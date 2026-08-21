@@ -4,7 +4,7 @@
  *   harn agents whoami            current agent's name + instance_id + claims
  *   harn agents list              all active agents (default: fold transients)
  *   harn agents list --all        include raw kind=transient rows
- *   harn agents list --stale      include heartbeats older than the freshness window
+ *   harn agents list --stale      include generations older than the freshness window
  *   harn agents list --json       JSON output (alias for --format json)
  *   harn agents status            end-of-turn status box (name + age + files + peers)
  *   harn agents heal-events       PIDMAP_HEAL telemetry (pid-map self-heal frequency)
@@ -29,7 +29,6 @@ import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { coordBinPath } from "../core/agents/coord-bin.ts";
-import { readStreamTailBounded } from "../core/agents/events/consume.ts";
 import {
   checkGitFinalization,
   formatGitFinalizationFailure,
@@ -37,32 +36,72 @@ import {
   readSessionWriteClaims,
 } from "../core/agents/finalization.ts";
 import {
-  emitCanonical,
-  type Heartbeat,
+  emitEventV3,
   monorepoRoot,
   normalizeAdapter,
-  readHeartbeat,
   resolveOwner,
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
+  sessionIdentityFromEnv,
 } from "../core/agents/index.ts";
+import { reopenLiveCoordinationGenerationV3 } from "../core/agents/live-authority-v3.ts";
+import {
+  listSessionFinalizationRequestsV3,
+  observeHostDisappearedV3,
+  reconcileSessionFinalizationV3,
+  requestSessionEndExplicitV3,
+  type SessionFinalizationRequestV3,
+} from "../core/agents/session-finalizer-v3.ts";
+import { SESSION_NAME_DISPLAY_NOTE } from "../core/agents/session-name-display.ts";
 import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
+  type Heartbeat,
+  readHeartbeat as readHeartbeatCache,
 } from "../core/agents/state/heartbeat-writer.ts";
+import {
+  readLiveCoordinationRow,
+  readLiveCoordinationRows,
+} from "../core/agents/state/live-coordination-view.ts";
 import {
   type AgentActivity,
   foldSessionState,
   type TaskState,
 } from "../core/agents/state/session-state.ts";
-import { coordFreshnessSeconds, resolveBinName } from "../core/config.ts";
+import {
+  coordFreshnessSeconds,
+  resolveBinName,
+  sessionFinalizationConfig,
+} from "../core/config.ts";
+import type { EventTypeV3 } from "../core/events/v3/contract.ts";
+import { readEventV3ControlState } from "../core/events/v3/control.ts";
+import { projectCoordinationViewV3 } from "../core/events/v3/coordination-view.ts";
+import { liveInstanceIdV3 } from "../core/events/v3/live-routing.ts";
+import {
+  listHookIntakeGroupsV3,
+  listHookIntakeRecordsV3,
+} from "../core/events/v3/producers/intake.ts";
+import {
+  listHookProducerStateRecordsV3,
+  readHookProducerStateV3,
+} from "../core/events/v3/producers/recorder.ts";
+import { readLedgerV3 } from "../core/events/v3/reader.ts";
+import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../core/events/v3/writer.ts";
+import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.ts";
+import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { registerContextCommand } from "./context.ts";
+
+type LiveCoordinationRow = ReturnType<typeof readLiveCoordinationRows>[number];
+
+function readCurrentCoordinationRow(instanceId: string): LiveCoordinationRow | null {
+  const root = monorepoRoot();
+  return root ? readLiveCoordinationRow(root, instanceId) : null;
+}
 
 /** Cap for CLI scans of the unbounded event ledger (`trace` / `health`). Well
  * under V8's ~512MB max string length so a `readFileSync` of the whole file can
  * never throw; covers ample recent history for a diagnostic scan. */
-const STREAM_SCAN_CAP_BYTES = 128 * 1024 * 1024; // 128 MiB
 
 import { parsePsChainLine } from "../core/hooks/resolve/anchor.ts";
 import { appendEntry, resolveOwnerByName } from "../core/journal/index.ts";
@@ -113,7 +152,7 @@ function freshnessCutoffSecs(): number {
 }
 
 const SUBAGENT_NOTE =
-  "Bash identity is process-level in v1; if you're running inside a subagent, " +
+  "Bash identity is process-level; if you're running inside a subagent, " +
   "this resolves to the parent group's name, not the subagent's. A subagent-aware " +
   "bridge (per-shell marker file at .harnery/shells/<pid>) is out of scope.";
 
@@ -187,17 +226,14 @@ interface Row {
   started_at: string;
   last_heartbeat: string;
   files_touched: string[];
-  last_tool?: string | null;
-  last_tool_target?: string | null;
   task?: string | null;
   activity: AgentActivity;
   activity_updated_at?: string | null;
   activity_source?: string | null;
   task_state: TaskState;
+  task_state_scope: "current" | "historical";
   task_state_updated_at?: string | null;
   task_state_reason?: string | null;
-  turn_summary?: string | null;
-  turn_summary_updated_at?: string | null;
   platform?: string | null;
   /** Set on relation=remote rows: the machine label the row arrived from
    * via the cross-machine presence transport (ADR 0016). */
@@ -210,6 +246,20 @@ function activityOf(hb: Pick<Heartbeat, "activity">): AgentActivity {
 
 function taskStateOf(hb: Pick<Heartbeat, "task_state">): TaskState {
   return hb.task_state ?? "active";
+}
+
+/** Producer joins use the private native session ID; `session_id` is the canonical V3 fingerprint. */
+export function nativeSessionIdentity(
+  row: Pick<Heartbeat, "native_session_id" | "session_id"> | null | undefined,
+  fallback: string,
+): string {
+  if (row?.native_session_id) return row.native_session_id;
+  // A projection-only row carries the privacy-safe canonical session
+  // fingerprint, not the adapter's native session ID needed to join the hook
+  // producer. Until a disposable cache exists, the resolved owner is the only
+  // native identity available to command surfaces such as `agents status`.
+  if (row?.session_id && !/^sid_[a-f0-9]{64}$/.test(row.session_id)) return row.session_id;
+  return fallback;
 }
 
 function lifecycleLabel(hb: Pick<Heartbeat, "task_state" | "task_state_reason">): string {
@@ -245,7 +295,7 @@ export function registerAgentsCommand(
     .command("list")
     .description("List all active agents (folds kind=transient by default)")
     .option("--all", "Include raw kind=transient rows (no fold)")
-    .option("--stale", "Include heartbeats older than the freshness window")
+    .option("--stale", "Include generations older than the freshness window")
     .option("--json", "JSON output (alias for --format json)")
     .action((opts: { all?: boolean; stale?: boolean; json?: boolean }) => {
       runList(opts);
@@ -260,14 +310,20 @@ export function registerAgentsCommand(
       "Treat this as the turn's closing status: issue the box only when this session's held paths are committed and their repositories are pushed",
     )
     .option(
+      "--end-session",
+      "After the closing status, durably request an authoritative session end as soon as this exact turn closes (requires --end-turn)",
+    )
+    .option(
       "--session-id <id>",
-      "Lookup heartbeat by session_id directly, bypassing the ppid walk. " +
+      "Lookup the V3 generation by session_id directly, bypassing the ppid walk. " +
         "Use this when calling from a hook (the hook's process tree may not lead back to Claude Code's session pid). " +
         "The Stop hook payload includes session_id; pass it through.",
     )
-    .action((opts: { endTurn?: boolean; json?: boolean; sessionId?: string }) => {
-      runStatus(opts);
-    });
+    .action(
+      (opts: { endTurn?: boolean; endSession?: boolean; json?: boolean; sessionId?: string }) => {
+        runStatus(opts);
+      },
+    );
 
   cmd
     .command("suggest-name [description...]")
@@ -280,7 +336,7 @@ export function registerAgentsCommand(
     .option("--json", "JSON output instead of the bare name")
     .option(
       "--session-id <id>",
-      "Lookup heartbeat by session_id directly, bypassing the ppid walk.",
+      "Lookup the V3 generation by session_id directly, bypassing the ppid walk.",
     )
     .action((description: string[], opts: { json?: boolean; sessionId?: string }) => {
       runSuggestName(description, opts);
@@ -289,7 +345,7 @@ export function registerAgentsCommand(
   cmd
     .command("watch")
     .description(
-      "Stream peer state changes in real time (file watcher on .harnery/active/). " +
+      "Stream peer state changes from the authoritative V3 coordination projection. " +
         "Prints one line per delta: started / ended / activity / file claim / task change.",
     )
     .option("--poll-ms <n>", "Debounce window after a change event", "200")
@@ -311,15 +367,15 @@ export function registerAgentsCommand(
   cmd
     .command("trace <name>")
     .description(
-      "Reconstruct one agent's coordination lifecycle from events.ndjson: " +
-        "session.start → prompts → turns → tools → heals/sweeps → claims → end, " +
+      "Reconstruct one agent's coordination lifecycle from the active canonical event ledger: " +
+        "session.started → prompts → turns → tools → observations → session.ended, " +
         "in chronological order. The answer to 'what happened to this agent / why did " +
         "it vanish?' without hand-grepping the stream. Accepts a name (agent-Foo or Foo) " +
         "or an instance_id.",
     )
     .option("--since <window>", "Only events newer than Nh|Nd (default: all)")
     .option("--limit <n>", "Show at most N most-recent events. Default: 200.", "200")
-    .option("--all-tools", "Include tool.post_use + command.* (default: hidden as noise)")
+    .option("--all-tools", "Include tool.completed + command.* (default: hidden as noise)")
     .option("--json", "JSON envelope output")
     .action(
       (
@@ -354,6 +410,60 @@ export function registerAgentsCommand(
     )
     .action((state: string, opts: { reason?: string; sessionId?: string }) => {
       runLifecycle(state, opts);
+    });
+
+  cmd
+    .command("end")
+    .description(
+      "Finalize the current V3 session explicitly, or durably queue finalization until the current turn and tool spans close.",
+    )
+    .option("--session-id <id>", "Native adapter session id to finalize")
+    .option("--instance-id <id>", "Canonical V3 instance id to finalize")
+    .option(
+      "--outcome <outcome>",
+      "succeeded | failed | cancelled | timed_out | denied | interrupted | unknown",
+      "succeeded",
+    )
+    .action((opts: { sessionId?: string; instanceId?: string; outcome: string }) => {
+      runEndSession(opts);
+    });
+
+  cmd
+    .command("reconcile")
+    .description(
+      "Reconcile archive, idle, parent/run completion, stale, superseded, and host lifecycle signals into V3 session finalization.",
+    )
+    .option("--watch", "Keep reconciling until interrupted")
+    .option("--interval-seconds <n>", "Watch interval in seconds")
+    .option("--json", "JSON output")
+    .action(async (opts: { watch?: boolean; intervalSeconds?: string; json?: boolean }) => {
+      await runSessionReconcile(opts);
+    });
+
+  cmd
+    .command("observe-archive")
+    .description(
+      "Record an adapter archive or unarchive observation and reconcile it through the canonical V3 finalizer.",
+    )
+    .requiredOption("--adapter <id>", "claude-code | codex | cursor")
+    .requiredOption("--session-id <id>", "Native adapter session id")
+    .option("--unarchived", "Cancel a pending archive finalization")
+    .option("--observed-at <iso>", "Observation time (defaults to now)")
+    .action(
+      (opts: { adapter: string; sessionId: string; unarchived?: boolean; observedAt?: string }) =>
+        runObserveArchive(opts),
+    );
+
+  cmd
+    .command("observe-host-disappeared")
+    .description(
+      "Record a provisional host-loss observation; finalization follows only after the configured cascade grace period.",
+    )
+    .requiredOption("--instance-id <id>", "Canonical V3 instance id")
+    .requiredOption("--generation-id <id>", "Canonical V3 generation id")
+    .option("--observed-at <iso>", "Observation time (defaults to now)")
+    .action((opts: { instanceId: string; generationId: string; observedAt?: string }) => {
+      runObserveHostDisappeared(opts);
     });
 
   cmd
@@ -467,18 +577,19 @@ export function registerAgentsCommand(
     .command("heal")
     .description(
       "Force a coord-layer recovery action on a specific agent. " +
-        "Kinds: pidmap (force PIDMAP_HEAL), heartbeat (force HEARTBEAT_HEAL), " +
-        "kill (rm the heartbeat file). Runs through the same heartbeat flock " +
-        "the live hooks use, so it governs the operation safely.",
+        "Kinds: pidmap (repair process attribution) and cache (rebuild the " +
+        "disposable V3 coordination cache from the authoritative ledger).",
     )
     .requiredOption("--owner <id>", "Target agent's instance_id")
-    .requiredOption("--kind <kind>", "pidmap | heartbeat | kill")
+    .requiredOption("--kind <kind>", "pidmap | cache")
     .option(
       "--session-id <id>",
-      "(--kind heartbeat) session_id to stamp on the heartbeat. " +
-        "Default: inherit from existing heartbeat if one exists. " +
-        "Required when no heartbeat exists yet (a heartbeat without " +
-        "session_id fails schema validation and pollutes the audit trail).",
+      "(--kind cache) native session id used to join the authoritative V3 generation.",
+    )
+    .option(
+      "--adapter <id>",
+      "(--kind cache) adapter used to validate the authoritative V3 generation: " +
+        "claude-code | cursor | codex.",
     )
     .option(
       "--pid <pid>",
@@ -489,11 +600,216 @@ export function registerAgentsCommand(
     )
     .option("--json", "JSON envelope output")
     .action(
-      (opts: { owner: string; kind: string; sessionId?: string; pid?: string; json?: boolean }) => {
+      (opts: {
+        owner: string;
+        kind: string;
+        sessionId?: string;
+        adapter?: string;
+        pid?: string;
+        json?: boolean;
+      }) => {
         runHeal(opts);
       },
     );
   registerIdentityCommands(cmd);
+}
+
+const SESSION_OUTCOMES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "denied",
+  "interrupted",
+  "unknown",
+]);
+
+function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome: string }) {
+  const root = monorepoRoot();
+  if (!root) return failCommand("not_in_repo", "not in an agent session");
+  if (!SESSION_OUTCOMES.has(opts.outcome)) {
+    return failCommand("invalid_outcome", "invalid session outcome");
+  }
+  const target = opts.instanceId ?? opts.sessionId ?? resolveOwner();
+  if (!target) {
+    return failCommand(
+      "session_identity_missing",
+      "could not resolve the current session; pass --session-id or --instance-id",
+    );
+  }
+  const byInstance = listHookProducerStateRecordsV3(root, { includeTerminal: false }).filter(
+    ({ state }) => state.instance_id === target,
+  );
+  const byNative = (["claude-code", "codex", "cursor"] as const).flatMap((adapter) => {
+    const state = readHookProducerStateV3(root, adapter, target);
+    return state && !state.terminal ? [{ path: "", modified_at_ms: 0, state }] : [];
+  });
+  const matches = byInstance.length > 0 ? byInstance : byNative;
+  if (matches.length !== 1) {
+    return failCommand(
+      "session_identity_ambiguous",
+      `expected one live V3 generation for the target; found ${matches.length}`,
+    );
+  }
+  const record = matches[0];
+  if (!record) {
+    return failCommand("session_identity_missing", "live V3 generation disappeared");
+  }
+  const state = record.state;
+  if (state.delegations.length > 0) {
+    return failCommand(
+      "session_work_open",
+      `cannot finalize while ${state.delegations.length} delegated child(ren) remain open`,
+    );
+  }
+  const history = readSessionWriteClaims(root, state.instance_id, state.session_id);
+  const finalized = checkGitFinalization(root, history.paths, {
+    claimHistoryComplete: history.complete,
+  });
+  if (!finalized.ok) {
+    return failCommand(
+      "git_not_finalized",
+      formatGitFinalizationFailure(finalized, resolveBinName(root)),
+    );
+  }
+  const result = requestSessionEndExplicitV3({
+    coordRoot: root,
+    instance_id: state.instance_id,
+    generation_id: state.generation_id,
+    outcome: opts.outcome as
+      | "succeeded"
+      | "failed"
+      | "cancelled"
+      | "timed_out"
+      | "denied"
+      | "interrupted"
+      | "unknown",
+    coordination_finalized: true,
+  });
+  if (
+    result.state !== "recorded" &&
+    result.state !== "already_ended" &&
+    result.state !== "queued" &&
+    result.state !== "already_requested"
+  ) {
+    return failCommand("session_end_failed", JSON.stringify(result));
+  }
+  const terminalEventId =
+    result.state === "recorded"
+      ? result.event.event_id
+      : result.state === "already_ended"
+        ? result.event_id
+        : undefined;
+  const requestId =
+    result.state === "queued" || result.state === "already_requested"
+      ? result.request.request_id
+      : undefined;
+  emit.data({
+    ok: true,
+    state: result.state,
+    instance_id: state.instance_id,
+    generation_id: state.generation_id,
+    ...(terminalEventId ? { terminal_event_id: terminalEventId } : {}),
+    ...(requestId ? { request_id: requestId } : {}),
+    authority: "approved",
+    reason: "approved_explicit_end",
+  });
+}
+
+async function runSessionReconcile(opts: {
+  watch?: boolean;
+  intervalSeconds?: string;
+  json?: boolean;
+}): Promise<void> {
+  const root = monorepoRoot();
+  if (!root) return failCommand("not_in_repo", "not in an agent session");
+  if (opts.json) emit.config({ format: "json" });
+  const interval = opts.intervalSeconds
+    ? Number.parseInt(opts.intervalSeconds, 10)
+    : sessionFinalizationConfig(root).reconcileIntervalSeconds;
+  if (!Number.isSafeInteger(interval) || interval < 1) {
+    return failCommand("invalid_interval", "interval-seconds must be a positive integer");
+  }
+  let stopped = false;
+  do {
+    emit.data(reconcileSessionFinalizationV3(root));
+    if (!opts.watch || stopped) return;
+    await new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, interval * 1_000);
+      const stop = () => {
+        stopped = true;
+        clearTimeout(timer);
+        process.off("SIGINT", stop);
+        process.off("SIGTERM", stop);
+        resolvePromise();
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    });
+  } while (opts.watch && !stopped);
+}
+
+function runObserveArchive(opts: {
+  adapter: string;
+  sessionId: string;
+  unarchived?: boolean;
+  observedAt?: string;
+}) {
+  const root = monorepoRoot();
+  if (!root) return failCommand("not_in_repo", "not in an agent session");
+  if (!(["claude-code", "codex", "cursor"] as string[]).includes(opts.adapter)) {
+    return failCommand("invalid_adapter", "adapter must be claude-code, codex, or cursor");
+  }
+  const adapter = opts.adapter as "claude-code" | "codex" | "cursor";
+  const observedAt = opts.observedAt ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(observedAt))) {
+    return failCommand("invalid_observed_at", "observed-at must be an ISO timestamp");
+  }
+  emit.data(
+    reconcileSessionFinalizationV3(root, {
+      now: new Date(observedAt),
+      archive_observations: [
+        {
+          adapter,
+          native_session_id: opts.sessionId,
+          archived: !opts.unarchived,
+          observed_at: observedAt,
+        },
+      ],
+    }),
+  );
+}
+
+function runObserveHostDisappeared(opts: {
+  instanceId: string;
+  generationId: string;
+  observedAt?: string;
+}) {
+  const root = monorepoRoot();
+  if (!root) return failCommand("not_in_repo", "not in an agent session");
+  if (!/^inst_[A-Za-z0-9._-]+$/.test(opts.instanceId)) {
+    return failCommand("invalid_instance_id", "invalid V3 instance id");
+  }
+  if (!/^gen_[A-Za-z0-9._-]+$/.test(opts.generationId)) {
+    return failCommand("invalid_generation_id", "invalid V3 generation id");
+  }
+  const observedAt = opts.observedAt ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(observedAt))) {
+    return failCommand("invalid_observed_at", "observed-at must be an ISO timestamp");
+  }
+  emit.data(
+    observeHostDisappearedV3({
+      coordRoot: root,
+      instance_id: opts.instanceId as `inst_${string}`,
+      generation_id: opts.generationId as `gen_${string}`,
+      observed_at: observedAt,
+    }),
+  );
+}
+
+function failCommand(code: string, message: string): void {
+  emit.error({ code, message });
+  process.exitCode = 1;
 }
 
 function registerIdentityCommands(parent: Command): void {
@@ -779,7 +1095,7 @@ export function registerCouncilCommands(parent: Command): void {
         "archive it first (trash-can pattern). Without --yes this prints " +
         "the paths that would be removed and exits 0 without touching " +
         "anything. Does NOT touch target_doc, close_handoff_path, or " +
-        "session-events.ndjson, which are owned by separate authors.",
+        "the canonical V3 event ledger, which is owned independently.",
     )
     .option("-y, --yes", "Required to actually delete; without this, dry-run")
     .option("--json", "JSON envelope output")
@@ -918,11 +1234,11 @@ function runWhoami(opts: { json?: boolean }): void {
     process.exit(1);
   }
 
-  const hb = readHeartbeat(myOwner);
+  const hb = readLiveCoordinationRow(root, myOwner);
   if (!hb) {
     emit.error({
-      code: "no_heartbeat",
-      message: noHeartbeatMessage(myOwner),
+      code: "no_live_generation",
+      message: noLiveGenerationMessage(myOwner),
     });
     process.exit(1);
   }
@@ -934,20 +1250,17 @@ function runWhoami(opts: { json?: boolean }): void {
     session_id: hb.session_id,
     kind: normalizeKind(hb.kind),
     relation: "self",
-    started_at: hb.started_at,
+    started_at: hb.started_at ?? hb.last_heartbeat,
     last_heartbeat: hb.last_heartbeat,
     files_touched: hb.files_touched ?? [],
-    last_tool: hb.last_tool ?? null,
-    last_tool_target: hb.last_tool_target ?? null,
     task: hb.task ?? null,
     activity: activityOf(hb),
     activity_updated_at: hb.activity_updated_at ?? null,
     activity_source: hb.activity_source ?? null,
     task_state: taskStateOf(hb),
+    task_state_scope: "current",
     task_state_updated_at: hb.task_state_updated_at ?? null,
     task_state_reason: hb.task_state_reason ?? null,
-    turn_summary: hb.turn_summary ?? null,
-    turn_summary_updated_at: hb.turn_summary_updated_at ?? null,
     platform: hb.platform ?? "claude-code",
   };
 
@@ -971,38 +1284,19 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
     process.exit(1);
   }
 
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) {
-    emit.data({ rows: [], note: SUBAGENT_NOTE });
-    return;
-  }
-
   // Resolve self for relation column; best-effort, missing → "unknown" on every row.
   const myOwner = resolveOwner();
-  const myHb = myOwner ? readHeartbeat(myOwner) : null;
+  const myHb = myOwner ? readLiveCoordinationRow(root, myOwner) : null;
   const mySession = myHb?.session_id ?? null;
 
-  // Read every heartbeat.
-  const heartbeats: Heartbeat[] = [];
-  for (const file of readdirSync(activeDir)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const raw = readFileSync(resolve(activeDir, file), "utf8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.instance_id === "string") {
-        heartbeats.push(parsed as Heartbeat);
-      }
-    } catch {
-      // skip malformed
-    }
-  }
+  const generations = readLiveCoordinationRows(root);
 
   // Apply staleness filter unless --stale.
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshnessCutoffSecs();
   const live = opts.stale
-    ? heartbeats
-    : heartbeats.filter((h) => {
+    ? generations
+    : generations.filter((h) => {
         const ts = Date.parse(h.last_heartbeat);
         return Number.isFinite(ts) && ts / 1000 >= cutoff;
       });
@@ -1038,20 +1332,17 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         session_id: h.session_id,
         kind: "transient",
         relation: relationOf(h, myOwner ?? "", mySession),
-        started_at: h.started_at,
+        started_at: h.started_at ?? h.last_heartbeat,
         last_heartbeat: h.last_heartbeat,
         files_touched: [...(h.files_touched ?? [])].sort(),
-        last_tool: h.last_tool ?? null,
-        last_tool_target: h.last_tool_target ?? null,
         task: h.task ?? null,
         activity: activityOf(h),
         activity_updated_at: h.activity_updated_at ?? null,
         activity_source: h.activity_source ?? null,
         task_state: taskStateOf(h),
+        task_state_scope: "current",
         task_state_updated_at: h.task_state_updated_at ?? null,
         task_state_reason: h.task_state_reason ?? null,
-        turn_summary: h.turn_summary ?? null,
-        turn_summary_updated_at: h.turn_summary_updated_at ?? null,
         platform: h.platform ?? "claude-code",
       });
       continue;
@@ -1069,32 +1360,28 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
       session_id: h.session_id,
       kind: normalizeKind(h.kind),
       relation: relationOf(h, myOwner ?? "", mySession),
-      started_at: h.started_at,
+      started_at: h.started_at ?? h.last_heartbeat,
       last_heartbeat: h.last_heartbeat,
       files_touched: files,
-      last_tool: h.last_tool ?? null,
-      last_tool_target: h.last_tool_target ?? null,
       task: h.task ?? null,
       activity: activityOf(h),
       activity_updated_at: h.activity_updated_at ?? null,
       activity_source: h.activity_source ?? null,
       task_state: taskStateOf(h),
+      task_state_scope: "current",
       task_state_updated_at: h.task_state_updated_at ?? null,
       task_state_reason: h.task_state_reason ?? null,
-      turn_summary: h.turn_summary ?? null,
-      turn_summary_updated_at: h.turn_summary_updated_at ?? null,
       platform: h.platform ?? "claude-code",
     });
   }
 
-  // Guard missing started_at: a heartbeat seeded from a stray event can lack it
-  // (legacy zombies), and an unguarded .localeCompare throws, which is exactly
-  // what made `harn agents list --all --stale` crash.
+  // Guard missing started_at so a partial observational projection cannot make
+  // `harn agents list --all --stale` throw while sorting.
   rows.sort((a, b) => (a.started_at ?? "").localeCompare(b.started_at ?? ""));
 
   // Cross-machine presence (ADR 0016): append sessions on OTHER machines from
   // the locally-fetched presence refs. Advisory rows (relation=remote) — they
-  // don't participate in local claim blocking in v1.
+  // never participate in local claim blocking.
   for (const rm of readRemoteMachines(root)) {
     for (const a of rm.agents) {
       rows.push({
@@ -1106,17 +1393,14 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         started_at: a.started_at ?? "",
         last_heartbeat: a.last_heartbeat ?? "",
         files_touched: [...(a.files_touched ?? [])].sort(),
-        last_tool: a.last_tool ?? null,
-        last_tool_target: null,
         task: a.task ?? null,
         activity: a.activity ?? "unknown",
         activity_updated_at: null,
         activity_source: null,
         task_state: a.task_state ?? "active",
+        task_state_scope: "current",
         task_state_updated_at: null,
         task_state_reason: a.task_state_reason ?? null,
-        turn_summary: a.turn_summary ?? null,
-        turn_summary_updated_at: null,
         platform: a.platform ?? "claude-code",
         machine: rm.machine,
       });
@@ -1131,7 +1415,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
 }
 
 function relationOf(
-  peer: Heartbeat,
+  peer: Pick<LiveCoordinationRow, "instance_id" | "session_id">,
   myOwner: string,
   mySession: string | null,
 ): "self" | "group" | "blocks" | "unknown" {
@@ -1147,22 +1431,18 @@ function normalizeKind(kind: string | undefined | null): string {
 }
 
 /**
- * The `no_heartbeat` diagnostic, quoting the owner id in FULL.
+ * The `no_live_generation` diagnostic, quoting the owner id in full.
  *
- * This id is actionable: the reader's next move is `agents heal --kind
- * heartbeat --owner <id>`, and heartbeats are keyed by the whole
- * `instance_id` (`.harnery/active/<instance_id>.json`). An abbreviated id
- * here reads as complete, so it gets copy-pasted into `--owner` and mints a
- * heartbeat at a filename no reader resolves — an orphan that leaves the
- * session looking unhealable. Abbreviate ids for display elsewhere, never in
- * a message whose whole purpose is to hand the reader an id to pass back.
+ * This id is actionable: the reader may pass it to cache repair or explicit
+ * finalization. Abbreviate ids for display elsewhere, never in a diagnostic
+ * whose purpose is to hand the caller a canonical identity.
  */
-function noHeartbeatMessage(owner: string): string {
-  return `resolved owner=${owner} but no heartbeat exists at .harnery/active/${owner}.json`;
+function noLiveGenerationMessage(owner: string): string {
+  return `resolved owner=${owner} but no authority-safe live V3 generation exists for it`;
 }
 
 /**
- * The instance_id of a live heartbeat that `prefix` strictly prefixes, or null.
+ * The instance_id of a live V3 generation that `prefix` strictly prefixes, or null.
  *
  * Used to recognize an abbreviated id handed back by a reader when the caller
  * supplied no canonical id of their own. Ambiguity is treated as "no answer":
@@ -1170,12 +1450,9 @@ function noHeartbeatMessage(owner: string): string {
  * and refusing with the wrong id in the message would be worse than the orphan.
  */
 function liveIdWithPrefix(root: string, prefix: string): string | null {
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) return null;
   const matches = new Set<string>();
-  for (const file of readdirSync(activeDir)) {
-    if (!file.endsWith(".json")) continue;
-    const id = file.slice(0, -".json".length);
+  for (const row of readLiveCoordinationRows(root)) {
+    const id = row.instance_id;
     if (id !== prefix && id.startsWith(prefix)) matches.add(id);
   }
   return matches.size === 1 ? (matches.values().next().value as string) : null;
@@ -1190,82 +1467,60 @@ async function runWatch(pollMs: number): Promise<void> {
     });
     process.exit(1);
   }
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) {
-    emit.error({ code: "no_active_dir", message: ".harnery/active/ missing" });
-    process.exit(1);
-  }
-
-  const fs = await import("node:fs");
-  const cache = new Map<string, Heartbeat>();
+  const cache = new Map<string, LiveCoordinationRow>();
 
   // Seed cache + print an initial roster line per live peer.
-  const initial = listActiveHeartbeats(activeDir);
-  process.stderr.write(`watching ${activeDir} (Ctrl-C to exit)\n`); // lint-ok-emission: banner goes to stderr, stdout is the live stream
+  const initial = listLiveGenerations(root);
+  process.stderr.write("watching authoritative V3 coordination state (Ctrl-C to exit)\n"); // lint-ok-emission: banner goes to stderr, stdout is the live stream
   for (const h of initial) {
     cache.set(h.instance_id, h);
     emitWatchLine(
-      `agent-${h.name ?? "?"} present (${formatAge(secondsSince(h.started_at))} old${h.task ? `, task: "${h.task}"` : ""})`,
+      `agent-${h.name ?? "?"} present (${formatAge(secondsSince(h.started_at ?? h.last_heartbeat))} old${h.task ? `, task: "${h.task}"` : ""})`,
     );
   }
 
-  let scheduled: NodeJS.Timeout | null = null;
   const rescan = () => {
-    if (scheduled) return;
-    scheduled = setTimeout(() => {
-      scheduled = null;
-      const current = new Map<string, Heartbeat>();
-      for (const h of listActiveHeartbeats(activeDir)) current.set(h.instance_id, h);
+    const current = new Map<string, LiveCoordinationRow>();
+    for (const h of listLiveGenerations(root)) current.set(h.instance_id, h);
 
-      // Removed agents.
-      for (const [id, old] of cache) {
-        if (!current.has(id)) {
-          emitWatchLine(`agent-${old.name ?? "?"} ended`);
-          cache.delete(id);
-        }
+    // Removed agents.
+    for (const [id, old] of cache) {
+      if (!current.has(id)) {
+        emitWatchLine(`agent-${old.name ?? "?"} ended`);
+        cache.delete(id);
       }
-      // Added or changed agents.
-      for (const [id, h] of current) {
-        const prev = cache.get(id);
-        if (!prev) {
-          emitWatchLine(
-            `agent-${h.name ?? "?"} started (${formatAge(secondsSince(h.started_at))} old${h.task ? `, task: "${h.task}"` : ""})`,
-          );
-          cache.set(id, h);
-          continue;
-        }
-        // Diff fields we care about.
-        if ((prev.task ?? "") !== (h.task ?? "")) {
-          emitWatchLine(`agent-${h.name ?? "?"} task: ${h.task ? `"${h.task}"` : "(cleared)"}`);
-        }
-        if (
-          (prev.last_tool ?? "") !== (h.last_tool ?? "") ||
-          (prev.last_tool_target ?? "") !== (h.last_tool_target ?? "")
-        ) {
-          if (h.last_tool) {
-            const target = h.last_tool_target ? ` ${truncate(h.last_tool_target, 80)}` : "";
-            emitWatchLine(`agent-${h.name ?? "?"} ${h.last_tool}${target}`);
-          }
-        }
-        // File additions/removals.
-        const prevFiles = new Set(prev.files_touched ?? []);
-        const currFiles = new Set(h.files_touched ?? []);
-        for (const f of currFiles) {
-          if (!prevFiles.has(f)) emitWatchLine(`agent-${h.name ?? "?"} +claim ${f}`);
-        }
-        for (const f of prevFiles) {
-          if (!currFiles.has(f)) emitWatchLine(`agent-${h.name ?? "?"} -release ${f}`);
-        }
+    }
+    // Added or changed agents.
+    for (const [id, h] of current) {
+      const prev = cache.get(id);
+      if (!prev) {
+        emitWatchLine(
+          `agent-${h.name ?? "?"} started (${formatAge(secondsSince(h.started_at ?? h.last_heartbeat))} old${h.task ? `, task: "${h.task}"` : ""})`,
+        );
         cache.set(id, h);
+        continue;
       }
-    }, pollMs);
+      // Diff fields we care about.
+      if ((prev.task ?? "") !== (h.task ?? "")) {
+        emitWatchLine(`agent-${h.name ?? "?"} task: ${h.task ? `"${h.task}"` : "(cleared)"}`);
+      }
+      // File additions/removals.
+      const prevFiles = new Set(prev.files_touched ?? []);
+      const currFiles = new Set(h.files_touched ?? []);
+      for (const f of currFiles) {
+        if (!prevFiles.has(f)) emitWatchLine(`agent-${h.name ?? "?"} +claim ${f}`);
+      }
+      for (const f of prevFiles) {
+        if (!currFiles.has(f)) emitWatchLine(`agent-${h.name ?? "?"} -release ${f}`);
+      }
+      cache.set(id, h);
+    }
   };
 
-  const watcher = fs.watch(activeDir, { persistent: true }, () => rescan());
-
   await new Promise<void>((resolveP) => {
+    const timer = setInterval(rescan, Math.max(100, pollMs));
     const stop = () => {
-      watcher.close();
+      clearInterval(timer);
       resolveP();
     };
     process.on("SIGINT", stop);
@@ -1273,23 +1528,13 @@ async function runWatch(pollMs: number): Promise<void> {
   });
 }
 
-function listActiveHeartbeats(activeDir: string): Heartbeat[] {
-  const out: Heartbeat[] = [];
+function listLiveGenerations(root: string): LiveCoordinationRow[] {
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshnessCutoffSecs();
-  for (const file of readdirSync(activeDir)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const raw = readFileSync(resolve(activeDir, file), "utf8");
-      const parsed = JSON.parse(raw) as Heartbeat;
-      if (!parsed || typeof parsed.instance_id !== "string") continue;
-      const ts = Date.parse(parsed.last_heartbeat);
-      if (Number.isFinite(ts) && ts / 1000 >= cutoff) out.push(parsed);
-    } catch {
-      // skip
-    }
-  }
-  return out;
+  return readLiveCoordinationRows(root).filter((row) => {
+    const ts = Date.parse(row.last_heartbeat);
+    return Number.isFinite(ts) && ts / 1000 >= cutoff;
+  });
 }
 
 function secondsSince(iso: string): number {
@@ -1311,29 +1556,14 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     });
     process.exit(1);
   }
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) {
-    emit.error({ code: "no_active_dir", message: ".harnery/active/ missing" });
-    process.exit(1);
-  }
-
-  // Read all heartbeats; match by name (case-insensitive). Apply freshness filter.
-  const matches: Heartbeat[] = [];
+  // Match authority-safe V3 generations by resolved display name.
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshnessCutoffSecs();
-  for (const file of readdirSync(activeDir)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const raw = readFileSync(resolve(activeDir, file), "utf8");
-      const parsed = JSON.parse(raw) as Heartbeat;
-      if (!parsed || typeof parsed.instance_id !== "string") continue;
-      if ((parsed.name ?? "").toLowerCase() !== name.toLowerCase()) continue;
-      const ts = Date.parse(parsed.last_heartbeat);
-      if (Number.isFinite(ts) && ts / 1000 >= cutoff) matches.push(parsed);
-    } catch {
-      // skip malformed
-    }
-  }
+  const matches = readLiveCoordinationRows(root).filter((row) => {
+    if ((row.name ?? "").toLowerCase() !== name.toLowerCase()) return false;
+    const ts = Date.parse(row.last_heartbeat);
+    return Number.isFinite(ts) && ts / 1000 >= cutoff;
+  });
 
   if (matches.length === 0) {
     emit.error({
@@ -1365,7 +1595,7 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
   const report = null as PeerReport | null;
   const bqError = null as string | null;
 
-  const startedAtMs = Date.parse(hb.started_at);
+  const startedAtMs = Date.parse(hb.started_at ?? hb.last_heartbeat);
   const ageSecs = Number.isFinite(startedAtMs)
     ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000))
     : 0;
@@ -1386,14 +1616,11 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     activity_updated_at: hb.activity_updated_at ?? null,
     activity_source: hb.activity_source ?? null,
     task_state: taskStateOf(hb),
+    task_state_scope: "current" as const,
     task_state_updated_at: hb.task_state_updated_at ?? null,
     task_state_reason: hb.task_state_reason ?? null,
-    turn_summary: hb.turn_summary ?? null,
-    turn_summary_updated_at: hb.turn_summary_updated_at ?? null,
     title: report?.title ?? null,
     files_held: hb.files_touched ?? [],
-    last_tool: hb.last_tool ?? null,
-    last_tool_target: hb.last_tool_target ?? null,
     recent_prompts: report?.recent_prompts ?? [],
     recent_tools: report?.recent_tools ?? [],
     tool_counts: report?.tool_counts ?? [],
@@ -1423,10 +1650,6 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
   lines.push(
     `  lifecycle:      ${data.task_state}${data.task_state === "blocked" && data.task_state_reason ? `: ${data.task_state_reason}` : ""}`,
   );
-  if (data.last_tool) {
-    const target = data.last_tool_target ? ` ${truncate(data.last_tool_target, 80)}` : "";
-    lines.push(`  last activity:  ${data.last_tool}${target}`);
-  }
   if (data.files_held.length > 0) {
     lines.push(`  holds ${data.files_held.length} file(s):`);
     for (const f of data.files_held.slice(0, 10)) lines.push(`    ${f}`);
@@ -1581,13 +1804,19 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // Identity: prefer explicit --session-id (the ppid-walk-free escape hatch,
   // mirrors `status`), fall back to the ppid walk. Cursor shell tool calls
   // don't descend from a pid-map-registered anchor, so the walk can miss there.
+  // Final fallback: the adapter/connector-stamped session id from the
+  // environment. set-task is the session's REGISTRATION point — a fresh
+  // (bridge) session has no heartbeat yet, so the heartbeat-validated resolver
+  // returns null by design, and erroring here orphans the session's first
+  // ritual command. The env id carries the same trust as an explicit
+  // --session-id, and set-task mints the heartbeat exactly as that path does.
   if (!opts?.sessionId) ensureCursorSession(root);
-  const myOwner = opts?.sessionId ?? resolveOwner();
+  const myOwner = opts?.sessionId ?? resolveOwner() ?? sessionIdentityFromEnv();
   if (!myOwner) {
     emit.error({
       code: "no_pidmap_entry",
       message:
-        "not in an agent session; ppid walk found no pid-map entry (pass --session-id to bypass)",
+        "not in an agent session; no session-id environment identity and the ppid walk found no pid-map entry (pass --session-id to bypass)",
     });
     process.exit(1);
   }
@@ -1598,7 +1827,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // naming window, and subagent/workflow kinds are never named — see
   // heartbeat-writer.setTask. This call is the naming call exactly when the
   // stamp appears across the mutation.
-  const priorHb = readHeartbeat(myOwner);
+  const priorHb = readCurrentCoordinationRow(myOwner);
   const normalizedTask = task.length > 0 ? task : undefined;
   const lifecycleWarning =
     priorHb && (priorHb.task_state ?? "active") !== "active" && priorHb.task !== normalizedTask
@@ -1619,7 +1848,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     process.exit(1);
   }
 
-  const hb = readHeartbeat(myOwner);
+  const hb = readCurrentCoordinationRow(myOwner);
 
   // The naming call: the mutation just stamped `suggested_session_name` for
   // the first time. `first_of_session: true` means exactly "this call produced
@@ -1630,19 +1859,6 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
       ? hb.suggested_session_name
       : null;
   const firstOfSession = suggestedName !== null;
-
-  emitCanonical({
-    type: "state.task_set",
-    owner: myOwner,
-    session: hb?.session_id ?? myOwner,
-    adapter: normalizeAdapter(hb?.platform),
-    data: {
-      task,
-      cleared: !task || task.length === 0,
-      first_of_session: firstOfSession,
-      suggested_session_name: suggestedName,
-    },
-  });
 
   emit.data({
     instance_id: myOwner,
@@ -1656,7 +1872,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     // exists; this result is the moment the model holds the string.
     ...(suggestedName
       ? {
-          note: "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title.",
+          note: SESSION_NAME_DISPLAY_NOTE,
         }
       : {}),
   });
@@ -1683,7 +1899,7 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     return;
   }
   if (!opts.sessionId) ensureCursorSession(root);
-  const myOwner = opts.sessionId ?? resolveOwner();
+  const myOwner = opts.sessionId ?? resolveOwner() ?? sessionIdentityFromEnv();
   if (!myOwner) {
     emit.error({
       code: "no_pidmap_entry",
@@ -1694,11 +1910,40 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     return;
   }
 
-  const hb = readHeartbeat(myOwner);
+  let hb = readCurrentCoordinationRow(myOwner);
+  let reopenedGeneration: ReturnType<typeof reopenLiveCoordinationGenerationV3> | undefined;
   if (!hb) {
-    emit.error({ code: "no_heartbeat", message: noHeartbeatMessage(myOwner) });
-    process.exitCode = 1;
-    return;
+    if (state !== "active") {
+      emit.error({
+        code: "no_live_generation",
+        message: `${noLiveGenerationMessage(myOwner)}; run \`${resolveBinName(root)} agents lifecycle active\` to open a fresh generation`,
+      });
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      reopenedGeneration = reopenLiveCoordinationGenerationV3({
+        coordRoot: root,
+        owner: myOwner,
+        nativeSessionId: nativeSessionIdentity(readHeartbeatCache(root, myOwner), myOwner),
+      });
+    } catch (error) {
+      emit.error({
+        code: "lifecycle_reopen_failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      process.exitCode = 1;
+      return;
+    }
+    hb = readCurrentCoordinationRow(myOwner);
+    if (!hb) {
+      emit.error({
+        code: "lifecycle_reopen_failed",
+        message: "the fresh generation was recorded but did not project as live",
+      });
+      process.exitCode = 1;
+      return;
+    }
   }
   if (hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) {
     emit.error({
@@ -1729,6 +1974,22 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
 
   const priorState: TaskState = hb.task_state ?? "active";
   const priorReason = hb.task_state_reason || undefined;
+  if (reopenedGeneration) {
+    emit.data({
+      instance_id: myOwner,
+      task_state: "active",
+      prior_state: null,
+      reason: null,
+      changed: true,
+      generation_reopened: true,
+      prior_generation_id: reopenedGeneration.prior_generation_id,
+      generation_id: reopenedGeneration.generation_id,
+      name_reminted: false,
+      suggested_session_name: null,
+      git_finalization_checked: false,
+    });
+    return;
+  }
   if (priorState === state && priorReason === reason) {
     emit.data({
       instance_id: myOwner,
@@ -1743,7 +2004,11 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
 
   let finalization: GitFinalizationResult | null = null;
   if (state === "done") {
-    const history = readSessionWriteClaims(root, hb.instance_id, hb.session_id ?? myOwner);
+    const history = readSessionWriteClaims(
+      root,
+      hb.instance_id,
+      nativeSessionIdentity(hb, myOwner),
+    );
     const touchedPaths = [...new Set([...(hb.files_touched ?? []), ...history.paths])];
     finalization = checkGitFinalization(root, touchedPaths, {
       claimHistoryComplete: history.complete,
@@ -1761,19 +2026,16 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     }
   }
 
-  const suggestedName = buildLifecycleSuggestedName(hb.name ?? "unknown", hb.task, state);
+  const suggestedName = buildLifecycleSuggestedName(hb.suggested_session_name, state);
   const nameReminted = suggestedName !== null && suggestedName !== hb.suggested_session_name;
-  const emitted = emitCanonical({
-    type: "state.task_state",
+  const emitted = emitEventV3({
     owner: myOwner,
-    session: hb.session_id ?? myOwner,
+    session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb.platform),
-    data: {
-      state,
-      reason: reason ?? null,
-      prior_state: priorState,
-      name_reminted: nameReminted,
-      git_finalization_checked: finalization !== null,
+    observation: {
+      event_type: "coord.lifecycle_changed",
+      new_state: state,
+      ...(reason ? { reason } : {}),
       ...(nameReminted ? { suggested_session_name: suggestedName } : {}),
     },
   });
@@ -1797,7 +2059,7 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     git_finalization_checked: finalization !== null,
     ...(nameReminted
       ? {
-          note: "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title.",
+          note: SESSION_NAME_DISPLAY_NOTE,
         }
       : {}),
   });
@@ -1829,7 +2091,7 @@ function runSuggestName(
     process.exit(1);
   }
 
-  const hb = readHeartbeat(myOwner);
+  const hb = readCurrentCoordinationRow(myOwner);
   const agentName = hb?.name || "unknown";
   // Description resolution: an explicit arg wins; with no arg, fall back to the
   // agent's current declared task, so a bare `suggest-name` reprints the running
@@ -1867,7 +2129,12 @@ function runSuggestName(
   process.stdout.write(`${suggestedName}\n`); // lint-ok-emission: chat-paste path
 }
 
-function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string }): void {
+function runStatus(opts: {
+  endTurn?: boolean;
+  endSession?: boolean;
+  json?: boolean;
+  sessionId?: string;
+}): void {
   const root = monorepoRoot();
   if (!root) {
     emit.error({
@@ -1875,6 +2142,14 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
       message: "not in an agent session; coord_root() returned null",
     });
     process.exit(1);
+  }
+  if (opts.endSession && !opts.endTurn) {
+    emit.error({
+      code: "end_session_requires_end_turn",
+      message: "--end-session requires --end-turn so Git finalization is verified first",
+    });
+    process.exitCode = 1;
+    return;
   }
 
   // Identity resolution: prefer explicit --session-id (hook-friendly), fall
@@ -1890,18 +2165,30 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
     process.exit(1);
   }
 
-  const hb = readHeartbeat(myOwner);
+  const hb = readCurrentCoordinationRow(myOwner);
   if (!hb) {
     emit.error({
-      code: "no_heartbeat",
-      message: noHeartbeatMessage(myOwner),
+      code: "no_live_generation",
+      message: noLiveGenerationMessage(myOwner),
     });
     process.exit(1);
   }
 
+  // Report-only run quality: cheap config/cursor due check first, then a
+  // non-blocking lazy evaluation. Shadow mode deliberately exposes no severity.
+  const qualityEvaluation = evaluateRunQualityIfDue(root, new Date(), myOwner);
+  const quality = qualityForStatus(
+    qualityEvaluation.config.requested_mode,
+    qualityEvaluation.snapshot,
+  );
+
   let finalization: GitFinalizationResult | null = null;
   if (opts.endTurn) {
-    const history = readSessionWriteClaims(root, hb.instance_id, hb.session_id ?? myOwner);
+    const history = readSessionWriteClaims(
+      root,
+      hb.instance_id,
+      nativeSessionIdentity(hb, myOwner),
+    );
     const touchedPaths = [...new Set([...(hb.files_touched ?? []), ...history.paths])];
     finalization = checkGitFinalization(root, touchedPaths, {
       claimHistoryComplete: history.complete,
@@ -1916,48 +2203,60 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
     }
   }
 
-  emitCanonical({
-    type: "state.status_checked",
+  emitEventV3({
     owner: myOwner,
-    session: hb.session_id ?? myOwner,
+    session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb.platform),
-    data: {
-      format: opts.json ? "json" : "box",
-      git_finalization_checked: opts.endTurn === true,
-      agent_count: 0, // computed below, not yet available here; Phase 5 verdict reads owner-scope only
-      included_self: true,
+    observation: {
+      event_type: "coord.status_observed",
+      status: opts.endTurn ? "end_turn_checked" : opts.json ? "json_checked" : "box_checked",
     },
   });
 
-  const startedAtMs = Date.parse(hb.started_at);
+  let sessionEnd:
+    | { state: "queued" | "already_requested"; request_id: string }
+    | { state: "recorded" | "already_ended"; terminal_event_id?: string }
+    | undefined;
+  if (opts.endSession) {
+    const canonicalInstanceId = liveInstanceIdV3(hb.instance_id);
+    const records = listHookProducerStateRecordsV3(root, { includeTerminal: true }).filter(
+      ({ state }) => state.instance_id === canonicalInstanceId,
+    );
+    if (records.length !== 1 || !records[0]) {
+      emit.error({
+        code: "session_identity_ambiguous",
+        message: `expected one V3 generation for ${canonicalInstanceId}; found ${records.length}`,
+      });
+      process.exitCode = 1;
+      return;
+    }
+    const state = records[0].state;
+    const requested = requestSessionEndExplicitV3({
+      coordRoot: root,
+      instance_id: state.instance_id,
+      generation_id: state.generation_id,
+      outcome: "succeeded",
+      coordination_finalized: true,
+    });
+    if (requested.state === "queued" || requested.state === "already_requested") {
+      sessionEnd = { state: requested.state, request_id: requested.request.request_id };
+    } else if (requested.state === "recorded") {
+      sessionEnd = { state: requested.state, terminal_event_id: requested.event.event_id };
+    } else if (requested.state === "already_ended") {
+      sessionEnd = { state: requested.state, terminal_event_id: requested.event_id };
+    } else {
+      emit.error({ code: "session_end_failed", message: JSON.stringify(requested) });
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const startedAtMs = Date.parse(hb.started_at ?? hb.last_heartbeat);
   const ageSecs = Number.isFinite(startedAtMs)
     ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000))
     : 0;
 
-  const activeDir = resolve(root, ".harnery", "active");
-  const nowSec = Math.floor(Date.now() / 1000);
-  const cutoff = nowSec - freshnessCutoffSecs();
-  const livePeers: Heartbeat[] = [];
-  let peersStale = 0;
-  if (existsSync(activeDir)) {
-    for (const file of readdirSync(activeDir)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const raw = readFileSync(resolve(activeDir, file), "utf8");
-        const peer = JSON.parse(raw) as Heartbeat;
-        if (!peer || typeof peer.instance_id !== "string") continue;
-        if (peer.instance_id === myOwner) continue;
-        const ts = Date.parse(peer.last_heartbeat);
-        if (Number.isFinite(ts) && ts / 1000 >= cutoff) {
-          livePeers.push(peer);
-        } else {
-          peersStale++;
-        }
-      } catch {
-        // skip malformed
-      }
-    }
-  }
+  const { livePeers, stale: peersStale } = collectStatusPeerHealth(root, myOwner);
 
   // Sort: file-holders first (by file count desc), then idle peers by recency.
   livePeers.sort((a, b) => {
@@ -1977,7 +2276,7 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
   const remoteMachines = readRemoteMachines(root);
   const peersStr = formatPeers(livePeers, 4, peersStale, remoteMachines);
 
-  const ctxUsage = readContextUsage(hb.session_id, hb.platform);
+  const ctxUsage = readContextUsage(hb.native_session_id ?? hb.session_id, hb.platform);
   let ctxStr: string;
   if (!ctxUsage) {
     ctxStr = "unavailable";
@@ -2014,6 +2313,7 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
     activity_updated_at: hb.activity_updated_at ?? null,
     activity_source: hb.activity_source ?? null,
     task_state: taskStateOf(hb),
+    task_state_scope: "current" as const,
     task_state_updated_at: hb.task_state_updated_at ?? null,
     task_state_reason: hb.task_state_reason ?? null,
     files_held: filesHeld,
@@ -2040,7 +2340,9 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
     context_window: ctxUsage?.window ?? null,
     timestamp_iso: new Date().toISOString(),
     timestamp_local: timeStr,
+    ...(quality ? { quality } : {}),
     ...(finalization ? { finalization } : {}),
+    ...(sessionEnd ? { session_end: sessionEnd } : {}),
   };
 
   if (opts.json) {
@@ -2058,10 +2360,7 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
     ["peers", peersStr],
     ["time", timeStr],
   ];
-  // task + turn_summary get full text; formatBox word-wraps to MAX_BOX_CONTENT_WIDTH.
-  if (hb.turn_summary && hb.turn_summary.length > 0) {
-    rows.splice(1, 0, ["last turn", hb.turn_summary]);
-  }
+  // Task gets full text; formatBox word-wraps to MAX_BOX_CONTENT_WIDTH.
   if (hb.task && hb.task.length > 0) {
     rows.splice(1, 0, ["task", hb.task]);
   }
@@ -2076,9 +2375,57 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
         : `${pendingCouncils.length} pending (${pendingCouncils[0]}, +${pendingCouncils.length - 1})`;
     rows.splice(idx, 0, ["council", summary]);
   }
+  if (quality) {
+    const idx = rows.findIndex((row) => row[0] === "time");
+    rows.splice(idx, 0, ["quality", formatRunQuality(quality.status, quality.signal_ids)]);
+  }
+  if (sessionEnd) {
+    const idx = rows.findIndex((row) => row[0] === "time");
+    rows.splice(idx, 0, [
+      "session end",
+      sessionEnd.state === "queued" || sessionEnd.state === "already_requested"
+        ? "queued after this turn"
+        : "recorded",
+    ]);
+  }
   // Box rendering needs predictable stdout regardless of TTY/pipe detection:
   // agent runs this via Bash (no TTY) and pastes captured stdout into chat.
   process.stdout.write(`${formatBox(displayName, rows)}\n`); // lint-ok-emission: chat-paste path; emit.text() auto-suppresses non-TTY
+}
+
+function qualityForStatus(
+  mode: "off" | "shadow" | "report",
+  snapshot: RunQualitySnapshot | null,
+): {
+  status: RunQualityStatus;
+  signal_ids: string[];
+  evaluated_at: string | null;
+  fresh: boolean;
+} | null {
+  if (mode !== "report") return null;
+  const fresh = !!snapshot && Date.parse(snapshot.expires_at) > Date.now();
+  if (!snapshot || !fresh) {
+    return {
+      status: "unknown",
+      signal_ids: [],
+      evaluated_at: snapshot?.evaluated_at ?? null,
+      fresh: false,
+    };
+  }
+  return {
+    status: snapshot.status,
+    signal_ids: snapshot.signals
+      .filter((signal) => signal.state === "active" && signal.severity !== "none")
+      .map((signal) => signal.id)
+      .sort()
+      .slice(0, 3),
+    evaluated_at: snapshot.evaluated_at,
+    fresh: true,
+  };
+}
+
+function formatRunQuality(status: RunQualityStatus, signalIds: string[]): string {
+  return signalIds.length > 0 ? `${status} (${signalIds.join(", ")})` : status;
 }
 
 function formatList(items: string[], cap: number, emptyLabel: string): string {
@@ -2089,7 +2436,7 @@ function formatList(items: string[], cap: number, emptyLabel: string): string {
 }
 
 function formatPeers(
-  peers: Heartbeat[],
+  peers: StatusPeerHeartbeat[],
   cap: number,
   staleCount: number,
   remoteMachines: RemoteMachine[] = [],
@@ -2120,6 +2467,38 @@ function formatPeers(
     main = `${main}; ${remote.join(", ")}${extra > 0 ? `, +${extra} more` : ""}`;
   }
   return main;
+}
+
+type StatusPeerHeartbeat = {
+  instance_id: string;
+  last_heartbeat: string;
+  files_touched?: string[];
+  name?: string;
+  platform?: string;
+};
+
+export function collectStatusPeerHealth(
+  root: string,
+  myOwner: string,
+  nowMs = Date.now(),
+): { livePeers: StatusPeerHeartbeat[]; stale: number } {
+  let rows: StatusPeerHeartbeat[] = [];
+  try {
+    rows = readLiveCoordinationRows(root);
+  } catch {
+    // V3 authority failures must not resurrect disposable cache rows.
+  }
+
+  const cutoffMs = nowMs - freshnessCutoffSecs() * 1000;
+  const livePeers: StatusPeerHeartbeat[] = [];
+  let stale = 0;
+  for (const peer of rows) {
+    if (peer.instance_id === myOwner) continue;
+    const observedAtMs = Date.parse(peer.last_heartbeat);
+    if (Number.isFinite(observedAtMs) && observedAtMs >= cutoffMs) livePeers.push(peer);
+    else stale += 1;
+  }
+  return { livePeers, stale };
 }
 
 function fmtTokens(n: number): string {
@@ -2371,46 +2750,69 @@ interface HealEvent {
   platform: string;
 }
 
-/**
- * One canonical event envelope from `.harnery/events.ndjson` (loose shape: we
- * only read the fields the health/heal aggregators need).
- */
-interface CanonicalEvent {
-  event_type: string;
+/** Bounded diagnostic event shape projected from the canonical V3 ledger. */
+export interface CanonicalEvent {
+  event_type: EventTypeV3;
   ts: string;
   instance_id?: string;
   adapter?: string;
-  data?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
 }
 
-/**
- * Read canonical events in a time window. The heal + council telemetry the
- * health/heal commands report lives here. Full-file read + ts filter is fine
- * for an on-demand diagnostic; events.ndjson is the canonical store.
- */
-function readCanonicalEventsInWindow(root: string, cutoffMs: number): CanonicalEvent[] {
-  const p = resolve(root, ".harnery", "events.ndjson");
-  if (!existsSync(p)) return [];
-  let raw: string;
-  try {
-    raw = readFileSync(p, "utf8");
-  } catch {
-    return [];
-  }
-  const out: CanonicalEvent[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line) continue;
-    try {
-      const ev = JSON.parse(line) as CanonicalEvent;
-      if (!ev.event_type || !ev.ts) continue;
-      const tsMs = Date.parse(ev.ts);
-      if (!Number.isFinite(tsMs) || tsMs < cutoffMs) continue;
-      out.push(ev);
-    } catch {
-      /* skip malformed */
+export interface AgentDiagnosticEventRead {
+  source: "v3";
+  authoritative: boolean;
+  reason?: string;
+  truncated: boolean;
+  bytes: number;
+  events: CanonicalEvent[];
+}
+
+/** Read validated canonical V3 events. */
+export function readAgentDiagnosticEventsInWindow(
+  root: string,
+  cutoffMs: number,
+): AgentDiagnosticEventRead {
+  const control = readEventV3ControlState(root);
+  if (control.state === "candidate" || control.state === "active") {
+    const ledger = readLedgerV3(root);
+    if (!ledger.complete) {
+      return {
+        source: "v3",
+        authoritative: false,
+        reason: `V3 ledger validation failed: ${ledger.diagnostics.map((item) => item.code).join(", ") || "incomplete"}`,
+        truncated: false,
+        bytes: ledger.bytes,
+        events: [],
+      };
     }
+    const events: CanonicalEvent[] = [];
+    for (const { event } of ledger.events) {
+      const tsMs = Date.parse(event.time.recorded_at);
+      if (!Number.isFinite(tsMs) || tsMs < cutoffMs) continue;
+      events.push({
+        event_type: event.event_type,
+        ts: event.time.recorded_at,
+        instance_id: event.scope.instance_id,
+        payload: event.payload as Record<string, unknown>,
+      });
+    }
+    return {
+      source: "v3",
+      authoritative: true,
+      truncated: false,
+      bytes: ledger.bytes,
+      events,
+    };
   }
-  return out;
+  return {
+    source: "v3",
+    authoritative: false,
+    reason: `V3 control state is ${control.state}`,
+    truncated: false,
+    bytes: 0,
+    events: [],
+  };
 }
 
 /** Normalize adapter event data into the heartbeat platform value. */
@@ -2418,19 +2820,21 @@ function adapterToPlatform(adapter: string | undefined): string {
   if (adapter === "claude-code") return "claude-code";
   if (adapter === "cursor") return "cursor";
   if (adapter === "codex") return "codex";
-  return "claude-code";
+  return "unknown";
 }
 
 /** Project a canonical health.* event into the HealEvent shape the aggregators
  * already consume. Returns null for non-heal events. instance_id → display name
  * via `nameById` (full-UUID keyed). */
 function canonicalToHealEvent(ev: CanonicalEvent, nameById: Map<string, string>): HealEvent | null {
-  if (ev.event_type !== "health.pidmap_heal" && ev.event_type !== "health.heartbeat_heal") {
+  if (ev.event_type !== "health.observed") {
     return null;
   }
-  const kind = ev.event_type === "health.pidmap_heal" ? "pidmap" : "heartbeat";
-  const data = ev.data ?? {};
-  const reason: "missing" | "stale" = data.reason === "stale" ? "stale" : "missing";
+  const data = ev.payload ?? {};
+  const subsystem = typeof data.subsystem === "string" ? data.subsystem : "";
+  if (subsystem !== "pidmap" && subsystem !== "heartbeat") return null;
+  const kind = subsystem;
+  const reason: "missing" | "stale" = data.condition === "stale" ? "stale" : "missing";
   const instanceId = ev.instance_id ?? "";
   const name = nameById.get(instanceId);
   const agent = name ? `agent-${name}` : `agent-${instanceId.slice(0, 8) || "unknown"}`;
@@ -2511,13 +2915,12 @@ function runHealEvents(opts: {
     process.exit(1);
   }
 
-  // Heal telemetry lives in the canonical .harnery/events.ndjson stream
-  // (health.pidmap_heal / health.heartbeat_heal), emitted by the writer on
-  // actual self-heal writes.
+  // Heal telemetry is read from the canonical V3 ledger.
   const cutoffMs = Date.now() - sinceSecs * 1000;
   const nameById = buildNameById(root);
   const events: HealEvent[] = [];
-  for (const ev of readCanonicalEventsInWindow(root, cutoffMs)) {
+  const diagnosticEvents = readAgentDiagnosticEventsInWindow(root, cutoffMs);
+  for (const ev of diagnosticEvents.events) {
     const heal = canonicalToHealEvent(ev, nameById);
     if (heal) events.push(heal);
   }
@@ -2554,6 +2957,11 @@ function runHealEvents(opts: {
 
   const data = {
     since: opts.since,
+    telemetry: {
+      source: diagnosticEvents.source,
+      authoritative: diagnosticEvents.authoritative,
+      reason: diagnosticEvents.reason,
+    },
     total: events.length,
     by_reason: byReason,
     by_kind: byKind,
@@ -2565,7 +2973,17 @@ function runHealEvents(opts: {
 
   if (opts.csv) {
     emit.config({ format: "csv" });
-    emit.data(recent);
+    emit.data(
+      data.telemetry.authoritative
+        ? recent
+        : [
+            {
+              status: "unavailable",
+              source: data.telemetry.source,
+              reason: data.telemetry.reason,
+            },
+          ],
+    );
     return;
   }
   if (opts.json) {
@@ -2580,6 +2998,13 @@ function runHealEvents(opts: {
     lines.push(
       `Heal events: ${events.length} total in last ${opts.since} (health.pidmap_heal + health.heartbeat_heal)`,
     );
+    if (!data.telemetry.authoritative) {
+      lines.push(
+        `  unavailable: ${data.telemetry.reason ?? "diagnostic event source is incomplete"}`,
+      );
+      emit.text(`${lines.join("\n")}\n`);
+      return;
+    }
     lines.push("");
     if (events.length === 0) {
       lines.push("  (none; pid-map/heartbeat drift is not happening in this window)");
@@ -2631,7 +3056,13 @@ function runHealEvents(opts: {
 interface HealthReport {
   since: string;
   generated_at: string;
+  event_telemetry: {
+    source: "v3";
+    authoritative: boolean;
+    reason?: string;
+  };
   active_agents: {
+    source: "event-ledger-v3";
     total: number;
     by_platform: Record<string, number>;
     by_kind: Record<string, number>;
@@ -2661,11 +3092,19 @@ interface HealthReport {
   // bug (e.g. a stop-projection crash that caused ~200 errors/day until it was fixed).
   hook_errors: {
     total: number;
+    last_1h: number;
+    latest_at: string | null;
     by_phase: Record<string, number>;
+    by_error: Record<string, number>;
     top: Array<{ phase: string; count: number; sample: string }>;
+    top_errors: Array<{ error: string; count: number; phase: string }>;
+    recent_top_errors: Array<{ error: string; count: number; phase: string }>;
   };
   // Canonical event stream growth + drain lag.
   stream: {
+    source: "v3";
+    authoritative: boolean;
+    reason?: string;
     bytes: number;
     lines: number;
     cursor_backlog: number;
@@ -2677,31 +3116,269 @@ interface HealthReport {
     count: number;
     samples: string[];
   };
+  // V3 event-ledger producer health: open tool spans, pending finalization
+  // requests, intake/diagnostics spool depth, span-count pressure.
+  event_ledger: EventLedgerHealthV3;
   anomalies: string[];
 }
 
+/** Open-span soft watermark per producer state. The producer-state reader
+ * hard-caps at 256 spans (a state file beyond it fails to load), so surfacing
+ * pressure at half that gives room to act before reads start failing. */
+const SPAN_PRESSURE_SOFT_WATERMARK = 128;
+
+export type EventLedgerHealthV3 =
+  | { state: "unavailable"; reason: string }
+  | {
+      state: "live";
+      mode: "candidate" | "active";
+      open_spans: {
+        total: number;
+        generations: Array<{
+          instance_id: string;
+          generation_id: string;
+          adapter: string;
+          span_count: number;
+          /** False = spans are open with NO open turn: the orphan signature
+           * (a turn ended without its tool spans being closed). */
+          turn_open: boolean;
+        }>;
+      };
+      pending_finalizations: Array<{
+        request_id: string;
+        trigger: string;
+        generation_id: string;
+        age_ms: number;
+        allowed_open_span_count: number;
+      }>;
+      intake_spool: {
+        total: number;
+        groups: Array<{ adapter: string; session_hash: string; count: number }>;
+      };
+      diagnostics_spool: {
+        total: number;
+        last_24h: number;
+        last_1h: number;
+        latest_at: string | null;
+        by_category: Record<string, { total: number; last_24h: number }>;
+        recent_by_category: Record<string, { last_1h: number; latest_at: string | null }>;
+      };
+      span_pressure: Array<{ instance_id: string; generation_id: string; span_count: number }>;
+      collection_errors: string[];
+    };
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Read-only health counters for the V3 event ledger's producer surfaces. Never
+ * mutates ledger state (no control repair, no spool drain) and never throws:
+ * a non-live route returns `{ state: "unavailable" }`, and each sub-surface
+ * that fails to read lands in `collection_errors` instead of aborting the rest.
+ */
+export function collectEventLedgerHealthV3(root: string, nowMs = Date.now()): EventLedgerHealthV3 {
+  let control: ReturnType<typeof readEventV3ControlState>;
+  try {
+    control = readEventV3ControlState(root);
+  } catch (error) {
+    return { state: "unavailable", reason: `control read failed: ${errorText(error)}` };
+  }
+  if (control.state !== "candidate" && control.state !== "active") {
+    return {
+      state: "unavailable",
+      reason: `${control.state}: ${control.reason}`,
+    };
+  }
+
+  const collectionErrors: string[] = [];
+
+  // 1) Open tool spans per live (non-terminal) generation + span-count pressure.
+  const generations: Extract<EventLedgerHealthV3, { state: "live" }>["open_spans"]["generations"] =
+    [];
+  const spanPressure: Extract<EventLedgerHealthV3, { state: "live" }>["span_pressure"] = [];
+  try {
+    for (const { state } of listHookProducerStateRecordsV3(root)) {
+      if (state.spans.length >= SPAN_PRESSURE_SOFT_WATERMARK) {
+        spanPressure.push({
+          instance_id: state.instance_id,
+          generation_id: state.generation_id,
+          span_count: state.spans.length,
+        });
+      }
+      if (state.spans.length === 0) continue;
+      generations.push({
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        adapter: state.adapter,
+        span_count: state.spans.length,
+        turn_open: Boolean(state.current_turn_id),
+      });
+    }
+  } catch (error) {
+    collectionErrors.push(`producer states unreadable: ${errorText(error)}`);
+  }
+
+  // 2) Pending finalization requests with age + trigger.
+  const pending: Extract<EventLedgerHealthV3, { state: "live" }>["pending_finalizations"] = [];
+  try {
+    for (const request of listSessionFinalizationRequestsV3(root)) {
+      if (request.status !== "pending") continue;
+      const observedMs = Date.parse(request.observed_at);
+      pending.push({
+        request_id: request.request_id,
+        trigger: request.trigger,
+        generation_id: request.generation_id,
+        age_ms: Number.isFinite(observedMs) ? Math.max(0, nowMs - observedMs) : -1,
+        allowed_open_span_count: request.allowed_open_span_ids?.length ?? 0,
+      });
+    }
+  } catch (error) {
+    collectionErrors.push(`finalization requests unreadable: ${errorText(error)}`);
+  }
+
+  // 3) Intake spool depth (queued hook signals awaiting a lease-holder drain).
+  let intakeTotal = 0;
+  const intakeGroups: Extract<EventLedgerHealthV3, { state: "live" }>["intake_spool"]["groups"] =
+    [];
+  try {
+    for (const group of listHookIntakeGroupsV3(root)) {
+      const count = listHookIntakeRecordsV3(group.directory).length;
+      if (count === 0) continue;
+      intakeTotal += count;
+      intakeGroups.push({ adapter: group.adapter, session_hash: group.session_hash, count });
+    }
+  } catch (error) {
+    collectionErrors.push(`intake spool unreadable: ${errorText(error)}`);
+  }
+
+  // 4) Diagnostics spool counts by category. Filenames only (never the
+  // contents): `<category>-<orderkey>.json` where the orderkey leads with a
+  // zero-padded epoch-ms, which also gives the last-24h split for free.
+  const byCategory: Record<string, { total: number; last_24h: number }> = {};
+  const recentByCategory: Extract<
+    EventLedgerHealthV3,
+    { state: "live" }
+  >["diagnostics_spool"]["recent_by_category"] = {};
+  let diagnosticsTotal = 0;
+  let diagnostics24h = 0;
+  let diagnostics1h = 0;
+  let latestDiagnosticMs = Number.NEGATIVE_INFINITY;
+  try {
+    const diagnosticsDir = join(resolve(root), EVENT_V3_LEDGER_RELATIVE_ROOT, "diagnostics");
+    if (existsSync(diagnosticsDir)) {
+      const dayAgoMs = nowMs - 24 * 60 * 60 * 1000;
+      const hourAgoMs = nowMs - 60 * 60 * 1000;
+      for (const name of readdirSync(diagnosticsDir)) {
+        const match = /^(.+)-(\d{15})-\d{20}-\d+-[0-9a-f-]+\.json$/.exec(name);
+        const category = match?.[1];
+        const epochMs = Number(match?.[2]);
+        if (!category) continue;
+        const entry = byCategory[category] ?? { total: 0, last_24h: 0 };
+        const recent = recentByCategory[category] ?? { last_1h: 0, latest_at: null };
+        byCategory[category] = entry;
+        recentByCategory[category] = recent;
+        entry.total += 1;
+        diagnosticsTotal += 1;
+        if (Number.isFinite(epochMs)) {
+          const recordedAt = new Date(epochMs).toISOString();
+          if (!recent.latest_at || epochMs > Date.parse(recent.latest_at)) {
+            recent.latest_at = recordedAt;
+          }
+          latestDiagnosticMs = Math.max(latestDiagnosticMs, epochMs);
+          if (epochMs >= dayAgoMs) {
+            entry.last_24h += 1;
+            diagnostics24h += 1;
+          }
+          if (epochMs >= hourAgoMs) {
+            recent.last_1h += 1;
+            diagnostics1h += 1;
+          }
+        }
+      }
+    }
+  } catch (error) {
+    collectionErrors.push(`diagnostics spool unreadable: ${errorText(error)}`);
+  }
+
+  return {
+    state: "live",
+    mode: control.state,
+    open_spans: {
+      total: generations.reduce((sum, generation) => sum + generation.span_count, 0),
+      generations,
+    },
+    pending_finalizations: pending,
+    intake_spool: { total: intakeTotal, groups: intakeGroups },
+    diagnostics_spool: {
+      total: diagnosticsTotal,
+      last_24h: diagnostics24h,
+      last_1h: diagnostics1h,
+      latest_at: Number.isFinite(latestDiagnosticMs)
+        ? new Date(latestDiagnosticMs).toISOString()
+        : null,
+      by_category: byCategory,
+      recent_by_category: recentByCategory,
+    },
+    span_pressure: spanPressure,
+    collection_errors: collectionErrors,
+  };
+}
+
 /** Tally agent-hook failures (.harnery/debug/agent-hook.errors.ndjson) in the
- * window, grouped by `phase`. Each line is {ts, error, phase, ...}. A dominant
- * phase points straight at a systemic hook bug. */
-function readHookErrors(
+ * window by exact error and phase, while separating current-hour failures from
+ * historical rows. Each line is {ts, error, phase, ...}. */
+export function readHookErrors(
   root: string,
   cutoffMs: number,
+  nowMs = Date.now(),
 ): {
   total: number;
+  last1h: number;
+  latestAt: string | null;
   byPhase: Record<string, number>;
+  byError: Record<string, number>;
   top: Array<{ phase: string; count: number; sample: string }>;
+  topErrors: Array<{ error: string; count: number; phase: string }>;
+  recentTopErrors: Array<{ error: string; count: number; phase: string }>;
 } {
   const p = resolve(root, ".harnery", "debug", "agent-hook.errors.ndjson");
   const byPhase: Record<string, number> = {};
+  const byError: Record<string, number> = {};
   const sampleByPhase: Record<string, string> = {};
+  const errorPhaseCounts = new Map<string, { error: string; phase: string; count: number }>();
+  const recentErrorPhaseCounts = new Map<string, { error: string; phase: string; count: number }>();
   let total = 0;
-  if (!existsSync(p)) return { total: 0, byPhase, top: [] };
+  let last1h = 0;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  if (!existsSync(p)) {
+    return {
+      total: 0,
+      last1h: 0,
+      latestAt: null,
+      byPhase,
+      byError,
+      top: [],
+      topErrors: [],
+      recentTopErrors: [],
+    };
+  }
   let raw: string;
   try {
     raw = readFileSync(p, "utf8");
   } catch {
-    return { total: 0, byPhase, top: [] };
+    return {
+      total: 0,
+      last1h: 0,
+      latestAt: null,
+      byPhase,
+      byError,
+      top: [],
+      topErrors: [],
+      recentTopErrors: [],
+    };
   }
+  const hourAgoMs = nowMs - 60 * 60 * 1000;
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -2709,8 +3386,21 @@ function readHookErrors(
       const tsMs = e.ts ? Date.parse(e.ts) : Number.NaN;
       if (!Number.isFinite(tsMs) || tsMs < cutoffMs) continue;
       const phase = e.phase ?? "(unknown)";
+      const error = e.error ?? "(unknown)";
       byPhase[phase] = (byPhase[phase] ?? 0) + 1;
+      byError[error] = (byError[error] ?? 0) + 1;
       if (!sampleByPhase[phase] && e.error) sampleByPhase[phase] = e.error;
+      const errorPhaseKey = `${error}\0${phase}`;
+      const errorPhase = errorPhaseCounts.get(errorPhaseKey) ?? { error, phase, count: 0 };
+      errorPhase.count += 1;
+      errorPhaseCounts.set(errorPhaseKey, errorPhase);
+      latestMs = Math.max(latestMs, tsMs);
+      if (tsMs >= hourAgoMs) {
+        last1h += 1;
+        const recent = recentErrorPhaseCounts.get(errorPhaseKey) ?? { error, phase, count: 0 };
+        recent.count += 1;
+        recentErrorPhaseCounts.set(errorPhaseKey, recent);
+      }
       total++;
     } catch {
       /* skip malformed */
@@ -2720,128 +3410,179 @@ function readHookErrors(
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([phase, count]) => ({ phase, count, sample: sampleByPhase[phase] ?? "" }));
-  return { total, byPhase, top };
+  const topErrors = [...errorPhaseCounts.values()]
+    .sort((left, right) => right.count - left.count || left.error.localeCompare(right.error))
+    .slice(0, 5);
+  const recentTopErrors = [...recentErrorPhaseCounts.values()]
+    .sort((left, right) => right.count - left.count || left.error.localeCompare(right.error))
+    .slice(0, 5);
+  return {
+    total,
+    last1h,
+    latestAt: Number.isFinite(latestMs) ? new Date(latestMs).toISOString() : null,
+    byPhase,
+    byError,
+    top,
+    topErrors,
+    recentTopErrors,
+  };
 }
 
 /** Canonical event stream size + drain lag (events appended after the cursor). */
-function readStreamStats(root: string): { bytes: number; lines: number; cursor_backlog: number } {
-  const streamPath = resolve(root, ".harnery", "events.ndjson");
-  if (!existsSync(streamPath)) return { bytes: 0, lines: 0, cursor_backlog: 0 };
-  let bytes = 0;
-  try {
-    bytes = statSync(streamPath).size;
-  } catch {
-    /* ignore */
-  }
-  let cursor: string | null = null;
-  const cursorPath = resolve(root, ".harnery", ".events-cursor");
-  if (existsSync(cursorPath)) {
-    try {
-      cursor = readFileSync(cursorPath, "utf8").trim() || null;
-    } catch {
-      /* ignore */
-    }
-  }
-  let lines = 0;
-  let backlog = 0;
-  let seenCursor = cursor === null; // no cursor → everything is "backlog"
-  try {
-    // Bounded tail read: the ledger grows without bound and a whole-file
-    // readFileSync throws past V8's ~512MB string limit. lines/backlog are then
-    // scoped to the scanned window; `bytes` (full size, via statSync above) still
-    // reflects the true stream size for the health rollup.
-    const { text } = readStreamTailBounded(streamPath, STREAM_SCAN_CAP_BYTES);
-    for (const line of text.split("\n")) {
-      if (!line.trim()) continue;
-      lines++;
-      if (seenCursor) {
-        backlog++;
-      } else if (cursor && line.includes(`"event_id":"${cursor}"`)) {
-        seenCursor = true;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return { bytes, lines, cursor_backlog: backlog };
+function readStreamStats(root: string): HealthReport["stream"] {
+  const read = readAgentDiagnosticEventsInWindow(root, 0);
+  return {
+    source: "v3",
+    authoritative: read.authoritative,
+    ...(read.reason ? { reason: read.reason } : {}),
+    bytes: read.bytes,
+    lines: read.events.length,
+    cursor_backlog: 0,
+  };
 }
 
 /** One rendered line in a trace. */
-interface TraceEntry {
+export interface TraceEntry {
   ts: string;
   event_type: string;
   detail: string;
 }
 
+export function traceInstanceIdsForEventSource(
+  nativeInstanceIds: readonly string[],
+  source: "v3",
+): string[] {
+  void source;
+  return nativeInstanceIds.map((instanceId) => liveInstanceIdV3(instanceId));
+}
+
 /** Map a canonical event to a concise trace line, or null to drop it. */
-function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
-  const d = (ev.data ?? {}) as Record<string, unknown>;
+export function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
+  const d = (ev.payload ?? {}) as Record<string, unknown>;
   const s = (k: string): string => (typeof d[k] === "string" ? (d[k] as string) : "");
+  const object = (value: unknown): Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   const clip = (v: string, n = 70): string => (v.length <= n ? v : `${v.slice(0, n - 1)}…`);
+  const recovery =
+    typeof d.recovery === "object" && d.recovery !== null
+      ? (d.recovery as { reason?: unknown })
+      : null;
+  const recoveryReason = typeof recovery?.reason === "string" ? recovery.reason : "";
+  const recoveryDetail = recoveryReason ? ` · RECOVERY reason=${recoveryReason}` : "";
   let detail = "";
   switch (ev.event_type) {
-    case "session.start":
-      detail = `${s("source") || "startup"}${s("model") ? ` · model=${s("model")}` : ""}${s("name") ? ` · ${s("name")}` : ""}`;
+    case "session.started":
+      detail = "generation started";
       break;
-    case "session.end":
-      detail = `clean_exit=${d.clean_exit ?? "?"}`;
+    case "session.resumed":
+      detail = "generation resumed";
       break;
-    case "subagent.start":
-      detail = `${s("agent_type") || "subagent"}${s("name") ? ` · ${s("name")}` : ""}`;
+    case "session.ended":
+      detail = `outcome=${s("outcome") || "unknown"}${s("reason") ? ` · reason=${s("reason")}` : ""}`;
       break;
-    case "subagent.stop":
-      detail = `clean_exit=${d.clean_exit ?? "?"}`;
+    case "session.termination_observed":
+      detail = `provisional ${s("observation") || "termination"}${s("reason") ? ` · reason=${s("reason")}` : ""}`;
       break;
-    case "user_prompt.submit":
-      detail = clip(s("prompt_text") || s("prompt"));
+    case "agent.delegated":
+      detail = `delegated child=${s("child_generation_id") || "unknown"}`;
       break;
-    case "turn.stop":
-      detail = `status_box=${d.status_box_present ?? "?"}${s("turn_summary") ? ` · ${clip(s("turn_summary"), 50)}` : ""}`;
+    case "agent.started":
+      detail = `child started=${s("child_generation_id") || "unknown"}`;
       break;
-    case "tool.pre_use":
-      detail = `${s("tool_name")}${s("tool_target") || s("intent") ? ` · ${clip(s("tool_target") || s("intent"), 60)}` : ""}`;
+    case "agent.completed":
+      detail = `child completed=${s("child_generation_id") || "unknown"} · outcome=${s("outcome") || "unknown"}`;
       break;
-    case "state.task_set":
-      detail = d.cleared ? "(cleared)" : clip(s("task"));
+    case "turn.started":
+      detail = `intent=${s("intent_kind") || "unknown"}`;
       break;
-    case "state.task_state":
-      detail = `${s("prior_state") || "active"} → ${s("state") || "active"}${s("reason") ? ` · ${clip(s("reason"), 55)}` : ""}`;
+    case "turn.completed":
+      detail = `outcome=${s("outcome") || "unknown"}`;
       break;
-    case "interaction.input_requested":
-      detail = s("request_kind") || s("tool_name") || "operator input requested";
+    case "tool.requested": {
+      const tool = object(d.tool);
+      detail = `${typeof tool.name === "string" ? tool.name : "tool"} requested (content omitted)${recoveryDetail}`;
       break;
-    case "state.status_checked":
-      detail = "status box rendered";
+    }
+    case "tool.completed": {
+      const tool = object(d.tool);
+      detail = `${typeof tool.name === "string" ? tool.name : "tool"} · outcome=${s("outcome") || "unknown"}${recoveryDetail}`;
       break;
-    case "identity.assumed":
-      detail = `${s("previous_name") || "unknown"} → ${s("name") || "unknown"}${s("agent_id") ? ` · persona=${s("agent_id").slice(0, 8)}…` : ""}`;
+    }
+    case "command.started":
+      if (!allTools) return null;
+      detail = "command started (content omitted)";
       break;
-    case "claim.acquire":
-    case "claim.release":
-    case "claim.conflict":
-      detail = clip(s("path"));
+    case "command.completed":
+      if (!allTools && !recoveryReason) return null;
+      detail = `outcome=${s("outcome") || "unknown"}${recoveryDetail}`;
       break;
-    case "health.heartbeat_heal":
-    case "health.pidmap_heal":
-      detail = `reason=${s("reason")}`;
+    case "coord.task_changed":
+    case "coord.lifecycle_changed":
+    case "coord.presence_changed":
+      detail = `${s("prior_state") || "unknown"} → ${s("new_state") || "unknown"}${s("reason") ? ` · ${clip(s("reason"), 55)}` : ""}`;
       break;
-    case "health.heartbeat_swept":
-      detail = `reason=${s("reason")}${d.age_secs !== undefined ? ` · age=${d.age_secs}s` : ""}`;
+    case "coord.status_observed":
+      detail = s("status") || "status observed";
+      break;
+    case "coord.claim_changed": {
+      const target = object(d.target);
+      detail = `${s("operation") || "changed"}${typeof target.display === "string" ? ` · ${clip(target.display)}` : ""}`;
+      break;
+    }
+    case "coord.message_observed":
+      detail = `${s("direction") || "observed"} · peer=${s("peer_instance_id") || "unknown"}`;
+      break;
+    case "coord.identity_attested":
+      detail = `${s("identity_id") || "identity"} · method=${s("method") || "unknown"}`;
+      break;
+    case "wait.started":
+      detail = s("kind") || "wait started";
+      break;
+    case "wait.ended":
+      detail = `outcome=${s("outcome") || "unknown"}`;
+      break;
+    case "artifact.observed": {
+      const artifact = object(d.artifact);
+      detail = `operation=${s("operation") || "observed"}${typeof artifact.kind === "string" ? ` · kind=${artifact.kind}` : ""}`;
+      break;
+    }
+    case "progress.observed":
+      detail = s("kind") || "progress";
+      break;
+    case "health.observed":
+      detail = `${s("subsystem") || "unknown"} · ${s("severity") || "unknown"} · ${s("condition") || "unknown"}`;
+      break;
+    case "council.state_changed":
+      detail = `${s("council_id") || "council"} · ${s("prior_state") || "unknown"} → ${s("new_state") || "unknown"}`;
+      break;
+    case "decision.state_changed":
+      detail = `${s("decision_id") || "decision"} · ${s("prior_state") || "unknown"} → ${s("new_state") || "unknown"}`;
+      break;
+    case "lifecycle.recovered":
+      detail = `recovered=${s("recovery_kind") || "unknown"}`;
+      break;
+    case "lifecycle.sweep_observed":
+      detail = `${s("observation") || "sweep"}${typeof d.age_ms === "number" ? ` · age=${Math.round(d.age_ms / 1000)}s` : ""}`;
       break;
     default:
-      // Noise unless --all-tools: per-line command.* + tool.post_use.
-      if (!allTools) return null;
-      if (
-        ev.event_type === "tool.post_use" ||
-        ev.event_type === "tool.post_use_failure" ||
-        ev.event_type.startsWith("command.")
-      ) {
-        detail = s("tool_name") || "";
-        break;
-      }
       return null;
   }
   return { ts: ev.ts, event_type: ev.event_type, detail };
+}
+
+export function pendingFinalizationTraceEntries(
+  requests: readonly SessionFinalizationRequestV3[],
+  instanceId: string,
+): TraceEntry[] {
+  return requests
+    .filter((request) => request.status === "pending" && request.instance_id === instanceId)
+    .map((request) => ({
+      ts: request.observed_at,
+      event_type: "session.finalization_pending",
+      detail: `trigger=${request.trigger} · request=${request.request_id}${request.allowed_open_span_ids?.length ? ` · allowed_open_spans=${request.allowed_open_span_ids.length}` : ""}`,
+    }));
 }
 
 function runTrace(
@@ -2872,7 +3613,7 @@ function runTrace(
     if (candidates.length === 1) targetId = candidates[0]![0];
     else if (candidates.length > 1)
       targetId = candidates.map(([id]) => id).join("\x00"); // sentinel; resolved below
-    else if (/^[0-9a-f-]{8,}$/i.test(wanted)) targetId = wanted; // looks like an id not in history
+    else if (/^(?:inst_)?[0-9a-z._-]{8,}$/i.test(wanted)) targetId = wanted;
   }
   if (!targetId) {
     emit.error({
@@ -2884,37 +3625,16 @@ function runTrace(
 
   const sinceMs = opts.since ? Date.now() - (parseWindowSecs(opts.since) ?? 0) * 1000 : 0;
   const limit = Math.max(1, Number.parseInt(opts.limit, 10) || 200);
-  const candidateIds = targetId.includes("\x00") ? targetId.split("\x00") : [targetId];
-
-  // Scan the stream tail once, bucket events by instance_id for the candidates.
-  // Bounded read: the ledger grows without bound and a whole-file readFileSync
-  // throws past V8's ~512MB string limit. A trace of an agent whose events all
-  // predate the window is reported as truncated rather than crashing.
-  const streamPath = resolve(root, ".harnery", "events.ndjson");
+  const diagnosticRead = readAgentDiagnosticEventsInWindow(root, sinceMs);
+  const nativeCandidateIds = targetId.includes("\x00") ? targetId.split("\x00") : [targetId];
+  const candidateIds = traceInstanceIdsForEventSource(nativeCandidateIds, diagnosticRead.source);
   const byId = new Map<string, CanonicalEvent[]>();
-  const { text: streamText, truncated: streamTruncated } = readStreamTailBounded(
-    streamPath,
-    STREAM_SCAN_CAP_BYTES,
-  );
-  for (const line of streamText.split("\n")) {
-    if (!line) continue;
-    try {
-      const ev = JSON.parse(line) as CanonicalEvent;
-      if (!ev.instance_id || !candidateIds.includes(ev.instance_id)) continue;
-      if (sinceMs && Date.parse(ev.ts) < sinceMs) continue;
-      const arr = byId.get(ev.instance_id) ?? [];
-      arr.push(ev);
-      byId.set(ev.instance_id, arr);
-    } catch {
-      /* skip */
-    }
+  for (const ev of diagnosticRead.events) {
+    if (!ev.instance_id || !candidateIds.includes(ev.instance_id)) continue;
+    const arr = byId.get(ev.instance_id) ?? [];
+    arr.push(ev);
+    byId.set(ev.instance_id, arr);
   }
-  if (streamTruncated) {
-    process.stderr.write(
-      `note: event ledger exceeds ${Math.round(STREAM_SCAN_CAP_BYTES / 1024 / 1024)}MB; traced only the most recent window (older events omitted)\n`,
-    );
-  }
-
   // If the name mapped to multiple instances, trace the one with the latest event.
   let resolvedId = candidateIds[0]!;
   if (candidateIds.length > 1) {
@@ -2930,25 +3650,84 @@ function runTrace(
   }
 
   const events = byId.get(resolvedId) ?? [];
-  const state = foldSessionState(events, { instance_id: resolvedId });
-  const lines = events
-    .map((ev) => traceLine(ev, !!opts.allTools))
-    .filter((l): l is TraceEntry => l !== null)
+  let state = foldSessionState(events, { instance_id: resolvedId });
+  let sessionState: "live" | "ended" = events.some((event) => event.event_type === "session.ended")
+    ? "ended"
+    : "live";
+  if (diagnosticRead.source === "v3" && diagnosticRead.authoritative) {
+    try {
+      const view = projectCoordinationViewV3(readLedgerV3(root));
+      const liveGeneration = view.instances[resolvedId];
+      const terminalGeneration = Object.values(view.terminal_generations).find(
+        (candidate) => candidate.instance_id === resolvedId,
+      );
+      const generation = liveGeneration ?? terminalGeneration;
+      if (generation) {
+        sessionState = terminalGeneration && !liveGeneration ? "ended" : "live";
+        const lifecycleState = generation.lifecycle_state;
+        state = {
+          activity: generation.activity === "terminal" ? "idle" : generation.activity,
+          activity_updated_at: generation.last_observed_at,
+          activity_source: "event-v3-coordination-view",
+          task_state:
+            lifecycleState === "active" || lifecycleState === "blocked" || lifecycleState === "done"
+              ? lifecycleState
+              : "active",
+          task_state_updated_at: generation.lifecycle_state_updated_at,
+        };
+      }
+    } catch {
+      diagnosticRead.authoritative = false;
+      diagnosticRead.reason = "V3 coordination projection is unavailable";
+    }
+  }
+  let pendingFinalizations: SessionFinalizationRequestV3[] = [];
+  if (diagnosticRead.source === "v3") {
+    try {
+      pendingFinalizations = listSessionFinalizationRequestsV3(root).filter(
+        (request) => request.status === "pending" && request.instance_id === resolvedId,
+      );
+    } catch {
+      diagnosticRead.authoritative = false;
+      diagnosticRead.reason = "V3 finalization requests are unreadable";
+    }
+  }
+  const lines = [
+    ...events
+      .map((ev) => traceLine(ev, !!opts.allTools))
+      .filter((l): l is TraceEntry => l !== null),
+    ...pendingFinalizationTraceEntries(pendingFinalizations, resolvedId),
+  ]
     // Sort by timestamp, not file order: codex replays events (original ts,
     // appended later), so append-order ≠ chronological order.
     .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
   const shown = lines.slice(-limit);
-  const displayName = nameById.get(resolvedId) ?? resolvedId.slice(0, 8);
+  const nativeResolvedId =
+    diagnosticRead.source === "v3"
+      ? nativeCandidateIds[candidateIds.indexOf(resolvedId)]
+      : resolvedId;
+  const displayName =
+    nameById.get(resolvedId) ??
+    (nativeResolvedId ? nameById.get(nativeResolvedId) : undefined) ??
+    resolvedId.slice(0, 8);
 
   const result = {
+    event_source: {
+      contract: diagnosticRead.source,
+      authoritative: diagnosticRead.authoritative,
+      reason: diagnosticRead.reason ?? null,
+    },
     name: displayName,
     instance_id: resolvedId,
     other_instances: candidateIds.filter((id) => id !== resolvedId),
+    pending_finalizations: pendingFinalizations,
     total_events: events.length,
+    session_state: sessionState,
     activity: state.activity,
     activity_updated_at: state.activity_updated_at ?? null,
     activity_source: state.activity_source ?? null,
     task_state: state.task_state,
+    task_state_scope: sessionState === "ended" ? "historical" : "current",
     task_state_updated_at: state.task_state_updated_at ?? null,
     task_state_reason: state.task_state_reason ?? null,
     shown: shown.length,
@@ -2963,8 +3742,11 @@ function runTrace(
   const header = `Trace: agent-${displayName}  (${resolvedId.slice(0, 8)}…)  ${events.length} events${result.other_instances.length ? ` · ${result.other_instances.length} older instance(s) of this name` : ""}`;
   process.stdout.write(`${header}\n`); // lint-ok-emission: human trace view
   process.stdout.write(
-    `  activity=${state.activity} · lifecycle=${state.task_state}${state.task_state === "blocked" && state.task_state_reason ? `: ${state.task_state_reason}` : ""}\n`,
+    `  activity=${state.activity} · session=${sessionState} · lifecycle=${sessionState === "ended" ? `historical(${state.task_state})` : state.task_state}${sessionState !== "ended" && state.task_state === "blocked" && state.task_state_reason ? `: ${state.task_state_reason}` : ""}\n`,
   ); // lint-ok-emission: human trace view
+  if (!diagnosticRead.authoritative) {
+    process.stdout.write(`  unavailable: ${diagnosticRead.reason ?? "event source incomplete"}\n`); // lint-ok-emission: explicit no-fallback diagnostic
+  }
   if (shown.length === 0) {
     process.stdout.write("  (no events)\n"); // lint-ok-emission: human trace view
     return;
@@ -2973,6 +3755,73 @@ function runTrace(
     const t = formatLocalTime(new Date(l.ts)).replace(/^[A-Za-z]{3}, /, ""); // drop weekday for density
     process.stdout.write(`  ${t}  ${l.event_type.padEnd(22)} ${l.detail}\n`); // lint-ok-emission: human trace view
   }
+}
+
+export interface ActiveAgentHealthSummary {
+  source: "event-ledger-v3";
+  total: number;
+  by_platform: Record<string, number>;
+  by_kind: Record<string, number>;
+  by_schema_version: Record<string, number>;
+  stale: number;
+}
+
+type ActiveHealthHeartbeat = {
+  instance_id: string;
+  platform?: string;
+  kind?: string;
+  schema_version?: number;
+  last_heartbeat?: string;
+};
+
+/**
+ * V3 generations, not disposable heartbeat caches, are the active-agent authority.
+ */
+export function collectActiveAgentHealth(
+  root: string,
+  nowMs = Date.now(),
+): ActiveAgentHealthSummary {
+  const source: ActiveAgentHealthSummary["source"] = "event-ledger-v3";
+  let heartbeats: ActiveHealthHeartbeat[] = [];
+  try {
+    const control = readEventV3ControlState(root);
+    if (control.state === "candidate" || control.state === "active") {
+      heartbeats = readLiveCoordinationRows(root);
+    }
+  } catch {
+    // The event-ledger section reports the authority read failure. Do not
+    // substitute stale cache rows for a live V3 route.
+  }
+
+  const byPlatform: Record<string, number> = {};
+  const byKind: Record<string, number> = {};
+  const bySchema: Record<string, number> = {};
+  let stale = 0;
+  for (const heartbeat of heartbeats) {
+    const platform = formatPlatformLabel(heartbeat.platform);
+    byPlatform[platform] = (byPlatform[platform] ?? 0) + 1;
+    const kind = heartbeat.kind ?? "unknown";
+    byKind[kind] = (byKind[kind] ?? 0) + 1;
+    // These rows exist only after an authority-safe V3 projection. The
+    // disposable heartbeat file has its own cache-format version, which must
+    // not be reported as the ledger schema version.
+    bySchema.v3 = (bySchema.v3 ?? 0) + 1;
+    const lastObservedMs = heartbeat.last_heartbeat
+      ? Date.parse(heartbeat.last_heartbeat)
+      : Number.NaN;
+    const ageMs = Number.isFinite(lastObservedMs)
+      ? nowMs - lastObservedMs
+      : Number.POSITIVE_INFINITY;
+    if (ageMs > freshnessCutoffSecs() * 1000) stale += 1;
+  }
+  return {
+    source,
+    total: heartbeats.length,
+    by_platform: byPlatform,
+    by_kind: byKind,
+    by_schema_version: bySchema,
+    stale,
+  };
 }
 
 function runHealth(opts: { since: string; json?: boolean }): void {
@@ -2996,12 +3845,13 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     process.exit(1);
   }
 
-  const cutoffMs = Date.now() - sinceSecs * 1000;
+  const nowMs = Date.now();
+  const cutoffMs = nowMs - sinceSecs * 1000;
   const activeDir = resolve(root, ".harnery/active");
   const councilsDir = resolve(root, ".harnery/councils");
 
-  // Coordination telemetry reads from the canonical events.ndjson stream.
-  // Heals come from health.*; council window-activity from council.*. The
+  // Coordination telemetry reads from the canonical V3 ledger.
+  // Heals come from health.observed; council activity from council.state_changed.
   const heal: HealEvent[] = [];
   let councilAdvanced = 0;
   let councilClosed = 0;
@@ -3010,33 +3860,33 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   const sweptByReason: Record<string, number> = {};
 
   const nameById = buildNameById(root);
-  for (const ev of readCanonicalEventsInWindow(root, cutoffMs)) {
+  const diagnosticEvents = readAgentDiagnosticEventsInWindow(root, cutoffMs);
+  for (const ev of diagnosticEvents.events) {
     const healEv = canonicalToHealEvent(ev, nameById);
     if (healEv) {
       heal.push(healEv);
       continue;
     }
+    if (ev.event_type === "council.state_changed") {
+      const state = String(ev.payload?.new_state ?? "");
+      if (state === "round_open") councilAdvanced++;
+      if (state === "closed") councilClosed++;
+      if (state === "archived") councilArchived++;
+      continue;
+    }
     switch (ev.event_type) {
-      case "council.round_open":
-        councilAdvanced++;
-        break;
-      case "council.close":
-        councilClosed++;
-        break;
-      case "council.archive":
-        councilArchived++;
-        break;
-      case "health.heartbeat_swept": {
+      case "lifecycle.sweep_observed": {
         sweptTotal++;
-        const reason = String((ev.data as { reason?: unknown })?.reason ?? "unknown");
+        const reason = String(ev.payload?.observation ?? "unknown");
         sweptByReason[reason] = (sweptByReason[reason] ?? 0) + 1;
         break;
       }
     }
   }
 
-  const hookErrors = readHookErrors(root, cutoffMs);
+  const hookErrors = readHookErrors(root, cutoffMs, nowMs);
   const stream = readStreamStats(root);
+  const eventLedger = collectEventLedgerHealthV3(root);
 
   // Canonical health.* events carry the full instance_id, already resolved to
   // `agent-<name>` (or `agent-<hex8>` fallback) by canonicalToHealEvent via
@@ -3056,19 +3906,13 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     .slice(0, 5)
     .map(([agent, count]) => ({ agent, count }));
 
-  // Active heartbeats: scan ALL files in active/, classify fresh vs stale ourselves.
-  const activeByPlatform: Record<string, number> = {};
-  const activeByKind: Record<string, number> = {};
-  const activeBySchema: Record<string, number> = {};
-  let activeTotal = 0;
-  let staleHeartbeats = 0;
+  const activeAgents = collectActiveAgentHealth(root, nowMs);
   // Zombies: files in active/ that are broken: unparseable, nameless, or an
   // absurd (epoch-ish) last_heartbeat. These show as `agent-unknown` ghosts and
   // mean dead files the sweep isn't reaping.
   let zombieCount = 0;
   const zombieSamples: string[] = [];
   const ABSURD_AGE_MS = 24 * 60 * 60 * 1000; // > 1 day = clearly not a live, self-healing agent
-  const nowMs = Date.now();
   if (existsSync(activeDir)) {
     for (const file of readdirSync(activeDir)) {
       if (!file.endsWith(".json")) continue;
@@ -3085,17 +3929,8 @@ function runHealth(opts: { since: string; json?: boolean }): void {
           zombieSamples.push(`${idFromFile.slice(0, 12)} (unparseable/no-id)`);
         continue;
       }
-      activeTotal++;
-      const platform = formatPlatformLabel(hb.platform);
-      activeByPlatform[platform] = (activeByPlatform[platform] ?? 0) + 1;
-      const kind = hb.kind ?? "unknown";
-      activeByKind[kind] = (activeByKind[kind] ?? 0) + 1;
-      const sv = (hb as { schema_version?: number }).schema_version;
-      const schemaKey = sv === undefined ? "v0" : `v${sv}`;
-      activeBySchema[schemaKey] = (activeBySchema[schemaKey] ?? 0) + 1;
       const lastHbMs = hb.last_heartbeat ? Date.parse(hb.last_heartbeat) : Number.NaN;
       const ageMs = Number.isFinite(lastHbMs) ? nowMs - lastHbMs : Number.POSITIVE_INFINITY;
-      if (ageMs > freshnessCutoffSecs() * 1000) staleHeartbeats++;
       // Zombie heuristics on a parseable heartbeat: no name, or an age so large
       // it can only be a broken/epoch timestamp (a real agent would have healed).
       if (!hb.name || hb.name === "unknown" || ageMs > ABSURD_AGE_MS) {
@@ -3127,37 +3962,38 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       );
     }
   }
-  if (staleHeartbeats > 0) {
+  if (activeAgents.stale > 0) {
+    const noun = activeAgents.source === "event-ledger-v3" ? "V3 generation" : "heartbeat";
+    const action =
+      activeAgents.source === "event-ledger-v3"
+        ? "lifecycle reconciliation may be delayed"
+        : "heal mechanism may not be firing";
     anomalies.push(
-      `${staleHeartbeats} active heartbeat(s) older than ${Math.floor(freshnessCutoffSecs() / 60)}min; heal mechanism may not be firing`,
+      `${activeAgents.stale} active ${noun}(s) without activity for ${Math.floor(freshnessCutoffSecs() / 60)}min; ${action}`,
     );
   }
-  const unexpectedSchemas = Object.keys(activeBySchema).filter((k) => k !== "v1");
+  const expectedSchema = "v3";
+  const unexpectedSchemas = Object.keys(activeAgents.by_schema_version).filter(
+    (schema) => schema !== expectedSchema,
+  );
   if (unexpectedSchemas.length > 0) {
     anomalies.push(
-      `Unexpected heartbeat schema versions in use: ${unexpectedSchemas.join(", ")} (expected v1)`,
+      `Unexpected active-agent schema versions in use: ${unexpectedSchemas.join(", ")} (expected ${expectedSchema})`,
     );
   }
-  // agent-hook failures: a dominant phase is the fastest pointer to a systemic
-  // hook bug (this is the signal that would have surfaced the stop-projection
-  // crash immediately instead of after an hour of log-grepping).
-  if (hookErrors.total > 0) {
-    const top = hookErrors.top[0];
-    const detail = top
-      ? `: top phase '${top.phase}' x${top.count}${top.sample ? ` (${top.sample.slice(0, 80)})` : ""}`
-      : "";
-    anomalies.push(`agent-hook errored ${hookErrors.total}x in ${opts.since}${detail}`);
+  // Only recent hook failures are active anomalies. Historical rows remain in
+  // the report with exact error signatures and their latest timestamp.
+  if (hookErrors.last1h > 0) {
+    const top = hookErrors.recentTopErrors[0];
+    const detail = top ? `: top '${top.error.slice(0, 80)}' x${top.count} (${top.phase})` : "";
+    anomalies.push(`agent-hook errored ${hookErrors.last1h}x in the last hour${detail}`);
   }
   if (stream.cursor_backlog > 500) {
     anomalies.push(
       `projection cursor is ${stream.cursor_backlog} events behind; drain lagging (stop projection may be failing)`,
     );
   }
-  // NB: raw stream size is NOT an anomaly. events.ndjson is a deliberate
-  // append-only ledger (names + forensics for the life of the log), and
-  // consumeSince tail-reads it, so size no longer drives latency. The
-  // bytes/lines still surface in the summary line for visibility;
-  // cursor_backlog above is the real drain-lag signal.
+  // Raw V3 stream size is not an anomaly; catalog rotation bounds readers.
   if ((sweptByReason.unparseable ?? 0) > 0) {
     anomalies.push(
       `${sweptByReason.unparseable} heartbeat(s) swept as unparseable in ${opts.since}; possible corruption or a non-atomic writer`,
@@ -3168,16 +4004,46 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       `${zombieCount} zombie heartbeat(s) in active/ (${zombieSamples.join(", ")}); broken files the sweep isn't reaping`,
     );
   }
+  if (eventLedger.state === "live") {
+    // Open spans whose generation has no open turn: the turn ended without its
+    // tool spans closing, so an explicit end can only queue, never finalize.
+    const orphanGenerations = eventLedger.open_spans.generations.filter(
+      (generation) => !generation.turn_open,
+    );
+    if (orphanGenerations.length > 0) {
+      const orphanSpans = orphanGenerations.reduce(
+        (sum, generation) => sum + generation.span_count,
+        0,
+      );
+      anomalies.push(
+        `${orphanSpans} open tool span(s) across ${orphanGenerations.length} generation(s) with no open turn; orphaned spans block clean session end`,
+      );
+    }
+    for (const pressure of eventLedger.span_pressure) {
+      anomalies.push(
+        `${pressure.instance_id} (${pressure.generation_id}) holds ${pressure.span_count} open spans (soft watermark ${SPAN_PRESSURE_SOFT_WATERMARK}; the reader's 256-span cap makes the state unreadable)`,
+      );
+    }
+    for (const collectionError of eventLedger.collection_errors) {
+      anomalies.push(`event-ledger health: ${collectionError}`);
+    }
+  }
 
   const report: HealthReport = {
     since: opts.since,
     generated_at: new Date().toISOString(),
+    event_telemetry: {
+      source: diagnosticEvents.source,
+      authoritative: diagnosticEvents.authoritative,
+      ...(diagnosticEvents.reason ? { reason: diagnosticEvents.reason } : {}),
+    },
     active_agents: {
-      total: activeTotal,
-      by_platform: activeByPlatform,
-      by_kind: activeByKind,
-      by_schema_version: activeBySchema,
-      stale: staleHeartbeats,
+      source: activeAgents.source,
+      total: activeAgents.total,
+      by_platform: activeAgents.by_platform,
+      by_kind: activeAgents.by_kind,
+      by_schema_version: activeAgents.by_schema_version,
+      stale: activeAgents.stale,
     },
     heal_events: {
       total: heal.length,
@@ -3193,9 +4059,19 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       closed_in_window: councilClosed,
     },
     swept_events: { total: sweptTotal, by_reason: sweptByReason },
-    hook_errors: { total: hookErrors.total, by_phase: hookErrors.byPhase, top: hookErrors.top },
+    hook_errors: {
+      total: hookErrors.total,
+      last_1h: hookErrors.last1h,
+      latest_at: hookErrors.latestAt,
+      by_phase: hookErrors.byPhase,
+      by_error: hookErrors.byError,
+      top: hookErrors.top,
+      top_errors: hookErrors.topErrors,
+      recent_top_errors: hookErrors.recentTopErrors,
+    },
     stream,
     zombies: { count: zombieCount, samples: zombieSamples },
+    event_ledger: eventLedger,
     anomalies,
   };
 
@@ -3237,7 +4113,9 @@ function renderHealthBox(report: HealthReport): void {
   if (report.councils.archived_in_window > 0)
     councilParts.push(`${report.councils.archived_in_window} archived`);
 
-  const activeStr = `${report.active_agents.total}${platforms ? ` (${platforms})` : ""}${schemas ? ` · ${schemas}` : ""}${report.active_agents.stale > 0 ? ` · ${report.active_agents.stale} stale` : ""}`;
+  const activeSource =
+    report.active_agents.source === "event-ledger-v3" ? "ledger" : "heartbeat cache";
+  const activeStr = `${report.active_agents.total}${platforms ? ` (${platforms})` : ""}${schemas ? ` · ${schemas}` : ""}${report.active_agents.stale > 0 ? ` · ${report.active_agents.stale} stale` : ""} · ${activeSource}`;
 
   const sweptReasonStr = Object.entries(report.swept_events.by_reason)
     .map(([r, n]) => `${r} ${n}`)
@@ -3245,11 +4123,36 @@ function renderHealthBox(report: HealthReport): void {
   const hookErrStr =
     report.hook_errors.total === 0
       ? "0"
-      : `${report.hook_errors.total}${report.hook_errors.top[0] ? ` (${report.hook_errors.top[0].phase} x${report.hook_errors.top[0].count})` : ""}`;
+      : `${report.hook_errors.total} in window · ${report.hook_errors.last_1h} in 1h`;
   const streamStr = `${(report.stream.bytes / 1048576).toFixed(1)}MB · ${report.stream.lines} lines · ${report.stream.cursor_backlog} behind`;
+
+  const ledger = report.event_ledger;
+  let ledgerStr: string;
+  if (ledger.state !== "live") {
+    ledgerStr = `unavailable (${ledger.reason})`;
+  } else {
+    const orphanGenerations = ledger.open_spans.generations.filter(
+      (generation) => !generation.turn_open,
+    ).length;
+    const pendingAges = ledger.pending_finalizations
+      .map((request) =>
+        request.age_ms < 0 ? "age?" : formatAge(Math.floor(request.age_ms / 1000)),
+      )
+      .join(", ");
+    ledgerStr = [
+      `open spans ${ledger.open_spans.total}${orphanGenerations > 0 ? ` (${orphanGenerations} gen turn-closed)` : ""}`,
+      `pending ends ${ledger.pending_finalizations.length}${pendingAges ? ` (${pendingAges})` : ""}`,
+      `intake ${ledger.intake_spool.total}`,
+      `diagnostics ${ledger.diagnostics_spool.total} (${ledger.diagnostics_spool.last_1h} in 1h / ${ledger.diagnostics_spool.last_24h} in 24h)`,
+    ].join(" · ");
+  }
 
   const rows: Array<[string, string]> = [
     ["window", `last ${report.since}`],
+    [
+      "event source",
+      `${report.event_telemetry.source.toUpperCase()} · ${report.event_telemetry.authoritative ? "validated" : `unavailable (${report.event_telemetry.reason ?? "incomplete"})`}`,
+    ],
     ["active", activeStr],
     [
       "heals",
@@ -3259,6 +4162,7 @@ function renderHealthBox(report: HealthReport): void {
     ["swept", `${report.swept_events.total}${sweptReasonStr ? ` (${sweptReasonStr})` : ""}`],
     ["hook errors", hookErrStr],
     ["stream", streamStr],
+    ["event ledger", ledgerStr],
     [
       "zombies",
       report.zombies.count === 0
@@ -3383,6 +4287,7 @@ function runAdapterProbe(
     replayExitCode = result.exitCode;
     data.samples = samples;
     data.samples_summary = result.summary;
+    if (result.note) data.samples_note = result.note;
   }
 
   emit.data(data);
@@ -3402,7 +4307,9 @@ function runAdapterProbe(
         | undefined;
       lines.push("");
       if (samples.length === 0) {
-        lines.push(`  Sample replay: no .json fixtures found under ${sampleDir}`);
+        lines.push(
+          `  Sample replay: ${String(data.samples_note ?? `no .json fixtures found under ${sampleDir}`)}`,
+        );
       } else {
         lines.push(
           `  Sample replay (${samples.length} fixture${samples.length === 1 ? "" : "s"}):`,
@@ -3459,6 +4366,7 @@ function replayAdapterSamples(
   samples: SampleReplayResult[];
   exitCode: number;
   summary: { total: number; pass: number; fail: number; skipped: number };
+  note?: string;
 } {
   const sampleDir = resolve(root, relativeSampleDir);
   if (!existsSync(sampleDir)) {
@@ -3466,6 +4374,7 @@ function replayAdapterSamples(
       samples: [],
       exitCode: 0,
       summary: { total: 0, pass: 0, fail: 0, skipped: 0 },
+      note: `sample directory not found: ${relativeSampleDir} — replay verified nothing`,
     };
   }
 
@@ -3479,6 +4388,7 @@ function replayAdapterSamples(
       samples: [],
       exitCode: 0,
       summary: { total: 0, pass: 0, fail: 0, skipped: 0 },
+      note: `no .json fixtures under ${relativeSampleDir} — replay verified nothing`,
     };
   }
 
@@ -3704,10 +4614,25 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
     });
     process.exit(1);
   }
-  const myHb = readHeartbeat(myOwner);
+  const myHb = readCurrentCoordinationRow(myOwner);
   const fromName = myHb?.name ?? "anonymous";
   const body = `from agent-${fromName}: ${message.trim()}`;
   const doc = appendEntry(peerOwner, "handoff", body);
+
+  // Canonical delivery record: sender is the envelope owner, recipient rides
+  // in data, so read-only observers can render the communication without
+  // joining journal files.
+  emitEventV3({
+    owner: myOwner,
+    session: nativeSessionIdentity(myHb, myOwner),
+    adapter: normalizeAdapter(myHb?.platform),
+    observation: {
+      event_type: "coord.message_observed",
+      direction: "sent",
+      subject: peerOwner,
+      body: message.trim(),
+    },
+  });
 
   const data = {
     peer: name,
@@ -3766,7 +4691,7 @@ async function runWait(
 
   let lastProgressMs = 0;
   while (true) {
-    const hb = readHeartbeat(peerOwner);
+    const hb = readCurrentCoordinationRow(peerOwner);
     const now = Date.now();
     const elapsedMs = now - startMs;
 
@@ -3806,9 +4731,8 @@ async function runWait(
     const progressGapMs = Math.max(pollMs, 30_000);
     if (!opts.quiet && now - lastProgressMs >= progressGapMs) {
       lastProgressMs = now;
-      const lastTool = hb.last_tool ? `, last=${hb.last_tool}` : "";
       const elapsedStr = formatAge(Math.floor(elapsedMs / 1000));
-      const progress = `  [${elapsedStr}] ${stillBlocking.length} file(s) blocking${lastTool}\n`;
+      const progress = `  [${elapsedStr}] ${stillBlocking.length} file(s) blocking\n`;
       process.stderr.write(progress); // lint-ok-emission: per-poll progress heartbeat to stderr
     }
 
@@ -3849,6 +4773,7 @@ function runHeal(opts: {
   owner: string;
   kind: string;
   sessionId?: string;
+  adapter?: string;
   pid?: string;
   json?: boolean;
 }): void {
@@ -3860,10 +4785,22 @@ function runHeal(opts: {
     emit.error({ code: "missing_owner", message: "--owner is required" });
     process.exit(1);
   }
-  if (kind !== "pidmap" && kind !== "heartbeat" && kind !== "kill") {
+  if (kind !== "pidmap" && kind !== "cache") {
     emit.error({
       code: "bad_kind",
-      message: "--kind must be one of: pidmap, heartbeat, kill",
+      message: "--kind must be one of: pidmap, cache",
+    });
+    process.exit(1);
+  }
+  if (
+    opts.adapter &&
+    opts.adapter !== "claude-code" &&
+    opts.adapter !== "cursor" &&
+    opts.adapter !== "codex"
+  ) {
+    emit.error({
+      code: "bad_adapter",
+      message: "--adapter must be one of: claude-code, cursor, codex",
     });
     process.exit(1);
   }
@@ -3877,10 +4814,9 @@ function runHeal(opts: {
     process.exit(1);
   }
 
-  const action =
-    kind === "pidmap" ? "heal-pidmap" : kind === "heartbeat" ? "heal-heartbeat" : "kill-heartbeat";
+  const action = kind === "pidmap" ? "heal-pidmap" : "repair-coordination-cache";
 
-  // Refuse to mint a heartbeat at a TRUNCATED owner id.
+  // Refuse to materialize a V3 cache at a truncated owner id.
   //
   // Heartbeats are keyed by the whole instance_id, so healing at an
   // abbreviated id writes `.harnery/active/<prefix>.json` while every reader
@@ -3900,19 +4836,18 @@ function runHeal(opts: {
   // whose instance_id this id is a prefix of settles it just as well, and is
   // present in precisely the case that matters (the session the reader was
   // trying to heal is registered, just not under the abbreviated name).
-  if (kind === "heartbeat" && !readHeartbeat(owner)) {
+  if (kind === "cache" && !readHeartbeatCache(root, owner)) {
     const canonical =
       opts.sessionId && opts.sessionId.trim() !== owner && opts.sessionId.trim().startsWith(owner)
         ? opts.sessionId.trim()
         : liveIdWithPrefix(root, owner);
     if (canonical) {
-      const source = opts.sessionId?.trim() === canonical ? "--session-id" : "a live heartbeat";
+      const source = opts.sessionId?.trim() === canonical ? "--session-id" : "a live V3 generation";
       emit.error({
         code: "truncated_owner",
         message:
-          `--owner ${owner} is a prefix of ${canonical} (${source}), and no heartbeat exists ` +
-          `at .harnery/active/${owner}.json. Healing here would create a heartbeat no reader ` +
-          `resolves. Re-run with --owner ${canonical}.`,
+          `--owner ${owner} is a prefix of ${canonical} (${source}). Cache repair requires ` +
+          `the canonical instance id; re-run with --owner ${canonical}.`,
       });
       process.exit(1);
     }
@@ -3920,14 +4855,13 @@ function runHeal(opts: {
 
   // Build positional args. agent-coord's arg layout:
   //   heal-pidmap <instance_id> [<pid>]
-  //   heal-heartbeat <instance_id> [<session_id>]
-  //   kill-heartbeat <instance_id>
+  //   repair-coordination-cache <instance_id> [<session_id>]
   const helperArgs: string[] = [action, owner];
   if (kind === "pidmap" && opts.pid) helperArgs.push(opts.pid);
-  if (kind === "heartbeat" && opts.sessionId) helperArgs.push(opts.sessionId);
+  if (kind === "cache" && opts.sessionId) helperArgs.push(opts.sessionId);
+  if (kind === "cache" && opts.adapter) helperArgs.push(`--adapter=${opts.adapter}`);
 
-  // heal-pidmap / heal-heartbeat / kill-heartbeat are handled by the
-  // bundled agent-coord binary.
+  // Both recovery actions are handled by the bundled agent-coord binary.
   const helper = agentCoordOrExit(root);
   const proc = spawnSync(helper, helperArgs, {
     encoding: "utf8",
@@ -3942,27 +4876,22 @@ function runHeal(opts: {
     process.exit(1);
   }
 
-  // Re-read the heartbeat to surface post-action state (or null if killed).
+  // Read the derived cache to surface post-action state.
   let after: Heartbeat | null = null;
   try {
-    after = readHeartbeat(owner);
+    after = readHeartbeatCache(root, owner);
   } catch {
     after = null;
   }
 
-  // Outcome semantics differ per kind. kill-heartbeat targets the heartbeat
-  // file directly; heal-heartbeat upserts it; heal-pidmap touches a pid-map
-  // row whose existence is independent of the heartbeat. Reporting on
-  // "heartbeat present after" for the pidmap path was misleading: it's
-  // unrelated to whether the heal succeeded.
   const outcome =
     kind === "pidmap"
       ? proc.status === 0
         ? "ok"
         : "failed"
       : after
-        ? "heartbeat_present"
-        : "heartbeat_absent";
+        ? "cache_present"
+        : "cache_absent";
 
   emit.data({
     rows: [
@@ -3985,36 +4914,40 @@ function runHeal(opts: {
     if (kind === "pidmap") {
       emit.text(`agent-coord ${action} ok\n`);
     } else {
-      emit.text(`agent-coord ${action} ok: heartbeat ${after ? "present" : "absent"} after\n`);
+      emit.text(`agent-coord ${action} ok: cache ${after ? "present" : "absent"} after\n`);
     }
   }
 
-  // Canonical health.* emission is owned by the writer (heartbeat-writer.ts
-  // healPidmap/healHeartbeat), so it fires inside the agent-coord subprocess
+  // Canonical health.* emission is owned by the cache writer, so it fires
+  // inside the agent-coord subprocess
   // above on actual writes only: write-only telemetry, no double-emit, no
   // event when an already-correct heal no-ops. (Previously emitted here
   // unconditionally on every `harn agents heal`, which over-counted no-op heals.)
 }
 
 /**
- * Shared emitter for council.* events. Looks up the running agent's
- * heartbeat so each event carries a real instance_id / session_id; falls
- * through silently if no session (CI / direct invocation).
+ * Emit one V3 council audit transition keyed to the exact durable manifest.
+ * Falls through silently when no live session can attest the observation.
  */
 function emitCouncilStateEvent(
-  type: string,
   manifest: CouncilManifest,
-  extraData: Record<string, unknown>,
+  newState: string,
+  priorState?: string,
 ): void {
   const myOwner = resolveOwner();
   if (!myOwner) return;
-  const hb = readHeartbeat(myOwner);
-  emitCanonical({
-    type,
+  const hb = readCurrentCoordinationRow(myOwner);
+  emitEventV3({
     owner: myOwner,
-    session: hb?.session_id ?? myOwner,
+    session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb?.platform),
-    data: { council_id: manifest.council_id, ...extraData },
+    observation: {
+      event_type: "council.state_changed",
+      council_id: manifest.council_id,
+      ...(priorState ? { prior_state: priorState } : {}),
+      new_state: newState,
+      record: manifest,
+    },
   });
 }
 
@@ -4071,7 +5004,7 @@ function runCouncilCreate(
   if (opts.createdBy?.trim()) {
     createdBy = normalizeAgentName(opts.createdBy);
   } else if (myOwner) {
-    const myHb = readHeartbeat(myOwner);
+    const myHb = readCurrentCoordinationRow(myOwner);
     if (myHb?.name) {
       createdBy = normalizeAgentName(myHb.name);
     }
@@ -4132,17 +5065,16 @@ function runCouncilCreate(
   writeManifest(manifest);
 
   if (myOwner) {
-    const myHbForEmit = readHeartbeat(myOwner);
-    emitCanonical({
-      type: "council.open",
+    const myHbForEmit = readCurrentCoordinationRow(myOwner);
+    emitEventV3({
       owner: myOwner,
-      session: myHbForEmit?.session_id ?? myOwner,
+      session: nativeSessionIdentity(myHbForEmit, myOwner),
       adapter: normalizeAdapter(myHbForEmit?.platform),
-      data: {
-        council_id: councilId,
-        topic: trimmedObjective,
-        members,
-        target_doc: manifest.target_doc ?? undefined,
+      observation: {
+        event_type: "council.state_changed",
+        council_id: manifest.council_id,
+        new_state: "active",
+        record: manifest,
       },
     });
   }
@@ -4155,7 +5087,7 @@ function runCouncilCreate(
   const skippedMembers: string[] = [];
   for (const memberName of members) {
     const bareName = memberName.replace(/^agent-/, "");
-    if (myOwner && readHeartbeat(myOwner)?.name === bareName) {
+    if (myOwner && readCurrentCoordinationRow(myOwner)?.name === bareName) {
       // Convener is themselves a member; skip the self-ping
       continue;
     }
@@ -4220,7 +5152,7 @@ function runCouncilList(opts: { status?: string; mine?: boolean; json?: boolean 
   if (opts.mine) {
     const myOwner = resolveOwner();
     if (myOwner) {
-      const myHb = readHeartbeat(myOwner);
+      const myHb = readCurrentCoordinationRow(myOwner);
       if (myHb?.name) myName = normalizeAgentName(myHb.name);
     }
     if (!myName) {
@@ -4397,7 +5329,7 @@ function runCouncilClose(id: string, opts: { json?: boolean }): void {
     closed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   };
   writeManifest(next);
-  emitCouncilStateEvent("council.close", next, { closed_at: next.closed_at! });
+  emitCouncilStateEvent(next, "closed", manifest.status);
 
   // Build the transcript: every round's contributions in order.
   const transcript = buildTranscript(next);
@@ -4442,7 +5374,7 @@ function runCouncilArchive(id: string, opts: { json?: boolean }): void {
   // updated status. moveToArchive then physically relocates the artifacts.
   writeManifest(next);
   moveToArchive(next.council_id);
-  emitCouncilStateEvent("council.archive", next, {});
+  emitCouncilStateEvent(next, "archived", manifest.status);
 
   emit.data({
     rows: [
@@ -4501,7 +5433,7 @@ function runCouncilUnarchive(id: string, opts: { json?: boolean }): void {
   // (allows re-running for testing).
   moveFromArchive(next.council_id);
   writeManifest(next);
-  emitCouncilStateEvent("council.unarchive", next, { restored_status: restoredStatus });
+  emitCouncilStateEvent(next, restoredStatus, "archived");
 
   emit.data({
     rows: [
@@ -4563,7 +5495,7 @@ function runCouncilDelete(id: string, opts: { yes?: boolean; json?: boolean }): 
 
   const removed = deleteArchivedCouncil(manifest.council_id);
   if (removed) {
-    emitCouncilStateEvent("council.delete", manifest, {});
+    emitCouncilStateEvent(manifest, "deleted", "archived");
   }
 
   emit.data({
@@ -4753,7 +5685,7 @@ function runCouncilContribute(
     try {
       const myOwner = resolveOwner();
       if (myOwner) {
-        const myHb = readHeartbeat(myOwner);
+        const myHb = readCurrentCoordinationRow(myOwner);
         if (myHb?.name) actualName = normalizeAgentName(myHb.name);
       }
     } catch {
@@ -4769,7 +5701,7 @@ function runCouncilContribute(
       });
       process.exit(1);
     }
-    const myHb = readHeartbeat(myOwner);
+    const myHb = readCurrentCoordinationRow(myOwner);
     if (!myHb?.name) {
       emit.error({
         code: "no_self_name",
@@ -4822,11 +5754,7 @@ function runCouncilContribute(
   }
 
   const path = writeContribution(manifest.council_id, manifest.current_round, myName, body);
-  emitCouncilStateEvent("council.contribution", manifest, {
-    round_no: manifest.current_round,
-    member: myName,
-    body_summary: body.length > 1000 ? `${body.slice(0, 997)}...` : body,
-  });
+  emitCouncilStateEvent(manifest, "contribution_recorded", manifest.round_status);
 
   // Update manifest: if all members have now contributed, flip round_status.
   const contributorsNow = contributorsInRound(manifest.council_id, manifest.current_round);
@@ -4836,14 +5764,10 @@ function runCouncilContribute(
   if (allIn) {
     nextManifest = { ...manifest, round_status: "collected" };
     writeManifest(nextManifest);
-    emitCouncilStateEvent("council.round_close", nextManifest, {
-      round_no: nextManifest.current_round,
-    });
+    emitCouncilStateEvent(nextManifest, "round_closed", manifest.round_status);
     if (manifest.auto_advance) {
       nextManifest = advanceCouncil(nextManifest, /*force=*/ false);
-      emitCouncilStateEvent("council.round_open", nextManifest, {
-        round_no: nextManifest.current_round,
-      });
+      emitCouncilStateEvent(nextManifest, "round_open", "round_closed");
       autoAdvanced = true;
     }
   }
@@ -4934,7 +5858,7 @@ function runCouncilPrompt(
     try {
       const myOwner = resolveOwner();
       if (myOwner) {
-        const myHb = readHeartbeat(myOwner);
+        const myHb = readCurrentCoordinationRow(myOwner);
         if (myHb?.name) actualName = normalizeAgentName(myHb.name);
       }
     } catch {
@@ -4950,7 +5874,7 @@ function runCouncilPrompt(
       });
       process.exit(1);
     }
-    const myHb = readHeartbeat(myOwner);
+    const myHb = readCurrentCoordinationRow(myOwner);
     if (!myHb?.name) {
       emit.error({
         code: "no_self_name",
@@ -5115,12 +6039,8 @@ function runCouncilAdvance(id: string, opts: { force?: boolean; json?: boolean }
   }
 
   const next = advanceCouncil(manifest, !!opts.force);
-  emitCouncilStateEvent("council.round_close", manifest, {
-    round_no: manifest.current_round,
-  });
-  emitCouncilStateEvent("council.round_open", next, {
-    round_no: next.current_round,
-  });
+  emitCouncilStateEvent(manifest, "round_closed", manifest.round_status);
+  emitCouncilStateEvent(next, "round_open", "round_closed");
 
   emit.data({
     rows: [
@@ -5166,7 +6086,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
   // (Convener already knows; we skip pinging them if they convened it from
   // their own session.)
   const myOwner = resolveOwner();
-  const myName = myOwner ? normalizeAgentName(readHeartbeat(myOwner)?.name ?? "") : "";
+  const myName = myOwner ? normalizeAgentName(readCurrentCoordinationRow(myOwner)?.name ?? "") : "";
   for (const memberName of next.members) {
     if (memberName === myName) continue;
     const bareName = memberName.replace(/^agent-/, "");
@@ -5190,7 +6110,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
 // Hard cap on box width. Values longer than the per-row budget word-wrap to
 // continuation lines (blank key column, value resumes indented). Picked to
 // stay readable in narrow terminals + chat clients while giving long
-// turn_summary / task values room to breathe.
+// Task values need room to breathe.
 const MAX_BOX_CONTENT_WIDTH = 100;
 
 function formatBox(title: string, rows: Array<[string, string]>): string {

@@ -1,6 +1,6 @@
 /**
  * SessionStart UX renderer: combines the peer table, the wiring check, and
- * the pending-council formatter so agent-hook session.start can emit the
+ * the pending-council formatter so agent-hook session.started can emit the
  * combined `systemMessage` JSON directly.
  *
  * Outputs a Claude Code SessionStart hookSpecificOutput.additionalContext
@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
 import { readRemoteMachines } from "../../presence/index.ts";
+import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 import { readForkParent } from "../state/names.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
 
@@ -23,15 +24,12 @@ interface HeartbeatRow {
   session_id?: string;
   started_at?: string;
   last_heartbeat?: string;
-  last_tool?: string;
-  last_tool_target?: string;
   files_touched?: string[];
   platform?: string;
   task?: string;
   activity?: AgentActivity;
   task_state?: TaskState;
   task_state_reason?: string;
-  turn_summary?: string;
 }
 
 export interface RenderOpts {
@@ -154,22 +152,11 @@ function formatRemoteMachines(coordRoot: string): string {
   }
 }
 
-/** Read all peer heartbeats from .harnery/active/, excluding self. */
+/** Read peers from the selected ledger route, excluding self. */
 function readActivePeers(coordRoot: string, selfInstanceId: string): HeartbeatRow[] {
-  const out: HeartbeatRow[] = [];
-  const dir = join(coordRoot, ".harnery", "active");
-  if (!existsSync(dir)) return out;
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const hb = JSON.parse(readFileSync(join(dir, f), "utf8")) as HeartbeatRow;
-      if (!hb.instance_id || hb.instance_id === selfInstanceId) continue;
-      out.push(hb);
-    } catch {
-      /* skip */
-    }
-  }
-  return out;
+  return readLiveCoordinationRows(coordRoot).filter(
+    (heartbeat) => heartbeat.instance_id && heartbeat.instance_id !== selfInstanceId,
+  );
 }
 
 /**
@@ -244,23 +231,13 @@ function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number
     lifecycle === "blocked" && r.task_state_reason ? `: ${r.task_state_reason.slice(0, 80)}` : "";
   const ageFrom = fmtAge(nowSec - parseIsoSec(r.started_at));
   const filesPart = fmtFiles(r.display_files);
-  const lastActivity = fmtLastActivity(r, nowSec);
-  const turnSummary = r.turn_summary ? `\n    last turn: ${r.turn_summary.slice(0, 80)}` : "";
-  return `  - agent-${r.name ?? "unknown"}${taskPart}   (activity=${activity}, lifecycle=${lifecycle}${reason}, ${ageFrom}, ${filesPart}${lastActivity})${turnSummary}`;
+  return `  - agent-${r.name ?? "unknown"}${taskPart}   (activity=${activity}, lifecycle=${lifecycle}${reason}, ${ageFrom}, ${filesPart})`;
 }
 
 function fmtFiles(files: string[]): string {
   if (files.length === 0) return "nothing yet";
   if (files.length <= 3) return `holds: ${files.join(", ")}`;
   return `holds: ${files.slice(0, 3).join(", ")}, +${files.length - 3} more`;
-}
-
-function fmtLastActivity(r: HeartbeatRow, nowSec: number): string {
-  if (!r.last_tool) return "";
-  const lastTs = parseIsoSec(r.last_heartbeat ?? r.started_at);
-  const ageSec = nowSec - lastTs;
-  const tail = r.last_tool_target ? ` ${r.last_tool_target.slice(0, 60)}` : "";
-  return `, last: ${r.last_tool}${tail} ${fmtAge(ageSec)}`;
 }
 
 function parseIsoSec(iso: string | undefined): number {
@@ -360,7 +337,9 @@ function extractFirstSubmodule(gitmodulesPath: string): string | null {
  * superproject) via a `git rev-parse --git-dir` vs `--git-common-dir` check.
  */
 function isLinkedWorktree(coordRoot: string): boolean {
-  const dir = spawnSync("git", ["-C", coordRoot, "rev-parse", "--git-dir"], { encoding: "utf8" });
+  const dir = spawnSync("git", ["-C", coordRoot, "rev-parse", "--git-dir"], {
+    encoding: "utf8",
+  });
   const common = spawnSync("git", ["-C", coordRoot, "rev-parse", "--git-common-dir"], {
     encoding: "utf8",
   });

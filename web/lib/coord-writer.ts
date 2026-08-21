@@ -8,19 +8,19 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { isSafeInstanceId, resolveContainedFile } from "harnery/core/agents";
+import { isSafeInstanceId } from "harnery/core/agents";
 import {
   appendEntry,
   archiveJournal,
-  parseJournal,
   JOURNAL_CATEGORIES,
   type JournalCategory,
   journalPath,
+  parseJournal,
   serializeJournal,
 } from "harnery/core/journal";
-import { activeDir, coordRoot } from "./coord-reader";
+import { coordRoot } from "./coord-reader";
 
 export { JOURNAL_CATEGORIES, type JournalCategory };
 
@@ -69,14 +69,39 @@ export function safeOwnerId(owner: string): boolean {
   return isSafeInstanceId(owner);
 }
 
+/**
+ * Resolve a canonical V3 instance ID back to the native cache owner when both
+ * records describe the same generation. Operator actions can be rendered from
+ * a projection-only `inst_*` row, while agent-coord must join the hook producer
+ * with the adapter's native owner ID.
+ */
+export function resolveOperatorMutationOwner(
+  instanceId: string,
+  root: string = coordRoot(),
+): string {
+  if (!instanceId.startsWith("inst_")) return instanceId;
+  const candidate = instanceId.slice("inst_".length);
+  if (!safeOwnerId(candidate)) return instanceId;
+  try {
+    const cache = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", `${candidate}.json`), "utf8"),
+    ) as Record<string, unknown>;
+    if (
+      cache.instance_id === candidate &&
+      cache.v3_instance_id === instanceId &&
+      typeof cache.v3_generation_id === "string"
+    ) {
+      return candidate;
+    }
+  } catch {
+    // No validated native cache alias exists, so preserve the supplied owner.
+  }
+  return instanceId;
+}
+
 /** Force a coord-layer recovery action on an agent. Shells to harnery/bin/agent-coord. */
-export async function healAgent(
-  owner: string,
-  kind: "pidmap" | "heartbeat" | "kill",
-): Promise<HelperResult> {
-  const action =
-    kind === "pidmap" ? "heal-pidmap" : kind === "heartbeat" ? "heal-heartbeat" : "kill-heartbeat";
-  return runHelper([action, owner]);
+export async function healAgent(owner: string, _kind: "cache"): Promise<HelperResult> {
+  return runHelper(["repair-coordination-cache", owner]);
 }
 
 /**
@@ -253,28 +278,6 @@ function ensureCoordRootEnv(): void {
   }
 }
 
-export interface HeartbeatFile {
-  instance_id: string;
-  name?: string;
-  files_touched?: string[];
-  [key: string]: unknown;
-}
-
-function heartbeatPath(instanceId: string): string {
-  if (!safeOwnerId(instanceId)) throw new Error("invalid instance_id");
-  return resolveContainedFile(activeDir(), `${instanceId}.json`);
-}
-
-function readHeartbeatFile(instanceId: string): HeartbeatFile | null {
-  const p = heartbeatPath(instanceId);
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf-8")) as HeartbeatFile;
-  } catch {
-    return null;
-  }
-}
-
 export interface ReleaseClaimResult {
   ok: boolean;
   instance_id: string;
@@ -284,7 +287,10 @@ export interface ReleaseClaimResult {
   error?: string;
 }
 
-export function releaseClaim(instanceId: string, target: string): ReleaseClaimResult {
+export async function releaseClaim(
+  instanceId: string,
+  target: string,
+): Promise<ReleaseClaimResult> {
   if (!safeOwnerId(instanceId)) {
     return {
       ok: false,
@@ -295,27 +301,43 @@ export function releaseClaim(instanceId: string, target: string): ReleaseClaimRe
       error: "invalid instance_id",
     };
   }
-  const hb = readHeartbeatFile(instanceId);
-  if (!hb) {
+  const result = await runHelper([
+    "release-claim",
+    resolveOperatorMutationOwner(instanceId),
+    target,
+  ]);
+  if (!result.ok) {
     return {
       ok: false,
       instance_id: instanceId,
       path: target,
       removed: false,
       remaining: 0,
-      error: "heartbeat not found",
+      error: result.stderr.trim() || `claim release exited ${result.exit_code}`,
     };
   }
-  const before = (hb.files_touched ?? []).length;
-  const filtered = (hb.files_touched ?? []).filter((p) => p !== target);
-  hb.files_touched = filtered;
-  writeFileSync(heartbeatPath(instanceId), `${JSON.stringify(hb, null, 2)}\n`, "utf-8");
+  let filesTouched: string[] = [];
+  try {
+    const payload = JSON.parse(result.stdout.trim()) as { files_touched?: unknown };
+    filesTouched = Array.isArray(payload.files_touched)
+      ? payload.files_touched.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch (error) {
+    return {
+      ok: false,
+      instance_id: instanceId,
+      path: target,
+      removed: false,
+      remaining: 0,
+      error: `invalid claim-release response: ${(error as Error).message}`,
+    };
+  }
   return {
     ok: true,
     instance_id: instanceId,
     path: target,
-    removed: filtered.length < before,
-    remaining: filtered.length,
+    removed: !filesTouched.includes(target),
+    remaining: filesTouched.length,
   };
 }
 
@@ -357,32 +379,54 @@ export function pingAgent(targetInstanceId: string, message: string): PingResult
 export interface EndSessionResult {
   ok: boolean;
   instance_id: string;
-  removed_from: string;
+  terminal_event_recorded: boolean;
+  terminal_event_queued: boolean;
+  request_id?: string;
   error?: string;
 }
 
-export function endSession(instanceId: string): EndSessionResult {
+export async function endSession(instanceId: string): Promise<EndSessionResult> {
   if (!safeOwnerId(instanceId)) {
-    return { ok: false, instance_id: instanceId, removed_from: "", error: "invalid instance_id" };
-  }
-  const p = heartbeatPath(instanceId);
-  if (!existsSync(p)) {
     return {
       ok: false,
       instance_id: instanceId,
-      removed_from: p,
-      error: "heartbeat not found",
+      terminal_event_recorded: false,
+      terminal_event_queued: false,
+      error: "invalid instance_id",
+    };
+  }
+  const result = await runHelper(["end-session", instanceId]);
+  if (!result.ok) {
+    return {
+      ok: false,
+      instance_id: instanceId,
+      terminal_event_recorded: false,
+      terminal_event_queued: false,
+      error: result.stderr.trim() || `session finalizer exited ${result.exit_code}`,
     };
   }
   try {
-    unlinkSync(p);
-    return { ok: true, instance_id: instanceId, removed_from: p };
+    const payload = JSON.parse(result.stdout.trim()) as {
+      state?: string;
+      request?: { request_id?: string };
+    };
+    const queued = payload.state === "queued" || payload.state === "already_requested";
+    const recorded = payload.state === "recorded" || payload.state === "already_ended";
+    if (!queued && !recorded) throw new Error(`unexpected finalizer state: ${payload.state}`);
+    return {
+      ok: true,
+      instance_id: instanceId,
+      terminal_event_recorded: recorded,
+      terminal_event_queued: queued,
+      ...(payload.request?.request_id ? { request_id: payload.request.request_id } : {}),
+    };
   } catch (err) {
     return {
       ok: false,
       instance_id: instanceId,
-      removed_from: p,
-      error: (err as Error).message,
+      terminal_event_recorded: false,
+      terminal_event_queued: false,
+      error: `invalid finalizer response: ${(err as Error).message}`,
     };
   }
 }

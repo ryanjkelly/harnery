@@ -17,7 +17,7 @@ export function GET(req: Request): Response {
   const sessions = run
     ? new Set(
         readWorkflowChildSessions(coordRoot(), run, {
-          heartbeatRoot: runRoot?.root,
+          coordinationRoot: runRoot?.root,
         }).map((c) => c.sessionId),
       )
     : undefined;

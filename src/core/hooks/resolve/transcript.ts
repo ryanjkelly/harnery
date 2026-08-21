@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 
 /**
  * Scan a CC-style JSONL transcript for the `┌─ agent-` status-box prefix in
- * the most-recent assistant turn. Used by `turn.stop` events to populate
+ * the most-recent assistant turn. Used by `turn.completed` events to populate
  * `status_box_present`.
  *
  * Cheap by default: caps the read at 256KB tailed from the file, since the
@@ -13,8 +13,9 @@ import { basename, dirname, join } from "node:path";
  * and Phase 5 verdict path catches the race via a single retry.
  */
 export function scanStatusBoxPresent(transcriptPath: string | undefined): boolean {
-  if (!transcriptPath || !existsSync(transcriptPath)) return false;
-  const text = tailText(transcriptPath);
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return false;
+  const text = tailText(readablePath);
   if (text === undefined) return false;
   // The box is rendered as a text content block by the assistant; we look
   // for the prefix on any line of the trailing window.
@@ -23,7 +24,7 @@ export function scanStatusBoxPresent(transcriptPath: string | undefined): boolea
 
 /**
  * Scan a CC-style JSONL transcript for a needle in ASSISTANT message text
- * blocks only. Used by `turn.stop` to detect the suggested session name in the
+ * blocks only. Used by `turn.completed` to detect the suggested session name in the
  * reply.
  *
  * The row filter is load-bearing: the transcript tail also carries the needle
@@ -39,8 +40,10 @@ export function scanAssistantTextIncludes(
   transcriptPath: string | undefined,
   needle: string,
 ): boolean {
-  if (!transcriptPath || !needle || !existsSync(transcriptPath)) return false;
-  const text = tailText(transcriptPath);
+  if (!needle) return false;
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return false;
+  const text = tailText(readablePath);
   if (!text) return false;
   for (const line of text.split("\n")) {
     // Cheap gate before parsing: most lines don't contain the needle at all.
@@ -71,11 +74,156 @@ export function scanAssistantTextIncludes(
   return false;
 }
 
+/** Most recent user-visible assistant text across Claude Code and Codex JSONL. */
+export function scanLatestAssistantText(transcriptPath: string | undefined): string | undefined {
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return undefined;
+  const text = tailText(readablePath);
+  if (!text) return undefined;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const row = parseTranscriptRow(lines[i]);
+    if (!row) continue;
+    const assistantText = assistantTextFromRow(row);
+    // Claude Code appends the current tool_use-only assistant row before
+    // PreToolUse fires. Skip rows with no user-visible text so the immediately
+    // preceding fenced block remains discoverable.
+    if (assistantText !== null && assistantText.trim().length > 0) return assistantText;
+  }
+  return undefined;
+}
+
+/**
+ * Verify that the first assistant message after the set-task result begins
+ * with the exact session-name block. This is the Stop-time fallback for a
+ * correctly displayed name followed by no further tool call. A name printed
+ * after later work does not pass.
+ */
+export function scanSessionNameDisplayedImmediately(
+  transcriptPath: string | undefined,
+  name: string,
+  startsWithBlock: (text: string, expectedName: string) => boolean,
+): boolean {
+  return (
+    inspectSessionNameDisplayImmediately(transcriptPath, name, startsWithBlock).state === "present"
+  );
+}
+
+export type SessionNameDisplayInspection =
+  | { state: "present" }
+  | { state: "absent" }
+  | { state: "unavailable"; reason: "missing_transcript" | "transcript_not_ready" };
+
+/**
+ * Inspect the ordered post-mint reply without conflating a malformed display
+ * with an unreadable transcript. PreToolUse can enforce the former, while the
+ * latter must remain an honest unsupported observation instead of deadlocking
+ * every tool behind evidence the adapter has not persisted yet.
+ */
+export function inspectSessionNameDisplayImmediately(
+  transcriptPath: string | undefined,
+  name: string,
+  startsWithBlock: (text: string, expectedName: string) => boolean,
+): SessionNameDisplayInspection {
+  if (!name) return { state: "absent" };
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return { state: "unavailable", reason: "missing_transcript" };
+  const text = tailText(readablePath);
+  if (!text) return { state: "unavailable", reason: "transcript_not_ready" };
+  let sawMintResult = false;
+  for (const line of text.split("\n")) {
+    if (!sawMintResult) {
+      if (line.includes(name) && line.includes("suggested_session_name")) sawMintResult = true;
+      continue;
+    }
+    const row = parseTranscriptRow(line);
+    if (!row) continue;
+    const assistantText = assistantTextFromRow(row);
+    if (assistantText !== null) {
+      return { state: startsWithBlock(assistantText, name) ? "present" : "absent" };
+    }
+  }
+  return sawMintResult
+    ? { state: "unavailable", reason: "transcript_not_ready" }
+    : { state: "absent" };
+}
+
+/**
+ * Resolve a transcript path at the adapter boundary. Windows-native Codex can
+ * send `C:\...` while the managed hook executes inside WSL, where the same
+ * file is mounted at `/mnt/c/...`.
+ */
+export function transcriptPathCandidates(transcriptPath: string | undefined): string[] {
+  if (!transcriptPath) return [];
+  const candidates = [transcriptPath];
+  const windowsDrive = /^([A-Za-z]):[\\/](.*)$/.exec(transcriptPath);
+  if (windowsDrive) {
+    candidates.push(
+      `/mnt/${windowsDrive[1]!.toLowerCase()}/${windowsDrive[2]!.replaceAll("\\", "/")}`,
+    );
+  }
+  return [...new Set(candidates)];
+}
+
+function resolveTranscriptPath(transcriptPath: string | undefined): string | undefined {
+  return transcriptPathCandidates(transcriptPath).find((candidate) => existsSync(candidate));
+}
+
+function parseTranscriptRow(line: string | undefined): Record<string, unknown> | null {
+  if (!line?.trim()) return null;
+  try {
+    const row = JSON.parse(line) as unknown;
+    return typeof row === "object" && row !== null ? (row as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** null means this row is not an assistant message; an empty string is one with no text. */
+function assistantTextFromRow(row: Record<string, unknown>): string | null {
+  if (row.type === "assistant") {
+    const message = objectValue(row.message);
+    return textFromContent(message?.content);
+  }
+
+  if (row.type === "response_item") {
+    const payload = objectValue(row.payload);
+    if (payload?.type !== "message" || payload.role !== "assistant") return null;
+    return textFromContent(payload.content);
+  }
+
+  if (row.type === "event_msg") {
+    const payload = objectValue(row.payload);
+    if (payload?.type !== "agent_message") return null;
+    return typeof payload.message === "string" ? payload.message : "";
+  }
+
+  return null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function textFromContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    const value = objectValue(block);
+    if (!value) continue;
+    if ((value.type === "text" || value.type === "output_text") && typeof value.text === "string") {
+      parts.push(value.text);
+    }
+  }
+  return parts.join("\n");
+}
+
 /**
  * Resolve the agent's model from a CC-style JSONL transcript by reading the
  * most-recent assistant message's `message.model`. Claude Code's SessionStart
  * payload omits `model` (Codex + Cursor supply it directly), so this is the
- * fallback that lets `session.start` / `turn.stop` populate the heartbeat's
+ * fallback that lets `session.started` / `turn.completed` populate the cache's
  * model field once the transcript has at least one assistant turn.
  *
  * Tail-reads the same 256KB window as the status-box scan and walks lines from
@@ -84,8 +232,9 @@ export function scanAssistantTextIncludes(
  * transcript is missing/empty (e.g. a fresh session's first SessionStart).
  */
 export function scanTranscriptModel(transcriptPath: string | undefined): string | undefined {
-  if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
-  const text = tailText(transcriptPath);
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return undefined;
+  const text = tailText(readablePath);
   if (!text) return undefined;
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -146,15 +295,17 @@ export function detectForkParent(
   sessionId: string,
 ): string | undefined {
   try {
-    if (!transcriptPath || !sessionId || !existsSync(transcriptPath)) return undefined;
-    if (statSync(transcriptPath).size > FORK_SCAN_MAX_BYTES) return undefined;
-    const own = readFileSync(transcriptPath, "utf8");
+    if (!sessionId) return undefined;
+    const readablePath = resolveTranscriptPath(transcriptPath);
+    if (!readablePath) return undefined;
+    if (statSync(readablePath).size > FORK_SCAN_MAX_BYTES) return undefined;
+    const own = readFileSync(readablePath, "utf8");
     const uuids = messageUuids(own);
     if (uuids.length === 0) return undefined;
     const sample = sampleEvenly(uuids, FORK_SAMPLE_SIZE);
 
-    const dir = dirname(transcriptPath);
-    const ownFile = basename(transcriptPath);
+    const dir = dirname(readablePath);
+    const ownFile = basename(readablePath);
     let best: { id: string; score: number; rows: number; mtimeMs: number } | null = null;
     for (const file of readdirSync(dir)) {
       if (file === ownFile || !SESSION_FILE_RE.test(file)) continue;

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -30,9 +30,7 @@ export function ReleaseClaimButton({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
-  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(
-    null,
-  );
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
   function handleConfirm() {
     setFeedback(null);
@@ -48,10 +46,7 @@ export function ReleaseClaimButton({
           | { error: string; stderr?: string };
 
         if (!res.ok || !("ok" in data)) {
-          const msg =
-            "error" in data
-              ? data.error
-              : `release failed (HTTP ${res.status})`;
+          const msg = "error" in data ? data.error : `release failed (HTTP ${res.status})`;
           setFeedback({ ok: false, msg: `Release failed: ${msg}` });
           return;
         }
@@ -89,46 +84,31 @@ export function ReleaseClaimButton({
           <DialogTitle>Release file claim?</DialogTitle>
           <DialogDescription>
             <span className="block">
-              Remove this path from{" "}
-              <span className="font-mono">{agentName}</span>&apos;s
+              Remove this path from <span className="font-mono">{agentName}</span>&apos;s
               files_touched array.
             </span>
             <code className="mt-2 block px-2 py-1 bg-muted rounded-md text-xs font-mono break-all">
               {path}
             </code>
             <span className="mt-2 block text-xs">
-              The agent will lose its lock on this file immediately. If the
-              agent is actively writing to it, the next PostToolUse hook will
-              fail the E guard (peer-staged-file collision). Releasing while
-              the owning agent is mid-edit is a recipe for surprise.
+              The agent will lose its lock on this file immediately. If the agent is actively
+              writing to it, the next PostToolUse hook will fail the E guard (peer-staged-file
+              collision). Releasing while the owning agent is mid-edit is a recipe for surprise.
             </span>
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => setOpen(false)}
-            disabled={pending}
-          >
+          <Button variant="outline" onClick={() => setOpen(false)} disabled={pending}>
             Cancel
           </Button>
-          <Button
-            variant="destructive"
-            onClick={handleConfirm}
-            disabled={pending}
-          >
+          <Button variant="destructive" onClick={handleConfirm} disabled={pending}>
             {pending ? "Releasing…" : "Release claim"}
           </Button>
         </DialogFooter>
       </Dialog>
 
       {feedback && (
-        <p
-          className={
-            "text-[11px] mt-1 " +
-            (feedback.ok ? "text-emerald-400" : "text-red-400")
-          }
-        >
+        <p className={"text-[11px] mt-1 " + (feedback.ok ? "text-emerald-400" : "text-red-400")}>
           {feedback.msg}
         </p>
       )}

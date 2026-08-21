@@ -1,5 +1,66 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { nodeOptionsWithHeapCap, resolveMaxOldSpaceMb } from "./web.ts";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
+import { isWebPortAvailable, nodeOptionsWithHeapCap, resolveMaxOldSpaceMb } from "./web.ts";
+
+describe("resolveWebPort", () => {
+  let savedEnv: string | undefined;
+  let root: string;
+
+  beforeEach(() => {
+    savedEnv = process.env.HARNERY_WEB_PORT;
+    delete process.env.HARNERY_WEB_PORT;
+    root = mkdtempSync(join(tmpdir(), "harnery-web-port-"));
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env.HARNERY_WEB_PORT;
+    else process.env.HARNERY_WEB_PORT = savedEnv;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("uses the mnemonic HARN port by default", () => {
+    expect(resolveWebPort(undefined, root)).toBe(DEFAULT_WEB_PORT);
+    expect(DEFAULT_WEB_PORT).toBe(4276);
+  });
+
+  test("reads web.port from project config", () => {
+    mkdirSync(join(root, ".harnery"));
+    writeFileSync(join(root, ".harnery", "config.jsonc"), '{ "web": { "port": 5100 } }');
+    expect(resolveWebPort(undefined, root)).toBe(5100);
+  });
+
+  test("environment wins over project config and an explicit flag wins over both", () => {
+    mkdirSync(join(root, ".harnery"));
+    writeFileSync(join(root, ".harnery", "config.jsonc"), '{ "web": { "port": 5100 } }');
+    process.env.HARNERY_WEB_PORT = "5200";
+    expect(resolveWebPort(undefined, root)).toBe(5200);
+    expect(resolveWebPort("5300", root)).toBe(5300);
+  });
+
+  test("rejects invalid explicit and environment ports", () => {
+    expect(() => resolveWebPort("900", root)).toThrow("--port must be an integer");
+    process.env.HARNERY_WEB_PORT = "random";
+    expect(() => resolveWebPort(undefined, root)).toThrow("HARNERY_WEB_PORT must be an integer");
+  });
+});
+
+describe("isWebPortAvailable", () => {
+  test("reports a bound port and releases it cleanly", async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a TCP address");
+    expect(await isWebPortAvailable(address.port)).toBe(false);
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    expect(await isWebPortAvailable(address.port)).toBe(true);
+  });
+});
 
 /**
  * The dashboard's V8 old-space ceiling. Next only supplies its own

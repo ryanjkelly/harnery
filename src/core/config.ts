@@ -9,8 +9,8 @@
  * Fields owned here: `binName` (host CLI name for agent-facing strings),
  * `hooksSetupHint`, `agents`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
  * `coord` (heartbeat freshness), `artifacts` (working-file retention),
- * `backup` (restic repo/password/prune policy), and `sync` (rclone
- * remote/prefix) sections. The `files` deny/override section
+ * `backup` (restic repo/password/prune policy), `sync` (rclone
+ * remote/prefix), and `web` (dashboard port) sections. The `files` deny/override section
  * is parsed separately by `web/lib/files.ts`.
  *
  * Env vars and CLI flags override any config value per invocation (each accessor
@@ -29,6 +29,25 @@ export const DEFAULT_BIN_NAME = "harn";
 
 /** Heartbeat-freshness default (seconds): the sweep window when nothing overrides it. */
 export const DEFAULT_FRESHNESS_SECS = 600;
+
+/** Mnemonic dashboard port: 4276 spells HARN on a phone keypad. */
+export const DEFAULT_WEB_PORT = 4276;
+
+export interface SessionFinalizationConfig {
+  archiveGraceSeconds: number;
+  idleObserveSeconds: number;
+  idleFinalizeSeconds: number;
+  cascadeGraceSeconds: number;
+  reconcileIntervalSeconds: number;
+}
+
+export const DEFAULT_SESSION_FINALIZATION_CONFIG: SessionFinalizationConfig = {
+  archiveGraceSeconds: 600,
+  idleObserveSeconds: 3 * 24 * 60 * 60,
+  idleFinalizeSeconds: 7 * 24 * 60 * 60,
+  cascadeGraceSeconds: 60 * 60,
+  reconcileIntervalSeconds: 15 * 60,
+};
 
 export type AgentFinalizationDisposition = "git" | "output";
 
@@ -88,7 +107,17 @@ interface HarneryConfig {
    * Coord-layer tunables. `freshness_seconds` is the heartbeat age above which
    * the sweeper prunes an agent (default 600). Read via `coordFreshnessSeconds()`.
    */
-  coord?: { freshness_seconds?: number };
+  coord?: {
+    freshness_seconds?: number;
+    run_quality?: unknown;
+    finalization?: {
+      archive_grace_seconds?: number;
+      idle_observe_seconds?: number;
+      idle_finalize_seconds?: number;
+      cascade_grace_seconds?: number;
+      reconcile_interval_seconds?: number;
+    };
+  };
   /**
    * Managed working-artifact defaults. `default_retention_days` is the
    * create-time TTL when the caller does not pass `artifacts create --days`.
@@ -111,6 +140,8 @@ interface HarneryConfig {
    * `~/.config/harnery/sync.json`, which is consulted as a lower-precedence fallback.
    */
   sync?: { remote?: string; prefix?: string };
+  /** Standalone dashboard defaults. */
+  web?: { port?: number; bind?: string };
   [k: string]: unknown;
 }
 
@@ -192,6 +223,61 @@ function parseConfigFile(p: string): HarneryConfig {
     /* missing or unparseable → defaults (files-section resolver fails loud; the rest is non-critical) */
   }
   return {};
+}
+
+export interface CoordRunQualityConfigSource {
+  value: unknown;
+  invalid: boolean;
+  /** Stable digest seed that contains no config values when parsing failed. */
+  digest_seed: unknown;
+}
+
+/**
+ * Effective user-plus-project `coord.run_quality` value with parse diagnostics.
+ * The ordinary config reader stays fail-soft; this one lets the guard visibly
+ * disable itself rather than silently substituting defaults for malformed JSONC.
+ */
+export function coordRunQualityConfigSource(root: string): CoordRunQualityConfigSource {
+  const projectPath = join(root, ".harnery", "config.jsonc");
+  const userPath = userConfigPath();
+  const layers = [userPath, projectPath].map((path) => parseConfigLayer(path));
+  const invalid = layers.filter((layer) => layer.invalid);
+  if (invalid.length > 0) {
+    return {
+      value: undefined,
+      invalid: true,
+      digest_seed: invalid.map((layer) => ({
+        path_kind: layer.path_kind,
+        signature: layer.signature,
+      })),
+    };
+  }
+  const merged = mergeConfig(layers[0]!.config, layers[1]!.config);
+  return {
+    value: merged.coord?.run_quality,
+    invalid: false,
+    digest_seed: merged.coord?.run_quality,
+  };
+}
+
+function parseConfigLayer(path: string): {
+  config: HarneryConfig;
+  invalid: boolean;
+  path_kind: "user" | "project";
+  signature: string | null;
+} {
+  const pathKind = path === userConfigPath() ? "user" : "project";
+  const signature = statSignature(path);
+  if (signature === null) return { config: {}, invalid: false, path_kind: pathKind, signature };
+  try {
+    const value = JSON.parse(stripJsonComments(readFileSync(path, "utf8"))) as unknown;
+    if (isPlainObject(value)) {
+      return { config: value as HarneryConfig, invalid: false, path_kind: pathKind, signature };
+    }
+  } catch {
+    // The guard reports one bounded health event for this file signature.
+  }
+  return { config: {}, invalid: true, path_kind: pathKind, signature };
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -443,6 +529,65 @@ export function coordFreshnessSeconds(coordRoot?: string | null): number {
   const root = coordRoot ?? findCoordRoot();
   if (root) return posIntOr(readConfig(root).coord?.freshness_seconds, DEFAULT_FRESHNESS_SECS);
   return DEFAULT_FRESHNESS_SECS;
+}
+
+function parseWebPort(value: unknown, source: string): number {
+  const port = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new RangeError(`${source} must be an integer from 1024 through 65535`);
+  }
+  return port;
+}
+
+/**
+ * Resolve the standalone dashboard port.
+ *
+ * Precedence: explicit `--port` flag, `HARNERY_WEB_PORT`, merged
+ * `.harnery/config.jsonc` `web.port`, then the mnemonic built-in default 4276.
+ */
+export function resolveWebPort(explicitPort?: string, coordRoot?: string | null): number {
+  if (explicitPort !== undefined && explicitPort.trim() !== "") {
+    return parseWebPort(explicitPort, "--port");
+  }
+  const envPort = coordEnv("WEB_PORT");
+  if (envPort !== undefined && envPort.trim() !== "") {
+    return parseWebPort(envPort, "HARNERY_WEB_PORT");
+  }
+  const root = coordRoot ?? findCoordRoot();
+  const configuredPort = root ? readConfig(root).web?.port : undefined;
+  if (configuredPort !== undefined) {
+    return parseWebPort(configuredPort, "web.port");
+  }
+  return DEFAULT_WEB_PORT;
+}
+
+/** Policy for converging independent termination signals on one finalizer. */
+export function sessionFinalizationConfig(coordRoot?: string | null): SessionFinalizationConfig {
+  const root = coordRoot ?? findCoordRoot();
+  const configured = root ? readConfig(root).coord?.finalization : undefined;
+  const defaults = DEFAULT_SESSION_FINALIZATION_CONFIG;
+  const archiveGraceSeconds = posIntOr(
+    configured?.archive_grace_seconds,
+    defaults.archiveGraceSeconds,
+  );
+  const idleObserveSeconds = posIntOr(
+    configured?.idle_observe_seconds,
+    defaults.idleObserveSeconds,
+  );
+  const idleFinalizeSeconds = Math.max(
+    idleObserveSeconds,
+    posIntOr(configured?.idle_finalize_seconds, defaults.idleFinalizeSeconds),
+  );
+  return {
+    archiveGraceSeconds,
+    idleObserveSeconds,
+    idleFinalizeSeconds,
+    cascadeGraceSeconds: posIntOr(configured?.cascade_grace_seconds, defaults.cascadeGraceSeconds),
+    reconcileIntervalSeconds: posIntOr(
+      configured?.reconcile_interval_seconds,
+      defaults.reconcileIntervalSeconds,
+    ),
+  };
 }
 
 /**

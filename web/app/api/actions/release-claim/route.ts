@@ -21,5 +21,5 @@ export async function POST(req: Request): Promise<Response> {
   if (!safeOwnerId(instance_id)) {
     return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }
-  return Response.json(releaseClaim(instance_id, path));
+  return Response.json(await releaseClaim(instance_id, path));
 }

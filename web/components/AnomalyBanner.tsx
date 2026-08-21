@@ -27,9 +27,7 @@ export function AnomalyBanner({ anomalies }: { anomalies: Anomaly[] }) {
       <div
         className={
           "font-semibold mb-1 " +
-          (hasWarnings
-            ? "text-amber-800 dark:text-amber-300"
-            : "text-sky-800 dark:text-sky-300")
+          (hasWarnings ? "text-amber-800 dark:text-amber-300" : "text-sky-800 dark:text-sky-300")
         }
       >
         {hasWarnings ? "⚠ " : "ⓘ "}
@@ -60,9 +58,7 @@ export function AnomalyBanner({ anomalies }: { anomalies: Anomaly[] }) {
                 a.message
               )}
               {a.detail && (
-                <span className="ml-2 text-muted-foreground font-mono">
-                  ({a.detail})
-                </span>
+                <span className="ml-2 text-muted-foreground font-mono">({a.detail})</span>
               )}
             </span>
           </li>

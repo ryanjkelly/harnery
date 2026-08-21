@@ -15,7 +15,7 @@ import {
   acceptWorkItem,
   cancelWorkItem,
   createWorkItem,
-  listWorkItems,
+  listWorkItemsWithWarnings,
   readWorkItem,
   reconcileAllWorkItems,
   reconcileWorkItem,
@@ -114,16 +114,27 @@ export function registerWorkCommand(program: Command, emit: EmitContext): void {
     .option("--json", "Emit complete work records as JSON")
     .action((opts: { state?: string; json?: boolean }) => {
       withWorkRoot(emit, (coordRoot) => {
-        const records = listWorkItems(coordRoot).filter(
+        const result = listWorkItemsWithWarnings(coordRoot);
+        const records = result.records.filter(
           (record) => !opts.state || record.projection.state === opts.state,
         );
         if (opts.json) {
           emit.config({ format: "json" });
           emit.data(records);
-        } else if (records.length === 0) {
+          for (const warning of result.warnings) {
+            emit.log(renderWorkListWarning(warning.work_id, warning.reason), "warn");
+          }
+        } else if (records.length === 0 && result.warnings.length === 0) {
           emit.text("no durable work\n");
         } else {
-          emit.text(`${records.map(renderWorkRow).join("\n")}\n`);
+          emit.text(
+            `${[
+              ...records.map(renderWorkRow),
+              ...result.warnings.map((warning) =>
+                renderWorkListWarning(warning.work_id, warning.reason),
+              ),
+            ].join("\n")}\n`,
+          );
         }
       });
     });
@@ -326,7 +337,11 @@ function registerGovernanceCommand(
       // dispatch. Resolve the goal BEFORE touching the work item so a refusal leaves
       // nothing half-done.
       const goalId =
-        name === "reopen" ? findCompletedMissionGoverning(coordRoot, workId) : undefined;
+        name === "reopen"
+          ? findCompletedMissionGoverning(coordRoot, workId, (warning) => {
+              emit.log(renderGovernorEnumerationWarning(warning.goal_id, warning.reason), "warn");
+            })
+          : undefined;
       const record = fn(coordRoot, workId, {
         ...opts,
         ...(opts.finding?.length ? { findings: opts.finding } : {}),
@@ -430,6 +445,14 @@ function renderAttemptTranscriptError(error: string | undefined): string {
 function renderWorkRow(record: WorkRecord): string {
   const projection = record.projection;
   return `${record.intent.id}  ${projection.state.padEnd(17)}  ${renderAttemptBudget(record).padEnd(18)}  ${projection.next_action.padEnd(21)}  ${record.intent.title}`;
+}
+
+function renderWorkListWarning(workId: string, reason: string): string {
+  return `warning  ${workId}  unreadable: ${reason}`;
+}
+
+function renderGovernorEnumerationWarning(goalId: string, reason: string): string {
+  return `skipped unreadable governor ${goalId}: ${reason}`;
 }
 
 // `max_attempts` budgets CHARGED attempts (ADR 0046), so the budget is

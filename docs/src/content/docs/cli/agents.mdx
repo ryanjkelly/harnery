@@ -9,11 +9,10 @@ sidebar:
 harn agents <subcommand> [options]
 ```
 
-The window into the coordination layer. Every agent sharing a checkout writes a
-heartbeat to `.harnery/active/<instance_id>.json` carrying its name, session
-age, the files it has claimed, its last tool call, and a self-declared task.
-`harn agents` reads that state, plus the append-only event ledger at
-`.harnery/events.ndjson`, to answer the questions that keep parallel agents out
+The window into the coordination layer. Every agent sharing a checkout records a
+generation to the V3 event ledger and materializes a disposable cache at
+`.harnery/active/<instance_id>.json`. `harn agents` reads the authority-safe V3
+projection to answer the questions that keep parallel agents out
 of each other's way: who else is here, what are they holding, what is each one
 doing, and did anything go wrong.
 
@@ -33,8 +32,12 @@ harn agents whoami              # this agent's name + instance_id + files claime
 harn agents list                # all active agents (folds transients by default)
 harn agents status              # status box (name, age, files, peers, task)
 harn agents status --end-turn   # issue the box only after owned Git work is finalized
+harn agents status --end-turn --end-session # final status, then end after this turn closes
 harn agents set-task <text...>  # declare what you're working on (visible to peers)
 harn agents lifecycle <state>   # declare active, blocked, or done task lifecycle
+harn agents end                 # record an authoritative V3 end after final checks
+harn agents reconcile           # reconcile archive, idle, cascade, and host-loss signals
+harn agents reconcile --watch   # run the host supervisor loop
 harn agents identity assume <name-or-id> # continue a durable role in this session
 harn agents show <name>         # deep-dive on one peer: registry state + session history
 harn agents trace <name>        # reconstruct one agent's lifecycle from the event ledger
@@ -52,6 +55,17 @@ One further subtree lives under `agents` for advanced use: `harn agents identity
 `harn agents adapter-probe` diagnoses adapter wiring. Run
 `harn agents <sub> --help` for any of them. Councils are their own top-level
 command; see [Councils](/concepts/councils/).
+
+When an adapter session survives a WSL or coordination-state restart, recreate
+its heartbeat with the full session ID and the adapter that owns it:
+
+```bash
+harn agents heal --kind heartbeat --owner "$CODEX_THREAD_ID" \
+  --session-id "$CODEX_THREAD_ID" --adapter codex
+```
+
+The adapter matters: it keeps recovered presence, telemetry, and end-of-turn
+behavior attributed to Codex instead of the manual-heal default.
 
 ### identity assume
 
@@ -112,7 +126,10 @@ The three orientation commands.
   the required final call: Harnery checks the current session's held paths,
   enclosing submodule pointers, and touched repositories before issuing the
   box. Dirty held work or commits missing from a configured remote make the
-  command fail instead.
+  command fail instead. Add `--end-session` to the closing call to durably
+  request an approved terminal event after this exact turn closes. It requires
+  `--end-turn`; the status box reports `queued after this turn` while the stop
+  hook finishes the sequence.
 
 ### set-task
 
@@ -129,7 +146,7 @@ the operator to set as their adapter's session/tab title:
 ```json
 { "task": "Auth Refactor", "first_of_session": true,
   "suggested_session_name": "Agent Hollis - Auth Refactor",
-  "note": "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title." }
+  "note": "Next, before any prose or another tool call, send suggested_session_name verbatim by itself in a fenced code block." }
 ```
 
 `first_of_session: true` means exactly "this call produced the session name" —
@@ -138,24 +155,38 @@ not consume the naming window; the next non-empty declaration still names the
 session. The `--session-id` path names the session like any other call.
 Subagents and workflow children are never named.
 
-With hooks installed, Harnery injects a reminder on every prompt in Claude
-Code, Cursor, and Codex until the session has produced its name; it skips
-subagents and workflow children. The single focus declaration feeds both the
-peer-visible task and the tab name, so there's one source of truth. Reproduce
-`suggested_session_name` inside a fenced code block in your reply. Chat UIs add
-a one-click Copy button to code blocks, so the operator grabs the exact string
-without hand-selecting. Every later `set-task` returns
+With hooks installed, Harnery treats the suggestion as pending until the exact
+copyable block has been displayed. PostToolUse asks for that block as the next
+assistant text. PreToolUse rejects another tool while the name is pending:
+Claude Code and Codex verify transcript text, while Cursor verifies its native
+`agent_message`. The block must be the first non-whitespace content and contain
+only `suggested_session_name`. Chat UIs add a one-click Copy button, so the
+operator gets the exact title without hand-selecting.
+
+For transcript-backed adapters, the evidence boundary is the first assistant
+message after the mint result. Later commentary or a user prompt does not erase
+an exact display. If the adapter transcript is unavailable or has not flushed
+yet, Harnery reports the check as pending and allows the tool. A readable
+missing or malformed display is still denied.
+
+The gate always allows a single `agents set-task` or `agents status` command.
+Those are the ritual's repair and turn-closing paths, so the naming check must
+not block them. Shell control syntax disqualifies the exemption.
+
+The same pending comparison drives every prompt reminder, including the one
+terminal name re-mint when lifecycle becomes `done`. Subagents and workflow
+children are skipped. Every later ordinary `set-task` returns
 `first_of_session: false` and a null name.
 
 `set-task` never changes task lifecycle. If task text changes while the session
 is `blocked` or `done`, the command returns a warning to reopen the lifecycle
 explicitly. The new task text is still recorded.
 
-On Claude Code, the Stop hook additionally enforces the naming turn
-(`stop-hook.session_name`): the turn whose `set-task` produced the name must
-show it in the reply text. Cursor's Stop payload carries neither a transcript
-nor the assistant message, so the fence is undetectable there and the reminder
-stays soft; Codex Stop remains observe-only.
+The Stop-time fallback accepts only the first assistant message after the tool
+result that minted the name. A plain-text mention or a block printed after
+substantial work does not count. Claude Code can enforce that fallback;
+Cursor's Stop payload has no reply text, and Codex Stop remains observe-only.
+PreToolUse handles the check before those adapter differences matter.
 
 ### lifecycle
 
@@ -175,25 +206,61 @@ command fail without changing lifecycle or recording an event. The gate checks
 repository hygiene; it does not certify tests, deployment, or the business
 outcome.
 
-A successful transition records one durable `state.task_state` event and
+A successful transition records one durable `coord.lifecycle_changed` event and
 projects it into the live heartbeat. Repeating the same state and reason is a
 no-op, with no duplicate event. Moving away from `blocked` clears the old
 blocker reason. Subagents, transient processes, and workflow children cannot
 declare operator-facing lifecycle state.
 
-Each title-changing transition also returns a re-minted
-`suggested_session_name`:
+Lifecycle changes do not rename the session except when it becomes `done`.
+That transition returns the original session name with `[DONE] ` prepended:
 
 ```text
-active  -> Agent Hollis - Auth Refactor
-blocked -> [BLOCKED] - Agent Hollis - Auth Refactor
-done    -> [DONE] - Agent Hollis - Auth Refactor
+active  -> no title change
+blocked -> no title change
+done    -> [DONE] Agent Hollis - Auth Refactor
 ```
 
-The per-prompt reminder and Claude Code Stop rule remain active until the new
-name is observed. Titles are projections for people; editing a title never
-changes the underlying lifecycle. Pass `--session-id <id>` when the calling
-process cannot resolve its session anchor.
+The per-prompt reminder and display latch remain active until that terminal
+name is observed. Reopening a done session does not ask the agent to print or
+restore another title. Titles are projections for people; editing a title
+never changes the underlying lifecycle. Pass `--session-id <id>` when the
+calling process cannot resolve its session anchor.
+
+### end and reconcile
+
+`harn agents end` is a deliberate V3 session-finalization command. It refuses
+delegated children and unfinished Git claims. If the generation is already
+idle, it appends one approved `session.ended` event immediately. If the command
+runs inside an open turn or tool span, it durably queues the end for the stop
+hook. The request is bound to that turn and its existing spans; any new turn,
+tool request, delegation, or resume cancels it instead of terminating new work.
+Use `--session-id` or `--instance-id` when automatic identity resolution is
+unavailable.
+
+For an agent ending itself, prefer the one-command closing ritual:
+
+```bash
+harn agents status --end-turn --end-session
+```
+
+`harn agents reconcile` performs one crash-safe lifecycle pass. It discovers
+verified adapter archives, long-idle sessions, parent and run completion,
+delegated-agent completion, stale sweeps, duplicate live generations, and
+previously submitted host-loss observations. `--watch` repeats the pass at
+`coord.finalization.reconcile_interval_seconds`.
+
+Archive observations can also enter through:
+
+```bash
+harn agents observe-archive --adapter codex --session-id <native-id>
+harn agents observe-archive --adapter codex --session-id <native-id> --unarchived
+```
+
+Unarchiving or subsequent activity cancels the pending archive request. A host
+supervisor can submit a provisional loss signal with
+`observe-host-disappeared`; it cannot bypass the configured grace period. See
+[ADR 0077](/decisions/0077-multi-signal-session-finalization/).
 
 ### suggest-name
 
@@ -263,6 +330,14 @@ The layer's own diagnostics.
   detection, and anomalies. Built for a daily
   glance or dashboard ingestion. `--since <window>` sets the window (default
   `24h`); `--json` for structured output.
+  When the V3 event ledger is live, an `event ledger` section adds read-only
+  producer counters: open tool spans per live generation (flagging generations
+  whose turn has closed while spans stayed open — the orphan signature that
+  blocks a clean session end), pending finalization requests with trigger and
+  age, intake-spool depth, diagnostics-spool counts by category (with a
+  last-24h split), and span-count pressure against the producer-state cap. On
+  an unavailable or invalid V3 control state the section reports that failure
+  explicitly instead.
 - **`heal-events`** surfaces PIDMAP_HEAL telemetry: how often the pid-map
   self-heal had to correct drift. Sustained high counts point at an upstream
   process-spawn bug. `--since <window>` (default `7d`), `--limit <n>` (default
@@ -337,7 +412,7 @@ The gitlink check compares the commit recorded in parent `HEAD`, the parent
 index, and the child repository's `HEAD`. It does not treat unrelated modified
 or untracked files inside the child as a pointer change.
 
-Committed paths stay in scope through the session's `claim.acquire` history.
+Committed paths stay in scope through the session's `coord.claim_changed` history.
 The commit hook can release a clean active claim without letting an unpushed
 commit disappear from the final check.
 
@@ -365,6 +440,14 @@ glance:
 `task` is what you declared with `set-task`; `last turn` is an auto-generated
 summary of your previous turn; `peers` lists the other active agents with their
 adapter and file counts.
+
+When `coord.run_quality.mode` is `report`, status also performs a non-blocking
+due check and shows a `quality` line. A fresh snapshot can be `unknown`,
+`healthy`, `attention`, or `critical`, followed by up to three active signal
+IDs. Missing, expired, truncated, or insufficient evidence is `unknown`.
+`shadow` mode still evaluates and records snapshots but deliberately exposes no
+operator-facing severity. Run quality is advisory and cannot alter the status
+command's Git guard or any hook verdict.
 
 ## Notes
 

@@ -19,8 +19,7 @@ import { join } from "node:path";
 import { applyDetection } from "../../../lib/presence.ts";
 import { coordBinPath } from "../../agents/coord-bin.ts";
 
-export type { CaptureContext } from "./image-capture.ts";
-export { captureImages, imageJanitor } from "./image-capture.ts";
+export { captureImages, imageJanitor, recordImageArtifactsV3 } from "./image-capture.ts";
 
 /**
  * Play a notification sound via the cross-platform utility
@@ -142,40 +141,6 @@ export function runSessionSyncExtension(repoRoot: string, force: boolean): void 
     if (!existsSync(script)) return;
     const child = spawn("bash", [script, force ? "1" : "0"], {
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-  } catch {
-    // best-effort
-  }
-}
-
-/**
- * Fire the turn-summary extension (Haiku auto-summary of the turn → heartbeat
- * `turn_summary`). Detached + unref'd; it makes an Anthropic API call and must
- * never block the Stop hook. Claude-Code-only. The
- * script self-guards on ANTHROPIC_API_KEY / curl / jq / matching session.
- */
-export function runTurnSummary(
-  repoRoot: string,
-  owner: string,
-  sessionId: string,
-  transcriptPath: string | undefined,
-): void {
-  try {
-    if (!transcriptPath || !existsSync(transcriptPath)) return;
-    const script = join(
-      repoRoot,
-      "scripts",
-      "hooks",
-      "harness",
-      "claude-code",
-      "extensions",
-      "turn-summary.sh",
-    );
-    if (!existsSync(script)) return;
-    const child = spawn("bash", [script, owner, sessionId, transcriptPath], {
       detached: true,
       stdio: "ignore",
     });

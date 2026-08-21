@@ -2,7 +2,7 @@
  * Stale-sweep: prune dead heartbeats + orphaned pid-map + .last-peer-hash
  * files.
  *
- * Fires at session.start to clean up crashed-peer detritus before the new
+ * Runs after session.started to clean up crashed-peer detritus before the new
  * session's UX layer reads peer state.
  *
  * Freshness threshold defaults to 600s; configurable via the
@@ -13,7 +13,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
-import { emit } from "../events/emit.ts";
+import { recordLiveSweepObservationV3 } from "../live-lifecycle-v3.ts";
 
 /** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
 function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
@@ -22,7 +22,7 @@ function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "cod
   return "claude-code";
 }
 
-/** Emit a best-effort health.heartbeat_swept event. Telemetry only, never throws. */
+/** Record the sweep before deleting authority state. V3 ambiguity fails closed. */
 function emitSwept(
   coordRoot: string,
   instanceId: string,
@@ -30,19 +30,24 @@ function emitSwept(
   sessionId: string,
   reason: "stale" | "unparseable" | "missing_ts",
   ageSecs?: number,
-): void {
+): boolean {
   try {
-    emit(coordRoot, {
-      event_type: "health.heartbeat_swept",
-      instance_id: instanceId,
-      session_id: sessionId,
+    recordLiveSweepObservationV3({
+      coordRoot,
+      owner: instanceId,
+      nativeSessionId: sessionId,
       adapter,
-      source: "agent-coord",
-      data: { reason, ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}) },
-      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-    } as Parameters<typeof emit>[1]);
+      observation:
+        reason === "stale"
+          ? "stale_heartbeat"
+          : reason === "unparseable"
+            ? "unparseable_heartbeat"
+            : "missing_timestamp",
+      ageMs: Math.max(0, (ageSecs ?? 0) * 1_000),
+    });
+    return true;
   } catch {
-    /* telemetry only, never break the sweep */
+    return false;
   }
 }
 
@@ -68,7 +73,7 @@ export function staleSweep(coordRoot: string): {
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshness;
 
-  // 1. Prune stale heartbeats from the canonical `.harnery/active/` dir.
+  // 1. Prune stale rows from the disposable V3 coordination cache.
   //
   // Two deletion regimes, deliberately asymmetric:
   //   • Valid JSON with an OLD last_heartbeat → the legitimate dead/idle-agent
@@ -105,9 +110,14 @@ export function staleSweep(coordRoot: string): {
         // Unparseable: only reap if the file itself is mtime-old.
         if (mtimeSecs(path) < cutoff) {
           try {
+            const ageSecs = nowSec - mtimeSecs(path);
+            if (
+              !emitSwept(coordRoot, idFromFile, "claude-code", idFromFile, "unparseable", ageSecs)
+            ) {
+              continue;
+            }
             unlinkSync(path);
             heartbeatsRemoved.push(f);
-            emitSwept(coordRoot, idFromFile, "claude-code", idFromFile, "unparseable");
           } catch {
             /* swallow */
           }
@@ -125,9 +135,20 @@ export function staleSweep(coordRoot: string): {
       if (!parsed.last_heartbeat || !Number.isFinite(ts)) {
         // No / NaN last_heartbeat: can't trust content; gate on mtime.
         if (mtimeSecs(path) < cutoff) {
+          if (
+            !emitSwept(
+              coordRoot,
+              instanceId,
+              adapter,
+              sessionId,
+              "missing_ts",
+              nowSec - mtimeSecs(path),
+            )
+          ) {
+            continue;
+          }
           unlinkSync(path);
           heartbeatsRemoved.push(f);
-          emitSwept(coordRoot, instanceId, adapter, sessionId, "missing_ts");
         } else if (parsed.instance_id) {
           liveInstanceIds.add(parsed.instance_id);
         }
@@ -136,9 +157,11 @@ export function staleSweep(coordRoot: string): {
 
       if (ts < cutoff) {
         // Legitimate stale prune (valid timestamp, past the freshness cutoff).
+        if (!emitSwept(coordRoot, instanceId, adapter, sessionId, "stale", nowSec - ts)) {
+          continue;
+        }
         unlinkSync(path);
         heartbeatsRemoved.push(f);
-        emitSwept(coordRoot, instanceId, adapter, sessionId, "stale", nowSec - ts);
         continue;
       }
 

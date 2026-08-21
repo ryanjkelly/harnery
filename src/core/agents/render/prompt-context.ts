@@ -3,7 +3,7 @@
  * council-pending hash-dedup, the cross-adapter first-session naming nudge,
  * the Cursor/Codex set-task staleness nudge, and the Codex status-footer
  * reminder.
- * agent-hook's user_prompt.submit post-emit handler calls this
+ * agent-hook's turn.started post-emit handler calls this
  * and forwards the result as the adapter-shaped additionalContext payload.
  *
  * Four subsections combined into one additionalContext payload:
@@ -12,9 +12,9 @@
  *      + sorted(files_touched) + platform, sorted by instance_id).
  *   2. Council pending: pending open-council IDs hashed; re-emits when the
  *      ID set changes.
- *   3. Focus nudge. Until the session has produced its suggested name (first
- *      non-empty set-task), tells every adapter — on every prompt, undeduped —
- *      to reproduce set-task's suggested session name in a fenced code block.
+ *   3. Focus nudge. Until the session has displayed its current suggested
+ *      name, tells every adapter on every prompt to send the exact fenced block
+ *      before prose or another tool call.
  *      Cursor/Codex additionally get the existing unset/stale-task reminder
  *      because their Stop hooks do not enforce task declarations as reliably
  *      as Claude Code's.
@@ -45,6 +45,11 @@ import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
 import { endOfTurnStatusCommand, resolveBinName } from "../../config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
+import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
+import {
+  readLiveCoordinationRow,
+  readLiveCoordinationRows,
+} from "../state/live-coordination-view.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
 import { formatPendingCouncils } from "./session-context.ts";
 
@@ -55,18 +60,15 @@ interface HeartbeatRow {
   session_id?: string;
   started_at?: string;
   last_heartbeat?: string;
-  last_tool?: string;
-  last_tool_target?: string;
   files_touched?: string[];
   platform?: string;
   task?: string;
   activity?: AgentActivity;
   task_state?: TaskState;
   task_state_reason?: string;
-  task_updated_at?: string;
+  task_updated_at?: string | null;
   suggested_session_name?: string;
   session_name_seen_for?: string;
-  turn_summary?: string;
   workflow_run_id?: string;
 }
 
@@ -160,7 +162,7 @@ function renderTurnRitualReminder(
   selfInstanceId: string,
   adapter: string,
 ): string {
-  const hb = readHeartbeat(join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`));
+  const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);
   if (!hb || hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) return "";
 
   const bin = resolveBinName(coordRoot);
@@ -178,7 +180,7 @@ function renderTurnRitualReminder(
 }
 
 function renderStatusFooterReminder(coordRoot: string, selfInstanceId: string): string {
-  const hb = readHeartbeat(join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`));
+  const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);
   if (!hb || hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) return "";
 
   const statusCommand = endOfTurnStatusCommand(coordRoot);
@@ -200,14 +202,8 @@ function computeFocusNudgeIfChanged(
   selfInstanceId: string,
   opts: { sessionNameNudge: boolean; taskNudge: boolean },
 ): string {
-  const hbPath = join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`);
-  if (!existsSync(hbPath)) return "";
-  let hb: HeartbeatRow;
-  try {
-    hb = JSON.parse(readFileSync(hbPath, "utf8"));
-  } catch {
-    return "";
-  }
+  const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);
+  if (!hb) return "";
 
   const hashFile = join(coordRoot, ".harnery", `.last-task-nudge-hash.${selfInstanceId}`);
   // Subagents and workflow children have no human-owned session/tab to rename.
@@ -223,20 +219,16 @@ function computeFocusNudgeIfChanged(
   let message = "";
   let nudgeKind = "";
 
-  if (
-    opts.sessionNameNudge &&
-    (!hb.suggested_session_name ||
-      (hb.session_name_seen_for !== undefined &&
-        hb.suggested_session_name !== hb.session_name_seen_for))
-  ) {
+  const pendingSessionName = sessionNameDisplayPending(hb);
+  if (opts.sessionNameNudge && (!hb.suggested_session_name || pendingSessionName)) {
     // Keyed on "a name was ever produced", not task_updated_at: a bare clear
     // as the first declaration must not end the naming window.
     needsNudge = true;
     nudgeKind = "session-name";
-    message = hb.suggested_session_name
-      ? `This session's lifecycle changed its suggested name. Reproduce this value by itself inside a fenced code block at the very top of your reply so the operator can one-click-copy it as the session/tab title: ${hb.suggested_session_name}`
+    message = pendingSessionName
+      ? `This session name is still pending display. Before any prose or another tool call, send this exact block as your next assistant text:\n\n${sessionNameDisplayBlock(pendingSessionName)}`
       : `This session has no name yet: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
-        "When it returns `first_of_session: true`, reproduce its `suggested_session_name` value by itself inside a fenced code block at the very top of your reply so the operator can one-click-copy it as the session/tab title. " +
+        "When it returns `first_of_session: true`, send its `suggested_session_name` as the exact fenced block requested by the PostToolUse instruction before any prose or another tool call. " +
         "Then continue with the task; that `set-task` also satisfies this turn's focus declaration.";
   } else if (opts.taskNudge && !taskValue) {
     needsNudge = true;
@@ -287,25 +279,21 @@ function computePeerTableIfChanged(
   selfInstanceId: string,
   selfSessionIdFallback: string,
 ): string {
-  const activeDir = join(coordRoot, ".harnery", "active");
-  if (!existsSync(activeDir)) return "";
-
   // Read self heartbeat for session_id (group key); fall back to the caller's hint.
   let mySessionId = selfSessionIdFallback;
-  const selfHb = readHeartbeat(join(activeDir, `${selfInstanceId}.json`));
+  const rows = readLiveCoordinationRows(coordRoot);
+  const selfHb = readLiveCoordinationRow(coordRoot, selfInstanceId);
   if (selfHb?.session_id) mySessionId = selfHb.session_id;
   if (!mySessionId) return "";
 
-  // Collect peer heartbeats.
-  const peers: HeartbeatRow[] = [];
-  for (const f of readdirSync(activeDir)) {
-    if (!f.endsWith(".json")) continue;
-    const hb = readHeartbeat(join(activeDir, f));
-    if (!hb?.instance_id || hb.instance_id === selfInstanceId) continue;
-    peers.push(hb);
-  }
+  // Collect peers from the selected ledger route. Under V3 this is the
+  // canonical projection, never the legacy active directory.
+  const peers: HeartbeatRow[] = rows.filter(
+    (heartbeat) => heartbeat.instance_id && heartbeat.instance_id !== selfInstanceId,
+  );
   // Cross-machine presence (ADR 0016): sessions on other machines, from the
-  // locally-fetched presence refs. Advisory (no claim blocking in v1).
+  // locally-fetched presence refs. Advisory only; remote presence never grants
+  // claim authority.
   const remote = readRemoteMachinesSafe(coordRoot);
   if (peers.length === 0 && remote.length === 0) return "";
 
@@ -448,14 +436,6 @@ function computeCouncilPendingIfChanged(
 
 /* ---------- helpers ---------- */
 
-function readHeartbeat(path: string): HeartbeatRow | null {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as HeartbeatRow;
-  } catch {
-    return null;
-  }
-}
-
 function safeRead(path: string): string {
   try {
     return readFileSync(path, "utf8").trim();
@@ -555,12 +535,10 @@ function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number
   const startedSec = parseIsoSec(r.started_at) ?? parseIsoSec(r.last_heartbeat);
   const ageFrom = startedSec === null ? "age unknown" : fmtAge(nowSec - startedSec);
   const filesPart = fmtFiles(r.display_files);
-  const lastActivity = fmtLastActivity(r, nowSec);
-  const turnSummary = r.turn_summary ? `\n    last turn: ${r.turn_summary.slice(0, 80)}` : "";
   // Prefer a short instance_id over a bare "unknown" so an incomplete row is
   // still identifiable.
   const label = r.name ?? (r.instance_id ? r.instance_id.slice(0, 8) : "unknown");
-  return `  - agent-${label}${taskPart}   (${statePart}, ${ageFrom}, ${filesPart}${lastActivity})${turnSummary}`;
+  return `  - agent-${label}${taskPart}   (${statePart}, ${ageFrom}, ${filesPart})`;
 }
 
 function formatState(r: HeartbeatRow): string {
@@ -575,15 +553,6 @@ function fmtFiles(files: string[]): string {
   if (files.length === 0) return "nothing yet";
   if (files.length <= 3) return `holds: ${files.join(", ")}`;
   return `holds: ${files.slice(0, 3).join(", ")}, +${files.length - 3} more`;
-}
-
-function fmtLastActivity(r: HeartbeatRow, nowSec: number): string {
-  if (!r.last_tool) return "";
-  const lastTs = parseIsoSec(r.last_heartbeat) ?? parseIsoSec(r.started_at);
-  const tail = r.last_tool_target ? ` ${r.last_tool_target.slice(0, 60)}` : "";
-  // No valid timestamp → render the tool without an absurd age.
-  if (lastTs === null) return `, last: ${r.last_tool}${tail}`;
-  return `, last: ${r.last_tool}${tail} ${fmtAge(nowSec - lastTs)}`;
 }
 
 /** Epoch-seconds for an ISO string, or null when missing/unparseable (so callers

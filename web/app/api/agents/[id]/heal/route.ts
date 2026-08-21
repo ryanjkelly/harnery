@@ -1,5 +1,5 @@
-import { healAgent, safeOwnerId } from "@/lib/coord-writer";
 import { readAgent } from "@/lib/coord-reader";
+import { healAgent, safeOwnerId } from "@/lib/coord-writer";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -22,11 +22,8 @@ export async function POST(
   }
 
   const kind = String(body.kind ?? "");
-  if (kind !== "pidmap" && kind !== "heartbeat" && kind !== "kill") {
-    return Response.json(
-      { error: "kind must be one of: pidmap, heartbeat, kill" },
-      { status: 400 },
-    );
+  if (kind !== "cache") {
+    return Response.json({ error: "kind must be: cache" }, { status: 400 });
   }
 
   const result = await healAgent(instanceId, kind);
@@ -41,8 +38,7 @@ export async function POST(
     );
   }
 
-  // Post-heal heartbeat snapshot: `kill` returns null; the others return the
-  // new shape so the client can verify the mutation landed.
+  // Post-repair V3 projection so the client can verify the derived cache landed.
   const after = readAgent(instanceId);
   return Response.json(
     { ok: true, action: `heal-${kind}`, instance_id: instanceId, after },

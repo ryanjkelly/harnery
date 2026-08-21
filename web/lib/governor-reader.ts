@@ -1,12 +1,12 @@
 import {
-  listGovernors,
-  readGovernor,
-  readGovernorServiceStatus,
   type GovernorPlanRecord,
   type GovernorPlanReviewStatus,
   type GovernorRecord,
   type GovernorServiceStatus,
   type GovernorState,
+  listGovernors,
+  readGovernor,
+  readGovernorServiceStatus,
 } from "harnery/core/governor/state";
 
 type BadgeVariant = "muted" | "info" | "success" | "warning" | "destructive";
@@ -57,9 +57,7 @@ export function readGovernorBackgroundService(root: string): GovernorServiceStat
   return readGovernorServiceStatus(root);
 }
 
-export function governorPlanDashboardStatus(
-  plan: GovernorPlanRecord,
-): GovernorPlanDashboardStatus {
+export function governorPlanDashboardStatus(plan: GovernorPlanRecord): GovernorPlanDashboardStatus {
   if (plan.status === "attention" && plan.review && plan.review.status !== "passed") {
     return {
       state: reviewedProposalState(plan.review.status),

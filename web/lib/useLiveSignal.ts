@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
-export type LiveStatus = "connecting" | "live" | "polling" | "reconnecting";
+import { createLiveSignalController, type LiveSignalStatus } from "./live-signal-controller";
+
+export type LiveStatus = LiveSignalStatus;
 
 export interface LiveSignalOptions {
   /**
@@ -54,7 +56,6 @@ const DEFAULT_WATCHDOG_MS = 5_000;
 const DEFAULT_STALE_MS = 60_000;
 const DEFAULT_POLL_MS = 5_000;
 const DEFAULT_MAX_RETRIES = 3;
-const RECONNECT_DELAY_MS = 1_000;
 
 /**
  * Shared live-update primitive for the Harnery viewer. Owns the SSE connection
@@ -94,164 +95,46 @@ export function useLiveSignal(opts: LiveSignalOptions): LiveStatus {
   const fetchOnFallbackStart = opts.fetchOnFallbackStart ?? false;
 
   useEffect(() => {
-    let es: EventSource | null = null;
-    let cancelled = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let initialWatchdog: ReturnType<typeof setTimeout> | null = null;
-    let activityTimer: ReturnType<typeof setTimeout> | null = null;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
-    let lastVersion: string | null = null;
-    let retries = 0;
-
-    const clearTimer = (t: ReturnType<typeof setTimeout> | null): null => {
-      if (t) clearTimeout(t);
-      return null;
-    };
-    function stopPolling(): void {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
-    }
-    function closeStream(): void {
-      reconnectTimer = clearTimer(reconnectTimer);
-      initialWatchdog = clearTimer(initialWatchdog);
-      activityTimer = clearTimer(activityTimer);
-      es?.close();
-      es = null;
-    }
-    function teardown(): void {
-      closeStream();
-      stopPolling();
-    }
-
-    // ── polling fallback ──────────────────────────────────────────────────
-    async function pollOnce(): Promise<void> {
-      try {
-        const res = await fetch(versionUrl, { cache: "no-store" });
-        if (cancelled || !res.ok) return;
-        const { v } = (await res.json()) as { v: string };
-        if (cancelled) return;
-        if (lastVersion === null) {
-          // First tick after fallback: current data is already on screen, so
-          // just record the baseline; don't refresh (no flicker when idle).
-          lastVersion = v;
-          return;
-        }
-        if (v !== lastVersion) {
-          lastVersion = v;
-          onFallbackRef.current();
-        }
-      } catch {
-        // transient: try again next tick
-      }
-    }
-    function startPolling(): void {
-      if (cancelled || pollTimer) return;
-      closeStream();
-      setStatus("polling");
-      lastVersion = null;
-      // Consumers with no SSR seed (empty initial snapshot, e.g. /live) populate
-      // now; consumers that already rendered their data skip this and stay
-      // flash-free until something actually changes.
-      if (fetchOnFallbackStart) onFallbackRef.current();
-      void pollOnce(); // establish baseline now (no refresh)
-      pollTimer = setInterval(() => void pollOnce(), pollMs);
-    }
-
-    // ── stream lifecycle ──────────────────────────────────────────────────
-    function bumpActivity(): void {
-      activityTimer = clearTimer(activityTimer);
-      activityTimer = setTimeout(() => {
-        // Live, then went silent past the heartbeat interval → the connection
-        // died without an error event. Reconnect; if the fresh stream is also
-        // silent the initial watchdog will fall us back to polling.
-        scheduleReconnect();
-      }, staleMs);
-    }
-    function markLive(): void {
-      retries = 0;
-      initialWatchdog = clearTimer(initialWatchdog);
-      stopPolling();
-      setStatus("live");
-      bumpActivity();
-    }
-    function scheduleReconnect(): void {
-      closeStream();
-      if (cancelled) return;
-      setStatus((prev) => (prev === "live" ? "reconnecting" : prev));
-      reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
-    }
-    function connect(): void {
-      if (!enabled || !streamUrl) return;
-      if (cancelled || es || pollTimer) return;
-      // Don't hold a socket while the tab is backgrounded. Next dev is HTTP/1.1
-      // (≤6 connections per host) and every viewer tab holds one of these, so
-      // background tabs would starve the foreground tab's loads. Reconnect on
-      // return.
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        setStatus("connecting");
-        return;
-      }
-      const source = new EventSource(streamUrl);
-      es = source;
-
-      // Arm the initial watchdog only once the connection is established
-      // (headers received). Through the tunnel `onopen` fires but no data
-      // follows → watchdog → poll. Locally a cold dev-compile delays `onopen`,
-      // so gating on it avoids a false fallback while the route compiles.
-      source.onopen = () => {
-        initialWatchdog = clearTimer(initialWatchdog);
-        initialWatchdog = setTimeout(startPolling, watchdogMs);
-      };
-
-      // Attach a listener per registered event name; dispatch to the latest
-      // handler via the ref so we never hold a stale closure.
-      for (const name of Object.keys(eventsRef.current)) {
-        source.addEventListener(name, (ev) => {
-          markLive();
-          eventsRef.current[name]?.(ev as MessageEvent);
-        });
-      }
-      // The hook owns server-initiated reconnects so consumers don't each
-      // reimplement it. (A consumer-supplied `stale` handler still runs, above.)
-      source.addEventListener("stale", () => scheduleReconnect());
-
-      source.onerror = () => {
-        // Browsers fire onerror on transport drop. (A tunnel-buffered stream
-        // never does; the initial watchdog covers that.)
-        setStatus((prev) => (prev === "live" ? "reconnecting" : prev));
-        closeStream();
-        if (cancelled) return;
-        retries += 1;
-        if (retries >= maxRetries) {
-          startPolling(); // give up on SSE
-          return;
-        }
-        reconnectTimer = setTimeout(connect, Math.min(30_000, 1000 * 2 ** retries));
-      };
-    }
-
-    function onVisibility(): void {
-      if (document.visibilityState === "hidden") {
-        teardown();
-        setStatus("connecting");
-      } else {
-        // Re-probe SSE from journal on return (network path may have changed).
-        retries = 0;
-        teardown();
-        setStatus("connecting");
-        connect();
-      }
-    }
-
-    connect();
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      cancelled = true;
-      document.removeEventListener("visibilitychange", onVisibility);
-      teardown();
-    };
+    const controller = createLiveSignalController(
+      {
+        streamUrl,
+        versionUrl,
+        watchdogMs,
+        staleMs,
+        pollMs,
+        maxRetries,
+        enabled,
+        fetchOnFallbackStart,
+        eventNames: () => Object.keys(eventsRef.current),
+        onEvent: (name, event) => eventsRef.current[name]?.(event as MessageEvent),
+        onFallbackChange: () => onFallbackRef.current(),
+        onStatus: setStatus,
+      },
+      {
+        createSource: (url) => new EventSource(url),
+        fetchVersion: async (url) => {
+          try {
+            const response = await fetch(url, { cache: "no-store" });
+            if (!response.ok) return undefined;
+            const body = (await response.json()) as { v?: unknown };
+            return typeof body.v === "string" ? body.v : undefined;
+          } catch {
+            return undefined;
+          }
+        },
+        setTimeout: (callback, ms) => setTimeout(callback, ms),
+        clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+        setInterval: (callback, ms) => setInterval(callback, ms),
+        clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
+        visibility: () => (document.visibilityState === "hidden" ? "hidden" : "visible"),
+        onVisibilityChange: (callback) => {
+          document.addEventListener("visibilitychange", callback);
+          return () => document.removeEventListener("visibilitychange", callback);
+        },
+      },
+    );
+    controller.start();
+    return () => controller.stop();
   }, [
     streamUrl,
     versionUrl,

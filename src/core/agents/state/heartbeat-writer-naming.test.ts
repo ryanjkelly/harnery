@@ -9,7 +9,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildSuggestedName, setTask, stampSessionNameSeen } from "./heartbeat-writer.ts";
+import {
+  buildSuggestedName,
+  readHeartbeat,
+  setTask,
+  stampSessionNameSeen,
+} from "./heartbeat-writer.ts";
 
 let root: string;
 let activeDir: string;
@@ -36,7 +41,7 @@ function seed(extra: Record<string, unknown> = {}): void {
   writeFileSync(
     join(activeDir, "self.json"),
     JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       instance_id: "self",
       name: "Maya",
       kind: "session",
@@ -53,6 +58,11 @@ function seed(extra: Record<string, unknown> = {}): void {
 function readSelf(): Record<string, unknown> {
   return JSON.parse(readFileSync(join(activeDir, "self.json"), "utf8"));
 }
+
+test("heartbeat paths reject traversal before touching the filesystem", () => {
+  expect(() => readHeartbeat(root, "../outside")).toThrow(/instance_id/);
+  expect(() => readHeartbeat(root, "nested/owner")).toThrow(/instance_id/);
+});
 
 describe("setTask session naming", () => {
   test("first non-empty declaration builds and stamps the name", () => {
@@ -110,7 +120,7 @@ describe("stampSessionNameSeen", () => {
 
   // The sighting has to record WHICH name it was for. Keyed on the timestamp
   // alone, a re-minted suggested name inherits the earlier sighting, the
-  // turn.stop scan stays off forever, `session_name_present` is never emitted
+  // turn.completed scan stays off forever, `session_name_present` is never emitted
   // again, and the Stop-hook naming rule blocks every reply from then on --
   // including the reply that reproduced the name it asked for.
   test("records which name the sighting was for, and re-records on a new name", () => {

@@ -9,9 +9,9 @@
  * Codex `.codex/hooks.json`).
  */
 
-export type { Adapter as AdapterId } from "../events/schema.ts";
+export type { Adapter as AdapterId } from "../../adapter.ts";
 
-import type { Adapter as AdapterId } from "../events/schema.ts";
+import type { Adapter as AdapterId } from "../../adapter.ts";
 
 export interface HookEvent {
   /** Key under the adapter settings file's `hooks` map (e.g. `SessionStart`, `preToolUse`). */
@@ -55,6 +55,7 @@ export interface AdapterSpec {
 export const CLAUDE_CODE_EVENTS: HookEvent[] = [
   { settingsKey: "SessionStart", subcommand: "session-start" },
   { settingsKey: "UserPromptSubmit", subcommand: "user-prompt-submit" },
+  { settingsKey: "PermissionRequest", subcommand: "permission-request" },
   { settingsKey: "Stop", subcommand: "stop" },
   { settingsKey: "StopFailure", subcommand: "stop-failure" },
   { settingsKey: "SessionEnd", subcommand: "session-end" },
@@ -64,22 +65,28 @@ export const CLAUDE_CODE_EVENTS: HookEvent[] = [
   { settingsKey: "PostToolUse", subcommand: "post-tool-use" },
   { settingsKey: "PostToolUseFailure", subcommand: "post-tool-use-failure" },
   { settingsKey: "PreCompact", subcommand: "pre-compact" },
+  { settingsKey: "PostCompact", subcommand: "post-compact" },
 ];
 
 /**
  * Cursor: `.cursor/hooks.json`. camelCase event keys; flat `{ command }` entries;
- * no `StopFailure` event, but a distinct `beforeShellExecution` (shell-mutation warn).
+ * no `StopFailure` event. Generic tool hooks remain useful in the IDE, while
+ * shell-specific hooks are also installed because remote/CLI modes do not
+ * dispatch generic tool hooks consistently. V3 deduplicates overlapping shell
+ * deliveries by a private command fingerprint.
  */
 export const CURSOR_EVENTS: HookEvent[] = [
   { settingsKey: "sessionStart", subcommand: "session-start" },
   { settingsKey: "sessionEnd", subcommand: "session-end" },
   { settingsKey: "preToolUse", subcommand: "pre-tool-use" },
-  { settingsKey: "beforeShellExecution", subcommand: "before-shell-execution" },
   { settingsKey: "postToolUse", subcommand: "post-tool-use" },
   { settingsKey: "postToolUseFailure", subcommand: "post-tool-use-failure" },
+  { settingsKey: "beforeShellExecution", subcommand: "before-shell-execution" },
+  { settingsKey: "afterShellExecution", subcommand: "after-shell-execution" },
   { settingsKey: "subagentStart", subcommand: "sub-agent-start" },
   { settingsKey: "subagentStop", subcommand: "sub-agent-stop" },
   { settingsKey: "beforeSubmitPrompt", subcommand: "user-prompt-submit" },
+  { settingsKey: "preCompact", subcommand: "pre-compact" },
   { settingsKey: "stop", subcommand: "stop" },
 ];
 
@@ -95,16 +102,16 @@ export const CODEX_EVENTS: HookEvent[] = [
   { settingsKey: "PreCompact", subcommand: "pre-compact" },
   { settingsKey: "PostCompact", subcommand: "post-compact" },
   { settingsKey: "Stop", subcommand: "stop" },
+  { settingsKey: "SessionEnd", subcommand: "session-end" },
 ];
 
 /** Entries written by harnery before Codex adopted a strict native hook schema. */
 export const LEGACY_CODEX_EVENTS: HookEvent[] = [
-  { settingsKey: "SessionEnd", subcommand: "session-end" },
   { settingsKey: "PostToolUseFailure", subcommand: "post-tool-use-failure" },
   { settingsKey: "StopFailure", subcommand: "stop-failure" },
 ];
 
-/** Every hook key accepted by Codex 0.144, including events harnery does not consume. */
+/** Every hook key accepted by Codex's current native hook schema. */
 export const CODEX_ALLOWED_EVENT_KEYS = [
   "SessionStart",
   "PreToolUse",
@@ -116,6 +123,7 @@ export const CODEX_ALLOWED_EVENT_KEYS = [
   "SubagentStart",
   "SubagentStop",
   "Stop",
+  "SessionEnd",
 ];
 
 /** Every supported adapter, fully wireable by `harn init`. */

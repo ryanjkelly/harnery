@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { NavBar } from "@/components/NavBar";
-import { NewCouncilForm, type AgentRegistryRow } from "@/components/NewCouncilForm";
+import { type AgentRegistryRow, NewCouncilForm } from "@/components/NewCouncilForm";
 import { coordRoot, readAgents } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +10,7 @@ const STALE_AGE_SECONDS = 5 * 60;
 
 /**
  * Server-rendered new-council page. Loads the current agent registry from
- * `.harnery/active/*.json` and hands it to the client form. Submission goes
+ * the authoritative V3 coordination projection and hands it to the client form. Submission goes
  * to POST /api/councils which shells through to `harn agents council create`.
  *
  * Preselect via `?objective=<encoded>`: the /council skill's create mode
@@ -31,9 +31,7 @@ export default async function NewCouncilPage({
   const rows: AgentRegistryRow[] = [...snap.active, ...snap.stale]
     .filter((hb) => hb.name && hb.name.length > 0)
     .map((hb) => {
-      const bare = hb.name.startsWith("agent-")
-        ? hb.name.slice("agent-".length)
-        : hb.name;
+      const bare = hb.name.startsWith("agent-") ? hb.name.slice("agent-".length) : hb.name;
       return {
         name: bare,
         instance_id: hb.instance_id,
@@ -75,19 +73,14 @@ export default async function NewCouncilPage({
         <header className="mb-6">
           <h1 className="text-xl font-semibold tracking-tight">New council</h1>
           <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-            Pick members + steward + (optional) target doc. Submitting creates
-            the council via{" "}
-            <code className="font-mono text-xs">harn agents council create</code>{" "}
-            and routes you to its detail page. Members get pinged via their
-            journals if currently active; others see the invite on next
-            SessionStart.
+            Pick members + steward + (optional) target doc. Submitting creates the council via{" "}
+            <code className="font-mono text-xs">harn agents council create</code> and routes you to
+            its detail page. Members get pinged via their journals if currently active; others see
+            the invite on next SessionStart.
           </p>
         </header>
 
-        <NewCouncilForm
-          initialObjective={initialObjective}
-          agents={dedupedAgents}
-        />
+        <NewCouncilForm initialObjective={initialObjective} agents={dedupedAgents} />
       </main>
     </>
   );

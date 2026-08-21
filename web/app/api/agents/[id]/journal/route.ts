@@ -2,8 +2,8 @@ import {
   appendJournalEntry,
   editJournal,
   JOURNAL_CATEGORIES,
-  safeOwnerId,
   type JournalCategory,
+  safeOwnerId,
 } from "@/lib/coord-writer";
 
 export const dynamic = "force-dynamic";
@@ -54,16 +54,9 @@ export async function POST(
     );
   }
 
-  const result = appendJournalEntry(
-    instanceId,
-    category as JournalCategory,
-    body,
-  );
+  const result = appendJournalEntry(instanceId, category as JournalCategory, body);
   if (!result.ok) {
-    return Response.json(
-      { error: result.error ?? "append failed" },
-      { status: 500 },
-    );
+    return Response.json({ error: result.error ?? "append failed" }, { status: 500 });
   }
   return Response.json(
     {
@@ -94,8 +87,7 @@ export async function PUT(
   }
 
   const newBody = typeof body.body === "string" ? body.body : "";
-  const summary =
-    typeof body.summary === "string" ? body.summary : "edited via web UI";
+  const summary = typeof body.summary === "string" ? body.summary : "edited via web UI";
 
   if (newBody.length === 0) {
     return Response.json(

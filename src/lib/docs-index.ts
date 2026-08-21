@@ -30,6 +30,10 @@ import { readDocStatusFromText } from "./docs-frontmatter.ts";
  * Idempotent: safe to run on every commit. Reads the first ~30 lines of
  * each dated file to extract title and (for issues) status.
  *
+ * Targets: the host root, every initialized git submodule, and first-level
+ * in-tree packages that keep `docs/audits` or `docs/issues` without being
+ * git submodules. Marker rules are unchanged.
+ *
  * Preserves hand-written preambles. The command updates only the section
  * between `<!-- BEGIN INDEX -->` and `<!-- END INDEX -->` markers. If a
  * README exists without markers, the command refuses to overwrite it and
@@ -165,12 +169,38 @@ function buildNewReadme(kind: "audits" | "issues", body: string): string {
   return `${defaultPreamble(kind)}\n${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
 }
 
-export async function runIndex(opts: IndexOpts): Promise<IndexResult[]> {
-  const targets: { name: string; path: string }[] = [{ name: "(root)", path: REPO_ROOT }];
+const SKIP_NESTED_DIR_NAMES = new Set(["node_modules", "dist", "target"]);
+
+function hasIndexableDocs(path: string): boolean {
+  return existsSync(join(path, "docs", "audits")) || existsSync(join(path, "docs", "issues"));
+}
+
+/** Root + initialized submodules + first-level in-tree packages with docs indexes. */
+export function collectIndexTargets(): { name: string; path: string }[] {
+  const byPath = new Map<string, { name: string; path: string }>();
+  const add = (name: string, path: string) => {
+    byPath.set(path, { name, path });
+  };
+  add("(root)", REPO_ROOT);
   for (const name of SUBMODULES) {
     if (!isSubmoduleInitialized(name)) continue;
-    targets.push({ name, path: submodulePath(name) });
+    add(name, submodulePath(name));
   }
+  if (!existsSync(REPO_ROOT)) return [...byPath.values()];
+  for (const ent of readdirSync(REPO_ROOT, { withFileTypes: true })) {
+    if (!ent.isDirectory() && !ent.isSymbolicLink()) continue;
+    if (ent.name.startsWith(".")) continue;
+    if (SKIP_NESTED_DIR_NAMES.has(ent.name)) continue;
+    if (isSubmoduleInitialized(ent.name)) continue;
+    const child = join(REPO_ROOT, ent.name);
+    if (!hasIndexableDocs(child)) continue;
+    add(ent.name, child);
+  }
+  return [...byPath.values()];
+}
+
+export async function runIndex(opts: IndexOpts): Promise<IndexResult[]> {
+  const targets = collectIndexTargets();
 
   const filter = opts.repo === "." ? "(root)" : opts.repo;
   const filtered = filter ? targets.filter((t) => t.name === filter) : targets;

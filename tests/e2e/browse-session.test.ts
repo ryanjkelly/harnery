@@ -33,7 +33,9 @@ async function startHost(): Promise<{
   origin: string;
   descriptor: BrowserSessionDescriptor;
 }> {
-  const dir = privateDir("harnery-session-e2e-");
+  // Keep the macOS /var/folders prefix plus the random socket suffix below
+  // the Unix-domain socket path limit enforced by session-control.
+  const dir = privateDir("hse2e-");
   const controlFile = join(dir, "control.json");
   const profile = join(dir, "profile");
   const child = spawn(process.execPath, [fixtureHost, controlFile, profile], {

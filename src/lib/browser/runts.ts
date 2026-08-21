@@ -129,7 +129,7 @@ export function buildRuntsCheck(): (args: {
       scanned++;
 
       // Map every word to its visual line by rounding the Range rect top.
-      const lines = new Map<number, { words: string[]; last: DOMRect }>();
+      const lines = new Map<number, { words: string[]; last: DOMRect; node: Node }>();
       const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
       for (let n = tw.nextNode(); n; n = tw.nextNode()) {
         const value = n.nodeValue ?? "";
@@ -144,8 +144,9 @@ export function buildRuntsCheck(): (args: {
           if (entry) {
             entry.words.push(m[0]);
             entry.last = rect;
+            entry.node = n;
           } else {
-            lines.set(top, { words: [m[0]], last: rect });
+            lines.set(top, { words: [m[0]], last: rect, node: n });
           }
         }
       }
@@ -156,6 +157,30 @@ export function buildRuntsCheck(): (args: {
       if (last?.words.length !== 1) continue;
       const word = last.words[0] ?? "";
       if (ATOMIC.test(word)) continue;
+      // A chip is not prose. A lone token whose glyphs live inside a padded,
+      // boxed inline element (a <code> chip, pill, or badge) is a UI control:
+      // it cannot be rebalanced by rewording, tag rows legitimately wrap to a
+      // single chip, and its shifted glyph box also buckets as a phantom
+      // "line" when it sits mid-line beside normal text. Walk the word's
+      // inline ancestry (tag-based, since flex/grid parents blockify computed
+      // display) and skip the finding when a chip hosts it.
+      const chipHosted = (() => {
+        for (
+          let e = last.node.parentElement;
+          e && e !== el && INLINE.has(e.tagName);
+          e = e.parentElement
+        ) {
+          const cs = getComputedStyle(e);
+          const padX =
+            (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
+          const boxed =
+            (cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent") ||
+            (Number.parseFloat(cs.borderTopWidth) || 0) > 0;
+          if (padX > 0 && boxed) return true;
+        }
+        return false;
+      })();
+      if (chipHosted) continue;
 
       runts.push({
         block: label(el),

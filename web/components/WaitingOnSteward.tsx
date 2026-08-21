@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import { Check, Copy } from "lucide-react";
+import { useState } from "react";
 
 import { AgentChip } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
@@ -65,8 +65,8 @@ export function WaitingOnSteward({
         }
       />
       <div>
-        <strong className="text-amber-300">Waiting on steward.</strong> No
-        prompts drafted yet for round {currentRound}.
+        <strong className="text-amber-300">Waiting on steward.</strong> No prompts drafted yet for
+        round {currentRound}.
       </div>
       <div className="text-muted-foreground">
         The steward (

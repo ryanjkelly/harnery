@@ -151,7 +151,7 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-gap-threshold <px>` | Maximum gap deviation in CSS pixels. Default `2`. |
 | `--check-gap-fail` | Exit 2 when a gap target fails, is unknown, or is missing. A two-item group needs `--check-gap-expected` to produce a conclusive result. |
 | `--no-check-gap-annotate` | Skip gap annotations. |
-| `--check-clip <selector>` | Check every matching container for descendant boxes or text paint leaving its rectangular clipping chain or nearest block parent. Repeatable. |
+| `--check-clip <selector>` | Check every matching container for descendant boxes or text paint leaving its rectangular clipping chain or nearest block parent. In-flow boxes are checked horizontally against that parent even when CSS overflow is visible. Repeatable. |
 | `--check-clip-threshold <px>` | Allowed rectangular overrun in CSS pixels. Default `0`. |
 | `--check-clip-fail` | Exit 2 when rectangular clipping fails, is unknown, or the selector is missing. |
 | `--no-check-clip-annotate` | Skip clipping annotations. |
@@ -262,9 +262,9 @@ without tripping a named rule.
 
 | Flag | Description |
 | --- | --- |
-| `--check-critique [selector]` | Send the page to a vision model, tile by tile. Default tiling cuts overlapping vertical bands; a selector tiles one screenshot per matching element. |
-| `--check-critique-band <px>` | Band height for default tiling. Default `1400`. |
-| `--check-critique-overlap <px>` | Vertical overlap between bands so a seam finding stays visible. Default `120`. |
+| `--check-critique [selector]` | Send the page to a vision model, tile by tile. Default tiling cuts vertical bands whose seams snap into content gaps; a selector tiles one screenshot per matching element, banding any element taller than the band budget internally. |
+| `--check-critique-band <px>` | Band height budget for tiling. Seams may move up to 30% above the budget to land in a gap, never below it. Default `1400`. |
+| `--check-critique-overlap <px>` | Vertical overlap below a seam that had to cut through content, so a straddling finding stays visible. Clean seams (nothing straddles them) carry a 16px margin instead. Default `120`. |
 | `--check-critique-max-tiles <n>` | Cap on tiles sent to the model, to bound cost. Default `24`. |
 | `--check-critique-rubric <text>` | Override the default rubric. |
 | `--check-critique-fail` | Run a whole-page critique when needed; exit 2 unless it conclusively passes. |
@@ -272,7 +272,12 @@ without tripping a named rule.
 The page is tiled because a tall screenshot downscaled to a model's input budget
 loses the detail the critique depends on; each tile is captured at full
 resolution and judged on its own, and findings carry their tile and scroll
-offset for locality. harnery ships no model client, so a host injects a
+offset for locality. Band seams are content-aware: the page's text lines,
+images, and small bordered boxes are extracted first, and each cut lands in
+the cheapest nearby gap rather than at a fixed offset, so tiles rarely open or
+close mid-element. Where no clean cut exists (an element taller than the band
+budget), the cut falls back to the fixed offset with the full overlap, and the
+rubric tells the model to treat slice-edge clipping there as an artifact. harnery ships no model client, so a host injects a
 `critiqueProvider` into `HarneryProgramContext` (the `extraHeaders` pattern);
 without one, the result is `skipped`, and `--check-critique-fail` exits 2 rather
 than certifying a review that did not happen. A provider that throws becomes a
@@ -307,6 +312,49 @@ reconciliation).
 | `--diff <name>` | Pixel-diff the capture against the named baseline; writes a diff PNG next to the screenshot and reports `mismatchedPixels` + `similarity`. |
 | `--diff-threshold <ratio>` | `mismatchRatio` below which the diff is a match (0–1). Default `0.01` (1%). |
 | `--diff-fail` | Exit non-zero if `mismatchRatio` exceeds the threshold. |
+
+### Diff-aware QA planning
+
+Vision review costs the same whether you changed one word or the whole theme,
+unless something classifies the change first. `--qa-plan` compares the rendered
+page against a persisted baseline signature (per-element structure, attributes,
+direct-text digests, applied-stylesheet digests) and emits a review manifest
+under `qaPlan` in the JSON envelope before any model call is made: the change
+class, the stable scope selectors that contain it, the render contexts worth
+reviewing, and the provider-call ceiling.
+
+| Flag | Description |
+| --- | --- |
+| `--qa-plan` | Classify this render against the persisted baseline and emit the review manifest. No baseline classifies as `unknown` and widens to full coverage. |
+| `--qa-snapshot` | Persist this render (signature + DOM + full-page screenshot) as the QA baseline for the target + context, atomically. Run on a page state you trust. |
+| `--qa-target <key>` | Override the snapshot-store key (default: the url argument), so a production render can seed the baseline for a local route. |
+| `--qa-theme <theme>` | Context label for the store: `light` \| `dark` (default `light`). Labels only; it does not switch the page theme. |
+| `--qa-state <name>` | Context state label (default `default`). |
+| `--qa-scope <selector>` | Explicit scope selector from the producing task (repeatable); overrides lifted anchors. |
+| `--qa-states <names>` | Comma-separated interaction states to review; promotes the plan to `interaction-state`. |
+| `--qa-reuse` | With `--check-critique`: reuse the baseline run's verdicts for tiles whose pixels provably didn't change (band-diff against the persisted snapshot screenshot). Only clean regions reuse; baseline findings or any pixel drift force a fresh review. Stats land under `qaReuse`. |
+| `--qa-reuse-threshold <ratio>` | Mismatch ratio at or below which a clean tile region is reused (default `0.001`; lower toward 0 for stricter reuse). |
+
+The classes: `text-data-only` (only direct text changed, so zero vision
+calls), `local-visual` (structural changes contained by stable anchors, so
+review scopes to them in light contexts), `interaction-state` (explicit states
+requested), `large-structural` (stylesheet changed, unprovable boundary, or
+multi-region change: the full desktop/mobile and light/dark matrix), and
+`unknown` (no or truncated baseline: widened, never treated as text-only).
+Ambiguity always widens. A one-line edit to a linked stylesheet changes zero
+DOM bytes and every pixel, so DOM equality alone never proves a change is
+text-only; stylesheet digests (external sheets fetched and hashed) must match
+too. Stable anchors are
+unique `#id`s or `data-qa-scope` attributes; nested anchors dedupe to the
+outermost root so a container is reviewed once, not per descendant.
+
+Reuse closes the loop: `--qa-snapshot` on a critique run persists the verdicts
+with the screenshot, and the next `--check-critique --qa-reuse` run pixel-diffs
+each tile's document rect against that baseline and skips the model call for
+clean, finding-free regions that match at or below the strict threshold. Reuse
+can produce false re-reviews, never false passes: a region with baseline
+findings is always re-reviewed, a rubric or contract change is a whole-run
+miss, and a partially-reused run is never persisted as the next baseline.
 
 ### Diagnostics
 

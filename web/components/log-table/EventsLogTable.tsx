@@ -3,8 +3,8 @@
 import { useMemo } from "react";
 
 import { useHostInfo } from "@/components/HostInfoProvider";
-import { LogTable } from "@/components/log-table/LogTable";
 import { makeHookEventRenderer } from "@/components/log-table/event-renderers";
+import { LogTable } from "@/components/log-table/LogTable";
 import type { EventRow } from "@/lib/coord-reader";
 
 interface Props {
@@ -22,8 +22,7 @@ interface Props {
  *
  * Server pre-renders the initial 500 rows for first paint; the SSE snapshot
  * replaces them on connect so SSR + live state stay in sync. After that,
- * each new event appended to `.harnery/events.ndjson` streams in as it
- * lands.
+ * each newly recorded V3 event streams in as it lands.
  */
 export function EventsLogTable({
   initialRows,
@@ -48,7 +47,7 @@ export function EventsLogTable({
       initialAgent={initialAgent}
       initialKind={initialKind}
       knownKinds={knownKinds}
-      emptyStateHint="No hook events yet. Anything an agent does (tool calls, prompts, turn boundaries) lands here once .harnery/events.ndjson has been written."
+      emptyStateHint="No V3 events yet. Tool calls, prompts, and lifecycle boundaries appear after the first recorded agent signal."
     />
   );
 }

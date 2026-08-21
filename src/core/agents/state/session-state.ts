@@ -4,7 +4,7 @@ export type AgentActivity = "unknown" | "working" | "needs_input" | "idle";
 /** Whether the declared task remains open. Activity never changes this axis. */
 export type TaskState = "active" | "blocked" | "done";
 
-/** Raw fields stored in a live heartbeat and rebuilt from canonical events. */
+/** Raw fields stored in the disposable V3 coordination cache and rebuilt from canonical events. */
 export interface SessionStateFields {
   activity?: AgentActivity;
   activity_updated_at?: string;
@@ -26,14 +26,18 @@ export interface SessionStateSelector {
 }
 
 export interface SessionStateEvidenceEvent {
-  event_type: string;
+  event_type: EventTypeV3;
   ts: string;
-  data?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
   instance_id?: string;
   session_id?: string;
 }
 
-const TERMINAL_ACTIVITY_EVENTS = new Set(["session.end", "subagent.stop", "turn.stop"]);
+const TERMINAL_ACTIVITY_EVENTS: ReadonlySet<EventTypeV3> = new Set([
+  "session.ended",
+  "agent.completed",
+  "turn.completed",
+]);
 
 /**
  * Apply one canonical event to the two independent state axes.
@@ -49,14 +53,20 @@ export function applySessionStateEvent(
 ): SessionStateFields {
   const next: SessionStateFields = { ...current };
 
-  if (event.event_type === "session.start" || event.event_type === "subagent.start") {
+  if (
+    event.event_type === "session.started" ||
+    event.event_type === "session.resumed" ||
+    event.event_type === "agent.started"
+  ) {
     setActivity(next, "idle", event);
-  } else if (event.event_type === "user_prompt.submit" || event.event_type === "tool.pre_use") {
+  } else if (event.event_type === "turn.started" || event.event_type === "tool.requested") {
     setActivity(next, "working", event);
-  } else if (event.event_type === "interaction.input_requested") {
+  } else if (event.event_type === "wait.started") {
     setActivity(next, "needs_input", event);
+  } else if (event.event_type === "wait.ended") {
+    setActivity(next, "working", event);
   } else if (
-    event.event_type === "command.start" &&
+    event.event_type === "command.started" &&
     (current.activity === "working" || current.activity === "needs_input")
   ) {
     setActivity(next, "working", event);
@@ -64,13 +74,13 @@ export function applySessionStateEvent(
     setActivity(next, "idle", event);
   }
 
-  if (event.event_type === "state.task_state") {
-    const data = event.data ?? {};
-    const state = field(data, "state");
+  if (event.event_type === "coord.lifecycle_changed") {
+    const payload = event.payload ?? {};
+    const state = field(payload, "new_state");
     if (state === "active" || state === "blocked" || state === "done") {
       next.task_state = state;
       next.task_state_updated_at = event.ts;
-      const reason = field(data, "reason");
+      const reason = field(payload, "reason");
       if (typeof reason === "string" && reason.length > 0) {
         next.task_state_reason = reason;
       } else {
@@ -129,3 +139,5 @@ function timestamp(event: SessionStateEvidenceEvent): number {
 function field(data: Record<string, unknown>, key: string): unknown {
   return data[key];
 }
+
+import type { EventTypeV3 } from "../../events/v3/contract.ts";

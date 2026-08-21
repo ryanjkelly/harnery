@@ -44,7 +44,7 @@ export const BUILTIN_ADAPTER_PROFILES = {
     authModel: "own-auth",
     modelFamily: "claude",
     effortValues: ["low", "medium", "high", "xhigh", "max"],
-    verified: { date: "2026-07-25", version: "2.1.197 (Claude Code)" },
+    verified: { date: "2026-08-18", version: "2.1.233 (Claude Code)" },
     capabilities: capabilities({
       effortSelection: supported("Mapped to `--effort <level>`."),
       maxTurns: supported("Mapped to `--max-turns <n>`."),
@@ -70,7 +70,7 @@ export const BUILTIN_ADAPTER_PROFILES = {
     authModel: "own-auth",
     modelFamily: "gpt",
     effortValues: ["none", "minimal", "low", "medium", "high", "xhigh"],
-    verified: { date: "2026-07-25", version: "codex-cli 0.144.5" },
+    verified: { date: "2026-08-04", version: "codex-cli 0.144.5" },
     // Verified against codex-cli 0.144.5: `--sandbox <mode>` plus
     // `sandbox_workspace_write.writable_roots`. Without the writable-root entry
     // a workspace-write child still cannot write a repository's .git directory.
@@ -106,7 +106,7 @@ export const BUILTIN_ADAPTER_PROFILES = {
     authModel: "own-auth",
     modelFamily: "multi",
     effortValues: [],
-    verified: { date: "2026-07-25", version: "2026.07.23-e383d2b" },
+    verified: { date: "2026-08-18", version: "2026.08.11-e8db854" },
     capabilities: capabilities({
       effortSelection: unsupported(
         "Cursor embeds effort in some parameterized model ids; Harnery does not rewrite model ids.",
@@ -115,9 +115,7 @@ export const BUILTIN_ADAPTER_PROFILES = {
       sessionId: supported("Read from the JSON result envelope."),
       cost: unsupported("The JSON result envelope carries no cost."),
       contextTelemetry: unknown("No stable Cursor context-usage payload has been certified."),
-      preCompactionSignal: unsupported(
-        "Harnery does not wire an unverified Cursor preCompact hook.",
-      ),
+      preCompactionSignal: supported("Cursor preCompact is wired to a durable checkpoint."),
       postCompactionSignal: unsupported(
         "Harnery does not wire an unverified Cursor postCompact hook.",
       ),

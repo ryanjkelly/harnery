@@ -1,0 +1,140 @@
+/*
+ * Codec cinematic layer. Every rule here is presentation-only sugar over the
+ * evidence-backed panel content, and every motion effect sits behind
+ * prefers-reduced-motion: no-preference — reduced-motion readers get the same
+ * information from static color and the existing text badges.
+ */
+
+/* Portrait scanline overlay: matches the character art's CRT duotone. */
+.portraitFrame {
+  position: relative;
+  flex: none;
+}
+.portraitFrame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(180, 255, 235, 0.05) 0px,
+    rgba(180, 255, 235, 0.05) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+/* Offline/unknown presence: heavier static, like a dropped call. */
+.portraitStatic::after {
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(200, 220, 215, 0.1) 0px,
+    rgba(200, 220, 215, 0.1) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+}
+
+/* Gentle idle "breathing" on actively working portraits only. */
+@media (prefers-reduced-motion: no-preference) {
+  .breathing {
+    animation: codec-breathe 4.5s ease-in-out infinite;
+  }
+  @keyframes codec-breathe {
+    0%,
+    100% {
+      filter: brightness(1);
+    }
+    50% {
+      filter: brightness(1.09);
+    }
+  }
+}
+
+/* Error attention: two quick pulses that decay, never a permanent alarm. */
+@media (prefers-reduced-motion: no-preference) {
+  .errorFlash {
+    animation: codec-error-flash 1.2s ease-out 2;
+  }
+  @keyframes codec-error-flash {
+    0% {
+      box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.55);
+    }
+    100% {
+      box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.15);
+    }
+  }
+}
+
+/* Ping arrival glow on the recipient panel (static-friendly). */
+.pingArrive {
+  outline: 2px solid rgba(56, 189, 248, 0.65);
+  outline-offset: 2px;
+  transition: outline-color 1.4s ease-out;
+}
+.pingArriveFade {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  transition: outline-color 1.4s ease-out;
+}
+
+/* Traveling message particle (created imperatively, motion-gated in JS). */
+.pingDot {
+  position: fixed;
+  z-index: 60;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(125, 211, 252, 1), rgba(56, 189, 248, 0.4));
+  box-shadow: 0 0 10px 2px rgba(56, 189, 248, 0.7);
+}
+
+/* Relationship lines: persistent structure between panels. The dash flow
+ * communicates direction (prerequisite → dependent); reduced-motion readers
+ * get the same static line plus the sr-only relationship list. */
+@media (prefers-reduced-motion: no-preference) {
+  .flowLine {
+    stroke-dasharray: 6 6;
+    animation: codec-flow 1.6s linear infinite;
+  }
+  @keyframes codec-flow {
+    from {
+      stroke-dashoffset: 12;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+}
+
+/* Team ambience: a quiet shared tint behind the grid, color = meaning. */
+.ambCalm {
+  background: radial-gradient(80% 60% at 50% 0%, rgba(45, 212, 191, 0.04), transparent 70%);
+}
+.ambBusy {
+  background: radial-gradient(80% 60% at 50% 0%, rgba(56, 189, 248, 0.07), transparent 70%);
+}
+.ambAlert {
+  background: radial-gradient(80% 60% at 50% 0%, rgba(245, 158, 11, 0.08), transparent 70%);
+}
+
+/* Output flow is a short evidence-backed pulse. Reduced-motion readers keep
+ * the same static label and color without animation. */
+.outputFlow {
+  color: rgb(2 132 199);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .outputFlow {
+    animation: codec-output-flow 1.4s ease-in-out infinite;
+  }
+  @keyframes codec-output-flow {
+    0%,
+    100% {
+      opacity: 0.65;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+}

@@ -7,23 +7,22 @@ import { ContributionMatrixCard } from "@/components/ContributionMatrix";
 import { CouncilActions } from "@/components/CouncilActions";
 import { CouncilCompletionBanner } from "@/components/CouncilCompletionBanner";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
+import { FilePath } from "@/components/file-viewer/FilePath";
 import { NavBar } from "@/components/NavBar";
 import { RoundDiff } from "@/components/RoundDiff";
 import { NextActionBanner, RoutingLegend } from "@/components/RoutingGuide";
 import { RoutingPromptTabs } from "@/components/RoutingPromptTabs";
-import { WaitingOnSteward } from "@/components/WaitingOnSteward";
-import { FilePath } from "@/components/file-viewer/FilePath";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { buildAgentSummaryMap } from "@/lib/agent-summary";
-import { listKnownAgents } from "@/lib/agent-summary";
-import { NO_DATA } from "@/lib/format/no-data";
+import { WaitingOnSteward } from "@/components/WaitingOnSteward";
+import { buildAgentSummaryMap, listKnownAgents } from "@/lib/agent-summary";
 import {
   coordRoot,
   readAgents,
   readCouncilDetail,
   readInstanceIdentities,
 } from "@/lib/coord-reader";
+import { NO_DATA } from "@/lib/format/no-data";
 
 export const dynamic = "force-dynamic";
 
@@ -78,15 +77,12 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
   // flips to "contributed" the moment their council.contribution lands.
   const WORKING_WINDOW_MS = 120_000;
   const nowMs = Date.now();
-  const activityByMember: Record<string, { lastTool: string | null; lastSeen: string }> = {};
+  const activityByMember: Record<string, { lastSeen: string }> = {};
   for (const hb of readAgents().active) {
     const ageMs = nowMs - Date.parse(hb.last_heartbeat);
     if (!Number.isFinite(ageMs) || ageMs > WORKING_WINDOW_MS) continue;
     const name = hb.name.startsWith("agent-") ? hb.name : `agent-${hb.name}`;
-    activityByMember[name] = {
-      lastTool: hb.last_tool ?? null,
-      lastSeen: hb.last_heartbeat,
-    };
+    activityByMember[name] = { lastSeen: hb.last_heartbeat };
   }
   const activeMemberWorking = activePrompt ? Boolean(activityByMember[activePrompt.member]) : false;
 
@@ -444,13 +440,7 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
   );
 }
 
-function Row({
-  label,
-  value,
-}: {
-  label: string;
-  value: string | React.ReactNode;
-}) {
+function Row({ label, value }: { label: string; value: string | React.ReactNode }) {
   return (
     <div className="flex gap-2">
       <span className="text-muted-foreground/70 tabular-nums shrink-0 w-16">{label}</span>

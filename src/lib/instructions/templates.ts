@@ -28,10 +28,12 @@ export const HOST_ADDENDUM_REGION = "host-addendum";
 
 /** Which shipped skills exist in the project the block is rendered for. */
 export interface BlockSkills {
-  /** the `harn-decide` skill file is present (claude-code, not excluded) */
+  /** the `harn-decide` skill file is present */
   decide: boolean;
   /** the `harn-council` skill file is present */
   council: boolean;
+  /** the `harn-end` skill file is present */
+  end: boolean;
 }
 
 /**
@@ -39,22 +41,24 @@ export interface BlockSkills {
  * lines: it costs every agent context on every turn, so it states that each
  * surface *exists* and gives one line of *when* — the *how* lives in the skills
  * and each command's `--help`. Skill names are fixed (`harn-decide`,
- * `harn-council`) even for a renamed bin; only command strings track `binName`.
+ * `harn-council`, `harn-end`) even for a renamed bin; only command strings
+ * track `binName`.
  *
  * The block only points at a skill that actually exists here: a host that
- * excludes one via `skills.exclude`, or a adapter with no skill primitive
- * (cursor/codex get the block but no skill files), gets a `--help` pointer
- * instead of a dangling reference to a skill it doesn't have.
+ * excludes one via `skills.exclude` gets a CLI pointer instead of a dangling
+ * reference to a skill it doesn't have.
  */
 export function renderInstructionsBlock(
   binName: string,
-  skills: BlockSkills = { decide: true, council: true },
+  skills: BlockSkills = { decide: true, council: true, end: true },
 ): string {
   const b = binName;
 
-  const named = [skills.decide && "`harn-decide`", skills.council && "`harn-council`"].filter(
-    Boolean,
-  ) as string[];
+  const named = [
+    skills.decide && "`harn-decide`",
+    skills.council && "`harn-council`",
+    skills.end && "`harn-end`",
+  ].filter(Boolean) as string[];
   const deeper =
     named.length > 0
       ? `Procedures for the deeper flows live in the ${named.join(" and ")} skill${named.length > 1 ? "s" : ""}.`
@@ -65,6 +69,9 @@ export function renderInstructionsBlock(
   const councilPointer = skills.council
     ? "The `harn-council` skill has the steward and member flow."
     : `See \`${b} agents council --help\` for the steward and member flow.`;
+  const endPointer = skills.end
+    ? "When the whole session is genuinely finished, use the `harn-end` skill as the final workflow."
+    : `When the whole session is genuinely finished, run \`${b} agents status --end-turn --end-session\` as the final tool action.`;
   // Render the journal categories from the canonical enum so this prose can
   // never drift from what `journal add` actually accepts (the "note, plan…" list
   // silently lagged the tool by two categories before this).
@@ -86,6 +93,14 @@ surface. ${deeper}
 active peers and the files they've claimed; \`${b} agents set-task "<focus>"\`
 declares your current focus so peers can see it. Check for peers before editing
 widely-shared files.
+
+**Task lifecycle.** Beside the activity peers already see, declare whether your
+objective is still open: \`${b} agents lifecycle blocked --reason "<why>"\` when
+it cannot proceed, \`${b} agents lifecycle done\` when it is complete, and
+\`${b} agents lifecycle active\` to reopen. \`done\` requires a current task and
+a passing Git finalization check (dirty or unpushed work refuses, and nothing is
+written). Ordinary \`set-task\` calls never change lifecycle, and a transition
+that re-mints the session title tells you the new name to copy. ${endPointer}
 
 **Dispatching a team.** Everything else here coordinates the agents already
 present. These three start new ones, and they differ by how long the objective
@@ -251,7 +266,7 @@ The web UI is the member + steward picker; don't create from the CLI (that skips
 the steward choice). Emit the link with the objective URL-encoded:
 
 \`\`\`
-http://localhost:9000/councils/new?objective=<encoded>
+http://localhost:4276/councils/new?objective=<encoded>
 \`\`\`
 
 If the dev server isn't up, start it with \`${b} web up\`.
@@ -307,6 +322,54 @@ mismatch), and offer the right next step. Don't propose a workaround that bypass
 the guard.`;
 }
 
+function endBody(b: string): string {
+  return `Finalize only after the work is genuinely complete. This is the deliberate,
+high-confidence escape hatch for adapters that do not provide a trustworthy
+native session-end callback.
+
+## Workflow
+
+1. Finish all in-scope work, tests, documentation, commits, pushes, and
+   user-facing reporting first.
+2. Confirm no tool call, open turn, delegated child, file claim, or uncommitted
+   session write remains. Do not fabricate completion or use this skill to hide
+   unfinished work.
+3. Run the closing status and end request as the final tool action:
+
+   \`\`\`bash
+   ${b} agents status --end-turn --end-session
+   \`\`\`
+
+   When automatic identity resolution is unavailable, pass the current native
+   adapter session ID with \`--session-id <id>\`. The command durably queues the
+   authoritative end while it is still running. The adapter's stop hook records
+   \`session.ended\` only after this command, its tool span, and the current turn
+   have closed.
+4. Do not run another tool after a successful request. Reproduce the status
+   output, tell the operator the end is queued, and yield. The terminal event ID
+   becomes available after the response completes and can be verified from a
+   later session or the web UI.
+
+## Refusals and recovery
+
+- If the command reports delegated work, finish or explicitly cancel those
+  children, then try again.
+- If Git finalization fails, complete the repository's required commit and push
+  workflow before retrying.
+- If the V3 ledger is unavailable or unsafe, do not fall back to deleting a
+  projection or writing a synthetic ledger row. Report the failure.
+- Starting a new turn or tool after the request cancels the pending end. Run the
+  workflow again when the session is actually finished.
+- On a manual \`${b} agents end\` call, use \`--outcome failed\`, \`cancelled\`,
+  \`interrupted\`, or \`unknown\` only when that describes the completed session
+  honestly.
+
+Never use this skill to end another operator's session unless the operator
+explicitly identifies it. Use the web control or \`${b} agents end --instance-id
+<id>\` for that operator action; it records immediately for an idle session or
+durably queues the end for its current turn.`;
+}
+
 export const SKILLS: SkillTemplate[] = [
   {
     id: "harn-decide",
@@ -316,7 +379,6 @@ export const SKILLS: SkillTemplate[] = [
         name: "harn-decide",
         description:
           "File a decision into the docket instead of blocking on a human: search precedent, file it, and proceed on a reversible default; or pick up and resolve an open decision with cited evidence. Use whenever you're about to ask a human a decision-shaped question you could resolve yourself.",
-        argumentHint: "[<the decision / question you're facing> | resolve <id> | review]",
         binName,
         body: decideBody(binName),
       }),
@@ -329,10 +391,20 @@ export const SKILLS: SkillTemplate[] = [
         name: "harn-council",
         description:
           "Interact with the multi-agent council system: list / create / show / prompts (steward) / contribute (member). Guards against misrouting: refuses to contribute when you aren't a member, have already contributed, or weren't routed a prompt.",
-        argumentHint:
-          "[<id-or-fragment> | create <objective> | contribute <id> | prompts <id> | show <id>]",
         binName,
         body: councilBody(binName),
+      }),
+  },
+  {
+    id: "harn-end",
+    relPath: "harn-end/SKILL.md",
+    render: (binName) =>
+      buildOwnedSkill({
+        name: "harn-end",
+        description:
+          "Safely finalize the current Harnery agent session with an authoritative V3 session-ended event. Use when the operator says /harn-end, asks to end or close the current session, or when all work is complete and the session should stop counting as live.",
+        binName,
+        body: endBody(binName),
       }),
   },
 ];

@@ -44,7 +44,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
   // A child emits to the coord root it ran in, which is not always this one.
   const runRoot = resolveRunCoordRoot(coordRoot(), run.runId);
   const childSessions = readWorkflowChildSessions(coordRoot(), run.runId, {
-    heartbeatRoot: runRoot.root,
+    coordinationRoot: runRoot.root,
   });
   const sessionIds = new Set(childSessions.map((c) => c.sessionId));
   const activityRows =
@@ -580,7 +580,6 @@ export default async function WorkflowRunPage({ params }: PageProps) {
             ) : null}
           </section>
         ) : null}
-
       </main>
     </div>
   );

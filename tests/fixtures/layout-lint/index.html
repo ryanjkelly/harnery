@@ -41,6 +41,15 @@
       .clip-rounded-visible { width: 100px; border-radius: 12px; }
       .clip-rounded-hidden { width: 100px; border-radius: 12px; overflow: hidden; }
       .clip-path-unknown { width: 100px; clip-path: circle(50%); }
+      /* The nowrap chip stays inside the outer scope but escapes its narrow
+         grid cell and paints over the neighboring column. */
+      .clip-parent-box { display: grid; grid-template-columns: 80px 80px; gap: 8px; width: 168px; }
+      .clip-parent-box .cell { min-width: 0; }
+      .clip-parent-box .nowrap-chip { display: inline-flex; white-space: nowrap; }
+      /* The same parent escape is reachable when an outer ancestor scrolls. */
+      .clip-parent-scroll { width: 80px; overflow-x: auto; }
+      .clip-parent-scroll .visible-wrapper { width: 60px; }
+      .clip-parent-scroll .wide-box { width: 120px; height: 20px; }
       .overlap-good { display: flex; gap: 4px; }
       .overlap-bad { display: grid; width: 40px; height: 24px; }
       .overlap-bad > * { grid-area: 1 / 1; width: 30px; height: 20px; }
@@ -60,7 +69,18 @@
       .crowd-composite-good > .panel { margin-top: 16px; }
       .crowd-composite-deep .group p { margin: 0; height: 40px; }
       .crowd-composite-deep > .panel { margin-top: 0; }
-      .runt-good, .runt-bad { width: 105px; font: 16px/20px monospace; }
+      .runt-good, .runt-bad, .runt-chip { width: 105px; font: 16px/20px monospace; }
+      .runt-chip code, .crowd-chips code {
+        background: #eef; border: 1px solid #99c; border-radius: 4px; padding: 1px 4px;
+      }
+      .crowd-chips { display: flex; gap: 2px; width: 300px; }
+      .clip-sronly span.sr {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+      }
+      .clip-truncate p {
+        width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
     </style>
   </head>
   <body>
@@ -95,6 +115,13 @@
     <section class="clip-rounded-visible"><div>Visible rounded container</div></section>
     <section class="clip-rounded-hidden"><div>Hidden rounded container</div></section>
     <section class="clip-path-unknown"><div>Non-rectangular clip path</div></section>
+    <section class="clip-parent-box">
+      <div class="cell"><span class="nowrap-chip">Active offer: yes</span></div>
+      <div class="cell">Neighbor</div>
+    </section>
+    <section class="clip-parent-scroll">
+      <div class="visible-wrapper"><div class="wide-box">Reachable by scrolling</div></div>
+    </section>
     <section class="overlap-good">
       <div class="overlap-box"></div><div class="overlap-box"></div>
     </section>
@@ -133,5 +160,17 @@
     </section>
     <section class="runt-good">alpha beta gamma delta epsilon zeta eta theta i j</section>
     <section class="runt-bad">alpha beta gamma delta epsilon zeta eta theta iota omega</section>
+    <!-- chip on the last line: a padded, boxed <code> token is a UI control,
+         not a prose word, so the runt gate must not flag it -->
+    <section class="runt-chip">alpha beta gamma delta epsilon zeta eta theta <code>omega_flag</code></section>
+    <!-- flex tag row: blockified code chips 2px apart are controls, not
+         crowded panels -->
+    <section class="crowd-chips"><code>alpha.js</code><code>beta.js</code><code>gamma.js</code></section>
+    <!-- visually-hidden (sr-only) content is clipped BY DESIGN for assistive
+         tech; the clip gate must exclude it -->
+    <section class="clip-sronly" style="position: relative;">Visible label<span class="sr">Screen reader only description that would overflow its one pixel box</span></section>
+    <!-- single-line ellipsis truncation is deliberate; the truncation check
+         owns auditing it, the clip gate excludes it -->
+    <section class="clip-truncate"><p>This long label is designed to truncate with an ellipsis at one twenty pixels</p></section>
   </body>
 </html>

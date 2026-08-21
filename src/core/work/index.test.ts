@@ -9,13 +9,19 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { resolveWorkflowApproval, type Spawner, WorkflowParkedError } from "../workflow/index.ts";
+import {
+  resolveWorkflowApproval,
+  type Spawner,
+  type SpawnRequest,
+  WorkflowParkedError,
+} from "../workflow/index.ts";
 import { WORKFLOW_TRANSCRIPT_EVENT_BYTES } from "../workflow/transcript.ts";
 import {
   acceptWorkItem,
   cancelWorkItem,
   createWorkItem,
   listWorkItems,
+  listWorkItemsWithWarnings,
   openOperatorFindings,
   readWorkItem,
   reconcileWorkItem,
@@ -70,6 +76,37 @@ describe("durable work ledger", () => {
         workflowPath,
       }),
     ).toThrow();
+  });
+
+  test("work-set scans skip unreadable records and keep single-item reads strict", () => {
+    const { root, workflowPath } = fixture();
+    for (const id of ["work-readable", "work-poisoned"]) {
+      createWorkItem({
+        coordRoot: root,
+        id,
+        title: id,
+        objective: "Keep readable work available",
+        workflowPath,
+      });
+    }
+    const poisonedPath = join(root, ".harnery", "work", "work-poisoned", "intent.json");
+    const poisoned = JSON.parse(readFileSync(poisonedPath, "utf8")) as Record<string, unknown>;
+    poisoned.schema_version = 1;
+    writeFileSync(poisonedPath, `${JSON.stringify(poisoned, null, 2)}\n`);
+
+    expect(() => readWorkItem(root, "work-poisoned")).toThrow(
+      "work intent work-poisoned has an unsupported or mismatched schema",
+    );
+    expect(listWorkItems(root).map((record) => record.intent.id)).toEqual(["work-readable"]);
+    expect(listWorkItemsWithWarnings(root)).toMatchObject({
+      records: [{ intent: { id: "work-readable" } }],
+      warnings: [
+        {
+          work_id: "work-poisoned",
+          reason: "work intent work-poisoned has an unsupported or mismatched schema",
+        },
+      ],
+    });
   });
 
   test("derives dependency readiness without mutating the dependent", () => {
@@ -253,6 +290,78 @@ describe("durable work ledger", () => {
     expect(manifest.attempt_context).toEqual(second.result);
     expect(proof.run.attempt_context).toEqual(second.result);
     expect(readWorkItem(root, "contextual-retry").projection.state).toBe("in_review");
+  });
+
+  test("a direct retry inherits the prior attempt's recorded specialist profiles", async () => {
+    const requests: SpawnRequest[] = [];
+    const releaseWarden: Spawner = async (request) => {
+      requests.push(request);
+      return { ok: true, text: "reviewed", durationMs: 1, costUsd: 0 };
+    };
+    const { root, workflowPath } = fixture(`
+      export const meta = {
+        name: "governed-retry",
+        acceptance: [{ id: "retry-complete", statement: "The retry completed" }],
+      };
+      export default async (ctx) => {
+        const response = await ctx.agent("Review the release", {
+          specialist: "release-warden",
+        });
+        if (ctx.attempt.trigger === "retry") {
+          ctx.evidence({
+            kind: "artifact",
+            status: "passed",
+            label: "specialist retry completed",
+            acceptanceIds: ["retry-complete"],
+          });
+        }
+        return { response, trigger: ctx.attempt.trigger };
+      };
+    `);
+    createWorkItem({
+      coordRoot: root,
+      id: "governed-retry",
+      title: "Governed retry",
+      objective: "Retry with the frozen release team",
+      acceptance: ["The retry completed"],
+      workflowPath,
+      maxAttempts: 2,
+    });
+
+    const first = await runWorkItem({
+      coordRoot: root,
+      workId: "governed-retry",
+      engine: {
+        spawners: { codex: releaseWarden },
+        specialists: {
+          "release-warden": {
+            instructions: "You are the frozen release reviewer.",
+            adapter: "codex",
+            effort: "high",
+          },
+        },
+      },
+    });
+    expect(readWorkItem(root, "governed-retry").projection.state).toBe("blocked");
+
+    const second = await runWorkItem({
+      coordRoot: root,
+      workId: "governed-retry",
+      retry: true,
+      engine: { spawners: { codex: releaseWarden } },
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.prompt).toStartWith("You are the frozen release reviewer.");
+    expect(requests[1]?.effort).toBe("high");
+    const firstManifest = JSON.parse(
+      readFileSync(join(root, ".harnery", "workflows", first.runId, "run.json"), "utf8"),
+    );
+    const secondManifest = JSON.parse(
+      readFileSync(join(root, ".harnery", "workflows", second.runId, "run.json"), "utf8"),
+    );
+    expect(secondManifest.execution.specialists).toEqual(firstManifest.execution.specialists);
+    expect(readWorkItem(root, "governed-retry").projection.state).toBe("in_review");
   });
 
   test("a lost prior attempt is explicit without inventing a diagnosis", async () => {

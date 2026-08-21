@@ -1,0 +1,54 @@
+---
+title: "0089: Migrate the V2 fingerprint store at V3 initialization"
+description: "ADR: preserve fingerprint epochs and keys while atomically changing the private store envelope during the explicit V3 cutover."
+sidebar:
+  order: 89
+---
+
+**Status:** superseded by ADR 0091 (2026-08-21) · **Scope:** product tier (`core/events/v3`)
+
+## Context
+
+V2 and V3 use the same private fingerprint key path and the same epoch and key
+schema. Their envelopes differ only in the format marker. A host upgrading
+directly from V2 therefore reaches V3 initialization with valid key material
+that the V3 reader refuses before it can create the new ledger authority.
+
+The refusal is safe but leaves the documented initialization path unusable.
+Deleting the old store would make historical fingerprints unverifiable and
+would replace a valid secret merely because the event contract advanced.
+
+## Alternatives considered
+
+**Accept both formats indefinitely.** Rejected because a permanent dual reader
+would hide an incomplete alpha cutover and keep an obsolete format live.
+
+**Delete the V2 store and create a new key.** Rejected because the existing
+epochs are valid and may be needed to compare retained historical evidence.
+
+**Require a separate manual migration.** Rejected because `init` is already the
+explicit boundary that archives the prior ledger and activates the new runtime
+profile.
+
+## Decision
+
+`loadOrCreateFingerprintKeyStoreV3` recognizes the exact V2 envelope during
+V3 initialization. Under the existing no-clobber publication lease, it
+validates every store and epoch field, preserves the active epoch, timestamps,
+and key bytes, then atomically rewrites only the format marker to
+`harnery-v3-fingerprint-keys`.
+
+The ordinary V3 reader remains strict. Unknown formats, extra fields, invalid
+permissions, malformed keys, or other schema drift are refused without
+rewriting the file. Once migrated, the store is V3-only and later loads are
+idempotent.
+
+## Result
+
+The cutover regression starts with the recorded V2 envelope shape and confirms
+that the on-disk result differs only by its format marker. A second regression
+adds an unsupported field and confirms that the bytes remain unchanged after
+the refusal.
+
+This migration was used for the known host cutovers. ADR 0091 removed the
+recognizer after every known store carried the V3 envelope.

@@ -31,6 +31,7 @@ describe("renderInstructionsBlock", () => {
     const block = renderInstructionsBlock("acme");
     expect(block).toContain("harn-decide");
     expect(block).toContain("harn-council");
+    expect(block).toContain("harn-end");
   });
 
   test("stays within the ~80-line orientation budget", () => {
@@ -38,11 +39,28 @@ describe("renderInstructionsBlock", () => {
     expect(lines).toBeLessThanOrEqual(80);
   });
 
-  test("names all five surfaces so an agent knows they exist", () => {
+  test("names all six surfaces so an agent knows they exist", () => {
     const block = renderInstructionsBlock("harn").toLowerCase();
-    for (const surface of ["identity", "intent", "journal", "decision docket", "council"]) {
+    for (const surface of [
+      "identity",
+      "lifecycle",
+      "intent",
+      "journal",
+      "decision docket",
+      "council",
+    ]) {
       expect(block).toContain(surface);
     }
+  });
+
+  test("teaches lifecycle declarations with host-bin commands", () => {
+    const block = renderInstructionsBlock("acme");
+    expect(block).toContain('acme agents lifecycle blocked --reason "<why>"');
+    expect(block).toContain("acme agents lifecycle done");
+    expect(block).toContain("acme agents lifecycle active");
+    // the done gate is stated, and set-task neutrality is preserved
+    expect(block).toContain("Git finalization check");
+    expect(block).toContain("`set-task` calls never change lifecycle");
   });
 
   test("lists every journal category (locks the block to the canonical enum)", () => {
@@ -56,16 +74,21 @@ describe("renderInstructionsBlock", () => {
     expect(INSTRUCTIONS_REGION).toBe("instructions");
   });
 
-  test("with both skills excluded, points at --help instead of dangling skill refs", () => {
-    const block = renderInstructionsBlock("acme", { decide: false, council: false });
+  test("with every skill excluded, points at CLI commands instead of dangling refs", () => {
+    const block = renderInstructionsBlock("acme", {
+      decide: false,
+      council: false,
+      end: false,
+    });
     expect(block).not.toContain("`harn-decide` skill");
     expect(block).not.toContain("`harn-council` skill");
     expect(block).toContain("acme decision --help");
     expect(block).toContain("acme agents council --help");
+    expect(block).toContain("acme agents status --end-turn --end-session");
   });
 
   test("mixed availability names only the present skill", () => {
-    const block = renderInstructionsBlock("acme", { decide: false, council: true });
+    const block = renderInstructionsBlock("acme", { decide: false, council: true, end: false });
     // intro + council pointer reference harn-council; decide falls back to --help
     expect(block).toContain("`harn-council`");
     expect(block).toContain("acme decision --help");
@@ -74,16 +97,17 @@ describe("renderInstructionsBlock", () => {
     expect(block).not.toContain("`harn-decide` and");
   });
 
-  test("default (no arg) still references both skills — bare-consumer case", () => {
+  test("default (no arg) references all three skills", () => {
     const block = renderInstructionsBlock("harn");
     expect(block).toContain("`harn-decide` skill");
     expect(block).toContain("`harn-council` skill");
+    expect(block).toContain("`harn-end` skill");
   });
 });
 
 describe("SKILLS", () => {
-  test("ships harn-decide and harn-council, engine-mechanics only", () => {
-    expect(SKILLS.map((s) => s.id).sort()).toEqual(["harn-council", "harn-decide"]);
+  test("ships the three harn-prefixed engine skills", () => {
+    expect(SKILLS.map((s) => s.id).sort()).toEqual(["harn-council", "harn-decide", "harn-end"]);
   });
 
   test("every skill renders an owned, fresh, correctly-pathed file", () => {

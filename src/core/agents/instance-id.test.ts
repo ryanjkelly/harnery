@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
-import {
-  assertSafeInstanceId,
-  isSafeInstanceId,
-  readHeartbeat,
-  resolveContainedFile,
-} from "./index.ts";
+import { assertSafeInstanceId, isSafeInstanceId, resolveContainedFile } from "./index.ts";
 
 describe("coordination instance IDs", () => {
   test("accepts portable coordination basenames", () => {
@@ -18,10 +13,6 @@ describe("coordination instance IDs", () => {
       expect(isSafeInstanceId(value)).toBe(false);
       expect(() => assertSafeInstanceId(value)).toThrow(/instance_id/);
     }
-  });
-
-  test("heartbeat lookup rejects a traversal ID before filesystem access", () => {
-    expect(readHeartbeat("../../outside")).toBeNull();
   });
 
   test("resolves only direct children beneath a coordination root", () => {

@@ -34,9 +34,7 @@ export type RoundBodies = {
  * chars so a closing prose PARAGRAPH (one long line in markdown) that merely
  * mentions the word can't fire. The last tag word on that line wins.
  */
-export function lastStatusMarker(
-  body: string,
-): "trivial" | "substantive" | null {
+export function lastStatusMarker(body: string): "trivial" | "substantive" | null {
   const lower = body.toLowerCase();
   const t = lower.lastIndexOf("<trivial>");
   const s = lower.lastIndexOf("<substantive>");
@@ -56,9 +54,7 @@ export function lastStatusMarker(
  * is not evidence of divergence. A round counts only when it has at least
  * one contribution and EVERY contribution's last marker is `<trivial>`.
  */
-export function countConsecutiveAllTrivialRoundsFromTags(
-  rounds: RoundBodies[],
-): number {
+export function countConsecutiveAllTrivialRoundsFromTags(rounds: RoundBodies[]): number {
   const sorted = [...rounds].sort((a, b) => a.round - b.round);
   let i = sorted.length - 1;
   while (i >= 0 && sorted[i].bodies.length === 0) i--;

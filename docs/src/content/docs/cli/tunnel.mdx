@@ -19,7 +19,7 @@ This is the one Harnery command that needs [Bun](https://bun.sh) installed: the 
 
 ```bash
 harn tunnel up                       # start the default instance
-harn tunnel up --target 127.0.0.1:9000 --vhost localhost:9000   # custom upstream + Host
+harn tunnel up --target 127.0.0.1:4276 --vhost localhost:4276   # Harnery web upstream + Host
 harn tunnel up --name web            # a second, independently-managed instance
 harn tunnel up --provider cloudflare # default: random *.trycloudflare.com URL + IP allowlist
 harn tunnel up --provider tailscale  # tailnet-only Tailscale Serve URL

@@ -9,7 +9,8 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Adapter } from "../hooks/events/schema.ts";
+import type { Adapter } from "../adapter.ts";
+import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 
 export const CONTEXT_SCHEMA_VERSION = 1 as const;
 export const MAX_CAPSULE_BYTES = 32 * 1024;
@@ -71,12 +72,9 @@ export interface ContinuityCapsule {
   context?: ContextSample;
   work: {
     task?: string;
-    turn_summary?: string;
     continuation_note?: string;
     files_held: string[];
     files_held_truncated?: boolean;
-    last_tool?: string;
-    last_tool_target?: string;
   };
   repo: RepoSnapshot;
 }
@@ -123,10 +121,7 @@ export interface PreparedContextRecovery {
 interface HeartbeatSnapshot {
   model?: string;
   task?: string;
-  turn_summary?: string;
   files_touched?: string[];
-  last_tool?: string;
-  last_tool_target?: string;
 }
 
 /** Parse the context-window shapes exposed by current adapter hook/status data. */
@@ -379,17 +374,11 @@ export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: Rep
     `[harnery context continuity] Recovered generation ${capsule.generation} after native context compaction.`,
   ];
   if (capsule.work.task) lines.push(`Task: ${capsule.work.task}`);
-  if (capsule.work.turn_summary) lines.push(`Last progress: ${capsule.work.turn_summary}`);
   if (capsule.work.continuation_note) {
     lines.push(`Continuation note: ${capsule.work.continuation_note}`);
   }
   if (capsule.work.files_held.length > 0) {
     lines.push(`Files held: ${capsule.work.files_held.join(", ")}`);
-  }
-  if (capsule.work.last_tool) {
-    lines.push(
-      `Last tool: ${capsule.work.last_tool}${capsule.work.last_tool_target ? ` (${capsule.work.last_tool_target})` : ""}`,
-    );
   }
 
   const drift: string[] = [];
@@ -446,17 +435,20 @@ function buildWorkSnapshot(
     : [];
   return {
     task: clampString(heartbeat?.task, 1_000),
-    turn_summary: clampString(heartbeat?.turn_summary, 3_000),
     continuation_note: clampString(continuationNote, 3_000),
     files_held: files.slice(0, MAX_SNAPSHOT_PATHS),
     ...(files.length > MAX_SNAPSHOT_PATHS ? { files_held_truncated: true } : {}),
-    last_tool: clampString(heartbeat?.last_tool, 200),
-    last_tool_target: clampString(heartbeat?.last_tool_target, 1_000),
   };
 }
 
 function readHeartbeat(coordRoot: string, instanceId: string): HeartbeatSnapshot | null {
-  return readJson<HeartbeatSnapshot>(join(coordRoot, ".harnery", "active", `${instanceId}.json`));
+  const row = readLiveCoordinationRow(coordRoot, instanceId);
+  if (!row) return null;
+  return {
+    model: row.model,
+    task: row.task,
+    files_touched: row.files_touched,
+  };
 }
 
 function newState(input: {

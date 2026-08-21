@@ -1,0 +1,110 @@
+import type { CodecPanelScene, Presented } from "./contracts";
+
+export interface CodecEvidenceReceiptRow {
+  group: "state" | "activity" | "source";
+  channel: string;
+  value: string;
+  detail?: string;
+  provenance: string;
+  confidence: string;
+  observed_at: string;
+  evidence_event_ids: string[];
+  expires_at?: string;
+}
+
+/** Flatten visible panel channels into a bounded read-only inspection receipt. */
+export function codecEvidenceReceiptRows(panel: CodecPanelScene): CodecEvidenceReceiptRow[] {
+  const rows: CodecEvidenceReceiptRow[] = [];
+  add(rows, "state", "presence", panel.presence);
+  add(rows, "state", "activity", panel.activity);
+  add(rows, "state", "lifecycle", panel.lifecycle);
+  add(rows, "state", "expression", panel.expression);
+  add(rows, "state", "attention", panel.attention);
+  add(rows, "state", "context", panel.context_band);
+  add(rows, "activity", "progress", panel.progress_rhythm);
+  if (panel.operation) add(rows, "activity", "operation", panel.operation);
+  if (panel.artifact_cue) add(rows, "activity", "artifact", panel.artifact_cue);
+  if (panel.friction) add(rows, "activity", "friction", panel.friction);
+  if (panel.telemetry) add(rows, "source", "telemetry", panel.telemetry);
+  if (panel.telemetry_reason) {
+    add(rows, "source", "observer reason", panel.telemetry_reason);
+  }
+  if (panel.focus_bubble) add(rows, "activity", "focus", panel.focus_bubble);
+  if (panel.ledger_state) add(rows, "source", "ledger", panel.ledger_state);
+  if (panel.remote_source) {
+    add(rows, "source", "relay", panel.remote_source.relay);
+    if (panel.remote_source.digest) {
+      add(rows, "source", "remote digest", panel.remote_source.digest);
+    }
+  }
+  for (const action of panel.recent_actions.slice(-3)) {
+    rows.push({
+      group: "activity",
+      channel: "action",
+      value: `${action.category} · ${action.outcome}`,
+      provenance: "event",
+      confidence: "high",
+      observed_at: action.observed_at,
+      evidence_event_ids: [action.event_id],
+    });
+  }
+  return rows;
+}
+
+function add(
+  rows: CodecEvidenceReceiptRow[],
+  group: CodecEvidenceReceiptRow["group"],
+  channel: string,
+  presented: Presented<unknown>,
+): void {
+  const detail = displayDetail(presented.value);
+  rows.push({
+    group,
+    channel,
+    value: displayValue(presented.value),
+    ...(detail ? { detail } : {}),
+    provenance: presented.provenance,
+    confidence: presented.confidence,
+    observed_at: presented.observed_at,
+    evidence_event_ids: (presented.evidence_event_ids ?? []).slice(-3),
+    ...(presented.expires_at ? { expires_at: presented.expires_at } : {}),
+  });
+}
+
+function displayDetail(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const details: string[] = [];
+  if (typeof record.elapsed_ms === "number") details.push(`elapsed ${duration(record.elapsed_ms)}`);
+  if (typeof record.duration_sample_count === "number") {
+    details.push(`${record.duration_sample_count} baseline samples`);
+  }
+  if (typeof record.long_running_threshold_ms === "number") {
+    details.push(`long-running after ${duration(record.long_running_threshold_ms)}`);
+  }
+  if (typeof record.age_ms === "number") details.push(`age ${duration(record.age_ms)}`);
+  return details.length > 0 ? details.join(" · ") : undefined;
+}
+
+function duration(value: number): string {
+  if (value < 1_000) return `${Math.max(0, Math.round(value))}ms`;
+  if (value < 60_000) return `${Math.round(value / 1_000)}s`;
+  const minutes = Math.floor(value / 60_000);
+  const seconds = Math.round((value % 60_000) / 1_000);
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function displayValue(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return (
+      [record.label, record.state, record.operation, record.kind, record.text]
+        .filter((part): part is string => typeof part === "string")
+        .join(" · ") || "observed"
+    );
+  }
+  return "unknown";
+}

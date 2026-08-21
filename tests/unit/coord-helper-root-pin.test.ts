@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { coordHelperOpts } from "../../src/commands/agents.ts";
+import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
+import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
+import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
+import {
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../src/core/events/v3/live-routing.ts";
 
 /**
  * Regression: a shell cd'd into a nested directory that carries its own
@@ -25,15 +32,24 @@ function makeNestedRoots(): { outer: string; nested: string; owner: string } {
   const outer = mkdtempSync(join(tmpdir(), "coord-pin-"));
   dirs.push(outer);
   const owner = "test-owner-1234";
-  mkdirSync(join(outer, ".harnery", "active"), { recursive: true });
-  writeFileSync(
-    join(outer, ".harnery", "active", `${owner}.json`),
-    JSON.stringify({
-      instance_id: owner,
-      session_id: owner,
-      last_heartbeat: new Date().toISOString(),
-    }),
-  );
+  initializeEventLedgerV3({
+    coordRoot: outer,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V3("config"),
+    approvalRecordId: "test-root-pin",
+  });
+  const route = resolveLiveEventLedgerRouteV3(outer);
+  if (route.state !== "v3") throw new Error("expected V3 route");
+  recordLiveHookSignalV3({
+    coordRoot: outer,
+    route,
+    eventName: "session-start",
+    payload: { session_id: owner, raw: {} },
+    adapter: "codex",
+    instanceId: owner,
+  });
+  ensureLiveCoordinationHeartbeat(outer, owner, owner, "codex");
   const nested = join(outer, "embedded");
   mkdirSync(join(nested, ".harnery"), { recursive: true });
   return { outer, nested, owner };
@@ -61,8 +77,7 @@ describe("agent-coord root pinning (coordHelperOpts)", () => {
       env: bareEnv(),
     });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("no heartbeat at");
-    expect(r.stderr).toContain(nested); // error names the wrongly-resolved root
+    expect(r.stderr).toContain("v3_not_initialized");
   });
 
   test("pinned spawn from the same nested cwd finds the heartbeat (the fix)", () => {

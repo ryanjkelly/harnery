@@ -112,10 +112,6 @@ function renderSelf(s: NonNullable<ContextReport["self"]>): string[] {
     `  agent-${s.name ?? "?"}  (${formatAge(s.session_age_secs)} old, owner=${s.instance_id.slice(0, 8)}…)`,
   );
   if (s.task) body.push(`  task:    "${s.task}"`);
-  if (s.last_tool) {
-    const target = s.last_tool_target ? `  ${truncate(s.last_tool_target, 80)}` : "";
-    body.push(`  last:    ${s.last_tool}${target}`);
-  }
   if (s.files_held.length > 0) {
     body.push(`  holds ${s.files_held.length} file(s):`);
     for (const f of s.files_held.slice(0, 5)) body.push(`    ${f}`);
@@ -175,8 +171,7 @@ function renderPeers(p: NonNullable<ContextReport["peers"]>): string[] {
   const lines = p.rows.map((peer) => {
     const taskBit = peer.task ? ` "${truncate(peer.task, 40)}"` : "";
     const filesBit = peer.files > 0 ? `${peer.files}f` : "0f";
-    const lastBit = peer.last_tool ? `, last: ${peer.last_tool}` : "";
-    return `  agent-${peer.name.padEnd(12)}${taskBit}  (${peer.age_min}m old, ${filesBit}${lastBit})`;
+    return `  agent-${peer.name.padEnd(12)}${taskBit}  (${peer.age_min}m old, ${filesBit})`;
   });
   return section("peers", lines);
 }

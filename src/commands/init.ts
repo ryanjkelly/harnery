@@ -17,17 +17,32 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME, pinnedBinName, stripJsonComments } from "../core/config.ts";
+import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
+import { ADAPTER_CAPABILITY_PROFILES_V3 } from "../core/events/v3/capabilities.ts";
+import type { EventV3ControlState } from "../core/events/v3/control.ts";
+import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
+import {
+  initializeEventLedgerV3,
+  readEventV3ControlState,
+  sha256V3,
+} from "../core/events/v3/index.ts";
+import { liveEventV3BuildId } from "../core/events/v3/live-routing.ts";
 import { ADAPTER_SPECS, type AdapterId, type AdapterSpec } from "../core/hooks/adapter/events.ts";
 import {
+  agentHookPathForProject,
   commandWiresSubcommand,
+  diffWiring,
   groupCommands,
   type HookGroup,
+  hookCommand,
+  isAgentHookCommand,
   makeEntry,
   type SettingsFile,
 } from "../core/hooks/adapter/wiring.ts";
@@ -79,16 +94,86 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       // CLI re-stamps the host's name into committed agent-facing surfaces.
       const bin = pinnedBinName(projectRoot) ?? (binName?.trim() ? binName : DEFAULT_BIN_NAME);
 
-      // ── --check: read-only drift report on the block + skills ──────────────
+      // ── --check: read-only drift report on every init-managed surface ─────
       if (opts.check === true) {
         const { status, issues } = checkInstructions(projectRoot, { binName: bin, adapter });
+        let hookCheckError = false;
+        let hookDrift = false;
+        const settingsPath = resolve(projectRoot, spec.settingsFile);
+        const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
+        if (!existsSync(settingsPath)) {
+          hookDrift = true;
+          issues.push(`${spec.settingsFile}: missing (re-run init)`);
+        } else {
+          try {
+            const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
+            const hookDiff = diffWiring(settings, spec, { agentHookPath: agentHook, adapter });
+            hookDrift =
+              hookDiff.missing.length > 0 ||
+              hookDiff.stale.length > 0 ||
+              hookDiff.duplicates.length > 0 ||
+              hookDiff.misplaced.length > 0 ||
+              hookDiff.orphans.length > 0 ||
+              hookDiff.invalidTopLevelKeys.length > 0 ||
+              hookDiff.invalidEventKeys.length > 0;
+            if (hookDiff.missing.length > 0) {
+              issues.push(
+                `${spec.settingsFile}: missing hooks (${hookDiff.missing.map((e) => e.settingsKey).join(", ")})`,
+              );
+            }
+            if (hookDiff.stale.length > 0) {
+              issues.push(
+                `${spec.settingsFile}: stale hook commands (${hookDiff.stale.map((e) => e.settingsKey).join(", ")})`,
+              );
+            }
+            if (hookDiff.duplicates.length > 0) {
+              issues.push(
+                `${spec.settingsFile}: duplicate hooks (${hookDiff.duplicates.map((e) => e.settingsKey).join(", ")})`,
+              );
+            }
+            if (hookDiff.misplaced.length > 0) {
+              issues.push(
+                `${spec.settingsFile}: hooks under the wrong event (${hookDiff.misplaced.map((e) => e.subcommand).join(", ")})`,
+              );
+            }
+            if (hookDiff.orphans.length > 0) {
+              issues.push(`${spec.settingsFile}: obsolete hooks (${hookDiff.orphans.join(", ")})`);
+            }
+            if (hookDiff.invalidTopLevelKeys.length > 0) {
+              issues.push(
+                `${spec.settingsFile}: invalid fields (${hookDiff.invalidTopLevelKeys.join(", ")})`,
+              );
+            }
+            if (hookDiff.invalidEventKeys.length > 0) {
+              issues.push(
+                `${spec.settingsFile}: unsupported events (${hookDiff.invalidEventKeys.join(", ")})`,
+              );
+            }
+          } catch (error) {
+            hookCheckError = true;
+            issues.push(`${spec.settingsFile}: invalid JSON (${(error as Error).message})`);
+          }
+        }
         const gitHooks = checkGitHooks(projectRoot);
         if (gitHooks.status !== "fresh") issues.push(...gitHooks.issues);
+        const ledger = readEventV3ControlState(projectRoot);
+        if (ledger.state !== "active") issues.push(`event ledger V3 is ${ledger.state}`);
+        const ledgerRuntimeIssues = eventLedgerV3RuntimeIssues(ledger, gitBuild(HARNERY_ROOT));
+        if (ledgerRuntimeIssues.length > 0) {
+          issues.push(`event ledger V3 is runtime-stale (${ledgerRuntimeIssues.join(", ")})`);
+        }
         const merged =
-          status === "error" ? "error" : gitHooks.status !== "fresh" ? "drift" : status;
+          status === "error" || hookCheckError
+            ? "error"
+            : hookDrift ||
+                gitHooks.status !== "fresh" ||
+                ledger.state !== "active" ||
+                ledgerRuntimeIssues.length > 0
+              ? "drift"
+              : status;
         const head =
           merged === "fresh"
-            ? "harn init --check: instructions + skills + git hooks are current"
+            ? "harn init --check: hooks + instructions + skills + event ledger V3 are current"
             : merged === "drift"
               ? "harn init --check: drift found (re-run `init` to refresh)"
               : "harn init --check: error";
@@ -137,9 +222,41 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         if (stamp) actions.push(stamp);
       }
 
+      // ── 1d. universal V3 event ledger ────────────────────────────────────
+      if (dryRun) {
+        const ledger = readEventV3ControlState(projectRoot);
+        const runtimeIssues = eventLedgerV3RuntimeIssues(ledger, gitBuild(HARNERY_ROOT));
+        actions.push(
+          ledger.state === "active" && runtimeIssues.length === 0
+            ? "· event ledger V3 is active"
+            : ledger.state === "active"
+              ? `+ would refresh event ledger V3 runtime profile (${runtimeIssues.join(", ")})`
+              : `+ would initialize event ledger V3 (current state: ${ledger.state})`,
+        );
+      } else {
+        const harneryBuild = gitBuild(HARNERY_ROOT);
+        const ledgerBefore = readEventV3ControlState(projectRoot);
+        const runtimeIssues = eventLedgerV3RuntimeIssues(ledgerBefore, harneryBuild);
+        const initialized = initializeEventLedgerV3({
+          coordRoot: projectRoot,
+          harneryBuild,
+          hostBuild: gitBuild(projectRoot),
+          configDigest: digestConfig(resolve(coordDir, "config.jsonc")),
+          approvalRecordId: "harnery-init-v3-universal",
+          forceNewEpoch: runtimeIssues.length > 0,
+        });
+        actions.push(
+          initialized.archived_epoch
+            ? `+ refreshed event ledger V3 runtime profile (${runtimeIssues.join(", ")}); archived the prior epoch intact`
+            : initialized.initialized
+              ? "+ initialized event ledger V3"
+              : "· event ledger V3 already active",
+        );
+      }
+
       // ── 2. adapter hooks ───────────────────────────────────────────────────
       const settingsPath = resolve(projectRoot, spec.settingsFile);
-      const agentHook = relative(projectRoot, resolve(HARNERY_ROOT, "bin", "agent-hook"));
+      const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
 
       let settings: SettingsFile;
       if (existsSync(settingsPath)) {
@@ -165,14 +282,14 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       } else if (dryRun) {
         actions.push(
           `+ would wire ${wired} hook(s), upgrade ${upgraded} stale command(s), and remove ` +
-            `${removed} legacy hook(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
+            `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
         );
       } else {
         mkdirSync(dirname(settingsPath), { recursive: true });
         writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
         actions.push(
           `+ wired ${wired} hook(s), upgraded ${upgraded} stale command(s), and removed ` +
-            `${removed} legacy hook(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
+            `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
         );
       }
       const authorizationReview = codexHookReviewAction(adapter);
@@ -204,6 +321,52 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
     });
 }
 
+function gitBuild(root: string): string {
+  const result = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  const commit = result.status === 0 ? result.stdout.trim() : "";
+  return /^[0-9a-f]{40,64}$/.test(commit)
+    ? commit
+    : createHash("sha256").update(resolve(root)).digest("hex");
+}
+
+function digestConfig(path: string): `sha256:${string}` {
+  return sha256V3(existsSync(path) ? readFileSync(path) : Buffer.from("{}\n"));
+}
+
+/**
+ * Runtime gates bound into an immutable V3 epoch. `init` is the explicit
+ * upgrade boundary: when code or capability profiles change, it archives the
+ * old epoch intact and activates a compatible one instead of letting upgraded
+ * hooks fail closed against stale approvals.
+ */
+export function eventLedgerV3RuntimeIssues(
+  control: EventV3ControlState,
+  harneryBuild: string,
+): string[] {
+  if (control.state !== "active") return [];
+  const issues: string[] = [];
+  const profile = control.genesis.profile;
+  if (profile.initial_schema_digest !== EVENT_V3_SCHEMA_DIGEST) issues.push("schema digest");
+  if (profile.contract_source_digest !== EVENT_V3_SCHEMA_DIGEST) issues.push("contract digest");
+  if (!profile.producer_build_ids.includes(liveEventV3BuildId(harneryBuild))) {
+    issues.push("producer build");
+  }
+  const expectedCapabilities = Object.values(ADAPTER_CAPABILITY_PROFILES_V3).map((value) =>
+    sha256V3(canonicalJsonV3(value)),
+  );
+  if (
+    expectedCapabilities.some(
+      (digest) => !profile.adapter_capability_profile_digests.includes(digest),
+    )
+  ) {
+    issues.push("adapter capabilities");
+  }
+  return issues;
+}
+
 export function codexHookReviewAction(adapter: AdapterId): string | null {
   if (adapter !== "codex") return null;
   return (
@@ -222,8 +385,7 @@ export function codexHookReviewAction(adapter: AdapterId): string | null {
  * `{ command }`) and ensures the root `version` key when the adapter requires
  * one. Pure (no fs/git) so it's unit-testable.
  *
- * The trailing space in the match (`agent-hook ${subcommand} `) is load-bearing:
- * it keeps `stop` from matching `stop-failure`.
+ * Token-aware matching keeps `stop` from matching `stop-failure`.
  */
 export function wireHooks(
   settings: SettingsFile,
@@ -239,31 +401,40 @@ export function wireHooks(
   let already = 0;
   let removed = 0;
   let upgraded = 0;
-  for (const { settingsKey, subcommand } of spec.legacyEvents ?? []) {
-    const groups = settings.hooks[settingsKey] ?? [];
-    const kept = groups.filter(
-      (group) =>
-        !groupCommands(group).some((command) => commandWiresSubcommand(command, subcommand)),
-    );
-    removed += groups.length - kept.length;
-    if (kept.length === 0) delete settings.hooks[settingsKey];
-    else settings.hooks[settingsKey] = kept;
+  for (const { subcommand } of spec.legacyEvents ?? []) {
+    for (const settingsKey of Object.keys(settings.hooks)) {
+      removed += removeCommandsFromKey(settings, settingsKey, (command) =>
+        commandWiresSubcommand(command, subcommand),
+      );
+    }
   }
   for (const { settingsKey, subcommand } of spec.events) {
     const command = hookCommand(spec, agentHookPath, subcommand, adapter);
-    const groups = settings.hooks[settingsKey] ?? [];
     let present = false;
-    for (const group of groups) {
-      upgraded += rewriteStaleCommands(group, subcommand, command, () => {
-        present = true;
-      });
+    for (const key of Object.keys(settings.hooks)) {
+      if (key === settingsKey) continue;
+      removed += removeCommandsFromKey(settings, key, (candidate) =>
+        commandWiresSubcommand(candidate, subcommand),
+      );
     }
+    const groups = settings.hooks[settingsKey] ?? [];
+    const nextGroups: HookGroup[] = [];
+    for (const group of groups) {
+      const normalized = normalizeEventGroup(group, subcommand, command, present);
+      if (normalized.found && !present) present = true;
+      upgraded += normalized.upgraded;
+      removed += normalized.removed;
+      if (normalized.group) nextGroups.push(normalized.group);
+    }
+    if (nextGroups.length > 0) settings.hooks[settingsKey] = nextGroups;
+    else delete settings.hooks[settingsKey];
     if (present) {
       already++;
       continue;
     }
-    groups.push(makeEntry(spec.entryShape, command));
-    settings.hooks[settingsKey] = groups;
+    const current = settings.hooks[settingsKey] ?? [];
+    current.push(makeEntry(spec.entryShape, command));
+    settings.hooks[settingsKey] = current;
     wired++;
   }
   return { wired, already, removed, upgraded };
@@ -279,49 +450,80 @@ export function wireHooks(
  * that don't set the var. Only the env expansion is quoted so the
  * `agent-hook <subcommand> ` wiring match stays byte-identical.
  */
-function hookCommand(
-  spec: AdapterSpec,
-  agentHookPath: string,
-  subcommand: string,
-  adapter: AdapterId,
-): string {
-  const anchor = spec.projectDirEnv ? `"\${${spec.projectDirEnv}:-.}"/` : "";
-  return `bash ${anchor}${agentHookPath} ${subcommand} --adapter ${adapter}`;
-}
-
-/**
- * Rewrite any harnery-owned command for `subcommand` inside one hook group to
- * the canonical form, in place. Returns the number of commands rewritten and
- * calls `onPresent` when the subcommand is wired in this group at all.
- */
-function rewriteStaleCommands(
+function normalizeEventGroup(
   group: HookGroup,
   subcommand: string,
   canonical: string,
-  onPresent: () => void,
-): number {
-  let rewritten = 0;
+  alreadyFound: boolean,
+): { group: HookGroup | null; found: boolean; upgraded: number; removed: number } {
+  let found = false;
+  let upgraded = 0;
+  let removed = 0;
   if ("command" in group && typeof group.command === "string") {
     if (commandWiresSubcommand(group.command, subcommand)) {
-      onPresent();
+      if (alreadyFound) return { group: null, found: true, upgraded: 0, removed: 1 };
+      found = true;
       if (group.command !== canonical) {
         group.command = canonical;
-        rewritten++;
+        upgraded++;
       }
     }
   }
   if ("hooks" in group && Array.isArray(group.hooks)) {
+    const kept = [] as typeof group.hooks;
     for (const hook of group.hooks) {
-      if (typeof hook.command !== "string") continue;
-      if (!commandWiresSubcommand(hook.command, subcommand)) continue;
-      onPresent();
+      if (typeof hook.command !== "string" || !commandWiresSubcommand(hook.command, subcommand)) {
+        kept.push(hook);
+        continue;
+      }
+      if (alreadyFound || found) {
+        removed++;
+        continue;
+      }
+      found = true;
       if (hook.command !== canonical) {
         hook.command = canonical;
-        rewritten++;
+        upgraded++;
       }
+      kept.push(hook);
     }
+    group.hooks = kept;
+    if (group.hooks.length === 0) return { group: null, found, upgraded, removed };
   }
-  return rewritten;
+  return { group, found, upgraded, removed };
+}
+
+/** Remove matching command handlers while preserving unrelated handlers in a mixed group. */
+function removeCommandsFromKey(
+  settings: SettingsFile,
+  settingsKey: string,
+  predicate: (command: string) => boolean,
+): number {
+  const groups = settings.hooks?.[settingsKey];
+  if (!Array.isArray(groups)) return 0;
+  let removed = 0;
+  const kept: HookGroup[] = [];
+  for (const group of groups) {
+    if ("command" in group && typeof group.command === "string") {
+      if (predicate(group.command)) removed++;
+      else kept.push(group);
+      continue;
+    }
+    if ("hooks" in group && Array.isArray(group.hooks)) {
+      const handlers = group.hooks.filter((hook) => {
+        if (typeof hook.command !== "string" || !predicate(hook.command)) return true;
+        removed++;
+        return false;
+      });
+      group.hooks = handlers;
+      if (handlers.length > 0) kept.push(group);
+      continue;
+    }
+    kept.push(group);
+  }
+  if (kept.length === 0) delete settings.hooks?.[settingsKey];
+  else settings.hooks![settingsKey] = kept;
+  return removed;
 }
 
 /**
@@ -338,17 +540,11 @@ export function unwireHooks(settings: SettingsFile): { removed: number; remainin
   if (!settings.hooks || typeof settings.hooks !== "object") return { removed: 0, remaining: 0 };
   let removed = 0;
   for (const key of Object.keys(settings.hooks)) {
-    const groups = settings.hooks[key];
-    if (!Array.isArray(groups)) continue;
-    const kept = groups.filter((g) => !groupCommands(g).some((c) => c.includes("agent-hook ")));
-    removed += groups.length - kept.length;
-    // removing the emptied hook key is the intent (tiny one-shot object)
-    if (kept.length === 0) delete settings.hooks[key];
-    else settings.hooks[key] = kept;
+    removed += removeCommandsFromKey(settings, key, isAgentHookCommand);
   }
   let remaining = 0;
   for (const groups of Object.values(settings.hooks)) {
-    if (Array.isArray(groups)) remaining += groups.length;
+    if (Array.isArray(groups)) remaining += groups.flatMap(groupCommands).length;
   }
   // drop the now-empty hooks object so callers see a clean shape
   if (Object.keys(settings.hooks).length === 0) delete settings.hooks;

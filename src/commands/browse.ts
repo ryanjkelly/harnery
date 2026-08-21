@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { Command } from "commander";
@@ -33,6 +33,24 @@ import {
   writeNetscapeCookieFile,
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
+import {
+  buildQaManifest,
+  classifySignatures,
+  type QaClassification,
+  type QaContext,
+  type QaManifest,
+  type QaScope,
+  type QaSignature,
+} from "../lib/browser/qa-plan.ts";
+import {
+  type CritiqueReusePlan,
+  DEFAULT_REUSE_MISMATCH_RATIO,
+  type PersistedCritique,
+  planCritiqueReuse,
+  QA_CRITIQUE_CONTRACT_VERSION,
+  rubricDigest,
+} from "../lib/browser/qa-reuse.ts";
+import { loadQaSnapshot, resolveQaBaseline, saveQaSnapshot } from "../lib/browser/qa-snapshot.ts";
 import {
   type BrowserSessionServer,
   startBrowserSessionServer,
@@ -181,6 +199,16 @@ interface BrowseOpts {
   diff?: string;
   diffThreshold?: string;
   diffFail?: boolean;
+  // Diff-aware QA planning (qa-plan.ts / qa-snapshot.ts)
+  qaPlan?: boolean;
+  qaSnapshot?: boolean;
+  qaTarget?: string;
+  qaTheme?: string;
+  qaState?: string;
+  qaScope?: string[];
+  qaStates?: string[];
+  qaReuse?: boolean;
+  qaReuseThreshold?: string;
   // Next.js dev-overlay capture (auto-on; --no-dev-overlay opts out)
   devOverlay?: boolean;
 }
@@ -591,6 +619,67 @@ export function registerBrowseCommand(
       "Exit non-zero if --diff mismatchRatio exceeds --diff-threshold; requires --diff.",
     )
     .option(
+      "--qa-plan",
+      "Classify this render against the persisted QA baseline and emit a review manifest " +
+        "(change class, scope selectors, required contexts, provider-call ceiling) under " +
+        "`qaPlan` in the JSON envelope — BEFORE any vision spend. Text/data-only edits plan " +
+        "zero model calls; ambiguity widens, never narrows. Baseline comes from the snapshot " +
+        "store (seed one with --qa-snapshot); no baseline classifies as `unknown`.",
+    )
+    .option(
+      "--qa-snapshot",
+      "Persist this render (signature + DOM + full-page screenshot) as the QA baseline for the " +
+        "target + context, replacing any prior snapshot atomically. Run it on a page state you " +
+        "trust — typically right after a passing QA run — so the next --qa-plan inherits its " +
+        "baseline for free.",
+    )
+    .option(
+      "--qa-target <key>",
+      "Override the snapshot-store key (default: the url argument). Lets a production render " +
+        "seed the baseline for a local file/route: browse the prod URL with --qa-snapshot " +
+        "--qa-target <local-target>, then --qa-plan the local target.",
+    )
+    .option(
+      "--qa-theme <theme>",
+      "Context label for the QA snapshot store: light | dark (default light). Labels the " +
+        "stored/compared context; it does not switch the page's rendered theme.",
+      "light",
+    )
+    .option(
+      "--qa-state <name>",
+      "Context state label for the QA snapshot store (default 'default').",
+      "default",
+    )
+    .option(
+      "--qa-scope <selector>",
+      "Explicit scope selector from the producing task (repeatable) — resolution-order rung 1; " +
+        "overrides lifted anchors in the --qa-plan manifest.",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
+      "--qa-states <names>",
+      "Comma-separated interaction states to review (promotes the plan to interaction-state).",
+      (value: string) =>
+        value
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+    )
+    .option(
+      "--qa-reuse",
+      "Reuse the baseline run's critique verdicts for tiles whose pixels provably didn't " +
+        "change (band-diff against the persisted --qa-snapshot screenshot; strict mismatch " +
+        "threshold). Only clean regions are reused — a region with baseline findings or any " +
+        "pixel drift is always re-reviewed. Requires --check-critique; misses degrade to a " +
+        "full fresh review, never an error. Stats land under `qaReuse` in the JSON envelope.",
+    )
+    .option(
+      "--qa-reuse-threshold <ratio>",
+      "Band-diff mismatch ratio at or below which a clean tile region is reused " +
+        `(default ${DEFAULT_REUSE_MISMATCH_RATIO}; lower it toward 0 for stricter reuse).`,
+    )
+    .option(
       "--no-dev-overlay",
       "Skip auto-capture of Next.js dev-overlay issues. Default: capture every queued error (kind/code/message/stack) when a <nextjs-portal> shadow root is present. Necessary because Next.js 16 + React 19 route hydration errors + most React warnings through onCaughtError → next-devtools' errorQueue, NOT through console.error, so Playwright's standard listener doesn't see them. Surfaces them in the JSON envelope under `devOverlay`.",
     )
@@ -818,17 +907,138 @@ async function runBrowse(
           opts.checkContrast !== undefined ? { scope: contentScope(opts.checkContrast) } : null,
       });
     }
+    // Diff-aware QA planning. Signature capture must also happen BEFORE any
+    // annotation overlays are injected — an annotation box is a DOM change.
+    let qaPlan: QaPlanReport | undefined;
+    let qaCapture: QaCaptureState | undefined;
+    if (opts.qaPlan || opts.qaSnapshot) {
+      const qa = await runQaPlanning(browser, url, navResult.url, opts);
+      qaPlan = qa.report;
+      qaCapture = qa.capture;
+      if (qaPlan?.manifest) {
+        const m = qaPlan.manifest;
+        emit.log(
+          `qa-plan: class=${m.change_class} scopes=${m.scopes.map((s) => s.selector).join(",") || "-"} ` +
+            `contexts=${m.contexts.length} model-calls<=${m.predicted.model_calls_ceiling} baseline=${m.baseline_source}`,
+          "info",
+        );
+      }
+    }
     // Vision critique. Capture tiles BEFORE any annotation overlays are injected
     // so the model sees the real page, not our boxes.
     let critique: CritiqueResult | undefined;
+    let qaReuse: CritiqueReusePlan | undefined;
+    let critiqueTiles: CritiqueTile[] | undefined;
+    let critiqueFullPage: Buffer | undefined;
     if (opts.checkCritique !== undefined) {
-      const tiles = await captureCritiqueTiles(browser, opts);
+      const rubric = opts.checkCritiqueRubric ?? DEFAULT_CRITIQUE_RUBRIC;
+      const captured = await captureCritiqueTiles(
+        browser,
+        opts,
+        context?.critiqueProvider?.tileBudgetPx,
+      );
+      critiqueTiles = captured.tiles;
+      critiqueFullPage = captured.fullPage;
+      let tilesToReview = captured.tiles;
+      if (opts.qaReuse) {
+        const reuseContext: QaContext = {
+          viewport: opts.viewport ?? "desktop",
+          theme: opts.qaTheme === "dark" ? "dark" : "light",
+          state: opts.qaState ?? "default",
+        };
+        const stored = loadQaSnapshot(opts.qaTarget ?? url, reuseContext, {});
+        if (stored?.screenshotPath && stored.critique) {
+          qaReuse = planCritiqueReuse({
+            baselineScreenshot: readFileSync(stored.screenshotPath),
+            baselineCritique: stored.critique,
+            currentScreenshot: captured.fullPage,
+            tiles: captured.tiles,
+            rubric,
+            mismatchThreshold: opts.qaReuseThreshold
+              ? Number.parseFloat(opts.qaReuseThreshold)
+              : undefined,
+          });
+        } else {
+          qaReuse = {
+            mode: "band-diff",
+            review: captured.tiles,
+            decisions: [],
+            tiles_total: captured.tiles.length,
+            tiles_reused: 0,
+            tiles_reviewed: captured.tiles.length,
+            provider_calls_avoided: 0,
+            mismatch_threshold: DEFAULT_REUSE_MISMATCH_RATIO,
+            invalidation:
+              "no persisted baseline snapshot with critique results for this target/context",
+          };
+        }
+        tilesToReview = qaReuse.review;
+        emit.log(
+          `qa-reuse: ${qaReuse.tiles_reused}/${qaReuse.tiles_total} tiles reused (band-diff), ` +
+            `${qaReuse.tiles_reviewed} reviewed fresh${qaReuse.invalidation ? ` — ${qaReuse.invalidation}` : ""}`,
+          "info",
+        );
+      }
       critique = await runCritique({
         url: navResult.url,
-        rubric: opts.checkCritiqueRubric ?? DEFAULT_CRITIQUE_RUBRIC,
-        tiles,
+        rubric,
+        tiles: tilesToReview,
         provider: context?.critiqueProvider,
       });
+    }
+    // Persist the QA baseline AFTER critique so a passing run's verdicts ride
+    // along with the snapshot (still before annotations mutate the page).
+    if (opts.qaSnapshot && qaCapture) {
+      const screenshotPng = critiqueFullPage ?? (await browser.fullPageScreenshotBuffer());
+      // Persist critique results only when the full tile set was freshly
+      // reviewed — a partially-reused run must never become the next
+      // baseline's finding record.
+      const fullCoverage =
+        critique?.provider &&
+        critique.outcome !== "skipped" &&
+        critiqueTiles !== undefined &&
+        (!qaReuse || qaReuse.tiles_reused === 0);
+      const persistedCritique: PersistedCritique | undefined =
+        fullCoverage && critique && critiqueTiles
+          ? {
+              contract_version: QA_CRITIQUE_CONTRACT_VERSION,
+              rubric_digest: rubricDigest(opts.checkCritiqueRubric ?? DEFAULT_CRITIQUE_RUBRIC),
+              outcome: critique.outcome as "pass" | "fail",
+              findings: critique.findings,
+              tiles: critiqueTiles.map((t) => ({
+                index: t.index,
+                label: t.label,
+                x: t.x ?? 0,
+                scrollY: t.scrollY,
+                width: t.width,
+                height: t.height,
+              })),
+            }
+          : undefined;
+      const saved = saveQaSnapshot(
+        qaCapture.target,
+        qaCapture.context,
+        {
+          signature: qaCapture.signature,
+          domHtml: qaCapture.domHtml,
+          screenshotPng,
+          ...(persistedCritique ? { critique: persistedCritique } : {}),
+        },
+        {},
+      );
+      if (qaPlan) {
+        qaPlan.snapshotSaved = {
+          path: saved.path,
+          target: qaCapture.target,
+          context: qaCapture.context,
+        };
+      }
+      emit.log(
+        `qa-snapshot: saved baseline for ${qaCapture.target} ` +
+          `[${qaCapture.context.viewport}/${qaCapture.context.theme}/${qaCapture.context.state}]` +
+          `${persistedCritique ? " (with critique results)" : ""}`,
+        "info",
+      );
     }
     let asserts: AssertResult[] | undefined;
     if (opts.assert && opts.assert.length > 0) {
@@ -948,6 +1158,8 @@ async function runBrowse(
         asserts,
         devOverlay,
         batchResult,
+        qaPlan,
+        qaReuse ? summarizeReuse(qaReuse) : undefined,
       );
     } else {
       await runTrioMode(
@@ -966,6 +1178,8 @@ async function runBrowse(
         asserts,
         devOverlay,
         batchResult,
+        qaPlan,
+        qaReuse ? summarizeReuse(qaReuse) : undefined,
       );
     }
 
@@ -1209,6 +1423,8 @@ async function runPrintMode(
   asserts: AssertResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
+  qaPlan: QaPlanReport | undefined,
+  qaReuse: Record<string, unknown> | undefined,
 ): Promise<void> {
   let body: string | null = null;
   if (opts.html) {
@@ -1243,6 +1459,8 @@ async function runPrintMode(
     if (critique) result.critique = critique;
     if (asserts) result.asserts = asserts;
     if (devOverlay) result.devOverlay = devOverlay;
+    if (qaPlan) result.qaPlan = qaPlan;
+    if (qaReuse) result.qaReuse = qaReuse;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
     }
@@ -1279,6 +1497,8 @@ async function runTrioMode(
   asserts: AssertResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
+  qaPlan: QaPlanReport | undefined,
+  qaReuse: Record<string, unknown> | undefined,
 ): Promise<void> {
   const prefix = resolveOutPrefix(opts.out);
   mkdirSync(dirname(prefix), { recursive: true });
@@ -1351,6 +1571,8 @@ async function runTrioMode(
   if (critique) envelope.critique = critique;
   if (asserts) envelope.asserts = asserts;
   if (devOverlay) envelope.devOverlay = devOverlay;
+  if (qaPlan) envelope.qaPlan = qaPlan;
+  if (qaReuse) envelope.qaReuse = qaReuse;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
   }
@@ -1812,9 +2034,113 @@ function applyContentFailGates(opts: BrowseOpts, content: ContentChecksResult | 
 // Vision critique tiling
 // ---------------------------------------------------------------------------
 
-async function captureCritiqueTiles(browser: Browser, opts: BrowseOpts): Promise<CritiqueTile[]> {
+/** Envelope-safe reuse stats: everything except the `review` tiles, whose
+ * base64 PNGs would bloat the JSON by megabytes. */
+function summarizeReuse(plan: CritiqueReusePlan): Record<string, unknown> {
+  const { review: _review, ...rest } = plan;
+  return rest;
+}
+
+/** What `--qa-plan` / `--qa-snapshot` put in the JSON envelope. */
+interface QaPlanReport {
+  manifest?: QaManifest;
+  classification?: QaClassification;
+  snapshotSaved?: { path: string; target: string; context: QaContext };
+  signature: { nodes: number; stylesheets: number; truncated: boolean };
+}
+
+/** The captured page state a later --qa-snapshot persist needs. Kept out of
+ * the envelope: domHtml can be megabytes. */
+interface QaCaptureState {
+  target: string;
+  context: QaContext;
+  signature: QaSignature;
+  domHtml: string;
+}
+
+/**
+ * Diff-aware QA planning inside a browse run: capture the page's QA signature
+ * (before any annotation overlay mutates the DOM) and classify against the
+ * persisted baseline. Persistence happens later in the run — after critique —
+ * so a passing run's verdicts ride along with the snapshot; this helper only
+ * supplies the live-page inputs (signature, page height, explicit scope match
+ * counts). Classification and manifest math live in lib/browser/qa-plan.ts.
+ */
+async function runQaPlanning(
+  browser: Browser,
+  targetArg: string,
+  renderedUrl: string,
+  opts: BrowseOpts,
+): Promise<{ report: QaPlanReport; capture: QaCaptureState }> {
+  const context: QaContext = {
+    viewport: opts.viewport ?? "desktop",
+    theme: opts.qaTheme === "dark" ? "dark" : "light",
+    state: opts.qaState ?? "default",
+  };
+  const target = opts.qaTarget ?? targetArg;
+  const captured = await browser.qaSignature();
+  const signature: QaSignature = {
+    url: renderedUrl,
+    capturedAt: new Date().toISOString(),
+    nodes: captured.nodes,
+    stylesheets: captured.stylesheets,
+    ...(captured.truncated ? { truncated: true } : {}),
+  };
+  const report: QaPlanReport = {
+    signature: {
+      nodes: captured.nodes.length,
+      stylesheets: captured.stylesheets.length,
+      truncated: captured.truncated,
+    },
+  };
+
+  if (opts.qaPlan) {
+    const baseline = await resolveQaBaseline({ target, context });
+    const classification = classifySignatures(baseline.signature, signature);
+    // Full-page tile ceiling from the real page height and the critique
+    // tiling knobs, so the predicted cost matches what --check-critique
+    // would actually spend.
+    const pageHeight = await browser.currentPage.evaluate(() =>
+      Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
+    );
+    const band = Number.parseInt(opts.checkCritiqueBand ?? "1400", 10);
+    const overlap = Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10);
+    const maxTiles = Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10);
+    const estimatedFullPageTiles = Math.min(
+      maxTiles,
+      Math.max(1, Math.ceil(pageHeight / Math.max(1, band - overlap))),
+    );
+    const explicitScopes: QaScope[] = [];
+    for (const selector of opts.qaScope ?? []) {
+      const matches = await browser.currentPage.evaluate(
+        (sel) => document.querySelectorAll(sel).length,
+        selector,
+      );
+      explicitScopes.push({ selector, reason: "explicit input (--qa-scope)", matches });
+    }
+    report.classification = classification;
+    report.manifest = buildQaManifest(classification, {
+      baselineSource: baseline.source,
+      ...(explicitScopes.length > 0 ? { explicitScopes } : {}),
+      ...(opts.qaStates?.length ? { states: opts.qaStates } : {}),
+      ...(opts.assert?.length ? { outcomeAssertions: opts.assert } : {}),
+      estimatedFullPageTiles,
+    });
+  }
+
+  return { report, capture: { target, context, signature, domHtml: captured.domHtml } };
+}
+
+async function captureCritiqueTiles(
+  browser: Browser,
+  opts: BrowseOpts,
+  tileBudgetPx?: number,
+): Promise<{ tiles: CritiqueTile[]; fullPage: Buffer }> {
   const maxTiles = Math.max(1, Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10));
-  const band = Math.max(200, Number.parseInt(opts.checkCritiqueBand ?? "1400", 10));
+  // The routed provider's vision long-edge budget caps band height so tiles
+  // are never silently downscaled by the model.
+  const bandFlag = Math.max(200, Number.parseInt(opts.checkCritiqueBand ?? "1400", 10));
+  const band = tileBudgetPx ? Math.max(200, Math.min(bandFlag, tileBudgetPx)) : bandFlag;
   const overlap = Math.max(0, Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10));
 
   // Capture the whole page ONCE, then crop tiles from the pixels. Playwright's
@@ -1826,7 +2152,22 @@ async function captureCritiqueTiles(browser: Browser, opts: BrowseOpts): Promise
     typeof opts.checkCritique === "string"
       ? await browser.elementTiles(opts.checkCritique)
       : undefined;
-  const tiles = tilesFromFullPage(buffer, { elementRects, bandHeight: band, overlap, maxTiles });
+  // Content-aware seams: atoms let band cuts snap into gaps and over-tall
+  // selector tiles band internally. Extraction failing is never fatal — the
+  // tiler falls back to fixed bands, today's behavior.
+  let atoms: Awaited<ReturnType<Browser["visualAtoms"]>> | undefined;
+  try {
+    atoms = await browser.visualAtoms();
+  } catch {
+    atoms = undefined;
+  }
+  const tiles = tilesFromFullPage(buffer, {
+    elementRects,
+    bandHeight: band,
+    overlap,
+    maxTiles,
+    atoms,
+  });
 
   if (elementRects && elementRects.length > maxTiles) {
     emit.log(
@@ -1839,7 +2180,7 @@ async function captureCritiqueTiles(browser: Browser, opts: BrowseOpts): Promise
       "warn",
     );
   }
-  return tiles;
+  return { tiles, fullPage: buffer };
 }
 function logCritiqueSummary(critique: CritiqueResult): void {
   if (critique.outcome === "skipped") {

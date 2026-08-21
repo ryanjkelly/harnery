@@ -1,50 +1,44 @@
-/**
- * Locks the agent image-feed capture effect: viewed (Read) + produced (Bash)
- * detection, content-addressed dedup, the produced mtime gate, the size cap,
- * and the emitted `image.captured` shape. Plus the retention janitor's size +
- * age pruning.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { captureImages, imageJanitor } from "../../src/core/hooks/effects/image-capture.ts";
+import type { EventV3 } from "../../src/core/events/v3/contract.ts";
+import { validateEventV3 } from "../../src/core/events/v3/validate.ts";
+import type { ParsedPayload } from "../../src/core/hooks/adapter/parse.ts";
+import {
+  captureImages,
+  imageJanitor,
+  recordImageArtifactsV3,
+} from "../../src/core/hooks/effects/image-capture.ts";
+import { eventV3Fixture } from "../helpers/event-v3.ts";
 
-// A 1×1 PNG (smallest valid). Bytes are stable so the sha256 is deterministic.
-const PNG_1x1 = Buffer.from(
+const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   "base64",
 );
 
 function freshRoot(): string {
-  const root = mkdtempSync(path.join(os.tmpdir(), "harn-img-"));
+  const root = mkdtempSync(path.join(os.tmpdir(), "harn-img-v3-"));
   mkdirSync(path.join(root, ".harnery"), { recursive: true });
   return root;
 }
 
 function writePng(dir: string, name: string): string {
-  const p = path.join(dir, name);
-  writeFileSync(p, PNG_1x1);
-  return p;
+  const file = path.join(dir, name);
+  writeFileSync(file, PNG_1X1);
+  return file;
 }
 
-function readCaptured(root: string): Array<Record<string, unknown>> {
-  const p = path.join(root, ".harnery", "events.ndjson");
-  if (!existsSync(p)) return [];
-  return readFileSync(p, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => JSON.parse(l) as Record<string, unknown>)
-    .filter((e) => e.event_type === "image.captured");
+function payload(value: Partial<ParsedPayload>): ParsedPayload {
+  return { raw: { cwd: value.cwd }, ...value };
 }
 
 function imagesOf(root: string): string[] {
@@ -52,159 +46,103 @@ function imagesOf(root: string): string[] {
   return existsSync(dir) ? readdirSync(dir) : [];
 }
 
-describe("image-capture: viewed (Read)", () => {
-  test("captures a Read of an image → blob + event with role=viewed", () => {
+describe("V3 image capture", () => {
+  test("content-addresses a viewed image with only a workspace-relative path", () => {
     const root = freshRoot();
-    const png = writePng(root, "shot.png");
-    captureImages(root, {
-      eventType: "tool.pre_use",
-      data: {
-        tool_name: "Read",
-        tool_input: JSON.stringify({ file_path: png }),
-        intent: "look at the screenshot",
-        tool_use_id: "toolu_1",
+    const file = writePng(root, "shot.png");
+
+    const captured = captureImages(
+      root,
+      "tool.requested",
+      payload({ cwd: root, tool_name: "view_image", tool_input: { path: file } }),
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ role: "viewed", ext: "png", workspace_path: "shot.png" });
+    expect(imagesOf(root)).toEqual([`${captured[0]!.hash}.png`]);
+  });
+
+  test("captures fresh shell output but rejects an old referenced image", () => {
+    const root = freshRoot();
+    const fresh = writePng(root, "fresh.png");
+    const old = writePng(root, "old.png");
+    const tenMinutesAgo = Date.now() / 1_000 - 600;
+    utimesSync(old, tenMinutesAgo, tenMinutesAgo);
+
+    const captured = captureImages(
+      root,
+      "tool.completed",
+      payload({
+        cwd: root,
+        tool_name: "exec_command",
+        tool_input: { cmd: `render ${fresh} ${old}` },
+        tool_response: { output: `wrote ${fresh}; baseline ${old}` },
+      }),
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ role: "produced", workspace_path: "fresh.png" });
+  });
+
+  test("records a schema-valid canonical artifact observation", () => {
+    const root = freshRoot();
+    const source = eventV3Fixture("tool.requested", 1) as EventV3;
+    const hash = "b".repeat(64);
+
+    recordImageArtifactsV3(root, source, [
+      { hash, ext: "png", bytes: PNG_1X1.length, role: "viewed", workspace_path: "shot.png" },
+    ]);
+
+    const active = path.join(root, ".harnery", "ledgers", "v3", "active.ndjson");
+    const event = JSON.parse(readFileSync(active, "utf8").trim()) as EventV3;
+    expect(validateEventV3(event).issues).toEqual([]);
+    expect(event).toMatchObject({
+      event_type: "artifact.observed",
+      links: { caused_by: [source.event_id] },
+      payload: {
+        artifact: {
+          artifact_id: `art_${hash}`,
+          kind: "image",
+          media_type: "image/png",
+          workspace_path: "shot.png",
+        },
+        operation: "viewed",
       },
-      payload: { raw: { cwd: root } } as never,
-      instanceId: "iid-1",
-      sessionId: "sid-1",
-      adapter: "claude-code",
     });
-
-    const events = readCaptured(root);
-    expect(events.length).toBe(1);
-    const d = events[0]!.data as Record<string, unknown>;
-    expect(d.role).toBe("viewed");
-    expect(d.ext).toBe("png");
-    expect(d.intent).toBe("look at the screenshot");
-    expect(d.source_path).toBe("shot.png"); // canonicalized under coordRoot
-    expect(typeof d.hash).toBe("string");
-    expect(imagesOf(root)).toEqual([`${d.hash}.png`]);
-  });
-
-  test("ignores Read of a non-image file", () => {
-    const root = freshRoot();
-    const txt = path.join(root, "notes.txt");
-    writeFileSync(txt, "hello");
-    captureImages(root, {
-      eventType: "tool.pre_use",
-      data: { tool_name: "Read", tool_input: JSON.stringify({ file_path: txt }) },
-      payload: { raw: { cwd: root } } as never,
-      instanceId: "iid",
-      sessionId: "sid",
-      adapter: "claude-code",
-    });
-    expect(readCaptured(root).length).toBe(0);
-  });
-
-  test("dedup: re-viewing identical bytes → one blob, two events", () => {
-    const root = freshRoot();
-    const a = writePng(root, "a.png");
-    const b = writePng(root, "b.png"); // same bytes, different name
-    for (const file of [a, b]) {
-      captureImages(root, {
-        eventType: "tool.pre_use",
-        data: { tool_name: "Read", tool_input: JSON.stringify({ file_path: file }) },
-        payload: { raw: { cwd: root } } as never,
-        instanceId: "iid",
-        sessionId: "sid",
-        adapter: "claude-code",
-      });
-    }
-    expect(readCaptured(root).length).toBe(2); // two touches
-    expect(imagesOf(root).length).toBe(1); // one content-addressed blob
-  });
-});
-
-describe("image-capture: produced (Bash)", () => {
-  test("captures a freshly-produced image referenced in command output", () => {
-    const root = freshRoot();
-    const png = writePng(root, "out.png");
-    captureImages(root, {
-      eventType: "tool.post_use",
-      data: { tool_name: "Bash" },
-      payload: {
-        raw: { cwd: root, tool_input: { command: `harn browse https://x --out ${root}/out` } },
-        tool_response: { stdout: `wrote ${png}`, stderr: "" },
-      } as never,
-      instanceId: "iid",
-      sessionId: "sid",
-      adapter: "claude-code",
-    });
-    const events = readCaptured(root);
-    expect(events.length).toBe(1);
-    const d = events[0]!.data as Record<string, unknown>;
-    expect(d.role).toBe("produced");
-    expect(String(d.command_head)).toContain("harn browse");
-  });
-
-  test("produced mtime gate: an old image mentioned in output is NOT captured", () => {
-    const root = freshRoot();
-    const png = writePng(root, "old.png");
-    const old = Date.now() / 1000 - 600; // 10 min ago
-    utimesSync(png, old, old);
-    captureImages(root, {
-      eventType: "tool.post_use",
-      data: { tool_name: "Bash" },
-      payload: {
-        raw: { cwd: root, tool_input: { command: `cat ${png}` } },
-        tool_response: { stdout: png },
-      } as never,
-      instanceId: "iid",
-      sessionId: "sid",
-      adapter: "claude-code",
-    });
-    expect(readCaptured(root).length).toBe(0);
   });
 });
 
 describe("imageJanitor", () => {
-  test("prunes blobs older than the age cap", () => {
+  test("prunes by age and then oldest-first by size", () => {
     const root = freshRoot();
     const dir = path.join(root, ".harnery", "images");
     mkdirSync(dir, { recursive: true });
-    const oldBlob = path.join(dir, `${"a".repeat(64)}.png`);
-    const newBlob = path.join(dir, `${"b".repeat(64)}.png`);
-    writeFileSync(oldBlob, PNG_1x1);
-    writeFileSync(newBlob, PNG_1x1);
-    const old = Date.now() / 1000 - 40 * 24 * 60 * 60; // 40 days ago
-    utimesSync(oldBlob, old, old);
+    const names = ["a", "b", "c"].map((value) => path.join(dir, `${value.repeat(64)}.png`));
+    for (const [index, name] of names.entries()) {
+      writeFileSync(name, PNG_1X1);
+      const timestamp = Date.now() / 1_000 - (names.length - index) * 100;
+      utimesSync(name, timestamp, timestamp);
+    }
+    const expired = path.join(dir, `${"d".repeat(64)}.png`);
+    writeFileSync(expired, PNG_1X1);
+    const fortyDaysAgo = Date.now() / 1_000 - 40 * 24 * 60 * 60;
+    utimesSync(expired, fortyDaysAgo, fortyDaysAgo);
 
-    const prev = process.env.HARNERY_IMAGES_MAX_AGE_DAYS;
+    const previousBytes = process.env.HARNERY_IMAGES_MAX_BYTES;
+    const previousAge = process.env.HARNERY_IMAGES_MAX_AGE_DAYS;
+    process.env.HARNERY_IMAGES_MAX_BYTES = String(PNG_1X1.length * 2 + 1);
     process.env.HARNERY_IMAGES_MAX_AGE_DAYS = "30";
     try {
       imageJanitor(root);
     } finally {
-      if (prev === undefined) delete process.env.HARNERY_IMAGES_MAX_AGE_DAYS;
-      else process.env.HARNERY_IMAGES_MAX_AGE_DAYS = prev;
+      if (previousBytes === undefined) delete process.env.HARNERY_IMAGES_MAX_BYTES;
+      else process.env.HARNERY_IMAGES_MAX_BYTES = previousBytes;
+      if (previousAge === undefined) delete process.env.HARNERY_IMAGES_MAX_AGE_DAYS;
+      else process.env.HARNERY_IMAGES_MAX_AGE_DAYS = previousAge;
     }
 
-    expect(existsSync(oldBlob)).toBe(false);
-    expect(existsSync(newBlob)).toBe(true);
-  });
-
-  test("prunes oldest-first past the size cap", () => {
-    const root = freshRoot();
-    const dir = path.join(root, ".harnery", "images");
-    mkdirSync(dir, { recursive: true });
-    // Three blobs; cap below their combined size so the oldest gets dropped.
-    const names = ["a", "b", "c"].map((c) => path.join(dir, `${c.repeat(64)}.png`));
-    names.forEach((n, i) => {
-      writeFileSync(n, PNG_1x1);
-      const t = Date.now() / 1000 - (names.length - i) * 100; // a oldest, c newest
-      utimesSync(n, t, t);
-    });
-
-    const prev = process.env.HARNERY_IMAGES_MAX_BYTES;
-    process.env.HARNERY_IMAGES_MAX_BYTES = String(PNG_1x1.length * 2 + 1); // room for ~2
-    try {
-      imageJanitor(root);
-    } finally {
-      if (prev === undefined) delete process.env.HARNERY_IMAGES_MAX_BYTES;
-      else process.env.HARNERY_IMAGES_MAX_BYTES = prev;
-    }
-
-    const remaining = imagesOf(root);
-    expect(remaining.length).toBe(2);
-    expect(remaining).not.toContain(`${"a".repeat(64)}.png`); // oldest pruned
+    expect(imagesOf(root)).toHaveLength(2);
+    expect(existsSync(expired)).toBe(false);
+    expect(existsSync(names[0]!)).toBe(false);
   });
 });

@@ -19,7 +19,7 @@ const read = (rel: string) => readFileSync(join(root, rel), "utf8");
 const has = (rel: string) => existsSync(join(root, rel));
 
 describe("applyInstructions (claude-code)", () => {
-  test("creates AGENTS.md block, CLAUDE.md shim, and both skills", () => {
+  test("creates AGENTS.md block, CLAUDE.md shim, and all three skills", () => {
     const r = applyInstructions(root, { binName: BIN, adapter: "claude-code", dryRun: false });
     expect(has("AGENTS.md")).toBe(true);
     expect(read("AGENTS.md")).toContain("harnery:begin instructions");
@@ -28,6 +28,7 @@ describe("applyInstructions (claude-code)", () => {
     expect(read("CLAUDE.md")).toContain("@AGENTS.md");
     expect(has(".claude/skills/harn-decide/SKILL.md")).toBe(true);
     expect(has(".claude/skills/harn-council/SKILL.md")).toBe(true);
+    expect(has(".claude/skills/harn-end/SKILL.md")).toBe(true);
     expect(r.warnings).toHaveLength(0);
   });
 
@@ -78,36 +79,59 @@ describe("applyInstructions (claude-code)", () => {
     expect(has(".claude/skills/harn-council/SKILL.md")).toBe(true);
   });
 
-  test("excluding both skills renders a block that points at --help, not dangling skills", () => {
+  test("excluding every skill renders a block with CLI fallbacks, not dangling skills", () => {
     mkdirSync(join(root, ".harnery"), { recursive: true });
     writeFileSync(
       join(root, ".harnery/config.jsonc"),
-      '{ "skills": { "exclude": ["harn-decide", "harn-council"] } }',
+      '{ "skills": { "exclude": ["harn-decide", "harn-council", "harn-end"] } }',
     );
     applyInstructions(root, { binName: BIN, adapter: "claude-code", dryRun: false });
     const md = read("AGENTS.md");
     expect(md).not.toContain("`harn-decide` skill");
     expect(md).not.toContain("`harn-council` skill");
+    expect(md).not.toContain("`harn-end` skill");
     expect(md).toContain("acme decision --help");
+    expect(md).toContain("acme agents status --end-turn --end-session");
     // and re-check stays fresh (the check renders the same exclusion-aware block)
     expect(checkInstructions(root, { binName: BIN, adapter: "claude-code" }).status).toBe("fresh");
   });
 });
 
 describe("applyInstructions (cursor)", () => {
-  test("writes only the AGENTS.md block — no CLAUDE.md, no skills", () => {
+  test("writes AGENTS.md and all three shared skills, but no Claude files", () => {
     applyInstructions(root, { binName: BIN, adapter: "cursor", dryRun: false });
     expect(has("AGENTS.md")).toBe(true);
     expect(has("CLAUDE.md")).toBe(false);
     expect(has(".claude/skills/harn-decide/SKILL.md")).toBe(false);
+    expect(has(".agents/skills/harn-decide/SKILL.md")).toBe(true);
+    expect(has(".agents/skills/harn-council/SKILL.md")).toBe(true);
+    expect(has(".agents/skills/harn-end/SKILL.md")).toBe(true);
   });
 
-  test("cursor block points at --help (no skill files exist for cursor)", () => {
+  test("cursor block points at its installed skills", () => {
     applyInstructions(root, { binName: BIN, adapter: "cursor", dryRun: false });
     const md = read("AGENTS.md");
-    expect(md).not.toContain("`harn-decide` skill");
-    expect(md).toContain("acme decision --help");
+    expect(md).toContain("`harn-decide` skill");
+    expect(md).toContain("`harn-council` skill");
+    expect(md).toContain("`harn-end` skill");
     expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("fresh");
+  });
+});
+
+describe("applyInstructions (codex)", () => {
+  test("writes the same three shared skills as Cursor", () => {
+    applyInstructions(root, { binName: BIN, adapter: "codex", dryRun: false });
+    expect(has("AGENTS.md")).toBe(true);
+    expect(has("CLAUDE.md")).toBe(false);
+    for (const skill of ["harn-decide", "harn-council", "harn-end"]) {
+      expect(has(`.agents/skills/${skill}/SKILL.md`)).toBe(true);
+    }
+    expect(checkInstructions(root, { binName: BIN, adapter: "codex" }).status).toBe("fresh");
+  });
+
+  test("does not create an unprefixed end alias", () => {
+    applyInstructions(root, { binName: BIN, adapter: "codex", dryRun: false });
+    expect(has(".agents/skills/end/SKILL.md")).toBe(false);
   });
 });
 
@@ -158,6 +182,15 @@ describe("removeInstructions", () => {
     expect(has("CLAUDE.md")).toBe(false);
     expect(has(".claude/skills/harn-decide/SKILL.md")).toBe(false);
     expect(has(".claude/skills/harn-council")).toBe(false);
+    expect(has(".claude/skills/harn-end")).toBe(false);
+  });
+
+  test("removes shared Cursor/Codex skills from their native root", () => {
+    applyInstructions(root, { binName: BIN, adapter: "codex", dryRun: false });
+    removeInstructions(root, { adapter: "codex", dryRun: false });
+    for (const skill of ["harn-decide", "harn-council", "harn-end"]) {
+      expect(has(`.agents/skills/${skill}/SKILL.md`)).toBe(false);
+    }
   });
 
   test("preserves an AGENTS.md that had content outside the block", () => {

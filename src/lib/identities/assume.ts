@@ -3,8 +3,8 @@
  *
  * The operation is serialized because "is this name live?" and "claim it"
  * must be one critical section. Authoritative state is written twice on
- * purpose: `.name-history` heals a missing heartbeat, while the canonical
- * `identity.assumed` event makes replay and derived readers converge.
+ * purpose: `.name-history` supplies display metadata, while the canonical
+ * `coord.identity_attested` event makes replay and derived readers converge.
  *
  * Local collision policy: a fresh heartbeat alone is not enough to block.
  * If the namesake has no live pid-map process (crashed session, healed
@@ -14,21 +14,17 @@
  */
 
 import { randomUUID } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { emitAndProject } from "../../core/agents/cli-emit.ts";
-import { emit } from "../../core/agents/events/emit.ts";
-import { type Heartbeat, readHeartbeat } from "../../core/agents/state/heartbeat-writer.ts";
-import { recordNameAssumption, resolveForkAncestry } from "../../core/agents/state/names.ts";
+import { recordLiveIdentityChangeV3 } from "../../core/agents/live-authority-v3.ts";
+import { recordLiveSweepObservationV3 } from "../../core/agents/live-lifecycle-v3.ts";
+import type { Heartbeat } from "../../core/agents/state/heartbeat-writer.ts";
+import {
+  readLiveCoordinationRow,
+  readLiveCoordinationRows,
+} from "../../core/agents/state/live-coordination-view.ts";
+import { resolveForkAncestry } from "../../core/agents/state/names.ts";
 import { instanceHasLivePid, removePidmapRowsForInstance } from "../../core/agents/state/pidmap.ts";
 import { coordFreshnessSeconds } from "../../core/config.ts";
 import { readRemoteMachines } from "../../core/presence/index.ts";
@@ -44,7 +40,7 @@ export type IdentityAssumeErrorCode =
   | "identity_is_ancestor"
   | "identity_not_found"
   | "invalid_identity"
-  | "no_heartbeat"
+  | "no_live_generation"
   | "not_session"
   | "projection_failed";
 
@@ -91,22 +87,19 @@ export function findIdentityConflict(
   instanceId: string,
   name: string,
   nowMs = Date.now(),
+  excludedInstanceIds: ReadonlySet<string> = new Set(),
 ): IdentityConflict | null {
   const wanted = name.toLowerCase();
   const cutoffMs = nowMs - coordFreshnessSeconds(coordRoot) * 1000;
-  const activeDir = join(coordRoot, ".harnery", "active");
-  if (existsSync(activeDir)) {
-    for (const file of readdirSync(activeDir)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const hb = JSON.parse(readFileSync(join(activeDir, file), "utf8")) as Heartbeat;
-        if (hb.instance_id === instanceId || !heartbeatIsFresh(hb, cutoffMs)) continue;
-        if ((hb.name ?? "").toLowerCase() === wanted) {
-          return { instance_id: hb.instance_id, name: hb.name ?? name, scope: "local" };
-        }
-      } catch {
-        // Malformed heartbeats are handled by stale sweep, not this command.
-      }
+  for (const row of readLiveCoordinationRows(coordRoot)) {
+    if (
+      row.instance_id === instanceId ||
+      excludedInstanceIds.has(row.instance_id) ||
+      !heartbeatIsFresh(row, cutoffMs)
+    )
+      continue;
+    if ((row.name ?? "").toLowerCase() === wanted) {
+      return { instance_id: row.instance_id, name: row.name ?? name, scope: "local" };
     }
   }
 
@@ -143,13 +136,20 @@ export function reclaimAbandonedLocalConflict(
   let adapter: "claude-code" | "cursor" | "codex" = "claude-code";
   let sessionId = conflict.instance_id;
   let ageSecs: number | undefined;
+  const liveRow = readLiveCoordinationRow(coordRoot, conflict.instance_id);
+  if (liveRow) {
+    adapter = adapterOf(liveRow.platform);
+    sessionId = liveRow.session_id || conflict.instance_id;
+    const ts = Date.parse(liveRow.last_heartbeat);
+    if (Number.isFinite(ts)) ageSecs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  }
   if (existsSync(hbPath)) {
     try {
       const hb = JSON.parse(readFileSync(hbPath, "utf8")) as Heartbeat;
+      // Native producer identity is private cache metadata, not ledger authority.
+      // It is required to join the exact producer state when recording the sweep.
       adapter = adapterOf(hb.platform);
       sessionId = hb.session_id || conflict.instance_id;
-      const ts = Date.parse(hb.last_heartbeat);
-      if (Number.isFinite(ts)) ageSecs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
     } catch {
       /* content unreadable — still reclaim the file */
     }
@@ -160,23 +160,14 @@ export function reclaimAbandonedLocalConflict(
     }
   }
   removePidmapRowsForInstance(coordRoot, conflict.instance_id);
-  try {
-    emit(coordRoot, {
-      event_type: "health.heartbeat_swept",
-      instance_id: conflict.instance_id,
-      session_id: sessionId,
-      adapter,
-      source: "agent-coord",
-      data: {
-        reason: "stale",
-        ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}),
-        reclaimed_by: "identity.assume",
-      },
-      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-    } as Parameters<typeof emit>[1]);
-  } catch {
-    /* telemetry only */
-  }
+  recordLiveSweepObservationV3({
+    coordRoot,
+    owner: conflict.instance_id,
+    nativeSessionId: sessionId,
+    adapter,
+    observation: "stale_heartbeat",
+    ageMs: Math.max(0, (ageSecs ?? 0) * 1_000),
+  });
   return true;
 }
 
@@ -260,11 +251,11 @@ export function assumeIdentity(
 ): IdentityAssumeResult {
   const release = acquireLock(coordRoot);
   try {
-    const hb = readHeartbeat(coordRoot, instanceId);
+    const hb = readLiveCoordinationRow(coordRoot, instanceId);
     if (!hb) {
       throw new IdentityAssumeError(
-        "no_heartbeat",
-        `no live heartbeat for instance '${instanceId}'`,
+        "no_live_generation",
+        `no authority-safe live V3 generation for instance '${instanceId}'`,
       );
     }
     if (hb.kind && hb.kind !== "session") {
@@ -298,7 +289,16 @@ export function assumeIdentity(
     let conflict = findIdentityConflict(coordRoot, instanceId, targetIdentity.name);
     if (conflict && reclaimAbandonedLocalConflict(coordRoot, conflict)) {
       reclaimedInstanceId = conflict.instance_id;
-      conflict = findIdentityConflict(coordRoot, instanceId, targetIdentity.name);
+      // The V3 sweep is intentionally provisional, so the generation remains
+      // replay-visible after its disposable cache is removed. Ignore that one
+      // reclaimed holder while still checking for any additional namesake.
+      conflict = findIdentityConflict(
+        coordRoot,
+        instanceId,
+        targetIdentity.name,
+        Date.now(),
+        new Set([reclaimedInstanceId]),
+      );
     }
     if (conflict) {
       const where = conflict.scope === "remote" ? ` on ${conflict.machine}` : "";
@@ -312,15 +312,7 @@ export function assumeIdentity(
 
     const previousName = hb.name || null;
     const previousAgentId = hb.agent_id || null;
-    const history = recordNameAssumption(
-      coordRoot,
-      instanceId,
-      identity.name,
-      identity.agent_id,
-      "session",
-    );
-    const changed =
-      history.changed || previousName !== identity.name || previousAgentId !== identity.agent_id;
+    const changed = previousName !== identity.name || previousAgentId !== identity.agent_id;
     if (!changed) {
       return {
         changed: false,
@@ -336,34 +328,20 @@ export function assumeIdentity(
       };
     }
 
-    const emitted = emitAndProject(
-      {
-        event_type: "identity.assumed",
-        instance_id: instanceId,
-        session_id: hb.session_id,
-        adapter: adapterOf(hb.platform),
-        data: {
-          name: identity.name,
-          agent_id: identity.agent_id,
-          ...(previousName ? { previous_name: previousName } : {}),
-          ...(previousAgentId ? { previous_agent_id: previousAgentId } : {}),
-          ...(reclaimedInstanceId ? { reclaimed_instance_id: reclaimedInstanceId } : {}),
-        },
-      },
-      { coordRoot },
-    );
-    if (!emitted?.projected) {
-      throw new IdentityAssumeError(
-        "projection_failed",
-        "the durable name binding was recorded but event projection failed; rerun the command to heal it",
-      );
-    }
+    const emitted = recordLiveIdentityChangeV3({
+      coordRoot,
+      owner: instanceId,
+      nativeSessionId: hb.native_session_id ?? hb.session_id,
+      adapter: adapterOf(hb.platform),
+      name: identity.name,
+      identityId: identity.agent_id,
+    });
 
-    const projected = readHeartbeat(coordRoot, instanceId);
+    const projected = readLiveCoordinationRow(coordRoot, instanceId);
     if (projected?.name !== identity.name || projected.agent_id !== identity.agent_id) {
       throw new IdentityAssumeError(
         "projection_failed",
-        "identity.assumed was emitted but the heartbeat did not converge; rerun the command",
+        "coord.identity_attested was emitted but the V3 projection did not converge; rerun the command",
       );
     }
     return {
@@ -375,7 +353,10 @@ export function assumeIdentity(
       name: identity.name,
       agent_id: identity.agent_id,
       identity_created: created,
-      event_id: emitted.envelope.event_id,
+      event_id:
+        emitted.state === "recorded" && emitted.result.state === "recorded"
+          ? emitted.result.event.event_id
+          : null,
       reclaimed_instance_id: reclaimedInstanceId,
     };
   } finally {

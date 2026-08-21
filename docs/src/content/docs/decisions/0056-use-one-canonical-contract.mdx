@@ -38,10 +38,11 @@ Harnery uses one public name for each of these surfaces:
 - The verified-contract maintainer tool reads the adapter registry and uses the
   `adapter attest` command vocabulary.
 
-The explicit `docs frontmatter-migrate` command remains because it converts an
-old corpus on request and does not make the runtime accept two metadata
-contracts. `init` may also remove Harnery-owned hook entries that current vendor
-schemas reject. Those are bounded migrations, not alternate public interfaces.
+The explicit `docs frontmatter-migrate` command was a bounded conversion tool,
+not an alternate reader. ADR 0083 removed it after the final host cutover.
+`init` may still remove Harnery-owned hook entries that current vendor schemas
+reject because that cleanup is bounded and does not create a parallel public
+interface.
 
 ## Alternatives considered
 

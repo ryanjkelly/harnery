@@ -80,9 +80,7 @@ $ harn doctor --json
 
 ## Keeping hooks current after an upgrade
 
-Updating Harnery (`npm i -g harnery@latest`, `npm update harnery`, or `git pull` for a cloned checkout) is enough for **code** fixes: your wired hooks call the `agent-hook` binary, so they immediately run the new code. No re-`init` needed.
-
-The one exception is when a release **adds, renames, or retires a hook event**. Re-run [`harn init`](/cli/init) to migrate the Harnery-owned entries without touching third-party hooks. `harn doctor`'s `adapter hooks` check catches this, and a one-line nudge also appears at the start of your next session:
+After updating Harnery (`npm i -g harnery@latest`, `npm update harnery`, or `git pull` for a cloned checkout), re-run [`harn init`](/cli/init). Existing commands pick up the new code immediately, but the V3 ledger keeps its producer build and adapter capability approvals immutable. Init archives the prior epoch intact and activates a compatible one when those approvals changed. It also migrates Harnery-owned entries without touching third-party hooks. `harn doctor` and `harn init --check` catch the drift:
 
 ```bash
 $ harn doctor
@@ -91,7 +89,7 @@ $ harn doctor
     ↳ run `harn init` to wire the new hook(s) (idempotent)
 ```
 
-The check only performs missing-hook drift checks for a adapter the project has already opted into (at least one Harnery hook is wired), so a bare `.claude/settings.json` never triggers a false warning. Invalid JSON is always reported. Codex's parser is strict, so `doctor` also flags unsupported top-level fields and event names before they can silently disable every hook. Re-run `harn init` to remove legacy Harnery-owned events after repairing any invalid third-party configuration.
+The check reports drift only for an adapter the project has already opted into (at least one Harnery hook is wired), so a bare `.claude/settings.json` never triggers a false warning. It catches missing, stale, duplicated, misplaced, and retired Harnery entries. Invalid JSON is always reported. Codex's parser is strict, so `doctor` also flags unsupported top-level fields and event names before they can silently disable every hook. Re-run `harn init` after repairing any invalid third-party configuration.
 
 ### An adapter that was never wired at all
 

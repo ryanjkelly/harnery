@@ -1,7 +1,4 @@
-import {
-  listJournalArchives,
-  readJournalArchive,
-} from "@/lib/coord-reader";
+import { listJournalArchives, readJournalArchive } from "@/lib/coord-reader";
 import { safeOwnerId } from "@/lib/coord-writer";
 
 export const dynamic = "force-dynamic";
@@ -31,20 +28,11 @@ export async function GET(
   if (filename) {
     const body = readJournalArchive(instanceId, filename);
     if (body === null) {
-      return Response.json(
-        { error: "archive not found" },
-        { status: 404 },
-      );
+      return Response.json({ error: "archive not found" }, { status: 404 });
     }
-    return Response.json(
-      { filename, body },
-      { headers: { "cache-control": "no-store" } },
-    );
+    return Response.json({ filename, body }, { headers: { "cache-control": "no-store" } });
   }
 
   const archives = listJournalArchives(instanceId);
-  return Response.json(
-    { archives },
-    { headers: { "cache-control": "no-store" } },
-  );
+  return Response.json({ archives }, { headers: { "cache-control": "no-store" } });
 }

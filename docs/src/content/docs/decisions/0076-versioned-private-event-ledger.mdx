@@ -1,0 +1,138 @@
+---
+title: "0076: Replace the canonical event ledger with a private V2 contract"
+description: "ADR: separate durable structural evidence from expiring operator display, then cut over through an attested candidate and activation boundary."
+---
+
+**Status:** accepted (2026-08-16) · **Scope:** product tier (`core/events`, hooks, coordination, web projections)
+
+## Context
+
+The original event stream grew alongside coordination, adapter, workflow, web,
+and evaluation features. Its envelope permits optional identity and causal
+fields, while producers duplicate construction and append behavior. Readers
+also disagree about archive discovery and often accept any parseable object
+that resembles an event.
+
+Those weaknesses become material when the ledger supplies audit or evaluation
+evidence. Append mode does not prove that concurrent writes survive process
+death and rotation. A timestamp does not prove which schema, producer build, or
+configuration recorded a generation. Raw prompt, tool, command, output, error,
+and path values also outlive the operational need that caused them to be
+captured.
+
+The existing stream cannot gain the missing identity, causality, privacy, and
+durability facts by adding another set of optional fields. Historical rows do
+not contain enough information to synthesize them later.
+
+## Decision
+
+Introduce a separate `.harnery/ledgers/v2/` contract and hard-cut live
+producers and readers to it through an explicit candidate and activation. Keep
+the original files unchanged for audit.
+Do not dual-write, mix majors in one stream, or translate historical rows into
+V2 records.
+
+### One generated contract
+
+`src/core/events/v2/contract.ts` is the TypeBox source of truth. It defines a
+strict envelope and discriminated payload union. Generation produces the
+normative JSON Schema, the schema digest, public TypeScript bindings, fixture
+metadata, and downstream mirrors. Producers validate after privacy treatment
+and before persistence. Readers validate before projection and reject an
+unsupported major or digest.
+
+Every generation-scoped row carries explicit root, instance, session,
+generation, producer boot, sequence, runtime-attestation, and provenance
+identity. Native identifiers are HMAC-normalized before serialization. Event
+IDs provide uniqueness, not chronology. Physical position, producer sequence,
+monotonic time within one clock, causal event links, spans, delegations, and
+parent-generation links provide the ordering facts.
+
+### Structural durable records
+
+The durable ledger stores typed structure, outcomes, sizes, stable error
+classes, bounded relative references, and domain-separated HMAC fingerprints.
+It does not store raw prompts, intent, tool input, patches, queries, command
+arguments, output, error bodies, approval text, messages, or arbitrary absolute
+paths. Oversized or invalid rows fail validation instead of retaining an event
+name with a destroyed payload.
+
+Current operator surfaces may merge a separate owner-only display feed. That
+feed can contain scrubbed bounded intent and policy-safe labels, but never full
+command arguments or content bodies. Each row expires after a short TTL, reader
+expiry does not depend on cleanup, and the feed cannot enter ledger segments,
+backups, sync, remote presence publication, replay, safety projection, or an
+evaluation corpus.
+
+### Spool-first durability
+
+The writer serializes the final validated row, writes and flushes a temporary
+per-producer record, renames it to `ready`, and flushes the spool directory.
+That ready record is the acknowledgement boundary. A fenced lease drains ready
+records into the active segment, flushes the segment, and retires the receipt.
+Recovery removes only an unterminated final frame and replays the exact ready
+bytes. A repeated event ID with the same bytes deduplicates; the same identity
+with different bytes is an integrity failure.
+
+The lease holder orders ready records by causal dependency before append.
+Producer sequence numbers are local to one producer and never define a global
+order. If a ready event names another ready event as a cause, the writer flushes
+the parent first. Unrelated rows keep deterministic filename order. A causal
+cycle remains in the spool and fails the drain without changing the active
+segment. Causes absent from the spool are treated as previously committed, so a
+genuinely missing parent still reaches the reader and fails closed.
+
+Authority-bearing coordination uses a separate durable transaction outbox
+before it mutates task, lifecycle, claim, wait, approval, identity, or terminal
+state. Ordinary evidence failures stay report-only and cannot change tool or
+command results. Missing runtime attestation excludes evaluation evidence but
+does not block an otherwise authorized coordination transition.
+
+### Candidate and activation boundaries
+
+An immutable candidate genesis binds the contract digest, generated artifacts,
+producer builds, configuration, capabilities, privacy epoch, root identity,
+and prior-ledger terminal digest before canaries run. It grants no evidence
+eligibility. A later immutable activation record binds separately reviewed,
+pre-minted activation bytes to that candidate. Only generations beginning
+after the matching activation event can enter a corpus.
+
+Additive V2 changes deploy compatible readers first and then append a
+`ledger.schema_advanced` marker. Open generations finish on their pinned
+digest. Canonicalizer, fingerprint, or privacy-epoch changes require a reviewed
+comparability marker. Identity, ordering, privacy weakening, terminal
+authority, removal, retyping, or incompatible enum changes require V3 and a new
+candidate and activation boundary.
+
+## Alternatives considered
+
+- **Add required fields to the existing stream.** Rejected because old rows and
+  duplicated readers would retain ambiguous meaning.
+- **Mix V1 and V2 rows.** Rejected because every live reader and archive would
+  need permanent multi-major behavior.
+- **Dual-write during migration.** Rejected because partial success can make
+  two canonical records disagree.
+- **Translate V1 into V2.** Rejected because missing identity, capability,
+  privacy, causal, and terminal facts cannot be manufactured.
+- **Keep rich durable content and sanitize exports.** Rejected because local
+  web views, temporary copies, crash files, backups, sync, and manual sharing
+  create exposure before export.
+- **Use SQLite for this cutover.** Deferred. Segmented NDJSON remains easy to
+  inspect and package; a catalog and framed WAL address the known durability
+  and reader problems without adding another runtime dependency.
+
+## Approval and activation boundary
+
+Ryan accepted this architecture on 2026-08-16 after review of the complete
+inactive implementation, failure tests, adapter coverage, consumer cutover,
+and rollback tooling. The accepted implementation includes the generated
+contract, privacy-safe builders, spool-first writer, validating reader,
+producer routing, coordination authority, web projections, corpus admission,
+and full-epoch rollback.
+
+ADR acceptance does not open the live evidence boundary. A candidate remains
+ineligible until its exact commits, contract and configuration digests, canary
+evidence, failure tests, and rollback proof have passed. The separately
+approved activation packet is the sole authority that opens corpus admission,
+and it cannot admit a generation that began before activation. ADR 0075 remains
+accepted and report-only throughout.

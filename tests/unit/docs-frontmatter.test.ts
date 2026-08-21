@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   hasYamlStatus,
-  normalizeStatus,
   parseFrontmatter,
   readDocStatusFromText,
 } from "../../src/lib/docs-frontmatter.ts";
@@ -46,56 +45,20 @@ describe("parseFrontmatter", () => {
   });
 });
 
-describe("normalizeStatus", () => {
-  test("collapses spacing/underscore variants of in-progress", () => {
-    expect(normalizeStatus("in_progress")).toBe("in-progress");
-    expect(normalizeStatus("In Progress")).toBe("in-progress");
-    expect(normalizeStatus("WIP")).toBe("in-progress");
-  });
-
-  test("done-family collapses per kind", () => {
-    expect(normalizeStatus("done", "plan")).toBe("shipped");
-    expect(normalizeStatus("completed", "plan")).toBe("shipped");
-    expect(normalizeStatus("done", "issue")).toBe("resolved");
-    expect(normalizeStatus("complete", "handoff")).toBe("resolved");
-    // unknown kind defaults to shipped
-    expect(normalizeStatus("done")).toBe("shipped");
-  });
-
-  test("wontfix variants normalize", () => {
-    expect(normalizeStatus("wont-fix")).toBe("wontfix");
-    expect(normalizeStatus("wontfix")).toBe("wontfix");
-  });
-
-  test("empty token -> null", () => {
-    expect(normalizeStatus("   ")).toBeNull();
-  });
-
-  test("unknown and wrong-kind tokens -> null", () => {
-    expect(normalizeStatus("council-approved", "plan")).toBeNull();
-    expect(normalizeStatus("unknown", "issue")).toBeNull();
-  });
-
-  test("collapses empirical legacy aliases by kind", () => {
-    expect(normalizeStatus("planning", "plan")).toBe("proposed");
-    expect(normalizeStatus("open", "plan")).toBe("proposed");
-    expect(normalizeStatus("archived", "plan")).toBe("shipped");
-    expect(normalizeStatus("shelved", "plan")).toBe("abandoned");
-    expect(normalizeStatus("in progress", "issue")).toBe("open");
-    expect(normalizeStatus("fixed", "issue")).toBe("resolved");
-    expect(normalizeStatus("blocked", "handoff")).toBe("open");
-  });
-});
-
-describe("readDocStatusFromText (YAML-only)", () => {
-  test("reads and normalizes YAML status", () => {
-    const text = "---\nstatus: shipped\n---\n**Status:** in-progress\n";
+describe("readDocStatusFromText (v2-only)", () => {
+  test("reads an exact canonical v2 status", () => {
+    const text = "---\nschema: harnery-doc/v2\ntype: plan\nstatus: shipped\n---\n";
     expect(readDocStatusFromText(text, "plan")).toBe("shipped");
   });
 
-  test("ignores a legacy bold status when YAML is absent", () => {
-    const text = "# Plan\n\n**Status:** in_progress - phase 1\n";
-    expect(readDocStatusFromText(text, "plan")).toBeNull();
+  test("rejects aliases and unversioned YAML", () => {
+    expect(readDocStatusFromText("---\nstatus: in_progress\n---\n", "plan")).toBeNull();
+    expect(
+      readDocStatusFromText(
+        "---\nschema: harnery-doc/v2\ntype: plan\nstatus: in_progress\n---\n",
+        "plan",
+      ),
+    ).toBeNull();
   });
 
   test("neither shape -> null", () => {

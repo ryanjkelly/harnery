@@ -50,13 +50,12 @@ export interface LogRowRenderer<E> {
    * Optional run-folding key. When provided, the table collapses *maximal
    * contiguous runs* of adjacent rows that share the same non-null key into a
    * single expandable group row (preview + count, click to expand the full
-   * block). Return `null` for any row that must always stand alone (anchors
-   * like `command_start`/`command_end`, narration, etc.).
+   * block). Return `null` for any row that must always stand alone, such as
+   * `command.started` and `command.completed` anchors.
    *
-   * Used by /live to fold a command's per-line `output` events: each stdout
-   * line is its own ndjson record, but they share a `cmd_id` and arrive
-   * contiguously, so they belong to one logical output block. /events passes
-   * no `getGroupKey` and renders every row discretely (current behavior).
+   * Used by /live to fold adjacent `command.output_observed` events that share
+   * one V3 span. /events passes no `getGroupKey` and renders every row
+   * discretely.
    *
    * Folding runs on the already-sorted+filtered row list, so a search that
    * hides some lines of a block naturally shrinks that block's count.

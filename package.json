@@ -92,6 +92,16 @@
       "types": "./dist/core/governor/read.d.ts",
       "import": "./dist/core/governor/read.js"
     },
+    "./core/guard": {
+      "bun": "./src/core/guard/index.ts",
+      "types": "./dist/core/guard/index.d.ts",
+      "import": "./dist/core/guard/index.js"
+    },
+    "./core/events/v3": {
+      "bun": "./src/core/events/v3/index.ts",
+      "types": "./dist/core/events/v3/index.d.ts",
+      "import": "./dist/core/events/v3/index.js"
+    },
     "./core/governor/plans": {
       "bun": "./src/core/governor/plan-read.ts",
       "types": "./dist/core/governor/plan-read.d.ts",
@@ -121,6 +131,11 @@
       "bun": "./src/lib/format.ts",
       "types": "./dist/lib/format.d.ts",
       "import": "./dist/lib/format.js"
+    },
+    "./lib/headless": {
+      "bun": "./src/lib/headless/index.ts",
+      "types": "./dist/lib/headless/index.d.ts",
+      "import": "./dist/lib/headless/index.js"
     },
     "./lib/http": {
       "bun": "./src/lib/http/index.ts",
@@ -175,9 +190,9 @@
   },
   "packageManager": "bun@1.3.3",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/rewrite-dts-extensions.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/rewrite-dts-extensions.mjs",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run clean && npm run build",
+    "prepublishOnly": "npm run build",
     "typecheck": "bun x tsc --noEmit",
     "lint": "bun x @biomejs/biome check src",
     "check:portability": "bun run scripts/check-portability.ts",
@@ -193,10 +208,15 @@
     "docs:build": "bun run --cwd docs build",
     "brand:showcase": "node scripts/build-brand-showcase.mjs",
     "verify:contracts": "bun run scripts/sync-verified-contracts.ts",
-    "verify:contracts:check": "bun run scripts/sync-verified-contracts.ts --check"
+    "verify:contracts:check": "bun run scripts/sync-verified-contracts.ts --check",
+    "generate:event-v3": "bun run scripts/generate-event-v3-contract.ts",
+    "check:event-v3": "bun run scripts/generate-event-v3-contract.ts --check && bun run scripts/check-event-v3-reader-boundary.ts",
+    "generate:docs-metadata-v2": "bun run scripts/generate-docs-metadata-v2-schema.ts",
+    "check:docs-metadata-v2": "bun run scripts/generate-docs-metadata-v2-schema.ts --check"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "@sinclair/typebox": "^0.34.52",
     "axe-core": "^4.12.1",
     "commander": "^14.0.3",
     "gpt-tokenizer": "^3.4.0",
@@ -207,7 +227,8 @@
     "playwright": "^1.59.1",
     "pngjs": "^7.0.0",
     "turndown": "^7.2.4",
-    "turndown-plugin-gfm": "^1.0.2"
+    "turndown-plugin-gfm": "^1.0.2",
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",

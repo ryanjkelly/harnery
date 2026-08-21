@@ -8,7 +8,7 @@
  *   4. Resolve instance_id (env → payload → pid-map walk).
  *   5. Map event-name → canonical event_type.
  *   6. Build event data from payload + resolvers (intent, transcript scan).
- *   7. Append envelope to .harnery/events.ndjson via emit() under flock.
+ *   7. Record the normalized observation in the canonical V3 ledger.
  *   8. (Still also writes a debug breadcrumb to .harnery/debug/ for visibility.)
  *
  * Phase 2 ship criterion: confirms parser correctness across thousands of
@@ -22,20 +22,25 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { buildInstructionBundle } from "../../lib/instructions/bundle.ts";
-import { replayCodexJsonl } from "../agents/codex-replay.ts";
+import type { Adapter } from "../adapter.ts";
 import { coordBinPath } from "../agents/coord-bin.ts";
-import { consumeSince, writeCursor } from "../agents/events/consume.ts";
 import {
   type ClaimFinalizationDecision,
   type ClaimFinalizationDescriptor,
   classifyWriteClaimFinalization,
   formatWriteClaimFinalizationDenial,
 } from "../agents/finalization.ts";
-import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
-import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
-import { stampSessionStateEvent } from "../agents/state/heartbeat-writer.ts";
+import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "../agents/rules/stop-hook.ts";
+import {
+  assistantTextStartsWithSessionNameBlock,
+  isSessionNameRemediationCommand,
+  sessionNameDisplayInstruction,
+  sessionNameDisplayPending,
+  toolResponseMintedSessionName,
+} from "../agents/session-name-display.ts";
+import { stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
+import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
-import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
 import {
   checkpointContext,
@@ -47,8 +52,15 @@ import {
   readContextState,
   recordContextSample,
 } from "../context/index.ts";
-import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
-import { detectAdapter } from "./adapter/detect.ts";
+import { tryWriteLiveDisplayV3 } from "../events/v3/live-feed.ts";
+import {
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
+import { captureSpanClockV3 } from "../events/v3/span-state.ts";
+import { fetchPresence } from "../presence/index.ts";
+import { stableScopeId } from "../workflow/scope-id.ts";
+import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
 import {
   extractBashCommand,
   extractToolDescription,
@@ -71,21 +83,21 @@ import {
   journalJanitor,
   journalRecoveryCue,
   playSound,
+  recordImageArtifactsV3,
   resetSoundCounters,
   runSessionSyncExtension,
-  runTurnSummary,
   soundForEvent,
 } from "./effects/index.ts";
-import { emit } from "./events/emit.ts";
-import type { Adapter } from "./events/schema.ts";
+import { toolInputHash, toolTargetHash } from "./events/input-hash.ts";
 import { canonicalize } from "./guard-path.ts";
 import { adapterPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
 import { findCoordRoot } from "./resolve/coord-root.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
 import {
-  detectForkParent,
+  inspectSessionNameDisplayImmediately,
   scanAssistantTextIncludes,
+  scanSessionNameDisplayedImmediately,
   scanStatusBoxPresent,
   scanTranscriptModel,
 } from "./resolve/transcript.ts";
@@ -172,7 +184,7 @@ function logError(coordRoot: string | null, err: unknown, context: Record<string
 /**
  * Spawn `agent-coord assign-name <owner> <kind>` to mint or recover the
  * hurricane-style name for this owner. Returns null on any failure so
- * session.start emission never breaks the adapter flow.
+ * session.started emission never breaks the adapter flow.
  *
  * Lives at agent-hooks side (not agent-coord) to keep emitter/consumer
  * separation: we spawn rather than import.
@@ -209,7 +221,7 @@ function assignNameViaAgentCoord(
 
 /**
  * Direct (in-process) pidmap write, avoiding the spawn overhead of going via
- * the agent-coord CLI for every session.start / subagent.start. Pid-map rows
+ * the agent-coord CLI for every session.started signal. Pid-map rows
  * are essential for `harn agents whoami` ppid resolution.
  *
  * This used to inline its own copy of the write to keep this module's
@@ -251,6 +263,7 @@ interface BuildContext {
   raw: string;
   adapter: Adapter;
   instanceId: string;
+  eventName: string;
 }
 
 function buildEventData(
@@ -259,7 +272,7 @@ function buildEventData(
 ): Record<string, unknown> {
   const p = ctx.payload;
   switch (eventType) {
-    case "session.start": {
+    case "session.started": {
       const adapterPlatform =
         ctx.adapter === "claude-code"
           ? "claude-code"
@@ -267,11 +280,11 @@ function buildEventData(
             ? "cursor"
             : "codex";
       // Recorded fork lineage is NOT detected here. On claude-code a fork
-      // never fires its own session.start — SessionStart fires under the
+      // never fires its own session.started — SessionStart fires under the
       // PARENT's session id (source=resume) before the fork id is minted
       // (verified 2026-08-05) — so detection at this point can only mislabel
       // the resumed parent. The fork's new instance is caught by the
-      // tool.pre_use heal path instead. The forkedFrom plumbing below stays
+      // tool.requested heal path instead. The forkedFrom plumbing below stays
       // for adapters that DO report a parent at session start.
       const forkedFrom: string | undefined = undefined;
       // Assign (or recover) name + kind via agent-coord. Idempotent: resume
@@ -298,7 +311,7 @@ function buildEventData(
         cwd: p?.cwd ?? process.cwd(),
         // Claude Code's SessionStart payload omits `model` (Codex + Cursor
         // supply it). Fall back to the transcript, populated on `resume`, and
-        // backfilled later by `turn.stop` for a fresh `startup` session.
+        // backfilled later by `turn.completed` for a fresh startup session.
         model: p?.model ?? scanTranscriptModel(p?.transcript_path),
         pid: adapterPid,
         source: p?.source,
@@ -335,26 +348,35 @@ function buildEventData(
       };
     }
 
-    case "session.end":
+    case "session.ended":
       return {
         ended_at: new Date().toISOString(),
         clean_exit: p?.clean_exit ?? true,
       };
 
-    case "user_prompt.submit": {
+    case "turn.started": {
+      // Cursor can deliver beforeSubmitPrompt before sessionStart. Ensure that
+      // high-confidence prompt bootstrap also mints durable display identity;
+      // a later SessionStart remains idempotent.
+      if (
+        ctx.adapter === "cursor" &&
+        !readLiveCoordinationRow(ctx.coordRoot, ctx.instanceId)?.name
+      ) {
+        assignNameViaAgentCoord(ctx.coordRoot, ctx.instanceId, "session");
+      }
       const prompt = p?.prompt ?? "";
       const { value, truncated } = clampString(prompt, 4000);
       return { prompt_text: value, ...(truncated ? { truncated: true } : {}) };
     }
 
-    case "turn.stop": {
+    case "turn.completed": {
       const lastAssistantMessage = (p?.raw.last_assistant_message as string | undefined) ?? "";
       const fileLinkTelemetry =
         ctx.adapter === "codex"
           ? codexWslFileLinkTelemetry(ctx.coordRoot, p?.cwd, lastAssistantMessage)
           : null;
       return {
-        // Backfill the model for adapters that omit it at session.start
+        // Backfill the model for adapters that omit it at session.started
         // (Claude Code). The transcript is populated with assistant turns by
         // Stop-hook time, so this resolves even for fresh `startup` sessions.
         model: p?.model ?? scanTranscriptModel(p?.transcript_path),
@@ -368,7 +390,7 @@ function buildEventData(
         // Box present if the transcript scan finds it OR the final assistant
         // message carries the `┌─ agent-` prefix. The latter covers codex's
         // text-only stop (box in last_assistant_message, no transcript), which
-        // the verdict now sees because agent-hook emits this turn.stop itself
+        // the verdict now sees because agent-hook emits this turn.completed itself
         // (the previous path passed those via the no-history fail-open).
         status_box_present:
           scanStatusBoxPresent(p?.transcript_path) || lastAssistantMessage.includes("┌─ agent-"),
@@ -388,15 +410,19 @@ function buildEventData(
         // and which name that refers to. Reported on every stop while a name
         // exists (the stop-hook.session_name verdict reads it per turn); the
         // transcript scan itself stops once the name has been sighted.
-        ...sessionNamePresence(ctx.coordRoot, ctx.instanceId, lastAssistantMessage, (name) =>
-          scanAssistantTextIncludes(p?.transcript_path, name),
+        ...sessionNamePresence(ctx.coordRoot, ctx.instanceId, (name) =>
+          scanSessionNameDisplayedImmediately(
+            p?.transcript_path,
+            name,
+            assistantTextStartsWithSessionNameBlock,
+          ),
         ),
         ...(fileLinkTelemetry ?? {}),
         stop_hook_active: p?.stop_hook_active,
       };
     }
 
-    case "subagent.start": {
+    case "agent.started": {
       const subagentCallId =
         (p?.raw.subagent_id as string | undefined) ?? (p?.raw.agent_id as string | undefined);
       // Subagents inherit parent's name via the resolve-name session_id path
@@ -417,14 +443,14 @@ function buildEventData(
       };
     }
 
-    case "subagent.stop": {
+    case "agent.completed": {
       const status = p?.exit_status;
       const normalized: "ok" | "error" | "interrupted" =
         status === "error" || status === "interrupted" ? status : "ok";
       return { exit_status: normalized, reason: p?.reason };
     }
 
-    case "tool.pre_use": {
+    case "tool.requested": {
       const toolName = p?.tool_name ?? "unknown";
       const command = extractBashCommand(toolName, p?.tool_input);
       const description = extractToolDescription(p?.tool_input);
@@ -439,6 +465,8 @@ function buildEventData(
       return {
         tool_name: toolName,
         tool_input: clamped.value,
+        input_hash: toolInputHash(toolName, p?.tool_input ?? null),
+        target_hash: toolTargetHash(toolName, p?.tool_input ?? null),
         intent,
         intent_source: source,
         tool_use_id: p?.tool_use_id,
@@ -446,7 +474,7 @@ function buildEventData(
       };
     }
 
-    case "interaction.input_requested": {
+    case "wait.started": {
       const description = extractToolDescription(p?.tool_input);
       const reason = description ? clampString(description, 500).value : undefined;
       return {
@@ -456,32 +484,28 @@ function buildEventData(
       };
     }
 
-    case "tool.post_use": {
+    case "tool.completed": {
       const toolName = p?.tool_name ?? "unknown";
       const summary = summarizeOutput(p?.tool_response);
-      return {
-        tool_name: toolName,
-        output_summary: summary.summary,
-        exit_status: "ok" as const,
-        duration_ms: 0, // Phase 3 pairs pre/post via tool_use_id
-        tool_use_id: p?.tool_use_id,
-        ...(summary.truncated ? { truncated: true } : {}),
-      };
+      return ctx.eventName === "post-tool-use-failure"
+        ? {
+            tool_name: toolName,
+            error: summary.summary,
+            duration_ms: 0,
+            tool_use_id: p?.tool_use_id,
+            ...(summary.truncated ? { truncated: true } : {}),
+          }
+        : {
+            tool_name: toolName,
+            output_summary: summary.summary,
+            exit_status: "ok" as const,
+            duration_ms: 0,
+            tool_use_id: p?.tool_use_id,
+            ...(summary.truncated ? { truncated: true } : {}),
+          };
     }
 
-    case "tool.post_use_failure": {
-      const toolName = p?.tool_name ?? "unknown";
-      const summary = summarizeOutput(p?.tool_response);
-      return {
-        tool_name: toolName,
-        error: summary.summary,
-        duration_ms: 0,
-        tool_use_id: p?.tool_use_id,
-        ...(summary.truncated ? { truncated: true } : {}),
-      };
-    }
-
-    case "context.compaction.started": {
+    case "context.compaction_started": {
       const metadata = objectRecord(p?.raw.compact_metadata);
       return {
         trigger: stringField(p?.raw.trigger) ?? stringField(metadata?.trigger),
@@ -492,7 +516,7 @@ function buildEventData(
       };
     }
 
-    case "context.compaction.completed": {
+    case "context.compaction_completed": {
       const metadata = objectRecord(p?.raw.compact_metadata);
       return {
         trigger: stringField(p?.raw.trigger) ?? stringField(metadata?.trigger),
@@ -533,9 +557,37 @@ function numberField(value: unknown): number | undefined {
 }
 
 async function main(): Promise<number> {
+  const hookStartedAt = performance.now();
+  const hookClock = captureSpanClockV3();
   const { eventName, extra } = parseArgv(process.argv.slice(2));
   const adapter = detectAdapter(process.argv.slice(2));
   const raw = await readStdin();
+
+  // Cursor executes the Claude Code project hooks too on hosts wired for both
+  // adapters, piping them its own payload (identifiable by the top-level
+  // cursor_version envelope field). That stray `--adapter claude-code`
+  // dispatch must not record (twin generation) or play Claude-Code-only
+  // sounds, so it bails here, before every effect. Cursor's own
+  // `--adapter cursor` dispatch of the same payload carries the session.
+  if (shouldSkipHookAdapter(adapter, raw)) {
+    if (coordEnv("AGENT_COORD_OFF") !== "1") {
+      const coordRoot = findCoordRoot(process.cwd());
+      if (coordRoot) {
+        appendDebug(coordRoot, {
+          ts: new Date().toISOString(),
+          event_name: eventName,
+          adapter,
+          extra_argv: extra,
+          payload_bytes: raw.length,
+          cwd: process.cwd(),
+          pid: process.pid,
+          ppid: process.ppid,
+          skipped: "cursor-payload-claude-adapter",
+        });
+      }
+    }
+    return 0;
+  }
 
   // Kill-switch-INDEPENDENT effects: notification sounds fire BEFORE the
   // HARNERY_AGENT_COORD_OFF gate so audible feedback survives incident-triage
@@ -566,6 +618,7 @@ async function main(): Promise<number> {
 
   const coordRoot = findCoordRoot(process.cwd());
   if (!coordRoot) return 0;
+  const ledgerRoute = resolveLiveEventLedgerRouteV3(coordRoot);
 
   // Always log a breadcrumb, useful when an event_type maps to null or owner
   // resolution fails. Stays cheap (one append) and self-prunes via repo log
@@ -593,7 +646,10 @@ async function main(): Promise<number> {
   }
 
   const payload = parsePayload(raw, adapter);
-  const owner = resolveOwner({ payload: payload?.raw ?? null, coordRoot });
+  const owner = resolveOwner({
+    payload: payload?.raw ?? null,
+    coordRoot,
+  });
   if (!owner) {
     appendDebug(coordRoot, {
       ...debugBase,
@@ -611,41 +667,109 @@ async function main(): Promise<number> {
     raw,
     adapter,
     instanceId: owner.instance_id,
+    eventName,
   });
+  const turnRitual =
+    norm.event_type === "turn.completed"
+      ? {
+          status_box_present: data.status_box_present === true,
+          status_box_present_strict: data.status_box_present_strict === true,
+          session_name_required: typeof data.session_name_present_for === "string",
+          session_name_present: data.session_name_present === true,
+        }
+      : undefined;
+  const stopRemediation =
+    norm.event_type === "turn.started" &&
+    typeof data.prompt_text === "string" &&
+    data.prompt_text.includes(STOP_REMEDIATION_MARKER);
 
-  const envelope = emit(coordRoot, {
-    event_type: norm.event_type,
-    instance_id: owner.instance_id,
-    session_id: sessionId,
-    parent_session_id: payload?.parent_session_id,
-    turn_id: payload?.turn_id,
-    parent_turn_id: payload?.parent_turn_id,
+  if (ledgerRoute.state === "blocked") {
+    appendDebug(coordRoot, {
+      ...debugBase,
+      skipped: "v3-control-blocked",
+      reason: ledgerRoute.reason,
+      event_type: norm.event_type,
+      owner_source: owner.source,
+    });
+    return 0;
+  }
+
+  let capturedImages: ReturnType<typeof captureImages> = [];
+  if (
+    norm.event_type === "tool.requested" ||
+    (norm.event_type === "tool.completed" && eventName === "post-tool-use")
+  ) {
+    try {
+      capturedImages = captureImages(coordRoot, norm.event_type, payload);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "image-capture" });
+    }
+  }
+
+  const v3Result = recordLiveHookSignalV3({
+    coordRoot,
+    route: ledgerRoute,
+    eventName,
+    payload,
     adapter,
-    data,
-    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-  } as Parameters<typeof emit>[1]);
+    instanceId: owner.instance_id,
+    ...(coordEnv("WORKFLOW_CHILD") === "1" && coordEnv("WORKFLOW_RUN_ID")
+      ? {
+          run_id: stableScopeId("run", coordEnv("WORKFLOW_RUN_ID")!),
+          workflow_id: stableScopeId("wf", coordEnv("WORKFLOW_RUN_ID")!),
+          ...(coordEnv("WORKFLOW_AGENT_ID")
+            ? { workflow_agent_id: coordEnv("WORKFLOW_AGENT_ID") }
+            : {}),
+        }
+      : {}),
+    ...(adapter === "codex" && isWslUncPath(payload?.cwd) ? { bridge: "codex-wsl" as const } : {}),
+    hook_name: eventName,
+    hook_duration_ms: Math.max(0, Math.floor(performance.now() - hookStartedAt)),
+    monotonic_ns: hookClock.monotonic_ns,
+    ...(stopRemediation ? { stop_remediation: true } : {}),
+    ...(turnRitual ? { turn_ritual: turnRitual } : {}),
+    ...(coordEnv("EXPERIMENT_DEFER_V3_DRAIN") === "1" ? { defer_drain: true } : {}),
+  });
+  const v3EventId =
+    v3Result && "event" in v3Result
+      ? v3Result.event.event_id
+      : v3Result && "event_id" in v3Result
+        ? v3Result.event_id
+        : undefined;
+
+  if (v3Result?.state === "recorded" && capturedImages.length > 0) {
+    try {
+      recordImageArtifactsV3(coordRoot, v3Result.event, capturedImages);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "image-artifact-observation" });
+    }
+  }
+
+  if (
+    norm.event_type === "tool.requested" &&
+    v3Result &&
+    v3Result.state === "recorded" &&
+    "generation_id" in v3Result.event.scope
+  ) {
+    const intent = typeof data.intent === "string" ? data.intent : undefined;
+    if (intent && intent !== "(no intent)") {
+      tryWriteLiveDisplayV3(coordRoot, {
+        generation_id: v3Result.event.scope.generation_id,
+        event_id: v3Result.event.event_id,
+        ...(typeof data.tool_name === "string" ? { executable: data.tool_name } : {}),
+        intent_display: intent,
+      });
+    }
+  }
 
   appendDebug(coordRoot, {
     ...debugBase,
     event_type: norm.event_type,
     owner_source: owner.source,
-    event_id: envelope.event_id,
+    ...(v3EventId ? { event_v3_id: v3EventId } : {}),
+    ...(v3Result ? { event_v3_state: v3Result.state } : {}),
+    ...(v3Result && "reason" in v3Result ? { event_v3_reason: v3Result.reason } : {}),
   });
-
-  // Activity is only useful while it is current. Stamp prompt and permission
-  // evidence directly from this envelope rather than draining the global
-  // projector: a drain here could apply a tool event before its authorization
-  // verdict. Tool progress is stamped later, after the guard allows it.
-  if (
-    norm.event_type === "user_prompt.submit" ||
-    norm.event_type === "interaction.input_requested"
-  ) {
-    try {
-      stampSessionStateEvent(coordRoot, owner.instance_id, envelope);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "activity-projection" });
-    }
-  }
 
   // Context telemetry is opportunistic and truthful: only persist a sample
   // when the adapter payload actually exposes usage/window data. Identical
@@ -661,22 +785,7 @@ async function main(): Promise<number> {
       });
       if (sample) {
         const recorded = recordContextSample(coordRoot, owner.instance_id, sample);
-        if (recorded.changed) {
-          emit(coordRoot, {
-            event_type: "context.sampled",
-            instance_id: owner.instance_id,
-            session_id: sessionId,
-            adapter,
-            data: {
-              model: sample.model,
-              used_tokens: sample.used_tokens,
-              window_tokens: sample.window_tokens,
-              used_percent: sample.used_percent,
-              telemetry_source: sample.source,
-              confidence: sample.confidence,
-            },
-          });
-        }
+        void recorded;
       }
     } catch (err) {
       logError(coordRoot, err, { phase: "context-sample" });
@@ -686,7 +795,7 @@ async function main(): Promise<number> {
   // A native pre-compaction signal is the safest available point to capture
   // external work state. The operation is idempotent until recovery, so a
   // adapter retry cannot create a storm of near-identical capsules.
-  if (norm.event_type === "context.compaction.started") {
+  if (norm.event_type === "context.compaction_started") {
     try {
       const checkpoint = checkpointContext(coordRoot, {
         sessionId,
@@ -696,25 +805,13 @@ async function main(): Promise<number> {
         reason: "pre_compact",
         model: payload?.model,
       });
-      emit(coordRoot, {
-        event_type: "context.checkpoint.created",
-        instance_id: owner.instance_id,
-        session_id: sessionId,
-        adapter,
-        data: {
-          capsule_id: checkpoint.capsule.capsule_id,
-          generation: checkpoint.capsule.generation,
-          path: checkpoint.state.latest_capsule ?? "",
-          reason: checkpoint.capsule.reason,
-          reused: checkpoint.reused,
-        },
-      });
+      void checkpoint;
     } catch (err) {
       logError(coordRoot, err, { phase: "context-checkpoint" });
     }
   }
 
-  if (norm.event_type === "context.compaction.completed") {
+  if (norm.event_type === "context.compaction_completed") {
     try {
       markContextCompactionCompleted(coordRoot, {
         sessionId,
@@ -730,29 +827,15 @@ async function main(): Promise<number> {
   // systemMessage JSON (peer table + wiring check + council invites).
   // Adapter-agnostic since v0.5.0; replaces the previous bash UX layer
   // and the equivalent per-adapter bash session_start handlers.
-  if (norm.event_type === "session.start") {
+  if (norm.event_type === "session.started") {
     // Effect (claude-code): prune stale journal archives + sweep orphans.
     // The recovery-cue is merged into the
     // session-start additionalContext inside emitSessionStartSystemMessage.
     if (adapter === "claude-code") journalJanitor(coordRoot);
-    // Image-feed retention sweep (size + age cap on .harnery/images/). Adapter-
-    // agnostic, cheap (one readdir), fail-soft. Paired with journalJanitor as a
-    // session-start "tidy the coord layer" step.
-    try {
-      imageJanitor(coordRoot);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "session-start-image-janitor" });
-    }
+    imageJanitor(coordRoot);
     let recovery: PreparedContextRecovery | null = null;
     if (payload?.source === "compact") {
       try {
-        emit(coordRoot, {
-          event_type: "context.compaction.completed",
-          instance_id: owner.instance_id,
-          session_id: sessionId,
-          adapter,
-          data: { trigger: "auto" },
-        });
         markContextCompactionCompleted(coordRoot, {
           sessionId,
           instanceId: owner.instance_id,
@@ -776,25 +859,15 @@ async function main(): Promise<number> {
         recovery?.briefing ?? "",
       );
       if (injected && recovery) {
-        completeRecoveryInjection(
-          coordRoot,
-          owner.instance_id,
-          sessionId,
-          adapter,
-          recovery,
-          "SessionStart",
-        );
+        completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
       }
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-systemMessage" });
     }
-    // Cross-machine presence (ADR 0016): announce this machine's sessions and
-    // pull peers'. Both are throttled + fail-silent; network runs detached.
-    // When a relay is configured, also make sure the live-socket daemon runs.
+    // Pull advisory cross-machine presence. V3 never publishes from the
+    // disposable heartbeat cache.
     try {
-      publishPresence(coordRoot);
       fetchPresence(coordRoot);
-      ensureRelayDaemon(coordRoot);
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-presence" });
     }
@@ -802,7 +875,7 @@ async function main(): Promise<number> {
 
   // Phase 8: SessionEnd cleanup: delete heartbeat + pid-map rows. Adapter-
   // agnostic since v0.5.0.
-  if (norm.event_type === "session.end") {
+  if (norm.event_type === "session.ended") {
     try {
       cleanupSessionEnd(coordRoot, owner.instance_id, (data.reason as string) ?? "unknown");
     } catch (err) {
@@ -814,19 +887,12 @@ async function main(): Promise<number> {
       journalArchive(coordRoot, owner.instance_id);
       runSessionSyncExtension(coordRoot, true);
     }
-    // Presence: publish the post-cleanup state so peers see this session gone
-    // promptly rather than waiting out the remote-stale window.
-    try {
-      publishPresence(coordRoot);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "session-end-presence" });
-    }
   }
 
   // Phase 8: SubagentStart: sync-project to create the subagent heartbeat,
   // log the lifecycle event, and emit a context message announcing the
   // subagent (claude-code + cursor; codex doesn't fan out subagents today).
-  if (norm.event_type === "subagent.start") {
+  if (norm.event_type === "agent.started") {
     try {
       const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
       if (existsSync(agentCoordBin)) {
@@ -853,7 +919,7 @@ async function main(): Promise<number> {
   }
 
   // Phase 8: SubagentStop: delete subagent heartbeat + log.
-  if (norm.event_type === "subagent.stop") {
+  if (norm.event_type === "agent.completed") {
     try {
       cleanupSessionEnd(coordRoot, owner.instance_id, (data.reason as string) ?? "unknown");
       const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
@@ -876,7 +942,7 @@ async function main(): Promise<number> {
 
   // Phase 8: UserPromptSubmit: render dedup'd peer table + council pending
   // and emit the adapter-shaped systemMessage JSON. Adapter-agnostic since v0.5.0.
-  if (norm.event_type === "user_prompt.submit") {
+  if (norm.event_type === "turn.started") {
     // Effects (claude-code): reset per-turn sound rate-limit counters + run
     // presence detection on the prompt.
     if (adapter === "claude-code") {
@@ -917,81 +983,27 @@ async function main(): Promise<number> {
         recovery?.briefing ?? "",
       );
       if (injected && recovery) {
-        completeRecoveryInjection(
-          coordRoot,
-          owner.instance_id,
-          sessionId,
-          adapter,
-          recovery,
-          "UserPromptSubmit",
-        );
+        completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
       }
     } catch (err) {
       logError(coordRoot, err, { phase: "user-prompt-submit-systemMessage" });
     }
   }
 
-  // turn.stop: telemetry + turn-summary effects, then the stop verdict. The
+  // turn.completed: telemetry, then the stop verdict. The
   // verdict + codex-replay previously lived in the per-adapter shell adapters;
   // agent-hook owns them now. Runs on the normal "stop" event only;
   // "stop-failure" (API error) gets no gate, matching the previous
   // stop vs stop-failure split.
-  if (norm.event_type === "turn.stop" && eventName === "stop") {
-    // Codex: replay the JSONL transcript → canonical events so the verdict has
-    // the status_checked / task_set / status_box_present evidence (codex
-    // doesn't emit those live; this re-emits turn.stop after agent-hook's own,
-    // so the verdict reads the replay's box signal as the latest).
-    if (adapter === "codex" && payload?.transcript_path && existsSync(payload.transcript_path)) {
-      try {
-        replayCodexJsonl({
-          coordRoot,
-          jsonlPath: payload.transcript_path,
-          sessionId,
-          instanceId: owner.instance_id,
-          lastAssistantMessage: (payload.raw.last_assistant_message as string | undefined) ?? "",
-        });
-      } catch (err) {
-        logError(coordRoot, err, { phase: "codex-replay" });
-      }
-    }
-
-    // CC effects: rate-limited session-telemetry sync + turn-summary Haiku
-    // auto-summary.
+  if (norm.event_type === "turn.completed" && eventName === "stop") {
+    // Claude Code session telemetry sync remains an independent side effect.
     if (adapter === "claude-code") {
       runSessionSyncExtension(coordRoot, false);
-      runTurnSummary(coordRoot, owner.instance_id, sessionId, payload?.transcript_path);
     }
 
-    // Master-state heartbeat projection. Drains events.ndjson since the last
-    // cursor → per-owner heartbeats. Was a SECOND binary (`agent-coord project`)
-    // pinned to Claude Code Stop only; folded in here so it (a) is one
-    // entry per event like everything else and (b) fires on EVERY adapter's stop,
-    // not just CC. Runs unconditionally before the verdict's possible exit-2 return
-    // (the events are real regardless of whether the agent gets nagged), and after
-    // codex-replay above so codex's replayed events are included in the drain.
-    // Not an emitter (consumes + writes heartbeats), so no emitter/consumer conflict.
-    try {
-      const result = consumeSince(coordRoot);
-      projectHeartbeats(coordRoot, result.events);
-      if (result.lastEventId) writeCursor(coordRoot, result.lastEventId);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "stop-projection" });
-    }
-
-    // Presence: publish AFTER the projection above so the blob carries this
-    // turn's fresh task/turn_summary/files. Change-batched + keepalive'd;
-    // the push itself runs detached. The relay daemon (when configured) is
-    // re-ensured here too — it self-exits on idle, and the next turn revives it.
-    try {
-      publishPresence(coordRoot);
-      ensureRelayDaemon(coordRoot);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "stop-presence" });
-    }
-
-    // Stop verdict (status-box + set-task gate). Direct in-process call: the
-    // rule lives in harnery. agent-hook already emitted this turn.stop (with
-    // status_box_present) above, so the evidence is in the stream.
+    // Stop verdict (V3 ritual + task/status gate). Direct in-process call: the
+    // rule lives in Harnery. agent-hook already emitted this turn.completed
+    // with privacy-safe ritual observations, so the evidence is in the stream.
     const verdict = evaluateStopHook(coordRoot, {
       rule: "stop-hook",
       instance_id: owner.instance_id,
@@ -1000,30 +1012,28 @@ async function main(): Promise<number> {
       bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
       workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
     });
-    const enforcementMode = stopEnforcementMode(verdict.rule);
-    emit(coordRoot, {
-      event_type: "stop.verdict",
-      instance_id: owner.instance_id,
-      session_id: sessionId,
-      turn_id: payload?.turn_id,
-      parent_turn_id: payload?.parent_turn_id,
-      adapter,
-      data: {
-        allow: verdict.allow,
-        rule: verdict.rule,
-        ...(verdict.reason ? { reason: verdict.reason } : {}),
-        enforcement_mode: enforcementMode,
-        eligible: enforcementMode === "enforced",
-        nag_delivered: enforcementMode === "enforced" && !verdict.allow,
-      },
-    });
     if (!verdict.allow) {
-      // Adapter-aware enforcement channel: Claude Code / Codex honor exit-2 +
-      // stderr as a turn block; Cursor ignores exit codes (fail-open) and
-      // re-prompts only via a `followup_message` it auto-submits. emitStopBlock
-      // writes the right shape and returns the exit code to use.
+      // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr
+      // as a turn block; Cursor ignores exit codes and re-prompts only via a
+      // `followup_message` it auto-submits. Codex returned observe-only above.
+      // emitStopBlock writes the right shape and returns the exit code to use.
       const { emitStopBlock } = await import("./adapter/output.ts");
       return emitStopBlock(adapter, verdict, coordRoot);
+    }
+
+    // An explicit end requested from inside this turn cannot be authoritative
+    // until the adapter has committed turn.completed above. Reconcile only
+    // when such a request exists; any later real work cancels it in the
+    // finalizer instead of being terminated underneath the agent.
+    try {
+      const { hasPendingExplicitSessionEndV3, reconcileSessionFinalizationV3 } = await import(
+        "../agents/session-finalizer-v3.ts"
+      );
+      if (hasPendingExplicitSessionEndV3(coordRoot)) {
+        reconcileSessionFinalizationV3(coordRoot);
+      }
+    } catch (err) {
+      logError(coordRoot, err, { phase: "stop-explicit-session-finalization" });
     }
   }
 
@@ -1036,41 +1046,35 @@ async function main(): Promise<number> {
   // side-by-side in the previous pre-tool-use adapter. The Phase 4-6 refactor
   // preserved the heartbeat half but dropped the pid-map half; the pid-map
   // call was restored here afterward.
-  if (norm.event_type === "tool.pre_use") {
+  if (norm.event_type === "tool.requested") {
     try {
       // Recorded fork lineage, heal-path flavor. A forked CC conversation
-      // never fires its own session.start (SessionStart fires under the
+      // never fires its own session.started (SessionStart fires under the
       // PARENT's session id with source=resume, before the fork id is
       // minted; verified 2026-08-05), so the fork's new instance first
       // materializes right here. Gate detection on "no heartbeat yet" so the
       // transcript scan runs once per instance lifetime, not per tool call.
-      let forkedFrom: string | undefined;
-      if (
-        adapter === "claude-code" &&
-        payload?.transcript_path &&
-        !existsSync(join(coordRoot, ".harnery", "active", `${owner.instance_id}.json`))
-      ) {
-        forkedFrom = detectForkParent(payload.transcript_path, owner.instance_id);
-      }
-      healHeartbeatViaCli(coordRoot, owner.instance_id, sessionId, adapter, forkedFrom);
       refreshPidmap(coordRoot, owner.instance_id, adapter, payload?.pid);
     } catch (err) {
       logError(coordRoot, err, { phase: "pre-tool-use-heal" });
     }
 
-    // Image feed: a Read on an image file is the "agent viewed this" signal.
-    // Capture the bytes (content-addressed, dedup'd) + emit image.captured.
+    // The suggested name is a pending display latch. The set-task call itself
+    // runs before a name exists; every later tool waits until the exact block
+    // is the first assistant text after the mint result. Cursor supplies
+    // agent_message directly; Claude Code and Codex are resolved from their
+    // JSONL transcripts. Later commentary must not erase an already-correct
+    // display, and an unreadable transcript must not deadlock every tool.
     try {
-      captureImages(coordRoot, {
-        eventType: "tool.pre_use",
-        data,
-        payload,
-        instanceId: owner.instance_id,
-        sessionId,
+      const displayAllowed = await enforcePendingSessionNameDisplay(
+        coordRoot,
+        owner.instance_id,
         adapter,
-      });
+        payload,
+      );
+      if (!displayAllowed) return 0;
     } catch (err) {
-      logError(coordRoot, err, { phase: "pre-tool-use-image-capture" });
+      logError(coordRoot, err, { phase: "pre-tool-use-session-name" });
     }
 
     // Windows-native Codex + WSL UNC only: block the one cross-shell shape
@@ -1084,13 +1088,6 @@ async function main(): Promise<number> {
       toolInput: payload?.tool_input,
     });
     if (unsafeShellReason) {
-      emit(coordRoot, {
-        event_type: "decision.block",
-        instance_id: owner.instance_id,
-        session_id: sessionId,
-        adapter,
-        data: { rule: "unsafe_cross_shell", reason: unsafeShellReason },
-      });
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(adapter, unsafeShellReason);
       return 0;
@@ -1116,83 +1113,29 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "pre-tool-use-guard" });
     }
-
-    if (guardAllowed) {
-      try {
-        stampSessionStateEvent(coordRoot, owner.instance_id, envelope);
-      } catch (err) {
-        logError(coordRoot, err, { phase: "activity-projection" });
-      }
-    }
-
-    // Shell-mutation warn (warn-only, never blocks). Was the cursor
-    // beforeShellExecution + codex preToolUse-Bash shell-mutation-claim-log in
-    // the per-adapter shell adapters. Cursor sends the command at payload.command;
-    // codex Bash at tool_input.command. Emits a decision.warn per candidate-mutated
-    // path so a peer sees the write in events.ndjson. (CC never did this,
-    // preserved; it emits with its own hooks-side emitter per the
-    // independent-emitter rule.)
-    const shellCmd =
-      eventName === "before-shell-execution"
-        ? ((payload?.raw.command as string | undefined) ?? "")
-        : adapter === "codex" && data.tool_name === "Bash"
-          ? (((payload?.raw.tool_input as Record<string, unknown> | undefined)?.command as
-              | string
-              | undefined) ?? "")
-          : "";
-    if (shellCmd) {
-      try {
-        const paths = shellMutationPaths(shellCmd, coordRoot);
-        const truncated = shellCmd.length > 80 ? shellCmd.slice(0, 80) : shellCmd;
-        const platform = adapterPlatform(adapter);
-        for (const p of paths) {
-          emit(coordRoot, {
-            event_type: "decision.warn",
-            instance_id: owner.instance_id,
-            session_id: sessionId,
-            adapter,
-            data: {
-              rule: "shell_mutation_candidate",
-              reason: `path=${p} cmd=${truncated} platform=${platform}`,
-            },
-            // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-          } as Parameters<typeof emit>[1]);
-        }
-      } catch (err) {
-        logError(coordRoot, err, { phase: "shell-mutation-warn" });
-      }
-    }
+    if (!guardAllowed) return 0;
   }
 
-  // Phase 7: PostToolUse: stamp last_tool + last_tool_target on heartbeat.
-  // Adapter-agnostic for the same reason as tool.pre_use above.
-  if (norm.event_type === "tool.post_use") {
+  if (norm.event_type === "tool.completed" && eventName === "post-tool-use") {
+    // Inject only at the successful tool boundary that actually minted a name:
+    // the first non-empty set-task or the transition to lifecycle done. The
+    // coordination row intentionally remains pending until transcript evidence
+    // catches up; reading that latch alone here would re-inject after every
+    // later tool and make the agent print the same block repeatedly.
     try {
-      stampToolActivity(coordRoot, owner.instance_id, data);
+      const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, owner.instance_id));
+      if (name && toolResponseMintedSessionName(payload?.tool_response, name)) {
+        const { emitContext } = await import("./adapter/output.ts");
+        emitContext(adapter, "PostToolUse", sessionNameDisplayInstruction(name));
+      }
     } catch (err) {
-      logError(coordRoot, err, { phase: "post-tool-use-stamp" });
-    }
-
-    // Image feed: a Bash command that wrote an image (harn browse, harn image,
-    // --diff, …) is the "agent produced this" signal. Scan the command + its
-    // output for freshly-written image paths and capture them.
-    try {
-      captureImages(coordRoot, {
-        eventType: "tool.post_use",
-        data,
-        payload,
-        instanceId: owner.instance_id,
-        sessionId,
-        adapter,
-      });
-    } catch (err) {
-      logError(coordRoot, err, { phase: "post-tool-use-image-capture" });
+      logError(coordRoot, err, { phase: "post-tool-use-session-name" });
     }
   }
 
   // Phase 7: PostToolUseFailure: release claim on failed Edit (the file
   // never landed; the claim is stale). Adapter-agnostic.
-  if (norm.event_type === "tool.post_use_failure") {
+  if (norm.event_type === "tool.completed" && eventName === "post-tool-use-failure") {
     try {
       releaseClaimOnFailure(coordRoot, owner.instance_id, data, payload?.raw);
     } catch (err) {
@@ -1203,11 +1146,48 @@ async function main(): Promise<number> {
   return 0;
 }
 
-function stopEnforcementMode(rule: string): "enforced" | "observe_only" | "exempt" | "fail_open" {
-  if (rule === "stop-hook.codex_observe_only") return "observe_only";
-  if (rule === "stop-hook.fail_open" || rule === "stop-hook.no_history") return "fail_open";
-  if (rule === "stop-hook.bypass" || rule === "stop-hook.workflow_child") return "exempt";
-  return "enforced";
+async function enforcePendingSessionNameDisplay(
+  coordRoot: string,
+  instanceId: string,
+  adapter: Adapter,
+  payload: ParsedPayload | null,
+): Promise<boolean> {
+  const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, instanceId));
+  if (!name) return true;
+
+  const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
+  if (isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) return true;
+
+  const inspection =
+    payload?.agent_message !== undefined
+      ? {
+          state: assistantTextStartsWithSessionNameBlock(payload.agent_message, name)
+            ? ("present" as const)
+            : ("absent" as const),
+        }
+      : inspectSessionNameDisplayImmediately(
+          payload?.transcript_path,
+          name,
+          assistantTextStartsWithSessionNameBlock,
+        );
+  if (inspection.state === "present") {
+    stampSessionNameSeen(coordRoot, instanceId, name);
+    return true;
+  }
+
+  if (inspection.state === "unavailable") {
+    const { emitContext } = await import("./adapter/output.ts");
+    emitContext(
+      adapter,
+      "PreToolUse",
+      "Harnery could not verify the pending session-name display because the adapter transcript is unavailable or not flushed yet. This tool is allowed so the session cannot deadlock; display the requested block before later work. Verification remains pending.",
+    );
+    return true;
+  }
+
+  const { emitDeny } = await import("./adapter/output.ts");
+  emitDeny(adapter, sessionNameDisplayInstruction(name));
+  return false;
 }
 
 async function runPreToolUseGuard(
@@ -1297,24 +1277,6 @@ async function runPreToolUseGuard(
       emitDeny(adapter, reason);
       return false;
     }
-
-    // The verdict mutates the live heartbeat immediately, but that file is a
-    // projection and can be rebuilt at any later hook. Persist the acquisition
-    // in the canonical stream too. This matters most for Codex apply_patch:
-    // one tool call can claim several files, and tool.pre_use's clamped payload
-    // is not a durable ownership representation for those targets.
-    emit(coordRoot, {
-      event_type: "claim.acquire",
-      instance_id: instanceId,
-      session_id: sessionId,
-      adapter,
-      source: "agent-hooks",
-      data: {
-        path: target.path,
-        mode: "write",
-        ...(target.finalization ? { finalization: target.finalization } : {}),
-      },
-    });
   }
   return true;
 }
@@ -1375,33 +1337,10 @@ function parseApplyPatchPaths(data: Record<string, unknown>): string[] {
   return out;
 }
 
-function healHeartbeatViaCli(
-  coordRoot: string,
-  instanceId: string,
-  sessionId: string,
-  adapter: string,
-  forkedFrom?: string,
-): void {
-  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
-  if (!existsSync(agentCoordBin)) return;
-  // Pass the detected adapter so a pruned Cursor/Codex heartbeat is recreated
-  // with the correct platform; without it, healHeartbeat defaults to
-  // claude-code and the dashboard mislabels the agent. See
-  // heartbeat-writer.healHeartbeat. --forked-from carries detected fork
-  // lineage for an instance that never session.started (the CC fork flow).
-  const args = ["heal-heartbeat", instanceId, sessionId, `--adapter=${adapter}`];
-  if (forkedFrom) args.push(`--forked-from=${forkedFrom}`);
-  spawnSync(agentCoordBin, args, {
-    encoding: "utf8",
-    timeout: 2000,
-    env: childEnv(coordRoot),
-  });
-}
-
 /**
  * Walk up the ppid chain on Linux/WSL looking for the adapter anchor PID,
  * the PID of the claude / cursor / codex binary. Finds the agent PID. Used by
- * `tool.pre_use`'s pid-map self-heal so a re-parented adapter binary (the
+ * `tool.requested` pid-map self-heal so a re-parented adapter binary (the
  * VS Code 2.1.x sibling-claude spawn case) gets its pid-map row rewritten on
  * the next tool call rather than going invisible until SessionStart fires
  * again, which it may never do.
@@ -1468,9 +1407,7 @@ function findAdapterAnchorPid(adapter?: Adapter): number | undefined {
 }
 
 /**
- * Pid-map self-heal for `tool.pre_use`. Symmetric counterpart to
- * `healHeartbeatViaCli`; the two were paired before the Phase 6 refactor split
- * them apart, then restored together afterward.
+ * Pid-map self-heal for `tool.requested`.
  *
  * The pid argument prefers the payload's `pid` (CC populates it on
  * SessionStart and may also send it on PreToolUse), then
@@ -1491,40 +1428,6 @@ function refreshPidmap(
   const pid = payloadPid ?? findAdapterAnchorPid(adapter) ?? process.ppid;
   if (!Number.isFinite(pid) || pid <= 0) return;
   writePidmapViaAgentCoord(coordRoot, pid, instanceId, adapterPlatform(adapter));
-}
-
-function stampToolActivity(
-  coordRoot: string,
-  instanceId: string,
-  data: Record<string, unknown>,
-): void {
-  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
-  if (!existsSync(agentCoordBin)) return;
-  const toolName = (data.tool_name as string | undefined) ?? "";
-  // Extract a 1-line target from the tool_input blob (file path / command head).
-  const toolInputRaw = data.tool_input;
-  let target = "";
-  if (typeof toolInputRaw === "string") {
-    try {
-      const parsed = JSON.parse(toolInputRaw) as Record<string, unknown>;
-      target =
-        (parsed.file_path as string | undefined) ??
-        (parsed.path as string | undefined) ??
-        (parsed.notebook_path as string | undefined) ??
-        (parsed.command as string | undefined) ??
-        (parsed.url as string | undefined) ??
-        (parsed.pattern as string | undefined) ??
-        "";
-    } catch {
-      /* skip */
-    }
-  }
-  if (target.length > 200) target = target.slice(0, 200);
-  spawnSync(agentCoordBin, ["stamp-tool-activity", instanceId, toolName, target], {
-    encoding: "utf8",
-    timeout: 2000,
-    env: childEnv(coordRoot),
-  });
 }
 
 function releaseClaimOnFailure(
@@ -1570,6 +1473,12 @@ function releaseClaimOnFailure(
       : filePath;
   }
 
+  // In V3 the release is an authority event, not a heartbeat mutation. Avoid
+  // creating a disposable cache for a failure that never acquired a claim,
+  // but release the exact path when the validated projection says it is held.
+  const row = readLiveCoordinationRow(coordRoot, instanceId);
+  if (!row?.files_touched?.includes(canonical)) return;
+
   const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(agentCoordBin)) return;
   spawnSync(agentCoordBin, ["release-claim", instanceId, canonical], {
@@ -1580,15 +1489,6 @@ function releaseClaimOnFailure(
 }
 
 function cleanupSessionEnd(coordRoot: string, instanceId: string, reason: string): void {
-  // Remove heartbeat from the canonical .harnery/active/ dir.
-  const path = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
-  try {
-    if (existsSync(path)) {
-      require("node:fs").unlinkSync(path);
-    }
-  } catch {
-    /* swallow */
-  }
   // Sweep pid-map entries pointing to this instance
   const pidmapDir = join(coordRoot, ".harnery", "pid-map");
   if (existsSync(pidmapDir)) {
@@ -1633,21 +1533,7 @@ async function emitUserPromptSubmitSystemMessage(
   let additionalContext = "";
 
   if (existsSync(agentCoordBin)) {
-    // Look up the agent's name from its heartbeat (for council pending rendering).
-    let agentName = "";
-    try {
-      const fs = require("node:fs") as typeof import("node:fs");
-      const hbPath = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
-      if (fs.existsSync(hbPath)) {
-        const hb = JSON.parse(fs.readFileSync(hbPath, "utf8")) as { name?: string };
-        agentName = hb.name ?? "";
-      }
-    } catch {
-      /* fall through with empty name; peer table still renders */
-    }
-
     const args = ["prompt-context", "--instance", instanceId, "--session", sessionId];
-    if (agentName) args.push("--name", agentName);
     // Every human-facing adapter gets the first-session naming reminder from
     // the shared hook path. Cursor + Codex additionally get ongoing set-task
     // staleness nudges; Claude Code enforces those via its Stop transcript.
@@ -1688,7 +1574,7 @@ function emitSubagentStartContext(
   adapter: Adapter,
 ): void {
   // Look up the subagent's assigned name (just-written by agent-coord assignName
-  // in session.start data) + the parent's short id for the "you are a subagent
+  // in session.started data) + the parent's short id for the "you are a subagent
   // of X" framing.
   const subagentName = (data.name as string | undefined) ?? "";
   if (!subagentName) return;
@@ -1733,13 +1619,19 @@ async function emitSessionStartSystemMessage(
   recoveryBriefing = "",
 ): Promise<boolean> {
   const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
+  const workflowChild = coordEnv("WORKFLOW_CHILD") === "1";
   let additionalContext = "";
   if (existsSync(agentCoordBin)) {
     // Sync-project so the heartbeat exists for downstream readers (peer table,
     // wiring check, council invites).
     spawnSync(agentCoordBin, ["project"], { encoding: "utf8", timeout: 3000 });
-    // Stale-sweep dead peers before rendering peer table.
-    spawnSync(agentCoordBin, ["stale-sweep"], { encoding: "utf8", timeout: 3000 });
+    // Opportunistic reconciliation makes normal session starts a failsafe for
+    // archive, idle, cascade, and host lifecycle observations.
+    spawnSync(agentCoordBin, ["reconcile-finalization"], {
+      encoding: "utf8",
+      timeout: 5000,
+      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: coordRoot },
+    });
 
     // SESSION_START activity log line, fired across all adapters.
     const model = (emittedData.model as string | undefined) ?? "unknown";
@@ -1756,32 +1648,37 @@ async function emitSessionStartSystemMessage(
       { encoding: "utf8", timeout: 2000 },
     );
 
-    // Render the systemMessage via agent-coord.
-    const agentName = (emittedData.name as string | undefined) ?? "";
-    const args = ["session-context", "--instance", instanceId, "--session", sessionId];
-    if (agentName) args.push("--name", agentName);
-    // The "You are agent-X." prefix in session-context renders unqualified by
-    // default (claude-code-style). For cursor/codex the bash dispatchers add
-    // a "(Cursor)" / "(Codex)" suffix; pass it through as --platform-label.
-    if (adapter !== "claude-code") {
-      args.push("--platform-label", platform === "cursor" ? "Cursor" : "Codex");
+    // Workflow children retain lifecycle/event capture but do not receive
+    // operator-facing peer, council, or init-remediation context. Injecting
+    // that context can make a bounded child follow housekeeping instructions
+    // instead of its assigned prompt.
+    if (!workflowChild) {
+      const agentName = (emittedData.name as string | undefined) ?? "";
+      const args = ["session-context", "--instance", instanceId, "--session", sessionId];
+      if (agentName) args.push("--name", agentName);
+      // The "You are agent-X." prefix in session-context renders unqualified by
+      // default (claude-code-style). For cursor/codex the bash dispatchers add
+      // a "(Cursor)" / "(Codex)" suffix; pass it through as --platform-label.
+      if (adapter !== "claude-code") {
+        args.push("--platform-label", platform === "cursor" ? "Cursor" : "Codex");
+      }
+      const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
+      if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
     }
-    const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
-    if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
   }
 
   // Effect (claude-code): merge the journal recovery cue into the session-start
   // context. Was a standalone additionalContext emission from the previous
   // journal-on-start adapter; now that agent-hook is the single SessionStart
   // entry, it folds in here.
-  if (adapter === "claude-code") {
+  if (adapter === "claude-code" && !workflowChild) {
     const cue = journalRecoveryCue(coordRoot);
     if (cue) additionalContext = [additionalContext, cue].filter(Boolean).join("\n\n");
   }
-  if (recoveryBriefing) {
+  if (recoveryBriefing && !workflowChild) {
     additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
   }
-  if (adapter === "codex" && isWslUncPath(emittedData.cwd)) {
+  if (adapter === "codex" && !workflowChild && isWslUncPath(emittedData.cwd)) {
     const fileLinkContext = renderCodexWslFileLinkContext(coordRoot, emittedData.cwd);
     if (fileLinkContext) {
       additionalContext = [additionalContext, fileLinkContext].filter(Boolean).join("\n\n");
@@ -1807,22 +1704,10 @@ function completeRecoveryInjection(
   coordRoot: string,
   instanceId: string,
   sessionId: string,
-  adapter: Adapter,
   recovery: PreparedContextRecovery,
-  injectionEvent: "SessionStart" | "UserPromptSubmit",
 ): void {
   completeContextRecovery(coordRoot, { sessionId, instanceId });
-  emit(coordRoot, {
-    event_type: "context.recovery.injected",
-    instance_id: instanceId,
-    session_id: sessionId,
-    adapter,
-    data: {
-      capsule_id: recovery.capsule.capsule_id,
-      generation: recovery.capsule.generation,
-      injection_event: injectionEvent,
-    },
-  });
+  void recovery;
 }
 
 main()

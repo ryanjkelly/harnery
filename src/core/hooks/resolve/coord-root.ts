@@ -7,7 +7,7 @@ import { resolveCoordRoot } from "../../agents/coord-client.ts";
  * different roots. They used to: this walked up from `CLAUDE_PROJECT_DIR` or
  * cwd while the CLI's `monorepoRoot()` asked git for the superproject first, so
  * with a shell inside a submodule that carries its own `.harnery/`, the CLI's
- * `state.status_checked` landed in a stream this side never read and rule 1/3
+ * `coord.status_observed` landed in a stream this side never read and rule 1/3
  * blocked every turn.
  *
  * Resolution precedence (see `resolveCoordRoot` for the full rationale):

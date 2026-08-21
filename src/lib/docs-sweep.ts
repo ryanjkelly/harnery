@@ -1,6 +1,6 @@
 import { existsSync as __existsSyncForDocs } from "node:fs";
 import { resolve as __resolveForDocs } from "node:path";
-import { readDocStatus } from "./docs-frontmatter.ts";
+import { parseFrontmatter, readDocStatus } from "./docs-frontmatter.ts";
 import { sh } from "./exec.ts";
 
 // Module-level docs context, initialized by initDocsContext() before any
@@ -22,7 +22,7 @@ function isSubmoduleInitialized(name: string): boolean {
   return __existsSyncForDocs(__resolveForDocs(REPO_ROOT, name, ".git"));
 }
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 /**
@@ -141,7 +141,18 @@ function walkMdFiles(dir: string, skipReadme = false): string[] {
   return out;
 }
 
-function sweepPlans(repoName: string, repoPath: string, ages: AgeMap, items: SweepItem[]): void {
+function metadataAgeDays(file: string, field: string, nowMs = Date.now()): number | null {
+  try {
+    const value = parseFrontmatter(readFileSync(file, "utf8")).data[field];
+    if (typeof value !== "string") return null;
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : Math.floor((nowMs - parsed) / (1000 * 60 * 60 * 24));
+  } catch {
+    return null;
+  }
+}
+
+function sweepPlans(repoName: string, repoPath: string, items: SweepItem[]): void {
   const plansDir = join(repoPath, "docs", "plans");
   if (!existsSync(plansDir)) return;
 
@@ -150,7 +161,7 @@ function sweepPlans(repoName: string, repoPath: string, ages: AgeMap, items: Swe
     const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
     const isArchived = rel.includes("/archive/");
     const status = readDocStatus(full, "plan");
-    const age = ageDays(ages, rel);
+    const age = metadataAgeDays(full, "status_changed_at");
     if (age == null) continue;
 
     if (!isArchived && status === "in-progress" && age > STALLED_PLAN_DAYS) {
@@ -159,7 +170,7 @@ function sweepPlans(repoName: string, repoPath: string, ages: AgeMap, items: Swe
         repo: repoName,
         path: displayPath,
         ageDays: age,
-        message: `plan is in-progress, last touched ${age}d ago; confirm still active or bump status`,
+        message: `plan has remained in-progress for ${age}d; confirm it is still active or change status`,
       });
     }
     if (!isArchived && status === "shipped" && age > UNARCHIVED_SHIPPED_DAYS) {
@@ -174,7 +185,7 @@ function sweepPlans(repoName: string, repoPath: string, ages: AgeMap, items: Swe
   }
 }
 
-function sweepIssues(repoName: string, repoPath: string, ages: AgeMap, items: SweepItem[]): void {
+function sweepIssues(repoName: string, repoPath: string, items: SweepItem[]): void {
   const issuesDir = join(repoPath, "docs", "issues");
   if (!existsSync(issuesDir)) return;
 
@@ -185,7 +196,7 @@ function sweepIssues(repoName: string, repoPath: string, ages: AgeMap, items: Sw
     const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
     const status = readDocStatus(full, "issue");
     if (status !== "open") continue;
-    const age = ageDays(ages, rel);
+    const age = metadataAgeDays(full, "status_changed_at");
     if (age == null || age <= OPEN_ISSUE_DAYS) continue;
     items.push({
       kind: "open-issue-cold",
@@ -197,7 +208,7 @@ function sweepIssues(repoName: string, repoPath: string, ages: AgeMap, items: Sw
   }
 }
 
-function sweepHandoffs(repoName: string, repoPath: string, ages: AgeMap, items: SweepItem[]): void {
+function sweepHandoffs(repoName: string, repoPath: string, items: SweepItem[]): void {
   const handoffsDir = join(repoPath, "docs", "handoffs");
   if (!existsSync(handoffsDir)) return;
 
@@ -205,7 +216,7 @@ function sweepHandoffs(repoName: string, repoPath: string, ages: AgeMap, items: 
     const rel = relative(repoPath, full);
     const status = readDocStatus(full, "handoff");
     if (status !== "open") continue;
-    const age = ageDays(ages, rel);
+    const age = metadataAgeDays(full, "status_changed_at");
     if (age == null || age <= COLD_HANDOFF_DAYS) continue;
     const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
     items.push({
@@ -218,19 +229,23 @@ function sweepHandoffs(repoName: string, repoPath: string, ages: AgeMap, items: 
   }
 }
 
-function sweepRunbook(repoName: string, repoPath: string, ages: AgeMap, items: SweepItem[]): void {
-  const runbook = join(repoPath, "docs", "runbook.md");
-  if (!existsSync(runbook)) return;
-  const age = ageDays(ages, "docs/runbook.md");
-  if (age == null || age <= RUNBOOK_DAYS) return;
-  const displayPath = join(repoName === "(root)" ? "" : repoName, "docs/runbook.md");
-  items.push({
-    kind: "runbook-unverified",
-    repo: repoName,
-    path: displayPath,
-    ageDays: age,
-    message: `runbook hasn't been edited in ${age}d; re-verify procedures`,
-  });
+function sweepRunbooks(repoName: string, repoPath: string, items: SweepItem[]): void {
+  const docs = join(repoPath, "docs");
+  if (!existsSync(docs)) return;
+  for (const runbook of walkMdFiles(docs)) {
+    const metadata = parseFrontmatter(readFileSync(runbook, "utf8")).data;
+    if (metadata.schema !== "harnery-doc/v2" || metadata.type !== "runbook") continue;
+    const age = metadataAgeDays(runbook, "reviewed_at");
+    if (age == null || age <= RUNBOOK_DAYS) continue;
+    const rel = relative(repoPath, runbook);
+    items.push({
+      kind: "runbook-unverified",
+      repo: repoName,
+      path: join(repoName === "(root)" ? "" : repoName, rel),
+      ageDays: age,
+      message: `runbook has not been reviewed for ${age}d; verify it with docs metadata sync --reviewed`,
+    });
+  }
 }
 
 function sweepTopicDocs(
@@ -324,10 +339,10 @@ export async function runSweep(opts: SweepOpts): Promise<SweepItem[]> {
   for (let i = 0; i < filtered.length; i++) {
     const { name, path } = filtered[i]!;
     const ages = ageMaps[i]!;
-    sweepPlans(name, path, ages, items);
-    sweepIssues(name, path, ages, items);
-    sweepHandoffs(name, path, ages, items);
-    sweepRunbook(name, path, ages, items);
+    sweepPlans(name, path, items);
+    sweepIssues(name, path, items);
+    sweepHandoffs(name, path, items);
+    sweepRunbooks(name, path, items);
     sweepTopicDocs(name, path, ages, items);
     await sweepDecisions(name, path, ages, items);
   }
@@ -344,7 +359,6 @@ export async function runSweep(opts: SweepOpts): Promise<SweepItem[]> {
  */
 export async function countColdHandoffs(): Promise<number> {
   const items: SweepItem[] = [];
-  const ages = await loadDocsAges(REPO_ROOT);
-  sweepHandoffs("(root)", REPO_ROOT, ages, items);
+  sweepHandoffs("(root)", REPO_ROOT, items);
   return items.length;
 }

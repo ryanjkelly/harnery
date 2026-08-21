@@ -5,27 +5,32 @@
  *   1. `HARNERY_COORD_ROOT` env var (set by `harn web up` to the user's cwd)
  *   2. Walk up from process.cwd() looking for a `.harnery/` directory
  *
- * Reads heartbeats, councils, events, and journals. Invalid entries are
- * reported as `meta.invalid` rather than crashing the page.
+ * Reads the V3 coordination projection, councils, events, and journals.
+ * Invalid disposable cache entries are diagnostics, never authority.
  */
 
-import {
-  closeSync,
-  existsSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { listSessionFinalizationRequestsV3 } from "../../src/core/agents/session-finalization-state-v3";
+import { readLiveCoordinationRows } from "../../src/core/agents/state/live-coordination-view";
+import type { AgentActivity, TaskState } from "../../src/core/agents/state/session-state";
+import type { EventV3 } from "../../src/core/events/v3/contract";
+import { readEventV3ControlState } from "../../src/core/events/v3/control";
 import {
-  type AgentActivity,
-  applySessionStateEvent,
-  type TaskState,
-} from "harnery/core/agents";
+  type CoordinationGenerationViewV3,
+  projectCoordinationViewV3,
+  readCoordinationViewV3,
+  requireAuthoritySafeCoordinationViewV3,
+} from "../../src/core/events/v3/coordination-view";
+import { type LiveDisplayRowV3, listLiveDisplayV3 } from "../../src/core/events/v3/live-feed";
+import {
+  liveInstanceIdV3,
+  nativeInstanceIdV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../src/core/events/v3/live-routing";
+import { listHookProducerStateRecordsV3 } from "../../src/core/events/v3/producers/recorder";
+import { readLedgerV3 } from "../../src/core/events/v3/reader";
+import { eventV3Paths } from "../../src/core/events/v3/writer";
 import {
   buildContributionMatrix,
   type ContributionMatrix,
@@ -80,11 +85,17 @@ export function journalDir(): string {
 }
 
 export function eventsPath(): string {
-  return path.join(harneryDir(), "events.ndjson");
+  return eventV3Paths(coordRoot()).active;
 }
 
 export interface Heartbeat {
   instance_id: string;
+  /**
+   * The canonical `inst_*` id for this generation, when the row also has an
+   * adapter-native owner id in `instance_id`. Ledger evidence is always keyed
+   * canonically, so this is the join key against event-derived state.
+   */
+  v3_instance_id?: string;
   name: string;
   kind?: string;
   platform?: string | null;
@@ -100,12 +111,21 @@ export interface Heartbeat {
   task_state: TaskState;
   task_state_updated_at?: string | null;
   task_state_reason?: string | null;
-  turn_summary?: string | null;
-  turn_summary_updated_at?: string | null;
-  last_tool?: string | null;
-  last_tool_target?: string | null;
   model?: string | null;
   age_seconds: number;
+  ledger_state?: AgentLedgerStateV3;
+  generation_id?: string;
+  open_span_count?: number;
+}
+
+export type AgentLedgerStateV3 = "live" | "ending" | "recovery-required" | "terminal";
+
+export interface AgentLedgerRecordV3 {
+  instance_id: string;
+  generation_id: string;
+  state: AgentLedgerStateV3;
+  open_span_count: number;
+  generation: CoordinationGenerationViewV3;
 }
 
 export interface InvalidHeartbeat {
@@ -113,15 +133,26 @@ export interface InvalidHeartbeat {
   issue: string;
 }
 
+/**
+ * Why the row list is empty. `readLiveCoordinationRows` answers a blocked
+ * ledger route and an unsafe authority view the same way it answers a genuinely
+ * idle repo — with no rows — so an empty dashboard alone cannot tell "nobody is
+ * working" from "this build cannot read the ledger". Only computed when there
+ * are no rows to explain.
+ */
+export type LedgerReadState = { ok: true } | { ok: false; reason: string };
+
 export interface AgentsSnapshot {
   active: Heartbeat[];
   stale: Heartbeat[];
+  terminal: Heartbeat[];
   claims: ClaimRow[];
   meta: {
     scanned_dir: string;
     count: number;
     invalid: InvalidHeartbeat[];
     stale_threshold_seconds: number;
+    read_state: LedgerReadState;
   };
 }
 
@@ -135,31 +166,35 @@ export interface ClaimRow {
 
 const STALE_AGE_SECONDS = 5 * 60;
 
-function isHeartbeatShape(v: unknown): v is Omit<Heartbeat, "age_seconds"> {
+function isV3CacheShape(v: unknown): v is Omit<Heartbeat, "age_seconds"> & {
+  schema_version: 2;
+  v3_instance_id: string;
+  v3_generation_id: string;
+} {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Record<string, unknown>;
   return (
+    r.schema_version === 2 &&
+    typeof r.v3_instance_id === "string" &&
+    typeof r.v3_generation_id === "string" &&
     typeof r.instance_id === "string" &&
-    typeof r.name === "string" &&
     typeof r.last_heartbeat === "string" &&
     Array.isArray(r.files_touched)
   );
 }
 
-function readHeartbeats(): { all: Heartbeat[]; invalid: InvalidHeartbeat[]; dir: string } {
+function readCacheDiagnostics(): { invalid: InvalidHeartbeat[]; dir: string } {
   const dir = activeDir();
   const invalid: InvalidHeartbeat[] = [];
-  const all: Heartbeat[] = [];
 
   let files: string[] = [];
   try {
     files = readdirSync(dir);
   } catch (err) {
     invalid.push({ file: dir, issue: `active dir missing: ${(err as Error).message}` });
-    return { all, invalid, dir };
+    return { invalid, dir };
   }
 
-  const now = Date.now();
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     const full = path.join(dir, file);
@@ -170,29 +205,68 @@ function readHeartbeats(): { all: Heartbeat[]; invalid: InvalidHeartbeat[]; dir:
       invalid.push({ file, issue: `parse error: ${(err as Error).message}` });
       continue;
     }
-    if (!isHeartbeatShape(parsed)) {
-      invalid.push({ file, issue: "missing required fields" });
-      continue;
+    if (!isV3CacheShape(parsed)) {
+      invalid.push({ file, issue: "not a generation-bound V3 cache" });
     }
-    const ts = Date.parse(parsed.last_heartbeat);
-    const ageSec = Number.isFinite(ts) ? Math.max(0, Math.floor((now - ts) / 1000)) : 0;
-    all.push({
-      ...parsed,
-      activity: parsed.activity ?? "unknown",
-      task_state: parsed.task_state ?? "active",
-      age_seconds: ageSec,
-    });
   }
+  return { invalid, dir };
+}
 
-  all.sort((a, b) => b.last_heartbeat.localeCompare(a.last_heartbeat));
-  return { all, invalid, dir };
+/**
+ * Reproduce the two silent bail-outs in `readLiveCoordinationRows` so an empty
+ * list can name its cause. Repeats that function's reads, so call it only when
+ * the list is already empty.
+ */
+function probeLedgerReadState(root: string): LedgerReadState {
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state === "blocked") {
+    return { ok: false, reason: `ledger route blocked: ${route.reason}` };
+  }
+  try {
+    requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(root));
+  } catch (err) {
+    return { ok: false, reason: (err as Error).message };
+  }
+  return { ok: true };
 }
 
 export function readAgents(): AgentsSnapshot {
-  const { all, invalid, dir } = readHeartbeats();
+  const root = coordRoot();
+  const { invalid, dir } = readCacheDiagnostics();
+  const ledgerRecords = readAgentLedgerRecordsV3();
+  const now = Date.now();
+  const all: Heartbeat[] = readLiveCoordinationRows(root).map((row) => {
+    const ts = Date.parse(row.last_heartbeat);
+    return {
+      ...row,
+      name: row.name ?? row.instance_id,
+      activity: row.activity ?? "unknown",
+      task_state: row.task_state ?? "active",
+      age_seconds: Number.isFinite(ts) ? Math.max(0, Math.floor((now - ts) / 1_000)) : 0,
+    };
+  });
+  const represented = new Set<string>();
+  for (const heartbeat of all) {
+    const canonicalId = liveInstanceIdV3(heartbeat.instance_id);
+    const record = ledgerRecords.get(heartbeat.instance_id) ?? ledgerRecords.get(canonicalId);
+    if (!record) continue;
+    represented.add(record.instance_id);
+    heartbeat.ledger_state = record.state;
+    heartbeat.generation_id = record.generation_id;
+    heartbeat.open_span_count = record.open_span_count;
+  }
+  for (const record of ledgerRecords.values()) {
+    if (record.state === "terminal" || represented.has(record.instance_id)) continue;
+    all.push(heartbeatFromLedgerRecord(record));
+  }
+  all.sort((a, b) => b.last_heartbeat.localeCompare(a.last_heartbeat));
 
   const active = all.filter((h) => h.age_seconds < STALE_AGE_SECONDS);
   const stale = all.filter((h) => h.age_seconds >= STALE_AGE_SECONDS);
+  const terminal = [...ledgerRecords.values()]
+    .filter((record) => record.state === "terminal" && !represented.has(record.instance_id))
+    .map(heartbeatFromLedgerRecord)
+    .sort((a, b) => b.last_heartbeat.localeCompare(a.last_heartbeat));
 
   const claims: ClaimRow[] = [];
   for (const hb of all) {
@@ -210,40 +284,51 @@ export function readAgents(): AgentsSnapshot {
   return {
     active,
     stale,
+    terminal,
     claims,
     meta: {
       scanned_dir: dir,
       count: all.length,
       invalid,
       stale_threshold_seconds: STALE_AGE_SECONDS,
+      read_state: all.length === 0 ? probeLedgerReadState(root) : { ok: true },
     },
   };
 }
 
 export function readAgent(instanceId: string): Heartbeat | null {
-  const { all } = readHeartbeats();
-  return all.find((h) => h.instance_id === instanceId) ?? null;
+  const snapshot = readAgents();
+  return (
+    [...snapshot.active, ...snapshot.stale].find(
+      (heartbeat) =>
+        heartbeat.instance_id === instanceId ||
+        liveInstanceIdV3(heartbeat.instance_id) === instanceId,
+    ) ?? null
+  );
 }
 
 /**
- * Reconstruct a read-only `Heartbeat` for an agent whose live heartbeat is gone
+ * Reconstruct a read-only coordination row for an agent whose live V3 generation is gone
  * (session ended, or the file was pruned) but whose durable identity persists in
  * the append-only event log. Mirrors what `buildEndedAgentSummaries` does for the
  * hover card, so the standalone `/agents/[id]` page works for ended agents too
  * instead of 404ing.
  *
  * Only the fields that survive a session are populated: name / platform /
- * session_id / started_at from the `session.start` (or `subagent.start`) record,
+ * session_id / started_at from the canonical `session.started` record,
  * and `last_heartbeat` set to the agent's most-recent event ts (a real "last
  * seen", more accurate than the start ts). The live-only fields (task,
- * files_touched, last_tool, model, turn_summary) are intentionally empty: they
+ * files_touched and model) are intentionally empty: they
  * lived in the heartbeat and don't outlast it. Callers distinguish this from a
- * live heartbeat by checking `readAgent` first and gate live-only mutation
+ * live V3 generation by checking `readAgent` first and gate live-only mutation
  * actions (heal / kill / nudge / end-session) on that.
  *
  * Returns null when no identity exists for the instance (→ genuine notFound).
  */
 export function readEndedAgent(instanceId: string): Heartbeat | null {
+  const records = readAgentLedgerRecordsV3();
+  const terminal = records.get(instanceId) ?? records.get(liveInstanceIdV3(instanceId));
+  if (terminal?.state === "terminal") return heartbeatFromLedgerRecord(terminal);
   const identity = readInstanceIdentities()[instanceId];
   if (!identity) return null;
   // Newest event ts for this instance = best "last seen" proxy. readEvents
@@ -268,12 +353,128 @@ export function readEndedAgent(instanceId: string): Heartbeat | null {
     task_state: identity.task_state ?? "active",
     task_state_updated_at: identity.task_state_updated_at ?? null,
     task_state_reason: identity.task_state_reason ?? null,
-    turn_summary: null,
-    last_tool: null,
-    last_tool_target: null,
     model: null,
     age_seconds: ageSec,
   };
+}
+
+export function classifyAgentLedgerStateV3(input: {
+  terminal: boolean;
+  pending_finalization: boolean;
+  open_span_count: number;
+  turn_open: boolean;
+}): AgentLedgerStateV3 {
+  if (input.terminal) return "terminal";
+  if (input.pending_finalization) return "ending";
+  if (input.open_span_count > 0 && !input.turn_open) return "recovery-required";
+  return "live";
+}
+
+function readAgentLedgerRecordsV3(): Map<string, AgentLedgerRecordV3> {
+  const root = coordRoot();
+  const control = readEventV3ControlState(root);
+  if (control.state !== "candidate" && control.state !== "active") return new Map();
+  try {
+    const read = readLedgerV3(root);
+    if (!read.complete) return new Map();
+    const view = projectCoordinationViewV3(read);
+    const pending = new Set<string>(
+      listSessionFinalizationRequestsV3(root)
+        .filter((request) => request.status === "pending")
+        .map((request) => request.generation_id),
+    );
+    const openSpans = new Map<string, { count: number; turn_open: boolean }>();
+    for (const { state } of listHookProducerStateRecordsV3(root)) {
+      if (state.spans.length === 0) continue;
+      openSpans.set(state.generation_id, {
+        count: state.spans.length,
+        turn_open: Boolean(state.current_turn_id),
+      });
+    }
+    const records = new Map<string, AgentLedgerRecordV3>();
+    for (const generation of [
+      ...Object.values(view.instances),
+      ...Object.values(view.terminal_generations),
+    ]) {
+      const spans = openSpans.get(generation.generation_id) ?? { count: 0, turn_open: false };
+      const record: AgentLedgerRecordV3 = {
+        instance_id: generation.instance_id,
+        generation_id: generation.generation_id,
+        state: classifyAgentLedgerStateV3({
+          terminal: generation.phase === "terminal",
+          pending_finalization: pending.has(generation.generation_id),
+          open_span_count: spans.count,
+          turn_open: spans.turn_open,
+        }),
+        open_span_count: spans.count,
+        generation,
+      };
+      const current = records.get(generation.instance_id);
+      if (!current || current.generation.last_observed_at < generation.last_observed_at) {
+        records.set(generation.instance_id, record);
+      }
+    }
+    return records;
+  } catch {
+    return new Map();
+  }
+}
+
+function heartbeatFromLedgerRecord(record: AgentLedgerRecordV3): Heartbeat {
+  const generation = record.generation;
+  const observedAt = generation.last_observed_at;
+  const observedMs = Date.parse(observedAt);
+  const adapter = generation.runtime_attestation.adapter;
+  return {
+    instance_id: generation.instance_id,
+    name: nameForLedgerInstance(generation.instance_id),
+    kind: generation.parent_generation_id ? "subagent" : "session",
+    platform: adapter.state === "observed" ? adapter.value.id : null,
+    session_id: generation.session_id,
+    started_at: generation.started_at,
+    last_heartbeat: observedAt,
+    files_touched: generation.files_touched,
+    task: null,
+    activity: generation.activity === "terminal" ? "idle" : generation.activity,
+    activity_updated_at: observedAt,
+    activity_source: "event-v3-coordination-view",
+    task_state: normalizeTaskState(generation.task_state),
+    task_state_updated_at: observedAt,
+    task_state_reason: null,
+    model: null,
+    age_seconds: Number.isFinite(observedMs)
+      ? Math.max(0, Math.floor((Date.now() - observedMs) / 1000))
+      : 0,
+    ledger_state: record.state,
+    generation_id: generation.generation_id,
+    open_span_count: record.open_span_count,
+  };
+}
+
+function nameForLedgerInstance(instanceId: string): string {
+  const historyPath = path.join(harneryDir(), ".name-history");
+  if (existsSync(historyPath)) {
+    for (const line of readFileSync(historyPath, "utf8").split("\n").reverse()) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as { instance_id?: string; name?: string };
+        if (
+          entry.name &&
+          entry.instance_id &&
+          (entry.instance_id === instanceId || liveInstanceIdV3(entry.instance_id) === instanceId)
+        ) {
+          return entry.name.startsWith("agent-") ? entry.name.slice("agent-".length) : entry.name;
+        }
+      } catch {
+        // Ignore malformed history rows; the instance prefix remains an honest fallback.
+      }
+    }
+  }
+  return nativeInstanceIdV3(instanceId).slice(0, 8);
+}
+
+function normalizeTaskState(value: string | undefined): TaskState {
+  return value === "blocked" || value === "done" ? value : "active";
 }
 
 export interface JournalEntry {
@@ -434,17 +635,25 @@ export function readJournalArchive(instanceId: string, filename: string): string
   }
 }
 
-export interface EventRow {
-  schema_version: number;
-  event_id: string;
-  event_type: string;
+type EventRowForV3<E extends EventV3> = {
+  schema_version: 3;
+  event_id: E["event_id"];
+  event_type: E["event_type"];
   ts: string;
   instance_id?: string;
   session_id?: string;
   adapter?: string;
   source?: string;
-  data?: Record<string, unknown>;
-}
+  data: E["payload"];
+  live_display?: Pick<LiveDisplayRowV3, "executable" | "intent_display" | "target_labels">;
+};
+
+/** Discriminated, privacy-safe web DTO projected only from validated V3 rows. */
+export type EventRow = EventV3 extends infer E
+  ? E extends EventV3
+    ? EventRowForV3<E>
+    : never
+  : never;
 
 export interface EventsResponse {
   rows: EventRow[];
@@ -455,152 +664,6 @@ export interface EventsResponse {
   };
 }
 
-/** Bytes read per backward step when tailing events.ndjson. At ~550 bytes/row
- * this holds ~7k rows — comfortably more than `readEvents`' max `limit` (600) —
- * so unfiltered queries are satisfied in a single read. */
-const EVENTS_CHUNK_BYTES = 4_000_000;
-/** Default cap on how far back a single tail scan reads. events.ndjson is an
- * append-only ledger that grows without bound, so it can never be loaded whole:
- * past ~512MB `readFileSync` throws "Cannot create a string longer than
- * 0x1fffffe8 characters" (V8's max string length). Callers walk back until their
- * own stop condition, file start, or this cap. */
-const EVENTS_MAX_SCAN_BYTES = 64_000_000;
-
-/** Rolled event-stream archives (`events-*.ndjson`) newest-first, so a tail scan
- * can continue past the active file into recent history across a rotation
- * boundary. Sorted by mtime (not filename) so the manual `events-legacy.ndjson`
- * and same-day `.N` dedupe suffixes order correctly. The naming convention is
- * produced by src/core/hooks/events/rotate.ts — kept in sync with it. */
-function archiveFilesNewestFirst(dir: string = harneryDir()): string[] {
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return [];
-  }
-  return names
-    .filter((n) => n.startsWith("events-") && n.endsWith(".ndjson"))
-    .map((n) => {
-      const p = path.join(dir, n);
-      try {
-        return { p, m: statSync(p).mtimeMs };
-      } catch {
-        return { p, m: 0 };
-      }
-    })
-    .sort((a, b) => b.m - a.m)
-    .map((e) => e.p);
-}
-
-/** Scan one ndjson file from EOF backward, newest-first, up to `remaining`
- * bytes. Returns whether `onRow` asked to stop, plus bytes/lines consumed.
- * Lines never span files, so `carry` is file-local. */
-function scanFileBackward(
-  p: string,
-  onRow: (row: EventRow) => boolean | void,
-  chunkBytes: number,
-  remaining: number,
-): { stop: boolean; bytesConsumed: number; linesScanned: number } {
-  let linesScanned = 0;
-  let stop = false;
-  const size = statSync(p).size;
-  let end = size;
-  let carry = "";
-  const fd = openSync(p, "r");
-  try {
-    while (!stop && end > 0 && size - end < remaining) {
-      const start = Math.max(0, end - chunkBytes);
-      const len = end - start;
-      const buf = Buffer.allocUnsafe(len);
-      let read = 0;
-      while (read < len) {
-        const n = readSync(fd, buf, read, len - read, start + read);
-        if (n === 0) break;
-        read += n;
-      }
-      let text = buf.toString("utf8", 0, read) + carry;
-      if (start > 0) {
-        // First line is partial (its head is before `start`). Hold it to glue
-        // onto the next (earlier) chunk; process only the complete lines here.
-        const nl = text.indexOf("\n");
-        if (nl < 0) {
-          carry = text; // whole chunk is one unterminated line — keep going back
-          end = start;
-          continue;
-        }
-        carry = text.slice(0, nl);
-        text = text.slice(nl + 1);
-      } else {
-        carry = "";
-      }
-      const lines = text.split("\n");
-      // Newest-first: iterate this chunk's lines newest→oldest; chunks read
-      // earlier in the loop are already newer than this one.
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i];
-        if (line.trim() === "") continue;
-        linesScanned++;
-        let row: EventRow;
-        try {
-          row = JSON.parse(line) as EventRow;
-        } catch {
-          continue; // skip malformed line
-        }
-        if (onRow(row) === false) {
-          stop = true;
-          break;
-        }
-      }
-      end = start;
-    }
-  } finally {
-    closeSync(fd);
-  }
-  return { stop, bytesConsumed: size - end, linesScanned };
-}
-
-/**
- * Scan the event stream from newest to oldest, parsing complete lines and
- * invoking `onRow` for each parsed row **newest-first**. Reads the active
- * `events.ndjson` first, then continues into rolled `events-*.ndjson` archives
- * newest-first, so a rotation boundary is invisible to callers. Stops when
- * `onRow` returns `false`, all files are exhausted, or `maxScanBytes` (summed
- * across files) have been consumed. Malformed lines are skipped. Returns the
- * count of non-empty lines scanned.
- *
- * This is the one bounded reader every events.ndjson consumer must ride — a
- * whole-file `readFileSync` crashes once a single file passes V8's ~512MB max
- * string length (see `EVENTS_MAX_SCAN_BYTES`).
- */
-export function scanEventsTail(
-  onRow: (row: EventRow) => boolean | void,
-  opts: {
-    chunkBytes?: number;
-    maxScanBytes?: number;
-    /** Repo root to read from, when it is not the one being scanned. A workflow
-     * child emits to the coord root it runs in, which for a run driven from a
-     * sibling checkout is not this one. */
-    root?: string;
-  } = {},
-): { linesScanned: number } {
-  const chunkBytes = opts.chunkBytes ?? EVENTS_CHUNK_BYTES;
-  const maxScanBytes = opts.maxScanBytes ?? EVENTS_MAX_SCAN_BYTES;
-  let linesScanned = 0;
-  let bytesConsumed = 0;
-
-  const dir = opts.root ? path.join(opts.root, ".harnery") : harneryDir();
-  const files = [path.join(dir, "events.ndjson"), ...archiveFilesNewestFirst(dir)];
-  for (const p of files) {
-    if (bytesConsumed >= maxScanBytes) break;
-    if (!existsSync(p)) continue;
-    const res = scanFileBackward(p, onRow, chunkBytes, maxScanBytes - bytesConsumed);
-    linesScanned += res.linesScanned;
-    bytesConsumed += res.bytesConsumed;
-    if (res.stop) break;
-  }
-  return { linesScanned };
-}
-
 export function readEvents(
   opts: {
     limit?: number;
@@ -609,51 +672,88 @@ export function readEvents(
     /** Session-id allowlist. A main adapter session carries the same id in
      * `session_id` and `instance_id`, so either matching is a hit. */
     sessions?: Set<string>;
-    /** Read another checkout's stream (see `scanEventsTail`). */
+    /** Read another checkout's V3 ledger. */
     root?: string;
   } = {},
 ): EventsResponse {
-  const p = opts.root ? path.join(opts.root, ".harnery", "events.ndjson") : eventsPath();
-  const limit = opts.limit ?? 200;
-  const out: EventRow[] = [];
-  const { linesScanned } = scanEventsTail(
-    (row) => {
-      if (opts.instanceId && row.instance_id !== opts.instanceId) return;
-      if (opts.type && row.event_type !== opts.type) return;
-      if (
-        opts.sessions &&
-        !(
-          (row.session_id !== undefined && opts.sessions.has(row.session_id)) ||
-          (row.instance_id !== undefined && opts.sessions.has(row.instance_id))
-        )
+  const root = opts.root ?? coordRoot();
+  const control = readEventV3ControlState(root);
+  if (control.state === "candidate" || control.state === "active") {
+    const catalogPath = path.join(root, ".harnery", "ledgers", "v3", "catalog.json");
+    const ledger = readLedgerV3(root);
+    const liveDisplay = new Map(listLiveDisplayV3(root).map((row) => [row.event_id, row]));
+    const rows: EventRow[] = [];
+    if (ledger.complete) {
+      for (
+        let index = ledger.events.length - 1;
+        index >= 0 && rows.length < (opts.limit ?? 200);
+        index--
       ) {
-        return;
+        const event = ledger.events[index]!.event;
+        const display = liveDisplay.get(event.event_id);
+        const row = {
+          schema_version: 3,
+          event_id: event.event_id,
+          event_type: event.event_type,
+          ts: event.time.recorded_at,
+          instance_id: event.scope.instance_id,
+          session_id: "session_id" in event.scope ? event.scope.session_id : undefined,
+          source: event.provenance.source_event,
+          data: event.payload,
+          ...(display
+            ? {
+                live_display: {
+                  ...(display.executable ? { executable: display.executable } : {}),
+                  ...(display.intent_display ? { intent_display: display.intent_display } : {}),
+                  ...(display.target_labels ? { target_labels: display.target_labels } : {}),
+                },
+              }
+            : {}),
+        } as EventRow;
+        if (opts.instanceId && row.instance_id !== opts.instanceId) continue;
+        if (opts.type && row.event_type !== opts.type) continue;
+        if (
+          opts.sessions &&
+          !(
+            (row.session_id !== undefined && opts.sessions.has(row.session_id)) ||
+            (row.instance_id !== undefined && opts.sessions.has(row.instance_id))
+          )
+        ) {
+          continue;
+        }
+        rows.push(row);
       }
-      out.push(row);
-      if (out.length >= limit) return false;
+    }
+    return {
+      rows,
+      meta: {
+        path: existsSync(catalogPath)
+          ? catalogPath
+          : path.join(root, ".harnery", "ledgers", "v3", "active.ndjson"),
+        total_lines: ledger.events.length,
+        returned: rows.length,
+      },
+    };
+  }
+  return {
+    rows: [],
+    meta: {
+      path: path.join(root, ".harnery", "ledgers", "v3"),
+      total_lines: 0,
+      returned: 0,
     },
-    { root: opts.root },
-  );
-  return { rows: out, meta: { path: p, total_lines: linesScanned, returned: out.length } };
+  };
 }
 
-/** Durable identity for one agent instance, harvested from the append-only
- * event log (not from heartbeats, which are deleted on session end). */
+/** Durable instance identity projected exclusively from V3 plus name history. */
 export interface InstanceIdentity {
   instance_id: string;
   name: string;
-  /** Durable persona UUID after `agents identity assume`; otherwise null. */
   agent_id?: string | null;
-  /** "session" for a main agent (from `session.start`) or "subagent" (from
-   * `subagent.start`). */
   kind: "session" | "subagent";
-  /** subagents only: the Agent-tool type (Explore, general-purpose, …). */
   agent_type?: string | null;
-  /** subagents only: the dispatching parent's session id (= parent instance_id). */
   session_id?: string | null;
   platform?: string | null;
-  /** Model from this instance's most recent `turn.stop` ("what model did it
-   * last use"), survives the heartbeat and tracks mid-session model switches. */
   model?: string | null;
   activity?: AgentActivity;
   activity_updated_at?: string | null;
@@ -662,434 +762,52 @@ export interface InstanceIdentity {
   task_state_updated_at?: string | null;
   task_state_reason?: string | null;
   started_at?: string | null;
-  /** ts of the start event: a recency proxy for agents that have since ended. */
   last_ts?: string | null;
 }
 
-/**
- * Incremental `instance_id → identity` index over the append-only event log.
- *
- * `readInstanceIdentities` used to `readFileSync` the entire stream (now ~68MB,
- * growing forever, since events.ndjson is a deliberate immutable ledger) on every
- * web request, just to harvest the two sparse start events per agent. Because
- * the log is append-only, byte offsets never shift, so we can persist a derived
- * map + the byte offset consumed so far and on each call read only the appended
- * delta `[offset, size)`. Steady state (nothing new) is a single `statSync`.
- *
- * Persisted at `.harnery/.identity-index.json` (gitignored derived state, like
- * `.events-cursor`) so a fresh web-server process doesn't pay one O(file) read
- * on its first request; an in-memory cache makes repeat calls in-process free.
- */
-export interface IdentityIndex {
-  /** Bump when the parser learns new event types/fields. A persisted index
-   * built by an older parser has already consumed the bytes that carry the new
-   * data, so a version mismatch forces one full rebuild. */
-  version?: number;
-  /** Bytes of the ACTIVE events.ndjson consumed so far, always a line boundary. */
-  offset: number;
-  /** Basenames of rolled `events-*.ndjson` archives already folded into
-   * `identities`. Each archive is folded exactly once, ever, so identities
-   * survive a rotation (the active offset resets to 0 after a roll, but the
-   * rolled content lives on in an archive folded here). */
-  foldedArchives?: string[];
-  identities: Record<string, InstanceIdentity>;
-}
-
-/** v2: turn.stop model harvesting (2026-06-10). v3: fold rolled archives so
- * identities survive events.ndjson rotation (2026-07-07). v4: fold
- * identity.assumed role changes (2026-07-20). v5: fold both session-state
- * axes so ended-agent views keep durable lifecycle evidence. */
-const IDENTITY_INDEX_VERSION = 5;
-
-/** Line-aligned window for folding a file range into the identity index without
- * ever materializing a >512MB string (V8's max string length). A just-rolled
- * archive can be hundreds of MB, so it must be read in bounded windows. */
-const IDENTITY_FOLD_WINDOW_BYTES = 64 * 1024 * 1024;
-
-let identityIndexCache: IdentityIndex | null = null;
-
-/** Reset the memoized event-derived identity/state index (tests only). */
 export function __resetIdentityIndexCache(): void {
-  identityIndexCache = null;
+  // V3 projection is rebuilt from the canonical reader on demand.
 }
 
-/** Parse identity-bearing rows out of an ndjson chunk and merge them into
- * `into`. Starts establish the instance, identity.assumed changes its durable
- * persona/name, and turn.stop carries the most recently used model. Pure;
- * exported for tests. The substring pre-filter avoids JSON.parse on noise. */
-const SESSION_STATE_EVENT_TYPES = [
-  "user_prompt.submit",
-  "tool.pre_use",
-  "command.start",
-  "interaction.input_requested",
-  "session.end",
-  "subagent.stop",
-  "state.task_state",
-] as const;
-
-export function mergeIdentitiesFromChunk(
-  chunk: string,
-  into: Record<string, InstanceIdentity>,
-): Record<string, InstanceIdentity> {
-  for (const line of chunk.split("\n")) {
-    const isSession = line.includes('"session.start"');
-    const isSubagent = !isSession && line.includes('"subagent.start"');
-    const isAssume = !isSession && !isSubagent && line.includes('"identity.assumed"');
-    const isTurnStop = !isSession && !isSubagent && !isAssume && line.includes('"turn.stop"');
-    const isStateEvent =
-      !isSession &&
-      !isSubagent &&
-      !isAssume &&
-      !isTurnStop &&
-      SESSION_STATE_EVENT_TYPES.some((type) => line.includes(`"${type}"`));
-    if (!isSession && !isSubagent && !isAssume && !isTurnStop && !isStateEvent) continue;
-    try {
-      if (isTurnStop) {
-        const row = JSON.parse(line) as {
-          event_type: string;
-          instance_id?: string;
-          ts?: string;
-          data?: { model?: string } & Record<string, unknown>;
-        };
-        const model = row.data?.model;
-        // A turn.stop always follows its session.start in the append-only log,
-        // so the identity exists; if the start was never captured, a model with
-        // no name attached is unusable, so skip rather than synthesize.
-        if (row.instance_id && model && into[row.instance_id]) {
-          into[row.instance_id].model = model;
-        }
-        applyIdentityState(into, row);
-        continue;
-      }
-      if (isAssume) {
-        const row = JSON.parse(line) as {
-          instance_id?: string;
-          session_id?: string;
-          ts?: string;
-          data?: { name?: string; agent_id?: string };
-        };
-        const name = row.data?.name;
-        if (!row.instance_id || !name) continue;
-        const previous = into[row.instance_id];
-        into[row.instance_id] = {
-          instance_id: row.instance_id,
-          name,
-          agent_id: row.data?.agent_id ?? previous?.agent_id ?? null,
-          kind: previous?.kind ?? "session",
-          agent_type: previous?.agent_type ?? null,
-          session_id: previous?.session_id ?? row.session_id ?? null,
-          platform: previous?.platform ?? null,
-          model: previous?.model ?? null,
-          activity: previous?.activity,
-          activity_updated_at: previous?.activity_updated_at ?? null,
-          activity_source: previous?.activity_source ?? null,
-          task_state: previous?.task_state,
-          task_state_updated_at: previous?.task_state_updated_at ?? null,
-          task_state_reason: previous?.task_state_reason ?? null,
-          started_at: previous?.started_at ?? null,
-          last_ts: mostRecentTimestamp(row.ts, previous?.last_ts),
-        };
-        continue;
-      }
-      if (isStateEvent) {
-        const row = JSON.parse(line) as {
-          event_type: string;
-          instance_id?: string;
-          ts?: string;
-          data?: Record<string, unknown>;
-        };
-        applyIdentityState(into, row);
-        continue;
-      }
-      const row = JSON.parse(line) as {
-        event_type: string;
-        instance_id?: string;
-        session_id?: string;
-        ts?: string;
-        data?: { name?: string; agent_type?: string; platform?: string; started_at?: string };
-      };
-      const name = row.data?.name;
-      if (!row.instance_id || !name) continue;
-      into[row.instance_id] = {
-        instance_id: row.instance_id,
-        name,
-        agent_id: into[row.instance_id]?.agent_id ?? null,
-        kind: isSession ? "session" : "subagent",
-        agent_type: isSubagent ? (row.data?.agent_type ?? null) : null,
-        session_id: row.session_id ?? null,
-        platform: row.data?.platform ?? null,
-        // A re-emitted start (session resume) must not wipe a model already
-        // harvested from this instance's earlier turn.stops.
-        model: into[row.instance_id]?.model ?? null,
-        activity: into[row.instance_id]?.activity,
-        activity_updated_at: into[row.instance_id]?.activity_updated_at ?? null,
-        activity_source: into[row.instance_id]?.activity_source ?? null,
-        task_state: into[row.instance_id]?.task_state,
-        task_state_updated_at: into[row.instance_id]?.task_state_updated_at ?? null,
-        task_state_reason: into[row.instance_id]?.task_state_reason ?? null,
-        started_at: row.data?.started_at ?? null,
-        last_ts: mostRecentTimestamp(row.ts, into[row.instance_id]?.last_ts),
-      };
-      applyIdentityState(into, row);
-    } catch {
-      // skip malformed line
-    }
-  }
-  return into;
-}
-
-function applyIdentityState(
-  identities: Record<string, InstanceIdentity>,
-  event: {
-    event_type: string;
-    instance_id?: string;
-    ts?: string;
-    data?: Record<string, unknown>;
-  },
-): void {
-  if (!event.instance_id || !event.ts) return;
-  const identity = identities[event.instance_id];
-  if (!identity) return;
-  const priorActivityUpdatedAt = identity.activity_updated_at ?? null;
-  const priorTaskStateUpdatedAt = identity.task_state_updated_at ?? null;
-  const next = applySessionStateEvent(
-    {
-      activity: identity.activity,
-      activity_updated_at: identity.activity_updated_at ?? undefined,
-      activity_source: identity.activity_source ?? undefined,
-      task_state: identity.task_state,
-      task_state_updated_at: identity.task_state_updated_at ?? undefined,
-      task_state_reason: identity.task_state_reason ?? undefined,
-    },
-    {
-      event_type: event.event_type,
-      ts: event.ts,
-      data: event.data ?? {},
-    },
-  );
-  if (isAtLeastAsRecent(next.activity_updated_at, priorActivityUpdatedAt)) {
-    identity.activity = next.activity;
-    identity.activity_updated_at = next.activity_updated_at ?? null;
-    identity.activity_source = next.activity_source ?? null;
-  }
-  if (isAtLeastAsRecent(next.task_state_updated_at, priorTaskStateUpdatedAt)) {
-    identity.task_state = next.task_state;
-    identity.task_state_updated_at = next.task_state_updated_at ?? null;
-    identity.task_state_reason = next.task_state_reason ?? null;
-  }
-  identity.last_ts = mostRecentTimestamp(event.ts, identity.last_ts);
-}
-
-function isAtLeastAsRecent(candidate: string | null | undefined, current: string | null | undefined) {
-  if (!candidate) return !current;
-  if (!current) return true;
-  return Date.parse(candidate) >= Date.parse(current);
-}
-
-function mostRecentTimestamp(
-  candidate: string | null | undefined,
-  current: string | null | undefined,
-): string | null {
-  return isAtLeastAsRecent(candidate, current) ? (candidate ?? null) : (current ?? null);
-}
-
-/** Read bytes `[start, end)` of a file as UTF-8 without loading the rest. Both
- *  ends are line boundaries in this index, so no partial-multibyte decode. */
-function readRange(p: string, start: number, end: number): string {
-  const len = end - start;
-  if (len <= 0) return "";
-  const buf = Buffer.allocUnsafe(len);
-  const fd = openSync(p, "r");
-  try {
-    let read = 0;
-    while (read < len) {
-      const n = readSync(fd, buf, read, len - read, start + read);
-      if (n === 0) break;
-      read += n;
-    }
-    return buf.toString("utf8", 0, read);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function loadPersistedIndex(indexPath: string): IdentityIndex {
-  try {
-    const parsed = JSON.parse(readFileSync(indexPath, "utf8")) as Partial<IdentityIndex>;
-    if (
-      parsed.version === IDENTITY_INDEX_VERSION &&
-      typeof parsed.offset === "number" &&
-      parsed.identities &&
-      typeof parsed.identities === "object"
-    ) {
-      return {
-        version: parsed.version,
-        offset: parsed.offset,
-        foldedArchives: Array.isArray(parsed.foldedArchives) ? parsed.foldedArchives : [],
-        identities: parsed.identities as Record<string, InstanceIdentity>,
-      };
-    }
-  } catch {
-    // missing or corrupt → rebuild from journal
-  }
-  // Missing, corrupt, or built by an older parser version → one full re-scan.
-  return { offset: 0, foldedArchives: [], identities: {} };
-}
-
-/** Rolled `events-*.ndjson` archives under `.harnery`, oldest-first by mtime so
- * a later `session.start` wins per instance_id when folded in order. Basenames
- * only (the index keys `foldedArchives` by basename). */
-function listIdentityArchives(harneryDirPath: string): string[] {
-  try {
-    return readdirSync(harneryDirPath)
-      .filter((n) => n.startsWith("events-") && n.endsWith(".ndjson"))
-      .map((n) => {
-        try {
-          return { n, m: statSync(path.join(harneryDirPath, n)).mtimeMs };
-        } catch {
-          return { n, m: 0 };
-        }
-      })
-      .sort((a, b) => a.m - b.m)
-      .map((e) => e.n);
-  } catch {
-    return [];
-  }
-}
-
-/** Fold `[start, size)` of `p` into `identities` in line-aligned windows no
- * larger than `IDENTITY_FOLD_WINDOW_BYTES`, so a huge (just-rolled) file never
- * overflows V8's max string length. Returns the offset of the last COMPLETE
- * line consumed (a torn final write is left for the next call to re-read). */
-function foldRangeIntoIdentities(
-  p: string,
-  start: number,
-  size: number,
-  identities: Record<string, InstanceIdentity>,
-): number {
-  let off = start;
-  while (off < size) {
-    const end = Math.min(size, off + IDENTITY_FOLD_WINDOW_BYTES);
-    const chunk = readRange(p, off, end);
-    const isLast = end >= size;
-    const nl = chunk.lastIndexOf("\n");
-    if (nl < 0) {
-      if (isLast) break; // trailing partial line, nothing complete to fold
-      off = end; // pathological line longer than the window — step past it
-      continue;
-    }
-    const complete = chunk.slice(0, nl + 1);
-    mergeIdentitiesFromChunk(complete, identities);
-    off += Buffer.byteLength(complete, "utf8");
-    if (isLast) break;
-  }
-  return off;
-}
-
-function persistIndex(indexPath: string, idx: IdentityIndex): void {
-  try {
-    const tmp = `${indexPath}.tmp.${process.pid}`;
-    writeFileSync(tmp, JSON.stringify(idx), "utf8");
-    renameSync(tmp, indexPath);
-  } catch {
-    // best-effort; the in-memory cache is still authoritative this process
-  }
-}
-
-/**
- * Engine for the incremental identity index. Resolves paths from `root`
- * directly (not the module-cached coordRoot) so it's testable against a temp
- * dir. `prev` is the prior index (in-memory cache or null on cold start);
- * returns the refreshed index after consuming any appended events.
- */
-export function refreshIdentityIndex(root: string, prev: IdentityIndex | null): IdentityIndex {
-  const harneryDirPath = path.join(root, ".harnery");
-  const p = path.join(harneryDirPath, "events.ndjson");
-  const indexPath = path.join(harneryDirPath, ".identity-index.json");
-  const empty: IdentityIndex = { offset: 0, foldedArchives: [], identities: {} };
-  if (!existsSync(p)) return prev ?? empty;
-
-  let size: number;
-  try {
-    size = statSync(p).size;
-  } catch {
-    return prev ?? empty;
-  }
-
-  // Cold start: hydrate from the persisted index so we don't re-read the whole
-  // log on the first request after a process restart.
-  const base = prev ?? loadPersistedIndex(indexPath);
-  let { offset } = base;
-  const identities = base.identities;
-  const folded = new Set(base.foldedArchives ?? []);
-  let dirty = false;
-
-  // Fold any rolled archives not yet seen (each exactly once, ever), oldest-
-  // first so a later session.start wins. Windowed reads keep a just-rolled
-  // multi-hundred-MB archive under V8's max string length.
-  for (const name of listIdentityArchives(harneryDirPath)) {
-    if (folded.has(name)) continue;
-    const archivePath = path.join(harneryDirPath, name);
-    try {
-      const archiveSize = statSync(archivePath).size;
-      foldRangeIntoIdentities(archivePath, 0, archiveSize, identities);
-    } catch {
-      // Unreadable archive — mark folded anyway so we don't retry it forever.
-    }
-    folded.add(name);
-    dirty = true;
-  }
-
-  // Active file shrank (rolled, or deleted + recreated) → the old offset is
-  // meaningless. The rolled content is now an archive folded above, so just
-  // reset the active offset rather than wiping identities.
-  if (size < offset) {
-    offset = 0;
-    dirty = true;
-  }
-
-  // Read the appended delta (line-aligned, windowed) and advance the offset to
-  // the last COMPLETE line so a torn final write is re-read next call.
-  if (size > offset) {
-    const newOffset = foldRangeIntoIdentities(p, offset, size, identities);
-    if (newOffset !== offset) {
-      offset = newOffset;
-      dirty = true;
-    }
-  }
-
-  const next: IdentityIndex = {
-    version: IDENTITY_INDEX_VERSION,
-    offset,
-    foldedArchives: [...folded],
-    identities,
-  };
-  if (dirty) persistIndex(indexPath, next);
-  return next;
-}
-
-/**
- * Map `instance_id → identity`, harvested from `session.start` (main agents)
- * and `subagent.start` (Agent-tool dispatches) events in the canonical log.
- * Backed by the incremental index above, so cost is O(new events) not O(file).
- *
- * Why the event log and not heartbeats: heartbeat files in `.harnery/active/`
- * are deleted when a session ends, so they only name *live* agents. These start
- * events persist in the append-only log, so a name resolves for the life of the
- * log, including for agents (main and subagent alike) that have since exited.
- *
- * Subagents DO write heartbeats while running (the projector stamps one from
- * their tool events, carrying `kind: "subagent"` + `session_id` = the parent's
- * instance_id), so for a *live* subagent the parent is also resolvable straight
- * off the heartbeat. See `resolveSubagentLinkage` in agent-summary.ts, which
- * the live summary layer uses so a running subagent's `↳parent` resolves at
- * spawn instead of at exit. This durable-log path remains the source for ended
- * subagents (heartbeat already unlinked) and for the durable identity fields
- * (agent_type) the heartbeat doesn't carry.
- */
 export function readInstanceIdentities(): Record<string, InstanceIdentity> {
-  identityIndexCache = refreshIdentityIndex(coordRoot(), identityIndexCache);
-  return identityIndexCache.identities;
+  const root = coordRoot();
+  const control = readEventV3ControlState(root);
+  if (control.state !== "candidate" && control.state !== "active") return {};
+  const ledger = readLedgerV3(root);
+  if (!ledger.complete) return {};
+  const view = projectCoordinationViewV3(ledger);
+  const generations = [
+    ...Object.values(view.instances),
+    ...Object.values(view.terminal_generations),
+  ];
+  const identities: Record<string, InstanceIdentity> = {};
+  for (const generation of generations) {
+    identities[generation.instance_id] = {
+      instance_id: generation.instance_id,
+      name: nameForLedgerInstance(generation.instance_id),
+      agent_id: generation.identity_id ?? null,
+      kind: generation.parent_generation_id ? "subagent" : "session",
+      agent_type: generation.delegation_role ?? null,
+      session_id: generation.session_id,
+      platform:
+        generation.runtime_attestation.adapter.state === "observed"
+          ? generation.runtime_attestation.adapter.value.id
+          : null,
+      model:
+        generation.runtime_attestation.model.state === "observed"
+          ? generation.runtime_attestation.model.value.id
+          : null,
+      activity: generation.activity === "terminal" ? "idle" : generation.activity,
+      activity_updated_at: generation.last_observed_at,
+      activity_source: "event-v3-coordination-view",
+      task_state: normalizeTaskState(generation.task_state),
+      task_state_updated_at: generation.last_observed_at,
+      task_state_reason: null,
+      started_at: generation.started_at,
+      last_ts: generation.last_observed_at,
+    };
+  }
+  return identities;
 }
 
 export type CouncilStatus = "active" | "closed" | "archived";

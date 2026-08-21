@@ -1,0 +1,119 @@
+---
+title: "0092: Share bounded Codec digests and inspectable receipts"
+description: "ADR: extend encrypted presence with a content-free Codec digest and let operators inspect the evidence behind each panel cue."
+sidebar:
+  order: 92
+---
+
+**Status:** accepted (2026-08-21) · **Scope:** event producers, encrypted presence, Codec web tier
+
+## Context
+
+Codec can explain local activity from sanitized V3 events, but remote presence
+previously carried only task, lifecycle, heartbeat, and touched-file state. A
+remote panel therefore lost the operation, context band, and recent action
+evidence that a local panel could show.
+
+The scene contract also carries provenance, confidence, observation time, and
+event IDs, but the panel hid those receipts in tooltips. Operators could see a
+cue without a practical way to inspect why it appeared.
+
+Transport behavior and duration labels had two related gaps. The shared SSE
+hook had no direct state-machine tests, and long-running detection learned only
+from the current instance. That made the tunnel fallback hard to prove and left
+timing baselines too sparse.
+
+## Alternatives considered
+
+**Replicate raw V3 events between machines.** Rejected because prompts, command
+arguments, tool inputs, outputs, paths, and error bodies must not cross the
+presence boundary. Encryption protects transport, not an over-broad payload.
+
+**Send the complete projected scene.** Rejected because the scene contains
+local presentation choices and character-pack state. Presence should carry
+portable evidence, not a rendered result.
+
+**Add a general raw-event inspector to Codec.** Rejected because it would
+widen the browser boundary and make a read-only activity page responsible for
+sensitive ledger content.
+
+**Keep a fixed long-running threshold.** Rejected because tools and adapters
+have materially different normal durations. A fixed cutoff produces noisy
+labels and cannot improve with observed history.
+
+## Decision
+
+Keep presence blob version 1 and add an optional per-agent `codec` field. Old
+readers ignore the additive field. The digest is limited to a safe operation
+category and label, an observed context percentage, and three recent action
+categories and outcomes. Each item carries its event ID and observation time.
+It never carries arguments, bodies, paths, targets, prompts, or errors.
+
+Build the digest from validated V3 rows on the publishing machine. Read it
+through a second strict allowlist on the receiving machine. Malformed fields
+fail closed. A sentinel test proves that tool input and output content do not
+survive blob construction.
+
+Expose a read-only evidence receipt inside every Codec panel. It flattens only
+the already-sanitized scene fields and shows the cue value, provenance,
+confidence, observation time, expiry, and up to three evidence IDs. It does not
+read the ledger, reveal raw payloads, or mutate coordination state.
+
+Learn long-running thresholds from successful terminal durations across
+instances, grouped by adapter, namespace, and operation name. Require eight
+samples. The threshold is the larger of 30 seconds or 1.5 times the observed
+90th percentile. Insufficient history keeps the label off.
+
+Extract the live-signal transport into a dependency-injected controller while
+keeping the React hook API unchanged. Direct tests cover local SSE delivery,
+silent-open tunnel polling, retry exhaustion, and hidden-tab recovery.
+
+Expose transport mode and last-signal age in the page rather than collapsing
+SSE and fallback polling into one connected state. Remote panels derive relay
+and digest freshness from timestamps already present in the encrypted presence
+record. This does not add a relay field or widen the digest.
+
+Event producers may add high-confidence semantic events only when the native
+signal is unambiguous. Native subagent start produces `agent.delegated` before
+`agent.started`. The `request_user_input` tool produces a bounded input wait.
+Successful explicit edit and review tools produce `progress.observed` with the
+terminal event as evidence. Shell text is not parsed to guess progress.
+
+Accept additional semantic progress only from exact structured tool identities
+or an explicit top-level native progress field. The admitted kinds are test,
+build, publication, deploy, and commit. Explicit top-level native wait fields
+may produce approval, scheduled, and rate-limit waits. Nested tool input is not
+read for either purpose. Dependency waits remain unavailable until the
+canonical V3 wait schema admits that kind.
+
+Keep cards stable within their authoritative presence section. Local cards sort
+before remote cards, followed by remote machine, display name, and instance ID.
+Activity and heartbeat timestamps are deliberately excluded. Cards move only
+when presence, durable identity, or machine placement changes.
+
+Group the evidence receipt into state, activity, and source sections with a
+sticky header and bounded keyboard-scrollable body. Show safe observer reason
+codes, cue expiry, operation elapsed time, baseline sample count, and the
+learned long-running threshold when available. None of those fields permits a
+raw payload into the scene.
+
+## Result
+
+Remote panels can show a bounded operation, measured context band, and recent
+actions without sharing raw ledger content. Operators can inspect why any
+visible panel cue exists. Timing labels now use adapter-specific observed
+history, and the transport fallback has direct deterministic coverage.
+
+The page now says whether its live source is SSE, polling, reconnecting, or
+connecting and reports the age of the latest signal. Remote panels report relay
+and digest age independently. Degraded observer state carries a safe reason,
+and the receipt exposes the evidence and calibration details behind visible
+cues.
+
+Routine activity no longer reshuffles cards. Stable identity ordering keeps the
+grid readable while the existing online, stale, and ended sections continue to
+reflect authoritative presence changes.
+
+Missing evidence remains quiet. The optional presence extension is backward
+compatible, and every new browser value still crosses the existing sanitized
+scene boundary.

@@ -54,7 +54,7 @@ The coord layer is read-only-fine but easier to consume in a browser:
 harn web up
 ```
 
-Visit `http://localhost:9000`. Live updates via Server-Sent Events whenever the coord state changes. See [concepts / web UI](/concepts/web-ui/) for the full feature tour.
+Visit `http://localhost:4276`. Live updates via Server-Sent Events whenever the coord state changes. See [concepts / web UI](/concepts/web-ui/) for the full feature tour.
 
 ## Portable utilities
 
@@ -85,7 +85,7 @@ Insurance for the coord state across machines:
 # One-time setup (creates the restic repo + password file)
 harn backup init
 
-# Take a snapshot of .harnery/ (events.ndjson + .lock excluded by default)
+# Take a snapshot of the durable V3 ledger and coordination state
 harn backup snapshot
 
 # Cross-machine sync of identities + archived journals + councils via rclone

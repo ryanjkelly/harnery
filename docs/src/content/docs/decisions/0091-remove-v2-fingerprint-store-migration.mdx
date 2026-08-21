@@ -1,0 +1,48 @@
+---
+title: "0091: Remove the V2 fingerprint-store migration"
+description: "ADR: restore the strict V3-only fingerprint-store boundary after the known host cutovers completed."
+sidebar:
+  order: 91
+---
+
+**Status:** accepted (2026-08-21) · **Scope:** product tier (`core/events/v3`)
+
+## Context
+
+ADR 0080 removed the predecessor event-ledger runtime and required the V3
+private key store to accept only its own envelope. ADR 0089 later added a
+bounded initializer branch for the known host cutovers. That branch preserved
+the existing fingerprint epochs while rewriting the format marker.
+
+Every known store now carries the V3 envelope. Keeping the initializer branch
+would turn a completed deployment step into permanent compatibility code and
+would contradict the V3-only runtime boundary.
+
+## Alternatives considered
+
+**Keep the recognizer indefinitely.** Rejected because it would leave an
+obsolete format in the live runtime after every known host had migrated.
+
+**Remove it at an arbitrary future release.** Rejected because no remaining
+host or acceptance gate requires it. Delay would make the temporary exception
+look like a supported upgrade contract.
+
+**Create fresh V3 keys.** Rejected because the known hosts already have valid
+V3 stores. Rotating or replacing their keys would change fingerprint
+continuity without solving a current defect.
+
+## Decision
+
+`loadOrCreateFingerprintKeyStoreV3` reads an existing store only through the
+strict V3 validator. A missing store is still created under the no-clobber
+lease. Any existing non-V3 format is refused without rewriting the file.
+
+The predecessor-format type, migration branch, and migration fixture are
+removed. The regression suite uses an unsupported marker to prove strict
+refusal without retaining a predecessor contract fixture.
+
+## Result
+
+The public V3 runtime has one fingerprint-store format. Existing V3 stores
+load normally, fresh stores can still be created, and unsupported envelopes
+remain byte-identical after refusal.

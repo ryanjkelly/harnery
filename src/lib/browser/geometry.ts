@@ -24,7 +24,13 @@ export interface LayoutElementMeasurement {
 export interface LayoutExclusion {
   index: number;
   tag: string;
-  reason: "hidden" | "zero-area" | "out-of-flow" | "limit";
+  reason:
+    | "hidden"
+    | "zero-area"
+    | "out-of-flow"
+    | "limit"
+    | "visually-hidden"
+    | "ellipsis-truncation";
 }
 
 export interface AlignChild extends LayoutElementMeasurement {
@@ -507,6 +513,53 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       return { x: clips.has(style.overflowX), y: clips.has(style.overflowY) };
     };
 
+    // The visually-hidden idiom (Tailwind `sr-only`, Bootstrap
+    // `visually-hidden`): a ~1px absolutely-positioned box whose content is
+    // clipped ON PURPOSE so it exists for assistive tech only. Its box is 1x1
+    // (not zero-area, so the zero-area exclusion misses it) and the legacy
+    // `clip: rect(0,0,0,0)` it relies on is not an overflow style, so nothing
+    // above recognizes it. Reporting it would flag every accessible page.
+    const isVisuallyHidden = (element: Element): boolean => {
+      const style = getComputedStyle(element);
+      if (style.position !== "absolute" && style.position !== "fixed") return false;
+      if (style.clip && style.clip !== "auto") return true;
+      const rect = element.getBoundingClientRect();
+      return rect.width <= 1 && rect.height <= 1 && style.overflow === "hidden";
+    };
+
+    const hasVisuallyHiddenAncestor = (start: Element | null, scope: Element): boolean => {
+      let current = start;
+      while (current && scope.contains(current)) {
+        if (isVisuallyHidden(current)) return true;
+        if (current === scope) break;
+        current = current.parentElement;
+      }
+      return false;
+    };
+
+    // Deliberate single-line truncation (`text-overflow: ellipsis` + nowrap +
+    // hidden overflow, the `truncate` utility): cutting the text is the
+    // design, and the dedicated truncation check owns auditing it. Only text
+    // under such an ancestor is exempt; element boxes still have to fit.
+    const ellipsizes = (element: Element): boolean => {
+      const style = getComputedStyle(element);
+      return (
+        style.textOverflow === "ellipsis" &&
+        style.whiteSpace === "nowrap" &&
+        (style.overflowX === "hidden" || style.overflowX === "clip")
+      );
+    };
+
+    const hasEllipsizingAncestor = (start: Element | null, scope: Element): boolean => {
+      let current = start;
+      while (current && scope.contains(current)) {
+        if (ellipsizes(current)) return true;
+        if (current === scope) break;
+        current = current.parentElement;
+      }
+      return false;
+    };
+
     // A scroller hides content the same way a clip does, but the reader can
     // reach it. Content below the fold of a capped table or right of a wide
     // code block is not a layout defect, so an axis stops being checked at the
@@ -517,6 +570,20 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       const style = getComputedStyle(element);
       const scrolls = new Set(["auto", "scroll"]);
       return { x: scrolls.has(style.overflowX), y: scrolls.has(style.overflowY) };
+    };
+
+    const scrollsBeforeScope = (
+      start: Element | null,
+      scope: Element,
+      axis: "x" | "y",
+    ): boolean => {
+      let current = start;
+      while (current && scope.contains(current)) {
+        if (scrollingStyle(current)[axis]) return true;
+        if (current === scope) break;
+        current = current.parentElement;
+      }
+      return false;
     };
 
     const unbounded = (): LayoutRect => ({
@@ -573,7 +640,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       const recordIssue = (
         element: LayoutElementMeasurement,
         allowed: LayoutRect,
-        clippedBy: string,
+        clippedBy: { x: string; y: string },
         axes: { x: boolean; y: boolean } = { x: true, y: true },
       ): void => {
         const rect = element.rect;
@@ -585,7 +652,14 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         };
         const maxOverrunPx = Math.max(overrun.top, overrun.right, overrun.bottom, overrun.left);
         if (maxOverrunPx > tolerancePx + SUBPIXEL_EPSILON && issues.length < ISSUE_LIMIT) {
-          issues.push({ element, clippedBy, overrun, maxOverrunPx });
+          const horizontalOverrun = Math.max(overrun.left, overrun.right);
+          const verticalOverrun = Math.max(overrun.top, overrun.bottom);
+          issues.push({
+            element,
+            clippedBy: horizontalOverrun >= verticalOverrun ? clippedBy.x : clippedBy.y,
+            overrun,
+            maxOverrunPx,
+          });
         }
       };
 
@@ -599,9 +673,9 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         container: Element,
         seed: LayoutRect,
         seedLabel: string,
-      ): { allowed: LayoutRect; clippedBy: string } => {
+      ): { allowed: LayoutRect; clippedBy: { x: string; y: string } } => {
         let allowed = { ...seed };
-        let clippedBy = seedLabel;
+        const clippedBy = { x: seedLabel, y: seedLabel };
         const free = { x: false, y: false };
         let current: Element | null = start;
         while (current && container.contains(current)) {
@@ -622,6 +696,14 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           };
           if (clips.x || clips.y) {
             const candidate = paddingRect(current);
+            const tightensX =
+              clips.x &&
+              (candidate.left > allowed.left + SUBPIXEL_EPSILON ||
+                candidate.right < allowed.right - SUBPIXEL_EPSILON);
+            const tightensY =
+              clips.y &&
+              (candidate.top > allowed.top + SUBPIXEL_EPSILON ||
+                candidate.bottom < allowed.bottom - SUBPIXEL_EPSILON);
             allowed = {
               x: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
               y: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
@@ -634,7 +716,11 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
             };
             allowed.width = Math.max(0, allowed.right - allowed.left);
             allowed.height = Math.max(0, allowed.bottom - allowed.top);
-            clippedBy = labelOf(current);
+            // Keep the label of the boundary that actually made each axis
+            // smaller. A wider outer scope should not hide the nearer parent
+            // responsible for a horizontal overrun.
+            if (tightensX) clippedBy.x = labelOf(current);
+            if (tightensY) clippedBy.y = labelOf(current);
           }
           if (scrolls.x) free.x = true;
           if (scrolls.y) free.y = true;
@@ -644,7 +730,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         return { allowed, clippedBy };
       };
 
-      const textContainer = (node: Node, scope: Element): Element | null => {
+      const nearestBlockOwner = (node: Node, scope: Element): Element | null => {
         let current = node.parentElement;
         while (current && scope.contains(current)) {
           if (current instanceof SVGElement) return null;
@@ -665,17 +751,38 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
             excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "hidden" });
             return;
           }
+          if (hasVisuallyHiddenAncestor(element, container)) {
+            excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "visually-hidden" });
+            return;
+          }
           const rect = element.getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0) {
             excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "zero-area" });
             return;
           }
-          const chain = clipChain(
-            element.parentElement,
-            container,
-            unbounded(),
-            labelOf(container),
-          );
+          // CSS overflow defaults to visible, so a child can escape a grid or
+          // flex cell without any clipping ancestor noticing. Constrain
+          // in-flow boxes horizontally to their nearest block owner. Vertical
+          // parent containment is intentionally left to real CSS clips because
+          // normal margin collapse can paint outside a parent's vertical box.
+          const owner = nearestBlockOwner(element, container);
+          const seed = unbounded();
+          let seedLabel = labelOf(container);
+          const position = getComputedStyle(element).position;
+          if (
+            owner &&
+            position !== "absolute" &&
+            position !== "fixed" &&
+            !scrollsBeforeScope(owner, container, "x")
+          ) {
+            const ownerRect = paddingRect(owner);
+            seed.left = ownerRect.left;
+            seed.right = ownerRect.right;
+            seed.x = seed.left;
+            seed.width = Math.max(0, seed.right - seed.left);
+            seedLabel = labelOf(owner);
+          }
+          const chain = clipChain(element.parentElement, container, seed, seedLabel);
           recordIssue(measure(element, index, false), chain.allowed, chain.clippedBy);
         });
 
@@ -696,8 +803,24 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           ) {
             continue;
           }
-          const owner = textContainer(node, container);
+          const owner = nearestBlockOwner(node, container);
           if (!owner) continue;
+          if (hasVisuallyHiddenAncestor(parent, container)) {
+            excluded.push({
+              index: measurementIndex++,
+              tag: parent.tagName.toLowerCase(),
+              reason: "visually-hidden",
+            });
+            continue;
+          }
+          if (hasEllipsizingAncestor(parent, container)) {
+            excluded.push({
+              index: measurementIndex++,
+              tag: parent.tagName.toLowerCase(),
+              reason: "ellipsis-truncation",
+            });
+            continue;
+          }
           let transformed = false;
           let current: Element | null = owner;
           while (current && container.contains(current)) {
@@ -856,6 +979,11 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       "COL",
       "COLGROUP",
     ]);
+    // Code-family chips are inline controls, not layout cards, but the
+    // radius-vs-size pill test misses them (a code chip's radius is modest)
+    // and a flex/grid tag row blockifies their computed display, defeating
+    // the inline-display exclusion. Exclude them by tag.
+    const CONTROL_TAGS = new Set(["CODE", "KBD", "SAMP", "VAR", "OUTPUT"]);
 
     const maxCornerRadiusPx = (style: CSSStyleDeclaration, minDim: number): number => {
       const corners = [
@@ -877,6 +1005,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
 
     const isPanel = (element: Element): boolean => {
       if (STRUCTURAL_TAGS.has(element.tagName)) return false;
+      if (CONTROL_TAGS.has(element.tagName)) return false;
       const style = getComputedStyle(element);
       if (style.display.startsWith("table") || style.display.startsWith("inline")) return false;
       if (style.boxShadow && style.boxShadow !== "none") return true;

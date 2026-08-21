@@ -1,0 +1,182 @@
+---
+title: "0080: Span-native V3 event ledger"
+description: "ADR: keep V2's durable ledger physics while making terminal events self-contained, unifying span attribution, and allowing additive schema advances in place."
+---
+
+**Status:** accepted and active (2026-08-18) · **Scope:** product tier (`core/events/v3`, adapters, readers, projections)
+
+## Context
+
+The V2 event ledger fixed storage durability, privacy, generation authority,
+fingerprinting, and activation. Its evidence model still depends on pairing a
+request with a completion. Losing either half destroys the span, and most
+timing is derived from process-relative monotonic clocks that cannot be
+subtracted across short-lived hook processes.
+
+The first production probe found 443 of 457 tool durations missing and no
+parent link on 683 request events. Nested command spans therefore double-count
+inside their enclosing shell tools, permission waits remain open, and a turn
+does not carry token usage, inference time, or hook overhead. The run-quality
+corpus has no reviewed V2 traces, so one final generation boundary costs no
+adjudicated evidence today.
+
+V2 also declares `ledger.schema_advanced` without implementing its authority
+rules. Any payload addition therefore changes the approved schema digest and
+forces a full candidate-to-activation cutover. That makes ordinary additive
+evolution unnecessarily expensive.
+
+## Decision
+
+Create event contract major 3. V3 keeps V2's physical ledger, privacy epochs,
+keyed fingerprints, spool-first writes, durable authority outbox, sealed
+generations, and candidate-to-activation authority. The live V2 runtime remains
+authoritative until the V3 activation gate passes.
+
+### Self-contained terminal spans
+
+`session.ended`, `turn.completed`, `tool.completed`, `command.completed`,
+`agent.completed`, and `wait.ended` carry a required `span` summary:
+
+```ts
+{
+  span_id,
+  parent_span_id?,
+  opened_at,
+  duration_ms: Observation<number>,
+  open_event_id?
+}
+```
+
+The start event remains useful for live observation, but the terminal is the
+durable evidence record. Losing a request may remove the live "started" row;
+it does not remove the completed span. Recovery emits a terminal with
+`duration_ms: { state: "unknown", reason: "completion_not_observed" }` rather
+than claiming a zero duration.
+
+Session, turn, tool, command, wait, and delegation scopes form one span tree.
+Command producers stamp a tool parent only when exactly one open shell-class
+tool is an unambiguous parent. Missing parentage is visible over-counting;
+incorrect parentage is silent under-counting and is forbidden.
+
+### Time and turn economics
+
+V3 interprets `time.monotonic_ns` as boot-anchored monotonic time and compares
+it only within one producer `boot_id`. Cross-boot fallback uses wall time with
+derived/high confidence. A regression produces an
+`expected_but_missing/clock_regressed` observation.
+
+`turn.completed` carries required Observation-wrapped `usage`, `inference`,
+and `harness` blocks. Usage includes input, output, and optional cache-token
+counts plus a method label. Inference includes API time and request count.
+Harness timing aggregates hook time, hook count, and the optional slowest hook.
+Adapter-reported usage is attribution evidence, not billing truth.
+
+### Waits, recovery, and capability coherence
+
+The V2 names `interaction.wait_started` and `interaction.wait_ended` are
+replaced by `wait.started` and `wait.ended`. Active wait kinds are
+`permission | needs_input | decision | approval | scheduled | rate_limit |
+unknown`. `none` exists only in projections to mean that no wait is open.
+
+Adapter hooks can report permission waits when their native permission signal
+is available, but no current adapter supplies an independent completed-turn
+wait aggregate. `turn.completed.payload.wait_count` therefore carries an
+Observation when a producer can attest completeness and is `unsupported` for
+the current hook adapters. The latency projection may return an observed zero
+only from an observed count of zero. Otherwise it preserves the unioned closed
+wait duration as a lower bound and names unsupported, missing, or mismatched
+coverage. Counting delivered starts is not a completeness attestation because
+a missing start would be invisible to that derivation.
+
+The recovery marker introduced by ADR 0078 is present from V3 genesis.
+Recovered tool and command terminals require an unknown outcome and unknown
+duration. A recovered command cannot claim an exit code.
+
+Adapter profiles add `model_usage`, `inference_timing`, `harness_timing`, and
+`capability_drift`. At generation end, promised capability counts are compared
+with observed emissions. A mismatch emits `health.capability_drift`; it never
+changes tool or coordination authority.
+
+### Additive in-place advances
+
+`ledger.schema_advanced` becomes effective authority in V3. An advance records
+the prior and next schema digests, generated artifact digest, compatible reader
+builds, release reference, and physical segment/byte boundary.
+
+The advance command must prove that the next generated JSON Schema is a strict
+structural superset:
+
+- existing properties and union branches remain accepted;
+- new object properties are optional;
+- new union branches and capability signals may be added;
+- removals, newly required fields, narrowed bounds, identity changes, and
+  changed existing constraints are rejected.
+
+The structural validator is necessary but not sufficient. Reinterpreting an
+existing field is breaking even when the JSON shape still passes. Such a
+semantic change requires a new candidate genesis and activation review.
+
+An accepted additive advance does not move the evidence boundary. Readers
+older than the advance fail closed and name the minimum compatible build; new
+readers traverse both sides of the boundary.
+
+### One reader contract
+
+Segment discovery, fresh pre-rotation epochs, catalog validation, activation
+authority, schema-advance boundaries, and cursors live in one canonical reader.
+Guard, collector, web, Codec, CLI, and projections may not traverse ledger
+segments directly. A repository gate detects direct access outside that
+library.
+
+## Alternatives considered
+
+**Extend V2 in several small generation cutovers.** Rejected because every
+optional payload field resets the evidence boundary and repeats the same
+consumer migration.
+
+**Replace V2's physical ledger with a span database.** Rejected because the
+observed defects are in evidence shape and reader semantics. V2's storage,
+privacy, and authority layers are working and remain necessary.
+
+**Build a separate latency or cost sidecar.** Rejected because it would need a
+second identity, retention, privacy, and authority story while leaving the
+guard and operator projections with two sources of truth.
+
+**Infer all timing read-side from paired events.** Rejected because missing
+request halves, wait closure, hook overhead, usage, and unambiguous parentage
+require producer state. A reader cannot recover data that was never recorded.
+
+## Result
+
+V3 activated on 2026-08-18 under activation
+`act_01a015e3-0b89-70b8-ad4f-aea6a6d1f00f`. Hook, command, coordination,
+guard, web, Codec, and projection traffic now uses the V3 writer and validating
+reader.
+
+The predecessor runtime was active for about 42 hours, including roughly 10
+hours in its final universal form. It had no released compatibility obligation
+and no reviewed run-quality corpus. Keeping its 52-file implementation for
+audit replay added a permanent second contract without preserving evidence that
+Git history could not recover.
+
+V3 now builds without importing a predecessor namespace. Its contract
+branches, hook privacy normalizer, UUIDv7 IDs, capability profiles, fingerprint
+operations, generated schema, and fixtures all live under `core/events/v3`. The
+repository contains no Event Ledger V1 or V2 source, schemas, generators,
+fixtures, or tests. V3 bootstrap no longer seals or reads
+a predecessor ledger, and its private key store accepts only the V3 envelope.
+Existing predecessor bytes on disk are ignored.
+
+Git history and ADR 0079 are the historical record of the short-lived V2
+runtime. This ADR supersedes ADR 0079's contract-major and schema-evolution
+rules.
+
+On 2026-08-20, current terminal-hook key inventories confirmed that Claude
+Code, Codex, and Cursor do not natively report a complete used-token and
+context-limit pair. Their `context_usage` profiles now say `unsupported`.
+Every new completed turn still records a privacy-safe `context.observed`
+event: a complete pair is observed, one supplied endpoint is partial, an
+unfulfilled override is expected but missing, and the current native hooks are
+unsupported. Latency projections carry that state and its reason alongside
+the optional percentage. Existing authorities are not rewritten, so older
+turns without a context event remain expected but missing.

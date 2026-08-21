@@ -1,0 +1,75 @@
+{
+  "mode": "local",
+  "terminal_keys": [
+    "conversation_id",
+    "generation_id",
+    "hook_event_name",
+    "status"
+  ],
+  "events": [
+    {
+      "signal": "session-start",
+      "observed_at": "2026-08-19T00:00:00.000Z",
+      "monotonic_ns": "0",
+      "payload": {
+        "session_id": "cursor-local-fixture",
+        "is_background_agent": false,
+        "composer_mode": "agent",
+        "hook_event_name": "sessionStart"
+      }
+    },
+    {
+      "signal": "user-prompt-submit",
+      "observed_at": "2026-08-19T00:00:01.000Z",
+      "monotonic_ns": "1000000000",
+      "payload": {
+        "conversation_id": "cursor-local-fixture",
+        "generation_id": "cursor-local-turn",
+        "hook_event_name": "beforeSubmitPrompt",
+        "prompt": "PRIVATE_PROMPT_BODY"
+      }
+    },
+    {
+      "signal": "pre-tool-use",
+      "observed_at": "2026-08-19T00:00:02.000Z",
+      "monotonic_ns": "2000000000",
+      "payload": {
+        "conversation_id": "cursor-local-fixture",
+        "generation_id": "cursor-local-turn",
+        "hook_event_name": "preToolUse",
+        "tool_name": "Shell",
+        "tool_use_id": "cursor-local-tool",
+        "tool_input": {
+          "command": "PRIVATE_COMMAND_BODY"
+        }
+      }
+    },
+    {
+      "signal": "post-tool-use",
+      "observed_at": "2026-08-19T00:00:17.684Z",
+      "monotonic_ns": "17684000000",
+      "payload": {
+        "conversation_id": "cursor-local-fixture",
+        "generation_id": "cursor-local-turn",
+        "hook_event_name": "postToolUse",
+        "tool_name": "Shell",
+        "tool_use_id": "cursor-local-tool",
+        "tool_input": {
+          "command": "PRIVATE_COMMAND_BODY"
+        },
+        "tool_output": "PRIVATE_RESULT_BODY"
+      }
+    },
+    {
+      "signal": "stop",
+      "observed_at": "2026-08-19T00:00:18.000Z",
+      "monotonic_ns": "18000000000",
+      "payload": {
+        "conversation_id": "cursor-local-fixture",
+        "generation_id": "cursor-local-turn",
+        "hook_event_name": "stop",
+        "status": "completed"
+      }
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { runWorkflow } from "../workflow/engine.ts";
 import { readWorkflowProof } from "../workflow/proof.ts";
+import { readWorkflowRunManifest } from "../workflow/run-state.ts";
 import type {
   EngineOpts,
   RunReport,
@@ -80,9 +81,13 @@ export async function runWorkItem(input: RunWorkItemInput): Promise<RunReport> {
     const attempt = record.projection.attempts_used + 1;
     const trigger = input.retry ? "retry" : "initial";
     let prior: WorkflowAttemptContext["prior"];
+    let specialists = input.engine.specialists;
     if (trigger === "retry") {
       if (!latest) {
         throw new Error(`work item ${input.workId} has no prior attempt to retry`);
+      }
+      if (specialists === undefined && latest.proof_path) {
+        specialists = readWorkflowRunManifest(coordRoot, latest.run_id).execution.specialists;
       }
       prior = priorContext(coordRoot, latest);
     }
@@ -110,6 +115,7 @@ export async function runWorkItem(input: RunWorkItemInput): Promise<RunReport> {
     });
     return await runWorkflow(record.intent.workflow.path, {
       ...input.engine,
+      specialists,
       coordRoot,
       runId,
       workItemId: input.workId,

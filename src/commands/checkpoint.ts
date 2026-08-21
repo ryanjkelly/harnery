@@ -1,13 +1,14 @@
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
-import { monorepoRoot, readHeartbeat, resolveOwner } from "../core/agents/index.ts";
+import type { Adapter } from "../core/adapter.ts";
+import { monorepoRoot, resolveOwner } from "../core/agents/index.ts";
+import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import {
   type CheckpointReason,
   checkpointContext,
   readContextState,
   readLatestCapsule,
 } from "../core/context/index.ts";
-import type { Adapter } from "../core/hooks/events/schema.ts";
 
 /**
  * `harn checkpoint`: durable context continuity across compaction.
@@ -156,7 +157,7 @@ function resolveContinuityIdentity(
   if (!instanceId) {
     throw new Error("could not resolve the current agent; pass --instance and --session");
   }
-  const heartbeat = readHeartbeat(instanceId);
+  const heartbeat = readLiveCoordinationRow(coordRoot, instanceId);
   const sessionId = opts.session ?? heartbeat?.session_id ?? instanceId;
   const adapter = opts.adapter
     ? parseAdapter(opts.adapter)

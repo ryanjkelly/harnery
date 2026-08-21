@@ -7,16 +7,15 @@
  * still rather than re-rendering on every tick. Returns a tiny JSON body
  * (normal responses aren't buffered by the tunnel, only event streams are).
  *
- * `v` is a hash over the mtime+size of everything the SSE route fs.watches:
- * the events log (catches appends) plus the top-level entries of the active /
- * councils / journal dirs (catches heartbeat writes, council edits, etc.).
+ * `v` is a hash over the mtime+size of everything the SSE route watches:
+ * the V3 ledger plus council and journal files.
  * Just stats, no file-content reads, so it's sub-millisecond per call.
  */
 
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { activeDir, councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
+import { councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +43,6 @@ function dirSig(dir: string): string {
 export function GET(): Response {
   const raw = [
     `events:${statSig(eventsPath())}`,
-    `active:${dirSig(activeDir())}`,
     `councils:${dirSig(councilsDir())}`,
     `journal:${dirSig(journalDir())}`,
   ].join("|");

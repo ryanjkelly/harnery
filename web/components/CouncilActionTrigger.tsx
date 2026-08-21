@@ -28,26 +28,16 @@ function CouncilActionTrigger({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      onClick={() => dispatchCouncilAction({ action })}
-      className={className}
-    >
+    <button type="button" onClick={() => dispatchCouncilAction({ action })} className={className}>
       {children}
     </button>
   );
 }
 
-export function AdvanceCouncilTrigger(props: {
-  className?: string;
-  children: React.ReactNode;
-}) {
+export function AdvanceCouncilTrigger(props: { className?: string; children: React.ReactNode }) {
   return <CouncilActionTrigger action="advance" {...props} />;
 }
 
-export function CloseCouncilTrigger(props: {
-  className?: string;
-  children: React.ReactNode;
-}) {
+export function CloseCouncilTrigger(props: { className?: string; children: React.ReactNode }) {
   return <CouncilActionTrigger action="close" {...props} />;
 }

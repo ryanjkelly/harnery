@@ -1,0 +1,98 @@
+---
+title: "0090: Project Codec activity from bounded V3 evidence"
+description: "ADR: derive expiring operation, output, artifact, friction, wait, and telemetry cues without sending raw event payloads to the browser."
+sidebar:
+  order: 90
+---
+
+**Status:** accepted (2026-08-21) · **Scope:** web tier (`web/lib/codec`, `/codec`)
+
+## Context
+
+Codec already shows agent presence, declared task, lifecycle, recent action
+categories, and a small expressive layer. The V3 ledger now records enough
+structure to explain more of the work in progress. Tool and command spans have
+stable IDs. Commands report output byte counts. Fingerprints let a reader
+compare exact operations without reading their arguments. Artifact and claim
+events identify their operation and kind without requiring file content.
+
+The raw rows also contain data that Codec must not publish. Prompts, command
+arguments, tool inputs, output content, error bodies, and paths can carry
+private material. A direct event feed to the browser would make every UI
+consumer responsible for privacy and would turn a presentation feature into a
+second event inspector.
+
+Some plausible labels are not supported by the evidence. Repeated calls do not
+prove that an agent is stuck. A long duration does not prove failure. Missing
+telemetry does not prove that an event did not happen. Codec needs a small
+vocabulary that names what the ledger can establish and lets old cues expire.
+
+## Alternatives considered
+
+**Send validated V3 events to the browser and reduce them in React.** Rejected
+because validation does not remove sensitive fields. It would also duplicate
+pairing and decay logic in every client.
+
+**Add operation state to the coordination heartbeat.** Rejected because the
+ledger already owns tool, command, wait, artifact, and claim evidence. Writing
+presentation state back into coordination would create another authority and
+introduce cleanup races.
+
+**Use a model to summarize the latest events.** Rejected for operational state.
+A model may style an otherwise neutral panel, but it cannot own span pairing,
+retry detection, claim conflicts, or evidence expiry.
+
+**Infer stuck, confused, or percent complete.** Rejected because the V3 rows do
+not establish those claims. Codec uses "repeating operation", "recent error",
+"target contention", and "long running" when their rules have enough evidence.
+
+## Decision
+
+Keep two explicit server boundaries. `sanitize.ts` reduces each validated V3
+row to `CodecSourceEvidence`. The allowlist admits safe tokens, span and wait
+IDs, opaque keyed fingerprints, numeric output and duration observations,
+artifact kind and operation, claim state, typed wait state, and observation
+quality. It drops content descriptors beyond their safe counts and never copies
+display paths or content-bearing fields.
+
+`activity.ts` folds that evidence into bounded per-instance state. It caps open
+spans and comparison maps, selects the newest open leaf, and emits the following
+scene channels:
+
+- `operation` identifies a safe label, category, active state, and elapsed time;
+- `artifact_cue` reports a recent created, updated, viewed, or published kind;
+- `friction` reports a recent error, repeated exact operation, or write-target
+  contention;
+- `telemetry` reports a recent attribution conflict, clock regression, or
+  capability drift.
+
+Output flow lasts eight seconds. Artifact cues last two minutes. Recent errors,
+repetition, and telemetry defects last five minutes. Claim contention lasts one
+minute. Forward progress, a changed target, success, a turn close, claim
+release, or terminal session state clears the corresponding reducer state.
+
+Retry requires the same keyed fingerprint in the same turn after an error or
+unknown terminal. Repetition requires three starts with the same fingerprint
+and clears when progress or an artifact appears. Two active write claims for
+the same opaque target fingerprint count as contention; no path reaches the
+scene. Permission, input, decision, and approval waits request operator
+attention. Scheduled and rate-limit waits remain neutral.
+
+Every cue carries provenance, confidence, observed time, bounded evidence IDs,
+and an expiry when it is temporary. A telemetry defect suppresses
+order-sensitive animation. The browser receives `CodecScene`, not source
+evidence or raw events.
+
+## Result
+
+Codec can now distinguish the declared task from the operation currently under
+way. It can show active command output, exact retries, artifact production,
+repeated calls, claim contention, and typed waits while preserving the existing
+event boundary.
+
+The reducer is deterministic against an injected clock. Contract tests use
+sentinel prompts, inputs, paths, and output fingerprints to prove that private
+values do not survive sanitization. Missing or expired evidence removes the cue
+instead of leaving a permanent warning. Historical recovery events no longer
+force a session-wide recovering expression; only the authoritative
+`recovery-required` ledger state can hold that presentation.

@@ -23,7 +23,7 @@ import {
   type GovernorServiceConfig,
   type GovernorServiceStatus,
   governorServiceLogPath,
-  listGovernors,
+  listGovernorsWithWarnings,
   readGovernor,
   readGovernorPlan,
   readGovernorServiceConfig,
@@ -167,14 +167,24 @@ export function registerGovernorCommand(program: Command, emit: EmitContext): vo
     .option("--json", "Emit complete governor records as JSON")
     .action((opts: { json?: boolean }) => {
       withGovernorRoot(emit, (coordRoot) => {
-        const records = listGovernors(coordRoot);
+        const { records, warnings } = listGovernorsWithWarnings(coordRoot);
         if (opts.json) {
           emit.config({ format: "json" });
           emit.data(records);
-        } else if (records.length === 0) {
+          for (const warning of warnings) {
+            emit.log(renderGovernorListWarning(warning.goal_id, warning.reason), "warn");
+          }
+        } else if (records.length === 0 && warnings.length === 0) {
           emit.text("no durable governors\n");
         } else {
-          emit.text(`${records.map(renderGovernorRow).join("\n")}\n`);
+          emit.text(
+            `${[
+              ...records.map(renderGovernorRow),
+              ...warnings.map((warning) =>
+                renderGovernorListWarning(warning.goal_id, warning.reason),
+              ),
+            ].join("\n")}\n`,
+          );
         }
       });
     });
@@ -901,6 +911,10 @@ function emitPlanOutcome(
 function renderPlanRow(plan: GovernorPlanRecord): string {
   const review = plan.review ? `  review:${plan.review.status}` : "";
   return `${plan.request.id}  ${plan.status.padEnd(18)}  ${plan.request.prior_root_work_id}${review}`;
+}
+
+function renderGovernorListWarning(goalId: string, reason: string): string {
+  return `warning  ${goalId}  unreadable: ${reason}`;
 }
 
 function delay(ms: number): Promise<void> {

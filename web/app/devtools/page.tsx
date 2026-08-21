@@ -103,7 +103,9 @@ function ToolCard({
     return (
       <section className="rounded-lg border border-border bg-card p-5 opacity-60">
         <CardHeader tool={tool} />
-        <p className="mt-3 text-sm text-muted-foreground">Not found at {src.dir} on this machine.</p>
+        <p className="mt-3 text-sm text-muted-foreground">
+          Not found at {src.dir} on this machine.
+        </p>
       </section>
     );
   }
@@ -372,7 +374,14 @@ function CursorUsageBlock({ usage, now }: { usage: CursorUsage; now: number }) {
       {bars.length ? (
         <div className="space-y-3">
           {bars.map((b) => (
-            <QuotaBar key={b.window} window={b.window} pct={b.pct} resetsAt={null} now={now} hint={b.hint} />
+            <QuotaBar
+              key={b.window}
+              window={b.window}
+              pct={b.pct}
+              resetsAt={null}
+              now={now}
+              hint={b.hint}
+            />
           ))}
         </div>
       ) : null}

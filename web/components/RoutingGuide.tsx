@@ -12,13 +12,10 @@ import {
 
 import { AgentChip } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
-import {
-  AdvanceCouncilTrigger,
-  CloseCouncilTrigger,
-} from "@/components/CouncilActionTrigger";
+import { AdvanceCouncilTrigger, CloseCouncilTrigger } from "@/components/CouncilActionTrigger";
 import { useHostInfo } from "@/components/HostInfoProvider";
-import { councilAttentionRequest } from "@/lib/council-attention";
 import { adapterLabel } from "@/lib/adapter";
+import { councilAttentionRequest } from "@/lib/council-attention";
 
 /**
  * Presentational helpers that make the council routing flow self-explanatory and
@@ -97,8 +94,7 @@ export function NextActionBanner({
   // AND the operator hasn't acted on the current round (it's collected, or
   // open-but-untouched). Drafted prompts / landed contributions = continuing.
   const closeRecommended = Boolean(
-    exitCriterionMet &&
-      ((activeMember === null && pendingUnrouted.length === 0) || roundIdle),
+    exitCriterionMet && ((activeMember === null && pendingUnrouted.length === 0) || roundIdle),
   );
 
   // One attention request per banner state: the provider title-flashes /
@@ -162,9 +158,8 @@ export function NextActionBanner({
             Advance to round {nextRound}
             <ArrowRight className="inline size-3.5 ml-0.5 -mt-0.5" aria-hidden />
           </AdvanceCouncilTrigger>
-          . It opens the confirmation right here; contributions unlock for
-          everyone once the new round opens, and the steward synthesizes them
-          into the plan.
+          . It opens the confirmation right here; contributions unlock for everyone once the new
+          round opens, and the steward synthesizes them into the plan.
         </p>
         <span className="shrink-0 self-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs tabular-nums text-emerald-200/90">
           {memberContributed} of {memberTotal} in
@@ -215,13 +210,10 @@ export function NextActionBanner({
             </code>
           </p>
           {(workingUnrouted ?? []).map((name) => (
-            <p
-              key={name}
-              className="mt-1.5 flex items-center gap-1.5 text-xs text-emerald-300"
-            >
+            <p key={name} className="mt-1.5 flex items-center gap-1.5 text-xs text-emerald-300">
               <span className="live-dot" aria-hidden />
-              <AgentChip name={name} className="font-mono" /> is working now.
-              Watch for the contribution to land.
+              <AgentChip name={name} className="font-mono" /> is working now. Watch for the
+              contribution to land.
             </p>
           ))}
         </div>
@@ -251,15 +243,14 @@ export function NextActionBanner({
           ) : (
             "adapter"
           )}{" "}
-          session. They run{" "}
-          <code className="font-mono">/council contribute</code> to submit, and
+          session. They run <code className="font-mono">/council contribute</code> to submit, and
           the next prompt unlocks automatically.
         </p>
         {activeMemberWorking && (
           <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-emerald-300">
             <span className="live-dot" aria-hidden />
-            <AgentChip name={activeMember} className="font-mono" /> is working now.
-            Watch for the contribution to land.
+            <AgentChip name={activeMember} className="font-mono" /> is working now. Watch for the
+            contribution to land.
           </p>
         )}
       </div>
@@ -276,9 +267,9 @@ export function RoutingLegend() {
     <div className="mb-4">
       <p className="text-xs text-muted-foreground leading-relaxed mb-2.5">
         Copy each prompt and paste it into that agent&apos;s session,{" "}
-        <strong className="text-foreground/80">in order</strong>. The receiving
-        agent runs <code className="font-mono">/council contribute</code> to
-        submit, then the next prompt below becomes copy-able.
+        <strong className="text-foreground/80">in order</strong>. The receiving agent runs{" "}
+        <code className="font-mono">/council contribute</code> to submit, then the next prompt below
+        becomes copy-able.
       </p>
       <div className="rounded-md border border-border/70 bg-muted/30 px-3 py-2.5">
         <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
@@ -293,9 +284,7 @@ export function RoutingLegend() {
             meaning="copy this one now; it's your move"
           />
           <KeyRow
-            swatch={
-              <span className="size-2.5 rounded-full border border-muted-foreground/60" />
-            }
+            swatch={<span className="size-2.5 rounded-full border border-muted-foreground/60" />}
             term="queued"
             termCls="text-muted-foreground"
             meaning="waiting its turn; Copy is disabled until the one above contributes"

@@ -6,6 +6,7 @@ import { AgentChip } from "@/components/AgentChip";
 import { useDateTimeFormat } from "@/components/DateTimeFormatProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventRow } from "@/lib/coord-reader";
+import { describeEventV3 } from "@/lib/event-v3-display";
 import { NO_DATA } from "@/lib/format/no-data";
 import { formatTemplate } from "@/lib/format/template";
 
@@ -26,7 +27,13 @@ interface AgentLane {
 
 interface TimelineDot {
   ts: number;
-  kind: "command_start" | "command_end_ok" | "command_end_fail" | "narration" | "session" | "task";
+  kind:
+    | "action_started"
+    | "action_completed_ok"
+    | "action_completed_fail"
+    | "narration"
+    | "session"
+    | "task";
   label?: string;
 }
 
@@ -35,14 +42,8 @@ interface TimelineDot {
  * along the lane by time. Color encodes event type. Hover reveals the cmd
  * or tool. Useful for "what is everyone doing right now" at a glance.
  *
- * Mirrors the upstream app's ActivityTimeline, adapted for harnery's event_type +
- * data:Record shape:
- *   - tool.pre_use         → command_start (sky)
- *   - tool.post_use ok=true → command_end_ok (emerald)
- *   - tool.post_use_failure → command_end_fail (rose)
- *   - turn.stop            → narration (cyan)
- *   - state.task_set       → task (purple)
- *   - session.start/end    → session (slate)
+ * Uses the shared V3 display projection, so this page and `/events` cannot
+ * drift into separate event-name or payload interpretations.
  */
 export function ActivityTimeline({ initialEvents, instanceToName, windowMinutes = 30 }: Props) {
   const [mounted, setMounted] = useState(false);
@@ -70,35 +71,10 @@ export function ActivityTimeline({ initialEvents, instanceToName, windowMinutes 
       const agent = ev.instance_id ? instanceToName[ev.instance_id] : null;
       if (!agent) continue;
 
-      const data = ev.data ?? {};
-      let kind: TimelineDot["kind"] | null = null;
-      let label: string | undefined;
-
-      if (ev.event_type === "tool.pre_use") {
-        kind = "command_start";
-        label = String(
-          (data.tool_name as string) ?? (data.cmd as string) ?? (data.intent as string) ?? "",
-        );
-      } else if (ev.event_type === "tool.post_use") {
-        kind = "command_end_ok";
-        const ok = (data.ok ?? true) === true;
-        kind = ok ? "command_end_ok" : "command_end_fail";
-        label = String(data.tool_name ?? "");
-      } else if (ev.event_type === "tool.post_use_failure") {
-        kind = "command_end_fail";
-        label = String(data.tool_name ?? "");
-      } else if (ev.event_type === "turn.stop") {
-        kind = "narration";
-        label = String(data.turn_summary ?? "");
-      } else if (ev.event_type === "state.task_set") {
-        kind = "task";
-        label = String(data.task ?? "");
-      } else if (ev.event_type === "session.start" || ev.event_type === "session.end") {
-        kind = "session";
-        label = ev.event_type;
-      } else {
-        continue;
-      }
+      const display = describeEventV3(ev);
+      const kind = display.timeline_kind;
+      if (!kind) continue;
+      const label = display.summary;
       const arr = byAgent.get(agent) ?? [];
       arr.push({ ts, kind, label });
       byAgent.set(agent, arr);
@@ -113,9 +89,9 @@ export function ActivityTimeline({ initialEvents, instanceToName, windowMinutes 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-baseline justify-between gap-2">
+        <CardTitle className="flex flex-col items-start gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-2">
           <span>Activity timeline ({windowMinutes}m)</span>
-          <span className="text-[10px] text-muted-foreground font-mono">
+          <span className="self-end whitespace-nowrap text-[10px] font-mono text-muted-foreground sm:self-auto">
             {mounted ? (
               <>
                 {formatRangeBound(windowStart, userTz, prefs.timestamp.template)} →{" "}
@@ -200,9 +176,9 @@ function Lane({
 
 function Legend() {
   const items: Array<{ kind: TimelineDot["kind"]; label: string }> = [
-    { kind: "command_start", label: "tool start" },
-    { kind: "command_end_ok", label: "ok" },
-    { kind: "command_end_fail", label: "fail" },
+    { kind: "action_started", label: "tool start" },
+    { kind: "action_completed_ok", label: "ok" },
+    { kind: "action_completed_fail", label: "fail" },
     { kind: "narration", label: "turn end" },
     { kind: "task", label: "task" },
     { kind: "session", label: "session" },
@@ -235,11 +211,11 @@ function formatTime(ts: number, timeZone: string, template: string): string {
 
 function dotColor(kind: TimelineDot["kind"]): string {
   switch (kind) {
-    case "command_start":
+    case "action_started":
       return "bg-sky-500";
-    case "command_end_ok":
+    case "action_completed_ok":
       return "bg-emerald-500";
-    case "command_end_fail":
+    case "action_completed_fail":
       return "bg-rose-500";
     case "narration":
       return "bg-cyan-500";

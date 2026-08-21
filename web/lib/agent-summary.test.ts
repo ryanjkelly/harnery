@@ -10,8 +10,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { InstanceIdentity } from "./coord-reader.ts";
 import { resolveSubagentLinkage, sessionMetaByName } from "./agent-summary.ts";
+import type { InstanceIdentity } from "./coord-reader.ts";
 
 const PARENT_ID = "f3b64d7c-fa54-4900-a317-f478842c2dd4";
 const SUB_ID = "a7c3f60229ca9bdc0";
@@ -36,9 +36,14 @@ describe("resolveSubagentLinkage", () => {
   test("non-subagent kinds resolve to null (no enrichment spread)", () => {
     const idToName = liveMap({ [PARENT_ID]: "Owen" });
     expect(
-      resolveSubagentLinkage({ kind: "session", instance_id: PARENT_ID, session_id: PARENT_ID }, idToName),
+      resolveSubagentLinkage(
+        { kind: "session", instance_id: PARENT_ID, session_id: PARENT_ID },
+        idToName,
+      ),
     ).toBeNull();
-    expect(resolveSubagentLinkage({ instance_id: SUB_ID, session_id: PARENT_ID }, idToName)).toBeNull();
+    expect(
+      resolveSubagentLinkage({ instance_id: SUB_ID, session_id: PARENT_ID }, idToName),
+    ).toBeNull();
     expect(resolveSubagentLinkage({ kind: null, session_id: PARENT_ID }, idToName)).toBeNull();
   });
 

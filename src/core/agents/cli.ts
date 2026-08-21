@@ -124,104 +124,31 @@ async function handleVerdict(root: string): Promise<number> {
 }
 
 async function handleProject(root: string, rest: string[]): Promise<number> {
-  const { consumeSince, writeCursor } = await import("./events/consume.ts");
-  const { projectHeartbeats } = await import("./state/heartbeat-projector.ts");
-  const replayAll = rest.includes("--replay-all");
-  const result = consumeSince(root, { replayAll });
-  const project = projectHeartbeats(root, result.events);
-  const report = {
-    events_consumed: result.events.length,
-    stream_bytes: result.streamBytes,
-    owners_projected: project.written.length,
-    owners: project.written,
-    cursor: result.lastEventId,
-    replayed_all: replayAll,
-  };
-  if (result.lastEventId) writeCursor(root, result.lastEventId);
-  if (rest.includes("--json")) {
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  } else {
-    process.stdout.write(
-      `projected ${report.events_consumed} events across ${report.owners_projected} owners\n  cursor → ${report.cursor ?? "<none>"}\n${
-        report.owners.length
-          ? `  owners: ${report.owners.map((o) => o.slice(0, 8)).join(", ")}\n`
-          : ""
-      }`,
-    );
+  const { resolveLiveEventLedgerRouteV3 } = await import("../events/v3/live-routing.ts");
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state === "blocked") {
+    process.stderr.write(`agent-coord project: V3 route is unsafe (${route.reason})\n`);
+    return 1;
   }
-  return 0;
+  const { readCoordinationViewV3 } = await import("../events/v3/coordination-view.ts");
+  const view = readCoordinationViewV3(root);
+  const report = {
+    contract_major: 2,
+    source_complete: view.source_complete,
+    authority_safe: view.authority_safe,
+    owners_projected: Object.keys(view.instances).length,
+    owners: Object.keys(view.instances).sort(),
+    diagnostics: view.diagnostics,
+    materialized: false,
+  };
+  process.stdout.write(`${JSON.stringify(report, null, rest.includes("--json") ? 2 : 0)}\n`);
+  return view.authority_safe ? 0 : 1;
 }
 
 function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
   return "claude-code";
-}
-
-/**
- * Append a canonical `health.heartbeat_swept` event after an operator kill.
- * Same envelope stale-sweep emits, so the projector's terminal / ended_at
- * guards treat kill and sweep identically. Soft-fails: the unlink already
- * happened.
- */
-async function emitHeartbeatSwept(
-  root: string,
-  owner: string,
-  hb: { session_id?: string; platform?: string; last_heartbeat?: string },
-): Promise<void> {
-  try {
-    const { emit } = await import("./events/emit.ts");
-    let ageSecs: number | undefined;
-    if (hb.last_heartbeat) {
-      const ts = Date.parse(hb.last_heartbeat);
-      if (Number.isFinite(ts)) {
-        ageSecs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-      }
-    }
-    emit(root, {
-      event_type: "health.heartbeat_swept",
-      instance_id: owner,
-      session_id: hb.session_id ?? owner,
-      adapter: adapterFromPlatform(hb.platform),
-      source: "agent-coord",
-      data: {
-        reason: "killed",
-        ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}),
-      },
-    });
-  } catch {
-    /* soft-fail: never break the caller */
-  }
-}
-
-/**
- * Append a canonical `claim.release` event for a path dropped from an owner's
- * files_touched. The path is canonicalized to repo-relative (matching the
- * projector's normalization) so the subtraction matches on replay regardless
- * of the form the caller passed. Soft-fails: a failed emit must never break
- * the release/kill flow — the file mutation already happened.
- */
-async function emitClaimRelease(
-  root: string,
-  owner: string,
-  hb: { session_id?: string; platform?: string },
-  path: string,
-  reason: "explicit" | "heal" | "commit" | "checkout",
-): Promise<void> {
-  try {
-    const { emit } = await import("./events/emit.ts");
-    const canonical = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
-    emit(root, {
-      event_type: "claim.release",
-      instance_id: owner,
-      session_id: hb.session_id ?? owner,
-      adapter: adapterFromPlatform(hb.platform),
-      source: "agent-coord",
-      data: { path: canonical, reason },
-    });
-  } catch {
-    /* soft-fail: never break the caller */
-  }
 }
 
 async function handleStateAction(root: string, action: string, rest: string[]): Promise<number> {
@@ -235,7 +162,24 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
   switch (action) {
     case "set-task": {
       const task = args.join(" ");
-      const hb = writer.setTask(root, owner, task);
+      const before = writer.readHeartbeat(root, owner);
+      let hb: ReturnType<typeof writer.setTask>;
+      try {
+        const { recordLiveTaskChangeV3 } = await import("./live-authority-v3.ts");
+        recordLiveTaskChangeV3({
+          coordRoot: root,
+          owner,
+          nativeSessionId: before?.session_id ?? owner,
+          adapter: adapterFromPlatform(before?.platform),
+          task,
+        });
+        hb = writer.readHeartbeat(root, owner);
+      } catch (error) {
+        process.stderr.write(
+          `agent-coord set-task: V3 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
+        );
+        return 1;
+      }
       if (!hb) {
         // Name the RESOLVED root: when a nested .harnery/ shadows the real
         // coordination home, the full path is what makes that diagnosable.
@@ -249,15 +193,6 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       );
       return 0;
     }
-    case "set-turn-summary": {
-      const summary = args.join(" ");
-      const hb = writer.setTurnSummary(root, owner, summary);
-      if (!hb) return 1;
-      process.stdout.write(
-        `${JSON.stringify({ instance_id: owner, turn_summary: hb.turn_summary })}\n`,
-      );
-      return 0;
-    }
     case "release-claim": {
       const path = args[0];
       if (!path) {
@@ -265,46 +200,30 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         return 2;
       }
       const before = writer.readHeartbeat(root, owner);
-      const hb = writer.releaseClaim(root, owner, path);
-      if (!hb) return 1;
-      // Durability: the projector rebuilds files_touched by replaying the
-      // permanent Edit/Write events, so a file-only release is silently
-      // reverted by the next full replay. Emitting claim.release puts the
-      // subtraction into the stream so every future replay honors it. Only
-      // emit when the release actually removed a held path (idempotent
-      // re-releases stay quiet).
-      const heldBefore = before?.files_touched?.length ?? 0;
-      const heldAfter = hb.files_touched?.length ?? 0;
-      if (heldBefore > heldAfter) {
-        await emitClaimRelease(root, owner, before ?? hb, path, "explicit");
+      let hb: ReturnType<typeof writer.releaseClaim>;
+      try {
+        const { recordLiveClaimChangeV3 } = await import("./live-authority-v3.ts");
+        recordLiveClaimChangeV3({
+          coordRoot: root,
+          owner,
+          nativeSessionId: before?.session_id ?? owner,
+          adapter: adapterFromPlatform(before?.platform),
+          operation: "released",
+          path,
+          access: "write",
+        });
+        hb = writer.readHeartbeat(root, owner);
+      } catch (error) {
+        process.stderr.write(
+          `agent-coord release-claim: V3 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
+        );
+        return 1;
       }
+      if (!hb) return 1;
       process.stdout.write(
         `${JSON.stringify({ instance_id: owner, files_touched: hb.files_touched })}\n`,
       );
       return 0;
-    }
-    case "kill-heartbeat": {
-      // Read held claims BEFORE the unlink so they can be released durably —
-      // killing only the file leaves the claims resurrectable from the
-      // permanent Edit/Write events on the next full replay (observed: a
-      // 6-day-dead agent's claims returning after its heartbeat was killed).
-      //
-      // Also emit health.heartbeat_swept so the stream records a terminal
-      // marker. Without it, a later drain that replays [session.start …
-      // tools … claim.release] treats the owner as still in-flight and
-      // re-creates the file (kill→resurrect loop observed 2026-08-03: 21
-      // killed zombies back within a minute via claim.release seeding +
-      // historical replay).
-      const before = writer.readHeartbeat(root, owner);
-      const ok = writer.killHeartbeat(root, owner);
-      if (ok && before) {
-        await emitHeartbeatSwept(root, owner, before);
-        for (const held of before.files_touched ?? []) {
-          await emitClaimRelease(root, owner, before, held, "heal");
-        }
-      }
-      process.stdout.write(`${JSON.stringify({ instance_id: owner, removed: ok })}\n`);
-      return ok ? 0 : 1;
     }
     case "heal-pidmap": {
       const pidArg = args[0];
@@ -313,47 +232,63 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         process.stderr.write(`agent-coord heal-pidmap: invalid pid ${pidArg}\n`);
         return 2;
       }
-      writer.healPidmap(root, owner, pid);
+      try {
+        const { liveCoordinationWriteModeV3 } = await import("./live-authority-v3.ts");
+        liveCoordinationWriteModeV3(root);
+        writer.healPidmap(root, owner, pid);
+      } catch (error) {
+        process.stderr.write(
+          `agent-coord heal-pidmap: V3 route refused (${error instanceof Error ? error.message : String(error)})\n`,
+        );
+        return 1;
+      }
       process.stdout.write(`${JSON.stringify({ instance_id: owner, pid })}\n`);
       return 0;
     }
-    case "heal-heartbeat": {
+    case "repair-coordination-cache": {
       // adapter arrives as a `--adapter=<h>` flag (not positional) so the live
-      // tool.pre_use heal and the manual `harn agents heal` path (which pass
+      // tool.requested repair and the manual `harn agents heal` path (which pass
       // different positional counts) can both supply it without arg-order
       // fragility. Positionals (sessionId, model) stay as-is once flags are
       // filtered out.
       const adapter = args.find((a) => a.startsWith("--adapter="))?.slice("--adapter=".length);
-      const forkedFrom = args
-        .find((a) => a.startsWith("--forked-from="))
-        ?.slice("--forked-from=".length);
       const positional = args.filter((a) => !a.startsWith("--"));
       const sessionId = positional[0];
       const model = positional[1];
-      const hb = writer.healHeartbeat(
-        root,
-        owner,
-        sessionId,
-        model,
-        adapter,
-        forkedFrom ? { forkedFrom } : undefined,
-      );
+      let hb: import("./state/heartbeat-writer.ts").Heartbeat | null;
+      try {
+        const { liveCoordinationWriteModeV3 } = await import("./live-authority-v3.ts");
+        liveCoordinationWriteModeV3(root);
+        const { readCoordinationViewV3 } = await import("../events/v3/coordination-view.ts");
+        const { liveInstanceIdV3 } = await import("../events/v3/live-routing.ts");
+        const projected = readCoordinationViewV3(root).instances[liveInstanceIdV3(owner)];
+        if (projected?.provisional_termination) {
+          const { recordLiveResumeObservationV3 } = await import("./live-lifecycle-v3.ts");
+          recordLiveResumeObservationV3({
+            coordRoot: root,
+            owner,
+            nativeSessionId: sessionId ?? owner,
+            adapter: adapterFromPlatform(adapter),
+          });
+        }
+        const { ensureLiveCoordinationHeartbeat } = await import(
+          "./state/live-coordination-view.ts"
+        );
+        hb = ensureLiveCoordinationHeartbeat(
+          root,
+          owner,
+          sessionId ?? owner,
+          adapterFromPlatform(adapter),
+          model,
+        );
+      } catch (error) {
+        process.stderr.write(
+          `agent-coord repair-coordination-cache: V3 route refused (${error instanceof Error ? error.message : String(error)})\n`,
+        );
+        return 1;
+      }
       process.stdout.write(`${JSON.stringify({ instance_id: owner, recreated: !!hb })}\n`);
       return hb ? 0 : 1;
-    }
-    case "stamp-tool-activity": {
-      const toolName = args[0] ?? "";
-      const target = args.slice(1).join(" ");
-      const hb = writer.stampToolActivity(root, owner, toolName, target);
-      if (!hb) return 1;
-      process.stdout.write(
-        `${JSON.stringify({
-          instance_id: owner,
-          last_tool: hb.last_tool,
-          last_tool_target: hb.last_tool_target,
-        })}\n`,
-      );
-      return 0;
     }
     default:
       process.stderr.write(`agent-coord: unknown state action ${action}\n`);
@@ -563,32 +498,11 @@ async function handleShellMutationClaimLog(root: string, rest: string[]): Promis
   const platform = args.platform ?? "unknown";
   const owner = args.owner ?? null;
   const { shellMutationPaths } = await import("./state/shell-mutation.ts");
-  const { emit } = await import("./events/emit.ts");
-  const { readHeartbeat } = await import("./state/heartbeat-writer.ts");
   const paths = shellMutationPaths(cmd, root);
   const truncated = cmd.length > 80 ? cmd.slice(0, 80) : cmd;
-  // Warn-only peer-shell-mutation signal. Formerly a SHELL_CLAIM_CANDIDATE line
-  // in a log file; now a canonical decision.warn so the
-  // signal survives in events.ndjson. (The blocking claim-conflict path is
-  // separate: claim.conflict / verdict, and unaffected.)
-  const adapter = platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
-  const hb = owner ? readHeartbeat(root, owner) : null;
-  for (const p of paths) {
-    try {
-      emit(root, {
-        event_type: "decision.warn",
-        instance_id: owner ?? "unknown",
-        session_id: hb?.session_id ?? owner ?? "unknown",
-        adapter,
-        data: {
-          rule: "shell_mutation_candidate",
-          reason: `path=${p} cmd=${truncated} platform=${platform}`,
-        },
-      });
-    } catch {
-      /* telemetry only, never break the dispatcher */
-    }
-  }
+  process.stdout.write(
+    `${JSON.stringify({ schema_version: 2, owner, platform, command_preview: truncated, paths })}\n`,
+  );
   return 0;
 }
 
@@ -597,6 +511,40 @@ async function handleStaleSweep(root: string, _rest: string[]): Promise<number> 
   const result = staleSweep(root);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return 0;
+}
+
+async function handleReconcileFinalization(root: string): Promise<number> {
+  const { reconcileSessionFinalizationV3 } = await import("./session-finalizer-v3.ts");
+  const result = reconcileSessionFinalizationV3(root);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  return result.diagnostics.some((item) => item === "ledger_not_authority_safe") ? 2 : 0;
+}
+
+async function handleEndSession(root: string, rest: string[]): Promise<number> {
+  const instanceId = rest[0];
+  if (!instanceId || !/^inst_[A-Za-z0-9._-]+$/.test(instanceId)) return 2;
+  const { listHookProducerStateRecordsV3 } = await import("../events/v3/producers/recorder.ts");
+  const record = listHookProducerStateRecordsV3(root, { includeTerminal: false }).find(
+    ({ state }) => state.instance_id === instanceId,
+  );
+  if (!record) return 2;
+  const { requestSessionEndExplicitV3 } = await import("./session-finalizer-v3.ts");
+  const result = requestSessionEndExplicitV3({
+    coordRoot: root,
+    instance_id: record.state.instance_id,
+    generation_id: record.state.generation_id,
+    outcome: "interrupted",
+    coordination_finalized: false,
+  });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  return result.state === "recorded" ||
+    result.state === "already_ended" ||
+    result.state === "queued" ||
+    result.state === "already_requested"
+    ? 0
+    : result.state === "delegated_work_open"
+      ? 3
+      : 2;
 }
 
 async function handlePromptContext(root: string, rest: string[]): Promise<number> {
@@ -682,43 +630,6 @@ async function handleSessionContext(root: string, rest: string[]): Promise<numbe
   return 0;
 }
 
-async function handleCodexReplay(root: string, rest: string[]): Promise<number> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i]!;
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = rest[i + 1];
-      if (val === undefined || val.startsWith("--")) {
-        args[key] = "true";
-      } else {
-        args[key] = val;
-        i++;
-      }
-    }
-  }
-  const jsonlPath = args.jsonl;
-  const sessionId = args.session;
-  const instanceId = args.owner ?? sessionId;
-  const lastMsg = args["last-message"];
-  if (!jsonlPath || !sessionId) {
-    process.stderr.write(
-      "agent-coord codex-replay --jsonl <path> --session <id> [--owner <id>] [--last-message <text>]\n",
-    );
-    return 2;
-  }
-  const { replayCodexJsonl } = await import("./codex-replay.ts");
-  const result = replayCodexJsonl({
-    coordRoot: root,
-    jsonlPath,
-    sessionId,
-    instanceId: instanceId!,
-    lastAssistantMessage: lastMsg,
-  });
-  process.stdout.write(`${JSON.stringify({ session_id: sessionId, emitted: result.emitted })}\n`);
-  return 0;
-}
-
 async function handleResolveName(root: string, rest: string[]): Promise<number> {
   const { resolveName } = await import("./state/names.ts");
   const [owner, session] = rest;
@@ -738,7 +649,6 @@ async function handleResolveName(root: string, rest: string[]): Promise<number> 
 }
 
 async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
-  const { emitAndProject } = await import("./cli-emit.ts");
   const args: Record<string, string> = {};
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
@@ -758,11 +668,11 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
   const instanceId = args.owner;
   const sessionId = args.session;
   const adapter = args.adapter as "claude-code" | "cursor" | "codex" | undefined;
-  const dataJson = args["data-json"] ?? "{}";
+  const dataJson = args["data-stdin"] === "true" ? await readStdin() : "";
 
-  if (!eventType || !instanceId || !sessionId || !adapter) {
+  if (!eventType || !instanceId || !sessionId || !adapter || !dataJson) {
     process.stderr.write(
-      "agent-coord emit-event --type <T> --owner <id> --session <id> --adapter <h> [--data-json '<json>']\n",
+      "agent-coord emit-event --type <V3_TYPE> --owner <id> --session <id> --adapter <h> --data-stdin\n",
     );
     return 2;
   }
@@ -773,37 +683,88 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       data = parsed as Record<string, unknown>;
     } else {
-      process.stderr.write("agent-coord emit-event: --data-json must encode an object\n");
+      process.stderr.write("agent-coord emit-event: stdin must encode an object\n");
       return 2;
     }
   } catch (err) {
     process.stderr.write(
-      `agent-coord emit-event: invalid --data-json (${err instanceof Error ? err.message : String(err)})\n`,
+      `agent-coord emit-event: invalid stdin JSON (${err instanceof Error ? err.message : String(err)})\n`,
     );
     return 2;
   }
 
-  const result = emitAndProject(
-    {
-      event_type: eventType,
-      instance_id: instanceId,
-      session_id: sessionId,
-      adapter,
-      turn_id: args["turn-id"],
-      parent_session_id: args["parent-session-id"],
-      parent_turn_id: args["parent-turn-id"],
-      data,
-    },
-    { coordRoot: root },
-  );
-
-  if (!result) {
-    process.stderr.write("agent-coord emit-event: emission failed\n");
+  const { resolveLiveEventLedgerRouteV3 } = await import("../events/v3/live-routing.ts");
+  const ledgerRoute = resolveLiveEventLedgerRouteV3(root);
+  if (ledgerRoute.state === "blocked") {
+    process.stderr.write(
+      `agent-coord emit-event: V3 ledger route is unsafe (${ledgerRoute.reason})\n`,
+    );
     return 1;
   }
-
-  process.stdout.write(`${JSON.stringify(result.envelope)}\n`);
-  return 0;
+  if (data.event_type !== eventType) {
+    process.stderr.write("agent-coord emit-event: envelope type does not match stdin event_type\n");
+    return 2;
+  }
+  if (eventType === "coord.lifecycle_changed") {
+    const state = data.new_state;
+    if (state !== "active" && state !== "blocked" && state !== "done") {
+      process.stderr.write("agent-coord emit-event: invalid V3 lifecycle state\n");
+      return 2;
+    }
+    const { recordLiveLifecycleChangeV3 } = await import("./live-authority-v3.ts");
+    try {
+      const routed = recordLiveLifecycleChangeV3({
+        coordRoot: root,
+        owner: instanceId,
+        nativeSessionId: sessionId,
+        adapter,
+        state,
+        reason: typeof data.reason === "string" && data.reason.length > 0 ? data.reason : undefined,
+        suggestedSessionName:
+          typeof data.suggested_session_name === "string" && data.suggested_session_name.length > 0
+            ? data.suggested_session_name
+            : undefined,
+      });
+      process.stdout.write(
+        `${JSON.stringify({ schema_version: 2, event_type: "coord.lifecycle_changed", state: routed.state })}\n`,
+      );
+      return 0;
+    } catch (error) {
+      process.stderr.write(
+        `agent-coord emit-event: V3 lifecycle authority refused (${error instanceof Error ? error.message : String(error)})\n`,
+      );
+      return 1;
+    }
+  }
+  if (
+    eventType === "coord.status_observed" ||
+    eventType === "coord.presence_changed" ||
+    eventType === "coord.message_observed" ||
+    eventType === "council.state_changed" ||
+    eventType === "decision.state_changed"
+  ) {
+    const { recordLiveCoordinationObservationV3 } = await import("./live-observation-v3.ts");
+    try {
+      const routed = recordLiveCoordinationObservationV3({
+        coordRoot: root,
+        owner: instanceId,
+        nativeSessionId: sessionId,
+        adapter,
+        observation: data as never,
+      });
+      process.stdout.write(
+        `${JSON.stringify({ schema_version: 2, event_type: routed.event.event_type, event_id: routed.event.event_id })}\n`,
+      );
+      return 0;
+    } catch (error) {
+      process.stderr.write(
+        `agent-coord emit-event: V3 observation refused (${error instanceof Error ? error.message : String(error)})\n`,
+      );
+      return 1;
+    }
+  }
+  process.stderr.write(`agent-coord emit-event: unsupported V3 event type ${eventType}\n`);
+  return 2;
 }
 
 /**
@@ -876,14 +837,26 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
           : gh.collectCheckoutRemoved(cwd, rest[1] ?? "", rest[2] ?? "");
       if (paths.length === 0) return 0;
       const { resolveOwner } = await import("../hooks/resolve/owner.ts");
-      const owner = resolveOwner({ payload: null, coordRoot: root })?.instance_id;
+      const owner = resolveOwner({
+        payload: null,
+        coordRoot: root,
+      })?.instance_id;
       if (!owner) return 0;
-      const { groupUnclaim } = await import("./state/heartbeat-writer.ts");
-      const reason = event === "post-commit" ? ("commit" as const) : ("checkout" as const);
+      const { findGroupClaims } = await import("./state/heartbeat-writer.ts");
+      const { recordLiveClaimChangeV3 } = await import("./live-authority-v3.ts");
       for (const path of paths) {
         try {
-          for (const hit of groupUnclaim(root, owner, path)) {
-            await emitClaimRelease(root, hit.instance_id, hit, path, reason);
+          for (const hit of findGroupClaims(root, owner, path)) {
+            recordLiveClaimChangeV3({
+              coordRoot: root,
+              owner,
+              subject: hit.instance_id,
+              nativeSessionId: hit.session_id ?? owner,
+              adapter: adapterFromPlatform(hit.platform),
+              operation: "released",
+              path,
+              access: "write",
+            });
           }
         } catch {
           /* best-effort */
@@ -919,12 +892,9 @@ async function main(): Promise<number> {
 
   if (
     subcommand === "set-task" ||
-    subcommand === "set-turn-summary" ||
     subcommand === "release-claim" ||
-    subcommand === "kill-heartbeat" ||
     subcommand === "heal-pidmap" ||
-    subcommand === "heal-heartbeat" ||
-    subcommand === "stamp-tool-activity"
+    subcommand === "repair-coordination-cache"
   ) {
     return handleStateAction(root, subcommand, rest);
   }
@@ -952,12 +922,16 @@ async function main(): Promise<number> {
     return handleResolveName(root, rest);
   }
 
-  if (subcommand === "codex-replay") {
-    return handleCodexReplay(root, rest);
-  }
-
   if (subcommand === "stale-sweep") {
     return handleStaleSweep(root, rest);
+  }
+
+  if (subcommand === "reconcile-finalization") {
+    return handleReconcileFinalization(root);
+  }
+
+  if (subcommand === "end-session") {
+    return handleEndSession(root, rest);
   }
 
   if (subcommand === "session-context") {

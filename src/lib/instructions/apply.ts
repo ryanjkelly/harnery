@@ -14,8 +14,9 @@
  *     so a fresh consumer gets a CLAUDE.md whose managed region imports
  *     `@AGENTS.md`. A CLAUDE.md that already imports AGENTS.md or already carries
  *     the block (a host that generates CLAUDE.md from AGENTS.md) is left alone.
- *   - `.claude/skills/<skill>/SKILL.md` — claude-code only; fully-owned files,
- *     honoring `skills.exclude` in `.harnery/config.jsonc`.
+ *   - `<adapter-skill-dir>/<skill>/SKILL.md` — fully-owned files, honoring
+ *     `skills.exclude` in `.harnery/config.jsonc`. Claude Code uses
+ *     `.claude/skills/`; Cursor and Codex use `.agents/skills/`.
  */
 
 import {
@@ -49,7 +50,15 @@ import {
 
 const AGENTS_FILE = "AGENTS.md";
 const CLAUDE_FILE = "CLAUDE.md";
-const CLAUDE_SKILLS_DIR = join(".claude", "skills");
+const ADAPTER_SKILLS_DIR: Readonly<Record<string, string>> = {
+  "claude-code": join(".claude", "skills"),
+  cursor: join(".agents", "skills"),
+  codex: join(".agents", "skills"),
+};
+
+function adapterSkillsDir(adapter: string): string | null {
+  return ADAPTER_SKILLS_DIR[adapter] ?? null;
+}
 
 /** CLAUDE.md import-shim body: points Claude Code (which reads CLAUDE.md, not AGENTS.md) at AGENTS.md. */
 function importBody(): string {
@@ -79,16 +88,17 @@ export function readSkillsExclude(projectRoot: string): Set<string> {
 
 /**
  * Which shipped skills exist for this project, so the block references only the
- * ones actually present: claude-code writes skills (unless excluded); cursor and
- * codex get the block but no skill files, so both read false there. Kept in one
- * place so `applyInstructions` and `checkInstructions` render byte-identical blocks.
+ * ones actually present for every supported adapter, unless excluded. Kept in
+ * one place so `applyInstructions` and `checkInstructions` render byte-identical
+ * blocks.
  */
 function blockSkills(projectRoot: string, adapter: string): BlockSkills {
-  const claudeCode = adapter === "claude-code";
+  const supported = adapterSkillsDir(adapter) !== null;
   const exclude = readSkillsExclude(projectRoot);
   return {
-    decide: claudeCode && !exclude.has("harn-decide"),
-    council: claudeCode && !exclude.has("harn-council"),
+    decide: supported && !exclude.has("harn-decide"),
+    council: supported && !exclude.has("harn-council"),
+    end: supported && !exclude.has("harn-end"),
   };
 }
 
@@ -105,13 +115,14 @@ export interface ApplyResult {
 
 /**
  * Inject / refresh the instructions block, the CLAUDE.md import shim (claude-code),
- * and the shipped skills (claude-code). Idempotent: a re-run on current content
+ * and the adapter-native shipped skills. Idempotent: a re-run on current content
  * writes nothing. `dryRun` reports without touching the fs.
  */
 export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyResult {
   const actions: string[] = [];
   const warnings: string[] = [];
   const claudeCode = opts.adapter === "claude-code";
+  const skillsDir = adapterSkillsDir(opts.adapter);
   // dry-run narrates the future ("would create"); a real run narrates the past.
   const verbed = (base: string, past: string) => (opts.dryRun ? `would ${base}` : past);
 
@@ -191,15 +202,15 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
     }
   }
 
-  // ── shipped skills (claude-code only) ───────────────────────────────────
-  if (claudeCode) {
+  // ── shipped skills ───────────────────────────────────────────────────────
+  if (skillsDir) {
     const exclude = readSkillsExclude(projectRoot);
     for (const skill of SKILLS) {
       if (exclude.has(skill.id)) {
         actions.push(`· skipped skill ${skill.id} (skills.exclude)`);
         continue;
       }
-      const skillPath = join(projectRoot, CLAUDE_SKILLS_DIR, skill.relPath);
+      const skillPath = join(projectRoot, skillsDir, skill.relPath);
       const content = skill.render(opts.binName);
       const before = existsSync(skillPath) ? readFileSync(skillPath, "utf8") : null;
       if (before === content) {
@@ -235,6 +246,7 @@ export function removeInstructions(projectRoot: string, opts: RemoveOpts): Apply
   const actions: string[] = [];
   const warnings: string[] = [];
   const claudeCode = opts.adapter === "claude-code";
+  const skillsDir = adapterSkillsDir(opts.adapter);
 
   // ── AGENTS.md block + host addendum ─────────────────────────────────────
   const agentsPath = join(projectRoot, AGENTS_FILE);
@@ -288,10 +300,10 @@ export function removeInstructions(projectRoot: string, opts: RemoveOpts): Apply
     }
   }
 
-  // ── shipped skills (claude-code) ────────────────────────────────────────
-  if (claudeCode) {
+  // ── shipped skills ───────────────────────────────────────────────────────
+  if (skillsDir) {
     for (const skill of SKILLS) {
-      const skillPath = join(projectRoot, CLAUDE_SKILLS_DIR, skill.relPath);
+      const skillPath = join(projectRoot, skillsDir, skill.relPath);
       if (!existsSync(skillPath)) continue;
       if (!isOwnedFile(readFileSync(skillPath, "utf8"))) {
         warnings.push(`left ${skill.relPath} (hand-edited; no harnery ownership marker)`);
@@ -299,7 +311,7 @@ export function removeInstructions(projectRoot: string, opts: RemoveOpts): Apply
       }
       if (!opts.dryRun) {
         rmSync(skillPath);
-        // drop the now-empty skill dir (harn-decide/), leaving .claude/skills/ intact
+        // Drop the now-empty harn-* dir, leaving the adapter skills root intact.
         const dir = dirname(skillPath);
         try {
           if (readdirSync(dir).length === 0) rmdirSync(dir);
@@ -321,7 +333,7 @@ export interface CheckResult {
 
 /**
  * Read-only drift report for `init --check`: the AGENTS.md block and each
- * shipped skill (claude-code). Fresh → exit 0; any stale / missing / hand-edit
+ * shipped skill for the selected adapter. Fresh → exit 0; stale / missing / hand-edit
  * → drift (exit 2); an unreadable file → error (exit 1). Mirrors the wiki-theme
  * `--check-only` contract the first host wires into pre-commit.
  */
@@ -361,11 +373,12 @@ export function checkInstructions(
       issues.push(`${AGENTS_FILE} host addendum: present but no longer configured (re-run init)`);
     }
 
-    if (opts.adapter === "claude-code") {
+    const skillsDir = adapterSkillsDir(opts.adapter);
+    if (skillsDir) {
       const exclude = readSkillsExclude(projectRoot);
       for (const skill of SKILLS) {
         if (exclude.has(skill.id)) continue;
-        const skillPath = join(projectRoot, CLAUDE_SKILLS_DIR, skill.relPath);
+        const skillPath = join(projectRoot, skillsDir, skill.relPath);
         const c = existsSync(skillPath) ? readFileSync(skillPath, "utf8") : "";
         note(`skill ${skill.id}`, checkOwnedSkill(c, skillBody(skill.render, opts.binName)));
       }

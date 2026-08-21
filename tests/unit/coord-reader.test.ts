@@ -1,6 +1,6 @@
 /**
- * Fixture-based tests for the web UI's coord-reader. Drops fake heartbeats +
- * council manifest + events.ndjson into a tmp .harnery/ via HARNERY_COORD_ROOT,
+ * Fixture-based tests for the web UI's coord-reader. Drops disposable caches,
+ * a council manifest, and canonical V3 events into a temporary coordination root,
  * then asserts the reader returns the expected shape.
  *
  * Lives in tests/unit/ alongside commander.test.ts so `bun test` picks it up.
@@ -10,6 +10,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
+import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
+import {
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../src/core/events/v3/live-routing.ts";
 
 const ROOT = mkdtempSync(path.join(os.tmpdir(), "harn-coord-test-"));
 process.env.HARNERY_COORD_ROOT = ROOT;
@@ -51,10 +57,7 @@ beforeAll(() => {
     }),
   );
 
-  writeFileSync(
-    path.join(h, "active", "broken.json"),
-    "{ this is not valid json",
-  );
+  writeFileSync(path.join(h, "active", "broken.json"), "{ this is not valid json");
 
   writeFileSync(
     path.join(h, "councils", "council-foo.json"),
@@ -71,32 +74,28 @@ beforeAll(() => {
     }),
   );
 
-  writeFileSync(
-    path.join(h, "events.ndjson"),
-    [
-      JSON.stringify({
-        schema_version: 1,
-        event_id: "01EV0",
-        event_type: "tool.pre_use",
-        ts: "2026-05-27T15:00:00.000Z",
-        instance_id: "abc-fresh",
-      }),
-      JSON.stringify({
-        schema_version: 1,
-        event_id: "01EV1",
-        event_type: "tool.post_use",
-        ts: "2026-05-27T15:00:01.000Z",
-        instance_id: "abc-fresh",
-      }),
-      JSON.stringify({
-        schema_version: 1,
-        event_id: "01EV2",
-        event_type: "session.start",
-        ts: "2026-05-27T15:00:02.000Z",
-        instance_id: "def-stale",
-      }),
-    ].join("\n"),
-  );
+  initializeEventLedgerV3({
+    coordRoot: ROOT,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V3("config"),
+    approvalRecordId: "test-coord-reader",
+  });
+  const route = resolveLiveEventLedgerRouteV3(ROOT);
+  if (route.state !== "v3") throw new Error("expected V3 route");
+  const record = (instanceId: string, eventName: string, payload: Record<string, unknown>) =>
+    recordLiveHookSignalV3({
+      coordRoot: ROOT,
+      route,
+      eventName,
+      payload: { session_id: instanceId, raw: {}, ...payload },
+      adapter: "claude-code",
+      instanceId,
+    });
+  record("abc-fresh", "session-start", {});
+  record("abc-fresh", "user-prompt-submit", { turn_id: "turn-alpha", prompt: "test" });
+  record("abc-fresh", "pre-tool-use", { turn_id: "turn-alpha", tool_name: "Read" });
+  record("def-stale", "session-start", {});
 
   writeFileSync(
     path.join(h, "journal", "abc-fresh.md"),
@@ -115,22 +114,28 @@ const reader = await import(
 );
 
 describe("coord-reader", () => {
-  test("readAgents partitions fresh vs stale and includes invalid", () => {
+  test("readAgents ignores unbound cache rows and reports them as invalid", () => {
     const snap = reader.readAgents();
-    expect(snap.active.map((h: { name: string }) => h.name)).toEqual(["Alpha"]);
-    expect(snap.stale.map((h: { name: string }) => h.name)).toEqual(["Beta"]);
-    expect(snap.meta.invalid.length).toBe(1);
-    expect(snap.meta.invalid[0].file).toBe("broken.json");
+    expect(snap.active.map((h: { name: string }) => h.name).sort()).toEqual([
+      "abc-fresh",
+      "def-stale",
+    ]);
+    expect(snap.stale).toEqual([]);
+    expect(snap.meta.invalid.map((row: { file: string }) => row.file).sort()).toEqual([
+      "abc-fresh.json",
+      "broken.json",
+      "def-stale.json",
+    ]);
   });
 
-  test("readAgents claims flatten files_touched per heartbeat", () => {
+  test("readAgents never trusts claims from unbound cache rows", () => {
     const snap = reader.readAgents();
     const paths = snap.claims.map((c: { path: string }) => c.path).sort();
-    expect(paths).toEqual(["/a.ts", "/b.ts", "/c.ts"]);
+    expect(paths).toEqual([]);
   });
 
-  test("readAgent returns single heartbeat or null", () => {
-    expect(reader.readAgent("abc-fresh")?.name).toBe("Alpha");
+  test("readAgent returns the V3 projection or null", () => {
+    expect(reader.readAgent("abc-fresh")?.name).toBe("abc-fresh");
     expect(reader.readAgent("not-real")).toBeNull();
   });
 
@@ -141,18 +146,20 @@ describe("coord-reader", () => {
     expect(snap.active[0].members).toEqual(["Alpha", "Beta"]);
   });
 
-  test("readEvents tails the file newest-first with filter support", () => {
+  test("readEvents projects the V3 ledger newest-first with filter support", () => {
     const all = reader.readEvents({ limit: 10 });
-    expect(all.rows.length).toBe(3);
-    expect(all.rows[0].event_id).toBe("01EV2"); // newest first
+    expect(all.rows.length).toBeGreaterThanOrEqual(4);
+    expect(all.rows[0].event_type).toBe("session.started");
 
-    const onlyAlpha = reader.readEvents({ instanceId: "abc-fresh", limit: 10 });
-    expect(onlyAlpha.rows.every((r: { instance_id: string }) => r.instance_id === "abc-fresh"))
-      .toBe(true);
+    const onlyAlpha = reader.readEvents({ instanceId: "inst_abc-fresh", limit: 10 });
+    expect(
+      onlyAlpha.rows.every((r: { instance_id: string }) => r.instance_id === "inst_abc-fresh"),
+    ).toBe(true);
 
-    const onlyPre = reader.readEvents({ type: "tool.pre_use", limit: 10 });
-    expect(onlyPre.rows.every((r: { event_type: string }) => r.event_type === "tool.pre_use"))
-      .toBe(true);
+    const onlyPre = reader.readEvents({ type: "tool.requested", limit: 10 });
+    expect(
+      onlyPre.rows.every((r: { event_type: string }) => r.event_type === "tool.requested"),
+    ).toBe(true);
   });
 
   test("readJournal parses entries and inverts to newest-first display", () => {

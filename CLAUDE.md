@@ -6,7 +6,7 @@ Multi-agent coordination for AI coding agents: Claude Code, Cursor, and Codex. P
 
 ## Portability is the prime constraint
 
-This package serves arbitrary host projects. Nothing host-specific may land in `src/`, `web/`, `docs/`, or `schemas/`: no host names, hostnames, business vocabulary, hardcoded `/home/<user>/...` paths, or single-bin assumptions. Bin name, project context, and event emit are injected by the host CLI; anything project-specific belongs in the host, not here. Runtime state lives in the **host project's** `.harnery/` directory (`events.ndjson`, `active/`, `councils/`, `journal/`, `identities/`, `pid-map/`), resolved via `coordRoot()`, never a hardcoded location.
+This package serves arbitrary host projects. Nothing host-specific may land in `src/`, `web/`, `docs/`, or `schemas/`: no host names, hostnames, business vocabulary, hardcoded `/home/<user>/...` paths, or single-bin assumptions. Bin name, project context, and event emit are injected by the host CLI; anything project-specific belongs in the host, not here. Runtime state lives in the **host project's** `.harnery/` directory (`ledgers/`, `active/`, `councils/`, `journal/`, `identities/`, `pid-map/`), resolved via `coordRoot()`, never a hardcoded location.
 
 **Enforced, not just documented.** [scripts/check-portability.ts](scripts/check-portability.ts) scans committable source for host-specific tokens (a consumer's bin abbreviation, business name, submodule paths, dbt marts, skills, and `BP_`-style env prefixes) and fails on any hit. It runs as `bun run check:portability`, as the CI-gating [tests/unit/portability.test.ts](tests/unit/portability.test.ts), and (host-side) in the embedding monorepo's pre-commit hook. Env vars are the sneakiest leak: read every coord var through `coordEnv()` (which prepends `HARNERY_`), never a bare `process.env.BP_*`. Escape hatch for a genuine non-host use: `portability-allow: <reason>` on the line (rare; prefer a neutral token).
 
@@ -36,7 +36,7 @@ When writing README/docs/marketing copy, coordination leads and the toolkit is f
 - `src/lib/`: shared libs (a mix of exported toolkit modules and unexported internals; see Surface tiers above). Notables: `lib/council/` (council state machine: `writePrompt` auto-prepends the `<!-- council-route -->` header and auto-appends the `<!-- council-submit-footer -->` block, both idempotent; never hand-write those markers) and `lib/docs-lint.ts` / `docs-sweep.ts` (powers `harn docs`).
 - `bin/`: `harn`, `agent-coord`, `agent-hook` entrypoints.
 - `relay/`: the presence relay's Cloudflare Workers host (`relay/worker/`, deployed with wrangler; ADR 0016). The Bun self-host lives in `src/commands/relay.ts`; the shared wire protocol in `src/core/presence/relay-protocol.ts`.
-- `web/`: standalone Next.js dashboard (private, not published). Booted by `harn web up`; port via `HARNERY_WEB_PORT` (default 9000).
+- `web/`: standalone Next.js dashboard (private, not published). Booted by `harn web up`; port via `HARNERY_WEB_PORT` (default 4276, the phone-keypad spelling of HARN).
 - `docs/`: Astro Starlight site (harnery.com). Every new CLI command gets a `docs/src/content/docs/cli/<name>.mdx` page; ADRs live in `docs/src/content/docs/decisions/` (not a `docs/decisions.md`).
 - `tests/`: `unit/`, `integration/` (`tests/integration/run.sh`), plus `*.test.ts` alongside source.
 
@@ -89,20 +89,28 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=c28c3573 -->
+<!-- harnery:begin instructions v=d2822e95 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
 You share this checkout with other agents; the surfaces below keep you oriented
 and out of each other's way, and let you dispatch a team of your own when a job
 is bigger than one session. Run `harn <command> --help` for any command's full
-surface. Procedures for the deeper flows live in the `harn-decide` and `harn-council` skills.
+surface. Procedures for the deeper flows live in the `harn-decide` and `harn-council` and `harn-end` skills.
 
 **Identity + peers.** You are one of several agents in this repo.
 `harn agents whoami` is you; `harn agents status` shows your session plus the
 active peers and the files they've claimed; `harn agents set-task "<focus>"`
 declares your current focus so peers can see it. Check for peers before editing
 widely-shared files.
+
+**Task lifecycle.** Beside the activity peers already see, declare whether your
+objective is still open: `harn agents lifecycle blocked --reason "<why>"` when
+it cannot proceed, `harn agents lifecycle done` when it is complete, and
+`harn agents lifecycle active` to reopen. `done` requires a current task and
+a passing Git finalization check (dirty or unpushed work refuses, and nothing is
+written). Ordinary `set-task` calls never change lifecycle, and a transition
+that re-mints the session title tells you the new name to copy. When the whole session is genuinely finished, use the `harn-end` skill as the final workflow.
 
 **Dispatching a team.** Everything else here coordinates the agents already
 present. These three start new ones, and they differ by how long the objective

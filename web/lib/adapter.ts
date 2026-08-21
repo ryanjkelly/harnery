@@ -1,6 +1,6 @@
 /**
  * Human labels for the coord layer's `platform` values (written by heartbeats
- * and `session.start` events). Pure module, safe to import from both server
+ * and `session.started` events). Pure module, safe to import from both server
  * and client components.
  */
 const ADAPTER_LABELS: Record<string, string> = {

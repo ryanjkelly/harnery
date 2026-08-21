@@ -1,732 +1,284 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "./stop-hook.ts";
+import { eventV3Fixture, fixtureObject } from "../../../../tests/helpers/event-v3.ts";
+import { initializeEventLedgerV3 } from "../../events/v3/bootstrap.ts";
+import type { EventV3 } from "../../events/v3/contract.ts";
+import { startWorkflowChildSessionV3 } from "../../workflow/live-session-v3.ts";
+import { evaluateStopHook, evaluateStopHookV3Events } from "./stop-hook.ts";
 
-let root: string;
-
-beforeEach(() => {
-  root = join(tmpdir(), `agent-coord-stop-test-${process.pid}-${Date.now()}`);
-  mkdirSync(join(root, ".harnery"), { recursive: true });
-  writeFileSync(
-    join(root, ".harnery", "config.jsonc"),
-    `{ "agents": { "requireGitFinalization": false } }`,
-    "utf8",
-  );
-});
+const roots: string[] = [];
+const OWNER = "inst_operator";
+const GENERATION = "gen_00000000-0000-7000-8000-000000000111";
+const START = Date.parse("2026-08-18T14:00:00.000Z");
 
 afterEach(() => {
-  try {
-    rmSync(root, { recursive: true, force: true });
-  } catch {
-    /* swallow */
-  }
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function writeEvents(events: Array<Record<string, unknown>>): void {
-  const path = join(root, ".harnery", "events.ndjson");
-  writeFileSync(path, `${events.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf8");
+function root(): string {
+  const value = mkdtempSync(join(tmpdir(), "harn-stop-v3-"));
+  roots.push(value);
+  return value;
 }
 
-describe("evaluateStopHook", () => {
-  test("bypass=true short-circuits to allow", () => {
-    const v = evaluateStopHook(root, { rule: "stop-hook", instance_id: "x", bypass: true });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.bypass");
-  });
-
-  test("codex is observe-only even when every ritual signal is missing", () => {
-    const now = Date.now();
-    const ts = (offset: number) => new Date(now + offset).toISOString();
-    writeEvents([
-      {
-        event_id: "1",
-        event_type: "user_prompt.submit",
-        ts: ts(-10000),
-        instance_id: "codex-agent",
-        session_id: "codex-session",
-        adapter: "codex",
-        source: "test",
-        data: {},
-      },
-      {
-        event_id: "2",
-        event_type: "tool.pre_use",
-        ts: ts(-8000),
-        instance_id: "codex-agent",
-        session_id: "codex-session",
-        adapter: "codex",
-        source: "test",
-        data: {},
-      },
-      {
-        event_id: "3",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        instance_id: "codex-agent",
-        session_id: "codex-session",
-        adapter: "codex",
-        source: "test",
-        data: { status_box_present: false },
-      },
-    ]);
-
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "codex-agent",
-      adapter: "codex",
-      now_ms: now,
-    });
-
-    expect(v.allow).toBe(true);
-    expect(v.exit_code).toBe(0);
-    expect(v.rule).toBe("stop-hook.codex_observe_only");
-  });
-
-  test("missing events.ndjson → no_history (empty stream allows)", () => {
-    // readRecentEvents returns [] when the file doesn't exist; no events for
-    // owner → defer-allow under "stop-hook.no_history".
-    const v = evaluateStopHook(root, { rule: "stop-hook", instance_id: "x" });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.no_history");
-  });
-
-  test("no canonical events for owner → defer-allow", () => {
-    writeEvents([
-      {
-        event_id: "1",
-        event_type: "session.start",
-        ts: new Date().toISOString(),
-        instance_id: "other",
-        session_id: "s",
+describe("evaluateStopHook on the universal V3 ledger", () => {
+  test("explicit bypass, workflow children, and Codex remain unconditional allows", () => {
+    expect(
+      evaluateStopHook(root(), {
+        rule: "stop-hook",
+        instance_id: "operator",
         adapter: "claude-code",
-        source: "test",
-        data: {},
-      },
-    ]);
-    const v = evaluateStopHook(root, { rule: "stop-hook", instance_id: "missing" });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.no_history");
+        bypass: true,
+      }),
+    ).toMatchObject({ allow: true, rule: "stop-hook.bypass" });
+    expect(
+      evaluateStopHook(root(), {
+        rule: "stop-hook",
+        instance_id: "operator",
+        adapter: "cursor",
+        workflow_child: true,
+      }),
+    ).toMatchObject({ allow: true, rule: "stop-hook.workflow_child" });
+    expect(
+      evaluateStopHook(root(), {
+        rule: "stop-hook",
+        instance_id: "operator",
+        adapter: "codex",
+      }),
+    ).toMatchObject({ allow: true, rule: "stop-hook.codex_observe_only" });
   });
 
-  test("pure-prose turn (zero tool.pre_use) exempts rules 1/3 + 3/3", () => {
-    const now = Date.now();
-    const ts = (offset: number) => new Date(now + offset).toISOString();
-    writeEvents([
-      {
-        event_id: "1",
-        event_type: "user_prompt.submit",
-        ts: ts(-10000),
-        instance_id: "a",
-        session_id: "a",
+  test("fails open when no authoritative V3 control boundary exists", () => {
+    expect(
+      evaluateStopHook(root(), {
+        rule: "stop-hook",
+        instance_id: "operator",
         adapter: "claude-code",
-        source: "test",
-        data: {},
-      },
-      {
-        event_id: "2",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        instance_id: "a",
-        session_id: "a",
-        adapter: "claude-code",
-        source: "test",
-        data: { status_box_present: true },
-      },
-    ]);
-    const v = evaluateStopHook(root, { rule: "stop-hook", instance_id: "a", now_ms: now });
-    expect(v.allow).toBe(true);
+      }),
+    ).toMatchObject({ allow: true, rule: "stop-hook.v3_evidence_unavailable" });
   });
 
-  // --- Adapter-aware ack signal (Cursor) ---
-  // Cursor renders Shell output inline, so running `harn agents status`
-  // (state.status_checked) is the end-of-turn ack signal; the verbatim box
-  // paste (rule 2/3, transcript-scanned) is a Claude-Code-collapsed-UI remedy
-  // that's redundant + undetectable here. Cursor never carries
-  // status_box_present, so the verdict must NOT require it.
-
-  test("cursor tool-turn: status_checked + task_set pass WITHOUT a box (rule 2/3 not required)", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
-    writeEvents([
-      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-3000), ...base, data: {} },
-      { event_id: "4", event_type: "state.task_set", ts: ts(-2000), ...base, data: {} },
-      {
-        event_id: "5",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "c",
-      adapter: "cursor",
-      now_ms: now,
+  test("requires the visible Claude Code acknowledgement even on a prose-only turn", () => {
+    const missing = [turnStarted(0), turnCompleted(1, ritual(false))];
+    expect(verdict("claude-code", missing)).toMatchObject({
+      allow: false,
+      rule: "stop-hook.rule_2_3",
     });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.pass");
+
+    const present = [turnStarted(0), turnCompleted(1, ritual(true))];
+    expect(verdict("claude-code", present)).toMatchObject({
+      allow: true,
+      rule: "stop-hook.pure_prose_pass",
+    });
   });
 
-  test("opted-in host rejects a plain status event and accepts Git-finalization evidence", () => {
-    writeFileSync(
-      join(root, ".harnery", "config.jsonc"),
-      `{ "agents": { "requireGitFinalization": true } }`,
-      "utf8",
-    );
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
-    const events = (gitFinalizationChecked: boolean) => [
-      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
-      {
-        event_id: "3",
-        event_type: "state.status_checked",
-        ts: ts(-3000),
-        ...base,
-        data: { git_finalization_checked: gitFinalizationChecked },
-      },
-      { event_id: "4", event_type: "state.task_set", ts: ts(-2000), ...base, data: {} },
-      {
-        event_id: "5",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ];
-
-    writeEvents(events(false));
-    const plain = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "c",
-      adapter: "cursor",
-      now_ms: now,
+  test("enforces status, reply acknowledgement, and task evidence in order on tool turns", () => {
+    const base = [turnStarted(0), event("tool.requested", 1)];
+    expect(verdict("claude-code", [...base, turnCompleted(5, ritual(true))])).toMatchObject({
+      allow: false,
+      rule: "stop-hook.rule_1_3",
     });
-    expect(plain.allow).toBe(false);
-    expect(plain.rule).toBe("stop-hook.rule_1_3");
-    expect(plain.reason).toContain("agents status --end-turn");
-
-    writeEvents(events(true));
-    const guarded = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "c",
-      adapter: "cursor",
-      now_ms: now,
-    });
-    expect(guarded.allow).toBe(true);
-    expect(guarded.rule).toBe("stop-hook.pass");
+    expect(
+      verdict("claude-code", [...base, status(2), task(3), turnCompleted(5, ritual(false))]),
+    ).toMatchObject({ allow: false, rule: "stop-hook.rule_2_3" });
+    expect(
+      verdict("claude-code", [...base, status(2), turnCompleted(5, ritual(true))]),
+    ).toMatchObject({ allow: false, rule: "stop-hook.rule_3_3" });
+    expect(
+      verdict("claude-code", [...base, status(2), task(3), turnCompleted(5, ritual(true))]),
+    ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
   });
 
-  test("cursor tool-turn: missing task_set → block rule 3/3", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
-    writeEvents([
-      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-3000), ...base, data: {} },
-      {
-        event_id: "4",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "c",
-      adapter: "cursor",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("stop-hook.rule_3_3");
-  });
-
-  test("cursor: status_checked is the ack signal, missing it blocks rule 1/3 (not 2/3)", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
-    writeEvents([
-      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
-      {
-        event_id: "3",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "c",
-      adapter: "cursor",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("stop-hook.rule_1_3");
-  });
-
-  test("cursor pure-prose turn (no tools, no status) → block rule 1/3 (parity: every turn)", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
-    writeEvents([
-      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
-      {
-        event_id: "2",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "c",
-      adapter: "cursor",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("stop-hook.rule_1_3");
-  });
-
-  test("claude-code tool-turn still requires the box (rule 2/3); cursor change doesn't leak", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "d", session_id: "d", adapter: "claude-code", source: "test" };
-    writeEvents([
-      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-3000), ...base, data: {} },
-      { event_id: "4", event_type: "state.task_set", ts: ts(-2000), ...base, data: {} },
-      {
-        event_id: "5",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "d",
-      adapter: "claude-code",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("stop-hook.rule_2_3");
-  });
-
-  // Session-naming rule: the turn whose set-task produced the suggested name
-  // must show it in the reply (turn.stop's session_name_present). CC-only.
-  const NAME = "Agent Maya - Auth refactor";
-  const namingEvents = (
-    base: Record<string, unknown>,
-    ts: (o: number) => string,
-    stops: Array<Record<string, unknown>>,
-  ): Array<Record<string, unknown>> => [
-    { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
-    { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
-    { event_id: "3", event_type: "state.status_checked", ts: ts(-3000), ...base, data: {} },
-    {
-      event_id: "4",
-      event_type: "state.task_set",
-      ts: ts(-2500),
-      ...base,
-      data: {
-        task: "Auth refactor",
-        cleared: false,
-        first_of_session: true,
-        suggested_session_name: NAME,
-      },
-    },
-    ...stops.map((data, i) => ({
-      event_id: `${5 + i}`,
-      event_type: "turn.stop",
-      ts: ts(-1000 + i * 100),
-      ...base,
-      data,
-    })),
-  ];
-
-  test("claude-code: the naming turn without the fenced name blocks stop-hook.session_name", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "n1", session_id: "n1", adapter: "claude-code", source: "test" };
-    writeEvents(
-      namingEvents(base, ts, [{ status_box_present: true, session_name_present: false }]),
-    );
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "n1",
-      adapter: "claude-code",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("stop-hook.session_name");
-    expect(v.reason).toContain(NAME);
-  });
-
-  test("claude-code: naming turn passes once session_name_present is true", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "n2", session_id: "n2", adapter: "claude-code", source: "test" };
-    writeEvents(namingEvents(base, ts, [{ status_box_present: true, session_name_present: true }]));
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "n2",
-      adapter: "claude-code",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.pass");
-  });
-
-  test("claude-code: lifecycle name re-mint is enforced like first-session naming", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = {
-      instance_id: "life-name",
-      session_id: "life-name",
-      adapter: "claude-code",
-      source: "test",
-    };
-    const lifecycleName = "[DONE] - Agent Maya - Auth refactor";
-    writeEvents([
-      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-3000), ...base, data: {} },
-      {
-        event_id: "4",
-        event_type: "state.task_set",
-        ts: ts(-2600),
-        ...base,
-        data: { task: "Auth refactor", cleared: false, first_of_session: false },
-      },
-      {
-        event_id: "5",
-        event_type: "state.task_state",
-        ts: ts(-2500),
-        ...base,
-        data: {
-          state: "done",
-          name_reminted: true,
-          suggested_session_name: lifecycleName,
-        },
-      },
-      {
-        event_id: "6",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: true, session_name_present: false },
-      },
-    ]);
-    const verdict = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "life-name",
-      adapter: "claude-code",
-      now_ms: now,
-    });
-    expect(verdict.allow).toBe(false);
-    expect(verdict.rule).toBe("stop-hook.session_name");
-    expect(verdict.reason).toContain(lifecycleName);
-  });
-
-  test("an earlier in-window sighting satisfies the rule even when a later turn.stop omits the flag", () => {
-    // Once seen, session_name_seen_at is stamped and later turn.stops omit
-    // session_name_present; a repair of a DIFFERENT rule fires such a stop and
-    // must not un-satisfy the naming rule (livelock guard).
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "n3", session_id: "n3", adapter: "claude-code", source: "test" };
-    writeEvents(
-      namingEvents(base, ts, [
-        { status_box_present: true, session_name_present: true },
-        { status_box_present: true },
+  test("Cursor uses the inline status event and does not require reply-text evidence", () => {
+    expect(
+      verdict("cursor", [
+        turnStarted(0),
+        event("tool.requested", 1),
+        status(2),
+        task(3),
+        turnCompleted(4),
       ]),
-    );
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "n3",
+    ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
+  });
+
+  test("a Cursor remediation turn inherits ritual evidence from the human turn", () => {
+    const repaired = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      task(2),
+      turnCompleted(3),
+      turnStarted(4, true),
+      event("tool.requested", 5),
+      status(6),
+      turnCompleted(7),
+    ];
+    expect(verdict("cursor", repaired)).toMatchObject({
+      allow: true,
+      rule: "stop-hook.pass",
+    });
+
+    const nextHumanTurn = repaired.map((item) => structuredClone(item));
+    fixtureObject(nextHumanTurn[4]!.payload).stop_remediation = false;
+    expect(verdict("cursor", nextHumanTurn)).toMatchObject({
+      allow: false,
+      rule: "stop-hook.rule_3_3",
+    });
+  });
+
+  test("enforces the Claude Code session-name observation without retaining the name", () => {
+    const base = [turnStarted(0), event("tool.requested", 1), status(2), task(3)];
+    expect(
+      verdict("claude-code", [
+        ...base,
+        turnCompleted(4, ritual(true, { required: true, present: false })),
+      ]),
+    ).toMatchObject({ allow: false, rule: "stop-hook.session_name" });
+    expect(
+      verdict("claude-code", [
+        ...base,
+        turnCompleted(4, ritual(true, { required: true, present: true })),
+      ]),
+    ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
+  });
+
+  test("fails open when a Claude Code terminal predates structural ritual evidence", () => {
+    expect(verdict("claude-code", [turnStarted(0), turnCompleted(1)])).toMatchObject({
+      allow: true,
+      rule: "stop-hook.v3_evidence_unavailable",
+    });
+  });
+
+  test("a stamped sighting on the live row breaks the remediation block loop", () => {
+    // Remediation stops cannot land fresh turn.completed events (the first
+    // stop closed the turn span), so when the first terminal recorded
+    // present: false (flush race), in-window evidence never changes. The
+    // sighting stamp written by sessionNamePresence is the durable record
+    // that the name was shown; the rule must honor it instead of blocking
+    // every retry forever.
+    const NAME = "Agent Maya - Auth refactor";
+    const events = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      status(2),
+      task(3),
+      turnCompleted(4, ritual(true, { required: true, present: false })),
+    ];
+    const request = {
+      rule: "stop-hook" as const,
+      instance_id: "operator",
       adapter: "claude-code",
-      now_ms: now,
+      now_ms: START + 10_000,
+    };
+    expect(evaluateStopHookV3Events(stampedRoot(NAME, NAME), request, events)).toMatchObject({
+      allow: true,
+      rule: "stop-hook.pass",
     });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.pass");
-  });
-
-  test("a non-naming task_set never triggers the rule", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "n4", session_id: "n4", adapter: "claude-code", source: "test" };
-    writeEvents([
-      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-3000), ...base, data: {} },
-      {
-        event_id: "4",
-        event_type: "state.task_set",
-        ts: ts(-2500),
-        ...base,
-        data: { task: "Later turn", cleared: false, first_of_session: false },
-      },
-      {
-        event_id: "5",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: true },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "n4",
-      adapter: "claude-code",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.pass");
-  });
-
-  test("cursor: the naming rule never fires (fence undetectable from Cursor's Stop payload)", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "n5", session_id: "n5", adapter: "cursor", source: "test" };
-    writeEvents(
-      namingEvents(base, ts, [{ status_box_present: false, session_name_present: false }]),
-    );
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "n5",
-      adapter: "cursor",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.pass");
-  });
-
-  // Cross-turn remediation. Cursor answers a Stop block by auto-submitting our
-  // message as a NEW user turn, so these cases cover the window that spans the
-  // repair turn and the turn it repairs. Judged per-turn, the pair below
-  // alternates rule_3_3 / rule_1_3 forever: the repair runs a tool, so the new
-  // turn needs both signals while the earlier one sits outside the window.
-  const remediationPrompt = (rule: string) =>
-    `${STOP_REMEDIATION_MARKER} rule=${rule}]\nEnd-of-turn rule: repair the ritual.`;
-
-  test("cursor remediation followup inherits the window of the turn it repairs", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "e", session_id: "e", adapter: "cursor", source: "test" };
-    writeEvents([
-      // Human turn: ran tools and status, forgot set-task → blocked rule 3/3.
-      {
-        event_id: "1",
-        event_type: "user_prompt.submit",
-        ts: ts(-30000),
-        ...base,
-        data: { prompt_text: "anything else before we wrap?" },
-      },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-25000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-24000), ...base, data: {} },
-      {
-        event_id: "4",
-        event_type: "turn.stop",
-        ts: ts(-20000),
-        ...base,
-        data: { status_box_present: false },
-      },
-      // Repair turn, opened by our own followup: supplies only the missing half.
-      {
-        event_id: "5",
-        event_type: "user_prompt.submit",
-        ts: ts(-15000),
-        ...base,
-        data: { prompt_text: remediationPrompt("stop-hook.rule_3_3") },
-      },
-      { event_id: "6", event_type: "tool.pre_use", ts: ts(-12000), ...base, data: {} },
-      { event_id: "7", event_type: "state.task_set", ts: ts(-11000), ...base, data: {} },
-      {
-        event_id: "8",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "e",
-      adapter: "cursor",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.pass");
-
-    // The same stream judged with the window pinned to the repair turn alone is
-    // the pre-fix behavior, and it blocks: the agent supplied task_set, so the
-    // verdict now demands status_checked, which it already gave one turn ago.
-    // That is the alternation the remediation walk-back removes.
-    const perTurn = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "e",
-      adapter: "cursor",
-      now_ms: now,
-      turn_window: { start_ms: now - 15000, end_ms: now },
-    });
-    expect(perTurn.allow).toBe(false);
-    expect(perTurn.rule).toBe("stop-hook.rule_1_3");
-  });
-
-  test("a chain of remediation followups anchors on the last human prompt", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "f", session_id: "f", adapter: "cursor", source: "test" };
-    writeEvents([
-      {
-        event_id: "1",
-        event_type: "user_prompt.submit",
-        ts: ts(-40000),
-        ...base,
-        data: { prompt_text: "human turn" },
-      },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-38000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-37000), ...base, data: {} },
-      {
-        event_id: "4",
-        event_type: "user_prompt.submit",
-        ts: ts(-30000),
-        ...base,
-        data: { prompt_text: remediationPrompt("stop-hook.rule_3_3") },
-      },
-      { event_id: "5", event_type: "tool.pre_use", ts: ts(-28000), ...base, data: {} },
-      // Repair ran the wrong command (status again), so a second followup fired.
-      { event_id: "6", event_type: "state.status_checked", ts: ts(-27000), ...base, data: {} },
-      {
-        event_id: "7",
-        event_type: "user_prompt.submit",
-        ts: ts(-20000),
-        ...base,
-        data: { prompt_text: remediationPrompt("stop-hook.rule_3_3") },
-      },
-      { event_id: "8", event_type: "tool.pre_use", ts: ts(-18000), ...base, data: {} },
-      { event_id: "9", event_type: "state.task_set", ts: ts(-17000), ...base, data: {} },
-      {
-        event_id: "10",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "f",
-      adapter: "cursor",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.pass");
-  });
-
-  test("now_ms bounds the anchor search: a later prompt cannot anchor this turn", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "i", session_id: "i", adapter: "cursor", source: "test" };
-    writeEvents([
-      {
-        event_id: "1",
-        event_type: "user_prompt.submit",
-        ts: ts(-30000),
-        ...base,
-        data: { prompt_text: "the turn under judgement" },
-      },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-28000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-27000), ...base, data: {} },
-      { event_id: "4", event_type: "state.task_set", ts: ts(-26000), ...base, data: {} },
-      {
-        event_id: "5",
-        event_type: "turn.stop",
-        ts: ts(-25000),
-        ...base,
-        data: { status_box_present: false },
-      },
-      // Later history, past the cutoff. Replaying a recorded stop must not let
-      // this anchor the window (which would leave it empty and block wrongly).
-      {
-        event_id: "6",
-        event_type: "user_prompt.submit",
-        ts: ts(-5000),
-        ...base,
-        data: { prompt_text: "a later turn" },
-      },
-      { event_id: "7", event_type: "tool.pre_use", ts: ts(-4000), ...base, data: {} },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "i",
-      adapter: "cursor",
-      now_ms: now - 24000,
-    });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.pass");
-  });
-
-  test("a real human prompt does NOT inherit ritual credit from the previous turn", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "g", session_id: "g", adapter: "cursor", source: "test" };
-    writeEvents([
-      {
-        event_id: "1",
-        event_type: "user_prompt.submit",
-        ts: ts(-30000),
-        ...base,
-        data: { prompt_text: "first human turn" },
-      },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-28000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-27000), ...base, data: {} },
-      { event_id: "4", event_type: "state.task_set", ts: ts(-26000), ...base, data: {} },
-      {
-        event_id: "5",
-        event_type: "turn.stop",
-        ts: ts(-25000),
-        ...base,
-        data: { status_box_present: false },
-      },
-      // Second human turn: ritual not performed. Must still block.
-      {
-        event_id: "6",
-        event_type: "user_prompt.submit",
-        ts: ts(-15000),
-        ...base,
-        data: { prompt_text: "second human turn" },
-      },
-      { event_id: "7", event_type: "tool.pre_use", ts: ts(-12000), ...base, data: {} },
-      {
-        event_id: "8",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "g",
-      adapter: "cursor",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("stop-hook.rule_1_3");
+    // A stamp for a stale (since re-minted) name does not satisfy the rule.
+    expect(
+      evaluateStopHookV3Events(stampedRoot(NAME, "Agent Prior - Old focus"), request, events),
+    ).toMatchObject({ allow: false, rule: "stop-hook.session_name" });
   });
 });
+
+function stampedRoot(suggestedName: string, seenFor: string): string {
+  const value = mkdtempSync(join(tmpdir(), "harn-stop-v3-"));
+  roots.push(value);
+  initializeEventLedgerV3({
+    coordRoot: value,
+    harneryBuild: "stop-hook-test",
+    hostBuild: "host-test",
+    configDigest: `sha256:${"0".repeat(64)}`,
+    approvalRecordId: "stop-hook-test",
+  });
+  startWorkflowChildSessionV3({
+    coordRoot: value,
+    instanceId: "operator",
+    runId: "stop-hook-test",
+    agentId: "operator",
+    adapter: "codex",
+  });
+  const cachePath = join(value, ".harnery", "active", "operator.json");
+  const cache = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+  writeFileSync(
+    cachePath,
+    JSON.stringify({
+      ...cache,
+      suggested_session_name: suggestedName,
+      session_name_seen_for: seenFor,
+    }),
+    "utf8",
+  );
+  return value;
+}
+
+function verdict(adapter: "claude-code" | "cursor", events: EventV3[]) {
+  return evaluateStopHookV3Events(
+    root(),
+    {
+      rule: "stop-hook",
+      instance_id: "operator",
+      adapter,
+      now_ms: START + 10_000,
+    },
+    events,
+  );
+}
+
+function event(eventType: string, second: number): EventV3 {
+  const value = eventV3Fixture(eventType, second + 1);
+  const scope = fixtureObject(value.scope);
+  scope.instance_id = OWNER;
+  scope.generation_id = GENERATION;
+  const time = fixtureObject(value.time);
+  const stamp = new Date(START + second * 1_000).toISOString();
+  time.observed_at = stamp;
+  time.recorded_at = stamp;
+  return value as unknown as EventV3;
+}
+
+function turnStarted(second: number, stopRemediation = false): EventV3 {
+  const value = event("turn.started", second);
+  fixtureObject(value.payload).stop_remediation = stopRemediation;
+  return value;
+}
+
+function turnCompleted(second: number, turnRitual?: Record<string, unknown>): EventV3 {
+  const value = event("turn.completed", second);
+  if (turnRitual) fixtureObject(value.payload).ritual = turnRitual;
+  return value;
+}
+
+function status(second: number): EventV3 {
+  const value = event("coord.status_observed", second);
+  const payload = fixtureObject(value.payload);
+  payload.observer_instance_id = OWNER;
+  payload.subject_instance_id = OWNER;
+  payload.status = "box_checked";
+  return value;
+}
+
+function task(second: number): EventV3 {
+  const value = event("coord.task_changed", second);
+  const payload = fixtureObject(value.payload);
+  payload.actor_instance_id = OWNER;
+  payload.subject_instance_id = OWNER;
+  payload.new_state = "set";
+  return value;
+}
+
+function ritual(
+  statusBoxPresent: boolean,
+  sessionName: { required: boolean; present: boolean } = { required: false, present: false },
+): Record<string, unknown> {
+  return {
+    status_box_present: observed(statusBoxPresent),
+    status_box_present_strict: observed(statusBoxPresent),
+    session_name: observed(sessionName),
+  };
+}
+
+function observed(value: unknown): Record<string, unknown> {
+  return { state: "observed", value, attestation: "derived", confidence: "exact" };
+}

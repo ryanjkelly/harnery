@@ -29,4 +29,4 @@ assignees: ryanjkelly
 
 ## Logs / additional context
 
-<!-- Relevant lines from `.harnery/events.ndjson`, error messages, screenshots if relevant. -->
+<!-- Relevant `harn agents health` or `harn ledger-v3 status` output, error messages, screenshots if relevant. -->

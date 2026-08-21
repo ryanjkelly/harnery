@@ -1,12 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  isAcked,
-  loadAcked,
-  markAcked,
-  parseStoredRequest,
-  pruneAcked,
-} from "./attention";
+import { isAcked, loadAcked, markAcked, parseStoredRequest, pruneAcked } from "./attention";
 
 /** Minimal in-memory Storage stand-in (bun test has no DOM). */
 function memoryStore(initial: Record<string, string> = {}): Storage {
@@ -62,9 +56,7 @@ describe("acked-key store", () => {
     expect(loadAcked(memoryStore({ "harnery.attention.acked": "not json" }))).toEqual({});
     expect(loadAcked(memoryStore({ "harnery.attention.acked": "[1,2]" }))).toEqual({});
     expect(
-      loadAcked(
-        memoryStore({ "harnery.attention.acked": '{"k":"not-a-number","ok":5}' }),
-      ),
+      loadAcked(memoryStore({ "harnery.attention.acked": '{"k":"not-a-number","ok":5}' })),
     ).toEqual({ ok: 5 });
   });
 

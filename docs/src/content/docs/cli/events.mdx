@@ -1,0 +1,46 @@
+---
+title: harn events
+description: Inspect latency, token economics, and span attribution from Event Ledger V3.
+sidebar:
+  order: 44
+---
+
+```
+harn events latency [--root <path>] [--candidate] [--by-tool | --by-generation] [--json]
+```
+
+Read the canonical V3 ledger and project turn wall time, inclusive tool time, exclusive command time, waits, inference, harness overhead, residual time, context use, and token economics. The command fails closed when the validating reader reports an incomplete ledger.
+
+## Views
+
+The default table shows one row per turn. `--by-tool` groups inclusive duration by tool namespace and name. `--by-generation` aggregates turns into generation totals. The two grouping flags are mutually exclusive.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--root <path>` | Read coordination state from an explicit project root. |
+| `--candidate` | Read the pre-activation candidate instead of active authority. |
+| `--by-tool` | Aggregate inclusive latency by tool. |
+| `--by-generation` | Aggregate latency by generation. |
+| `--json` | Emit the complete latency and economics projections plus the selected view. |
+
+## Examples
+
+```bash
+# One row per completed turn
+harn events latency
+
+# Inclusive tool totals
+harn events latency --by-tool
+
+# Generation totals from a candidate ledger
+harn events latency --candidate --by-generation
+
+# Full machine-readable projection
+harn events latency --json
+```
+
+## Output
+
+Observed durations render as milliseconds. Partial observations render with a question mark and preserve known lower bounds. JSON output includes the selected root and authority, the chosen view, per-turn latency, and token economics.

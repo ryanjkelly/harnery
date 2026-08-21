@@ -1,0 +1,59 @@
+---
+title: "0087: Terminal-session task lifecycle is historical"
+description: "ADR: preserve the last declared task lifecycle after session end, label it historical, and never infer done from session authority."
+sidebar:
+  order: 87
+---
+
+**Status:** accepted (2026-08-20) · **Scope:** product tier (`core/events/v3`, `core/agents`, `commands/agents`)
+
+## Context
+
+V3 separates session authority from task lifecycle. A `session.ended` event
+proves that one generation stopped, while `coord.lifecycle_changed` records
+whether its task was active, blocked, or done. One task may continue in a later
+generation, so terminal session authority cannot complete the task by itself.
+
+The first terminal coordination reader kept that separation in storage but not
+in its output. A trace could say `session=ended` and `lifecycle=active` without
+explaining that active was the last declaration from the finished generation.
+It also dated the task lifecycle with the generation's last event, even when
+that event was the session terminal rather than a lifecycle transition.
+
+## Alternatives considered
+
+**Set every explicitly ended session to done.** Rejected because it invents a
+task transition and prevents a task from continuing in a later generation.
+
+**Replace terminal task state with unknown.** Rejected because the last
+declaration is valid historical evidence. Discarding it makes blocked and done
+generations indistinguishable when the ledger already preserves the difference.
+
+**Keep rendering the last value without qualification.** Rejected because a
+bare `active` value reads as current work and can contradict authoritative
+session completion.
+
+## Decision
+
+Agent command results carry `task_state_scope: "current" | "historical"`.
+Authority-safe live rows returned by list, show, whoami, and status use
+`current`. Trace uses `historical` when it selects a terminal generation and
+renders the human label as `lifecycle=historical(<last-state>)`.
+
+The value remains the last recorded lifecycle declaration. Session completion
+does not emit or project a synthetic `done`. A merely waiting multi-turn task
+still has a live session and therefore keeps current scope.
+
+The V3 safety reducer records the observed time of each task, lifecycle, and
+presence transition. Coordination views use the lifecycle transition time for
+`task_state_updated_at`; unrelated progress and `session.ended` no longer move
+that timestamp. The reducer build identifier advances to
+`event-v3-safety-reducer-v2` so downstream projections can identify the new
+evidence fields.
+
+## Result
+
+The agent-surface regression ends a generation whose last declared lifecycle
+is active. List omits it, show refuses it as non-live, and trace reports the
+session as ended with `task_state: "active"`, `task_state_scope: "historical"`,
+and the original lifecycle-transition timestamp. No done event is created.

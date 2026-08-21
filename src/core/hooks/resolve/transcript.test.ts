@@ -3,7 +3,16 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { detectForkParent, scanAssistantTextIncludes, scanTranscriptModel } from "./transcript.ts";
+import { assistantTextStartsWithSessionNameBlock } from "../../agents/session-name-display.ts";
+import {
+  detectForkParent,
+  inspectSessionNameDisplayImmediately,
+  scanAssistantTextIncludes,
+  scanLatestAssistantText,
+  scanSessionNameDisplayedImmediately,
+  scanTranscriptModel,
+  transcriptPathCandidates,
+} from "./transcript.ts";
 
 describe("scanAssistantTextIncludes", () => {
   let dir: string;
@@ -88,6 +97,192 @@ describe("scanAssistantTextIncludes", () => {
       { type: "assistant", message: { content: [{ type: "text", text: NAME }] } },
     ]);
     expect(scanAssistantTextIncludes(p, "")).toBe(false);
+  });
+});
+
+describe("ordered session-name transcript scans", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "harn-transcript-name-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const NAME = "Agent Maya - Auth refactor";
+  const BLOCK = `\`\`\`\n${NAME}\n\`\`\``;
+
+  test("maps a Windows Codex rollout path to its WSL mount candidate", () => {
+    expect(
+      transcriptPathCandidates(
+        "C:\\Users\\maya\\.codex\\sessions\\2026\\08\\20\\rollout-session.jsonl",
+      ),
+    ).toEqual([
+      "C:\\Users\\maya\\.codex\\sessions\\2026\\08\\20\\rollout-session.jsonl",
+      "/mnt/c/Users/maya/.codex/sessions/2026/08/20/rollout-session.jsonl",
+    ]);
+  });
+
+  function writeTranscript(lines: object[]): string {
+    const p = join(dir, "transcript.jsonl");
+    writeFileSync(p, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+    return p;
+  }
+
+  test("reads the latest Claude Code and Codex assistant text", () => {
+    const claude = writeTranscript([
+      { type: "assistant", message: { content: [{ type: "text", text: "earlier" }] } },
+      { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+    ]);
+    expect(scanLatestAssistantText(claude)).toBe(BLOCK);
+
+    const codex = writeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: BLOCK }],
+        },
+      },
+    ]);
+    expect(scanLatestAssistantText(codex)).toBe(BLOCK);
+  });
+
+  test("skips Claude Code's current tool-use-only row and finds the preceding block", () => {
+    const p = writeTranscript([
+      { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", input: { command: "harn agents status" } }] },
+      },
+    ]);
+    expect(scanLatestAssistantText(p)).toBe(BLOCK);
+  });
+
+  test("accepts the exact first assistant block after a Claude Code mint result", () => {
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ suggested_session_name: NAME }),
+            },
+          ],
+        },
+      },
+      { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+    ]);
+    expect(
+      scanSessionNameDisplayedImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toBe(true);
+  });
+
+  test("accepts the exact first assistant block after a Codex mint result", () => {
+    const p = writeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          output: [{ type: "input_text", text: JSON.stringify({ suggested_session_name: NAME }) }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: BLOCK }],
+        },
+      },
+    ]);
+    expect(
+      scanSessionNameDisplayedImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toBe(true);
+  });
+
+  test("keeps a recorded Codex display valid after later commentary and a new turn", () => {
+    const p = writeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          output: [{ type: "input_text", text: JSON.stringify({ suggested_session_name: NAME }) }],
+        },
+      },
+      { type: "event_msg", payload: { type: "agent_message", message: BLOCK } },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: BLOCK }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Continuing with the repository review." }],
+        },
+      },
+      { type: "event_msg", payload: { type: "user_message", message: "Continue." } },
+    ]);
+    expect(
+      inspectSessionNameDisplayImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toEqual({ state: "present" });
+  });
+
+  test("distinguishes malformed display evidence from an unavailable transcript", () => {
+    const malformed = writeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          output: [{ type: "input_text", text: JSON.stringify({ suggested_session_name: NAME }) }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: `Starting now.\n${BLOCK}` }],
+        },
+      },
+    ]);
+    expect(
+      inspectSessionNameDisplayImmediately(
+        malformed,
+        NAME,
+        assistantTextStartsWithSessionNameBlock,
+      ),
+    ).toEqual({ state: "absent" });
+    expect(
+      inspectSessionNameDisplayImmediately(
+        join(dir, "missing.jsonl"),
+        NAME,
+        assistantTextStartsWithSessionNameBlock,
+      ),
+    ).toEqual({ state: "unavailable", reason: "missing_transcript" });
+  });
+
+  test("rejects an end-of-task block when substantive assistant text came first", () => {
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: { content: [{ type: "tool_result", content: `suggested_session_name=${NAME}` }] },
+      },
+      { type: "assistant", message: { content: [{ type: "text", text: "Working on it." }] } },
+      { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+    ]);
+    expect(
+      scanSessionNameDisplayedImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toBe(false);
   });
 });
 

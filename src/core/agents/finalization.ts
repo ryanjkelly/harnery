@@ -10,9 +10,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { type AgentFinalizationDisposition, agentsFinalizationRoots } from "../config.ts";
-import { readStreamTailBounded } from "./events/consume.ts";
-
-const CLAIM_HISTORY_CAP_BYTES = 128 * 1024 * 1024;
+import { readFinalizationScopeV3 } from "../events/v3/finalization-view.ts";
+import { liveInstanceIdV3, resolveLiveEventLedgerRouteV3 } from "../events/v3/live-routing.ts";
 
 const GIT_DISCOVERY_VARS = [
   "GIT_DIR",
@@ -42,6 +41,9 @@ export interface GitFinalizationResult {
   claim_history_complete: boolean;
   dirty_paths: string[];
   unpushed_repos: string[];
+  behind_repos: string[];
+  stale_submodules: string[];
+  diverged_submodules: string[];
   host_output_paths: string[];
   unsupported_paths: UnsupportedFinalizationPath[];
   unverifiable_paths: string[];
@@ -94,38 +96,16 @@ export interface SessionWriteClaims {
 export function readSessionWriteClaims(
   coordRoot: string,
   instanceId: string,
-  sessionId: string,
+  _sessionId: string,
 ): SessionWriteClaims {
-  const streamPath = join(coordRoot, ".harnery", "events.ndjson");
-  const { text, truncated } = readStreamTailBounded(streamPath, CLAIM_HISTORY_CAP_BYTES);
-  const paths = new Set<string>();
-  let sawSessionStart = false;
-
-  for (const line of text.split("\n")) {
-    if (line.trim().length === 0) continue;
-    try {
-      const event = JSON.parse(line) as {
-        event_type?: string;
-        instance_id?: string;
-        session_id?: string;
-        data?: { path?: unknown; mode?: unknown };
-      };
-      if (event.instance_id !== instanceId || event.session_id !== sessionId) continue;
-      if (event.event_type === "session.start") sawSessionStart = true;
-      if (
-        event.event_type === "claim.acquire" &&
-        event.data?.mode === "write" &&
-        typeof event.data.path === "string"
-      ) {
-        paths.add(event.data.path);
-      }
-    } catch {
-      // Ignore malformed and crash-truncated event lines, matching the
-      // canonical stream consumer's recovery behavior.
-    }
+  const route = resolveLiveEventLedgerRouteV3(coordRoot);
+  if (route.state === "blocked") return { paths: [], complete: false };
+  try {
+    const scope = readFinalizationScopeV3(coordRoot, liveInstanceIdV3(instanceId));
+    return { paths: scope.files_touched, complete: true };
+  } catch {
+    return { paths: [], complete: false };
   }
-
-  return { paths: [...paths], complete: !truncated || sawSessionStart };
 }
 
 function git(args: string[], cwd: string): GitResult {
@@ -417,6 +397,64 @@ function repoSyncState(repoRoot: string): "synced" | "unpushed" | "unverifiable"
   return containing.stdout.trim().length > 0 ? "synced" : "unpushed";
 }
 
+function repoIsBehindUpstream(repoRoot: string): boolean {
+  if (!repoHasRemote(repoRoot)) return false;
+  const upstream = git(
+    ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+    repoRoot,
+  );
+  if (upstream.status !== 0) return false;
+  const behind = git(["rev-list", "--count", "HEAD..@{upstream}"], repoRoot);
+  return behind.status === 0 && Number.parseInt(behind.stdout.trim(), 10) > 0;
+}
+
+function rootSubmoduleFreshness(repoRoot: string): {
+  stale: string[];
+  diverged: string[];
+} {
+  const modules = git(
+    ["config", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+    repoRoot,
+  );
+  if (modules.status !== 0 || modules.stdout.trim().length === 0) {
+    return { stale: [], diverged: [] };
+  }
+
+  const stale: string[] = [];
+  const diverged: string[] = [];
+  for (const line of modules.stdout.trim().split("\n")) {
+    const path = line.trim().split(/\s+/).at(-1);
+    if (!path) continue;
+    const target = git(["rev-parse", `HEAD:${path}`], repoRoot);
+    const checkout = git(["rev-parse", "HEAD"], join(repoRoot, path));
+    if (target.status !== 0 || checkout.status !== 0) {
+      stale.push(path);
+      continue;
+    }
+    const targetSha = target.stdout.trim();
+    const checkoutSha = checkout.stdout.trim();
+    if (targetSha === checkoutSha) continue;
+
+    const checkoutBehind = git(
+      ["merge-base", "--is-ancestor", checkoutSha, targetSha],
+      join(repoRoot, path),
+    );
+    if (checkoutBehind.status === 0) {
+      stale.push(path);
+      continue;
+    }
+    const checkoutAhead = git(
+      ["merge-base", "--is-ancestor", targetSha, checkoutSha],
+      join(repoRoot, path),
+    );
+    // A checkout ahead of its gitlink is in-flight local work. Its owning
+    // session is responsible for the eventual pointer bump; unrelated turns
+    // must not be blocked globally while that work is active.
+    if (checkoutAhead.status !== 0) diverged.push(path);
+  }
+  return { stale: stale.sort(), diverged: diverged.sort() };
+}
+
 /** Compare gitlink commits without treating dirty contents inside the child as a pointer change. */
 function gitlinkIsDirty(parentRoot: string, gitlink: string): boolean {
   const head = git(["rev-parse", `HEAD:${gitlink}`], parentRoot);
@@ -435,6 +473,9 @@ export function checkGitFinalization(
   options: { claimHistoryComplete?: boolean } = {},
 ): GitFinalizationResult {
   const root = resolve(coordRoot);
+  // Repository discovery resolves symlinks. Use the same physical base for
+  // display labels so macOS /var -> /private/var aliases stay repo-relative.
+  const labelRoot = physicalPath(root) ?? root;
   const repos = new Map<string, RepoWork>();
   const hostOutputPaths = new Set<string>();
   const unsupportedPaths: UnsupportedFinalizationPath[] = [];
@@ -466,7 +507,7 @@ export function checkGitFinalization(
     for (const repoPath of work.paths) {
       if (work.gitlinks.has(repoPath)) {
         if (gitlinkIsDirty(work.root, repoPath)) {
-          const label = repoLabel(root, work.root);
+          const label = repoLabel(labelRoot, work.root);
           dirtyPaths.add(label === "." ? repoPath : `${label}/${repoPath}`);
         }
         continue;
@@ -476,36 +517,47 @@ export function checkGitFinalization(
         work.root,
       );
       if (status.status !== 0) {
-        unverifiablePaths.push(join(repoLabel(root, work.root), repoPath).replaceAll("\\", "/"));
+        unverifiablePaths.push(
+          join(repoLabel(labelRoot, work.root), repoPath).replaceAll("\\", "/"),
+        );
       } else if (status.stdout.length > 0) {
-        const label = repoLabel(root, work.root);
+        const label = repoLabel(labelRoot, work.root);
         dirtyPaths.add(label === "." ? repoPath : `${label}/${repoPath}`);
       }
     }
 
     const syncState = repoSyncState(work.root);
-    const label = repoLabel(root, work.root);
+    const label = repoLabel(labelRoot, work.root);
     if (syncState === "unpushed") unpushedRepos.push(label);
     if (syncState === "unverifiable") unverifiableRepos.push(label);
   }
+
+  const behindRepos = repoIsBehindUpstream(root) ? ["."] : [];
+  const submoduleFreshness = rootSubmoduleFreshness(root);
 
   const result: GitFinalizationResult = {
     ok: false,
     claim_history_complete: options.claimHistoryComplete ?? true,
     dirty_paths: [...dirtyPaths].sort(),
     unpushed_repos: [...new Set(unpushedRepos)].sort(),
+    behind_repos: behindRepos,
+    stale_submodules: submoduleFreshness.stale,
+    diverged_submodules: submoduleFreshness.diverged,
     host_output_paths: [...hostOutputPaths].sort(),
     unsupported_paths: unsupportedPaths.sort(
       (a, b) => a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason),
     ),
     unverifiable_paths: [...new Set(unverifiablePaths)].sort(),
     unverifiable_repos: [...new Set(unverifiableRepos)].sort(),
-    repos_checked: [...repos.keys()].map((repo) => repoLabel(root, repo)).sort(),
+    repos_checked: [...repos.keys()].map((repo) => repoLabel(labelRoot, repo)).sort(),
   };
   result.ok =
     result.claim_history_complete &&
     result.dirty_paths.length === 0 &&
     result.unpushed_repos.length === 0 &&
+    result.behind_repos.length === 0 &&
+    result.stale_submodules.length === 0 &&
+    result.diverged_submodules.length === 0 &&
     result.unsupported_paths.length === 0 &&
     result.unverifiable_paths.length === 0 &&
     result.unverifiable_repos.length === 0;
@@ -524,6 +576,24 @@ export function formatGitFinalizationFailure(result: GitFinalizationResult, bin:
     lines.push(
       "Repositories with commits not on their remote:",
       ...result.unpushed_repos.map((repo) => `  - ${repo}`),
+    );
+  }
+  if (result.behind_repos.length > 0) {
+    lines.push(
+      "Repositories behind their upstream:",
+      ...result.behind_repos.map((repo) => `  - ${repo}`),
+    );
+  }
+  if (result.stale_submodules.length > 0) {
+    lines.push(
+      "Submodule checkouts behind their parent gitlinks:",
+      ...result.stale_submodules.map((path) => `  - ${path}`),
+    );
+  }
+  if (result.diverged_submodules.length > 0) {
+    lines.push(
+      "Submodule checkouts diverged from their parent gitlinks:",
+      ...result.diverged_submodules.map((path) => `  - ${path}`),
     );
   }
   if (result.unsupported_paths.length > 0) {
@@ -549,11 +619,23 @@ export function formatGitFinalizationFailure(result: GitFinalizationResult, bin:
   if (
     result.dirty_paths.length > 0 ||
     result.unpushed_repos.length > 0 ||
+    result.behind_repos.length > 0 ||
+    result.stale_submodules.length > 0 ||
+    result.diverged_submodules.length > 0 ||
     result.unverifiable_paths.length > 0 ||
     result.unverifiable_repos.length > 0
   ) {
     lines.push(
       `Commit and push the owned Git work, then rerun \`${bin} agents status --end-turn\`.`,
+    );
+  }
+  if (
+    result.behind_repos.length > 0 ||
+    result.stale_submodules.length > 0 ||
+    result.diverged_submodules.length > 0
+  ) {
+    lines.push(
+      "Run the host repository's safe sync command, resolve any reported submodule state, then rerun the guarded status.",
     );
   }
   if (result.unsupported_paths.length > 0) {

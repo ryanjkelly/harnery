@@ -1,9 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
 import { lazyFetchWebRoot, webRunner } from "./web-fetch.ts";
 
 /**
@@ -88,11 +90,53 @@ function resolveWebRoot(emit: EmitContext, allowFetch: boolean): string | null {
 }
 
 interface UpOpts {
-  port: string;
+  port?: string;
   coordRoot?: string;
   prod?: boolean;
   fetch?: boolean;
   maxOldSpace?: string;
+}
+
+/**
+ * Probe the exact localhost socket Next will claim. This is deliberately a
+ * check-and-report step, not an alternate-port allocator: Harnery keeps one
+ * memorable URL and asks the caller to resolve a real conflict explicitly.
+ */
+export async function isWebPortAvailable(port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "EADDRINUSE" || error.code === "EACCES") {
+        resolve(false);
+        return;
+      }
+      reject(error);
+    });
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      server.close((error) => (error ? reject(error) : resolve(true)));
+    });
+  });
+}
+
+function reportInvalidPort(emit: EmitContext, error: unknown): void {
+  emit.error({
+    code: "invalid_web_port",
+    message: error instanceof Error ? error.message : "invalid web port",
+    hint: `Use an integer from 1024 through 65535; the default is ${DEFAULT_WEB_PORT}.`,
+  });
+  process.exitCode = 1;
+}
+
+async function requireAvailablePort(emit: EmitContext, port: number): Promise<boolean> {
+  if (await isWebPortAvailable(port)) return true;
+  emit.error({
+    code: "web_port_in_use",
+    message: `port ${port} is already in use`,
+    hint: `Stop the process using ${port}, or choose a deliberate override with \`harn web up --port <port>\`.`,
+  });
+  process.exitCode = 1;
+  return false;
 }
 
 export function registerWebCommand(program: Command, emit: EmitContext): void {
@@ -106,7 +150,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       "Start the dashboard. Default: dev mode (HMR, no build needed). With " +
         "--prod, runs next start (requires a prior `harn web build`).",
     )
-    .option("-p, --port <port>", "Listen port", "9000")
+    .option("-p, --port <port>", `Listen port (default ${DEFAULT_WEB_PORT})`)
     .option(
       "--coord-root <dir>",
       "Override the coord root (default: cwd; web walks up looking for .harnery/)",
@@ -125,7 +169,13 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       }
 
       const coordRoot = opts.coordRoot ?? process.cwd();
-      const port = String(opts.port);
+      let port: number;
+      try {
+        port = resolveWebPort(opts.port, opts.coordRoot);
+      } catch (error) {
+        reportInvalidPort(emit, error);
+        return;
+      }
       const mode = opts.prod ? "start" : "dev";
 
       if (opts.prod) {
@@ -141,6 +191,8 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         }
       }
 
+      if (!(await requireAvailablePort(emit, port))) return;
+
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       emit.log(`harn web · http://localhost:${port} (${mode})`, "info");
       emit.log(`files origin · http://harnery-files.localhost:${port}`, "info");
@@ -152,7 +204,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         env: {
           ...process.env,
           HARNERY_COORD_ROOT: coordRoot,
-          HARNERY_WEB_PORT: port,
+          HARNERY_WEB_PORT: String(port),
           ...(nodeOptionsWithHeapCap(heapMb)
             ? { NODE_OPTIONS: nodeOptionsWithHeapCap(heapMb) as string }
             : {}),
@@ -197,14 +249,14 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
   web
     .command("start")
     .description("Start the production server (next start). Requires prior `harn web build`.")
-    .option("-p, --port <port>", "Listen port", "9000")
+    .option("-p, --port <port>", `Listen port (default ${DEFAULT_WEB_PORT})`)
     .option("--coord-root <dir>", "Override the coord root")
     .option("--no-fetch", "Don't auto-fetch the dashboard if it's missing (npm installs)")
     .option(
       "--max-old-space <mb>",
       `V8 old-space ceiling in MB; 0 restores Next's own sizing (default ${DEFAULT_MAX_OLD_SPACE_MB}, env HARNERY_WEB_MAX_OLD_SPACE)`,
     )
-    .action((opts: { port: string; coordRoot?: string; fetch?: boolean; maxOldSpace?: string }) => {
+    .action(async (opts: UpOpts) => {
       const root = resolveWebRoot(emit, opts.fetch !== false);
       if (!root) {
         process.exitCode = 1;
@@ -221,7 +273,14 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         return;
       }
       const coordRoot = opts.coordRoot ?? process.cwd();
-      const port = String(opts.port);
+      let port: number;
+      try {
+        port = resolveWebPort(opts.port, opts.coordRoot);
+      } catch (error) {
+        reportInvalidPort(emit, error);
+        return;
+      }
+      if (!(await requireAvailablePort(emit, port))) return;
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       emit.log(`harn web · http://localhost:${port} (start)`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
@@ -232,7 +291,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         env: {
           ...process.env,
           HARNERY_COORD_ROOT: coordRoot,
-          HARNERY_WEB_PORT: port,
+          HARNERY_WEB_PORT: String(port),
           ...(nodeOptionsWithHeapCap(heapMb)
             ? { NODE_OPTIONS: nodeOptionsWithHeapCap(heapMb) as string }
             : {}),

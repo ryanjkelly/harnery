@@ -10,7 +10,7 @@
  * events without affecting behavior": fail-soft beats fail-hard.
  */
 
-import type { Adapter } from "../events/schema.ts";
+import type { Adapter } from "../../adapter.ts";
 
 export interface ParsedPayload {
   hook_event_name?: string;
@@ -27,6 +27,7 @@ export interface ParsedPayload {
   model?: string;
   source?: string; // SessionStart: "startup" | "resume" | …
   prompt?: string; // UserPromptSubmit / beforeSubmitPrompt
+  agent_message?: string; // Cursor PreToolUse: user-visible assistant text before the tool
   tool_name?: string; // Pre/PostToolUse
   tool_input?: unknown; // Pre/PostToolUse: the model's call arguments
   tool_response?: unknown; // PostToolUse: the tool's output (string or object)
@@ -35,6 +36,8 @@ export interface ParsedPayload {
   clean_exit?: boolean; // SessionEnd
   exit_status?: string; // SubagentStop
   reason?: string; // SubagentStop / StopFailure
+  /** Privacy-safe Cursor execution surface, derived from native lifecycle metadata. */
+  cursor_mode?: "local" | "cloud" | "unknown";
   /** original parsed object, preserved for callers that need a field we didn't pluck. */
   raw: Record<string, unknown>;
 }
@@ -52,9 +55,18 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     return null;
   }
 
-  const sessionId = normalizeSessionId(adapter, pickStr(json, "session_id"));
-  const conversationId = normalizeSessionId(adapter, pickStr(json, "conversation_id"));
+  const rawSessionId = pickStr(json, "session_id");
+  const rawConversationId = pickStr(json, "conversation_id");
+  const sessionId = normalizeSessionId(adapter, rawSessionId);
+  const conversationId = normalizeSessionId(adapter, rawConversationId);
   const parentSessionId = normalizeSessionId(adapter, pickStr(json, "parent_session_id"));
+  const hookEventName = pickStr(json, "hook_event_name");
+  const cursorGenerationId = adapter === "cursor" ? pickStr(json, "generation_id") : undefined;
+  const cursorShellHook =
+    adapter === "cursor" &&
+    (hookEventName === "beforeShellExecution" || hookEventName === "afterShellExecution");
+  const cursorCommand = cursorShellHook ? pickStr(json, "command") : undefined;
+  const normalizedToolInput = normalizeToolInput(json.tool_input, adapter);
   const normalizedRaw =
     adapter === "cursor"
       ? {
@@ -66,13 +78,15 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
       : json;
 
   return {
-    hook_event_name: pickStr(json, "hook_event_name"),
+    hook_event_name: hookEventName,
     session_id: sessionId,
     agent_id: pickStr(json, "agent_id"),
     subagent_id: pickStr(json, "subagent_id"),
     conversation_id: conversationId,
     parent_session_id: parentSessionId,
-    turn_id: pickStr(json, "turn_id"),
+    // Claude Code names its native turn identifier prompt_id; both are the
+    // adapter's turn-scoped id and feed native turn stamping (ADR 0078).
+    turn_id: pickStr(json, "turn_id") ?? pickStr(json, "prompt_id") ?? cursorGenerationId,
     parent_turn_id: pickStr(json, "parent_turn_id"),
     transcript_path: pickStr(json, "transcript_path"),
     cwd: pickStr(json, "cwd"),
@@ -80,16 +94,48 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     model: pickStr(json, "model"),
     source: pickStr(json, "source"),
     prompt: pickStr(json, "prompt"),
-    tool_name: pickStr(json, "tool_name"),
-    tool_input: json.tool_input,
-    tool_response: json.tool_response,
+    agent_message: pickStr(json, "agent_message"),
+    tool_name: cursorShellHook ? "Shell" : pickStr(json, "tool_name"),
+    tool_input: cursorCommand ? { command: cursorCommand } : normalizedToolInput,
+    tool_response: hookEventName === "afterShellExecution" ? json.output : json.tool_response,
     tool_use_id: pickStr(json, "tool_use_id"),
     stop_hook_active: pickBool(json, "stop_hook_active"),
     clean_exit: pickBool(json, "clean_exit"),
     exit_status: pickStr(json, "exit_status"),
     reason: pickStr(json, "reason"),
+    cursor_mode: cursorMode(json, adapter, rawSessionId, rawConversationId),
     raw: normalizedRaw,
   };
+}
+
+/**
+ * Cursor prefixes cloud/private-worker conversations with `bc-`. Current
+ * sessionStart payloads also expose `is_background_agent`; either native
+ * signal is enough to classify the execution surface without retaining text.
+ */
+function cursorMode(
+  json: Record<string, unknown>,
+  adapter: Adapter,
+  sessionId: string | undefined,
+  conversationId: string | undefined,
+): ParsedPayload["cursor_mode"] {
+  if (adapter !== "cursor") return undefined;
+  const background = pickBool(json, "is_background_agent");
+  if (background === true) return "cloud";
+  if (background === false) return "local";
+  const nativeId = conversationId ?? sessionId;
+  if (!nativeId) return "unknown";
+  return nativeId.startsWith("bc-") ? "cloud" : "local";
+}
+
+/** Cursor can serialize generic tool_input as a JSON string instead of an object. */
+function normalizeToolInput(value: unknown, adapter: Adapter): unknown {
+  if (adapter !== "cursor" || typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
 }
 
 /** Cursor Glass prefixes conversation ids with `bc-`; coordination uses the bare id everywhere. */
@@ -151,58 +197,54 @@ function pickBool(o: Record<string, unknown>, k: string): boolean | undefined {
  * Map the CLI-arg event-name (kebab-case, set by us in the wiring) to one of
  * the canonical event_types. Phase 2's CLI passes the kebab event
  * name; this returns the canonical event_type or null when the event has no
- * canonical equivalent (e.g. Cursor's before-shell-execution duplicates
- * pre-tool-use semantically, so we route both to `tool.pre_use`).
+ * canonical equivalent. Cursor's shell-specific hooks are retained as reliable
+ * remote/CLI fallbacks and normalized to the same tool events as generic hooks.
  */
 export function normalizeEventName(
   eventName: string,
 ): { event_type: NormalizedEventType; intra_turn: boolean } | null {
   switch (eventName) {
     case "session-start":
-      return { event_type: "session.start", intra_turn: false };
+      return { event_type: "session.started", intra_turn: false };
     case "session-end":
-      return { event_type: "session.end", intra_turn: false };
+      return { event_type: "session.ended", intra_turn: false };
     case "user-prompt-submit":
-      return { event_type: "user_prompt.submit", intra_turn: false };
+      return { event_type: "turn.started", intra_turn: false };
     case "stop":
-      return { event_type: "turn.stop", intra_turn: false };
+      return { event_type: "turn.completed", intra_turn: false };
     case "stop-failure":
-      // Phase 2: a failed stop is still a turn boundary; emit turn.stop and
-      // attach the failure signal in `data`. Phase 5 may introduce a
-      // dedicated `turn.stop_failure` event if the projector needs to branch.
-      return { event_type: "turn.stop", intra_turn: false };
+      return { event_type: "turn.completed", intra_turn: false };
     case "sub-agent-start":
-      return { event_type: "subagent.start", intra_turn: false };
+      return { event_type: "agent.started", intra_turn: false };
     case "sub-agent-stop":
-      return { event_type: "subagent.stop", intra_turn: false };
+      return { event_type: "agent.completed", intra_turn: false };
     case "pre-tool-use":
     case "before-shell-execution":
-      return { event_type: "tool.pre_use", intra_turn: true };
+      return { event_type: "tool.requested", intra_turn: true };
     case "permission-request":
-      return { event_type: "interaction.input_requested", intra_turn: true };
+      return { event_type: "wait.started", intra_turn: true };
     case "post-tool-use":
-      return { event_type: "tool.post_use", intra_turn: true };
+    case "after-shell-execution":
     case "post-tool-use-failure":
-      return { event_type: "tool.post_use_failure", intra_turn: true };
+      return { event_type: "tool.completed", intra_turn: true };
     case "pre-compact":
-      return { event_type: "context.compaction.started", intra_turn: false };
+      return { event_type: "context.compaction_started", intra_turn: false };
     case "post-compact":
-      return { event_type: "context.compaction.completed", intra_turn: false };
+      return { event_type: "context.compaction_completed", intra_turn: false };
     default:
       return null;
   }
 }
 
 export type NormalizedEventType =
-  | "session.start"
-  | "session.end"
-  | "user_prompt.submit"
-  | "turn.stop"
-  | "subagent.start"
-  | "subagent.stop"
-  | "tool.pre_use"
-  | "interaction.input_requested"
-  | "tool.post_use"
-  | "tool.post_use_failure"
-  | "context.compaction.started"
-  | "context.compaction.completed";
+  | "session.started"
+  | "session.ended"
+  | "turn.started"
+  | "turn.completed"
+  | "agent.started"
+  | "agent.completed"
+  | "tool.requested"
+  | "wait.started"
+  | "tool.completed"
+  | "context.compaction_started"
+  | "context.compaction_completed";

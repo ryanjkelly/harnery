@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useMemo, useState } from "react";
 
 import { AgentChip } from "@/components/AgentChip";
+import { SnapshotDiff } from "@/components/diff/SnapshotDiff";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { SnapshotDiff } from "@/components/diff/SnapshotDiff";
 import type { CouncilRoundView } from "@/lib/coord-reader";
 
 const SNAPSHOT_MIN_BYTES = 5_000;
@@ -52,8 +52,8 @@ export function RoundDiff({ rounds }: { rounds: CouncilRoundView[] }) {
   if (snapshots.length === 0) {
     return (
       <p className="text-sm text-muted-foreground italic">
-        No plan-doc snapshots in prior rounds yet. Each contribution must
-        upload a doc body (&gt;5 KB) to anchor a diff.
+        No plan-doc snapshots in prior rounds yet. Each contribution must upload a doc body (&gt;5
+        KB) to anchor a diff.
       </p>
     );
   }
@@ -63,8 +63,8 @@ export function RoundDiff({ rounds }: { rounds: CouncilRoundView[] }) {
     return (
       <p className="text-sm text-muted-foreground italic">
         Only one snapshotted contribution so far (round {only.round} ·{" "}
-        <AgentChip name={only.author} className="font-mono" />). A round-over-
-        round diff needs at least two.
+        <AgentChip name={only.author} className="font-mono" />
+        ). A round-over- round diff needs at least two.
       </p>
     );
   }
@@ -115,9 +115,7 @@ export function RoundDiff({ rounds }: { rounds: CouncilRoundView[] }) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() =>
-              setRightIdx((i) => Math.min(snapshots.length - 1, i + 1))
-            }
+            onClick={() => setRightIdx((i) => Math.min(snapshots.length - 1, i + 1))}
             disabled={!canGoNext}
             tooltip={
               canGoNext
@@ -136,9 +134,8 @@ export function RoundDiff({ rounds }: { rounds: CouncilRoundView[] }) {
         right={{ label: rightLabel, body: right.body, bytes: right.bytes }}
         emptyMessage={
           <>
-            No textual differences between these two snapshots. The
-            contributor who landed round {right.round} signed off with no
-            edits.
+            No textual differences between these two snapshots. The contributor who landed round{" "}
+            {right.round} signed off with no edits.
           </>
         }
       />

@@ -2,7 +2,8 @@ import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, watch } fr
 import { resolve as resolvePath } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { emitCanonical, normalizeAdapter, readHeartbeat } from "../core/agents/index.ts";
+import { monorepoRoot } from "../core/agents/index.ts";
+import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
   appendEntry,
@@ -53,17 +54,6 @@ export function registerJournalCommand(program: Command, emitParam: EmitContext)
       try {
         const owner = currentOwnerOrThrow();
         const doc = appendEntry(owner, cat, body);
-        const hb = readHeartbeat(owner);
-        emitCanonical({
-          type: "state.journal_append",
-          owner,
-          session: hb?.session_id ?? owner,
-          adapter: normalizeAdapter(hb?.platform),
-          data: {
-            category: cat,
-            body_summary: body.length > 1000 ? `${body.slice(0, 997)}...` : body,
-          },
-        });
         emit.data({
           instance_id: owner,
           name: doc.header.name,
@@ -341,7 +331,8 @@ function runRead(opts: { name?: string; owner?: string; archive?: string; limit:
     process.exit(1);
   }
 
-  const hb = readHeartbeat(owner);
+  const root = monorepoRoot();
+  const hb = root ? readLiveCoordinationRow(root, owner) : null;
   const staleBanner = renderStaleBannerIfNeeded(hb?.last_heartbeat);
   process.stdout.write(`${staleBanner + renderJournal(doc, limit)}\n`); // lint-ok-emission: pretty render, multi-line markdown for direct TTY/pipe consumption
 }

@@ -7,6 +7,10 @@ docs/dist/
 .DS_Store
 coverage/
 *.tsbuildinfo
+# Next regenerates web/next-env.d.ts on every run, and points it at a different
+# routes.d.ts under `next dev` than under `next build`. Tracking it means the
+# tree goes dirty based on whichever command ran last.
+web/next-env.d.ts
 .harnery/*
 !.harnery/config.jsonc
 # Runtime state + caches (harn tunnel writes .cache/tunnel/). Untracked but not

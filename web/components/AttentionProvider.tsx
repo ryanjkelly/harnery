@@ -1,21 +1,14 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 import { AttentionFlow } from "@/components/AttentionFlow";
 import {
   type AttentionRequest,
-  LAST_REQUEST_STORAGE_KEY,
   ensureAudioUnlocked,
   isAcked,
   isEngaged,
+  LAST_REQUEST_STORAGE_KEY,
   markAcked,
   parseStoredRequest,
   startChime,
@@ -88,11 +81,7 @@ export function useAttentionSlot(): (r: AttentionRequest | null) => void {
   return useContext(SlotCtx);
 }
 
-export function AttentionProvider({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export function AttentionProvider({ children }: { children: React.ReactNode }) {
   const [slot, setSlotState] = useState<AttentionRequest | null>(null);
   const slotRef = useRef<AttentionRequest | null>(null);
   const setSlot = useCallback((r: AttentionRequest | null) => {
@@ -111,9 +100,7 @@ export function AttentionProvider({
   // Seed the replay bell from sessionStorage so it survives a reload.
   useEffect(() => {
     try {
-      const stored = parseStoredRequest(
-        sessionStorage.getItem(LAST_REQUEST_STORAGE_KEY),
-      );
+      const stored = parseStoredRequest(sessionStorage.getItem(LAST_REQUEST_STORAGE_KEY));
       if (stored) {
         lastRequestRef.current = stored;
         setLastRequest(stored);
@@ -123,49 +110,46 @@ export function AttentionProvider({
     }
   }, []);
 
-  const startAlert = useCallback(
-    (request: AttentionRequest, opts: { force?: boolean } = {}) => {
-      stopRef.current(); // restore title/favicon from any prior alert first
+  const startAlert = useCallback((request: AttentionRequest, opts: { force?: boolean } = {}) => {
+    stopRef.current(); // restore title/favicon from any prior alert first
 
-      const channels = {
-        title: true,
-        favicon: true,
-        audio: true,
-        edge: true,
-        flow: true,
-        ...request.channels,
-      };
-      const stops: Array<() => void> = [];
-      if (opts.force || !isEngaged(lastInteraction.current)) {
-        if (channels.title) stops.push(startTitleFlash(request.label));
-        if (channels.favicon) stops.push(startFaviconDot());
-        if (channels.audio) stops.push(startChime(request.audioRepeat));
-      }
-      const stopAll = () => {
-        for (const stop of stops) stop();
-        stopRef.current = noop;
-      };
-      stopRef.current = stopAll;
-      ackRef.current = () => {
-        markAcked(request.key);
-        stopAll();
-        setAlert(null);
-        ackRef.current = noop;
-      };
-      setAlert(request);
-      lastRequestRef.current = request;
-      setLastRequest(request);
-      try {
-        sessionStorage.setItem(
-          LAST_REQUEST_STORAGE_KEY,
-          JSON.stringify({ key: request.key, label: request.label }),
-        );
-      } catch {
-        /* best-effort persistence */
-      }
-    },
-    [],
-  );
+    const channels = {
+      title: true,
+      favicon: true,
+      audio: true,
+      edge: true,
+      flow: true,
+      ...request.channels,
+    };
+    const stops: Array<() => void> = [];
+    if (opts.force || !isEngaged(lastInteraction.current)) {
+      if (channels.title) stops.push(startTitleFlash(request.label));
+      if (channels.favicon) stops.push(startFaviconDot());
+      if (channels.audio) stops.push(startChime(request.audioRepeat));
+    }
+    const stopAll = () => {
+      for (const stop of stops) stop();
+      stopRef.current = noop;
+    };
+    stopRef.current = stopAll;
+    ackRef.current = () => {
+      markAcked(request.key);
+      stopAll();
+      setAlert(null);
+      ackRef.current = noop;
+    };
+    setAlert(request);
+    lastRequestRef.current = request;
+    setLastRequest(request);
+    try {
+      sessionStorage.setItem(
+        LAST_REQUEST_STORAGE_KEY,
+        JSON.stringify({ key: request.key, label: request.label }),
+      );
+    } catch {
+      /* best-effort persistence */
+    }
+  }, []);
 
   const replay = useCallback(() => {
     const request = lastRequestRef.current ?? slotRef.current;

@@ -18,9 +18,13 @@ export function EndSessionButton({ instanceId, name }: { instanceId: string; nam
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ instance_id: instanceId }),
       });
-      const json = (await res.json()) as { ok: boolean; error?: string };
+      const json = (await res.json()) as {
+        ok: boolean;
+        terminal_event_queued?: boolean;
+        error?: string;
+      };
       if (json.ok) {
-        setFeedback({ ok: true, msg: "ended" });
+        setFeedback({ ok: true, msg: json.terminal_event_queued ? "end queued" : "ended" });
         setTimeout(() => router.push("/"), 600);
       } else {
         setFeedback({ ok: false, msg: json.error ?? "failed" });
@@ -36,7 +40,10 @@ export function EndSessionButton({ instanceId, name }: { instanceId: string; nam
   if (confirming) {
     return (
       <span className="inline-flex items-center gap-2 text-xs">
-        <span>End {name}'s session? (operator escape hatch, removes the heartbeat file)</span>
+        <span>
+          End {name}&apos;s session? (records now if idle, otherwise immediately after the current
+          turn closes)
+        </span>
         <button
           type="button"
           onClick={endIt}

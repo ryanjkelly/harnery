@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import { CheckCircle2, Copy, FileText, PartyPopper } from "lucide-react";
-
+import { useState } from "react";
 
 import { AgentChip } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
@@ -68,8 +67,7 @@ export function CouncilCompletionBanner({
                   </strong>
                 </>
               )}
-              . Closed <FormattedTs iso={closedAt} />, archived{" "}
-              <FormattedTs iso={archivedAt} />{" "}
+              . Closed <FormattedTs iso={closedAt} />, archived <FormattedTs iso={archivedAt} />{" "}
               {archivedAt && <span className="text-muted">({relativeAgo(archivedAt)})</span>}.
             </p>
           </div>
@@ -107,7 +105,7 @@ function ClosedHandoffState({
 }) {
   const handoffDone = closeHandoffPath !== null;
   const handoffBasename = closeHandoffPath
-    ? closeHandoffPath.split("/").pop() ?? closeHandoffPath
+    ? (closeHandoffPath.split("/").pop() ?? closeHandoffPath)
     : null;
   const attention = councilWrapupAttentionRequest({
     councilId,
@@ -121,9 +119,7 @@ function ClosedHandoffState({
       <div className="flex items-start gap-3">
         <CheckCircle2 className="size-5 shrink-0 text-emerald-300 mt-0.5" aria-hidden />
         <div className="space-y-1.5 flex-1">
-          <h3 className="text-base font-semibold text-emerald-300">
-            Council closed successfully
-          </h3>
+          <h3 className="text-base font-semibold text-emerald-300">Council closed successfully</h3>
           <p className="text-xs leading-relaxed text-foreground/80">
             Ran for{" "}
             <strong className="text-white">
@@ -170,10 +166,8 @@ function ClosedHandoffState({
               <span className="font-mono text-[11px] text-emerald-300 inline-flex items-center gap-1">
                 <FileText className="size-3 shrink-0" aria-hidden />
                 {handoffBasename}
-              </span>
-              {" "}
-              <span className="text-muted">({closeHandoffPath})</span>
-              .
+              </span>{" "}
+              <span className="text-muted">({closeHandoffPath})</span>.
             </p>
           ) : (
             <HandoffPendingSection councilId={councilId} steward={steward} />
@@ -193,15 +187,15 @@ function ClosedHandoffState({
           <p className="text-xs text-muted leading-relaxed">
             {handoffDone ? (
               <>
-                Click <strong className="text-white">Archive</strong> in the Actions card to
-                move the council to{" "}
-                <code className="font-mono text-[11px]">.harnery/councils/archive/</code>{" "}
-                and mark it 100% complete.
+                Click <strong className="text-white">Archive</strong> in the Actions card to move
+                the council to{" "}
+                <code className="font-mono text-[11px]">.harnery/councils/archive/</code> and mark
+                it 100% complete.
               </>
             ) : (
               <>
-                After step 1, click <strong className="text-white">Archive</strong> in the
-                Actions card.
+                After step 1, click <strong className="text-white">Archive</strong> in the Actions
+                card.
               </>
             )}
           </p>
@@ -211,13 +205,7 @@ function ClosedHandoffState({
   );
 }
 
-function HandoffPendingSection({
-  councilId,
-  steward,
-}: {
-  councilId: string;
-  steward: string;
-}) {
+function HandoffPendingSection({ councilId, steward }: { councilId: string; steward: string }) {
   const kickoff = `Write the close-out handoff for council \`${councilId}\`.`;
   const [copied, setCopied] = useState(false);
   const onCopy = async (): Promise<void> => {
@@ -239,9 +227,8 @@ function HandoffPendingSection({
           <span className="font-mono text-white">{NO_DATA}</span>
         )}
         ) writes the close-out handoff (a brief in{" "}
-        <code className="font-mono text-[11px]">docs/handoffs/YYYY-MM/</code>) summarizing
-        the final plan + any open loops. After it lands, archive the council to mark it
-        100% complete.
+        <code className="font-mono text-[11px]">docs/handoffs/YYYY-MM/</code>) summarizing the final
+        plan + any open loops. After it lands, archive the council to mark it 100% complete.
       </p>
       <div className="flex items-start gap-2">
         <code className="flex-1 font-mono text-[11px] leading-relaxed px-2 py-1.5 rounded bg-background border border-emerald-500/20 select-all wrap-break-word">
@@ -263,9 +250,7 @@ function HandoffPendingSection({
 
 function FormattedTs({ iso }: { iso?: string | null }) {
   if (!iso) return <span>{NO_DATA}</span>;
-  return (
-    <FormattedDateTime iso={iso} className="font-mono text-[11px]" />
-  );
+  return <FormattedDateTime iso={iso} className="font-mono text-[11px]" />;
 }
 
 function relativeAgo(iso: string): string {

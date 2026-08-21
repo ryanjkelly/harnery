@@ -18,6 +18,7 @@
 //      orchestration live here; the model call lives in the host.
 
 import { PNG } from "pngjs";
+import { bandOversizedRect, snappedBandRects, type VisualAtom } from "./tiling.js";
 
 export interface CritiqueTile {
   index: number;
@@ -25,6 +26,9 @@ export interface CritiqueTile {
   label: string;
   /** Document-space Y offset of the tile's top, so findings map to a place. */
   scrollY: number;
+  /** Document-space X offset (0 for full-width bands; element-relative for
+   * selector tiles). Optional for backward compatibility — treat absent as 0. */
+  x?: number;
   width: number;
   height: number;
   /** Base64 PNG of the tile (no data: prefix). */
@@ -48,18 +52,32 @@ export interface CritiqueResult {
   outcome: "pass" | "fail" | "skipped";
   /** Set when skipped or a provider call failed. */
   error?: string;
+  /** Host-reported provider provenance (route, attempts, fallbacks, usage). */
+  provider_meta?: Record<string, unknown>;
 }
 
 /**
  * The host-injected model call. Given one tile and the rubric, return the
  * findings for that tile. Throwing is caught and surfaced as an error finding
  * so one bad tile never sinks the run.
+ *
+ * Optional properties let the host shape execution without widening the call
+ * contract: `concurrency` caps how many tiles run at once (default 4 — tiles
+ * are independent, and the wall-clock win is roughly the cap factor), and
+ * `meta()` is read once after the run so route/usage provenance lands on the
+ * result envelope.
  */
-export type CritiqueProvider = (input: {
+export type CritiqueProvider = ((input: {
   url: string;
   rubric: string;
   tile: CritiqueTile;
-}) => Promise<CritiqueFinding[]>;
+}) => Promise<CritiqueFinding[]>) & {
+  concurrency?: number;
+  meta?: () => Record<string, unknown> | undefined;
+  /** Long-edge pixel budget of the routed model's vision input. The tiler
+   * clamps band height to it so tiles are never downscaled by the provider. */
+  tileBudgetPx?: number;
+};
 
 export const DEFAULT_CRITIQUE_RUBRIC = [
   "You are reviewing one vertical slice of a rendered web page for visual defects.",
@@ -70,6 +88,10 @@ export const DEFAULT_CRITIQUE_RUBRIC = [
   "- broken, distorted, or missing images",
   "- leaked template tokens, placeholder text, or obviously wrong values",
   "- anything that looks broken, unfinished, or accidental",
+  "The slice's own top and bottom edges cut through the page at arbitrary points:",
+  "content cropped by the slice boundary itself (a heading, row, or paragraph",
+  "entering or leaving the frame) is a tiling artifact, NOT a defect - never report it.",
+  "Only report clipping that happens at an element's own container edge inside the slice.",
   "Do NOT comment on content quality, wording, tone, or subjective taste.",
   "If the slice looks fine, return an empty list. Be precise and terse.",
   "Return JSON only: an array of objects",
@@ -108,6 +130,13 @@ export function bandRects(
  * resolution. Pass `elementRects` for semantic (per-element) tiling; otherwise
  * the page is banded from the actual image height. Rects are clamped to the
  * image so an off-by-one never throws.
+ *
+ * When `atoms` are supplied (see tiling.ts), band seams snap into content
+ * gaps instead of cutting at fixed offsets, and element rects taller than the
+ * band budget are banded internally rather than shipped as one over-tall tile
+ * the provider would downscale. Atom coordinates must be in the same pixel
+ * space as the screenshot (identical at deviceScaleFactor 1; scale them if
+ * the capture DPR differs).
  */
 export function tilesFromFullPage(
   fullPageBuffer: Buffer,
@@ -116,20 +145,46 @@ export function tilesFromFullPage(
     bandHeight?: number;
     overlap?: number;
     maxTiles: number;
+    atoms?: VisualAtom[];
   },
 ): CritiqueTile[] {
   const png = PNG.sync.read(fullPageBuffer);
-  const rects =
-    opts.elementRects && opts.elementRects.length > 0
-      ? opts.elementRects.map((r, index) => ({ index, ...r }))
-      : bandRects(png.height, png.width, opts.bandHeight ?? 1400, opts.overlap ?? 120).map((b) => ({
-          index: b.index,
-          label: `band ${b.index + 1}`,
-          x: b.x,
-          y: b.y,
-          width: b.width,
-          height: b.height,
-        }));
+  const snapOpts = {
+    bandHeight: opts.bandHeight ?? 1400,
+    overlap: opts.overlap ?? 120,
+  };
+  let rects: Array<{
+    index: number;
+    label: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
+  if (opts.elementRects && opts.elementRects.length > 0) {
+    const expanded = opts.atoms
+      ? opts.elementRects.flatMap((r) => bandOversizedRect(r, opts.atoms ?? [], snapOpts))
+      : opts.elementRects;
+    rects = expanded.map((r, index) => ({ index, ...r }));
+  } else if (opts.atoms && opts.atoms.length > 0) {
+    rects = snappedBandRects(0, png.height, 0, png.width, opts.atoms, snapOpts).rects.map((b) => ({
+      index: b.index,
+      label: `band ${b.index + 1}`,
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+    }));
+  } else {
+    rects = bandRects(png.height, png.width, snapOpts.bandHeight, snapOpts.overlap).map((b) => ({
+      index: b.index,
+      label: `band ${b.index + 1}`,
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+    }));
+  }
   const tiles: CritiqueTile[] = [];
   for (const rect of rects.slice(0, opts.maxTiles)) {
     const sx = Math.max(0, Math.min(Math.round(rect.x), png.width - 1));
@@ -148,6 +203,7 @@ export function tilesFromFullPage(
       index: rect.index,
       label: rect.label,
       scrollY: sy,
+      x: sx,
       width: w,
       height: h,
       pngBase64: PNG.sync.write(dst).toString("base64"),
@@ -212,20 +268,41 @@ export async function runCritique(args: {
         "no critiqueProvider injected by the host (see HarneryProgramContext.critiqueProvider)",
     };
   }
-  const findings: CritiqueFinding[] = [];
-  for (const tile of tiles) {
-    try {
-      const tileFindings = await provider({ url, rubric, tile });
-      findings.push(...tileFindings.map((f) => ({ ...f, tile: tile.index })));
-    } catch (err: unknown) {
-      findings.push({
-        tile: tile.index,
-        severity: "high",
-        category: "provider-error",
-        description: `critique provider failed on ${tile.label}: ${err instanceof Error ? err.message : String(err)}`,
-      });
+  // Tiles are judged independently, so run them concurrently (bounded) and
+  // reassemble findings in tile order so artifacts stay deterministic.
+  const concurrency = Math.max(1, Math.min(provider.concurrency ?? 4, tiles.length || 1));
+  const perTile: CritiqueFinding[][] = tiles.map(() => []);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const i = cursor++;
+      if (i >= tiles.length) return;
+      const tile = tiles[i];
+      try {
+        const tileFindings = await provider({ url, rubric, tile });
+        perTile[i] = tileFindings.map((f) => ({ ...f, tile: tile.index }));
+      } catch (err: unknown) {
+        perTile[i] = [
+          {
+            tile: tile.index,
+            severity: "high",
+            category: "provider-error",
+            description: `critique provider failed on ${tile.label}: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ];
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  const findings = perTile.flat();
   const outcome = findings.some((f) => f.severity === "high") ? "fail" : "pass";
-  return { rule: "critique", tiles: tiles.length, provider: true, findings, outcome };
+  const meta = provider.meta?.();
+  return {
+    rule: "critique",
+    tiles: tiles.length,
+    provider: true,
+    findings,
+    outcome,
+    ...(meta ? { provider_meta: meta } : {}),
+  };
 }

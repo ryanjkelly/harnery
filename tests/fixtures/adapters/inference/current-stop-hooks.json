@@ -1,0 +1,52 @@
+{
+  "cases": [
+    {
+      "adapter": "claude-code",
+      "version": "2.1.233 (Claude Code)",
+      "terminal_keys": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "permission_mode",
+        "hook_event_name",
+        "stop_hook_active",
+        "last_assistant_message"
+      ],
+      "payload": {
+        "session_id": "claude-current-fixture",
+        "transcript_path": "/private/claude-transcript.jsonl",
+        "cwd": "/private/workspace",
+        "permission_mode": "default",
+        "hook_event_name": "Stop",
+        "stop_hook_active": false,
+        "last_assistant_message": "PRIVATE_ASSISTANT_BODY"
+      }
+    },
+    {
+      "adapter": "codex",
+      "version": "codex-cli 0.144.5",
+      "terminal_keys": [
+        "session_id",
+        "turn_id",
+        "transcript_path",
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "stop_hook_active",
+        "last_assistant_message"
+      ],
+      "payload": {
+        "session_id": "codex-current-fixture",
+        "turn_id": "codex-current-turn",
+        "transcript_path": "/private/codex-transcript.jsonl",
+        "cwd": "/private/workspace",
+        "hook_event_name": "Stop",
+        "model": "fixture-model",
+        "permission_mode": "default",
+        "stop_hook_active": false,
+        "last_assistant_message": "PRIVATE_ASSISTANT_BODY"
+      }
+    }
+  ]
+}

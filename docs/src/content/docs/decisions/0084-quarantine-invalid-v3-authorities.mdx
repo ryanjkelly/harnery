@@ -1,0 +1,80 @@
+---
+title: "0084: Quarantine invalid V3 authorities"
+description: "ADR: preserve a failed event-ledger epoch intact, then link it to a clean active authority with a hash-only recovery receipt."
+---
+
+**Status:** accepted (2026-08-19) · **Scope:** product tier (`core/events/v3`, `ledger-v3`)
+
+## Context
+
+The canonical V3 reader must reject a durable invalid frame. A timestamp
+regression, noncanonical row, broken causal link, or sequence gap cannot be
+silently skipped after later events have already been appended. Failing closed
+protects authority, but it also leaves every future producer and projection
+behind the same unreadable frame.
+
+The existing forced epoch initializer archives a directory intact, but it does
+not explain why the epoch failed, bind the archive to its validated prefix, or
+make repeated recovery idempotent. It is intended for approved contract and
+build changes, not forensic recovery.
+
+## Alternatives
+
+**Skip the rejected row and continue reading.** Rejected because later events
+may depend on state that the rejected row changed. The result would look
+complete while omitting an unknown authority transition.
+
+**Rewrite the row or repair its timestamp.** Rejected because a recovery tool
+must not manufacture history. Even an apparently obvious one-millisecond fix
+would replace durable producer evidence with operator inference.
+
+**Promote the validated prefix and copy later rows into a new file.** Rejected
+because rows after the first diagnostic have not passed through a complete
+authority chain. Copying them would imply validation that never happened.
+
+**Require backup restoration for every invalid frame.** Rejected because a
+verified backup may not exist and because future events still need a safe place
+to land. Backup restoration remains the response for control damage that is not
+a ledger-integrity failure.
+
+## Decision
+
+Add `recoverInvalidEventLedgerV3` and expose it as `harn ledger-v3 recover`.
+The operation accepts only a control state whose reason is
+`ledger_integrity_failure`.
+
+Before replacement, it writes a canonical recovery intent outside the active
+V3 directory. The intent contains no event rows. It binds:
+
+- a digest over every regular file in the failed authority;
+- the active-file digest and byte count;
+- the digest and byte count of the active prefix before the first diagnostic;
+- the diagnostic code, physical position, and event ID witness; and
+- the approved builds, configuration digest, approval record, and recovery ID.
+
+The existing initializer then moves the whole V3 directory into
+`v3-archives/` and creates a fresh genesis and activation. Candidate
+initialization can resume after a crash between genesis and activation
+publication. Once the new authority validates, a committed receipt links the
+intent, archive directory, new genesis, and new activation. The ready intent is
+removed only after that receipt is durable.
+
+Canonical filesystem reads list committed recovery receipts as
+`failed_epochs`. They continue to validate only the current authority. Archived
+events, including rows after the defect, are never replayed into current state.
+
+The recovery ID is derived from the hash-only failure witness. A retry resumes
+the pending intent or returns the receipt already linked to the current
+genesis. It cannot replace an archive or create a second epoch for the same
+completed recovery.
+
+## Result
+
+One durable invalid frame no longer blocks all later generations. Operators can
+start a clean authority while retaining the complete failed epoch for forensic
+inspection. Current coordination and projections can proceed, and every read
+still exposes that an earlier epoch ended incomplete.
+
+The operation remains deliberately narrow. It refuses non-ledger control
+damage, a failure in a sealed segment, conflicting pending intents, ambiguous
+archive digests, and a new authority that does not validate completely.

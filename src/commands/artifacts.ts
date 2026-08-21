@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
-import { monorepoRoot, readHeartbeat, resolveOwner } from "../core/agents/index.ts";
+import { monorepoRoot, resolveOwner } from "../core/agents/index.ts";
+import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import {
   type ArtifactActor,
   cleanArtifacts,
@@ -30,7 +31,7 @@ export function registerArtifactsCommand(
     .action((slug: string, opts: { purpose: string; days?: string }) => {
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
-        const actor = currentActor();
+        const actor = currentActor(repoRoot);
         const retentionDays = opts.days
           ? parseDays(opts.days)
           : artifactDefaultRetentionDays(repoRoot);
@@ -85,7 +86,7 @@ export function registerArtifactsCommand(
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
         const manifest = renewArtifact(repoRoot, ref, parseDays(opts.days), opts.reason, {
-          actor: currentActor(),
+          actor: currentActor(repoRoot),
         });
         emit.data(manifest);
       });
@@ -97,7 +98,7 @@ export function registerArtifactsCommand(
     .action((ref: string) => {
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
-        emit.data(releaseArtifact(repoRoot, ref, { actor: currentActor() }));
+        emit.data(releaseArtifact(repoRoot, ref, { actor: currentActor(repoRoot) }));
       });
     });
 
@@ -117,10 +118,10 @@ export function registerArtifactsCommand(
     });
 }
 
-function currentActor(): ArtifactActor | undefined {
+function currentActor(repoRoot: string): ArtifactActor | undefined {
   const instanceId = resolveOwner();
   if (!instanceId) return undefined;
-  const hb = readHeartbeat(instanceId);
+  const hb = readLiveCoordinationRow(repoRoot, instanceId);
   return {
     instance_id: instanceId,
     session_id: hb?.session_id,

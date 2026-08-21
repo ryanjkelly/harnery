@@ -11,7 +11,7 @@
 
 import { existsSync, type FSWatcher, statSync, watch } from "node:fs";
 import path from "node:path";
-import { activeDir, councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
+import { councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -25,9 +25,7 @@ export function GET(): Response {
       const enc = new TextEncoder();
       const send = (eventName: string, data: unknown): void => {
         try {
-          controller.enqueue(
-            enc.encode(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`),
-          );
+          controller.enqueue(enc.encode(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`));
         } catch {
           // controller closed
         }
@@ -48,7 +46,6 @@ export function GET(): Response {
       };
 
       for (const [label, dir] of [
-        ["active", activeDir()],
         ["councils", councilsDir()],
         ["journal", journalDir()],
       ] as const) {
@@ -74,7 +71,7 @@ export function GET(): Response {
         }
       }
 
-      // events.ndjson is a single file; watch its parent dir.
+      // The active V3 segment is a single file; watch its parent directory.
       const eventsP = eventsPath();
       if (existsSync(path.dirname(eventsP))) {
         try {
@@ -90,14 +87,13 @@ export function GET(): Response {
         }
       }
 
-      // Safety-net filesize poll for events.ndjson. A directory `fs.watch` does
+      // Safety-net filesize poll for the active V3 segment. A directory `fs.watch` does
       // NOT fire on a plain append to an existing file on Linux/WSL (inotify
       // reports create/rename/delete for a dir watch, not the IN_MODIFY of a
-      // child append), so the watch above on `dirname(events.ndjson)` catches
-      // rotation but misses every append. That means a `subagent.start` (or any
-      // event) append goes unnoticed here until the next `.harnery/active/`
-      // heartbeat write happens to churn that watched dir, minutes away when
-      // agents are idle. Concretely: a freshly-spawned subagent's parent linkage
+      // child append), so the directory watch catches
+      // rotation but misses every append. That means an `agent.started` (or any
+      // event) append otherwise goes unnoticed here until another watched
+      // coordination document changes. Concretely: a freshly-spawned subagent's parent linkage
       // ("of agent-X") is computed in the page render from `readInstanceIdentities`
       // (the event log), so it only resolves on a refresh, and the refresh was
       // never firing on the append. Poll the size and fire a refresh when it

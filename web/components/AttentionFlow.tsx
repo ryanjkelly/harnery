@@ -80,17 +80,13 @@ export function AttentionFlow() {
     const collectTargets = (): DOMRect[] => {
       const els: Element[] = [];
       const seen = new Set<Element>();
-      for (const el of document.querySelectorAll(
-        "[data-attention-target], .attention-ring",
-      )) {
+      for (const el of document.querySelectorAll("[data-attention-target], .attention-ring")) {
         if (seen.has(el)) continue;
         seen.add(el);
         els.push(el);
         if (els.length >= MAX_TARGETS) break;
       }
-      return els
-        .map((el) => el.getBoundingClientRect())
-        .filter((r) => r.width > 0 && r.height > 0);
+      return els.map((el) => el.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
     };
 
     const frame = (now: number) => {
@@ -114,8 +110,7 @@ export function AttentionFlow() {
         // straight line; the bow sways slowly so the path feels alive.
         const px = -dy / dist;
         const py = dx / dist;
-        const bow =
-          Math.min(dist * 0.22, 120) * Math.sin(now / 1700 + i * 1.9);
+        const bow = Math.min(dist * 0.22, 120) * Math.sin(now / 1700 + i * 1.9);
         const cx = (mouse.x + ax) / 2 + px * bow;
         const cy = (mouse.y + ay) / 2 + py * bow;
         const q = (t: number) => {
@@ -158,10 +153,7 @@ export function AttentionFlow() {
           if (p.t >= 1) Object.assign(p, spawn(), { t: 0 });
           const pos = q(p.t);
           const taper = Math.sin(Math.PI * p.t);
-          const wobble =
-            Math.sin(p.t * p.wobbleFreq + p.phase + now / 900) *
-            p.wobbleAmp *
-            taper;
+          const wobble = Math.sin(p.t * p.wobbleFreq + p.phase + now / 900) * p.wobbleAmp * taper;
           const alpha = 0.12 + 0.55 * taper;
           ctx.beginPath();
           ctx.arc(

@@ -7,12 +7,11 @@ import { buildInstructionBundle } from "./bundle.ts";
 function fixture(): string {
   const root = mkdtempSync(join(tmpdir(), "harnery-bundle-"));
   mkdirSync(join(root, ".agents", "skills", "review"), { recursive: true });
-  mkdirSync(join(root, ".harnery", "skills", "review"), { recursive: true });
+  mkdirSync(join(root, ".harnery"), { recursive: true });
   mkdirSync(join(root, ".codex"), { recursive: true });
   mkdirSync(join(root, "app"), { recursive: true });
   writeFileSync(join(root, "AGENTS.md"), "root instructions\n");
   writeFileSync(join(root, ".agents", "skills", "review", "SKILL.md"), "canonical skill\n");
-  writeFileSync(join(root, ".harnery", "skills", "review", "SKILL.md"), "rendered skill\n");
   writeFileSync(join(root, ".codex", "hooks.json"), "{}\n");
   writeFileSync(join(root, ".harnery", "config.jsonc"), "{}\n");
   return root;
@@ -25,28 +24,29 @@ describe("instruction bundle identity", () => {
     const second = buildInstructionBundle({ coordRoot: root, cwd: root, adapter: "codex" });
     expect(second.instruction_bundle_id).toBe(first.instruction_bundle_id);
     expect(second.components.map((component) => component.path)).toEqual([
+      ".agents/skills/review/SKILL.md",
       ".codex/hooks.json",
       ".harnery/config.jsonc",
-      ".harnery/skills/review/SKILL.md",
       "AGENTS.md",
     ]);
   });
 
-  test("changes effective and canonical identities independently", () => {
+  test("tracks installed skills as effective and canonical content", () => {
     const root = fixture();
     const before = buildInstructionBundle({ coordRoot: root, cwd: root, adapter: "codex" });
     writeFileSync(join(root, ".agents", "skills", "review", "SKILL.md"), "canonical changed\n");
     const sourceChanged = buildInstructionBundle({ coordRoot: root, cwd: root, adapter: "codex" });
-    expect(sourceChanged.instruction_bundle_id).toBe(before.instruction_bundle_id);
+    expect(sourceChanged.instruction_bundle_id).not.toBe(before.instruction_bundle_id);
     expect(sourceChanged.canonical_source_id).not.toBe(before.canonical_source_id);
 
-    writeFileSync(join(root, ".harnery", "skills", "review", "SKILL.md"), "rendered changed\n");
-    const renderedChanged = buildInstructionBundle({
+    writeFileSync(join(root, ".harnery", "config.jsonc"), '{ "binName": "acme" }\n');
+    const runtimeChanged = buildInstructionBundle({
       coordRoot: root,
       cwd: root,
       adapter: "codex",
     });
-    expect(renderedChanged.instruction_bundle_id).not.toBe(before.instruction_bundle_id);
+    expect(runtimeChanged.instruction_bundle_id).not.toBe(sourceChanged.instruction_bundle_id);
+    expect(runtimeChanged.canonical_source_id).toBe(sourceChanged.canonical_source_id);
   });
 
   test("adds directory-scoped instructions for a nested profile", () => {

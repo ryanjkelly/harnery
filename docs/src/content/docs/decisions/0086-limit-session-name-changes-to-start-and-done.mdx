@@ -1,0 +1,57 @@
+---
+title: "0086: Limit session-name changes to start and done"
+description: "ADR: keep active and blocked lifecycle transitions title-silent, and prepend [DONE] to the original session name only when lifecycle becomes done."
+---
+
+**Status:** accepted (2026-08-20) · **Scope:** product tier (`core/agents`, `commands/agents`)
+
+## Context
+
+Harnery originally projected every explicit lifecycle state into the session
+title. Entering `blocked` produced a `[BLOCKED] - ` title, reopening produced
+the unprefixed title again, and entering `done` produced `[DONE] - `. Each
+change also activated the display latch, so agents printed several copyable
+name blocks during one session.
+
+The session title is an operator handle, not a live lifecycle dashboard.
+Activity and lifecycle already have canonical fields and event-backed UI
+projections. Repeated title output adds noise and makes a mid-session state
+change look like a new naming ritual.
+
+## Alternatives
+
+**Project all lifecycle states into the title.** Rejected because it creates
+extra name blocks and duplicates canonical lifecycle state in an editable
+human label.
+
+**Never change the initial title.** Rejected because a terminal marker remains
+useful in client sidebars and preserves the established Claude Desktop cleanup
+convention for older sessions.
+
+**Remove the done marker when a session is reopened.** Rejected because that
+would require another title mutation and display block, violating the
+start-and-done-only rule. Canonical lifecycle state, not the title, determines
+whether a reopened session is active.
+
+## Decision
+
+`buildLifecycleSuggestedName()` receives the stored session name and returns
+`null` for `active` and `blocked`. For `done`, it returns that name with exactly
+`[DONE] ` prepended. It also normalizes the old `[BLOCKED] - ` form so sessions
+started before this decision finish with one clean terminal prefix.
+
+The existing command path already emits `suggested_session_name`, sets
+`name_reminted: true`, and activates the display latch only when the helper
+returns a value different from the stored name. No adapter-specific branch is
+needed. Initial `set-task` naming and terminal `done` naming therefore use the
+same cross-adapter display protocol from ADR 0085.
+
+Repeating `done` is a no-op. Reopening to `active` or moving to `blocked`
+changes lifecycle state without changing or displaying the title.
+
+## Result
+
+An agent displays a session name at most twice: once after the initial task
+declaration and once after the first successful transition to `done`. Ordinary
+lifecycle changes stay visible through lifecycle fields and events without
+creating extra copyable blocks.

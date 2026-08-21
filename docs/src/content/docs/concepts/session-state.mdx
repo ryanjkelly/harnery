@@ -27,24 +27,25 @@ Harnery changes activity only when a canonical event supplies evidence.
 
 | Canonical event | Activity | Notes |
 | --- | --- | --- |
-| `session.start`, `subagent.start` | `idle` | The session exists, but no open turn is implied. |
-| `user_prompt.submit`, `tool.pre_use` | `working` | A turn or tool action is in progress. |
-| `command.start` | `working` | Applied only during an already evidenced open turn. |
-| `interaction.input_requested` | `needs_input` | The adapter directly reported an operator prompt. |
-| `turn.stop`, `session.end`, `subagent.stop` | `idle` | The current execution window ended. |
+| `session.started`, `session.resumed`, `agent.started` | `idle` | The session exists, but no open turn is implied. |
+| `turn.started`, `tool.requested` | `working` | A turn or tool action is in progress. |
+| `command.started` | `working` | Applied only during an already evidenced open turn. |
+| `wait.started` | `needs_input` | The adapter directly reported an operator prompt. |
+| `wait.ended` | `working` | The reported wait ended and execution resumed. |
+| `turn.completed`, `session.ended`, `agent.completed` | `idle` | The current execution window ended. |
 
 Output chunks, post-tool events, narration, unrelated coordination commands,
 and elapsed time do not clear `needs_input`. New progress evidence or a stop
 event does.
 
 Codex provides a `PermissionRequest` hook, which Harnery records as
-`interaction.input_requested`. Claude Code and Cursor sessions still use
+`wait.started`. Claude Code and Cursor sessions still use
 `unknown` when their available events cannot prove an input wait. Harnery does
 not turn a nearby pre-execution event into approval evidence.
 
 ## Lifecycle evidence
 
-Only `state.task_state` changes task lifecycle. Stopping a process or reaching
+Only `coord.lifecycle_changed` changes task lifecycle. Stopping a process or reaching
 the end of a turn does not mark the task `done`.
 
 Human-facing sessions declare lifecycle explicitly:
@@ -74,21 +75,44 @@ The compatibility default is `active` when an older heartbeat or event stream
 has no lifecycle event. A blocked state may carry a reason. Reopening the task
 clears an obsolete blocker reason.
 
+## Session finalization
+
+Task lifecycle and session lifecycle are separate. `lifecycle done` says the
+declared task is complete; `agents end` records terminal authority for the V3
+session. A completed response (`turn.completed`) ends only one response.
+
+Native harness callbacks remain the strongest end signal. When a harness lacks
+one, Harnery can approve an explicit end, wait through a reversible archive
+grace period, or reconcile idle, parent/run completion, stale, superseded, and
+host-loss observations. Every path converges on one leased finalizer, so a
+generation receives at most one terminal event and cannot be resurrected.
+
+An agent can request its own end from the closing status command even though
+that command still belongs to an open tool span and turn. Harnery persists the
+intent, waits for the matching `tool.completed` and `turn.completed`, then lets
+the stop hook record `session.ended`. Starting new work cancels the request.
+The terminal row therefore never appears before the work that proves the turn
+closed.
+
+Automatic policy ends clean coordination state but do not qualify as
+run-quality evidence. Verified archive ends require an independent ambiguity
+review before corpus admission.
+
 ## Session-name projection
 
-A lifecycle change can re-mint the human-facing session name:
+A lifecycle change is title-silent unless it marks the session done:
 
 | Lifecycle | Suggested name |
 | --- | --- |
-| `active` | `Agent <name> - <task>` |
-| `blocked` | `[BLOCKED] - Agent <name> - <task>` |
-| `done` | `[DONE] - Agent <name> - <task>` |
+| `active` | No title change |
+| `blocked` | No title change |
+| `done` | `[DONE] Agent <name> - <task>` |
 
-The `state.task_state` event carries `suggested_session_name` and
-`name_reminted: true` when the name changes. Prompt context keeps reminding the
-agent until the new name is observed, and the Claude Code Stop rule treats the
-re-mint like the first session name. The title is still a projection. Editing
-it does not mutate lifecycle.
+The `coord.lifecycle_changed` event carries `suggested_session_name` only for
+the `done` projection. Prompt context keeps reminding the agent until that name
+is observed, and the display latch treats it like the first session name.
+Reopening does not print another title. The title is still a projection;
+editing it does not mutate lifecycle.
 
 Claude Desktop cleanup uses the same one-way projection. `harn claude-desktop
 tidy` maps a sidebar entry to its Harnery session and checks the latest durable
@@ -105,7 +129,7 @@ The heartbeat projector writes these fields to `.harnery/active/<id>.json`:
 {
   "activity": "needs_input",
   "activity_updated_at": "2026-08-12T10:02:00.000Z",
-  "activity_source": "interaction.input_requested",
+  "activity_source": "wait.started",
   "task_state": "active",
   "task_state_updated_at": "2026-08-12T09:30:00.000Z"
 }

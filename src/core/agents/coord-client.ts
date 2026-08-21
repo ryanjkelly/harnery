@@ -10,6 +10,10 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
+import {
+  listHookProducerStateRecordsV3,
+  readHookProducerStateV3,
+} from "../events/v3/producers/recorder.ts";
 
 // NOTE: kept dependency-free (node builtins only); this file is vendored verbatim into
 // a downstream consumer, so it cannot import the coordEnv helper.
@@ -56,48 +60,6 @@ export function resolveContainedFile(directory: string, fileName: string): strin
   return candidate;
 }
 
-export interface Heartbeat {
-  instance_id: string;
-  name?: string;
-  kind?: string;
-  session_id: string;
-  agent_id: string;
-  model: string;
-  started_at: string;
-  last_heartbeat: string;
-  files_touched: string[];
-  agent_type?: string;
-  /** Most recent tool name stamped by the PostToolUse hook. Phase 1. */
-  last_tool?: string;
-  /** Short string identifying what the last tool acted on (file path, command head, URL). Phase 1. */
-  last_tool_target?: string;
-  /** Free-form task/intent string set via `harn agents set-task`. Phase 2. */
-  task?: string;
-  /** UTC ISO-8601 timestamp when task was last set/cleared. Used by adapters without Stop enforcement to compute staleness. 2026-05-24. */
-  task_updated_at?: string | null;
-  /** Current evidence-derived activity axis. */
-  activity?: "unknown" | "working" | "needs_input" | "idle";
-  activity_updated_at?: string;
-  activity_source?: string;
-  /** Explicit task lifecycle axis. */
-  task_state?: "active" | "blocked" | "done";
-  task_state_updated_at?: string;
-  task_state_reason?: string;
-  /** Session name built on the first non-empty set-task; its presence means "this session has been named". 2026-08-09. */
-  suggested_session_name?: string;
-  /** Stamped by turn.stop once the suggested name is seen in assistant reply text. 2026-08-09. */
-  session_name_seen_at?: string;
-  /** Which suggested name the latest sighting covered. */
-  session_name_seen_for?: string;
-  /** Auto-generated per-turn summary written by the Stop hook via Haiku. 2026-05-23. */
-  turn_summary?: string | null;
-  /** UTC ISO-8601 timestamp when turn_summary was last refreshed. */
-  turn_summary_updated_at?: string | null;
-  /** Hook client: `claude-code` (default) or `cursor`. Cursor Phase 1. */
-  platform?: string;
-  workflow_run_id?: string;
-}
-
 /**
  * Resolve the monorepo root for coord-state purposes.
  *
@@ -112,8 +74,8 @@ export function monorepoRoot(): string | null {
  * THE coordination-root resolution. Every surface — the hooks, the CLI's reads,
  * and the CLI's canonical emits — resolves through this one function, because a
  * root the two layers disagree about is a root that silently breaks the
- * end-of-turn rules: the hook evaluates `state.status_checked` from the stream
- * it reads, so an emit into a different `.harnery/events.ndjson` is invisible
+ * end-of-turn rules: the hook evaluates `coord.status_observed` from the stream
+ * it reads, so an emit into a different V3 ledger root is invisible
  * and rule 1/3 blocks a turn that did run `agents status`, with no sequence of
  * CLI commands able to satisfy it.
  *
@@ -168,7 +130,7 @@ export function resolveCoordRoot(start: string = process.cwd()): string | null {
   if (ancestors.length > 0) return ancestors[0] as string;
   if (gitRoots.length > 0) return gitRoots[0] as string;
   // Nothing carries `.harnery/` yet. Hand back the enclosing checkout so a
-  // first run (`harn init`, agent-hook's session.start) has somewhere to
+  // first run (`harn init`, agent-hook's session.started) has somewhere to
   // create it.
   return gitToplevel(start);
 }
@@ -195,7 +157,7 @@ function ancestorCoordRoots(start: string): string[] {
  * Does this root's `.harnery/` already know the process asking?
  *
  * Two discriminators, both genuinely about *this* session: the adapter-exported
- * session id matching a live heartbeat, and a pid-map row on our own ppid
+ * session id matching live V3 producer state, and a pid-map row on our own ppid
  * chain. Deliberately NOT the single-live-agent fallback that owner resolution
  * ends with — a lone stranger in the wrong root is exactly how `whoami` came to
  * report another agent's name and task as its own.
@@ -244,7 +206,7 @@ function gitToplevel(start: string): string | null {
 }
 
 function gitRevParse(cwd: string, flag: string): string | null {
-  const key = `${cwd} ${flag}`;
+  const key = `${cwd}\0${flag}`;
   const cached = gitRevParseCache.get(key);
   if (cached !== undefined) return cached;
   let value: string | null = null;
@@ -404,22 +366,20 @@ export function resolveOwnerWithSource(): {
   owner: string | null;
   source: "env" | "pidmap" | "pidmap_fallback" | "session_env" | "active_singleton" | "none";
 } {
+  const bridge = process.env.HARNERY_AGENT_COORD_BRIDGE?.trim();
   const envOwner = process.env.HARNERY_AGENT_COORD_OWNER?.trim();
-  if (envOwner) {
+  // A bridge-marked child must prove identity through a live V3 producer. An
+  // inherited owner override is only a string, so trusting it here would let a
+  // stale or foreign environment bypass the bridge's fail-closed contract.
+  if (envOwner && !bridge) {
     return { owner: envOwner, source: "env" };
   }
 
   const root = monorepoRoot();
   if (!root) return { owner: null, source: "none" };
 
-  // Every supported adapter exports its session id into the env of the
-  // subprocess it spawns for a tool call, and each heartbeat records the
-  // session id it was minted under. Matching the two names us outright, even
-  // with many live agents, so it goes ahead of the ppid walk rather than
-  // catching what the walk drops. Cursor needed this first because its
-  // Glass/Agents UI runs several chats under one node ancestor, making that row
-  // last-writer-wins; pid recycling generalises the same hazard to every
-  // adapter.
+  // Every supported adapter exports its native session id into subprocesses.
+  // Match it against the live V3 producer state, never a disposable cache.
   if (shouldPreferSessionEnv()) {
     const bySession = resolveOwnerBySessionEnv(root);
     if (bySession) {
@@ -427,12 +387,17 @@ export function resolveOwnerWithSource(): {
     }
   }
 
+  // Connector children cross process-tree boundaries where pid ancestry is
+  // not logical session identity. Once marked, a missing V3 generation is
+  // terminal: never guess through pid-map or singleton fallback.
+  if (bridge) return { owner: null, source: "none" };
+
   if (!existsSync(resolve(root, ".harnery", "pid-map"))) return { owner: null, source: "none" };
 
   const byPidmap = resolveOwnerByPidmap(root);
   if (byPidmap.owner) return byPidmap;
 
-  // Last resort: if exactly one agent is live in this coord root, it's
+  // Last resort: if exactly one V3 generation is live in this coord root, it's
   // unambiguously us — resolve to it. This is what lets the bare `agents
   // status` / `set-task` the stop hook recommends work without a `--session-id`
   // flag in the common single-agent case. With 0 or 2+ live agents it would be
@@ -501,6 +466,18 @@ const SESSION_ID_ENV_VARS = [
 ] as const;
 
 /** Read normalized candidates from the first non-empty adapter session-id env var. */
+/**
+ * First adapter/bridge-stamped session id from the environment, WITHOUT the
+ * live-heartbeat validation resolveOwnerBySessionEnv applies. A fresh session
+ * has no heartbeat until its first set-task, so heartbeat-validated resolution
+ * returns null there by design; commands that REGISTER a session (set-task)
+ * may use this id directly — it carries the same trust as an explicit
+ * `--session-id` argument, because the adapter or connector stamped it.
+ */
+export function sessionIdentityFromEnv(): string | null {
+  return sessionIdsFromEnv()[0] ?? null;
+}
+
 function sessionIdsFromEnv(): string[] {
   for (const key of SESSION_ID_ENV_VARS) {
     const v = process.env[key]?.trim();
@@ -531,7 +508,7 @@ function sessionIdFromEnv(): string | null {
  * agent's name and file list.
  *
  * This only reorders the two. Session-env resolution still requires a live
- * heartbeat carrying that session id, so when it does not match, the walk runs
+ * V3 producer carrying that session id, so when it does not match, the walk runs
  * exactly as before.
  */
 function shouldPreferSessionEnv(): boolean {
@@ -539,160 +516,70 @@ function shouldPreferSessionEnv(): boolean {
 }
 
 /**
- * Resolve the owner by matching the adapter session-id env var against the
- * `session_id` of a live heartbeat in this coord root. Returns the matching
- * `instance_id`, or null if there's no session-id env var or no live heartbeat
- * carries it. "Live" reuses the same 10-minute freshness window the singleton
- * fallback applies, so a stale heartbeat from a prior session of the same id
- * doesn't resolve. When legacy Cursor Glass state contains both the canonical
- * bare id and its raw `bc-` alias, candidate order wins first; ties prefer a
- * named heartbeat, then the newest heartbeat, with instance id as a stable
- * final tie-breaker. Filesystem enumeration order never decides identity.
+ * Resolve the owner by joining adapter session environment to the live V3
+ * hook-producer state. A missing, terminal, or ambiguous generation fails
+ * closed. The disposable cache is consulted only to recover the native
+ * instance label bound to an already-authoritative canonical instance.
  *
  * Exported for unit testing with an injectable root.
  */
 export function resolveOwnerBySessionEnv(root: string): string | null {
   const sessionIds = sessionIdsFromEnv();
   if (sessionIds.length === 0) return null;
-
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) return null;
-  const FRESHNESS_SECS = 600;
-  const cutoffMs = Date.now() - FRESHNESS_SECS * 1000;
-  let files: string[];
-  try {
-    files = readdirSync(activeDir);
-  } catch {
-    return null;
-  }
-  const matches: Array<{
-    instanceId: string;
-    sessionPreference: number;
-    hasName: boolean;
-    lastHeartbeatMs: number;
-  }> = [];
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
-      if (!parsed) continue;
-      const sessionPreference = sessionIds.indexOf(parsed.session_id);
-      if (sessionPreference === -1) continue;
-      if (typeof parsed.instance_id !== "string") continue;
-      const ts = Date.parse(parsed.last_heartbeat);
-      if (!Number.isFinite(ts) || ts < cutoffMs) continue;
-      matches.push({
-        instanceId: parsed.instance_id,
-        sessionPreference,
-        hasName: typeof parsed.name === "string" && parsed.name.trim().length > 0,
-        lastHeartbeatMs: ts,
-      });
-    } catch {
-      // skip malformed
+  const adapters = adapterCandidatesFromEnv();
+  const matches = new Set<string>();
+  for (const sessionId of sessionIds) {
+    for (const adapter of adapters) {
+      const state = readHookProducerStateV3(root, adapter, sessionId);
+      if (state && !state.terminal) matches.add(nativeOwnerForV3Instance(root, state.instance_id));
     }
   }
-  matches.sort(
-    (a, b) =>
-      a.sessionPreference - b.sessionPreference ||
-      Number(b.hasName) - Number(a.hasName) ||
-      b.lastHeartbeatMs - a.lastHeartbeatMs ||
-      a.instanceId.localeCompare(b.instanceId),
-  );
-  return matches[0]?.instanceId ?? null;
+  return matches.size === 1 ? [...matches][0]! : null;
 }
 
 /**
- * Return the instance_id of the sole live agent in this coord root, or null
- * if there are zero or more than one. "Live" reuses the 10-minute heartbeat
- * freshness window the rest of the agents surface applies (kept inline as a
- * literal so this file stays node-builtins-only for vendored downstream use).
+ * Return the native instance label of the sole live V3 generation in this
+ * coord root, or null if there are zero or more than one.
  *
  * Exported for unit testing with an injectable root (the caller in
  * `resolveOwnerWithSource` passes `monorepoRoot()`).
  */
 export function resolveSingleActiveOwner(root: string): string | null {
+  const live = new Set(
+    listHookProducerStateRecordsV3(root, { includeTerminal: false }).map(({ state }) =>
+      nativeOwnerForV3Instance(root, state.instance_id),
+    ),
+  );
+  return live.size === 1 ? [...live][0]! : null;
+}
+
+function adapterCandidatesFromEnv(): Array<"claude-code" | "codex" | "cursor"> {
+  const value = process.env.HARNERY_AGENT_COORD_PLATFORM?.trim();
+  if (value === "claude-code" || value === "codex" || value === "cursor") return [value];
+  return ["claude-code", "codex", "cursor"];
+}
+
+function nativeOwnerForV3Instance(root: string, instanceId: string): string {
   const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) return null;
-  const FRESHNESS_SECS = 600;
-  const cutoffMs = Date.now() - FRESHNESS_SECS * 1000;
-  const live: string[] = [];
-  let files: string[];
   try {
-    files = readdirSync(activeDir);
-  } catch {
-    return null;
-  }
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
-      if (!parsed || typeof parsed.instance_id !== "string") continue;
-      const ts = Date.parse(parsed.last_heartbeat);
-      if (Number.isFinite(ts) && ts >= cutoffMs) live.push(parsed.instance_id);
-    } catch {
-      // skip malformed
+    for (const file of readdirSync(activeDir)) {
+      if (!file.endsWith(".json")) continue;
+      const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8")) as Record<
+        string,
+        unknown
+      >;
+      if (
+        parsed.schema_version === 2 &&
+        parsed.v3_instance_id === instanceId &&
+        typeof parsed.instance_id === "string"
+      ) {
+        return parsed.instance_id;
+      }
     }
-    if (live.length > 1) return null; // ambiguous; bail early
-  }
-  return live.length === 1 ? live[0]! : null;
-}
-
-/**
- * Read and parse a heartbeat file. Returns null if the file is missing,
- * unreadable, or contains malformed JSON. Does not throw.
- *
- * Phase 8 cleanup (2026-05-27): the v1/v2 dual-write bridge is gone; the
- * projector writes additively-merged heartbeats directly to
- * `.harnery/active/<id>.json` (the canonical location every reader expects).
- */
-export function readHeartbeat(instanceId: string): Heartbeat | null {
-  if (!isSafeInstanceId(instanceId)) return null;
-  const root = monorepoRoot();
-  if (!root) return null;
-  const path = resolveContainedFile(resolve(root, ".harnery", "active"), `${instanceId}.json`);
-  return readJsonHeartbeatFile(path);
-}
-
-function readJsonHeartbeatFile(path: string): Heartbeat | null {
-  if (!existsSync(path)) return null;
-  try {
-    const raw = readFileSync(path, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && typeof parsed.instance_id === "string") {
-      return parsed as Heartbeat;
-    }
-    return null;
   } catch {
-    return null;
+    // The producer state remains authoritative; fall through to the canonical label.
   }
-}
-
-/**
- * Render the display form for an instance_id: `agent-<Name>` if the heartbeat
- * carries a non-empty `.name`, else `agent-<8-char-hex-prefix>`.
- *
- * Hex fallback handles three cases cleanly:
- *  - heartbeat written before this feature shipped (no `name` field)
- *  - heartbeat pruned but instance_id still appears in older log lines
- *  - the narrow window between instance_id resolution and heartbeat read
- */
-export function displayName(instanceId: string): string {
-  if (!instanceId) return "agent-unknown";
-  const hb = readHeartbeat(instanceId);
-  if (hb && typeof hb.name === "string" && hb.name.length > 0) {
-    return `agent-${hb.name}`;
-  }
-  return `agent-${instanceId.slice(0, 8)}`;
-}
-
-/**
- * Convenience: resolve self via ppid walk, then render. Returns
- * `agent-unknown` when the walk fails.
- */
-export function selfDisplayName(): string {
-  const owner = resolveOwner();
-  if (!owner) return "agent-unknown";
-  return displayName(owner);
+  return instanceId.startsWith("inst_") ? instanceId.slice(5) : instanceId;
 }
 
 function readPpid(pid: number): number | null {

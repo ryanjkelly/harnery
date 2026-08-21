@@ -35,6 +35,9 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
             <Link href="/live" className="hover:text-foreground">
               Live
             </Link>
+            <Link href="/codec" className="hover:text-foreground">
+              Codec
+            </Link>
             <Link href="/events" className="hover:text-foreground">
               Events
             </Link>

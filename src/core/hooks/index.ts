@@ -1,16 +1,9 @@
 /**
  * agent-hooks library exports.
  *
- * Phase 1 (skeleton): exposes only the canonical event schema types. Parsers,
- * resolvers, and emit helpers ship in Phase 2.
+ * Public hook types for the canonical V3 ledger.
  */
 
-export {
-  type Adapter,
-  type Event,
-  type EventEnvelope,
-  type EventType,
-  type RedactionMarker,
-  SCHEMA_VERSION,
-  type Source,
-} from "./events/schema.ts";
+export type { Adapter } from "../adapter.ts";
+export type { EventV3 as Event } from "../events/v3/contract.ts";
+export { EventV3Schema } from "../events/v3/contract.ts";

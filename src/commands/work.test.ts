@@ -1,8 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
-import { createWorkItem, type WorkAttempt, type WorkRecord } from "../core/work/index.ts";
+import { createGovernor } from "../core/governor/index.ts";
+import {
+  cancelWorkItem,
+  createWorkItem,
+  type WorkAttempt,
+  type WorkRecord,
+} from "../core/work/index.ts";
 import { renderAttemptBudget, renderAttemptRow } from "./work.ts";
 
 const roots: string[] = [];
@@ -102,6 +115,93 @@ describe("work command", () => {
       "  1. wf-unreadable  transcript_unreadable: cannot parse workflow run wf-unreadable transcript: expected object",
     );
     expect(text).toContain("  2. wf-lost  lost");
+  });
+
+  test("work list reports unreadable records and continues", async () => {
+    const root = mkdtempSync(join("/tmp", "harnery-work-list-command-"));
+    roots.push(root);
+    const workflowPath = join(root, "workflow.mjs");
+    writeFileSync(workflowPath, "export default async () => 'ok';\n");
+    for (const id of ["work-cli-readable", "work-cli-poisoned"]) {
+      createWorkItem({
+        coordRoot: root,
+        id,
+        title: id,
+        objective: "Keep readable work visible",
+        workflowPath,
+      });
+    }
+    const poisonedPath = join(root, ".harnery", "work", "work-cli-poisoned", "intent.json");
+    const poisoned = JSON.parse(readFileSync(poisonedPath, "utf8")) as Record<string, unknown>;
+    poisoned.schema_version = 1;
+    writeFileSync(poisonedPath, `${JSON.stringify(poisoned, null, 2)}\n`);
+
+    const output: string[] = [];
+    const previousOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    try {
+      await createHarneryProgram({ emit: captureText(output) }).parseAsync(["work", "list"], {
+        from: "user",
+      });
+    } finally {
+      if (previousOverride === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+      else process.env.HARNERY_COORD_ROOT_OVERRIDE = previousOverride;
+    }
+
+    const text = output.join("");
+    expect(text).toContain("work-cli-readable");
+    expect(text).toContain(
+      "warning  work-cli-poisoned  unreadable: work intent work-cli-poisoned has an unsupported or mismatched schema",
+    );
+  });
+
+  test("work reopen skips unreadable governors and reports the warning", async () => {
+    const root = mkdtempSync(join("/tmp", "harnery-work-reopen-command-"));
+    roots.push(root);
+    const workflowPath = join(root, "workflow.mjs");
+    writeFileSync(workflowPath, "export default async () => 'ok';\n");
+    for (const id of ["reopen-target", "governed-root"]) {
+      createWorkItem({
+        coordRoot: root,
+        id,
+        title: id,
+        objective: "Exercise tolerant governor enumeration",
+        workflowPath,
+      });
+    }
+    cancelWorkItem(root, "reopen-target", { actor: "operator", reason: "test setup" });
+    createGovernor({
+      coordRoot: root,
+      id: "goal-reopen-poisoned",
+      rootWorkId: "governed-root",
+      specialists: { implementer: { instructions: "Implement", adapter: "codex" } },
+    });
+    const poisonedPath = join(root, ".harnery", "governors", "goal-reopen-poisoned", "intent.json");
+    const poisoned = JSON.parse(readFileSync(poisonedPath, "utf8")) as {
+      specialists: Record<string, Record<string, unknown>>;
+    };
+    poisoned.specialists.implementer!.harness = "codex";
+    writeFileSync(poisonedPath, `${JSON.stringify(poisoned, null, 2)}\n`);
+
+    const output: string[] = [];
+    const previousOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    try {
+      await createHarneryProgram({ emit: captureText(output) }).parseAsync(
+        ["work", "reopen", "reopen-target", "--reason", "operator found a defect"],
+        { from: "user" },
+      );
+    } finally {
+      if (previousOverride === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+      else process.env.HARNERY_COORD_ROOT_OVERRIDE = previousOverride;
+    }
+
+    const text = output.join("");
+    expect(text).toContain(
+      "skipped unreadable governor goal-reopen-poisoned: governor intent goal-reopen-poisoned specialists are not canonical",
+    );
+    expect(text).toContain("reopen-target: reopen-target");
+    expect(text).toContain("state: ready");
   });
 
   test("the attempt budget shows charged/max, surfacing uncharged attempts separately (ADR 0046)", () => {
@@ -206,7 +306,7 @@ function captureText(output: string[]): EmitContext {
           : "command error";
       throw new Error(message);
     },
-    log: () => {},
+    log: (message, level = "info") => output.push(`[${level}] ${message}\n`),
     setExitCode: (code) => {
       throw new Error(`unexpected exit code ${code}`);
     },

@@ -6,7 +6,7 @@
  * paths and are init'd on first `harn backup init`. Subcommands:
  *
  *   init      restic init the repo (one-time)
- *   snapshot  restic backup .harnery/ (working artifacts excluded)
+ *   snapshot  restic backup of the durable, privacy-safe V3 state
  *   list      restic snapshots
  *   restore   restic restore <id>
  *   prune     restic forget --keep-daily 7 --keep-weekly 4 --prune
@@ -134,17 +134,11 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
   backup
     .command("snapshot")
     .description(
-      "Take a restic snapshot of .harnery/ (excluding events.ndjson and " +
-        ".lock files and artifacts/ by default). Pass --target to back up a different path.",
+      "Take a restic snapshot of the durable, privacy-safe V3 ledger and coordination state.",
     )
-    .option("--target <path>", "Path to snapshot (default: .harnery/ from cwd walk-up)")
     .option("--tag <tag>", "Restic tag (repeatable)", collect, [] as string[])
     .option("--repo <path>", "Repository path")
     .option("--password-file <path>", "Password file")
-    .option(
-      "--include-events",
-      "Don't exclude events.ndjson (default: excluded; large + machine-local)",
-    )
     .option(
       "--include-artifacts",
       "Include managed working artifacts (default: excluded; potentially large + ephemeral)",
@@ -152,9 +146,7 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
     .action(
       (
         opts: BaseOpts & {
-          target?: string;
           tag: string[];
-          includeEvents?: boolean;
           includeArtifacts?: boolean;
         },
       ) => {
@@ -162,27 +154,43 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
           emit.setExitCode(1);
           return;
         }
-        const target = opts.target ?? findHarneryDir();
-        if (!target) {
+        const harnery = findHarneryDir();
+        if (!harnery) {
           emit.error({
             code: "target_missing",
-            message:
-              "No .harnery/ found above cwd; pass --target explicitly or run from a monorepo with .harnery/",
+            message: "No .harnery/ found above cwd; run from an initialized project",
           });
           emit.setExitCode(1);
           return;
         }
         const passThrough: string[] = [];
-        if (!opts.includeEvents) {
-          passThrough.push("--exclude", "events.ndjson");
-          passThrough.push("--exclude", ".lock");
-          passThrough.push("--exclude", ".log.lock");
-        }
-        if (!opts.includeArtifacts) passThrough.push("--exclude", "artifacts");
         for (const t of opts.tag) {
           passThrough.push("--tag", t);
         }
-        const r = runRestic(["backup", target], {
+        const safeTargets = [
+          "ledgers",
+          "councils",
+          "journal",
+          "work",
+          "workflows",
+          "decisions",
+          "config.jsonc",
+          ".name-history",
+        ]
+          .map((entry) => path.join(harnery, entry))
+          .filter(existsSync);
+        if (opts.includeArtifacts && existsSync(path.join(harnery, "artifacts"))) {
+          safeTargets.push(path.join(harnery, "artifacts"));
+        }
+        if (safeTargets.length === 0) {
+          emit.error({
+            code: "backup_empty",
+            message: "No durable V3 state is available to back up",
+          });
+          emit.setExitCode(1);
+          return;
+        }
+        const r = runRestic(["backup", ...safeTargets], {
           repo: opts.repo,
           passwordFile: opts.passwordFile,
           stdio: "inherit",

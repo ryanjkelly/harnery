@@ -2,17 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
 import {
   checkGitFinalization,
   classifyWriteClaimFinalization,
   formatGitFinalizationFailure,
-  readSessionWriteClaims,
 } from "./finalization.ts";
 
 let temp: string;
-const HARN_CLI = resolve(import.meta.dir, "../../..", "src", "cli.ts");
-
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
@@ -21,7 +18,11 @@ function git(cwd: string, ...args: string[]): string {
 
 function initRepo(path: string, bare = false): void {
   mkdirSync(path, { recursive: true });
-  git(path, "init", ...(bare ? ["--bare"] : ["--quiet"]));
+  git(
+    path,
+    "init",
+    ...(bare ? ["--bare", "--initial-branch=master"] : ["--quiet", "--initial-branch=master"]),
+  );
   if (!bare) {
     git(path, "config", "user.email", "test@example.invalid");
     git(path, "config", "user.name", "Test");
@@ -45,40 +46,6 @@ afterEach(() => {
 });
 
 describe("checkGitFinalization", () => {
-  test("keeps committed paths in scope through durable session claim history", () => {
-    const repo = join(temp, "repo");
-    initRepo(repo);
-    mkdirSync(join(repo, ".harnery"), { recursive: true });
-    writeFileSync(
-      join(repo, ".harnery", "events.ndjson"),
-      [
-        JSON.stringify({
-          event_type: "session.start",
-          instance_id: "owner",
-          session_id: "session",
-          data: {},
-        }),
-        JSON.stringify({
-          event_type: "claim.acquire",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: "owned.txt", mode: "write" },
-        }),
-        JSON.stringify({
-          event_type: "claim.release",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: "owned.txt", reason: "commit" },
-        }),
-      ].join("\n"),
-    );
-
-    expect(readSessionWriteClaims(repo, "owner", "session")).toEqual({
-      paths: ["owned.txt"],
-      complete: true,
-    });
-  });
-
   test("passes when held files are clean and the branch is pushed", () => {
     const remote = join(temp, "remote.git");
     const repo = join(temp, "repo");
@@ -206,6 +173,86 @@ describe("checkGitFinalization", () => {
     expect(result.dirty_paths).toEqual([]);
   });
 
+  test("blocks a clean submodule checkout that is behind the parent gitlink", () => {
+    const childRemote = join(temp, "child-remote.git");
+    const childSeed = join(temp, "child-seed");
+    const parent = join(temp, "parent");
+    initRepo(childRemote, true);
+    initRepo(childSeed);
+    writeFileSync(join(childSeed, "owned.txt"), "one\n");
+    commitAll(childSeed, "one");
+    const oldChild = git(childSeed, "rev-parse", "HEAD");
+    git(childSeed, "remote", "add", "origin", childRemote);
+    git(childSeed, "push", "-u", "origin", "HEAD:master");
+    initRepo(parent);
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", childRemote, "child");
+    commitAll(parent, "add child");
+
+    writeFileSync(join(childSeed, "owned.txt"), "two\n");
+    commitAll(childSeed, "two");
+    const newChild = git(childSeed, "rev-parse", "HEAD");
+    git(childSeed, "push", "origin", "HEAD:master");
+    git(join(parent, "child"), "fetch", "origin", "master");
+    git(join(parent, "child"), "checkout", "--detach", newChild);
+    commitAll(parent, "bump child");
+    git(join(parent, "child"), "checkout", "--detach", oldChild);
+
+    const result = checkGitFinalization(parent, []);
+    expect(result.ok).toBe(false);
+    expect(result.stale_submodules).toEqual(["child"]);
+    expect(formatGitFinalizationFailure(result, "harn")).toContain(
+      "Submodule checkouts behind their parent gitlinks",
+    );
+  });
+
+  test("does not globally block an unrelated turn on a submodule checkout ahead of its gitlink", () => {
+    const childRemote = join(temp, "child-remote.git");
+    const childSeed = join(temp, "child-seed");
+    const parent = join(temp, "parent");
+    initRepo(childRemote, true);
+    initRepo(childSeed);
+    writeFileSync(join(childSeed, "owned.txt"), "one\n");
+    commitAll(childSeed, "one");
+    git(childSeed, "remote", "add", "origin", childRemote);
+    git(childSeed, "push", "-u", "origin", "HEAD:master");
+    initRepo(parent);
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", childRemote, "child");
+    commitAll(parent, "add child");
+
+    git(join(parent, "child"), "config", "user.email", "test@example.invalid");
+    git(join(parent, "child"), "config", "user.name", "Test");
+    writeFileSync(join(parent, "child", "owned.txt"), "local work\n");
+    commitAll(join(parent, "child"), "local work");
+
+    const result = checkGitFinalization(parent, []);
+    expect(result.ok).toBe(true);
+    expect(result.stale_submodules).toEqual([]);
+    expect(result.diverged_submodules).toEqual([]);
+  });
+
+  test("blocks when the coordination repository is behind its fetched upstream", () => {
+    const remote = join(temp, "remote.git");
+    const repo = join(temp, "repo");
+    const peer = join(temp, "peer");
+    initRepo(remote, true);
+    initRepo(repo);
+    writeFileSync(join(repo, "owned.txt"), "one\n");
+    commitAll(repo, "one");
+    git(repo, "remote", "add", "origin", remote);
+    git(repo, "push", "-u", "origin", "HEAD:master");
+    git(temp, "clone", "--quiet", remote, peer);
+    git(peer, "config", "user.email", "test@example.invalid");
+    git(peer, "config", "user.name", "Test");
+    writeFileSync(join(peer, "owned.txt"), "two\n");
+    commitAll(peer, "two");
+    git(peer, "push", "origin", "HEAD:master");
+    git(repo, "fetch", "origin", "master");
+
+    const result = checkGitFinalization(repo, []);
+    expect(result.ok).toBe(false);
+    expect(result.behind_repos).toEqual(["."]);
+  });
+
   test("checks an authorized sibling Git repository through dirty, local, unpushed, and pushed states", () => {
     const coord = join(temp, "coord");
     const sibling = join(temp, "sibling");
@@ -324,62 +371,6 @@ describe("checkGitFinalization", () => {
       descriptor: { disposition: "git" },
     });
   });
-
-  test("a released sibling Git claim still blocks an unpushed commit", () => {
-    const coord = join(temp, "coord");
-    const sibling = join(temp, "sibling");
-    const remote = join(temp, "remote.git");
-    initRepo(coord);
-    writeFileSync(join(coord, "seed.txt"), "coord\n");
-    commitAll(coord, "coord");
-    initRepo(remote, true);
-    initRepo(sibling);
-    writeFileSync(join(sibling, "owned.txt"), "base\n");
-    commitAll(sibling, "initial");
-    git(sibling, "remote", "add", "origin", remote);
-    git(sibling, "push", "-u", "origin", "HEAD:master");
-    configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
-    mkdirSync(join(coord, ".harnery"), { recursive: true });
-    writeFileSync(
-      join(coord, ".harnery", "events.ndjson"),
-      [
-        event("session.start", {}),
-        event("claim.acquire", { path: "../sibling/owned.txt", mode: "write" }),
-        event("claim.release", { path: "../sibling/owned.txt", reason: "explicit" }),
-      ].join("\n"),
-    );
-    writeFileSync(join(sibling, "owned.txt"), "done\n");
-    commitAll(sibling, "done");
-
-    const history = readSessionWriteClaims(coord, "owner", "session");
-    expect(history.paths).toEqual(["../sibling/owned.txt"]);
-    expect(checkGitFinalization(coord, history.paths)).toMatchObject({
-      ok: false,
-      unpushed_repos: ["../sibling"],
-    });
-  });
-
-  test("the command-level end-turn path passes clean sibling work and names a dirty verdict", () => {
-    const coord = join(temp, "coord");
-    const sibling = join(temp, "sibling");
-    initRepo(coord);
-    writeFileSync(join(coord, "seed.txt"), "coord\n");
-    commitAll(coord, "coord");
-    initRepo(sibling);
-    writeFileSync(join(sibling, "owned.txt"), "base\n");
-    commitAll(sibling, "initial");
-    configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
-    seedSession(coord, "../sibling/owned.txt");
-
-    const clean = runEndTurn(coord);
-    expect(clean.status).toBe(0);
-
-    writeFileSync(join(sibling, "owned.txt"), "dirty\n");
-    const dirty = runEndTurn(coord);
-    expect(dirty.status).toBe(1);
-    expect(`${dirty.stdout}\n${dirty.stderr}`).toContain("../sibling/owned.txt");
-    expect(`${dirty.stdout}\n${dirty.stderr}`).toContain("Dirty owned paths");
-  }, 15_000);
 });
 
 function configureFinalizationRoots(
@@ -393,51 +384,5 @@ function configureFinalizationRoots(
       binName: "harn",
       agents: { requireGitFinalization: true, finalizationRoots: roots },
     }),
-  );
-}
-
-function event(eventType: string, data: Record<string, unknown>): string {
-  return JSON.stringify({
-    event_type: eventType,
-    instance_id: "owner",
-    session_id: "session",
-    data,
-  });
-}
-
-function seedSession(coord: string, heldPath: string): void {
-  mkdirSync(join(coord, ".harnery", "active"), { recursive: true });
-  writeFileSync(
-    join(coord, ".harnery", "active", "owner.json"),
-    JSON.stringify({
-      instance_id: "owner",
-      session_id: "session",
-      started_at: new Date().toISOString(),
-      last_heartbeat: new Date().toISOString(),
-      files_touched: [heldPath],
-    }),
-  );
-  writeFileSync(
-    join(coord, ".harnery", "events.ndjson"),
-    [event("session.start", {}), event("claim.acquire", { path: heldPath, mode: "write" })].join(
-      "\n",
-    ),
-  );
-}
-
-function runEndTurn(coord: string): ReturnType<typeof spawnSync> {
-  return spawnSync(
-    process.execPath,
-    [HARN_CLI, "agents", "status", "--end-turn", "--session-id", "owner"],
-    {
-      cwd: coord,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        HARNERY_COORD_ROOT_OVERRIDE: coord,
-        HARNERY_OUTPUT_SESSION_TEE: "0",
-      },
-      timeout: 30_000,
-    },
   );
 }

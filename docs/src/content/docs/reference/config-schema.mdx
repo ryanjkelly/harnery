@@ -88,8 +88,61 @@ Env override per process: `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0`.
 | Field                 | Type    | Default | Description |
 | --------------------- | ------- | ------- | ----------- |
 | `freshness_seconds`   | number  | `600`   | Heartbeat age (seconds) above which the sweeper prunes an agent (10 min) |
+| `finalization`        | object  | see below | Multi-signal V3 session-finalization grace periods |
+| `run_quality`         | object  | `{ "mode": "off" }` | Report-only run-quality observation (see below) |
 
 Resolution: `HARNERY_AGENT_COORD_FRESHNESS` env → this `config.jsonc` key → `600`.
+
+### `coord.finalization`
+
+These bounds control the canonical V3 reconciler. Archive and policy signals
+are provisional until their grace period expires. Any new session activity
+cancels a pending request.
+
+| Field | Default | Purpose |
+| ----- | ------- | ------- |
+| `archive_grace_seconds` | `600` | Delay before a verified archive may end a session |
+| `idle_observe_seconds` | `259200` | Inactivity before Harnery creates an idle observation (3 days) |
+| `idle_finalize_seconds` | `604800` | Inactivity before idle policy finalization (7 days) |
+| `cascade_grace_seconds` | `3600` | Delay for parent, stale, superseded, and host-loss cascades |
+| `reconcile_interval_seconds` | `900` | Default interval for `agents reconcile --watch` |
+
+All values are positive integers. `idle_finalize_seconds` is clamped to at
+least `idle_observe_seconds`. See [ADR 0077](/decisions/0077-multi-signal-session-finalization/).
+
+### `coord.run_quality`
+
+The run-quality evaluator derives advisory `unknown`, `healthy`, `attention`,
+or `critical` snapshots from bounded coordination evidence. It never blocks,
+steers, pauses, or stops an agent. `shadow` writes snapshots and transition
+telemetry without exposing severity; `report` also adds a `quality` line and
+JSON field to `harn agents status`. The package default is `off`.
+
+| Field | Default | Valid range |
+| ----- | ------- | ----------- |
+| `mode` | `off` | `off \| shadow \| report` |
+| `evaluation_interval_seconds` | `30` | 5–3,600 |
+| `snapshot_ttl_seconds` | `120` | 10–86,400 |
+| `max_tail_bytes` | `2097152` | 65,536–67,108,864 |
+| `evaluation_timeout_seconds` | `30` | 1–30 |
+| `lock_stale_seconds` | `60` | 5–3,600 |
+| `supervised_roots_per_sweep` | `8` | 1–100 |
+| `thresholds.repeated_tool_calls` | `8` | 2–10,000 |
+| `thresholds.consecutive_failures` | `5` | 1–10,000 |
+| `thresholds.context_growth_per_minute` | `60000` | 1–10,000,000 |
+| `thresholds.compaction_grace_seconds` | `300` | 0–86,400 |
+| `thresholds.no_progress_evaluations` | `2` | 1–10,000 |
+
+All supplied bounds must be finite integers. A malformed object disables the
+whole evaluator for that config digest and emits one bounded
+`health.run_quality_config_invalid` event; Harnery does not partially apply it.
+The snapshot TTL must be at least the evaluation interval, and the stale-lock
+bound must be greater than the evaluation timeout so a live writer cannot be
+stolen inside its allowed runtime.
+Snapshots live under `.harnery/guard/`, use a cursor separate from the session
+projector, and contain hashes and aggregates rather than tool bodies. See
+[ADR 0075](/decisions/0075-report-only-run-quality-observation/) for the signal,
+wait, freshness, and rollout contract.
 
 ## `artifacts`
 
@@ -120,7 +173,7 @@ Env override per process: `HARNERY_TOOLS_AUTOINSTALL=1|0`.
 
 | Field     | Type       | Default | Description |
 | --------- | ---------- | ------- | ----------- |
-| `exclude` | string[]   | `[]`    | Shipped harnery skills this repo suppresses, e.g. `["harn-decide", "harn-council"]` when the host keeps its own richer versions. The injected AGENTS.md block points at `--help` instead of an excluded skill |
+| `exclude` | string[]   | `[]`    | Shipped Harnery skills this repo suppresses. The installed set is `harn-decide`, `harn-council`, and `harn-end`; the injected AGENTS.md block uses the matching CLI command instead of an excluded skill |
 
 ## `instructions`
 
@@ -147,10 +200,10 @@ Env overrides per process: `HARNERY_PRESENCE=1|0` (whole feature), `HARNERY_PRES
 
 | Field   | Type    | Default       | Description |
 | ------- | ------- | ------------- | ----------- |
-| `port`  | number  | `9000`        | Listen port for `harn web up` |
+| `port`  | number  | `4276`        | Listen port for `harn web up`; 4276 spells HARN on a phone keypad |
 | `bind`  | string  | `127.0.0.1`   | Bind address. Localhost-only by default |
 
-Override via flags: `harn web up --port 4000`.
+Precedence is `--port`, then `HARNERY_WEB_PORT`, then this config value, then `4276`. An occupied port fails with `web_port_in_use`; Harnery never silently chooses a different URL.
 
 ## `backup`
 
@@ -218,7 +271,7 @@ Full precedence for a `sync` remote, highest first: `HARNERY_SYNC_REMOTE` env �
   },
 
   "web": {
-    "port": 9000
+    "port": 4276
   },
 
   "tools": {

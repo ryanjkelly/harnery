@@ -59,8 +59,9 @@ for dirty touched files, uncommitted submodule pointers, incomplete write
 history, and commits that have not reached a configured remote. It certifies
 repository hygiene, not test results or business correctness.
 
-Lifecycle also drives human-facing projections. A blocked task suggests a
-`[BLOCKED]` session title, while a completed task suggests `[DONE]`. Claude
+Lifecycle has one human-facing title projection: when a task becomes done, its
+original session name is re-minted with `[DONE] ` prepended. Active, blocked,
+and reopened sessions do not ask the agent to print another title. Claude
 Desktop cleanup reads the lifecycle event itself, not the editable title.
 
 ## Where it appears

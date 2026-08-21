@@ -5,7 +5,12 @@ import {
   reopenGovernorMissionPlan,
   retryGovernorPlanProposal,
 } from "./planning.ts";
-import { acquireGovernorLease, listGovernors, readGovernorIgnoringLease } from "./state.ts";
+import {
+  acquireGovernorLease,
+  type GovernorListWarning,
+  listGovernorsWithWarnings,
+  readGovernorIgnoringLease,
+} from "./state.ts";
 
 export function approveGovernorPlan(input: {
   coordRoot: string;
@@ -60,8 +65,11 @@ export function rejectGovernorPlan(input: {
 export function findCompletedMissionGoverning(
   coordRoot: string,
   workId: string,
+  onWarning?: (warning: GovernorListWarning) => void,
 ): string | undefined {
-  for (const record of listGovernors(coordRoot)) {
+  const result = listGovernorsWithWarnings(coordRoot);
+  for (const warning of result.warnings) onWarning?.(warning);
+  for (const record of result.records) {
     if (record.projection.state !== "succeeded" || !record.intent.mission) continue;
     if (record.projection.root_work_id === workId || record.projection.work_ids.includes(workId)) {
       return record.intent.id;

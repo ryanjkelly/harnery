@@ -23,7 +23,7 @@ In scope:
 - The `harn` CLI binary
 - The web UI (`harn web up`) when bound to localhost
 - Configuration file parsing (`.harnery/config.jsonc`)
-- Coord-layer state files (under `.harnery/`: `active/`, `events.ndjson`, `councils/`, etc.)
+- Coord-layer state files (under `.harnery/`: `active/`, `ledgers/`, `councils/`, etc.)
 
 Out of scope:
 
