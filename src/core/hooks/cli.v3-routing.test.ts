@@ -58,12 +58,25 @@ describe("agent-hook V3 hard cut", () => {
       "utf8",
     );
 
+    const unrelatedPost = runHook("post-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "ordinary-tool",
+      tool_response: "ok",
+    });
+    expect(unrelatedPost.status).toBe(0);
+    expect(unrelatedPost.stdout).not.toContain('"hookEventName":"PostToolUse"');
+    expect(unrelatedPost.stdout).not.toContain(name);
+
     const post = runHook("post-tool-use", {
       session_id: owner,
       cwd: root,
       tool_name: "Bash",
       tool_use_id: "set-task-tool",
-      tool_response: "ok",
+      tool_response: {
+        output: JSON.stringify({ suggested_session_name: name, first_of_session: true }),
+      },
     });
     expect(post.status).toBe(0);
     expect(post.stdout).toContain('"hookEventName":"PostToolUse"');

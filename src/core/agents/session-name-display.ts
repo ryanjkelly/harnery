@@ -37,6 +37,69 @@ export function sessionNameDisplayInstruction(name: string): string {
 }
 
 /**
+ * A PostToolUse result should announce the display protocol only when that
+ * exact tool call minted the current suggestion. The coordination row keeps
+ * the suggestion pending until transcript evidence catches up, so checking
+ * the row alone would re-announce the same name after every later tool.
+ *
+ * Adapter responses vary between a direct command envelope and wrapper
+ * objects whose `output`/content field contains the JSON as one line. Walk
+ * both shapes, but require the command's explicit mint flag as well as the
+ * exact current name. Ordinary status output can carry the name without
+ * activating the display ritual.
+ */
+export function toolResponseMintedSessionName(response: unknown, name: string): boolean {
+  if (!name) return false;
+  return responseContainsSessionNameMint(response, name, new Set<object>(), 0);
+}
+
+function responseContainsSessionNameMint(
+  value: unknown,
+  name: string,
+  seen: Set<object>,
+  depth: number,
+): boolean {
+  if (depth > 8 || value === null || value === undefined) return false;
+
+  if (typeof value === "string") {
+    const candidates = [value.trim(), ...value.split(/\r?\n/).map((line) => line.trim())];
+    for (const candidate of candidates) {
+      if (!candidate.startsWith("{") && !candidate.startsWith("[")) continue;
+      try {
+        if (
+          responseContainsSessionNameMint(JSON.parse(candidate) as unknown, name, seen, depth + 1)
+        ) {
+          return true;
+        }
+      } catch {
+        // Wrapper prose and partial JSON are not authoritative mint evidence.
+      }
+    }
+    return false;
+  }
+
+  if (typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.some((item) => responseContainsSessionNameMint(item, name, seen, depth + 1));
+  }
+
+  const row = value as Record<string, unknown>;
+  if (
+    row.suggested_session_name === name &&
+    (row.first_of_session === true || row.name_reminted === true)
+  ) {
+    return true;
+  }
+
+  return Object.values(row).some((item) =>
+    responseContainsSessionNameMint(item, name, seen, depth + 1),
+  );
+}
+
+/**
  * Accept the exact unlabelled block Harnery requests. `text` and `plaintext`
  * are tolerated for older prompts, but the code block may contain only the
  * suggested name and must be the first non-whitespace user-facing content.

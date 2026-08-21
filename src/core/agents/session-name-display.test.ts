@@ -4,6 +4,7 @@ import {
   isSessionNameRemediationCommand,
   sessionNameDisplayBlock,
   sessionNameDisplayPending,
+  toolResponseMintedSessionName,
 } from "./session-name-display.ts";
 
 const NAME = "Agent Maya - Auth refactor";
@@ -62,5 +63,35 @@ describe("session name display latch", () => {
     expect(isSessionNameRemediationCommand('harn agents set-task "$(echo bypass)"', "harn")).toBe(
       false,
     );
+  });
+
+  test("recognizes only start and done mint responses for the current name", () => {
+    expect(
+      toolResponseMintedSessionName({ suggested_session_name: NAME, first_of_session: true }, NAME),
+    ).toBe(true);
+    expect(
+      toolResponseMintedSessionName(
+        {
+          output: `Script completed\nOutput:\n${JSON.stringify({
+            suggested_session_name: `[DONE] ${NAME}`,
+            name_reminted: true,
+          })}`,
+        },
+        `[DONE] ${NAME}`,
+      ),
+    ).toBe(true);
+    expect(toolResponseMintedSessionName({ suggested_session_name: NAME }, NAME)).toBe(false);
+    expect(
+      toolResponseMintedSessionName(
+        { suggested_session_name: NAME, first_of_session: false, name_reminted: false },
+        NAME,
+      ),
+    ).toBe(false);
+    expect(
+      toolResponseMintedSessionName(
+        { suggested_session_name: "Agent Maya - Earlier focus", first_of_session: true },
+        NAME,
+      ),
+    ).toBe(false);
   });
 });

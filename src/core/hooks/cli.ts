@@ -36,6 +36,7 @@ import {
   isSessionNameRemediationCommand,
   sessionNameDisplayInstruction,
   sessionNameDisplayPending,
+  toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
 import { stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
@@ -1116,12 +1117,14 @@ async function main(): Promise<number> {
   }
 
   if (norm.event_type === "tool.completed" && eventName === "post-tool-use") {
-    // A successful set-task or lifecycle command can mint a new display name.
-    // Inject at the tool boundary, while "next assistant text" is unambiguous
-    // in Claude Code, Codex, and Cursor.
+    // Inject only at the successful tool boundary that actually minted a name:
+    // the first non-empty set-task or the transition to lifecycle done. The
+    // coordination row intentionally remains pending until transcript evidence
+    // catches up; reading that latch alone here would re-inject after every
+    // later tool and make the agent print the same block repeatedly.
     try {
       const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, owner.instance_id));
-      if (name) {
+      if (name && toolResponseMintedSessionName(payload?.tool_response, name)) {
         const { emitContext } = await import("./adapter/output.ts");
         emitContext(adapter, "PostToolUse", sessionNameDisplayInstruction(name));
       }
