@@ -12,7 +12,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ADAPTER_SPECS,
@@ -84,8 +84,26 @@ export function hookCommand(
   subcommand: string,
   adapter: AdapterId,
 ): string {
+  if (agentHookPath === "agent-hook") {
+    return `agent-hook ${subcommand} --adapter ${adapter}`;
+  }
   const anchor = spec.projectDirEnv ? `"\${${spec.projectDirEnv}:-.}"/` : "";
   return `bash ${anchor}${agentHookPath} ${subcommand} --adapter ${adapter}`;
+}
+
+/**
+ * Pick a committed hook target that survives cloning the consumer elsewhere.
+ * Projects that contain Harnery can use its repo-relative launcher. Standalone
+ * consumers use the package's installed `agent-hook` executable from PATH
+ * instead of recording a relative path back into one developer's package tree.
+ */
+export function agentHookPathForProject(projectRoot: string, packageRoot: string): string {
+  const hook = join(packageRoot, "bin", "agent-hook");
+  const candidate = relative(projectRoot, hook);
+  if (candidate === ".." || candidate.startsWith(`..${sep}`) || isAbsolute(candidate)) {
+    return "agent-hook";
+  }
+  return candidate;
 }
 
 export interface WiringDiff {
@@ -243,7 +261,7 @@ export function loadAdapterWiring(projectRoot: string): AdapterWiringStatus[] {
       spec,
       packageRoot
         ? {
-            agentHookPath: relative(projectRoot, join(packageRoot, "bin", "agent-hook")),
+            agentHookPath: agentHookPathForProject(projectRoot, packageRoot),
             adapter: id,
           }
         : undefined,

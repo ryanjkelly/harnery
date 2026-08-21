@@ -8,9 +8,10 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { ADAPTER_SPECS, type AdapterId, CLAUDE_CODE_EVENTS } from "./events.ts";
 import {
+  agentHookPathForProject,
   diffWiring,
   harneryPackageRoot,
   loadAdapterWiring,
@@ -27,9 +28,11 @@ function settingsWiring(subcommands: string[], hookBase = HOOK_BASE): SettingsFi
   for (const sub of subcommands) {
     const event = CLAUDE_CODE_EVENTS.find((e) => e.subcommand === sub);
     if (!event) throw new Error(`no spec event for ${sub}`);
-    hooks[event.settingsKey] = [
-      { hooks: [{ type: "command", command: `bash ${hookBase} ${sub} --adapter claude-code` }] },
-    ];
+    const command =
+      hookBase === "agent-hook"
+        ? `agent-hook ${sub} --adapter claude-code`
+        : `bash ${hookBase} ${sub} --adapter claude-code`;
+    hooks[event.settingsKey] = [{ hooks: [{ type: "command", command }] }];
   }
   return { hooks };
 }
@@ -155,6 +158,24 @@ describe("diffWiring", () => {
   });
 });
 
+describe("agentHookPathForProject", () => {
+  test("uses a repo-relative launcher when Harnery is contained by the project", () => {
+    const root = join(process.cwd(), "consumer-root");
+    expect(agentHookPathForProject(root, join(root, "harnery"))).toBe(
+      join("harnery", "bin", "agent-hook"),
+    );
+  });
+
+  test("uses the installed executable for a standalone consumer", () => {
+    expect(
+      agentHookPathForProject(
+        join(process.cwd(), "creative-kit"),
+        join(process.cwd(), "tools", "harnery"),
+      ),
+    ).toBe("agent-hook");
+  });
+});
+
 describe("loadAdapterWiring (fs-backed)", () => {
   let dir: string;
 
@@ -184,13 +205,12 @@ describe("loadAdapterWiring (fs-backed)", () => {
     try {
       const packageRoot = harneryPackageRoot();
       if (!packageRoot) throw new Error("harnery package root unavailable");
-      const hook = relative(root, join(packageRoot, "bin", "agent-hook"));
-      const anchored = `"\${CLAUDE_PROJECT_DIR:-.}"/${hook}`;
+      const hook = agentHookPathForProject(root, packageRoot);
       writeClaudeSettings(
         root,
         settingsWiring(
           CLAUDE_CODE_EVENTS.map((e) => e.subcommand),
-          anchored,
+          hook,
         ),
       );
       expect(loadAdapterWiring(root)).toHaveLength(0);

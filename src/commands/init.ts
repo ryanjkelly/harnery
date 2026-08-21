@@ -36,6 +36,7 @@ import {
 import { liveEventV3BuildId } from "../core/events/v3/live-routing.ts";
 import { ADAPTER_SPECS, type AdapterId, type AdapterSpec } from "../core/hooks/adapter/events.ts";
 import {
+  agentHookPathForProject,
   commandWiresSubcommand,
   diffWiring,
   groupCommands,
@@ -99,7 +100,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         let hookCheckError = false;
         let hookDrift = false;
         const settingsPath = resolve(projectRoot, spec.settingsFile);
-        const agentHook = relative(projectRoot, resolve(HARNERY_ROOT, "bin", "agent-hook"));
+        const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
         if (!existsSync(settingsPath)) {
           hookDrift = true;
           issues.push(`${spec.settingsFile}: missing (re-run init)`);
@@ -255,7 +256,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
 
       // ── 2. adapter hooks ───────────────────────────────────────────────────
       const settingsPath = resolve(projectRoot, spec.settingsFile);
-      const agentHook = relative(projectRoot, resolve(HARNERY_ROOT, "bin", "agent-hook"));
+      const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
 
       let settings: SettingsFile;
       if (existsSync(settingsPath)) {
