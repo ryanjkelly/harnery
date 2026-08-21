@@ -1,0 +1,56 @@
+---
+title: "0093: Inherit retry specialists from the prior manifest"
+description: "ADR: use the previous attempt's validated specialist snapshot when a direct work retry does not supply profiles."
+sidebar:
+  order: 93
+---
+
+**Status:** accepted (2026-08-21) · **Scope:** durable work and workflow execution
+
+## Context
+
+A governor freezes its specialist profiles in the goal intent and passes them
+to every work attempt it starts. The workflow engine records the normalized
+profiles in that attempt's immutable `run.json` manifest.
+
+The direct `work retry` path supplied no specialist map. A governed item whose
+workflow requested `release-warden` therefore started a charged attempt and
+then failed because the role was not configured, even though the prior attempt
+had recorded the frozen team.
+
+## Alternatives considered
+
+**Scan every governor and load the matching goal.** Rejected because work items
+have no governor back-reference, old goals can be unreadable, and two goals can
+contain the same work ID. A retry should not guess among coordination records.
+
+**Add a governor ID or specialist map to the work intent.** Rejected because it
+would change the durable work schema and duplicate an execution snapshot that
+already exists in the workflow manifest.
+
+**Refuse direct retries for governed work.** Rejected because manual retry is a
+documented recovery path, including for goals whose frozen automation policy
+does not retry blocked work.
+
+## Decision
+
+When `runWorkItem` starts a retry, the caller did not supply specialist
+profiles, and the prior attempt has durable proof, read that attempt's manifest
+through `readWorkflowRunManifest` and pass its `execution.specialists` snapshot
+to the new run. Validate the manifest before appending `attempt.started`, so an
+invalid snapshot cannot spend an attempt.
+
+An explicit library caller remains authoritative and may supply a replacement
+map. Governor-driven attempts continue to pass the frozen goal profiles
+directly. Initial attempts and parked-attempt resumes are unchanged.
+
+Do not scan governors, add work-intent fields, or infer profiles from workflow
+source. A lost attempt with no manifest, or a manifest without a specialist
+snapshot, contributes no profiles.
+
+## Result
+
+The recorded `release-warden` regression can retry without resupplying the
+team. Both attempt manifests contain the same normalized profile, including
+instructions, adapter, and effort. Standalone callers that explicitly supply
+profiles retain their existing override behavior.
