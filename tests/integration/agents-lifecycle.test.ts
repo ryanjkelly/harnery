@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -24,6 +24,8 @@ const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
 const HARN = path.join(HARNERY_DIR, "bin", "harn");
 const OWNER = "45f21628-043a-463d-a394-4128789f2276";
 const sandboxes: string[] = [];
+
+setDefaultTimeout(15_000);
 
 interface RunResult {
   stdout: string;

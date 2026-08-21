@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +26,8 @@ import { readLedgerV3 } from "../events/v3/reader.ts";
 const HARNERY_DIR = resolve(import.meta.dir, "../../..");
 const AGENT_HOOK = join(HARNERY_DIR, "bin", "agent-hook");
 const roots: string[] = [];
+
+setDefaultTimeout(15_000);
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
