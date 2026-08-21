@@ -26,7 +26,7 @@ import {
   TriangleAlert,
   Wrench,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { AgentChip } from "@/components/AgentChip";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/cn";
@@ -243,9 +243,7 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
       </div>
 
       {panels.length === 0 ? (
-        <p className={styles.emptyScene}>
-          No active agents. Panels appear when a session starts.
-        </p>
+        <p className={styles.emptyScene}>No active agents. Panels appear when a session starts.</p>
       ) : (
         <div ref={gridRef} className="relative">
           <RelationshipLines scene={scene} gridRef={gridRef} />
@@ -418,13 +416,16 @@ function CodecPanel({
       data-instance={panel.instance_id}
       data-codec-card
       data-activity={panel.activity.value}
+      data-attention={panel.attention.value}
       data-expression={panel.expression.value}
+      data-telemetry={panel.telemetry?.value ?? "unknown"}
       className={cn(
         styles.codecPanel,
         panelPalette(panel.identity.display_name),
         ATTENTION_RING[panel.attention.value],
         panel.friction && "ring-1 ring-amber-400/50",
         panel.attention.value === "error" && styles.errorFlash,
+        panel.attention.value === "completion" && styles.completionBurst,
         glowing ? styles.pingArrive : styles.pingArriveFade,
         offline && styles.panelOffline,
         unknownPresence && styles.panelStale,
@@ -441,15 +442,15 @@ function CodecPanel({
       <div className={styles.panelBody}>
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-          <div className="truncate">
-            <AgentChip name={panel.identity.display_name} />
-          </div>
-          <p
-            className="break-words text-xs text-muted-foreground"
-            title={panel.identity.task?.value}
-          >
-            {panel.identity.task?.value ?? "no declared task"}
-          </p>
+            <div className="truncate">
+              <AgentChip name={panel.identity.display_name} />
+            </div>
+            <p
+              className="break-words text-xs text-muted-foreground"
+              title={panel.identity.task?.value}
+            >
+              {panel.identity.task?.value ?? "no declared task"}
+            </p>
           </div>
           <ContextGauge panel={panel} />
         </div>
@@ -458,126 +459,130 @@ function CodecPanel({
         <OperationCue panel={panel} />
 
         <div className={styles.statusRail}>
-        <Badge
-          variant={panel.activity.value === "needs-input" ? "default" : "outline"}
-          title={`Activity: ${panel.activity.value} (${panel.activity.provenance})`}
-        >
-          {panel.activity.value === "working" && <span className="live-dot" aria-hidden />}
-          {panel.activity.value}
-        </Badge>
-        {panel.lifecycle.value !== "unknown" && (
           <Badge
-            variant={panel.lifecycle.value === "done" ? "secondary" : "outline"}
-            title={`Lifecycle: ${panel.lifecycle.value} (${panel.lifecycle.provenance})`}
+            variant={panel.activity.value === "needs-input" ? "default" : "outline"}
+            title={`Activity: ${panel.activity.value} (${panel.activity.provenance})`}
           >
-            {panel.lifecycle.value}
+            {panel.activity.value === "working" && <span className="live-dot" aria-hidden />}
+            {panel.activity.value}
           </Badge>
-        )}
-        {panel.ledger_state?.value === "recovery-required" && (
-          <Badge
-            variant="destructive"
-            title="Ledger state: recovery-required (open spans after the turn closed)"
-          >
-            recovering
-          </Badge>
-        )}
-        {panel.ledger_state?.value === "ending" && (
-          <Badge variant="secondary" title="Ledger state: ending (finalization pending)">
-            ending
-          </Badge>
-        )}
-        {offline && (
-          <Badge variant="secondary" title="Presence: offline (event-backed)">
-            offline
-          </Badge>
-        )}
-        {unknownPresence && (
-          <Badge variant="outline" title="Presence unknown: no fresh V3 observation">
-            presence unknown
-          </Badge>
-        )}
-        {panel.progress_rhythm.value !== "unknown" && (
-          <Badge
-            variant="outline"
-            title={`Progress rhythm: ${panel.progress_rhythm.value} (${panel.progress_rhythm.provenance}, ${panel.progress_rhythm.confidence} confidence)`}
-            className={cn(
-              panel.progress_rhythm.provenance === "inferred" &&
-                "border-dashed border-muted-foreground/60 text-foreground/80",
-            )}
-          >
-            {panel.progress_rhythm.value}
-            {panel.progress_rhythm.provenance === "inferred" && (
-              <span className="ml-1 opacity-70">· inferred</span>
-            )}
-          </Badge>
-        )}
-        {panel.expression.value !== "neutral" &&
-          !(
-            panel.ledger_state?.value === "recovery-required" &&
-            panel.expression.value === "recovering"
-          ) && (
+          {panel.lifecycle.value !== "unknown" && (
+            <Badge
+              variant={panel.lifecycle.value === "done" ? "secondary" : "outline"}
+              title={`Lifecycle: ${panel.lifecycle.value} (${panel.lifecycle.provenance})`}
+            >
+              {panel.lifecycle.value}
+            </Badge>
+          )}
+          {panel.ledger_state?.value === "recovery-required" && (
+            <Badge
+              variant="destructive"
+              title="Ledger state: recovery-required (open spans after the turn closed)"
+            >
+              recovering
+            </Badge>
+          )}
+          {panel.ledger_state?.value === "ending" && (
+            <Badge variant="secondary" title="Ledger state: ending (finalization pending)">
+              ending
+            </Badge>
+          )}
+          {offline && (
+            <Badge variant="secondary" title="Presence: offline (event-backed)">
+              offline
+            </Badge>
+          )}
+          {unknownPresence && (
+            <Badge variant="outline" title="Presence unknown: no fresh V3 observation">
+              presence unknown
+            </Badge>
+          )}
+          {panel.progress_rhythm.value !== "unknown" && (
             <Badge
               variant="outline"
-              title={`Expression: ${panel.expression.value} (${panel.expression.provenance}, ${panel.expression.confidence} confidence)`}
+              title={`Progress rhythm: ${panel.progress_rhythm.value} (${panel.progress_rhythm.provenance}, ${panel.progress_rhythm.confidence} confidence)`}
               className={cn(
-                panel.expression.provenance === "inferred" && "border-dashed text-muted-foreground",
+                panel.progress_rhythm.provenance === "inferred" &&
+                  "border-dashed border-muted-foreground/60 text-foreground/80",
               )}
             >
-              {panel.expression.value}
-              {panel.expression.provenance === "inferred" && (
-                <span className="ml-1 opacity-70">· inferred</span>
+              {panel.progress_rhythm.value}
+              {panel.progress_rhythm.provenance === "inferred" && (
+                <span className="ml-1 opacity-90">· inferred</span>
               )}
             </Badge>
           )}
-        {panel.attention.value !== "none" && (
-          <Badge
-            variant={panel.attention.value === "error" ? "destructive" : "secondary"}
-            title={`Attention: ${panel.attention.value} (expires ${panel.attention.expires_at ?? "soon"})`}
-          >
-            {panel.attention.value}
-          </Badge>
-        )}
-        {panel.artifact_cue && (
-          <Badge
-            variant="secondary"
-            title={`Artifact: ${panel.artifact_cue.value.operation} ${panel.artifact_cue.value.kind} (${panel.artifact_cue.provenance})`}
-          >
-            <PackageCheck className="mr-1 size-3" aria-hidden />
-            {panel.artifact_cue.value.operation} {humanizeCueToken(panel.artifact_cue.value.kind)}
-          </Badge>
-        )}
-        {panel.friction && (
-          <Badge
-            variant="secondary"
-            className="border-amber-400/50 text-amber-700 dark:text-amber-300"
-            title={`Friction: ${panel.friction.value} (${panel.friction.provenance}, ${panel.friction.confidence} confidence)`}
-          >
-            <TriangleAlert className="mr-1 size-3" aria-hidden />
-            {humanizeCueToken(panel.friction.value)}
-          </Badge>
-        )}
-        {panel.telemetry?.value === "degraded" && (
-          <Badge
-            variant="outline"
-            className={cn(
-              "border-dashed border-muted-foreground/60 text-foreground/80",
-              styles.flexibleBadge,
+          {panel.expression.value !== "neutral" &&
+            !(
+              panel.ledger_state?.value === "recovery-required" &&
+              panel.expression.value === "recovering"
+            ) && (
+              <Badge
+                variant="outline"
+                title={`Expression: ${panel.expression.value} (${panel.expression.provenance}, ${panel.expression.confidence} confidence)`}
+                className={cn(
+                  panel.expression.provenance === "inferred" &&
+                    "border-dashed text-muted-foreground",
+                )}
+              >
+                {panel.expression.value}
+                {panel.expression.provenance === "inferred" && (
+                  <span className="ml-1 opacity-90">· inferred</span>
+                )}
+              </Badge>
             )}
-            title={`Observer telemetry is degraded${panel.telemetry_reason ? `: ${humanizeCueToken(panel.telemetry_reason.value)}` : ""}; order-sensitive animation is suppressed`}
-          >
-            observer degraded
-          </Badge>
-        )}
-        {parentName && (
-          <Badge variant="outline" title={`Delegated by ${parentName} (event-backed parentage)`}>
-            ↳ {parentName}
-          </Badge>
-        )}
-        {panel.machine && (
-          <Badge variant="secondary" title={`Running on ${panel.machine} (via the presence relay)`}>
-            @ {panel.machine}
-          </Badge>
-        )}
+          {panel.attention.value !== "none" && (
+            <Badge
+              variant={panel.attention.value === "error" ? "destructive" : "secondary"}
+              title={`Attention: ${panel.attention.value} (expires ${panel.attention.expires_at ?? "soon"})`}
+            >
+              {panel.attention.value}
+            </Badge>
+          )}
+          {panel.artifact_cue && (
+            <Badge
+              variant="secondary"
+              title={`Artifact: ${panel.artifact_cue.value.operation} ${panel.artifact_cue.value.kind} (${panel.artifact_cue.provenance})`}
+            >
+              <PackageCheck className="mr-1 size-3" aria-hidden />
+              {panel.artifact_cue.value.operation} {humanizeCueToken(panel.artifact_cue.value.kind)}
+            </Badge>
+          )}
+          {panel.friction && (
+            <Badge
+              variant="secondary"
+              className="border-amber-400/50 text-amber-700 dark:text-amber-300"
+              title={`Friction: ${panel.friction.value} (${panel.friction.provenance}, ${panel.friction.confidence} confidence)`}
+            >
+              <TriangleAlert className="mr-1 size-3" aria-hidden />
+              {humanizeCueToken(panel.friction.value)}
+            </Badge>
+          )}
+          {panel.telemetry?.value === "degraded" && (
+            <Badge
+              variant="outline"
+              className={cn(
+                "border-dashed border-muted-foreground/60 text-foreground/80",
+                styles.flexibleBadge,
+              )}
+              title={`Observer telemetry is degraded${panel.telemetry_reason ? `: ${humanizeCueToken(panel.telemetry_reason.value)}` : ""}; order-sensitive animation is suppressed`}
+            >
+              observer degraded
+            </Badge>
+          )}
+          {parentName && (
+            <Badge variant="outline" title={`Delegated by ${parentName} (event-backed parentage)`}>
+              ↳ {parentName}
+            </Badge>
+          )}
+          {panel.machine && (
+            <Badge
+              variant="secondary"
+              title={`Running on ${panel.machine} (via the presence relay)`}
+            >
+              @ {panel.machine}
+            </Badge>
+          )}
         </div>
 
         {panel.remote_source && (
@@ -600,7 +605,14 @@ function CodecPanel({
           </p>
         )}
 
-        <ActionTrail actions={panel.recent_actions} />
+        <ActionTrail
+          actions={panel.recent_actions}
+          active={
+            panel.presence.value === "online" &&
+            panel.activity.value === "working" &&
+            panel.telemetry?.value !== "degraded"
+          }
+        />
       </div>
       <div className={styles.evidenceFooter}>
         <EvidenceReceipt panel={panel} />
@@ -694,7 +706,13 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
   return (
     <div
       role="status"
-      className={styles.operationCue}
+      className={cn(
+        styles.operationCue,
+        panel.presence.value === "online" &&
+          panel.activity.value === "working" &&
+          panel.telemetry?.value !== "degraded" &&
+          styles.operationCueLive,
+      )}
       aria-label={`Current operation: ${operation.value.label}, ${stateLabel}`}
       title={`Current operation (${operation.provenance}): ${operation.value.label} · ${stateLabel}`}
     >
@@ -743,7 +761,7 @@ function FocusBubble({ panel }: { panel: CodecPanelScene }) {
       title={`Focus (${bubble.value.basis}): ${bubble.value.text}`}
     >
       <span className={styles.focusText}>{bubble.value.text}</span>
-      {inferred && <span className="flex-none opacity-70">· inferred</span>}
+      {inferred && <span className="flex-none opacity-90">· inferred</span>}
     </p>
   );
 }
@@ -811,15 +829,19 @@ function ContextGauge({ panel }: { panel: CodecPanelScene }) {
   );
 }
 
-function ActionTrail({ actions }: { actions: CodecRecentAction[] }) {
+function ActionTrail({ actions, active }: { actions: CodecRecentAction[]; active: boolean }) {
   if (actions.length === 0) return null;
   return (
-    <ul className={styles.actionTrail} aria-label="Recent actions">
-      {actions.map((action) => {
+    <ul
+      className={cn(styles.actionTrail, active && styles.actionTrailLive)}
+      aria-label="Recent actions"
+    >
+      {actions.map((action, index) => {
         const Icon = CATEGORY_ICONS[action.category] ?? CircleDashed;
         return (
           <li
             key={action.event_id}
+            style={{ "--trail-index": index } as CSSProperties}
             className={cn(
               styles.actionIcon,
               action.outcome === "error"

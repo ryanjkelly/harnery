@@ -16,7 +16,10 @@ const LATER = "2026-08-16T12:30:00.000Z";
 
 let root: string;
 
-function makePack(id: string, opts: { missing?: string[] } = {}): string {
+function makePack(
+  id: string,
+  opts: { missing?: string[]; version?: string; metadata?: Record<string, string> } = {},
+): string {
   const dir = path.join(root, "codec", "packs", id);
   mkdirSync(dir, { recursive: true });
   const expressions: Record<string, string> = {};
@@ -26,7 +29,13 @@ function makePack(id: string, opts: { missing?: string[] } = {}): string {
   }
   writeFileSync(
     path.join(dir, "pack.json"),
-    JSON.stringify({ schema_version: 1, pack_id: id, pack_version: "1", expressions }),
+    JSON.stringify({
+      schema_version: 1,
+      pack_id: id,
+      pack_version: opts.version ?? "1",
+      expressions,
+      ...opts.metadata,
+    }),
   );
   return dir;
 }
@@ -48,6 +57,25 @@ describe("validatePackDir / listPacks", () => {
 
   test("an empty roster yields no packs, not an error", () => {
     expect(listPacks(root)).toEqual([]);
+  });
+
+  test("exposes optional art-direction metadata for roster previews", () => {
+    makePack("aurora", {
+      metadata: {
+        style: "manga-signal-v2",
+        character: "silver-haired strategist",
+        palette: "cyan, coral, violet",
+        generated_with: "gpt-image-1-mini",
+        quality: "low",
+      },
+    });
+    expect(listPacks(root)[0]).toMatchObject({
+      style: "manga-signal-v2",
+      character: "silver-haired strategist",
+      palette: "cyan, coral, violet",
+      generated_with: "gpt-image-1-mini",
+      quality: "low",
+    });
   });
 });
 
@@ -75,6 +103,31 @@ describe("allocateCharacters", () => {
     expect(i1).toHaveLength(1);
     expect(i1[0].released_at).toBe(LATER);
     expect(i1[0].pack_id).toBe(first.get("i-1")?.pack_id);
+  });
+
+  test("a pack upgrade preserves history and refreshes the live cache version", () => {
+    const dir = makePack("aurora");
+    expect(allocateCharacters(["i-1"], NOW, root).get("i-1")).toEqual({
+      pack_id: "aurora",
+      pack_version: "1",
+    });
+
+    const manifestPath = path.join(dir, "pack.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    writeFileSync(manifestPath, JSON.stringify({ ...manifest, pack_version: "2" }));
+
+    expect(allocateCharacters(["i-1"], LATER, root).get("i-1")).toEqual({
+      pack_id: "aurora",
+      pack_version: "2",
+    });
+    const registry = JSON.parse(readFileSync(path.join(root, "codec", "registry.json"), "utf8"));
+    const bindings = registry.bindings.filter(
+      (binding: { instance_id: string }) => binding.instance_id === "i-1",
+    );
+    expect(bindings).toHaveLength(2);
+    expect(bindings[0]).toMatchObject({ pack_version: "1", released_at: LATER });
+    expect(bindings[1]).toMatchObject({ pack_version: "2" });
+    expect(bindings[1].released_at).toBeUndefined();
   });
 });
 

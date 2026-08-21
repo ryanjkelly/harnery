@@ -8,6 +8,8 @@
  * repo's Codec visual-director plan).
  */
 
+import Link from "next/link";
+
 import { AgentChipProvider } from "@/components/AgentChip";
 import { CodecView } from "@/components/codec/CodecView";
 import styles from "@/components/codec/codec.module.css";
@@ -30,6 +32,9 @@ export default async function CodecPage() {
             <span className={styles.headerBeacon} aria-hidden />
             <p className={styles.headerKicker}>Live agent director</p>
             <h1 className={styles.codecTitle}>Codec</h1>
+            <Link className={styles.rosterLink} href="/codec/roster" prefetch={false}>
+              Roster lab
+            </Link>
           </div>
           <p className={styles.codecDeck}>
             A read-only, ledger-backed view of the team in motion. Local intent stays on this

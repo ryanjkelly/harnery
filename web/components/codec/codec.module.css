@@ -39,7 +39,12 @@
     radial-gradient(circle at 50% 100%, rgb(244 63 94 / 0.09), transparent 36rem),
     linear-gradient(rgb(255 255 255 / 0.04) 1px, transparent 1px),
     linear-gradient(90deg, rgb(255 255 255 / 0.04) 1px, transparent 1px);
-  background-size: auto, auto, auto, 42px 42px, 42px 42px;
+  background-size:
+    auto,
+    auto,
+    auto,
+    42px 42px,
+    42px 42px;
 }
 
 .codecHeader {
@@ -83,6 +88,24 @@
   letter-spacing: -0.045em;
 }
 
+.rosterLink {
+  border: 1px solid rgb(34 211 238 / 0.32);
+  border-radius: 999px;
+  padding: 0.32rem 0.55rem;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(165 243 252);
+  background: rgb(8 145 178 / 0.08);
+}
+
+.rosterLink:hover,
+.rosterLink:focus-visible {
+  background: rgb(8 145 178 / 0.2);
+}
+
 .codecDeck {
   max-width: 42rem;
   text-align: right;
@@ -96,8 +119,22 @@
 }
 
 .codecArena {
+  position: relative;
+  isolation: isolate;
   width: 100%;
   border-radius: 1.5rem;
+}
+
+.codecArena::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -2rem;
+  pointer-events: none;
+  opacity: 0.55;
+  background:
+    radial-gradient(circle at 18% 40%, rgb(34 211 238 / 0.12), transparent 24rem),
+    radial-gradient(circle at 82% 55%, rgb(217 70 239 / 0.1), transparent 26rem);
 }
 
 .sceneRail {
@@ -165,7 +202,13 @@
   left: 0;
   right: 0;
   height: 2px;
-  background: linear-gradient(90deg, transparent, rgb(var(--codec-accent)), rgb(var(--codec-accent-2)), transparent);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(var(--codec-accent)),
+    rgb(var(--codec-accent-2)),
+    transparent
+  );
   box-shadow: 0 0 18px rgb(var(--codec-accent) / 0.55);
 }
 
@@ -299,6 +342,7 @@
 }
 
 .operationCue {
+  position: relative;
   display: grid;
   min-width: 0;
   grid-template-columns: auto minmax(0, 1fr);
@@ -310,6 +354,21 @@
   border-radius: 0.45rem;
   font-size: 0.75rem;
   background: rgb(39 39 47 / 0.48);
+}
+
+.operationCue::after {
+  content: "";
+  position: absolute;
+  right: 0.55rem;
+  bottom: 0.2rem;
+  left: 2.05rem;
+  height: 1px;
+  opacity: 0;
+  background: linear-gradient(90deg, transparent, rgb(var(--codec-accent)), transparent);
+}
+
+.operationCueLive::after {
+  opacity: 0.55;
 }
 
 .operationIcon {
@@ -362,6 +421,10 @@
   box-shadow: inset 0 0 12px rgb(var(--codec-accent) / 0.06);
 }
 
+.actionTrailLive .actionIcon {
+  border-color: rgb(var(--codec-accent) / 0.52);
+}
+
 .flexibleBadge {
   min-width: 0;
   max-width: 100%;
@@ -391,13 +454,15 @@
   inset: 0;
   border-radius: 6px;
   pointer-events: none;
-  background: repeating-linear-gradient(
-    180deg,
-    rgba(180, 255, 235, 0.05) 0px,
-    rgba(180, 255, 235, 0.05) 1px,
-    transparent 1px,
-    transparent 3px
-  ), radial-gradient(circle at 50% 20%, rgb(var(--codec-accent) / 0.18), transparent 62%);
+  background:
+    repeating-linear-gradient(
+      180deg,
+      rgba(180, 255, 235, 0.05) 0px,
+      rgba(180, 255, 235, 0.05) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    radial-gradient(circle at 50% 20%, rgb(var(--codec-accent) / 0.18), transparent 62%);
 }
 /* Offline/unknown presence: heavier static, like a dropped call. */
 .portraitStatic::after {
@@ -451,6 +516,15 @@
   outline: 2px solid transparent;
   outline-offset: 2px;
   transition: outline-color 1.4s ease-out;
+}
+
+/* Completion is an expiring attention channel, so its burst is deliberately
+ * finite. Static border + badge semantics remain when motion is reduced. */
+.completionBurst {
+  box-shadow:
+    0 0 0 1px rgb(52 211 153 / 0.45),
+    0 20px 60px rgb(0 0 0 / 0.36),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
 }
 
 /* Traveling message particle (created imperatively, motion-gated in JS). */
@@ -510,6 +584,24 @@
     background-size: 200% 100%;
   }
 
+  .ambBusy::before,
+  .ambAlert::before {
+    animation: codec-ambience-drift 9s ease-in-out infinite alternate;
+  }
+
+  .operationCueLive::after {
+    animation: codec-operation-scan 1.8s ease-in-out infinite;
+  }
+
+  .actionTrailLive .actionIcon {
+    animation: codec-action-sequence 3.4s ease-in-out infinite;
+    animation-delay: calc(var(--trail-index) * 180ms);
+  }
+
+  .completionBurst {
+    animation: codec-completion-burst 1.05s ease-out 2;
+  }
+
   @keyframes codec-beacon {
     0%,
     100% {
@@ -530,6 +622,57 @@
       background-position: 200% 0;
     }
   }
+
+  @keyframes codec-ambience-drift {
+    from {
+      opacity: 0.38;
+      transform: translate3d(-1.25rem, 0, 0) scale(0.98);
+    }
+    to {
+      opacity: 0.7;
+      transform: translate3d(1.25rem, -0.5rem, 0) scale(1.02);
+    }
+  }
+
+  @keyframes codec-operation-scan {
+    0%,
+    100% {
+      opacity: 0.25;
+      transform: scaleX(0.4);
+    }
+    50% {
+      opacity: 0.9;
+      transform: scaleX(1);
+    }
+  }
+
+  @keyframes codec-action-sequence {
+    0%,
+    34%,
+    100% {
+      box-shadow: inset 0 0 12px rgb(var(--codec-accent) / 0.06);
+    }
+    17% {
+      box-shadow:
+        0 0 15px rgb(var(--codec-accent) / 0.28),
+        inset 0 0 12px rgb(var(--codec-accent) / 0.16);
+    }
+  }
+
+  @keyframes codec-completion-burst {
+    from {
+      box-shadow:
+        0 0 0 0 rgb(52 211 153 / 0.5),
+        0 20px 60px rgb(0 0 0 / 0.36),
+        inset 0 1px 0 rgb(255 255 255 / 0.06);
+    }
+    to {
+      box-shadow:
+        0 0 0 9px rgb(52 211 153 / 0),
+        0 20px 60px rgb(0 0 0 / 0.36),
+        inset 0 1px 0 rgb(255 255 255 / 0.06);
+    }
+  }
 }
 
 @media (max-width: 720px) {
@@ -546,9 +689,18 @@
     margin-bottom: 1.5rem;
   }
 
+  .headerTitleRow {
+    flex-wrap: wrap;
+    row-gap: 0.45rem;
+  }
+
   .codecDeck {
     margin-top: 0.65rem;
     text-align: left;
+  }
+
+  .codecArena::before {
+    inset-inline: 0;
   }
 
   .codecPanel {

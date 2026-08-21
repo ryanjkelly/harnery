@@ -40,11 +40,16 @@ export interface CodecPack {
   pack_id: string;
   pack_version: string;
   dir: string;
+  style?: string;
+  character?: string;
+  palette?: string;
+  generated_with?: string;
+  quality?: string;
   /** expression → filename (validated present on disk). */
   expressions: Record<string, string>;
 }
 
-interface PackBinding {
+export interface PackBinding {
   instance_id: string;
   pack_id: string;
   pack_version: string;
@@ -52,7 +57,7 @@ interface PackBinding {
   released_at?: string;
 }
 
-interface PackRegistry {
+export interface PackRegistry {
   schema_version: 1;
   bindings: PackBinding[];
 }
@@ -110,7 +115,19 @@ export function validatePackDir(
   if (problems.length > 0) return { ok: false, problems };
   return {
     ok: true,
-    pack: { pack_id: packId, pack_version: packVersion, dir, expressions: validated },
+    pack: {
+      pack_id: packId,
+      pack_version: packVersion,
+      dir,
+      expressions: validated,
+      ...(typeof manifest.style === "string" ? { style: manifest.style } : {}),
+      ...(typeof manifest.character === "string" ? { character: manifest.character } : {}),
+      ...(typeof manifest.palette === "string" ? { palette: manifest.palette } : {}),
+      ...(typeof manifest.generated_with === "string"
+        ? { generated_with: manifest.generated_with }
+        : {}),
+      ...(typeof manifest.quality === "string" ? { quality: manifest.quality } : {}),
+    },
   };
 }
 
@@ -136,7 +153,7 @@ export function listPacks(root = harneryDir()): CodecPack[] {
   return packs;
 }
 
-function readRegistry(root: string): PackRegistry {
+export function readPackRegistry(root = harneryDir()): PackRegistry {
   try {
     const parsed = JSON.parse(fs.readFileSync(registryPath(root), "utf8"));
     if (parsed?.schema_version === 1 && Array.isArray(parsed.bindings)) {
@@ -168,17 +185,27 @@ export function allocateCharacters(
   root = harneryDir(),
 ): Map<string, { pack_id: string; pack_version: string }> {
   const packs = listPacks(root);
-  const registry = readRegistry(root);
+  const registry = readPackRegistry(root);
   const live = new Set(instanceIds);
   const byId = new Map(packs.map((p) => [p.pack_id, p]));
   let changed = false;
 
   const activeByInstance = new Map<string, PackBinding>();
+  const upgradedPackByInstance = new Map<string, string>();
   const packInUse = new Set<string>();
   for (const binding of registry.bindings) {
     if (binding.released_at) continue;
     if (!live.has(binding.instance_id)) {
       binding.released_at = now;
+      changed = true;
+      continue;
+    }
+    const currentPack = byId.get(binding.pack_id);
+    if (currentPack && currentPack.pack_version !== binding.pack_version) {
+      // Pack upgrades preserve the historical binding and immediately rebind
+      // the live instance below so the asset URL gets the new cache key.
+      binding.released_at = now;
+      upgradedPackByInstance.set(binding.instance_id, binding.pack_id);
       changed = true;
       continue;
     }
@@ -197,7 +224,12 @@ export function allocateCharacters(
       out.set(instanceId, { pack_id: existing.pack_id, pack_version: existing.pack_version });
       continue;
     }
-    const pack = freePacks.shift();
+    const upgradedPackId = upgradedPackByInstance.get(instanceId);
+    const upgradedPackIndex = upgradedPackId
+      ? freePacks.findIndex((candidate) => candidate.pack_id === upgradedPackId)
+      : -1;
+    const pack =
+      upgradedPackIndex >= 0 ? freePacks.splice(upgradedPackIndex, 1)[0] : freePacks.shift();
     if (!pack) {
       out.set(instanceId, { ...FALLBACK_PACK });
       continue;
