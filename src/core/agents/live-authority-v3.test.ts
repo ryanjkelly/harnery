@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { buildEventV3 } from "../events/v3/builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
@@ -17,6 +17,7 @@ import { readCoordinationViewV3 } from "../events/v3/coordination-view.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../events/v3/fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../events/v3/generated.ts";
 import { recordHookSignalV3 } from "../events/v3/producers/recorder.ts";
+import { reduceSafetyProjectionV3 } from "../events/v3/projection.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
 import type { ParsedPayload } from "../hooks/adapter/parse.ts";
 import {
@@ -153,6 +154,37 @@ describe("live V3 coordination", () => {
         },
       },
     });
+  });
+
+  test("releases an out-of-root claim across dot-dot and absolute forms", () => {
+    const root = startedRoot();
+    const external = join(dirname(root), "approved-output", "artifact.txt");
+
+    expect(
+      recordLiveClaimChangeV3(
+        liveInput(root, {
+          operation: "acquired",
+          path: relative(root, external),
+          access: "write",
+        }),
+      ).state,
+    ).toBe("recorded");
+    expect(readHeartbeat(root, "operator")?.files_touched).toEqual([external]);
+
+    expect(
+      recordLiveClaimChangeV3(
+        liveInput(root, { operation: "released", path: external, access: "write" }),
+      ).state,
+    ).toBe("recorded");
+
+    const read = readLedgerV3(root);
+    expect(readHeartbeat(root, "operator")?.files_touched).toEqual([]);
+    expect(reduceSafetyProjectionV3(read)).toMatchObject({
+      authority_safe: true,
+      diagnostics: [],
+      claims: {},
+    });
+    expect(JSON.stringify(read.events)).not.toContain(external);
   });
 
   test("heals a new generation and replaces a stale generation cache before task and claim", () => {

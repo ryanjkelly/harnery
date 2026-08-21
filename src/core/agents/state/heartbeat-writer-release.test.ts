@@ -9,8 +9,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { findGroupClaims, releaseClaim } from "./heartbeat-writer.ts";
+import { dirname, join, relative } from "node:path";
+import { acquireClaim, findGroupClaims, releaseClaim } from "./heartbeat-writer.ts";
 
 let root: string;
 let activeDir: string;
@@ -70,6 +70,20 @@ describe("releaseClaim path-form robustness", () => {
     expect(selfFiles()).toEqual(["docs/b.md"]);
   });
 
+  test("absolute arg releases a historical dot-dot out-of-root entry", () => {
+    const external = join(dirname(root), "approved-output", "artifact.txt");
+    seedSelf([relative(root, external), "docs/b.md"]);
+    releaseClaim(root, "self", external);
+    expect(selfFiles()).toEqual(["docs/b.md"]);
+  });
+
+  test("out-of-root acquisition stores one resolved absolute identity", () => {
+    const external = join(dirname(root), "approved-output", "artifact.txt");
+    seedSelf([relative(root, external)]);
+    acquireClaim(root, "self", external);
+    expect(selfFiles()).toEqual([external]);
+  });
+
   test("no match → unchanged", () => {
     seedSelf(["docs/a.md"]);
     releaseClaim(root, "self", "docs/nope.md");
@@ -108,6 +122,13 @@ describe("findGroupClaims path-form robustness", () => {
     seedPeer("parent", "sess-1", [join(root, "docs/a.md"), "docs/a.md", "docs/b.md"]);
     expect(findGroupClaims(root, "sess-1", "docs/a.md")).toHaveLength(1);
     expect(peerFiles("parent")).toEqual([join(root, "docs/a.md"), "docs/a.md", "docs/b.md"]);
+  });
+
+  test("recognizes absolute and dot-dot forms for an out-of-root target", () => {
+    const external = join(dirname(root), "approved-output", "artifact.txt");
+    seedPeer("parent", "sess-1", [relative(root, external)]);
+    expect(findGroupClaims(root, "sess-1", external)).toHaveLength(1);
+    expect(peerFiles("parent")).toEqual([relative(root, external)]);
   });
 
   test("walks the whole session group, skips other groups, reports hits", () => {

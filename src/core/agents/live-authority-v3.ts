@@ -25,6 +25,7 @@ import {
   readTerminalHookProducerStateV3,
   recordHookSignalV3,
 } from "../events/v3/producers/recorder.ts";
+import { canonicalClaimPath } from "./claim-path.ts";
 import {
   acquireClaim,
   type Heartbeat,
@@ -368,8 +369,4 @@ function authorityStateDigest(heartbeat: Heartbeat): `sha256:${string}` {
       display_name: heartbeat.name ?? null,
     }),
   );
-}
-
-function canonicalClaimPath(coordRoot: string, path: string): string {
-  return path.startsWith(`${coordRoot}/`) ? path.slice(coordRoot.length + 1) : path;
 }

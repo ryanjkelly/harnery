@@ -24,6 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { canonicalClaimPath } from "../claim-path.ts";
 import { assertSafeInstanceId, resolveContainedFile } from "../coord-client.ts";
 import type { AgentActivity, TaskState } from "./session-state.ts";
 
@@ -221,16 +222,12 @@ export function releaseClaim(
   instanceId: string,
   path: string,
 ): Heartbeat | null {
-  // files_touched can hold either absolute-under-coordRoot or canonical
-  // monorepo-relative entries; normalize both sides so release matches
-  // regardless of the form the caller passes (the old exact-string filter
-  // silently no-op'd on a form mismatch).
-  const norm = (p: string): string =>
-    p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
-  const target = norm(path);
+  const target = canonicalClaimPath(coordRoot, path);
   return mutate(coordRoot, instanceId, (hb) => ({
     ...hb,
-    files_touched: (hb.files_touched ?? []).filter((p) => norm(p) !== target),
+    files_touched: (hb.files_touched ?? []).filter(
+      (candidate) => canonicalClaimPath(coordRoot, candidate) !== target,
+    ),
   }));
 }
 
@@ -240,12 +237,15 @@ export function acquireClaim(
   instanceId: string,
   path: string,
 ): Heartbeat | null {
-  const norm = (p: string): string =>
-    p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
-  const target = norm(path);
+  const target = canonicalClaimPath(coordRoot, path);
   return mutate(coordRoot, instanceId, (hb) => ({
     ...hb,
-    files_touched: [...new Set([...(hb.files_touched ?? []).map(norm), target])].sort(),
+    files_touched: [
+      ...new Set([
+        ...(hb.files_touched ?? []).map((candidate) => canonicalClaimPath(coordRoot, candidate)),
+        target,
+      ]),
+    ].sort(),
   }));
 }
 
@@ -282,9 +282,7 @@ export function findGroupClaims(
   if (!groupId || !path) return hits;
   const activeDir = join(coordRoot, ".harnery", "active");
   if (!existsSync(activeDir)) return hits;
-  const norm = (p: string): string =>
-    p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
-  const target = norm(path);
+  const target = canonicalClaimPath(coordRoot, path);
   for (const f of readdirSync(activeDir)) {
     if (!f.endsWith(".json")) continue;
     const hbPath = join(activeDir, f);
@@ -298,7 +296,9 @@ export function findGroupClaims(
       (body.session_id as string | undefined) ?? (body.instance_id as string | undefined);
     if (peerSession !== groupId) continue;
     const files = (body.files_touched as string[] | undefined) ?? [];
-    if (!files.some((candidate) => norm(candidate) === target)) continue;
+    if (!files.some((candidate) => canonicalClaimPath(coordRoot, candidate) === target)) {
+      continue;
+    }
     hits.push({
       instance_id: (body.instance_id as string | undefined) ?? f.replace(/\.json$/, ""),
       session_id: body.session_id as string | undefined,
