@@ -259,6 +259,30 @@ describe("projectScene", () => {
     expect(rhythm([ev({ event_type: "turn.completed", ts: "2026-08-16T09:00:00.000Z" })])).toBe(
       "unknown",
     );
+
+    expect(
+      rhythm([
+        ev({ event_type: "tool.completed", ts: "2026-08-16T10:03:20.000Z", outcome: "ok" }),
+        ev({ event_type: "command.completed", ts: "2026-08-16T10:03:55.000Z", outcome: "ok" }),
+        ev({ event_type: "tool.completed", ts: "2026-08-16T10:04:40.000Z", outcome: "ok" }),
+      ]),
+    ).toBe("steady");
+
+    expect(
+      rhythm([
+        ev({ event_type: "tool.completed", ts: "2026-08-16T10:04:40.000Z", outcome: "ok" }),
+        ev({ event_type: "command.completed", ts: "2026-08-16T10:04:45.000Z", outcome: "ok" }),
+        ev({ event_type: "progress.observed", ts: "2026-08-16T10:04:50.000Z", outcome: "ok" }),
+        ev({ event_type: "tool.completed", ts: "2026-08-16T10:04:55.000Z", outcome: "ok" }),
+      ]),
+    ).toBe("bursty");
+
+    const duplicate = ev({
+      event_type: "tool.completed",
+      ts: "2026-08-16T10:04:55.000Z",
+      outcome: "ok",
+    });
+    expect(rhythm([duplicate, duplicate, duplicate, duplicate])).toBe("in-motion");
   });
 
   test("recent actions keep the newest three closed actions only", () => {
@@ -411,6 +435,50 @@ describe("projectScene", () => {
       now: NOW,
     });
     expect(scene.panels).toHaveLength(1);
+  });
+
+  test("mixed-adapter sessions keep their operation evidence isolated", () => {
+    const scene = projectScene({
+      snapshot: snapshot([
+        hb({ instance_id: "inst-claude", name: "Claude" }),
+        hb({ instance_id: "inst-codex", name: "Codex" }),
+        hb({ instance_id: "inst-cursor", name: "Cursor" }),
+      ]),
+      events: [
+        ev({
+          event_type: "tool.requested",
+          instance_id: "inst-claude",
+          span_id: "span-claude",
+          tool_namespace: "claude-code",
+          tool_name: "Read",
+          category: "research",
+        }),
+        ev({
+          event_type: "tool.requested",
+          instance_id: "inst-codex",
+          span_id: "span-codex",
+          tool_namespace: "functions",
+          tool_name: "apply_patch",
+          category: "edit",
+        }),
+        ev({
+          event_type: "tool.requested",
+          instance_id: "inst-cursor",
+          span_id: "span-cursor",
+          tool_namespace: "cursor",
+          tool_name: "StrReplace",
+          category: "edit",
+        }),
+      ],
+      now: NOW,
+    });
+
+    expect(
+      Object.fromEntries(
+        scene.panels.map((panel) => [panel.identity.display_name, panel.operation?.value.label]),
+      ),
+    ).toEqual({ Claude: "Reading", Codex: "Editing files", Cursor: "Editing with StrReplace" });
+    expect(scene.team_ambience.value).toBe("busy");
   });
 
   test("ping transients render only unexpired and only between rendered panels", () => {

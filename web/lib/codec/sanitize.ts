@@ -356,7 +356,16 @@ function liftMeasurement(
     confidence?: string;
   },
 ): CodecSourceEvidence | null {
-  if (measurement.state !== "observed" || !measurement.value) return null;
+  if (
+    measurement.state !== "observed" &&
+    measurement.state !== "unsupported" &&
+    measurement.state !== "expected_but_missing" &&
+    measurement.state !== "unknown"
+  ) {
+    return null;
+  }
+  base.context_observation_state = measurement.state;
+  if (measurement.state !== "observed" || !measurement.value) return base;
   const limit = measurement.value.limit_tokens;
   if (!Number.isFinite(limit) || limit <= 0) return null;
   base.used_percent = Math.min(100, (measurement.value.used_tokens / limit) * 100);

@@ -41,6 +41,9 @@ import { deriveExpressiveChannels, type ExpressiveAction } from "./expression";
 const JUST_STARTED_WINDOW_MS = 90_000;
 const WRAPPING_UP_WINDOW_MS = 20_000;
 const IN_MOTION_WINDOW_MS = 120_000;
+const CADENCE_RECENT_MS = 30_000;
+const CADENCE_BURST_MS = 20_000;
+const CADENCE_STEADY_SPAN_MS = 30_000;
 
 /** Hysteresis (percentage points) at context-band boundaries. */
 const BAND_HYSTERESIS_PP = 2;
@@ -81,6 +84,8 @@ interface InstanceEvidence {
   recentActions: CodecRecentAction[];
   /** Full recent action list for the expressive rules, ascending, capped. */
   actionsFull: ExpressiveAction[];
+  /** Successful terminal/progress evidence for bounded cadence inference. */
+  successfulProgress: Array<{ ts: string; event_id: string }>;
   openSubagents: number;
 }
 
@@ -97,10 +102,13 @@ const ACTION_TYPES = new Set([
 
 function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, InstanceEvidence> {
   const byInstance = new Map<string, InstanceEvidence>();
+  const seenEventIds = new Set<string>();
   for (const ev of events) {
+    if (seenEventIds.has(ev.event_id)) continue;
+    seenEventIds.add(ev.event_id);
     let slot = byInstance.get(ev.instance_id);
     if (!slot) {
-      slot = { recentActions: [], actionsFull: [], openSubagents: 0 };
+      slot = { recentActions: [], actionsFull: [], successfulProgress: [], openSubagents: 0 };
       byInstance.set(ev.instance_id, slot);
     }
     if (ev.parent_session_id) {
@@ -227,6 +235,16 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         });
         if (slot.recentActions.length > 3) slot.recentActions.length = 3;
       }
+      if (
+        ev.outcome === "ok" &&
+        ev.telemetry_issue === undefined &&
+        (ev.event_type === "tool.completed" ||
+          ev.event_type === "command.completed" ||
+          ev.event_type === "progress.observed")
+      ) {
+        slot.successfulProgress.push({ ts: ev.ts, event_id: ev.event_id });
+        if (slot.successfulProgress.length > ACTIONS_FULL_CAP) slot.successfulProgress.shift();
+      }
     }
   }
   return byInstance;
@@ -352,6 +370,10 @@ function progressRhythm(
   const stopTs = ms(ev.lastTurnCompleted?.ts);
   const actionTs = ms(ev.lastAction?.ts);
   const startTs = ms(ev.lastTurnOrSessionStarted?.ts);
+  const successful = ev.successfulProgress.filter((item) => {
+    const itemTs = ms(item.ts);
+    return Number.isFinite(itemTs) && nowMs >= itemTs && nowMs - itemTs <= IN_MOTION_WINDOW_MS;
+  });
 
   // wrapping-up: a just-observed turn stop with nothing newer.
   if (
@@ -373,6 +395,27 @@ function progressRhythm(
   ) {
     return present("just-started", "event", "high", ev.lastTurnOrSessionStarted.ts, [
       ev.lastTurnOrSessionStarted.event_id,
+    ]);
+  }
+  const latestSuccess = successful.at(-1);
+  const latestSuccessTs = ms(latestSuccess?.ts);
+  const burst = successful.filter((item) => nowMs - ms(item.ts) <= CADENCE_BURST_MS);
+  if (burst.length >= 4 && latestSuccess) {
+    return present("bursty", "inferred", "medium", latestSuccess.ts, [
+      ...burst.slice(-3).map((item) => item.event_id),
+    ]);
+  }
+  const firstSuccessTs = ms(successful[0]?.ts);
+  if (
+    successful.length >= 3 &&
+    latestSuccess &&
+    Number.isFinite(latestSuccessTs) &&
+    nowMs - latestSuccessTs <= CADENCE_RECENT_MS &&
+    Number.isFinite(firstSuccessTs) &&
+    latestSuccessTs - firstSuccessTs >= CADENCE_STEADY_SPAN_MS
+  ) {
+    return present("steady", "inferred", "medium", latestSuccess.ts, [
+      ...successful.slice(-3).map((item) => item.event_id),
     ]);
   }
   // in-motion: current action evidence.

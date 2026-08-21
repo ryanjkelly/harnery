@@ -127,7 +127,37 @@ describe("sanitizeEvent", () => {
       event_type: "context.observed",
       used_percent: 75,
       context_confidence: "exact",
+      context_observation_state: "observed",
     });
+  });
+
+  test("retains context capability states without inventing measurements", () => {
+    const unsupported = sanitizeEvent(
+      v3Event("context.observed", {
+        measurement: { state: "unsupported", capability: "context_usage" },
+      }),
+    );
+    expect(unsupported).toMatchObject({
+      event_type: "context.observed",
+      context_observation_state: "unsupported",
+    });
+    expect(unsupported?.used_percent).toBeUndefined();
+
+    const compacting = sanitizeEvent(
+      v3Event("context.compaction_started", {
+        before: {
+          state: "expected_but_missing",
+          capability: "pre_compaction",
+          reason: "context_measurement_incomplete",
+        },
+        method: "codex_hook",
+      }),
+    );
+    expect(compacting).toMatchObject({
+      event_type: "context.compaction_started",
+      context_observation_state: "expected_but_missing",
+    });
+    expect(compacting?.used_percent).toBeUndefined();
   });
 
   test("does not treat command intent_kind as operator-visible intent", () => {

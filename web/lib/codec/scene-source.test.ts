@@ -12,7 +12,12 @@ import {
   type CodecSourceEvidence,
   FALLBACK_PACK,
 } from "./contracts";
-import { applyLiveFeedOverlay, readSanitizedTails, stripLiveFeedOverlay } from "./scene-source";
+import {
+  applyLiveFeedOverlay,
+  mergeRemotePanels,
+  readSanitizedTails,
+  stripLiveFeedOverlay,
+} from "./scene-source";
 
 const roots: string[] = [];
 
@@ -199,6 +204,30 @@ describe("Codec live-display overlay", () => {
     };
     expect(stripLiveFeedOverlay(scene).panels[0]?.focus_bubble).toBeUndefined();
     expect(scene.panels[0]?.focus_bubble).toBeDefined();
+
+    const localPanel = scene.panels[0];
+    if (!localPanel) throw new Error("local panel missing");
+    const remoteDuplicate = {
+      ...localPanel,
+      identity: { display_name: "Remote duplicate" },
+      machine: "peer-a",
+    };
+    const remoteUnique = {
+      ...remoteDuplicate,
+      instance_id: "inst-remote",
+      identity: { display_name: "Remote unique" },
+    };
+    const withRemote = mergeRemotePanels(scene, [
+      remoteDuplicate,
+      remoteUnique,
+      { ...remoteUnique, machine: "peer-b" },
+    ]);
+    expect(withRemote.panels.map((panel) => panel.identity.display_name)).toEqual([
+      "Sara",
+      "Remote unique",
+    ]);
+    expect(withRemote.team_ambience).toEqual(scene.team_ambience);
+    expect(scene.panels).toHaveLength(1);
   });
 
   test("ignores overlays that do not match an evidence event id", () => {

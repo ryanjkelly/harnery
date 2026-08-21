@@ -87,6 +87,42 @@ describe("projectActivityChannels", () => {
     expect(channels?.operation).toBeUndefined();
   });
 
+  test("context compaction becomes a bounded operation and closes on completion", () => {
+    const started = event({
+      event_type: "context.compaction_started",
+      ts: at(40),
+      context_observation_state: "expected_but_missing",
+    });
+    const active = projectActivityChannels([started], NOW).get("inst-a");
+    expect(active?.operation).toMatchObject({
+      value: { label: "Compacting context", category: "other", state: "active" },
+      provenance: "event",
+      confidence: "high",
+      evidence_event_ids: [started.event_id],
+    });
+    expect(active?.telemetry.value).toBe("degraded");
+
+    const completed = event({
+      event_type: "context.compaction_completed",
+      ts: at(10),
+      context_observation_state: "expected_but_missing",
+    });
+    const closed = projectActivityChannels([started, completed], NOW).get("inst-a");
+    expect(closed?.operation).toBeUndefined();
+  });
+
+  test("an older compaction start cannot reopen after a newer completion", () => {
+    const channels = projectActivityChannels(
+      [
+        event({ event_type: "context.compaction_completed", ts: at(10) }),
+        event({ event_type: "context.compaction_started", ts: at(40) }),
+      ],
+      NOW,
+    ).get("inst-a");
+
+    expect(channels?.operation).toBeUndefined();
+  });
+
   test("duplicate event ids are idempotent and do not manufacture repetition", () => {
     const start = event({
       event_type: "tool.requested",

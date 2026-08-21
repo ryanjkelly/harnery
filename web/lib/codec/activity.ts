@@ -65,6 +65,8 @@ interface FrictionRecord {
 
 interface InstanceActivityState {
   open: Map<string, OpenOperation>;
+  compaction?: { ts: string; eventId: string };
+  lastCompactionCompletedTs?: string;
   pendingTerminals: Map<string, CodecSourceEvidence>;
   closedTurns: Map<string, true>;
   lastTerminalByFingerprint: Map<string, TerminalAttempt>;
@@ -388,6 +390,9 @@ export function projectActivityChannels(
     if (event.telemetry_issue) {
       slot.telemetry = { ts: event.ts, eventId: event.event_id };
     }
+    if (event.context_observation_state === "expected_but_missing") {
+      slot.telemetry = { ts: event.ts, eventId: event.event_id };
+    }
     switch (event.event_type) {
       case "tool.requested":
       case "command.started":
@@ -422,6 +427,18 @@ export function projectActivityChannels(
       case "progress.observed":
         clearForwardProgress(slot);
         break;
+      case "context.compaction_started":
+        if (
+          !slot.lastCompactionCompletedTs ||
+          millis(event.ts) > millis(slot.lastCompactionCompletedTs)
+        ) {
+          slot.compaction = { ts: event.ts, eventId: event.event_id };
+        }
+        break;
+      case "context.compaction_completed":
+        slot.compaction = undefined;
+        slot.lastCompactionCompletedTs = event.ts;
+        break;
       case "coord.claim_changed": {
         const target = targetFingerprintKey(event.target_fingerprint);
         if (!target || event.claim_access !== "write") break;
@@ -455,6 +472,7 @@ export function projectActivityChannels(
       case "session.ended":
       case "agent.completed":
         slot.open.clear();
+        slot.compaction = undefined;
         slot.pendingTerminals.clear();
         slot.activeWriteClaims.clear();
         break;
@@ -536,6 +554,22 @@ export function projectActivityChannels(
         "high",
         open.lastOutputTs ?? open.ts,
         evidenceIds,
+      );
+    } else if (slot.compaction) {
+      const elapsedMs = Number.isFinite(millis(slot.compaction.ts))
+        ? Math.max(0, nowMs - millis(slot.compaction.ts))
+        : undefined;
+      operation = present(
+        {
+          category: "other",
+          label: "Compacting context",
+          state: "active",
+          ...(elapsedMs !== undefined ? { elapsed_ms: elapsedMs } : {}),
+        },
+        "event",
+        "high",
+        slot.compaction.ts,
+        [slot.compaction.eventId],
       );
     }
 

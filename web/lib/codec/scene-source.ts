@@ -113,7 +113,7 @@ export async function readSceneSource(): Promise<CodecSceneSource> {
 
 export async function buildScene(now?: string, source?: CodecSceneSource): Promise<CodecScene> {
   const { snapshot, events } = source ?? (await readSceneSource());
-  const scene = projectScene({ snapshot, events, ...(now ? { now } : {}) });
+  let scene = projectScene({ snapshot, events, ...(now ? { now } : {}) });
   // Optional styler suggestions: read-only merge of validated, expiring
   // low-confidence styling into fallback-valued channels. Failure = no
   // styling, never a degraded scene.
@@ -126,10 +126,7 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
   // panels win instance-id collisions: the local view is closer to the
   // source when the same session is observed twice.
   try {
-    const localIds = new Set(scene.panels.map((p) => p.instance_id));
-    for (const panel of readRemotePanels()) {
-      if (!localIds.has(panel.instance_id)) scene.panels.push(panel);
-    }
+    scene = mergeRemotePanels(scene, readRemotePanels());
   } catch {
     // local scene stands
   }
@@ -170,6 +167,23 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
     scene.relationships = [];
   }
   return scene;
+}
+
+/** Merge sparse relay panels without letting remote or duplicate rows replace
+ * a closer local observation. Team ambience remains local-only because remote
+ * presence blobs do not carry the evidence needed for that inference. */
+export function mergeRemotePanels(
+  scene: CodecScene,
+  remotePanels: ReadonlyArray<CodecScene["panels"][number]>,
+): CodecScene {
+  const panels = [...scene.panels];
+  const occupiedIds = new Set(panels.map((panel) => panel.instance_id));
+  for (const panel of remotePanels) {
+    if (occupiedIds.has(panel.instance_id)) continue;
+    occupiedIds.add(panel.instance_id);
+    panels.push(panel);
+  }
+  return { ...scene, panels };
 }
 
 export function eventsFilePaths(): string[] {

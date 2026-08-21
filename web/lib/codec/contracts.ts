@@ -35,7 +35,13 @@ export type CodecActivity = "working" | "needs-input" | "idle" | "unknown";
 export type CodecLifecycle = "active" | "blocked" | "done" | "unknown";
 export type CodecContextBand = "ample" | "reduced" | "low" | "unknown";
 export type CodecFreshness = "live" | "stale" | "reconnecting" | "unknown";
-export type CodecProgressRhythm = "just-started" | "in-motion" | "wrapping-up" | "unknown";
+export type CodecProgressRhythm =
+  | "just-started"
+  | "in-motion"
+  | "steady"
+  | "bursty"
+  | "wrapping-up"
+  | "unknown";
 
 export type CodecExpression =
   | "neutral"
@@ -171,6 +177,8 @@ export interface CodecSourceEvidence {
   /** Context capacity from context.sampled. */
   used_percent?: number;
   context_confidence?: "exact" | "reported" | "estimated";
+  /** Capability state retained even when a context value is unavailable. */
+  context_observation_state?: "observed" | "unsupported" | "expected_but_missing" | "unknown";
   /** Durable display name from identity.assumed. */
   identity_name?: string;
   /** Message recipient from coord.message_observed; body never crosses. */

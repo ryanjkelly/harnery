@@ -474,8 +474,18 @@ function CodecPanel({
           </Badge>
         )}
         {panel.progress_rhythm.value !== "unknown" && (
-          <Badge variant="outline" title={`Progress rhythm: ${panel.progress_rhythm.value}`}>
+          <Badge
+            variant="outline"
+            title={`Progress rhythm: ${panel.progress_rhythm.value} (${panel.progress_rhythm.provenance}, ${panel.progress_rhythm.confidence} confidence)`}
+            className={cn(
+              panel.progress_rhythm.provenance === "inferred" &&
+                "border-dashed border-muted-foreground/60 text-foreground/80",
+            )}
+          >
             {panel.progress_rhythm.value}
+            {panel.progress_rhythm.provenance === "inferred" && (
+              <span className="ml-1 opacity-70">· inferred</span>
+            )}
           </Badge>
         )}
         {panel.expression.value !== "neutral" &&
@@ -526,7 +536,7 @@ function CodecPanel({
         {panel.telemetry?.value === "degraded" && (
           <Badge
             variant="outline"
-            className="border-dashed text-muted-foreground"
+            className="border-dashed border-muted-foreground/60 text-foreground/80"
             title="Observer telemetry is degraded; order-sensitive animation is suppressed"
           >
             observer degraded
