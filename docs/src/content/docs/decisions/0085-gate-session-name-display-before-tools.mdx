@@ -105,3 +105,12 @@ post-mint message, so later commentary cannot erase valid evidence. A readable
 malformed or missing block still denies the tool. If the transcript is
 unavailable or not flushed, the hook reports that verification is pending and
 allows the tool.
+
+A later Claude Code incident showed that ordered evidence also needs an
+explicit retry boundary. The display was correct, but the scanner had already
+classified the original post-mint reply as absent. Later copies could never
+change that historical result. While a suggestion remains pending, repeating
+the exempt `agents set-task` command now returns the unchanged suggestion with
+`session_name_retry: true`. PostToolUse treats that response as fresh mint
+evidence, which lets the next exact block satisfy the latch without renaming the
+session or claiming an unobserved display.
