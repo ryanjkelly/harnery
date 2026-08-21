@@ -112,6 +112,14 @@ export function assistantTextStartsWithSessionNameBlock(text: string, name: stri
 }
 
 /**
+ * A trailing stream redirect to `/dev/null` or another descriptor. Agents append
+ * these habitually when capturing output, and unlike a pipe or `&&` they cannot
+ * smuggle a second command, so they must not disable the remediation exemption
+ * below. Deliberately excludes redirects to a named file.
+ */
+const BENIGN_REDIRECT_SUFFIX = /\s*[012]?>>?\s*(?:&[012]|\/dev\/null)\s*$/;
+
+/**
  * The display latch must not block the two coordination commands that can
  * repair a turn or close it cleanly. Keep this intentionally narrower than
  * "any harn command" and reject shell control syntax before matching.
@@ -121,7 +129,17 @@ export function isSessionNameRemediationCommand(
   binName: string,
 ): boolean {
   if (!command || !binName) return false;
-  const body = command.replace(/^(?:[ \t]*#\s*intent:[^\n]*\n)+/i, "").trim();
+  let body = command.replace(/^(?:[ \t]*#\s*intent:[^\n]*\n)+/i, "").trim();
+
+  // Strip benign trailing redirects before the control-syntax check. Without
+  // this, `<bin> agents status --end-turn 2>&1` fails the `&` test, which
+  // disables the one exemption that can close a latched turn and leaves the
+  // session unable to satisfy either the latch or the end-of-turn rule.
+  for (let next = body.replace(BENIGN_REDIRECT_SUFFIX, "").trim(); next !== body; ) {
+    body = next;
+    next = body.replace(BENIGN_REDIRECT_SUFFIX, "").trim();
+  }
+
   if (!body || /[\n;&|<>`$]/.test(body)) return false;
   const escapedBin = binName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(

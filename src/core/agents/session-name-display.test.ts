@@ -65,6 +65,38 @@ describe("session name display latch", () => {
     );
   });
 
+  test("tolerates trailing stream redirects on remediation commands", () => {
+    // A latched session cannot close its turn if `2>&1` disables the exemption,
+    // because the end-of-turn rule requires the very command the latch blocks.
+    expect(isSessionNameRemediationCommand("harn agents status --end-turn 2>&1", "harn")).toBe(
+      true,
+    );
+    expect(isSessionNameRemediationCommand('harn agents set-task "Fix naming" 2>&1', "harn")).toBe(
+      true,
+    );
+    expect(
+      isSessionNameRemediationCommand("harn agents status --end-turn 2>/dev/null", "harn"),
+    ).toBe(true);
+    expect(
+      isSessionNameRemediationCommand("harn agents status --end-turn >/dev/null 2>&1", "harn"),
+    ).toBe(true);
+    expect(
+      isSessionNameRemediationCommand(
+        "# intent: Close the turn.\nharn agents status --end-turn 2>&1",
+        "harn",
+      ),
+    ).toBe(true);
+
+    // Redirecting to a named file, or chaining past a redirect, stays rejected.
+    expect(isSessionNameRemediationCommand("harn agents status > /tmp/out", "harn")).toBe(false);
+    expect(
+      isSessionNameRemediationCommand("harn agents status 2>&1 && echo bypass", "harn"),
+    ).toBe(false);
+    expect(isSessionNameRemediationCommand("harn agents status 2>&1 | tee /tmp/out", "harn")).toBe(
+      false,
+    );
+  });
+
   test("recognizes only start and done mint responses for the current name", () => {
     expect(
       toolResponseMintedSessionName({ suggested_session_name: NAME, first_of_session: true }, NAME),
