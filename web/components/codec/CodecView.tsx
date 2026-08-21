@@ -197,6 +197,7 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
   const current = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "online"));
   const stale = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "unknown"));
   const ended = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "offline"));
+  const panels = [...current, ...stale, ...ended];
   const transportLabel =
     status === "live"
       ? "SSE live"
@@ -216,14 +217,18 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
       : undefined;
 
   return (
-    <div className={cn("rounded-xl", AMBIENCE_CLASS[scene.team_ambience.value])}>
+    <div
+      data-codec-scene
+      className={cn(styles.codecArena, AMBIENCE_CLASS[scene.team_ambience.value])}
+    >
       <p aria-live="polite" className="sr-only">
         {announcement}
       </p>
-      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <div className={styles.sceneRail}>
         <Badge
           data-codec-feed-status
           variant={degraded ? "secondary" : "outline"}
+          className={styles.feedBadge}
           title={`Transport: ${transportLabel}; last signal ${signalAge}`}
         >
           feed {transportLabel} · {signalAge}
@@ -232,65 +237,28 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
         <Badge variant="outline" title={`Team ambience: ${scene.team_ambience.value}`}>
           ambience {scene.team_ambience.value}
         </Badge>
+        <Badge variant="outline" title="Agent presence summary">
+          {current.length} live · {stale.length} stale · {ended.length} ended
+        </Badge>
       </div>
 
-      {current.length === 0 && stale.length === 0 && ended.length === 0 ? (
-        <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+      {panels.length === 0 ? (
+        <p className={styles.emptyScene}>
           No active agents. Panels appear when a session starts.
         </p>
       ) : (
         <div ref={gridRef} className="relative">
           <RelationshipLines scene={scene} gridRef={gridRef} />
-          {current.length === 0 ? (
-            <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-              No live agents. Panels appear when a session is online.
-            </p>
-          ) : (
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
-              {current.map((panel) => (
-                <CodecPanel
-                  key={panel.instance_id}
-                  panel={panel}
-                  parentName={parentNameFor(panel)}
-                  glowing={Boolean(glowing[panel.instance_id])}
-                />
-              ))}
-            </div>
-          )}
-          {stale.length > 0 && (
-            <>
-              <p className="mt-6 mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Stale presence
-              </p>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
-                {stale.map((panel) => (
-                  <CodecPanel
-                    key={panel.instance_id}
-                    panel={panel}
-                    parentName={parentNameFor(panel)}
-                    glowing={false}
-                  />
-                ))}
-              </div>
-            </>
-          )}
-          {ended.length > 0 && (
-            <>
-              <p className="mt-6 mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Recently ended
-              </p>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
-                {ended.map((panel) => (
-                  <CodecPanel
-                    key={panel.instance_id}
-                    panel={panel}
-                    parentName={parentNameFor(panel)}
-                    glowing={false}
-                  />
-                ))}
-              </div>
-            </>
-          )}
+          <div data-codec-grid className={styles.panelGrid}>
+            {panels.map((panel) => (
+              <CodecPanel
+                key={panel.instance_id}
+                panel={panel}
+                parentName={parentNameFor(panel)}
+                glowing={Boolean(glowing[panel.instance_id])}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -417,6 +385,21 @@ const ATTENTION_RING: Record<string, string> = {
   completion: "ring-1 ring-emerald-400/60",
 };
 
+const PANEL_PALETTES = [
+  styles.paletteCyan,
+  styles.paletteViolet,
+  styles.paletteCoral,
+  styles.paletteLime,
+  styles.paletteGold,
+  styles.palettePink,
+];
+
+function panelPalette(name: string): string | undefined {
+  let hash = 0;
+  for (const character of name) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return PANEL_PALETTES[hash % PANEL_PALETTES.length];
+}
+
 function CodecPanel({
   panel,
   parentName,
@@ -433,19 +416,31 @@ function CodecPanel({
     <section
       aria-label={`Agent ${panel.identity.display_name}`}
       data-instance={panel.instance_id}
+      data-codec-card
+      data-activity={panel.activity.value}
+      data-expression={panel.expression.value}
       className={cn(
-        "relative z-[2] rounded-lg border bg-card p-3 text-card-foreground",
+        styles.codecPanel,
+        panelPalette(panel.identity.display_name),
         ATTENTION_RING[panel.attention.value],
         panel.friction && "ring-1 ring-amber-400/50",
         panel.attention.value === "error" && styles.errorFlash,
         glowing ? styles.pingArrive : styles.pingArriveFade,
-        offline && "opacity-60",
-        unknownPresence && "opacity-80",
+        offline && styles.panelOffline,
+        unknownPresence && styles.panelStale,
       )}
     >
-      <div className="flex items-center gap-3">
+      <div className={styles.portraitColumn}>
         <Portrait panel={panel} />
-        <div className="min-w-0 flex-1">
+        <div className={styles.portraitReadout}>
+          <span>{humanizeCueToken(panel.expression.value)}</span>
+          <span>{humanizeCueToken(panel.activity.value)}</span>
+        </div>
+      </div>
+
+      <div className={styles.panelBody}>
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
           <div className="truncate">
             <AgentChip name={panel.identity.display_name} />
           </div>
@@ -455,14 +450,14 @@ function CodecPanel({
           >
             {panel.identity.task?.value ?? "no declared task"}
           </p>
+          </div>
+          <ContextGauge panel={panel} />
         </div>
-        <ContextGauge panel={panel} />
-      </div>
 
-      <FocusBubble panel={panel} />
-      <OperationCue panel={panel} />
+        <FocusBubble panel={panel} />
+        <OperationCue panel={panel} />
 
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <div className={styles.statusRail}>
         <Badge
           variant={panel.activity.value === "needs-input" ? "default" : "outline"}
           title={`Activity: ${panel.activity.value} (${panel.activity.provenance})`}
@@ -564,15 +559,13 @@ function CodecPanel({
         {panel.telemetry?.value === "degraded" && (
           <Badge
             variant="outline"
-            className="border-dashed border-muted-foreground/60 text-foreground/80"
+            className={cn(
+              "border-dashed border-muted-foreground/60 text-foreground/80",
+              styles.flexibleBadge,
+            )}
             title={`Observer telemetry is degraded${panel.telemetry_reason ? `: ${humanizeCueToken(panel.telemetry_reason.value)}` : ""}; order-sensitive animation is suppressed`}
           >
             observer degraded
-            {panel.telemetry_reason && (
-              <span className="ml-1 opacity-75">
-                · {humanizeCueToken(panel.telemetry_reason.value)}
-              </span>
-            )}
           </Badge>
         )}
         {parentName && (
@@ -585,30 +578,33 @@ function CodecPanel({
             @ {panel.machine}
           </Badge>
         )}
+        </div>
+
+        {panel.remote_source && (
+          <p
+            data-codec-remote-source
+            className="mt-2 text-[11px] text-muted-foreground"
+            title="Remote source freshness is measured from the encrypted presence relay and its bounded Codec digest"
+          >
+            relay {panel.remote_source.relay.value.state} ·{" "}
+            {formatElapsed(panel.remote_source.relay.value.age_ms)} old
+            {panel.remote_source.digest ? (
+              <>
+                {" "}
+                · digest {panel.remote_source.digest.value.state} ·{" "}
+                {formatElapsed(panel.remote_source.digest.value.age_ms)} old
+              </>
+            ) : (
+              <> · digest unavailable</>
+            )}
+          </p>
+        )}
+
+        <ActionTrail actions={panel.recent_actions} />
       </div>
-
-      {panel.remote_source && (
-        <p
-          data-codec-remote-source
-          className="mt-2 text-[11px] text-muted-foreground"
-          title="Remote source freshness is measured from the encrypted presence relay and its bounded Codec digest"
-        >
-          relay {panel.remote_source.relay.value.state} ·{" "}
-          {formatElapsed(panel.remote_source.relay.value.age_ms)} old
-          {panel.remote_source.digest ? (
-            <>
-              {" "}
-              · digest {panel.remote_source.digest.value.state} ·{" "}
-              {formatElapsed(panel.remote_source.digest.value.age_ms)} old
-            </>
-          ) : (
-            <> · digest unavailable</>
-          )}
-        </p>
-      )}
-
-      <ActionTrail actions={panel.recent_actions} />
-      <EvidenceReceipt panel={panel} />
+      <div className={styles.evidenceFooter}>
+        <EvidenceReceipt panel={panel} />
+      </div>
     </section>
   );
 }
@@ -698,15 +694,15 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
   return (
     <div
       role="status"
-      className="mt-2 flex min-w-0 items-center gap-2 rounded-md border bg-muted/35 px-2.5 py-1.5 text-xs"
+      className={styles.operationCue}
       aria-label={`Current operation: ${operation.value.label}, ${stateLabel}`}
       title={`Current operation (${operation.provenance}): ${operation.value.label} · ${stateLabel}`}
     >
-      <Icon className="size-3.5 flex-none text-muted-foreground" aria-hidden />
-      <span className="min-w-0 flex-1 truncate font-medium">{operation.value.label}</span>
+      <Icon className={styles.operationIcon} aria-hidden />
+      <span className={styles.operationLabel}>{operation.value.label}</span>
       <span
         className={cn(
-          "flex-none text-muted-foreground",
+          styles.operationState,
           operation.value.state === "output-flow" &&
             panel.telemetry?.value !== "degraded" &&
             styles.outputFlow,
@@ -741,11 +737,12 @@ function FocusBubble({ panel }: { panel: CodecPanelScene }) {
     <p
       className={cn(
         "mt-2 inline-flex max-w-full items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs",
+        styles.focusBubble,
         inferred ? "border-dashed text-muted-foreground" : "text-foreground",
       )}
       title={`Focus (${bubble.value.basis}): ${bubble.value.text}`}
     >
-      <span className="min-w-0 break-words">{bubble.value.text}</span>
+      <span className={styles.focusText}>{bubble.value.text}</span>
       {inferred && <span className="flex-none opacity-70">· inferred</span>}
     </p>
   );
@@ -763,23 +760,23 @@ function Portrait({ panel }: { panel: CodecPanelScene }) {
   return (
     <span className={cn(styles.portraitFrame, !online && styles.portraitStatic)} aria-hidden>
       {usePack ? (
-        // biome-ignore lint/performance/noImgElement: local 48px WebP pack assets should not be re-encoded
+        // biome-ignore lint/performance/noImgElement: local 512px WebP pack assets should not be re-encoded
         <img
           src={`/api/codec-pack/${panel.character.pack_id}/${panel.expression.value}?v=${panel.character.pack_version}`}
           alt=""
-          width={48}
-          height={48}
+          width={512}
+          height={512}
           onError={() => setFailed(true)}
           className={cn(
-            "size-12 rounded-md border object-cover",
+            styles.portraitImage,
             online && panel.activity.value === "working" && styles.breathing,
-            !online && "opacity-70 grayscale",
+            !online && styles.portraitImageOffline,
           )}
         />
       ) : (
         <span
           className={cn(
-            "grid size-12 place-items-center rounded-md border bg-muted font-mono text-lg font-bold",
+            styles.portraitFallback,
             online ? "text-foreground" : "text-muted-foreground",
           )}
         >
@@ -817,14 +814,14 @@ function ContextGauge({ panel }: { panel: CodecPanelScene }) {
 function ActionTrail({ actions }: { actions: CodecRecentAction[] }) {
   if (actions.length === 0) return null;
   return (
-    <ul className="mt-2 flex items-center gap-1.5" aria-label="Recent actions">
+    <ul className={styles.actionTrail} aria-label="Recent actions">
       {actions.map((action) => {
         const Icon = CATEGORY_ICONS[action.category] ?? CircleDashed;
         return (
           <li
             key={action.event_id}
             className={cn(
-              "grid size-6 place-items-center rounded border",
+              styles.actionIcon,
               action.outcome === "error"
                 ? "border-red-300 text-red-600 dark:border-red-900 dark:text-red-400"
                 : "text-muted-foreground",

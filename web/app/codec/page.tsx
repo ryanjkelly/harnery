@@ -10,6 +10,7 @@
 
 import { AgentChipProvider } from "@/components/AgentChip";
 import { CodecView } from "@/components/codec/CodecView";
+import styles from "@/components/codec/codec.module.css";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
 import { buildScene } from "@/lib/codec/scene-source";
 
@@ -22,18 +23,22 @@ export default async function CodecPage() {
 
   return (
     <AgentChipProvider summaries={summaries}>
-      <main className="mx-auto max-w-6xl px-4 py-6">
-        <header className="mb-5 flex items-baseline justify-between gap-3 flex-wrap">
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight">Codec</h1>
-            <p className="text-sm text-muted-foreground">
-              Read-only presentation of live agent activity from the V3 event ledger. Local intent
-              overlay lasts 15 minutes and never leaves this machine. Experimental; the dashboard
-              remains the control surface.
-            </p>
+      <main className={styles.codecPage}>
+        <div className={styles.pageGrid} aria-hidden />
+        <header className={styles.codecHeader}>
+          <div className={styles.headerTitleRow}>
+            <span className={styles.headerBeacon} aria-hidden />
+            <p className={styles.headerKicker}>Live agent director</p>
+            <h1 className={styles.codecTitle}>Codec</h1>
           </div>
+          <p className={styles.codecDeck}>
+            A read-only, ledger-backed view of the team in motion. Local intent stays on this
+            machine; the dashboard remains the control surface.
+          </p>
         </header>
-        <CodecView initialScene={scene} />
+        <div className={styles.codecStage}>
+          <CodecView initialScene={scene} />
+        </div>
       </main>
     </AgentChipProvider>
   );
