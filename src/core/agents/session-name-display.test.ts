@@ -89,9 +89,9 @@ describe("session name display latch", () => {
 
     // Redirecting to a named file, or chaining past a redirect, stays rejected.
     expect(isSessionNameRemediationCommand("harn agents status > /tmp/out", "harn")).toBe(false);
-    expect(
-      isSessionNameRemediationCommand("harn agents status 2>&1 && echo bypass", "harn"),
-    ).toBe(false);
+    expect(isSessionNameRemediationCommand("harn agents status 2>&1 && echo bypass", "harn")).toBe(
+      false,
+    );
     expect(isSessionNameRemediationCommand("harn agents status 2>&1 | tee /tmp/out", "harn")).toBe(
       false,
     );
