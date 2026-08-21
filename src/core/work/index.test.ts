@@ -109,6 +109,106 @@ describe("durable work ledger", () => {
     });
   });
 
+  test("work-set scans isolate a recorded legacy run-manifest shape", async () => {
+    const { root, workflowPath } = fixture();
+    for (const id of ["work-readable-run", "work-legacy-run"]) {
+      createWorkItem({
+        coordRoot: root,
+        id,
+        title: id,
+        objective: "Keep readable work available",
+        workflowPath,
+      });
+    }
+    const report = await runWorkItem({
+      coordRoot: root,
+      workId: "work-legacy-run",
+      engine: {
+        spawners: {},
+        specialists: {
+          reviewer: {
+            instructions: "Review the bounded result",
+            adapter: "cursor",
+            effort: "high",
+          },
+        },
+      },
+    });
+    const manifestPath = join(root, ".harnery", "workflows", report.runId, "run.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      execution: Record<string, unknown>;
+    };
+
+    // This is the persisted pre-adapter vocabulary observed in an unreadable
+    // run: default_harness plus role-level harness, timeoutMs, and maxTurns.
+    const execution = manifest.execution;
+    execution.default_harness = execution.default_adapter;
+    delete execution.default_adapter;
+    const specialists = execution.specialists as Record<string, Record<string, unknown>>;
+    for (const profile of Object.values(specialists)) {
+      profile.harness = profile.adapter;
+      delete profile.adapter;
+      profile.timeoutMs = 1_800_000;
+      profile.maxTurns = 24;
+    }
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    expect(() => readWorkItem(root, "work-legacy-run")).toThrow(
+      /workflow run manifest .* has an unsupported or mismatched schema/,
+    );
+    expect(listWorkItems(root).map((record) => record.intent.id)).toEqual(["work-readable-run"]);
+    expect(listWorkItemsWithWarnings(root)).toMatchObject({
+      records: [{ intent: { id: "work-readable-run" } }],
+      warnings: [
+        {
+          work_id: "work-legacy-run",
+          reason: expect.stringMatching(
+            /workflow run manifest .* has an unsupported or mismatched schema/,
+          ),
+        },
+      ],
+    });
+  });
+
+  test("run-manifest identity stays strict for the operated work item", async () => {
+    const { root, workflowPath } = fixture();
+    for (const id of ["manifest-owner-mismatch", "manifest-context-mismatch"]) {
+      createWorkItem({
+        coordRoot: root,
+        id,
+        title: id,
+        objective: `Preserve ${id}`,
+        workflowPath,
+      });
+    }
+    const ownerReport = await runWorkItem({
+      coordRoot: root,
+      workId: "manifest-owner-mismatch",
+      engine: { spawners: {} },
+    });
+    const ownerPath = join(root, ".harnery", "workflows", ownerReport.runId, "run.json");
+    const ownerManifest = JSON.parse(readFileSync(ownerPath, "utf8"));
+    ownerManifest.work_item_id = "different-owner";
+    ownerManifest.work_context.id = "different-owner";
+    writeFileSync(ownerPath, `${JSON.stringify(ownerManifest, null, 2)}\n`);
+    expect(() => readWorkItem(root, "manifest-owner-mismatch")).toThrow(
+      /does not belong to work item manifest-owner-mismatch/,
+    );
+
+    const contextReport = await runWorkItem({
+      coordRoot: root,
+      workId: "manifest-context-mismatch",
+      engine: { spawners: {} },
+    });
+    const contextPath = join(root, ".harnery", "workflows", contextReport.runId, "run.json");
+    const contextManifest = JSON.parse(readFileSync(contextPath, "utf8"));
+    contextManifest.work_context.objective = "Changed after execution";
+    writeFileSync(contextPath, `${JSON.stringify(contextManifest, null, 2)}\n`);
+    expect(() => readWorkItem(root, "manifest-context-mismatch")).toThrow(
+      /work context does not match work item manifest-context-mismatch/,
+    );
+  });
+
   test("derives dependency readiness without mutating the dependent", () => {
     const { root, workflowPath } = fixture();
     createWorkItem({
