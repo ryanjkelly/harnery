@@ -48,11 +48,21 @@ export interface StoredQaSnapshot {
 /** Filesystem-safe key for a target URL/file + render context. The digest
  * disambiguates targets whose sanitized slugs collide. */
 export function qaSnapshotKey(target: string): string {
-  const slug = target
-    .replace(/^[a-z]+:\/\//i, "")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
+  const source = target.replace(/^[a-z]+:\/\//i, "");
+  let slug = "";
+  let separatorPending = false;
+  for (let index = 0; index < source.length && slug.length < 80; index++) {
+    const code = source.charCodeAt(index);
+    const alpha = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    const digit = code >= 48 && code <= 57;
+    if (alpha || digit) {
+      if (separatorPending && slug.length > 0 && slug.length < 80) slug += "-";
+      if (slug.length < 80) slug += source[index];
+      separatorPending = false;
+    } else if (slug.length > 0) {
+      separatorPending = true;
+    }
+  }
   return `${slug || "target"}-${fnv1a32(target).slice(0, 8)}`;
 }
 

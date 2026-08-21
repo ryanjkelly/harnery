@@ -9,7 +9,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildSuggestedName, setTask, stampSessionNameSeen } from "./heartbeat-writer.ts";
+import {
+  buildSuggestedName,
+  readHeartbeat,
+  setTask,
+  stampSessionNameSeen,
+} from "./heartbeat-writer.ts";
 
 let root: string;
 let activeDir: string;
@@ -53,6 +58,11 @@ function seed(extra: Record<string, unknown> = {}): void {
 function readSelf(): Record<string, unknown> {
   return JSON.parse(readFileSync(join(activeDir, "self.json"), "utf8"));
 }
+
+test("heartbeat paths reject traversal before touching the filesystem", () => {
+  expect(() => readHeartbeat(root, "../outside")).toThrow(/instance_id/);
+  expect(() => readHeartbeat(root, "nested/owner")).toThrow(/instance_id/);
+});
 
 describe("setTask session naming", () => {
   test("first non-empty declaration builds and stamps the name", () => {

@@ -92,6 +92,12 @@ describe("removeRegion", () => {
     expect(r.removed).toBe(true);
     expect(r.text).toBe("");
   });
+
+  test("trims horizontal whitespace before newlines without changing kept content", () => {
+    const withBlock = `${regionBlock(REGION, "drop")}\n\nkeep  \nnext\t\n`;
+    const r = removeRegion(withBlock, REGION);
+    expect(r.text).toBe("keep\nnext\n");
+  });
 });
 
 describe("checkRegion", () => {

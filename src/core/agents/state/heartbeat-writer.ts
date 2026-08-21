@@ -23,7 +23,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { assertSafeInstanceId, resolveContainedFile } from "../coord-client.ts";
 import type { AgentActivity, TaskState } from "./session-state.ts";
 
 export interface Heartbeat {
@@ -74,7 +75,12 @@ export interface Heartbeat {
 }
 
 function heartbeatPath(coordRoot: string, instanceId: string): string {
-  return join(coordRoot, ".harnery", "active", `${instanceId}.json`);
+  assertSafeInstanceId(instanceId);
+  const safeInstanceId = basename(instanceId);
+  if (safeInstanceId !== instanceId) {
+    throw new Error("instance_id must be a direct-child coordination basename");
+  }
+  return resolveContainedFile(join(coordRoot, ".harnery", "active"), `${safeInstanceId}.json`);
 }
 
 function nowIsoSeconds(): string {

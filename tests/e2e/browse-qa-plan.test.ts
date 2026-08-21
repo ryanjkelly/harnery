@@ -51,6 +51,21 @@ function signature(
 }
 
 describe("fixture-backed QA classification", () => {
+  test("QA anchors completely escape quoted attribute values", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      const html = `<section data-qa-scope='quote"back\\slash'><p>Copy</p></section>`;
+      await browser.navigate(`data:text/html,${encodeURIComponent(html)}`);
+      const capture = await browser.qaSignature();
+      expect(capture.nodes.find((node) => node.tag === "p")?.anchor?.selector).toBe(
+        `[data-qa-scope="quote\\"back\\\\slash"]`,
+      );
+    } finally {
+      await browser.close();
+    }
+  });
+
   test("text/data edits skip vision while visual evidence always reviews", async () => {
     const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
     try {

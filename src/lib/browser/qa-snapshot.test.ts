@@ -39,6 +39,11 @@ describe("qaSnapshotKey", () => {
     expect(a).toMatch(/^[a-zA-Z0-9-]+$/);
     expect(a).not.toBe(b);
   });
+
+  test("bounds separator-heavy targets without a backtracking trim", () => {
+    const key = qaSnapshotKey(`https://${"-".repeat(100_000)}`);
+    expect(key).toMatch(/^target-[0-9a-f]{8}$/);
+  });
 });
 
 describe("save/load", () => {

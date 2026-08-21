@@ -32,6 +32,24 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function trimHorizontalWhitespaceBeforeNewlines(content: string): string {
+  const chunks: string[] = [];
+  let segmentStart = 0;
+  for (let index = 0; index < content.length; index++) {
+    if (content.charCodeAt(index) !== 10) continue;
+    let segmentEnd = index;
+    while (segmentEnd > segmentStart) {
+      const code = content.charCodeAt(segmentEnd - 1);
+      if (code !== 32 && code !== 9) break;
+      segmentEnd--;
+    }
+    chunks.push(content.slice(segmentStart, segmentEnd), "\n");
+    segmentStart = index + 1;
+  }
+  chunks.push(content.slice(segmentStart));
+  return chunks.join("");
+}
+
 /**
  * Marker comment style. Markdown/HTML files wrap markers in HTML comments;
  * shell files (git hooks) use `#` line comments. The style only changes the
@@ -94,7 +112,7 @@ export function spliceRegion(
     const text = content.replace(re, () => fresh);
     return { text, changed: text !== content, had: true, stale };
   }
-  const trimmed = content.replace(/\s+$/, "");
+  const trimmed = content.trimEnd();
   const text = trimmed ? `${trimmed}\n\n${fresh}\n` : `${fresh}\n`;
   return { text, changed: true, had: false, stale: false };
 }
@@ -112,9 +130,7 @@ export function removeRegion(
 ): { text: string; removed: boolean } {
   const re = regionRe(region, style);
   if (!re.test(content)) return { text: content, removed: false };
-  const stripped = content
-    .replace(re, "")
-    .replace(/[ \t]+\n/g, "\n")
+  const stripped = trimHorizontalWhitespaceBeforeNewlines(content.replace(re, ""))
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return { text: stripped ? `${stripped}\n` : "", removed: true };

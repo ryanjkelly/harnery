@@ -732,7 +732,7 @@ export class Browser {
         if (el.id && idCount.get(el.id) === 1) return `#${CSS.escape(el.id)}`;
         const scope = el.getAttribute("data-qa-scope");
         if (scope && scopeCount.get(scope) === 1) {
-          return `[data-qa-scope="${scope.replace(/"/g, '\\"')}"]`;
+          return `[data-qa-scope="${CSS.escape(scope)}"]`;
         }
         return null;
       };
