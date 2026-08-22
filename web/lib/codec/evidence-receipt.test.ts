@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { CodecPanelScene } from "./contracts";
 import { codecEvidenceReceiptRows } from "./evidence-receipt";
+import { setCodecSemantic } from "./semantic-contract";
 
 const shown = <T>(value: T, event = "evt_receipt") => ({
   value,
@@ -50,6 +51,37 @@ test("evidence receipt exposes bounded provenance without raw source content", (
     character: { pack_id: "fallback-neutral", pack_version: "0" },
     updated_at: "2026-08-21T15:00:01.000Z",
   } satisfies CodecPanelScene;
+  setCodecSemantic(panel, {
+    state: "current",
+    reader_outcome: "accepted",
+    reader: {
+      harness: "codex",
+      configured_model: "gpt-5.6-luna",
+      resolved_model_id: "gpt-5.6-luna",
+      model_attestation: "requested-only",
+    },
+    evidence_digest: `sha256:${"a".repeat(64)}`,
+    observed_through_event_id: "evt_semantic",
+    observed_through_ts: "2026-08-21T15:00:00.000Z",
+    generated_at: "2026-08-21T15:00:01.000Z",
+    expires_at: "2026-08-21T15:05:00.000Z",
+    summary: {
+      value: "The agent is checking the reader contract.",
+      basis: "model-synthesis",
+      provenance: "inferred",
+      confidence: "high",
+      observed_at: "2026-08-21T15:00:01.000Z",
+      evidence_event_ids: ["evt_semantic"],
+    },
+    next_step: {
+      value: "Verify the merged scene.",
+      basis: "prediction",
+      provenance: "inferred",
+      confidence: "low",
+      observed_at: "2026-08-21T15:00:01.000Z",
+      evidence_event_ids: ["evt_semantic"],
+    },
+  });
   const rows = codecEvidenceReceiptRows(panel);
   expect(rows.find((row) => row.channel === "operation")?.value).toBe("Editing files · active");
   expect(rows.find((row) => row.channel === "operation")?.detail).toBe(
@@ -62,6 +94,16 @@ test("evidence receipt exposes bounded provenance without raw source content", (
   expect(rows.find((row) => row.channel === "relay")?.detail).toBe("age 20s");
   expect(rows.find((row) => row.channel === "remote digest")?.detail).toBe("age 3m");
   expect(rows.find((row) => row.channel === "presence")?.group).toBe("state");
+  expect(rows.find((row) => row.channel === "semantic reader")).toMatchObject({
+    value: "gpt-5.6-luna · current",
+    confidence: "medium",
+    expires_at: "2026-08-21T15:05:00.000Z",
+  });
+  expect(rows.find((row) => row.channel === "summary")?.detail).toBe("model-synthesis");
+  expect(rows.find((row) => row.channel === "next prediction")).toMatchObject({
+    detail: "prediction",
+    confidence: "low",
+  });
   expect(rows[0]?.evidence_event_ids).toEqual(["evt_two", "evt_three", "evt_four"]);
   expect(JSON.stringify(rows)).not.toContain("tool_input");
 });

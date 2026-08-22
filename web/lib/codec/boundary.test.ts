@@ -23,6 +23,8 @@ const ENTRYPOINTS = [
   "lib/codec/validator.ts",
   "lib/codec/packs.ts",
   "lib/codec/suggestions.ts",
+  "lib/codec/semantic-contract.ts",
+  "lib/codec/semantic.ts",
   "lib/codec/remote-source.ts",
   "lib/codec/relationships.ts",
   "lib/codec/scene-source.ts",

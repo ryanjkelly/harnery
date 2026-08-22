@@ -1,4 +1,9 @@
 import type { CodecPanelScene, Presented } from "./contracts";
+import {
+  type CodecSemanticChannel,
+  type CodecSemanticPresented,
+  codecSemantic,
+} from "./semantic-contract";
 
 export interface CodecEvidenceReceiptRow {
   group: "state" | "activity" | "source";
@@ -31,6 +36,8 @@ export function codecEvidenceReceiptRows(panel: CodecPanelScene): CodecEvidenceR
   }
   if (panel.focus_bubble) add(rows, "activity", "focus", panel.focus_bubble);
   if (panel.ledger_state) add(rows, "source", "ledger", panel.ledger_state);
+  const semantic = codecSemantic(panel);
+  if (semantic) addSemanticRows(rows, semantic);
   if (panel.remote_source) {
     add(rows, "source", "relay", panel.remote_source.relay);
     if (panel.remote_source.digest) {
@@ -49,6 +56,60 @@ export function codecEvidenceReceiptRows(panel: CodecPanelScene): CodecEvidenceR
     });
   }
   return rows;
+}
+
+function addSemanticRows(rows: CodecEvidenceReceiptRow[], semantic: CodecSemanticChannel): void {
+  rows.push({
+    group: "source",
+    channel: "semantic reader",
+    value: `${semantic.reader.configured_model} · ${semantic.state}`,
+    detail: [
+      semantic.reader.harness,
+      semantic.reader.resolved_model_id,
+      semantic.reader.model_attestation,
+      semantic.receipt?.reason_code,
+    ]
+      .filter((part): part is string => Boolean(part))
+      .join(" · "),
+    provenance: "projection",
+    confidence:
+      semantic.reader.model_attestation === "verified"
+        ? "high"
+        : semantic.reader.model_attestation === "requested-only"
+          ? "medium"
+          : "low",
+    observed_at: semantic.generated_at,
+    evidence_event_ids: [semantic.observed_through_event_id],
+    expires_at: semantic.expires_at,
+  });
+  if (semantic.state !== "current") return;
+  addSemantic(rows, "headline", semantic.headline);
+  addSemantic(rows, "summary", semantic.summary);
+  addSemantic(rows, "phase", semantic.phase);
+  addSemantic(rows, "purpose", semantic.purpose);
+  addSemantic(rows, "recent result", semantic.recent_result);
+  addSemantic(rows, "semantic attention", semantic.attention);
+  addSemantic(rows, "next prediction", semantic.next_step);
+  addSemantic(rows, "tags", semantic.tags);
+}
+
+function addSemantic(
+  rows: CodecEvidenceReceiptRow[],
+  channel: string,
+  field: CodecSemanticPresented<unknown> | undefined,
+): void {
+  if (!field) return;
+  rows.push({
+    group: "activity",
+    channel,
+    value: displayValue(field.value),
+    detail: field.basis,
+    provenance: field.provenance,
+    confidence: field.confidence,
+    observed_at: field.observed_at,
+    evidence_event_ids: (field.evidence_event_ids ?? []).slice(-3),
+    ...(field.expires_at ? { expires_at: field.expires_at } : {}),
+  });
 }
 
 function add(

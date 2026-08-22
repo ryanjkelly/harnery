@@ -31,7 +31,8 @@ import { projectScene } from "./projector";
 import { deriveRelationships } from "./relationships";
 import { readRemotePresence } from "./remote-source";
 import { sanitizeEvent, sanitizeLine } from "./sanitize";
-import { applySuggestions } from "./suggestions";
+import { applySemanticReadModel } from "./semantic";
+import { stripCodecSemantic } from "./semantic-contract";
 
 /** How much of the log tail to fold. ~1KB/row → a few thousand recent rows. */
 const TAIL_BYTES = 4_000_000;
@@ -114,11 +115,10 @@ export async function readSceneSource(): Promise<CodecSceneSource> {
 export async function buildScene(now?: string, source?: CodecSceneSource): Promise<CodecScene> {
   const { snapshot, events } = source ?? (await readSceneSource());
   let scene = projectScene({ snapshot, events, ...(now ? { now } : {}) });
-  // Optional styler suggestions: read-only merge of validated, expiring
-  // low-confidence styling into fallback-valued channels. Failure = no
-  // styling, never a degraded scene.
+  // Optional semantic meaning is a separate validated presentation channel.
+  // It may fill only low-information fields and never weakens the scene.
   try {
-    applySuggestions(scene, events);
+    applySemanticReadModel(scene, events, coordRoot(), now ? new Date(now) : new Date());
   } catch {
     // deterministic scene stands
   }
@@ -240,7 +240,7 @@ export function stripLiveFeedOverlay(scene: CodecScene): CodecScene {
     ...scene,
     panels: scene.panels.map((panel) => {
       const { intent_history: _localIntents, ...withoutIntents } = panel;
-      let sanitized: CodecScene["panels"][number] = withoutIntents;
+      let sanitized: CodecScene["panels"][number] = stripCodecSemantic(withoutIntents);
       if (sanitized.context_usage) {
         const {
           used_tokens: _usedTokens,

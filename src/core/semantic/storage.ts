@@ -11,7 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { canonicalJsonV3, type LedgerCursorV3, sha256V3 } from "../events/v3/index.ts";
+import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
+import type { LedgerCursorV3 } from "../events/v3/reader.ts";
 import {
   SEMANTIC_EVIDENCE_CONTRACT_VERSION,
   SEMANTIC_PROMPT_CONTRACT_VERSION,

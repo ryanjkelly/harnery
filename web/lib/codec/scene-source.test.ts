@@ -18,6 +18,7 @@ import {
   readSanitizedTails,
   stripLiveFeedOverlay,
 } from "./scene-source";
+import { codecSemantic, setCodecSemantic } from "./semantic-contract";
 
 const roots: string[] = [];
 
@@ -237,6 +238,18 @@ describe("Codec live-display overlay", () => {
       },
       generated_at: overlay.written_at,
     };
+    const localSemanticPanel = scene.panels[0];
+    if (!localSemanticPanel) throw new Error("local semantic panel missing");
+    setCodecSemantic(localSemanticPanel, {
+      state: "current",
+      reader_outcome: "accepted",
+      reader: { harness: "codex", configured_model: "gpt-5.6-luna" },
+      evidence_digest: `sha256:${"a".repeat(64)}`,
+      observed_through_event_id: eventId,
+      observed_through_ts: overlay.written_at,
+      generated_at: overlay.written_at,
+      expires_at: overlay.expires_at,
+    });
     const stripped = stripLiveFeedOverlay(scene).panels[0];
     expect(stripped?.focus_bubble).toBeUndefined();
     expect(stripped?.intent_history).toBeUndefined();
@@ -245,6 +258,7 @@ describe("Codec live-display overlay", () => {
       remaining_percent: 25,
     });
     expect(stripped?.artifact_cue?.value).toEqual({ kind: "image", operation: "created" });
+    expect(stripped && codecSemantic(stripped)).toBeUndefined();
     expect(scene.panels[0]?.focus_bubble).toBeDefined();
     expect(scene.panels[0]?.intent_history).toHaveLength(1);
     expect(scene.panels[0]?.context_usage?.value.used_tokens).toBe(150_000);
