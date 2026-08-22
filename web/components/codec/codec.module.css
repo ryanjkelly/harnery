@@ -1162,7 +1162,7 @@
 
 .semanticReadMuted {
   border-style: dashed;
-  opacity: 0.78;
+  background: rgb(24 24 31 / 0.62);
 }
 
 .semanticSummaryLine {
@@ -1225,7 +1225,7 @@
 }
 
 .semanticState {
-  color: var(--muted-foreground);
+  color: rgb(228 228 231 / 0.9);
 }
 
 .semanticBody {
@@ -1270,7 +1270,7 @@
 
 .semanticTags,
 .semanticReceipt {
-  color: var(--muted-foreground);
+  color: rgb(212 212 216 / 0.86);
   font-size: 0.53rem;
   line-height: 1.35;
 }
