@@ -697,7 +697,9 @@ function processHookSignalLocked(
         (nativeTid !== undefined && state.current_turn_id === nativeTid));
 
     recordTurnHarnessTiming(state, input, !duplicateOpenTurnStart);
-    reconcilePendingRuntimeContexts(input, state, path, rootId, fingerprintContext);
+    reconcilePendingRuntimeContexts(input, state, path, rootId, fingerprintContext, {
+      finalAttempt: input.signal === "session-end",
+    });
 
     closeResolvedWaits(input, state, path, rootId, fingerprintContext, nativeTid);
     if (input.signal === "permission-request") {

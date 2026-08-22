@@ -1504,6 +1504,117 @@ describe("event ledger V3 persistent hook recorder", () => {
     ).toBeUndefined();
   });
 
+  test("bounds an unresolved Codex context join at approved session end", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-approved-end-unresolved-context";
+    const nativeTurn = "codex-approved-end-unresolved-turn";
+    const transcript = join(root, `rollout-fixture-${nativeSession}.jsonl`);
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        timestamp: "2026-08-21T20:24:00.000Z",
+        ordinal: 1,
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: nativeTurn },
+      })}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+        "codex",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+        "codex",
+      ),
+    );
+    const state = readHookProducerStateV3(root, "codex", nativeSession);
+    if (!state) throw new Error("producer state missing");
+
+    const startedAt = performance.now();
+    expect(
+      recordApprovedSessionEndV3({
+        coordRoot: root,
+        mode: "candidate",
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        build_id: "build_fixture",
+        platform: "linux",
+        reason: "approved_explicit_end",
+        outcome: "succeeded",
+        coordination_finalized: true,
+      }).state,
+    ).toBe("recorded");
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(elapsedMs).toBeGreaterThanOrEqual(450);
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect(
+      readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+    ).toBeUndefined();
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    expect(events.filter((event) => event.event_type === "context.observed")).toHaveLength(1);
+    expect(events.at(-1)?.event_type).toBe("session.ended");
+  });
+
+  test("treats a native Codex session end as the final pending-context attempt", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-native-end-unresolved-context";
+    const nativeTurn = "codex-native-end-unresolved-turn";
+    const transcript = join(root, `rollout-fixture-${nativeSession}.jsonl`);
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        timestamp: "2026-08-21T20:24:00.000Z",
+        ordinal: 1,
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: nativeTurn },
+      })}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+        "codex",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+        "codex",
+      ),
+    );
+    expect(
+      readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+    ).toHaveLength(1);
+
+    recordHookSignalV3(
+      baseInput(root, "session-end", parsed({ session_id: nativeSession }), "codex"),
+    );
+
+    expect(
+      readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+    ).toBeUndefined();
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    expect(events.filter((event) => event.event_type === "context.observed")).toHaveLength(1);
+    expect(events.at(-1)?.event_type).toBe("session.ended");
+  });
+
   test("bounds late Codex context retries when the transcript remains unflushed", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-bounded-context-retry";
