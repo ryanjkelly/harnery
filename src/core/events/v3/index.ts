@@ -253,6 +253,7 @@ export {
 } from "./projection.ts";
 export {
   digestEventV3AuthorityDirectoryV3,
+  eventV3ActiveWatchPath,
   inspectInvalidActiveAuthorityV3,
   type LedgerCursorV3,
   type LedgerDiagnosticCodeV3,
