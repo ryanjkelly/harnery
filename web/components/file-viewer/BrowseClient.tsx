@@ -28,8 +28,9 @@ import { DirectoryTree } from "./DirectoryTree";
 import { FileViewerPane } from "./FileViewerPane";
 
 export interface BrowseScope {
-  /** Display name of the agent whose artifacts scope the tree (null if unknown). */
-  agentName: string | null;
+  /** Banner text naming the scope (composed server-side: "Foo's artifacts",
+   * a directory path, or the no-artifacts fallback notice). */
+  label: string;
   /** Tree root directories (repo-relative), newest workspace first. */
   roots: string[];
 }
@@ -174,11 +175,11 @@ export function BrowseClient({
   );
 }
 
-/** Names the agent scoping the tree and links back to the unscoped repo view
+/** Names the scope rooting the tree and links back to the unscoped repo view
  * (a full navigation so the server re-renders without the scope). */
 function ScopeBanner({ scope, selected }: { scope: BrowseScope; selected: string | null }) {
   const fullRepoHref = selected ? `/browse?file=${encodeURIComponent(selected)}` : "/browse";
-  const label = scope.agentName ? `${scope.agentName}'s artifacts` : "Agent artifacts";
+  const label = scope.label;
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5 text-xs">
       <FolderTree className="size-3.5 shrink-0 text-muted-foreground" />
