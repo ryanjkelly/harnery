@@ -1325,11 +1325,11 @@
 }
 
 .intentHistory li[data-depth="2"] {
-  opacity: 0.58;
+  opacity: 0.74;
 }
 
 .intentHistory li[data-depth="3"] {
-  opacity: 0.32;
+  opacity: 0.56;
 }
 
 .intentLine,
