@@ -183,6 +183,9 @@ export function DirectoryTree({
   }
 
   if (scoped) {
+    if (roots.length === 0) {
+      return <p className="p-3 text-xs italic text-muted-foreground/60">Nothing in this scope.</p>;
+    }
     const statsOf = (r: string) => usage.current.get(r)?.self;
     const maxBytes = roots.reduce((m, r) => Math.max(m, statsOf(r)?.totalBytes ?? 0), 1);
     return (
