@@ -270,73 +270,77 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
       <p aria-live="polite" className="sr-only">
         {announcement}
       </p>
-      {mode === "replay" && activeReplayPhase && (
-        <section
-          data-codec-replay-banner
-          data-codec-replay-phase={activeReplayPhase.label}
-          className={styles.replayBanner}
-          aria-label="Replay controls"
-        >
-          <div>
-            <p className={styles.replayKicker}>Synthetic replay · no live agents</p>
-            <h2>{activeReplayPhase.label}</h2>
-            <p>{activeReplayPhase.note}</p>
-          </div>
-          <div className={styles.replayControls}>
-            <button
-              type="button"
-              aria-label="Previous replay phase"
-              onClick={() => {
-                setReplayPlaying(false);
-                setReplayIndex((index) => (index - 1 + replayPhases.length) % replayPhases.length);
-              }}
-            >
-              <ChevronLeft aria-hidden />
-            </button>
-            <button
-              type="button"
-              aria-label={replayPlaying ? "Pause replay" : "Play replay"}
-              aria-pressed={replayPlaying}
-              onClick={() => setReplayPlaying((playing) => !playing)}
-            >
-              {replayPlaying ? <Pause aria-hidden /> : <Play aria-hidden />}
-            </button>
-            <button
-              type="button"
-              aria-label="Next replay phase"
-              onClick={() => {
-                setReplayPlaying(false);
-                setReplayIndex((index) => (index + 1) % replayPhases.length);
-              }}
-            >
-              <ChevronRight aria-hidden />
-            </button>
-            <span>
-              {replayIndex + 1} / {replayPhases.length}
-            </span>
-          </div>
-        </section>
-      )}
-      <div className={styles.sceneRail}>
-        <Badge
-          data-codec-feed-status
-          variant={degraded ? "secondary" : "outline"}
-          className={styles.feedBadge}
-          title={
-            mode === "replay"
-              ? `Synthetic phase: ${signalAge}; no live transport`
-              : `Transport: ${transportLabel}; last signal ${signalAge}`
-          }
-        >
-          {mode === "replay" ? "demo" : "feed"} {transportLabel} · {signalAge}
-        </Badge>
-        {degraded && <span>showing the last known scene</span>}
-        <Badge variant="outline" title={`Team ambience: ${scene.team_ambience.value}`}>
-          ambience {scene.team_ambience.value}
-        </Badge>
-        <Badge variant="outline" title="Agent presence summary">
-          {current.length} live · {stale.length} stale · {ended.length} ended
-        </Badge>
+      <div className={styles.sceneStatus}>
+        {mode === "replay" && activeReplayPhase && (
+          <section
+            data-codec-replay-banner
+            data-codec-replay-phase={activeReplayPhase.label}
+            className={styles.replayBanner}
+            aria-label="Replay controls"
+          >
+            <div>
+              <p className={styles.replayKicker}>Synthetic replay · no live agents</p>
+              <h2>{activeReplayPhase.label}</h2>
+              <p>{activeReplayPhase.note}</p>
+            </div>
+            <div className={styles.replayControls}>
+              <button
+                type="button"
+                aria-label="Previous replay phase"
+                onClick={() => {
+                  setReplayPlaying(false);
+                  setReplayIndex(
+                    (index) => (index - 1 + replayPhases.length) % replayPhases.length,
+                  );
+                }}
+              >
+                <ChevronLeft aria-hidden />
+              </button>
+              <button
+                type="button"
+                aria-label={replayPlaying ? "Pause replay" : "Play replay"}
+                aria-pressed={replayPlaying}
+                onClick={() => setReplayPlaying((playing) => !playing)}
+              >
+                {replayPlaying ? <Pause aria-hidden /> : <Play aria-hidden />}
+              </button>
+              <button
+                type="button"
+                aria-label="Next replay phase"
+                onClick={() => {
+                  setReplayPlaying(false);
+                  setReplayIndex((index) => (index + 1) % replayPhases.length);
+                }}
+              >
+                <ChevronRight aria-hidden />
+              </button>
+              <span>
+                {replayIndex + 1} / {replayPhases.length}
+              </span>
+            </div>
+          </section>
+        )}
+        <div className={styles.sceneRail}>
+          <Badge
+            data-codec-feed-status
+            variant={degraded ? "secondary" : "outline"}
+            className={styles.feedBadge}
+            title={
+              mode === "replay"
+                ? `Synthetic phase: ${signalAge}; no live transport`
+                : `Transport: ${transportLabel}; last signal ${signalAge}`
+            }
+          >
+            {mode === "replay" ? "demo" : "feed"} {transportLabel} · {signalAge}
+          </Badge>
+          {degraded && <span>showing the last known scene</span>}
+          <Badge variant="outline" title={`Team ambience: ${scene.team_ambience.value}`}>
+            ambience {scene.team_ambience.value}
+          </Badge>
+          <Badge variant="outline" title="Agent presence summary">
+            {current.length} live · {stale.length} stale · {ended.length} ended
+          </Badge>
+        </div>
       </div>
 
       {scene.remote_machines.length > 0 && <RemoteFleet machines={scene.remote_machines} />}
@@ -346,9 +350,14 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
       {panels.length === 0 ? (
         <p className={styles.emptyScene}>No active agents. Panels appear when a session starts.</p>
       ) : (
-        <div ref={gridRef} className="relative">
+        <div ref={gridRef} data-codec-card-stage className={styles.cardStage}>
           <RelationshipLines scene={scene} gridRef={gridRef} />
-          <div data-codec-grid className={styles.panelGrid}>
+          <div
+            data-codec-grid
+            data-panel-count={panels.length}
+            data-panel-density={panels.length <= 4 ? "featured" : "dense"}
+            className={styles.panelGrid}
+          >
             {panels.map((panel) => (
               <CodecPanel
                 key={panel.instance_id}
@@ -360,7 +369,47 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
           </div>
         </div>
       )}
+
+      {panels.length > 0 && <ActivityLedger panels={panels} />}
     </div>
+  );
+}
+
+function ActivityLedger({ panels }: { panels: CodecPanelScene[] }) {
+  return (
+    <section
+      data-codec-activity-ledger
+      className={styles.activityLedger}
+      aria-labelledby="codec-activity-ledger-title"
+    >
+      <header>
+        <p className={styles.teamPulseKicker}>Live ledger</p>
+        <h2 id="codec-activity-ledger-title">What every agent is doing now</h2>
+      </header>
+      <ol>
+        {panels.map((panel) => {
+          const operation = panel.operation?.value;
+          const lastAction = panel.recent_actions[0];
+          return (
+            <li key={panel.instance_id} data-activity={panel.activity.value}>
+              <span className={styles.activityBeacon} aria-hidden />
+              <strong>{panel.identity.display_name}</strong>
+              <span>
+                {operation
+                  ? `${operation.label} · ${humanizeCueToken(operation.state)}`
+                  : (panel.identity.task?.value ?? "No declared task")}
+              </span>
+              <small>
+                {panel.activity.value}
+                {lastAction
+                  ? ` · ${lastAction.category} ${lastAction.outcome} · ${formatReceiptTime(lastAction.observed_at)}`
+                  : " · no recent tool signal"}
+              </small>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }
 

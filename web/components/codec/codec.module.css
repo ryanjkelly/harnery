@@ -20,11 +20,8 @@
   position: relative;
   color: rgb(244 244 245);
   isolation: isolate;
-  display: grid;
   min-height: 100dvh;
-  place-items: center;
-  overflow: hidden;
-  padding: 7rem clamp(1rem, 3vw, 3rem) 2.5rem;
+  overflow: auto;
   background: #080a0f;
 }
 
@@ -49,9 +46,10 @@
 
 .codecHeader {
   position: absolute;
-  top: clamp(1.25rem, 3vw, 2.25rem);
-  left: clamp(1rem, 3vw, 3rem);
-  right: clamp(1rem, 3vw, 3rem);
+  z-index: 10;
+  top: 0.85rem;
+  left: clamp(0.85rem, 1.5vw, 1.75rem);
+  right: clamp(0.85rem, 1.5vw, 1.75rem);
   display: flex;
   align-items: end;
   justify-content: space-between;
@@ -124,13 +122,24 @@
 }
 
 .codecStage {
-  width: min(100%, 100rem);
+  width: 100%;
+  min-height: 100dvh;
+  padding: 5.4rem clamp(0.75rem, 1.2vw, 1.5rem) clamp(0.75rem, 1.2vw, 1.25rem);
 }
 
 .codecArena {
   position: relative;
   isolation: isolate;
+  display: grid;
   width: 100%;
+  min-height: calc(100dvh - 6.65rem);
+  grid-template-columns: minmax(13rem, 1fr) minmax(44rem, 5fr) minmax(13rem, 1fr);
+  grid-template-rows: auto minmax(34rem, 1fr) auto;
+  grid-template-areas:
+    "status status status"
+    "remote cards team"
+    "activity activity activity";
+  gap: clamp(0.55rem, 0.8vw, 0.9rem);
   border-radius: 1.5rem;
 }
 
@@ -146,12 +155,17 @@
     radial-gradient(circle at 82% 55%, rgb(217 70 239 / 0.1), transparent 26rem);
 }
 
+.sceneStatus {
+  grid-area: status;
+  min-width: 0;
+}
+
 .sceneRail {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 0.9rem;
+  min-height: 1.8rem;
   color: rgb(161 161 170);
   font-size: 0.72rem;
 }
@@ -161,7 +175,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 0.85rem;
+  margin-bottom: 0.55rem;
   border: 1px solid rgb(244 114 182 / 0.42);
   border-radius: 1rem;
   padding: 0.75rem 0.85rem;
@@ -244,8 +258,11 @@
 .remoteFleet {
   position: relative;
   z-index: 3;
-  margin-bottom: 0.85rem;
-  overflow: hidden;
+  grid-area: remote;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
   border: 1px solid rgb(168 85 247 / 0.25);
   border-radius: 0.9rem;
   padding: 0.62rem 0.75rem;
@@ -254,9 +271,9 @@
 
 .remoteFleet > header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 0.45rem;
 }
 
 .remoteFleet > header strong {
@@ -272,16 +289,14 @@
 }
 
 .remoteFleet ul {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 0.42rem;
   margin-top: 0.52rem;
 }
 
 .remoteFleet li {
   display: grid;
-  min-width: 11rem;
-  flex: 1 1 12rem;
+  min-width: 0;
   grid-template-columns: auto minmax(0, 1fr);
   column-gap: 0.42rem;
   border: 1px solid rgb(255 255 255 / 0.08);
@@ -329,8 +344,12 @@
   z-index: 3;
   display: grid;
   gap: 0.65rem;
-  margin-bottom: 0.9rem;
-  overflow: hidden;
+  grid-area: team;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
+  align-content: start;
+  overflow: auto;
   border: 1px solid rgb(255 255 255 / 0.1);
   border-radius: 1rem;
   padding: 0.65rem 0.75rem;
@@ -354,9 +373,9 @@
 .teamPulseBody {
   display: flex;
   min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 0.65rem;
 }
 
 .teamPulseKicker {
@@ -379,7 +398,7 @@
 .relationshipLegend {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 0.55rem;
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 0.55rem;
@@ -417,18 +436,14 @@
 }
 
 .machineLanes {
-  display: flex;
+  display: grid;
   min-width: 0;
-  flex: 1;
+  width: 100%;
   gap: 0.5rem;
-  overflow-x: auto;
-  scrollbar-width: thin;
 }
 
 .machineLane {
-  min-width: 10rem;
-  max-width: 24rem;
-  flex: 1 0 auto;
+  min-width: 0;
   border: 1px solid rgb(34 211 238 / 0.16);
   border-radius: 0.65rem;
   padding: 0.45rem 0.55rem;
@@ -513,9 +528,9 @@
 
 .teamMetrics {
   display: grid;
-  flex: 0 0 auto;
-  grid-template-columns: repeat(4, minmax(3.1rem, 1fr));
-  gap: 0.35rem;
+  width: 100%;
+  grid-template-columns: repeat(2, minmax(3.1rem, 1fr));
+  gap: 0.4rem;
 }
 
 .teamMetrics div {
@@ -559,6 +574,8 @@
 }
 
 .emptyScene {
+  grid-area: cards;
+  align-self: center;
   border: 1px dashed rgb(34 211 238 / 0.35);
   border-radius: 1.5rem;
   padding: 5rem 2rem;
@@ -568,11 +585,39 @@
 }
 
 .panelGrid {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  width: min(100%, 96rem);
+  margin-inline: auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   justify-content: center;
   gap: 1rem;
   align-items: stretch;
+}
+
+.panelGrid[data-panel-density="featured"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panelGrid[data-panel-count="1"] {
+  width: min(100%, 44rem);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.panelGrid[data-panel-count="3"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panelGrid[data-panel-count="3"] > :last-child {
+  width: calc((100% - 1rem) / 2);
+  grid-column: 1 / -1;
+  justify-self: center;
+}
+
+.cardStage {
+  position: relative;
+  grid-area: cards;
+  align-self: center;
+  min-width: 0;
 }
 
 .codecPanel {
@@ -581,7 +626,6 @@
   position: relative;
   z-index: 2;
   display: grid;
-  flex: 0 0 100%;
   min-width: 0;
   min-height: 17.5rem;
   grid-template-columns: minmax(7.5rem, 34%) minmax(0, 1fr);
@@ -597,6 +641,100 @@
   box-shadow:
     0 20px 60px rgb(0 0 0 / 0.36),
     inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+.activityLedger {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  min-width: 0;
+  grid-area: activity;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  overflow: hidden;
+  border: 1px solid rgb(34 211 238 / 0.2);
+  border-radius: 0.9rem;
+  padding: 0.55rem 0.65rem;
+  background: linear-gradient(90deg, rgb(34 211 238 / 0.07), transparent 25%), rgb(11 13 20 / 0.92);
+}
+
+.activityLedger > header {
+  min-width: 9.5rem;
+  padding-right: 0.65rem;
+  border-right: 1px solid rgb(255 255 255 / 0.08);
+}
+
+.activityLedger h2 {
+  margin-top: 0.08rem;
+  font-size: 0.7rem;
+  font-weight: 720;
+  color: rgb(228 228 231);
+}
+
+.activityLedger ol {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.4rem;
+}
+
+.activityLedger li {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 0.38rem;
+  border-left: 2px solid rgb(113 113 122 / 0.55);
+  padding: 0.2rem 0.42rem;
+  background: rgb(24 24 31 / 0.42);
+}
+
+.activityLedger li[data-activity="working"] {
+  border-left-color: rgb(52 211 153 / 0.76);
+}
+
+.activityLedger li[data-activity="needs-input"],
+.activityLedger li[data-activity="blocked"] {
+  border-left-color: rgb(245 158 11 / 0.82);
+}
+
+.activityBeacon {
+  grid-row: 1 / span 3;
+  width: 0.38rem;
+  height: 0.38rem;
+  margin-top: 0.23rem;
+  border-radius: 999px;
+  background: rgb(113 113 122);
+}
+
+.activityLedger li[data-activity="working"] .activityBeacon {
+  background: rgb(52 211 153);
+  box-shadow: 0 0 7px rgb(52 211 153 / 0.5);
+}
+
+.activityLedger li > strong,
+.activityLedger li > span:not(.activityBeacon),
+.activityLedger li > small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activityLedger li > strong {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.58rem;
+  color: rgb(228 228 231);
+}
+
+.activityLedger li > span:not(.activityBeacon) {
+  font-size: 0.62rem;
+  color: rgb(212 212 216);
+}
+
+.activityLedger li > small {
+  font-size: 0.55rem;
+  color: rgb(161 161 170);
 }
 
 .codecPanel::before {
@@ -1130,9 +1268,11 @@
   }
 }
 
-@media (max-width: 720px) {
+/* Tablet and mobile intentionally use a stacked document layout. The same
+ * card component is reused, but none of the desktop viewport-grid geometry
+ * leaks into the compact reading order. */
+@media (max-width: 1199px) {
   .codecPage {
-    display: block;
     overflow: visible;
     padding: 1.25rem 0.85rem 2rem;
   }
@@ -1140,8 +1280,88 @@
   .codecHeader {
     position: relative;
     inset: auto;
-    display: block;
+    align-items: flex-start;
     margin-bottom: 1.5rem;
+  }
+
+  .codecStage {
+    min-height: 0;
+    padding: 0;
+  }
+
+  .codecArena {
+    display: block;
+    min-height: 0;
+  }
+
+  .sceneStatus,
+  .remoteFleet,
+  .teamPulse {
+    margin-bottom: 0.85rem;
+  }
+
+  .sceneRail {
+    min-height: 0;
+  }
+
+  .remoteFleet > header {
+    align-items: center;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+
+  .remoteFleet ul {
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  }
+
+  .teamPulseHeader,
+  .teamPulseBody {
+    align-items: center;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+
+  .relationshipLegend {
+    justify-content: flex-end;
+  }
+
+  .machineLanes {
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  }
+
+  .teamMetrics {
+    width: auto;
+    grid-template-columns: repeat(4, minmax(3.1rem, 1fr));
+  }
+
+  .cardStage {
+    margin-block: 0.85rem;
+  }
+
+  .panelGrid,
+  .panelGrid[data-panel-density="featured"],
+  .panelGrid[data-panel-count="3"] {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .panelGrid[data-panel-count="1"] {
+    width: min(100%, 44rem);
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .panelGrid[data-panel-count="3"] > :last-child {
+    width: calc((100% - 1rem) / 2);
+  }
+
+  .activityLedger {
+    margin-top: 0.85rem;
+  }
+}
+
+@media (max-width: 720px) {
+  .codecHeader {
+    display: block;
   }
 
   .headerTitleRow {
@@ -1177,6 +1397,17 @@
     grid-template-columns: minmax(7rem, 36%) minmax(0, 1fr);
   }
 
+  .panelGrid,
+  .panelGrid[data-panel-density="featured"],
+  .panelGrid[data-panel-count="3"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .panelGrid[data-panel-count="3"] > :last-child {
+    width: 100%;
+    grid-column: auto;
+  }
+
   .teamPulseHeader,
   .teamPulseBody {
     align-items: stretch;
@@ -1193,6 +1424,28 @@
 
   .teamMetrics {
     width: 100%;
+    grid-template-columns: repeat(2, minmax(3.1rem, 1fr));
+  }
+
+  .remoteFleet ul,
+  .machineLanes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .activityLedger {
+    display: block;
+  }
+
+  .activityLedger > header {
+    padding-right: 0;
+    padding-bottom: 0.5rem;
+    border-right: 0;
+    border-bottom: 1px solid rgb(255 255 255 / 0.08);
+  }
+
+  .activityLedger ol {
+    grid-template-columns: minmax(0, 1fr);
+    margin-top: 0.5rem;
   }
 
   .portraitColumn {
@@ -1214,29 +1467,6 @@
 
   .panelBody {
     padding: 0.85rem;
-  }
-}
-
-@media (min-width: 721px) {
-  .codecPanel {
-    flex-basis: calc((100% - 1rem) / 2);
-  }
-}
-
-@media (min-width: 1101px) {
-  .codecPanel {
-    flex-basis: calc((100% - 2rem) / 3);
-  }
-}
-
-@media (min-width: 1101px) and (min-height: 900px) {
-  .codecPage {
-    padding-block: 0;
-  }
-
-  .codecStage {
-    position: relative;
-    top: -1.1rem;
   }
 }
 @media (prefers-reduced-motion: no-preference) {
