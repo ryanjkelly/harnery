@@ -977,6 +977,14 @@
   padding: 1rem;
 }
 
+.panelName {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 1.1rem;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
 .fullWidthTooltip,
 .intentTooltipTrigger {
   display: flex;

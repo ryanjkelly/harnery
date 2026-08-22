@@ -953,8 +953,12 @@ function CodecPanel({
       <div className={styles.panelBody}>
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            <div className="truncate">
-              <AgentChip name={panel.identity.display_name} />
+            <div data-codec-agent-name className="truncate">
+              <AgentChip
+                name={panel.identity.display_name}
+                prefix=""
+                className={styles.panelName}
+              />
             </div>
             <Tooltip
               side="bottom"
