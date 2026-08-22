@@ -1430,7 +1430,7 @@ function IntentHistory({ intents }: { intents: CodecIntentSignal[] }) {
                 }
               >
                 <span data-codec-intent-line className={styles.intentLine}>
-                  {compactCueText(intent.text, 38)}
+                  {compactCueText(intent.text, 30)}
                 </span>
               </Tooltip>
             </li>
@@ -1545,7 +1545,7 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
         aria-label={operation ? `Current operation: ${headline}. ${metadata}` : label}
       >
         <Icon className={styles.operationIcon} aria-hidden />
-        <span className={styles.operationLabel}>{compactCueText(headline, 30)}</span>
+        <span className={styles.operationLabel}>{compactCueText(headline, 20)}</span>
         <span
           className={cn(
             styles.operationState,
