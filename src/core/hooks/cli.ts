@@ -74,6 +74,7 @@ import {
   type ParsedPayload,
   parsePayload,
 } from "./adapter/parse.ts";
+import { discoverCodexSessionTranscript } from "./adapter/runtime-telemetry.ts";
 import {
   codexWslFileLinkTelemetry,
   inspectCodexWslBridge,
@@ -415,7 +416,12 @@ function buildEventData(
         // transcript scan itself stops once the name has been sighted.
         ...sessionNamePresence(ctx.coordRoot, ctx.instanceId, (name) =>
           scanSessionNameDisplayedImmediately(
-            p?.transcript_path,
+            // Codex stops carry no transcript_path; discover the rollout by
+            // session id so the naming ritual can verify and stamp there too.
+            p?.transcript_path ??
+              (ctx.adapter === "codex"
+                ? discoverCodexSessionTranscript(p?.session_id ?? ctx.instanceId)
+                : undefined),
             name,
             assistantTextStartsWithSessionNameBlock,
           ),
@@ -1205,7 +1211,14 @@ async function enforcePendingSessionNameDisplay(
             : ("absent" as const),
         }
       : inspectSessionNameDisplayImmediately(
-          payload?.transcript_path,
+          // Codex hook payloads omit transcript_path on every event, which
+          // left this inspection permanently unavailable and the latch never
+          // stamped. Discover the rollout by session id; the scan only runs
+          // while a name is pending, so the latch closes after one success.
+          payload?.transcript_path ??
+            (adapter === "codex"
+              ? discoverCodexSessionTranscript(payload?.session_id ?? instanceId)
+              : undefined),
           name,
           assistantTextStartsWithSessionNameBlock,
         );
