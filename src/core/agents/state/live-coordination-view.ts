@@ -141,8 +141,33 @@ export function ensureLiveCoordinationHeartbeat(
 
   const resolved = resolveName(coordRoot, nativeInstanceId, nativeSessionId);
   const projected = projectHeartbeatV3(coordRoot, generation, undefined, nativeInstanceId);
+  // A generation reopen (resume, mid-flight onboarding) discards the stale
+  // cache, but the adapter tab it names is unchanged: same native session,
+  // same agent identity. Rebuilding without the naming evidence re-mints a
+  // fresh suggested name on the next set-task, so a multi-day session
+  // accumulates titles it is asked to display over and over. Carry the
+  // naming evidence across generations; everything else re-projects from V3.
+  // Same native session id means the same adapter tab; drop the carry only
+  // when the durable identity observably changed (a reassumed name would make
+  // the old "Agent <name> - …" block wrong for the new owner).
+  const identityUnchanged = !resolved?.name || !current?.name || resolved.name === current.name;
+  const carriedNaming =
+    current && current.session_id === nativeSessionId && identityUnchanged
+      ? {
+          ...(current.suggested_session_name
+            ? { suggested_session_name: current.suggested_session_name }
+            : {}),
+          ...(current.session_name_seen_for
+            ? { session_name_seen_for: current.session_name_seen_for }
+            : {}),
+          ...(current.session_name_seen_at
+            ? { session_name_seen_at: current.session_name_seen_at }
+            : {}),
+        }
+      : {};
   const materialized: V3HeartbeatMaterialization = {
     ...projected,
+    ...carriedNaming,
     schema_version: 2,
     instance_id: nativeInstanceId,
     session_id: nativeSessionId,

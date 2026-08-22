@@ -239,6 +239,49 @@ describe("live V3 coordination", () => {
     expect(JSON.stringify(readLedgerV3(root).events)).not.toContain("fresh V3 task");
   });
 
+  test("carries naming evidence across a generation reopen of the same native session", () => {
+    const root = startedRoot();
+    const active = join(root, ".harnery/active/operator.json");
+    mkdirSync(dirname(active), { recursive: true });
+    writeFileSync(
+      active,
+      JSON.stringify({
+        schema_version: 2,
+        instance_id: "operator",
+        session_id: "native-session",
+        platform: "claude-code",
+        last_heartbeat: "2026-08-21T00:00:00.000Z",
+        started_at: "2026-08-21T00:00:00.000Z",
+        files_touched: [],
+        task: "yesterday focus",
+        suggested_session_name: "Agent unknown - yesterday focus",
+        session_name_seen_for: "Agent unknown - yesterday focus",
+        session_name_seen_at: "2026-08-21T00:01:00.000Z",
+        v3_instance_id: "inst_operator",
+        v3_generation_id: "gen_stale",
+        v3_projection_event_id: "evt_stale",
+        v3_task_state: "set",
+      }),
+    );
+
+    // The reopened generation names the same adapter tab, so the already
+    // displayed title must survive instead of being re-minted and demanded
+    // again on the next focus declaration.
+    expect(
+      ensureLiveCoordinationHeartbeat(root, "operator", "native-session", "claude-code"),
+    ).toMatchObject({
+      session_id: "native-session",
+      suggested_session_name: "Agent unknown - yesterday focus",
+      session_name_seen_for: "Agent unknown - yesterday focus",
+    });
+    expect(recordLiveTaskChangeV3(liveInput(root, { task: "today focus" })).state).toBe("recorded");
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      task: "today focus",
+      suggested_session_name: "Agent unknown - yesterday focus",
+      session_name_seen_for: "Agent unknown - yesterday focus",
+    });
+  });
+
   test("names a V3 session once while later task changes and clears remain disposable", () => {
     const root = startedRoot();
 
