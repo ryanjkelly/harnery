@@ -16,11 +16,15 @@
  */
 
 import {
+  ChevronLeft,
+  ChevronRight,
   CircleDashed,
   Hammer,
   Network,
   PackageCheck,
+  Pause,
   Pencil,
+  Play,
   Search,
   TestTube,
   TriangleAlert,
@@ -34,10 +38,12 @@ import {
   CODEC_SCHEMA_VERSION,
   type CodecPanelScene,
   type CodecRecentAction,
+  type CodecRemoteMachine,
   type CodecScene,
 } from "@/lib/codec/contracts";
 import { codecEvidenceReceiptRows } from "@/lib/codec/evidence-receipt";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
+import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
 import { summarizeCodecTeam } from "@/lib/codec/team-summary";
 import { useLiveSignal } from "@/lib/useLiveSignal";
 import styles from "./codec.module.css";
@@ -62,13 +68,22 @@ const AMBIENCE_CLASS: Record<string, string | undefined> = {
   alert: styles.ambAlert,
 };
 
-export function CodecView({ initialScene }: { initialScene: CodecScene }) {
+interface CodecViewProps {
+  initialScene: CodecScene;
+  mode?: "live" | "replay";
+  replayPhases?: CodecReplayPhase[];
+}
+
+export function CodecView({ initialScene, mode = "live", replayPhases = [] }: CodecViewProps) {
   const [scene, setScene] = useState<CodecScene>(initialScene);
   const [glowing, setGlowing] = useState<Record<string, boolean>>({});
   const [announcement, setAnnouncement] = useState("");
   const [lastSignalAt, setLastSignalAt] = useState(initialScene.generated_at);
   const [clockNow, setClockNow] = useState<number | null>(null);
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [replayPlaying, setReplayPlaying] = useState(true);
   const gridRef = useRef<HTMLDivElement | null>(null);
+  const replayHydrated = useRef(false);
   // The server-rendered scene counts as a snapshot: its cues never animate.
   const seenCues = useRef<Set<string>>(new Set(initialScene.transients.map((t) => t.cue_id)));
   const glowTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -192,25 +207,55 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
     },
     onFallbackChange: refetch,
     fetchOnFallbackStart: false, // the page server-renders a complete scene
+    enabled: mode === "live",
   });
 
-  const degraded = status === "reconnecting" || status === "polling";
+  const activeReplayPhase = replayPhases[replayIndex];
+
+  useEffect(() => {
+    if (mode !== "replay" || !activeReplayPhase) return;
+    ingestScene(activeReplayPhase.scene, replayHydrated.current);
+    replayHydrated.current = true;
+  }, [activeReplayPhase, ingestScene, mode]);
+
+  useEffect(() => {
+    if (mode !== "replay") return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setReplayPlaying(false);
+    }
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode !== "replay" || !replayPlaying || replayPhases.length < 2) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        setReplayIndex((index) => (index + 1) % replayPhases.length);
+      }
+    }, 3_600);
+    return () => clearInterval(timer);
+  }, [mode, replayPhases.length, replayPlaying]);
+
+  const degraded = mode === "live" && (status === "reconnecting" || status === "polling");
   const current = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "online"));
   const stale = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "unknown"));
   const ended = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "offline"));
   const panels = [...current, ...stale, ...ended];
   const transportLabel =
-    status === "live"
-      ? "SSE live"
-      : status === "polling"
-        ? "polling"
-        : status === "reconnecting"
-          ? "reconnecting"
-          : "connecting";
+    mode === "replay"
+      ? "offline replay"
+      : status === "live"
+        ? "SSE live"
+        : status === "polling"
+          ? "polling"
+          : status === "reconnecting"
+            ? "reconnecting"
+            : "connecting";
   const signalAge =
-    clockNow === null
-      ? "waiting for signal"
-      : `${formatElapsed(Math.max(0, clockNow - Date.parse(lastSignalAt)))} ago`;
+    mode === "replay"
+      ? (activeReplayPhase?.label ?? "synthetic phase")
+      : clockNow === null
+        ? "waiting for signal"
+        : `${formatElapsed(Math.max(0, clockNow - Date.parse(lastSignalAt)))} ago`;
   const parentNameFor = (panel: CodecPanelScene) =>
     panel.parent_instance_id
       ? scene.panels.find((p) => p.instance_id === panel.parent_instance_id?.value)?.identity
@@ -225,14 +270,65 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
       <p aria-live="polite" className="sr-only">
         {announcement}
       </p>
+      {mode === "replay" && activeReplayPhase && (
+        <section
+          data-codec-replay-banner
+          data-codec-replay-phase={activeReplayPhase.label}
+          className={styles.replayBanner}
+          aria-label="Replay controls"
+        >
+          <div>
+            <p className={styles.replayKicker}>Synthetic replay · no live agents</p>
+            <h2>{activeReplayPhase.label}</h2>
+            <p>{activeReplayPhase.note}</p>
+          </div>
+          <div className={styles.replayControls}>
+            <button
+              type="button"
+              aria-label="Previous replay phase"
+              onClick={() => {
+                setReplayPlaying(false);
+                setReplayIndex((index) => (index - 1 + replayPhases.length) % replayPhases.length);
+              }}
+            >
+              <ChevronLeft aria-hidden />
+            </button>
+            <button
+              type="button"
+              aria-label={replayPlaying ? "Pause replay" : "Play replay"}
+              aria-pressed={replayPlaying}
+              onClick={() => setReplayPlaying((playing) => !playing)}
+            >
+              {replayPlaying ? <Pause aria-hidden /> : <Play aria-hidden />}
+            </button>
+            <button
+              type="button"
+              aria-label="Next replay phase"
+              onClick={() => {
+                setReplayPlaying(false);
+                setReplayIndex((index) => (index + 1) % replayPhases.length);
+              }}
+            >
+              <ChevronRight aria-hidden />
+            </button>
+            <span>
+              {replayIndex + 1} / {replayPhases.length}
+            </span>
+          </div>
+        </section>
+      )}
       <div className={styles.sceneRail}>
         <Badge
           data-codec-feed-status
           variant={degraded ? "secondary" : "outline"}
           className={styles.feedBadge}
-          title={`Transport: ${transportLabel}; last signal ${signalAge}`}
+          title={
+            mode === "replay"
+              ? `Synthetic phase: ${signalAge}; no live transport`
+              : `Transport: ${transportLabel}; last signal ${signalAge}`
+          }
         >
-          feed {transportLabel} · {signalAge}
+          {mode === "replay" ? "demo" : "feed"} {transportLabel} · {signalAge}
         </Badge>
         {degraded && <span>showing the last known scene</span>}
         <Badge variant="outline" title={`Team ambience: ${scene.team_ambience.value}`}>
@@ -242,6 +338,8 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
           {current.length} live · {stale.length} stale · {ended.length} ended
         </Badge>
       </div>
+
+      {scene.remote_machines.length > 0 && <RemoteFleet machines={scene.remote_machines} />}
 
       {panels.length > 0 && <TeamPulse scene={scene} />}
 
@@ -263,6 +361,43 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
         </div>
       )}
     </div>
+  );
+}
+
+function RemoteFleet({ machines }: { machines: CodecRemoteMachine[] }) {
+  const fresh = machines.filter((machine) => machine.state === "fresh").length;
+  const aging = machines.filter((machine) => machine.state === "aging").length;
+  const offline = machines.filter((machine) => machine.state === "offline").length;
+  return (
+    <section
+      data-codec-remote-fleet
+      className={styles.remoteFleet}
+      aria-label="Remote fleet health"
+    >
+      <header>
+        <div>
+          <p className={styles.teamPulseKicker}>Remote fleet</p>
+          <strong>
+            {fresh} fresh · {aging} aging · {offline} offline
+          </strong>
+        </div>
+        <small>expired relay files never restore agent cards</small>
+      </header>
+      <ul>
+        {machines.map((machine) => (
+          <li key={machine.machine} data-state={machine.state}>
+            <span aria-hidden />
+            <strong>{machine.machine}</strong>
+            <small>
+              {machine.state} · {formatElapsed(machine.age_ms)} since relay
+              {machine.visible_agent_count > 0
+                ? ` · ${machine.visible_agent_count} visible ${machine.visible_agent_count === 1 ? "agent" : "agents"}`
+                : ""}
+            </small>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

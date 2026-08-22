@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { readRemotePanels } from "./remote-source";
+import { readRemotePanels, readRemotePresence } from "./remote-source";
 
 const NOW = new Date("2026-08-16T12:00:00.000Z");
 
@@ -133,6 +133,23 @@ describe("readRemotePanels", () => {
     expect(panels.map((p) => p.instance_id)).toEqual(["remote-2"]);
     expect(panels[0]?.presence.value).toBe("unknown");
     expect(panels[0]?.remote_source?.relay.value.state).toBe("aging");
+    const fleet = readRemotePresence(NOW, root);
+    expect(fleet.machines).toEqual([
+      {
+        machine: "aging",
+        state: "aging",
+        age_ms: 300_000,
+        observed_at: "2026-08-16T11:55:00.000Z",
+        visible_agent_count: 1,
+      },
+      {
+        machine: "gone",
+        state: "offline",
+        age_ms: 900_000,
+        observed_at: "2026-08-16T11:45:00.000Z",
+        visible_agent_count: 0,
+      },
+    ]);
   });
 
   test("a stale per-agent heartbeat inside a fresh blob is not online", () => {
@@ -156,5 +173,6 @@ describe("readRemotePanels", () => {
     const dir = path.join(root, "presence", "remote");
     writeFileSync(path.join(dir, "junk.json"), "{not json");
     expect(readRemotePanels(NOW, root)).toEqual([]);
+    expect(readRemotePresence(NOW, root).machines).toEqual([]);
   });
 });

@@ -80,10 +80,23 @@ export type CodecTelemetryReason =
   | "context-observation-missing";
 
 export type CodecRemoteFreshness = "fresh" | "aging" | "stale";
+export type CodecRemoteMachineState = "fresh" | "aging" | "offline";
 
 export interface CodecRemoteFreshnessValue {
   state: CodecRemoteFreshness;
   age_ms: number;
+}
+
+/** Machine-level relay health survives longer than remote agent panels. It
+ * carries only transport metadata, so an expired cache can report a known
+ * machine as offline without reviving stale people, tasks, or activity. */
+export interface CodecRemoteMachine {
+  machine: string;
+  state: CodecRemoteMachineState;
+  age_ms: number;
+  observed_at: string;
+  /** Count of panels still safe to render, never the expired blob's old count. */
+  visible_agent_count: number;
 }
 
 export interface CodecOperationValue {
@@ -270,6 +283,7 @@ export interface CodecScene {
   source_event_id?: string;
   freshness: Presented<CodecFreshness>;
   panels: CodecPanelScene[];
+  remote_machines: CodecRemoteMachine[];
   relationships: CodecRelationship[];
   transients: CodecTransient[];
   team_ambience: Presented<"calm" | "busy" | "alert" | "unknown">;

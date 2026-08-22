@@ -7,6 +7,7 @@ import {
   readPackRegistry,
   summarizePackRoster,
 } from "@/lib/codec/packs";
+import { listCodecStyleStudies } from "@/lib/codec/style-board";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -15,6 +16,7 @@ export default function CodecRosterPage() {
   const packs = listPacks();
   const registry = readPackRegistry();
   const summary = summarizePackRoster(packs, registry);
+  const styleStudies = listCodecStyleStudies();
 
   return (
     <main className={styles.rosterPage}>
@@ -96,6 +98,41 @@ export default function CodecRosterPage() {
           </article>
         </div>
       </section>
+
+      {styleStudies.length > 0 && (
+        <section
+          data-codec-style-board
+          className={styles.styleBoard}
+          aria-labelledby="codec-style-board-title"
+        >
+          <header>
+            <div>
+              <p className={styles.kicker}>Direction studies · gpt-image-1-mini</p>
+              <h2 id="codec-style-board-title">Same character, four visual languages</h2>
+            </div>
+            <p>
+              Drafts only. Choose the card language here before spending on another complete
+              eleven-expression pack.
+            </p>
+          </header>
+          <div className={styles.studyGrid}>
+            {styleStudies.map((study) => (
+              <figure key={`${study.board_id}:${study.study_id}`}>
+                {/* biome-ignore lint/performance/noImgElement: runtime studies are already final PNG assets */}
+                <img
+                  src={study.asset_url}
+                  alt={`${study.label} style study of the same Codec character`}
+                  width={1024}
+                  height={1024}
+                  loading="eager"
+                  decoding="async"
+                />
+                <figcaption>{study.label}</figcaption>
+              </figure>
+            ))}
+          </div>
+        </section>
+      )}
 
       {packs.length === 0 ? (
         <p className={styles.empty}>No complete character packs are installed.</p>

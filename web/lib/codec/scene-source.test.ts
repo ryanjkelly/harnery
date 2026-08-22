@@ -192,6 +192,7 @@ describe("Codec live-display overlay", () => {
           updated_at: overlay.written_at,
         },
       ],
+      remote_machines: [],
       relationships: [],
       transients: [],
       team_ambience: {

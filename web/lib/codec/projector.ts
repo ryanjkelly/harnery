@@ -749,6 +749,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     ...(lastEvent ? { source_event_id: lastEvent.event_id } : {}),
     freshness: present("live", "projection", "high", now),
     panels,
+    remote_machines: [],
     relationships: [], // still requires proved work/governor adapters
     transients,
     team_ambience: present(ambience, "projection", panels.length ? "high" : "low", now),

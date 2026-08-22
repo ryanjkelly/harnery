@@ -35,6 +35,9 @@ export default async function CodecPage() {
             <Link className={styles.rosterLink} href="/codec/roster" prefetch={false}>
               Roster lab
             </Link>
+            <Link className={styles.rosterLink} href="/codec/replay" prefetch={false}>
+              Replay lab
+            </Link>
           </div>
           <p className={styles.codecDeck}>
             A read-only, ledger-backed view of the team in motion. Local intent stays on this

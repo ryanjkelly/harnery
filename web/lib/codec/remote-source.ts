@@ -27,6 +27,7 @@ import {
   type CodecActivity,
   type CodecLifecycle,
   type CodecPanelScene,
+  type CodecRemoteMachine,
   type Confidence,
   FALLBACK_PACK,
   type Presented,
@@ -64,18 +65,28 @@ function clampLabel(v: unknown): string | undefined {
   return t.length > MAX_LABEL ? `${t.slice(0, MAX_LABEL - 1)}…` : t;
 }
 
-/** Read every peer machine's cached presence blob and render remote panels. */
-export function readRemotePanels(now = new Date(), root = harneryDir()): CodecPanelScene[] {
+export interface RemotePresenceProjection {
+  panels: CodecPanelScene[];
+  machines: CodecRemoteMachine[];
+}
+
+/** Read every peer machine's cached presence blob. Agent panels expire after
+ * ten minutes; the machine-only health row remains as an offline observation. */
+export function readRemotePresence(
+  now = new Date(),
+  root = harneryDir(),
+): RemotePresenceProjection {
   const dir = path.join(root, "presence", "remote");
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
   } catch {
-    return []; // no relay cache = no remote panels, never an error
+    return { panels: [], machines: [] }; // no relay cache is a valid empty fleet
   }
 
   const nowMs = now.getTime();
   const panels: CodecPanelScene[] = [];
+  const machines: CodecRemoteMachine[] = [];
 
   for (const file of files.sort()) {
     let blob: Record<string, unknown>;
@@ -88,11 +99,23 @@ export function readRemotePanels(now = new Date(), root = harneryDir()): CodecPa
       continue; // fail closed on unknown blob versions
     }
     const publishedMs = Date.parse(String(blob.published_at ?? ""));
-    if (!Number.isFinite(publishedMs) || nowMs - publishedMs > BLOB_DROP_MS) continue;
+    if (!Number.isFinite(publishedMs)) continue;
     const blobFresh = nowMs - publishedMs <= BLOB_FRESH_MS;
     const relayAgeMs = Math.max(0, nowMs - publishedMs);
     const machine = clampLabel(blob.machine) ?? "remote";
     const publishedAt = new Date(publishedMs).toISOString();
+    const panelStart = panels.length;
+
+    if (relayAgeMs > BLOB_DROP_MS) {
+      machines.push({
+        machine,
+        state: "offline",
+        age_ms: relayAgeMs,
+        observed_at: publishedAt,
+        visible_agent_count: 0,
+      });
+      continue;
+    }
 
     for (const raw of blob.agents as Array<Record<string, unknown>>) {
       const instanceId = typeof raw.instance_id === "string" ? raw.instance_id : undefined;
@@ -223,8 +246,23 @@ export function readRemotePanels(now = new Date(), root = harneryDir()): CodecPa
         updated_at: publishedAt,
       });
     }
+    machines.push({
+      machine,
+      state: relayAgeMs <= BLOB_FRESH_MS ? "fresh" : "aging",
+      age_ms: relayAgeMs,
+      observed_at: publishedAt,
+      visible_agent_count: panels.length - panelStart,
+    });
   }
-  return panels;
+  return {
+    panels,
+    machines: machines.sort((a, b) => a.machine.localeCompare(b.machine)),
+  };
+}
+
+/** Compatibility seam for callers and tests concerned only with live-safe panels. */
+export function readRemotePanels(now = new Date(), root = harneryDir()): CodecPanelScene[] {
+  return readRemotePresence(now, root).panels;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

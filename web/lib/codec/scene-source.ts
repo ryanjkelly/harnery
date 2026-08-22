@@ -29,7 +29,7 @@ import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { allocateCharacters } from "./packs";
 import { projectScene } from "./projector";
 import { deriveRelationships } from "./relationships";
-import { readRemotePanels } from "./remote-source";
+import { readRemotePresence } from "./remote-source";
 import { sanitizeEvent, sanitizeLine } from "./sanitize";
 import { applySuggestions } from "./suggestions";
 
@@ -126,7 +126,11 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
   // panels win instance-id collisions: the local view is closer to the
   // source when the same session is observed twice.
   try {
-    scene = mergeRemotePanels(scene, readRemotePanels());
+    const remote = readRemotePresence(now ? new Date(now) : new Date());
+    scene = {
+      ...mergeRemotePanels(scene, remote.panels),
+      remote_machines: remote.machines,
+    };
   } catch {
     // local scene stands
   }

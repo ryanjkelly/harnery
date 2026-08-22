@@ -44,6 +44,7 @@ function scene(panels: CodecPanelScene[]): CodecScene {
     schema_version: CODEC_SCHEMA_VERSION,
     freshness: { value: "live", provenance: "projection", confidence: "high", observed_at: NOW },
     panels,
+    remote_machines: [],
     relationships: [],
     transients: [],
     team_ambience: {
