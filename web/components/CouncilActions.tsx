@@ -392,8 +392,8 @@ export function CouncilActions({
                       {pending.length === 1 ? "" : "s"}:
                     </strong>{" "}
                     <code className="font-mono">{pending.join(", ")}</code>. Advance with --force
-                    will drop {pending.length === 1 ? "this member" : "these members"} from THIS
-                    round&apos;s transcript; they can rejoin the next round.
+                    will drop {pending.length === 1 ? "this member" : "these members"}{" "}
+                    from THIS round&apos;s transcript; they can rejoin the next round.
                   </span>
                 )}
                 {hasPending && (
