@@ -1404,6 +1404,106 @@ describe("event ledger V3 persistent hook recorder", () => {
     }
   });
 
+  test("waits briefly for a late Codex terminal before an approved session end", async () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-approved-end-context-flush";
+    const nativeTurn = "codex-approved-end-context-turn";
+    const transcript = join(root, `rollout-fixture-${nativeSession}.jsonl`);
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        timestamp: "2026-08-21T20:24:00.000Z",
+        ordinal: 1,
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: nativeTurn },
+      })}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+        "codex",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+        "codex",
+      ),
+    );
+    const state = readHookProducerStateV3(root, "codex", nativeSession);
+    if (!state) throw new Error("producer state missing");
+
+    const writerScript = join(root, "delayed-transcript-append.mjs");
+    writeFileSync(
+      writerScript,
+      [
+        'import { appendFileSync } from "node:fs";',
+        "await new Promise((resolve) => setTimeout(resolve, Number(process.argv[2])));",
+        "appendFileSync(process.argv[3], process.argv[4]);",
+      ].join("\n"),
+    );
+    const terminalRows = `${[
+      {
+        timestamp: "2026-08-21T20:24:14.100Z",
+        ordinal: 2,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { input_tokens: 120_000 },
+            model_context_window: 258_400,
+          },
+        },
+      },
+      {
+        timestamp: "2026-08-21T20:24:15.200Z",
+        ordinal: 3,
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: nativeTurn },
+      },
+    ]
+      .map((row) => JSON.stringify(row))
+      .join("\n")}\n`;
+    const writer = Bun.spawn([process.execPath, writerScript, "300", transcript, terminalRows], {
+      stdout: "ignore",
+      stderr: "inherit",
+    });
+    const ended = recordApprovedSessionEndV3({
+      coordRoot: root,
+      mode: "candidate",
+      instance_id: state.instance_id,
+      generation_id: state.generation_id,
+      build_id: "build_fixture",
+      platform: "linux",
+      reason: "approved_explicit_end",
+      outcome: "succeeded",
+      coordination_finalized: true,
+    });
+    expect(await writer.exited).toBe(0);
+    expect(ended.state).toBe("recorded");
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const contexts = events.filter((event) => event.event_type === "context.observed");
+    expect(contexts).toHaveLength(2);
+    expect(
+      contexts.at(-1)?.event_type === "context.observed" && contexts.at(-1)?.payload.measurement,
+    ).toMatchObject({
+      state: "observed",
+      value: { used_tokens: 120_000, limit_tokens: 258_400 },
+    });
+    expect(events.at(-1)?.event_type).toBe("session.ended");
+    expect(
+      readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+    ).toBeUndefined();
+  });
+
   test("bounds late Codex context retries when the transcript remains unflushed", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-bounded-context-retry";

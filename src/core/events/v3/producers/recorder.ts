@@ -82,6 +82,8 @@ const CLOSED_TURN_MEMORY_CAP = 16;
 const SPAN_SOFT_WATERMARK = 128;
 const PENDING_RUNTIME_CONTEXT_CAP = 4;
 const RUNTIME_CONTEXT_RETRY_LIMIT = 2;
+/** Finalization is off the interactive hook path; briefly cover Codex's delayed transcript flush. */
+const APPROVED_END_RUNTIME_CONTEXT_RETRY_DELAYS_MS = [0, 250, 250] as const;
 /**
  * Adapters whose turn-boundary recovery and mid-flight onboarding are enabled.
  * Kept in code, outside the digested capability profiles, so tuning recovery
@@ -1664,6 +1666,7 @@ function reconcilePendingRuntimeContexts(
   path: string,
   rootId: `root_${string}`,
   fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+  options: { deferRetryLimit?: boolean; finalAttempt?: boolean } = {},
 ): void {
   if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) return;
   for (const pending of [...state.pending_runtime_contexts]) {
@@ -1705,10 +1708,10 @@ function reconcilePendingRuntimeContexts(
     }
     const attempts = pending.attempts + 1;
     if (
-      input.signal === "session-end" ||
+      options.finalAttempt ||
       runtime.state === "unsupported" ||
       !retryableRuntimeContextReason(runtime.reason) ||
-      attempts >= RUNTIME_CONTEXT_RETRY_LIMIT
+      (!options.deferRetryLimit && attempts >= RUNTIME_CONTEXT_RETRY_LIMIT)
     ) {
       queue.splice(index, 1);
     } else {
@@ -1719,6 +1722,43 @@ function reconcilePendingRuntimeContexts(
     state.pending_runtime_contexts = undefined;
   }
   publishProducerState(path, state);
+}
+
+function reconcilePendingRuntimeContextsBeforeApprovedEnd(
+  input: RecordApprovedSessionEndV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+): void {
+  if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) return;
+  for (const [index, delayMs] of APPROVED_END_RUNTIME_CONTEXT_RETRY_DELAYS_MS.entries()) {
+    if (delayMs > 0) sleepSync(delayMs);
+    reconcilePendingRuntimeContexts(
+      {
+        coordRoot: input.coordRoot,
+        mode: input.mode,
+        signal: "session-end",
+        payload: { raw: {} },
+        adapter: state.adapter,
+        instance_id: state.instance_id,
+        producer_id: "prd_agent-finalizer",
+        build_id: input.build_id,
+        platform: input.platform,
+        observed_at: new Date().toISOString(),
+        writerOptions: input.writerOptions,
+      },
+      state,
+      path,
+      rootId,
+      fingerprintContext,
+      {
+        deferRetryLimit: true,
+        finalAttempt: index === APPROVED_END_RUNTIME_CONTEXT_RETRY_DELAYS_MS.length - 1,
+      },
+    );
+    if (!state.pending_runtime_contexts?.length) return;
+  }
 }
 
 function retryableRuntimeContextReason(reason: string | undefined): boolean {
@@ -2102,6 +2142,7 @@ export function recordApprovedSessionEndV3(
       state.generation_id,
       state.privacy_epoch_id,
     );
+    reconcilePendingRuntimeContextsBeforeApprovedEnd(input, state, record.path, rootId, context);
     const expected = [
       "session_started",
       "turn_closed",
