@@ -347,6 +347,8 @@ export interface CodecSourceEvidence {
 export interface CodecPanelScene {
   instance_id: string;
   identity: { display_name: string; task?: Presented<string> };
+  /** Local-only capability bit; true when this agent owns a managed artifact workspace. */
+  has_artifact_workspace?: true;
   /** Present on panels sourced from another machine's presence blob. */
   machine?: string;
   presence: Presented<CodecPresence>;

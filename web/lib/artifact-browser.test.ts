@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentArtifactDirectories } from "./artifact-browser";
+import { agentArtifactDirectories, artifactOwnerInstanceIds } from "./artifact-browser";
 
 function workspace(root: string, name: string, manifest: unknown): void {
   const dir = join(root, ".harnery/artifacts", name);
@@ -35,10 +35,12 @@ describe("agentArtifactDirectories", () => {
       ".harnery/artifacts/newer",
       ".harnery/artifacts/older",
     ]);
+    expect([...artifactOwnerInstanceIds(root)].sort()).toEqual(["inst-a", "inst-b"]);
   });
 
   test("returns an empty list when the artifact root is missing", () => {
     const root = mkdtempSync(join(tmpdir(), "artifact-browser-empty-"));
     expect(agentArtifactDirectories(root, "inst-missing")).toEqual([]);
+    expect(artifactOwnerInstanceIds(root).size).toBe(0);
   });
 });

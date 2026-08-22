@@ -127,6 +127,11 @@ describe("Codec live-display overlay", () => {
       intent: "Inspect the adapter matrix",
       live_overlay: true,
     });
+    const longIntent =
+      "Inspect every adapter boundary without adding a visible truncation marker. ".repeat(5);
+    const bounded = applyLiveFeedOverlay(events, [{ ...overlay, intent_display: longIntent }]);
+    expect(bounded[0]?.intent).toBe(longIntent.trim().slice(0, 240));
+    expect(bounded[0]?.intent?.endsWith("…")).toBe(false);
 
     const scene: CodecScene = {
       schema_version: CODEC_SCHEMA_VERSION,
@@ -195,6 +200,7 @@ describe("Codec live-display overlay", () => {
             observed_at: overlay.written_at,
           },
           recent_actions: [],
+          has_artifact_workspace: true,
           intent_history: [
             {
               text: "Inspect the adapter matrix",
@@ -262,6 +268,7 @@ describe("Codec live-display overlay", () => {
     expect(relayScene.semantic_service).toBeUndefined();
     expect(stripped?.focus_bubble).toBeUndefined();
     expect(stripped?.intent_history).toBeUndefined();
+    expect(stripped?.has_artifact_workspace).toBeUndefined();
     expect(stripped?.context_usage?.value).toEqual({
       used_percent: 75,
       remaining_percent: 25,
@@ -270,6 +277,7 @@ describe("Codec live-display overlay", () => {
     expect(stripped && codecSemantic(stripped)).toBeUndefined();
     expect(scene.panels[0]?.focus_bubble).toBeDefined();
     expect(scene.panels[0]?.intent_history).toHaveLength(1);
+    expect(scene.panels[0]?.has_artifact_workspace).toBe(true);
     expect(scene.panels[0]?.context_usage?.value.used_tokens).toBe(150_000);
     expect(scene.panels[0]?.artifact_cue?.value.image_hash).toBe("a".repeat(64));
 

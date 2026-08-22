@@ -26,6 +26,7 @@ import { readLedgerV3 } from "../../../src/core/events/v3/reader";
 import { eventV3Paths } from "../../../src/core/events/v3/writer";
 import { readSemanticServiceStatus } from "../../../src/core/semantic/service-status";
 
+import { artifactOwnerInstanceIds } from "../artifact-browser";
 import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { allocateCharacters } from "./packs";
 import { projectScene } from "./projector";
@@ -151,6 +152,18 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
   } catch {
     // local scene stands
   }
+  // Artifact ownership is a local presentation capability. One bounded index
+  // scan serves every card; no recursive inventory work and no per-card scan.
+  try {
+    const artifactOwners = artifactOwnerInstanceIds(coordRoot());
+    for (const panel of scene.panels) {
+      if (!panel.machine && artifactOwners.has(panel.instance_id)) {
+        panel.has_artifact_workspace = true;
+      }
+    }
+  } catch {
+    // Missing or unreadable artifacts simply omit the Browse affordance.
+  }
   // Character assignment is presentation metadata layered on after the pure
   // projection; a registry failure leaves the fallback pack in place. Remote
   // panels are excluded — pack assets are machine-local, and binding a local
@@ -220,14 +233,14 @@ export function eventsFilePaths(): string[] {
   return [];
 }
 
-const MAX_OVERLAY_CHARS = 120;
+// Match the V3 live-display contract so Codec does not pre-truncate valid
+// intent text. The UI owns visual overflow with an edge fade.
+const MAX_OVERLAY_CHARS = 240;
 
 function clampOverlay(value: string): string | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
-  return trimmed.length > MAX_OVERLAY_CHARS
-    ? `${trimmed.slice(0, MAX_OVERLAY_CHARS - 1)}…`
-    : trimmed;
+  return trimmed.length > MAX_OVERLAY_CHARS ? trimmed.slice(0, MAX_OVERLAY_CHARS) : trimmed;
 }
 
 /** Attach unexpired live-display intent onto matching evidence event ids. */
@@ -250,15 +263,19 @@ export function applyLiveFeedOverlay(
   });
 }
 
-/** Drop local #intent history, exact context counts, image blob references,
- * and every feed-derived focus value before relay publication. */
+/** Drop local #intent history, artifact ownership, exact context counts, image
+ * blob references, and every feed-derived focus value before relay publication. */
 export function stripLiveFeedOverlay(scene: CodecScene): CodecScene {
   const { semantic_service: _semanticService, ...relaySafeScene } = scene;
   return {
     ...relaySafeScene,
     panels: scene.panels.map((panel) => {
-      const { intent_history: _localIntents, ...withoutIntents } = panel;
-      let sanitized: CodecScene["panels"][number] = stripCodecSemantic(withoutIntents);
+      const {
+        intent_history: _localIntents,
+        has_artifact_workspace: _localArtifactOwnership,
+        ...withoutLocalPresentation
+      } = panel;
+      let sanitized: CodecScene["panels"][number] = stripCodecSemantic(withoutLocalPresentation);
       if (sanitized.context_usage) {
         const {
           used_tokens: _usedTokens,

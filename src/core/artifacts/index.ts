@@ -24,10 +24,9 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { artifactDefaultRetentionDays } from "../config.ts";
+import { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
 
-export const ARTIFACTS_DIR = join(".harnery", "artifacts");
-export const ARTIFACT_MANIFEST = ".harnery-artifact.json";
-export const ARTIFACT_SCHEMA_VERSION = 1 as const;
+export { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
 
 export interface ArtifactActor {
   instance_id: string;

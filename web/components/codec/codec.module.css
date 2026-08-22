@@ -714,10 +714,8 @@
   min-width: 0;
   min-height: 17.5rem;
   grid-template-columns: minmax(7.5rem, 34%) minmax(0, 1fr);
-  grid-template-areas:
-    "portrait body"
-    "footer footer";
-  grid-template-rows: 1fr auto;
+  grid-template-areas: "portrait body";
+  grid-template-rows: 1fr;
   overflow: hidden;
   border: 1px solid rgb(var(--codec-accent) / 0.35);
   border-radius: 1.25rem;
@@ -802,8 +800,12 @@
 .activityLedger li > small {
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.activityLedger li > strong,
+.activityLedger li > small {
+  text-overflow: ellipsis;
 }
 
 .activityLedger li > strong {
@@ -815,6 +817,8 @@
 .activityLedger li > span:not(.activityBeacon) {
   font-size: 0.62rem;
   color: rgb(212 212 216);
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 1rem), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 1rem), transparent 100%);
 }
 
 .activityLedger li > small {
@@ -1141,6 +1145,8 @@
   font-weight: 600;
   line-height: 1.25;
   white-space: nowrap;
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 1rem), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 1rem), transparent 100%);
 }
 
 .operationState {
@@ -1344,6 +1350,11 @@
   color: rgb(228 228 231);
 }
 
+.intentLine {
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 1.1rem), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 1.1rem), transparent 100%);
+}
+
 .intentEmpty {
   opacity: 0.72;
 }
@@ -1383,13 +1394,6 @@
   max-width: 100%;
   flex-shrink: 1;
   white-space: normal;
-}
-
-.evidenceFooter {
-  grid-area: footer;
-  position: relative;
-  z-index: 1;
-  padding: 0 1rem 0.75rem;
 }
 
 .panelStale {

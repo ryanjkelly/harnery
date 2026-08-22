@@ -1,23 +1,20 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ARTIFACT_MANIFEST } from "../../src/core/artifacts/index";
-
-const ARTIFACTS_DIR = ".harnery/artifacts";
+import { ARTIFACT_MANIFEST, ARTIFACTS_DIR } from "../../src/core/artifacts/constants";
 
 interface OwnedWorkspace {
+  owner_instance_id: string;
   relative_path: string;
   created_at: string;
 }
 
 /**
- * Fast owner lookup for /browse: readdir the artifact root and read ONE small
- * manifest per entry. Deliberately NOT `inventoryArtifacts`, whose per-entry
- * recursive tree-size, git-tracked, and owner-liveness checks cost tens of
- * seconds on a large artifact root — far too slow for a page render.
- *
- * Returns the agent's managed workspaces as repo-relative paths, newest first.
+ * Read the bounded ownership index shared by /browse and Codec. This performs
+ * one root readdir plus one small manifest read per workspace; it deliberately
+ * avoids `inventoryArtifacts`, whose recursive size and git checks are far too
+ * expensive for a page render.
  */
-export function agentArtifactDirectories(repoRoot: string, instanceId: string): string[] {
+function ownedArtifactWorkspaces(repoRoot: string): OwnedWorkspace[] {
   let names: string[];
   try {
     names = readdirSync(join(repoRoot, ARTIFACTS_DIR));
@@ -32,8 +29,10 @@ export function agentArtifactDirectories(repoRoot: string, instanceId: string): 
         created_by?: { instance_id?: string };
         created_at?: string;
       };
-      if (manifest?.created_by?.instance_id === instanceId) {
+      const ownerInstanceId = manifest?.created_by?.instance_id;
+      if (ownerInstanceId) {
         owned.push({
+          owner_instance_id: ownerInstanceId,
           relative_path: `${ARTIFACTS_DIR}/${name}`,
           created_at: typeof manifest.created_at === "string" ? manifest.created_at : "",
         });
@@ -42,6 +41,19 @@ export function agentArtifactDirectories(repoRoot: string, instanceId: string): 
       // No manifest (unmanaged entry), unreadable, or invalid JSON — not a candidate.
     }
   }
+  return owned;
+}
+
+/** All agent ids that own at least one managed artifact workspace. */
+export function artifactOwnerInstanceIds(repoRoot: string): Set<string> {
+  return new Set(ownedArtifactWorkspaces(repoRoot).map((entry) => entry.owner_instance_id));
+}
+
+/** Returns one agent's managed workspaces as repo-relative paths, newest first. */
+export function agentArtifactDirectories(repoRoot: string, instanceId: string): string[] {
+  const owned = ownedArtifactWorkspaces(repoRoot).filter(
+    (entry) => entry.owner_instance_id === instanceId,
+  );
   return owned
     .sort((left, right) => right.created_at.localeCompare(left.created_at))
     .map((entry) => entry.relative_path);

@@ -52,7 +52,6 @@ import {
   type CodecRemoteMachine,
   type CodecScene,
 } from "@/lib/codec/contracts";
-import { codecEvidenceReceiptRows } from "@/lib/codec/evidence-receipt";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
 import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
 import { codecSemantic } from "@/lib/codec/semantic-contract";
@@ -608,7 +607,7 @@ function ActivityLedger({ panels }: { panels: CodecPanelScene[] }) {
             <li key={panel.instance_id} data-activity={panel.activity.value}>
               <span className={styles.activityBeacon} aria-hidden />
               <strong>{panel.identity.display_name}</strong>
-              <span title={summary}>{compactCueText(summary, 42)}</span>
+              <span title={summary}>{summary}</span>
               <small>
                 {panel.activity.value}
                 {lastAction
@@ -982,22 +981,24 @@ function CodecPanel({
             </Tooltip>
           </div>
           <div className={styles.cardUtilities}>
-            <Tooltip
-              side="bottom"
-              align="end"
-              content="Open Harnery Browse in a new tab, scoped to this agent's managed artifact workspaces (newest expanded). If none exist yet, Browse opens at the artifact root."
-            >
-              <a
-                data-codec-artifacts-link
-                href={`/browse?agent=${encodeURIComponent(panel.instance_id)}`}
-                target="_blank"
-                rel="noreferrer"
-                className={styles.artifactFolderButton}
-                aria-label={`Browse ${panel.identity.display_name}'s artifacts in a new tab`}
+            {panel.has_artifact_workspace && (
+              <Tooltip
+                side="bottom"
+                align="end"
+                content={`Open ${panel.identity.display_name}'s managed artifact workspaces in Harnery Browse.`}
               >
-                <FolderOpen aria-hidden />
-              </a>
-            </Tooltip>
+                <a
+                  data-codec-artifacts-link
+                  href={`/browse?agent=${encodeURIComponent(panel.instance_id)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.artifactFolderButton}
+                  aria-label={`Browse ${panel.identity.display_name}'s artifacts in a new tab`}
+                >
+                  <FolderOpen aria-hidden />
+                </a>
+              </Tooltip>
+            )}
             <ContextGauge panel={panel} />
           </div>
         </div>
@@ -1159,9 +1160,6 @@ function CodecPanel({
           }
         />
       </div>
-      <div className={styles.evidenceFooter}>
-        <EvidenceReceipt panel={panel} />
-      </div>
     </section>
   );
 }
@@ -1244,79 +1242,6 @@ function formatSemanticTime(value: string): string {
   return Number.isFinite(date.getTime())
     ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
     : "unknown";
-}
-
-function EvidenceReceipt({ panel }: { panel: CodecPanelScene }) {
-  const rows = codecEvidenceReceiptRows(panel);
-  const groups = ["state", "activity", "source"] as const;
-  return (
-    <details data-codec-evidence-receipt className="mt-2 border-t pt-2 text-xs">
-      <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <Tooltip
-          side="top"
-          content={`Open the bounded evidence receipt for ${panel.identity.display_name}. It contains ${rows.length} provenance signals and no raw prompts, commands, tool input, or output.`}
-        >
-          <span>Evidence receipt · {rows.length} signals</span>
-        </Tooltip>
-      </summary>
-      <section
-        className="mt-2 max-h-64 overflow-auto overscroll-contain rounded-md border bg-muted/20 shadow-inner"
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: this bounded table is a keyboard-scrollable region
-        tabIndex={0}
-        aria-label={`Evidence signals for ${panel.identity.display_name}; scroll for more`}
-      >
-        <table className="w-full border-collapse text-left">
-          <thead className="sticky top-0 z-10 border-b bg-background/95 text-[10px] uppercase tracking-wide text-muted-foreground backdrop-blur-sm">
-            <tr>
-              <th className="w-24 px-2 py-1.5">Signal</th>
-              <th className="px-2 py-1.5">Evidence</th>
-            </tr>
-          </thead>
-          <tbody>
-            {groups.map((group) => {
-              const groupedRows = rows.filter((row) => row.group === group);
-              if (groupedRows.length === 0) return null;
-              return [
-                <tr key={`${group}-heading`} className="border-b bg-muted/45">
-                  <th
-                    colSpan={2}
-                    className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
-                  >
-                    {group}
-                  </th>
-                </tr>,
-                ...groupedRows.map((row) => (
-                  <tr
-                    key={`${row.channel}-${row.observed_at}-${row.evidence_event_ids.join("-")}`}
-                    className="border-b last:border-0"
-                  >
-                    <th className="w-24 px-2 py-1.5 align-top font-medium">{row.channel}</th>
-                    <td className="px-2 py-1.5 text-muted-foreground">
-                      <span className="text-foreground">{row.value}</span>
-                      {row.detail && <span className="block text-foreground/80">{row.detail}</span>}
-                      <span className="block text-foreground/75">
-                        {row.provenance} · {row.confidence} · {formatReceiptTime(row.observed_at)}
-                      </span>
-                      {row.expires_at && (
-                        <span className="block text-foreground/75">
-                          expires {formatReceiptTime(row.expires_at)}
-                        </span>
-                      )}
-                      {row.evidence_event_ids.length > 0 && (
-                        <code className="block break-all rounded border bg-background/60 px-1 text-[10px] text-foreground/80">
-                          {row.evidence_event_ids.join(" · ")}
-                        </code>
-                      )}
-                    </td>
-                  </tr>
-                )),
-              ];
-            })}
-          </tbody>
-        </table>
-      </section>
-    </details>
-  );
 }
 
 function ArtifactCue({ cue }: { cue: NonNullable<CodecPanelScene["artifact_cue"]> }) {
@@ -1430,7 +1355,7 @@ function IntentHistory({ intents }: { intents: CodecIntentSignal[] }) {
                 }
               >
                 <span data-codec-intent-line className={styles.intentLine}>
-                  {compactCueText(intent.text, 30)}
+                  {intent.text}
                 </span>
               </Tooltip>
             </li>
@@ -1448,11 +1373,6 @@ function formatReceiptTime(value: string): string {
   return Number.isFinite(date.getTime())
     ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })
     : "unknown time";
-}
-
-function compactCueText(value: string, maxCharacters: number): string {
-  if (value.length <= maxCharacters) return value;
-  return `${value.slice(0, Math.max(1, maxCharacters - 1)).trimEnd()}…`;
 }
 
 /** Current operation is a span-derived fact, separate from declared task and
@@ -1545,7 +1465,7 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
         aria-label={operation ? `Current operation: ${headline}. ${metadata}` : label}
       >
         <Icon className={styles.operationIcon} aria-hidden />
-        <span className={styles.operationLabel}>{compactCueText(headline, 20)}</span>
+        <span className={styles.operationLabel}>{headline}</span>
         <span
           className={cn(
             styles.operationState,
