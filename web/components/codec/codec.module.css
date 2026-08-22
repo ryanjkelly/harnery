@@ -1080,7 +1080,7 @@
 
 .runtimeField[data-runtime-missing="true"] {
   border-style: dashed;
-  opacity: 0.5;
+  opacity: 0.72;
 }
 
 .statusRail {
@@ -1348,7 +1348,7 @@
 }
 
 .intentEmpty {
-  opacity: 0.42;
+  opacity: 0.72;
 }
 
 .focusText {
