@@ -152,6 +152,61 @@ describe("harn agents lifecycle on the V3 ledger", () => {
     expect(outputObject(reprint)).toMatchObject({ session_name_retry: false });
   });
 
+  test("does not reissue an already-seen done title after a native generation restart", () => {
+    const root = makeSandbox();
+    const completed = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
+    expect(completed.status).toBe(0);
+    const doneName = "[DONE] Agent Hollis - Auth Refactor";
+    stampSessionNameSeen(root, OWNER, doneName);
+
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    const terminalState = readHookProducerStateV3(root, "codex", OWNER);
+    if (!terminalState) throw new Error("expected hook producer state");
+    expect(
+      recordApprovedSessionEndV3({
+        coordRoot: root,
+        mode: route.mode,
+        instance_id: terminalState.instance_id,
+        generation_id: terminalState.generation_id,
+        build_id: route.build_id,
+        platform: "linux",
+        reason: "approved_explicit_end",
+        outcome: "succeeded",
+        coordination_finalized: true,
+      }).state,
+    ).toBe("recorded");
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "session-start",
+        payload: { session_id: OWNER, raw: {}, model: "gpt-5.6" },
+        adapter: "codex",
+        instanceId: OWNER,
+      }).state,
+    ).toBe("recorded");
+
+    const restarted = harn(root, [
+      "agents",
+      "set-task",
+      "Follow-up review",
+      "--session-id",
+      OWNER,
+    ]);
+    expect(restarted.status).toBe(0);
+    expect(outputObject(restarted)).toMatchObject({
+      first_of_session: false,
+      session_name_retry: false,
+      suggested_session_name: null,
+    });
+    expect(heartbeat(root)).toMatchObject({
+      task: "Follow-up review",
+      suggested_session_name: doneName,
+      session_name_seen_for: doneName,
+    });
+  });
+
   test("blocks without changing the title and records one canonical lifecycle event", () => {
     const root = makeSandbox();
     const result = harn(root, [

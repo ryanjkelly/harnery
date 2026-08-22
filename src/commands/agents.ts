@@ -1845,10 +1845,11 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // the first time. `first_of_session: true` means exactly "this call produced
   // the session name" — it is never true with a null name (an empty first
   // declaration or a `--session-id` relay both keep the window open instead).
-  const firstSuggestedName =
-    !priorHb?.suggested_session_name && hb?.suggested_session_name
-      ? hb.suggested_session_name
-      : null;
+  // A native generation restart may rebuild the current cache during the
+  // mutation and carry an already-seen suggestion from the prior generation.
+  // That title is continuity evidence, not a new display request.
+  const pendingName = sessionNameDisplayPending(hb);
+  const firstSuggestedName = !priorHb?.suggested_session_name && pendingName ? pendingName : null;
 
   // Routine focus declarations stay title-silent. A pending display no longer
   // turns every repeated set-task into a fresh name instruction; explicit
