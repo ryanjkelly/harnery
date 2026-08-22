@@ -601,15 +601,14 @@ function ActivityLedger({ panels }: { panels: CodecPanelScene[] }) {
         {panels.map((panel) => {
           const operation = panel.operation?.value;
           const lastAction = panel.recent_actions[0];
+          const summary = operation
+            ? `${operation.intent ?? operation.label} · ${humanizeCueToken(operation.state)}`
+            : (panel.identity.task?.value ?? "No declared task");
           return (
             <li key={panel.instance_id} data-activity={panel.activity.value}>
               <span className={styles.activityBeacon} aria-hidden />
               <strong>{panel.identity.display_name}</strong>
-              <span>
-                {operation
-                  ? `${operation.intent ?? operation.label} · ${humanizeCueToken(operation.state)}`
-                  : (panel.identity.task?.value ?? "No declared task")}
-              </span>
+              <span title={summary}>{compactCueText(summary, 42)}</span>
               <small>
                 {panel.activity.value}
                 {lastAction
@@ -1431,7 +1430,7 @@ function IntentHistory({ intents }: { intents: CodecIntentSignal[] }) {
                 }
               >
                 <span data-codec-intent-line className={styles.intentLine}>
-                  {intent.text}
+                  {compactCueText(intent.text, 38)}
                 </span>
               </Tooltip>
             </li>
@@ -1449,6 +1448,11 @@ function formatReceiptTime(value: string): string {
   return Number.isFinite(date.getTime())
     ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })
     : "unknown time";
+}
+
+function compactCueText(value: string, maxCharacters: number): string {
+  if (value.length <= maxCharacters) return value;
+  return `${value.slice(0, Math.max(1, maxCharacters - 1)).trimEnd()}…`;
 }
 
 /** Current operation is a span-derived fact, separate from declared task and
@@ -1541,7 +1545,7 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
         aria-label={operation ? `Current operation: ${headline}. ${metadata}` : label}
       >
         <Icon className={styles.operationIcon} aria-hidden />
-        <span className={styles.operationLabel}>{headline}</span>
+        <span className={styles.operationLabel}>{compactCueText(headline, 30)}</span>
         <span
           className={cn(
             styles.operationState,
