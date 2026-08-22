@@ -11,23 +11,40 @@
  * registers a palette file-open override so a picked file lands in the
  * in-page pane instead of the overlay.
  *
+ * `scope` (from `?agent=`) roots the tree at an agent's artifact workspaces
+ * instead of the repo; a banner names the agent and links back to the full
+ * repo view. The tree pane is width-adjustable on desktop via the drag handle
+ * (persisted in localStorage).
+ *
  * Mobile (< md): one pane at a time — tree, or the viewer with a back-to-tree
  * + search bar. The tree auto-reveals + scrolls to the selection.
  */
 
-import { ChevronLeft, Search } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { ChevronLeft, FolderTree, Search, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { openCommandPalette } from "@/components/palette/CommandPalette";
 import { usePaletteFileOpenOverride } from "@/components/palette/PaletteProvider";
 import { DirectoryTree } from "./DirectoryTree";
 import { FileViewerPane } from "./FileViewerPane";
 
+export interface BrowseScope {
+  /** Display name of the agent whose artifacts scope the tree (null if unknown). */
+  agentName: string | null;
+  /** Tree root directories (repo-relative), newest workspace first. */
+  roots: string[];
+}
+
+const TREE_WIDTH_KEY = "browse:tree-width";
+const TREE_WIDTH_DEFAULT = 288;
+const TREE_WIDTH_MIN = 200;
+const TREE_WIDTH_MAX = 640;
+
 export function BrowseClient({
   initialPath,
-  initialDirectory,
+  scope,
 }: {
   initialPath: string | null;
-  initialDirectory: string | null;
+  scope: BrowseScope | null;
 }) {
   const [selected, setSelected] = useState<string | null>(initialPath);
   const [mobileView, setMobileView] = useState<"tree" | "file">(initialPath ? "file" : "tree");
@@ -56,22 +73,80 @@ export function BrowseClient({
 
   const openSearch = useCallback(() => openCommandPalette({ view: "files" }), []);
 
+  // Desktop tree-pane width: draggable handle, persisted across visits.
+  const [treeWidth, setTreeWidth] = useState(TREE_WIDTH_DEFAULT);
+  const treeWidthRef = useRef(TREE_WIDTH_DEFAULT);
+  useEffect(() => {
+    const saved = Number(window.localStorage.getItem(TREE_WIDTH_KEY));
+    if (Number.isFinite(saved) && saved >= TREE_WIDTH_MIN && saved <= TREE_WIDTH_MAX) {
+      treeWidthRef.current = saved;
+      setTreeWidth(saved);
+    }
+  }, []);
+  const applyTreeWidth = useCallback((w: number) => {
+    const clamped = Math.min(TREE_WIDTH_MAX, Math.max(TREE_WIDTH_MIN, Math.round(w)));
+    treeWidthRef.current = clamped;
+    setTreeWidth(clamped);
+  }, []);
+  const startResize = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault(); // stop text selection while dragging
+      const startX = e.clientX;
+      const startW = treeWidthRef.current;
+      const onMove = (ev: PointerEvent) => applyTreeWidth(startW + ev.clientX - startX);
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.localStorage.setItem(TREE_WIDTH_KEY, String(treeWidthRef.current));
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [applyTreeWidth],
+  );
+  const resizeByKey = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const step = e.key === "ArrowLeft" ? -16 : e.key === "ArrowRight" ? 16 : 0;
+      if (!step) return;
+      e.preventDefault();
+      applyTreeWidth(treeWidthRef.current + step);
+      window.localStorage.setItem(TREE_WIDTH_KEY, String(treeWidthRef.current));
+    },
+    [applyTreeWidth],
+  );
+
   return (
     <div className="flex min-h-0 flex-1">
       <aside
+        style={{ "--tree-w": `${treeWidth}px` } as React.CSSProperties}
         className={`${
           mobileView === "tree" ? "flex" : "hidden"
-        } w-full shrink-0 flex-col overflow-hidden border-r border-border md:flex md:w-72`}
+        } w-full shrink-0 flex-col overflow-hidden border-r border-border md:flex md:w-[var(--tree-w)]`}
       >
         <SearchTrigger onClick={openSearch} />
+        {scope && <ScopeBanner scope={scope} selected={selected} />}
         <div className="min-h-0 flex-1 overflow-auto">
           <DirectoryTree
             selectedPath={selected}
-            revealDirectory={selected ? null : initialDirectory}
+            roots={scope ? scope.roots : undefined}
             onSelect={select}
           />
         </div>
       </aside>
+
+      {/* biome-ignore lint/a11y/useSemanticElements: a focusable window-splitter must be a div with role="separator" — an <hr> can't take focus or drag */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize file tree"
+        aria-valuenow={treeWidth}
+        aria-valuemin={TREE_WIDTH_MIN}
+        aria-valuemax={TREE_WIDTH_MAX}
+        tabIndex={0}
+        onPointerDown={startResize}
+        onKeyDown={resizeByKey}
+        className="hidden w-1 shrink-0 cursor-col-resize touch-none outline-none hover:bg-border focus-visible:bg-ring/40 active:bg-ring/40 md:block"
+      />
 
       <section
         className={`${mobileView === "file" ? "flex" : "hidden"} min-w-0 flex-1 flex-col md:flex`}
@@ -95,6 +170,28 @@ export function BrowseClient({
         </div>
         <FileViewerPane path={selected} />
       </section>
+    </div>
+  );
+}
+
+/** Names the agent scoping the tree and links back to the unscoped repo view
+ * (a full navigation so the server re-renders without the scope). */
+function ScopeBanner({ scope, selected }: { scope: BrowseScope; selected: string | null }) {
+  const fullRepoHref = selected ? `/browse?file=${encodeURIComponent(selected)}` : "/browse";
+  const label = scope.agentName ? `${scope.agentName}'s artifacts` : "Agent artifacts";
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5 text-xs">
+      <FolderTree className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate text-muted-foreground" title={label}>
+        {label}
+      </span>
+      <a
+        href={fullRepoHref}
+        className="ml-auto flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+        title="Leave the artifact scope and browse the whole repo"
+      >
+        <X className="size-3" /> Full repo
+      </a>
     </div>
   );
 }

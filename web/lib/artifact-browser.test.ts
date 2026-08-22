@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { latestAgentArtifactDirectory } from "./artifact-browser";
+import { agentArtifactDirectories } from "./artifact-browser";
 
-describe("latestAgentArtifactDirectory", () => {
-  test("selects the newest managed workspace owned by the requested agent", () => {
+describe("agentArtifactDirectories", () => {
+  test("returns the requested agent's workspaces newest first", () => {
     expect(
-      latestAgentArtifactDirectory(
+      agentArtifactDirectories(
         [
           {
             owner_instance_id: "inst-a",
@@ -24,10 +24,10 @@ describe("latestAgentArtifactDirectory", () => {
         ],
         "inst-a",
       ),
-    ).toBe(".harnery/artifacts/newer");
+    ).toEqual([".harnery/artifacts/newer", ".harnery/artifacts/older"]);
   });
 
-  test("returns null when the agent has no managed workspace", () => {
-    expect(latestAgentArtifactDirectory([], "inst-missing")).toBeNull();
+  test("returns an empty list when the agent has no managed workspace", () => {
+    expect(agentArtifactDirectories([], "inst-missing")).toEqual([]);
   });
 });

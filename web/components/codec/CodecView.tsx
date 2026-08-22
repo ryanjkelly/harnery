@@ -779,7 +779,7 @@ function CodecPanel({
             <Tooltip
               side="bottom"
               align="end"
-              content="Open Harnery Browse in a new tab and reveal this agent's newest managed artifact workspace. If none exists yet, Browse opens at the artifact root."
+              content="Open Harnery Browse in a new tab, scoped to this agent's managed artifact workspaces (newest expanded). If none exist yet, Browse opens at the artifact root."
             >
               <a
                 data-codec-artifacts-link

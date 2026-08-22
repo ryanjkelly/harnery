@@ -6,15 +6,13 @@ export interface ArtifactDirectoryCandidate {
   created_at: string | null;
 }
 
-/** Resolve an agent to its newest managed artifact workspace. */
-export function latestAgentArtifactDirectory(
+/** All of an agent's managed artifact workspaces, newest first. */
+export function agentArtifactDirectories(
   entries: readonly ArtifactDirectoryCandidate[],
   instanceId: string,
-): string | null {
-  return (
-    entries
-      .filter((entry) => entry.owner_instance_id === instanceId)
-      .sort((left, right) => (right.created_at ?? "").localeCompare(left.created_at ?? ""))[0]
-      ?.relative_path ?? null
-  );
+): string[] {
+  return entries
+    .filter((entry) => entry.owner_instance_id === instanceId)
+    .sort((left, right) => (right.created_at ?? "").localeCompare(left.created_at ?? ""))
+    .map((entry) => entry.relative_path);
 }

@@ -9,6 +9,10 @@
  * child directory's recursive byte total + file/folder counts), so every row
  * shows a size and a sibling-relative bar, and directories show their counts.
  * Denied/secret entries never arrive (lib/file-tree.ts filters them server-side).
+ *
+ * `roots` scopes the tree: each root renders as a top-level directory row and
+ * nothing outside them is listed or size-walked (the whole point — a repo-root
+ * usage walk is expensive). Default is the repo root, listed as today.
  */
 
 import { ChevronRight, Folder, FolderOpen, type LucideIcon, RefreshCw } from "lucide-react";
@@ -17,40 +21,70 @@ import { fetchList, fetchUsage } from "@/lib/file-viewer/client";
 import type { DirEntry, DirUsage, DirUsageStats } from "@/lib/file-viewer/types";
 import { iconForFile } from "./file-icons";
 
+const REPO_ROOTS: string[] = [""];
+
 export function DirectoryTree({
   selectedPath,
-  revealDirectory,
+  roots = REPO_ROOTS,
   onSelect,
 }: {
   selectedPath: string | null;
-  revealDirectory?: string | null;
+  /** Top-level directories to scope the tree to (repo-relative; default: repo root). */
+  roots?: string[];
   onSelect: (relPath: string) => void;
 }) {
   const listings = useRef(new Map<string, DirEntry[]>());
   const usage = useRef(new Map<string, DirUsage>());
+  const usageLoading = useRef(new Set<string>());
   const expanded = useRef(new Set<string>());
   const loading = useRef(new Set<string>());
   const failed = useRef(new Set<string>());
   const revealed = useRef<string | null>(null);
   const [, force] = useReducer((x: number) => x + 1, 0);
 
+  const scoped = roots.length !== 1 || roots[0] !== "";
+
   const loadDir = useCallback(async (dir: string) => {
     if (listings.current.has(dir) || loading.current.has(dir)) return;
     loading.current.add(dir);
     failed.current.delete(dir);
     force();
-    const [list, use] = await Promise.all([fetchList(dir), fetchUsage(dir)]);
+    const [list, use] = await Promise.all([
+      fetchList(dir),
+      usage.current.has(dir) ? null : fetchUsage(dir),
+    ]);
     loading.current.delete(dir);
     if (list.ok) listings.current.set(dir, list.data.entries);
     else failed.current.add(dir);
-    if (use.ok) usage.current.set(dir, use.data);
+    if (use?.ok) usage.current.set(dir, use.data);
     force();
   }, []);
 
-  // Root load on mount.
+  /** Usage only — sizes a collapsed scoped-root row without listing it. */
+  const loadUsage = useCallback(async (dir: string) => {
+    if (usage.current.has(dir) || usageLoading.current.has(dir)) return;
+    usageLoading.current.add(dir);
+    const use = await fetchUsage(dir);
+    usageLoading.current.delete(dir);
+    if (use.ok) {
+      usage.current.set(dir, use.data);
+      force();
+    }
+  }, []);
+
+  // Root load on mount: repo root as one listing, or every scoped root's usage
+  // plus the newest (first) root pre-expanded.
   useEffect(() => {
-    loadDir("");
-  }, [loadDir]);
+    if (!scoped) {
+      loadDir("");
+      return;
+    }
+    for (const r of roots) loadUsage(r);
+    if (roots[0] && !expanded.current.has(roots[0])) {
+      expanded.current.add(roots[0]);
+      loadDir(roots[0]);
+    }
+  }, [scoped, roots, loadDir, loadUsage]);
 
   const toggle = useCallback(
     (dir: string) => {
@@ -64,17 +98,22 @@ export function DirectoryTree({
     [loadDir],
   );
 
-  // Auto-reveal a selected file or a directly requested directory, then scroll
-  // its row into view. Reveal only adds expansions; it never collapses the tree.
+  // Auto-reveal the selected file, then scroll its row into view. Reveal only
+  // adds expansions; it never collapses the tree. Under a scoped tree the walk
+  // starts at the containing root; a selection outside every root is left to
+  // the viewer pane alone.
   useEffect(() => {
-    const target = selectedPath ?? revealDirectory;
+    const target = selectedPath;
     if (!target || revealed.current === target) return;
     revealed.current = target;
-    const targetIsDirectory = !selectedPath && Boolean(revealDirectory);
+    const root = scoped ? roots.find((r) => target === r || target.startsWith(`${r}/`)) : "";
+    if (root === undefined) return;
     const segs = target.split("/");
-    const ancestors: string[] = [];
-    const segmentLimit = targetIsDirectory ? segs.length : segs.length - 1;
-    for (let i = 0; i < segmentLimit; i++) ancestors.push(segs.slice(0, i + 1).join("/"));
+    const rootDepth = root === "" ? 0 : root.split("/").length;
+    const ancestors: string[] = root === "" ? [] : [root];
+    for (let i = rootDepth; i < segs.length - 1; i++) {
+      ancestors.push(segs.slice(0, i + 1).join("/"));
+    }
     (async () => {
       for (const a of ancestors) {
         expanded.current.add(a);
@@ -86,18 +125,7 @@ export function DirectoryTree({
         document.querySelector(sel)?.scrollIntoView({ block: "nearest" });
       });
     })();
-  }, [selectedPath, revealDirectory, loadDir]);
-
-  if (failed.current.has("")) {
-    return <p className="p-3 text-xs text-muted-foreground">Couldn&apos;t load the file tree.</p>;
-  }
-  if (!listings.current.has("")) {
-    return (
-      <p className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
-        <RefreshCw className="size-3.5 animate-spin" /> Loading tree…
-      </p>
-    );
-  }
+  }, [selectedPath, scoped, roots, loadDir]);
 
   function renderLevel(dir: string, depth: number): ReactNode {
     const entries = listings.current.get(dir);
@@ -117,10 +145,7 @@ export function DirectoryTree({
             entry={e}
             depth={depth}
             open={open}
-            selected={
-              (!isDir && selectedPath === e.relPath) ||
-              (isDir && !selectedPath && revealDirectory === e.relPath)
-            }
+            selected={!isDir && selectedPath === e.relPath}
             bytes={bytesOf(e)}
             maxBytes={maxBytes}
             stats={stats}
@@ -157,6 +182,45 @@ export function DirectoryTree({
     return renderLevel(dir, depth);
   }
 
+  if (scoped) {
+    const statsOf = (r: string) => usage.current.get(r)?.self;
+    const maxBytes = roots.reduce((m, r) => Math.max(m, statsOf(r)?.totalBytes ?? 0), 1);
+    return (
+      <ul className="py-1">
+        {roots.map((r) => {
+          const open = expanded.current.has(r);
+          const stats = statsOf(r);
+          return (
+            <Fragment key={r}>
+              <Row
+                entry={{ name: r.split("/").pop() || r, relPath: r, kind: "dir" }}
+                depth={0}
+                open={open}
+                selected={false}
+                bytes={stats?.totalBytes ?? 0}
+                maxBytes={maxBytes}
+                stats={stats}
+                isLoading={loading.current.has(r)}
+                onClick={() => toggle(r)}
+              />
+              {open && renderChildren(r, 1)}
+            </Fragment>
+          );
+        })}
+      </ul>
+    );
+  }
+
+  if (failed.current.has("")) {
+    return <p className="p-3 text-xs text-muted-foreground">Couldn&apos;t load the file tree.</p>;
+  }
+  if (!listings.current.has("")) {
+    return (
+      <p className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
+        <RefreshCw className="size-3.5 animate-spin" /> Loading tree…
+      </p>
+    );
+  }
   return <ul className="py-1">{renderLevel("", 0)}</ul>;
 }
 
