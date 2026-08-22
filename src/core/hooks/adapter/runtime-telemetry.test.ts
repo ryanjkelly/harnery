@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import {
   clearRuntimeTelemetryCachesForTest,
+  discoverCodexSessionTranscript,
   readRuntimeContextTelemetry,
   readRuntimeContextUsage,
 } from "./runtime-telemetry.ts";
@@ -203,6 +204,37 @@ describe("runtime context telemetry", () => {
         { codexRoots: [linuxRoot, windowsRoot] },
       ),
     ).toMatchObject({ state: "partial", reason: "codex_transcript_ambiguous" });
+  });
+
+  test("discoverCodexSessionTranscript finds the rollout for a payload with no transcript_path", () => {
+    const linuxRoot = join(root, "linux", ".codex", "sessions");
+    const transcript = writeCodex(
+      [taskStarted(1), tokenCount(2, 100, 1_000), taskComplete(3)],
+      "rollout-2026-08-21T15-12-34",
+      linuxRoot,
+    );
+    expect(discoverCodexSessionTranscript(SESSION, undefined, { codexRoots: [linuxRoot] })).toBe(
+      transcript,
+    );
+  });
+
+  test("discoverCodexSessionTranscript returns undefined on ambiguity, mismatch, or bad ids", () => {
+    const linuxRoot = join(root, "linux", ".codex", "sessions");
+    const windowsRoot = join(root, "mnt", "c", "Users", "maya", ".codex", "sessions");
+    writeCodex([taskStarted(1)], "one", linuxRoot);
+    writeCodex([taskStarted(1)], "two", windowsRoot);
+    expect(
+      discoverCodexSessionTranscript(SESSION, undefined, {
+        codexRoots: [linuxRoot, windowsRoot],
+      }),
+    ).toBeUndefined();
+    expect(
+      discoverCodexSessionTranscript("other-session", undefined, { codexRoots: [linuxRoot] }),
+    ).toBeUndefined();
+    expect(discoverCodexSessionTranscript(undefined)).toBeUndefined();
+    expect(
+      discoverCodexSessionTranscript("../../etc/passwd", undefined, { codexRoots: [linuxRoot] }),
+    ).toBeUndefined();
   });
 
   test("refuses a supplied transcript whose filename belongs to another session", () => {

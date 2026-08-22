@@ -115,6 +115,31 @@ export function readRuntimeContextTelemetry(
   return unsupported("runtime_adapter_not_supported", startedAt);
 }
 
+/**
+ * Locate a Codex rollout transcript for a session when the hook payload
+ * carries no transcript_path. Codex omits the path on every hook event except
+ * Stop, which leaves evidence-dependent verdicts (the pending session-name
+ * display) permanently unverifiable on that adapter. Discovery reuses the
+ * telemetry scanner's roots (native ~/.codex plus WSL-mounted Windows homes)
+ * and its process cache, and returns undefined on zero or ambiguous matches.
+ *
+ * Reserve this for evaluations that stop running once their evidence lands
+ * (the pending-name latch closes after one successful verification), not for
+ * per-tool hot paths that never converge — the scan walks every sessions root.
+ */
+export function discoverCodexSessionTranscript(
+  sessionId: string | undefined,
+  transcriptPath?: string,
+  options: RuntimeTelemetryOptions = {},
+): string | undefined {
+  if (!sessionId || !/^[0-9a-f][0-9a-f-]{14,62}[0-9a-f]$/i.test(sessionId)) return undefined;
+  const resolution = resolveCodexTranscript(
+    { adapter: "codex", session_id: sessionId, transcript_path: transcriptPath, mode: "status" },
+    options,
+  );
+  return resolution.state === "found" ? resolution.path : undefined;
+}
+
 /** Status compatibility wrapper: exact pairs render; partial values do not. */
 export function readRuntimeContextUsage(
   adapter: Adapter,
