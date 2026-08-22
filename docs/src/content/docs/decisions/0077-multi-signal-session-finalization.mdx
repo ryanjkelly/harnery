@@ -107,3 +107,19 @@ real completion. A durable deferred request preserves the ordering invariant.
 
 **Admit idle and stale closures to the corpus.** These signals are useful for
 cleanup but too ambiguous to label run quality without independent review.
+
+## Result: terminal-generation cache cleanup (2026-08-22)
+
+Event Ledger V3 exposed a housekeeping gap after this decision shipped. The
+stale sweep recorded `lifecycle.sweep_observed` against the heartbeat's own
+generation before deleting its disposable cache row. That works while the
+generation is joinable. It cannot work after `session.ended`, because V3
+correctly refuses to append another event to the terminal generation.
+
+The sweep now keeps the provisional lifecycle event for joinable generations.
+For a terminal or otherwise unavailable generation, it writes a body-free
+`heartbeat_sweep_unrecorded` producer diagnostic and then removes the stale
+cache row. If neither the event nor the diagnostic can be persisted, the row is
+kept. This does not finalize or resurrect a session: the canonical ledger
+already owns that truth, and the deleted file is only the disposable
+`.harnery/active/` projection.

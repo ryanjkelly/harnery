@@ -13,6 +13,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
+import { writeProducerDiagnosticV3 } from "../../events/v3/producers/intake.ts";
 import { recordLiveSweepObservationV3 } from "../live-lifecycle-v3.ts";
 
 /** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
@@ -22,7 +23,15 @@ function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "cod
   return "claude-code";
 }
 
-/** Record the sweep before deleting authority state. V3 ambiguity fails closed. */
+/**
+ * Record the sweep before deleting disposable cache state.
+ *
+ * A joinable generation owns the canonical provisional observation. Once that
+ * generation is terminal or unavailable, it must not be reopened merely to
+ * authorize cache housekeeping. Preserve the failed observation in the V3
+ * diagnostics spool instead. If neither durable record can be written, fail
+ * closed and keep the file.
+ */
 function emitSwept(
   coordRoot: string,
   instanceId: string,
@@ -46,8 +55,18 @@ function emitSwept(
       ageMs: Math.max(0, (ageSecs ?? 0) * 1_000),
     });
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return Boolean(
+      writeProducerDiagnosticV3(coordRoot, "heartbeat_sweep_unrecorded", {
+        adapter,
+        instance_id: instanceId,
+        signal: "lifecycle.sweep_observed",
+        reason: error instanceof Error ? error.message : String(error),
+        state: "cache_cleanup_pending",
+        observation: reason,
+        age_ms: Math.max(0, (ageSecs ?? 0) * 1_000),
+      }),
+    );
   }
 }
 
@@ -85,8 +104,9 @@ export function staleSweep(coordRoot: string): {
   //     a transient (mid-write / partial read), and deleting it would nuke a
   //     LIVE agent's heartbeat, the worst possible outcome. So: never reap a
   //     fresh file on a content failure.
-  // Every deletion now emits health.heartbeat_swept so the lifecycle is
-  // auditable (sweeps used to be silent; see the swept-event schema doc).
+  // Every deletion leaves durable audit evidence. A joinable generation gets
+  // lifecycle.sweep_observed; a terminal or unavailable generation gets a
+  // heartbeat_sweep_unrecorded producer diagnostic without being resurrected.
   const liveInstanceIds = new Set<string>();
   const d = join(coordRoot, ".harnery", "active");
   if (existsSync(d)) {
