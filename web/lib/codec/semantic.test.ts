@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SemanticAcceptedReadModelV1 } from "../../../src/core/semantic/contract";
+import type {
+  SemanticAcceptedReadModelV1,
+  SemanticAgentReadModelV1,
+} from "../../../src/core/semantic/contract";
 import { writeSemanticAgentDocument } from "../../../src/core/semantic/storage";
 import {
   CODEC_SCHEMA_VERSION,
@@ -138,6 +141,28 @@ function accepted(observedThrough = "2026-08-22T19:59:00.000Z"): SemanticAccepte
   };
 }
 
+function unavailable(): SemanticAgentReadModelV1 {
+  return {
+    schema_version: 1,
+    instance_id: "inst_fixture",
+    generation_id: GENERATION,
+    reader_outcome: "unavailable",
+    source: {
+      ledger_genesis_id: "gex_fixture",
+      evidence_digest: `sha256:${"b".repeat(64)}`,
+      observed_through_event_id: EVENT,
+      observed_through_ts: "2026-08-22T19:59:00.000Z",
+    },
+    reader: {
+      harness: "codex",
+      configured_model: "gpt-5.6-luna",
+      prompt_contract_version: 1,
+    },
+    receipt: { reason_code: "authentication_unavailable" },
+    generated_at: "2026-08-22T19:59:05.000Z",
+  };
+}
+
 describe("Codec semantic read model", () => {
   test("fills only low-information presentation channels and exposes provenance", () => {
     const root = fixtureRoot();
@@ -190,6 +215,21 @@ describe("Codec semantic read model", () => {
     expect(projected.panels[0]?.focus_bubble).toBeUndefined();
     expect(codecSemantic(projected.panels[0]!)).toMatchObject({ state: "stale" });
     expect(codecSemantic(projected.panels[0]!)?.headline).toBeUndefined();
+  });
+
+  test("shows an unavailable reader receipt without fabricating meaning", () => {
+    const root = fixtureRoot();
+    writeSemanticAgentDocument(root, unavailable());
+    const projected = scene(panel());
+    expect(applySemanticReadModel(projected, source(), root, new Date(NOW))).toBe(1);
+    expect(projected.panels[0]?.focus_bubble).toBeUndefined();
+    expect(codecSemantic(projected.panels[0]!)).toMatchObject({
+      state: "unavailable",
+      reader_outcome: "unavailable",
+      reader: { configured_model: "gpt-5.6-luna" },
+      receipt: { reason_code: "authentication_unavailable" },
+    });
+    expect(codecSemantic(projected.panels[0]!)?.summary).toBeUndefined();
   });
 
   test("ignores a semantic document from a different generation", () => {

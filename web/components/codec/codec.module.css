@@ -1154,6 +1154,127 @@
   mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 0.9rem), transparent 100%);
 }
 
+.semanticRead {
+  margin-top: 0.5rem;
+  overflow: hidden;
+  border: 1px solid rgb(var(--codec-accent) / 0.3);
+  border-radius: 0.45rem;
+  background: linear-gradient(90deg, rgb(var(--codec-accent) / 0.09), rgb(24 24 31 / 0.46));
+}
+
+.semanticReadMuted {
+  border-style: dashed;
+  opacity: 0.78;
+}
+
+.semanticSummaryLine {
+  display: flex;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.42rem 0.6rem;
+}
+
+.semanticSummaryLine::-webkit-details-marker {
+  display: none;
+}
+
+.semanticSummaryLine::before {
+  content: "+";
+  flex: none;
+  color: rgb(var(--codec-accent));
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-weight: 800;
+}
+
+.semanticRead[open] .semanticSummaryLine::before {
+  content: "−";
+}
+
+.semanticEyebrow,
+.semanticPhase,
+.semanticState,
+.semanticTags,
+.semanticReceipt,
+.semanticDetail span,
+.semanticPrediction span {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.semanticEyebrow {
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(228 228 231);
+  font-size: 0.61rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.semanticPhase,
+.semanticState {
+  flex: none;
+  border: 1px solid rgb(var(--codec-accent) / 0.28);
+  border-radius: 999px;
+  padding: 0.08rem 0.34rem;
+  color: rgb(var(--codec-accent));
+  font-size: 0.51rem;
+  line-height: 1.3;
+}
+
+.semanticState {
+  margin-left: auto;
+  color: var(--muted-foreground);
+}
+
+.semanticBody {
+  display: grid;
+  gap: 0.42rem;
+  padding: 0.15rem 0.65rem 0.65rem 1.5rem;
+  border-top: 1px solid rgb(var(--codec-accent) / 0.16);
+}
+
+.semanticCopy,
+.semanticDetail,
+.semanticPrediction {
+  color: rgb(228 228 231 / 0.9);
+  font-size: 0.68rem;
+  line-height: 1.42;
+  text-wrap: pretty;
+}
+
+.semanticDetail span,
+.semanticPrediction span {
+  margin-right: 0.3rem;
+  color: rgb(var(--codec-accent));
+  font-size: 0.53rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.semanticPrediction {
+  padding-left: 0.48rem;
+  border-left: 2px dashed rgb(var(--codec-accent) / 0.58);
+  color: rgb(212 212 216 / 0.82);
+  font-style: italic;
+}
+
+.semanticTags,
+.semanticReceipt {
+  color: var(--muted-foreground);
+  font-size: 0.53rem;
+  line-height: 1.35;
+}
+
+.semanticReceipt {
+  padding-top: 0.32rem;
+  border-top: 1px solid rgb(var(--codec-accent) / 0.12);
+}
+
 .focusBubble,
 .focusText {
   text-wrap: pretty;

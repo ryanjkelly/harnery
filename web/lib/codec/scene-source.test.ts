@@ -236,6 +236,13 @@ describe("Codec live-display overlay", () => {
         confidence: "high",
         observed_at: overlay.written_at,
       },
+      semantic_service: {
+        running: true,
+        stale: false,
+        state: "running",
+        pending_count: 1,
+        model_calls: 2,
+      },
       generated_at: overlay.written_at,
     };
     const localSemanticPanel = scene.panels[0];
@@ -250,7 +257,9 @@ describe("Codec live-display overlay", () => {
       generated_at: overlay.written_at,
       expires_at: overlay.expires_at,
     });
-    const stripped = stripLiveFeedOverlay(scene).panels[0];
+    const relayScene = stripLiveFeedOverlay(scene);
+    const stripped = relayScene.panels[0];
+    expect(relayScene.semantic_service).toBeUndefined();
     expect(stripped?.focus_bubble).toBeUndefined();
     expect(stripped?.intent_history).toBeUndefined();
     expect(stripped?.context_usage?.value).toEqual({

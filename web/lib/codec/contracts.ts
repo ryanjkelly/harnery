@@ -79,6 +79,74 @@ export type CodecTelemetryReason =
   | "capability-drift"
   | "context-observation-missing";
 
+export type CodecSemanticState = "current" | "stale" | "unavailable" | "invalid" | "deferred";
+export type CodecSemanticReaderOutcome = "accepted" | "unavailable" | "invalid" | "deferred";
+export type CodecSemanticPhase =
+  | "orienting"
+  | "researching"
+  | "planning"
+  | "implementing"
+  | "verifying"
+  | "coordinating"
+  | "waiting"
+  | "recovering"
+  | "wrapping-up"
+  | "unknown";
+export type CodecSemanticTag =
+  | "research"
+  | "planning"
+  | "implementation"
+  | "verification"
+  | "coordination"
+  | "waiting"
+  | "recovery"
+  | "delivery"
+  | "documentation"
+  | "infrastructure";
+
+export interface CodecSemanticPresented<T> extends Presented<T> {
+  basis: "model-synthesis" | "prediction";
+}
+
+/** Local-only model interpretation. It is stripped from presence relay payloads. */
+export interface CodecSemanticChannel {
+  state: CodecSemanticState;
+  reader_outcome: CodecSemanticReaderOutcome;
+  reader: {
+    harness: string;
+    configured_model: string;
+    resolved_model_id?: string;
+    model_attestation?: "verified" | "requested-only";
+  };
+  evidence_digest: string;
+  observed_through_event_id: string;
+  observed_through_ts: string;
+  generated_at: string;
+  expires_at: string;
+  headline?: CodecSemanticPresented<string>;
+  summary?: CodecSemanticPresented<string>;
+  phase?: CodecSemanticPresented<CodecSemanticPhase>;
+  purpose?: CodecSemanticPresented<string>;
+  recent_result?: CodecSemanticPresented<string>;
+  attention?: CodecSemanticPresented<string>;
+  next_step?: CodecSemanticPresented<string>;
+  tags?: CodecSemanticPresented<CodecSemanticTag[]>;
+  receipt?: {
+    reason_code: string;
+    eligible_after?: string;
+  };
+}
+
+export interface CodecSemanticServiceStatus {
+  running: boolean;
+  stale: boolean;
+  state: "starting" | "running" | "stopping" | "stopped" | "not-started";
+  pending_count: number;
+  model_calls: number;
+  newest_successful_pass?: string;
+  last_error_code?: "ledger_unavailable" | "semantic_pass_failed";
+}
+
 export type CodecRemoteFreshness = "fresh" | "aging" | "stale";
 export type CodecRemoteMachineState = "fresh" | "aging" | "offline";
 
@@ -312,6 +380,8 @@ export interface CodecPanelScene {
   telemetry?: Presented<CodecTelemetry>;
   /** Bounded explanation for a degraded observer cue. */
   telemetry_reason?: Presented<CodecTelemetryReason>;
+  /** Local-only bounded interpretation of this generation's current evidence. */
+  semantic?: CodecSemanticChannel;
   /** Present only on panels read from another machine's presence relay. */
   remote_source?: {
     relay: Presented<CodecRemoteFreshnessValue>;
@@ -352,6 +422,8 @@ export interface CodecScene {
   relationships: CodecRelationship[];
   transients: CodecTransient[];
   team_ambience: Presented<"calm" | "busy" | "alert" | "unknown">;
+  /** Read-only health; opening Codec never starts the service or spends model calls. */
+  semantic_service?: CodecSemanticServiceStatus;
   generated_at: string;
 }
 

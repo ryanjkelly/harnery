@@ -20,45 +20,30 @@ import { dirname, resolve } from "node:path";
 import { type ReadLedgerV3SinceResult, readLedgerV3Since } from "../events/v3/index.ts";
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
 import { runSemanticOnce, type SemanticOnceReport } from "./once.ts";
+import {
+  readSemanticServiceStatus,
+  SEMANTIC_SERVICE_STATUS_SCHEMA_VERSION,
+  type SemanticServiceErrorCode,
+  type SemanticServiceStatus,
+  type SemanticServiceStatusRecord,
+} from "./service-status.ts";
 import { readSemanticManifest, semanticPaths, writeSemanticManifest } from "./storage.ts";
 
-export const SEMANTIC_SERVICE_STATUS_SCHEMA_VERSION = 1 as const;
+export {
+  readSemanticServiceStatus,
+  SEMANTIC_SERVICE_STATUS_SCHEMA_VERSION,
+  type SemanticServiceErrorCode,
+  type SemanticServiceState,
+  type SemanticServiceStatus,
+  type SemanticServiceStatusRecord,
+} from "./service-status.ts";
+
 export const SEMANTIC_SERVICE_DEFAULT_DEBOUNCE_MS = 5_000;
 export const SEMANTIC_SERVICE_DEFAULT_WAKE_MS = 1_000;
 export const SEMANTIC_SERVICE_DEFAULT_HEARTBEAT_MS = 5_000;
 const FOREIGN_STATUS_STALE_MS = 2 * 60_000;
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LOG_BYTES = 512 * 1024;
-
-export type SemanticServiceState = "starting" | "running" | "stopping" | "stopped";
-export type SemanticServiceErrorCode = "ledger_unavailable" | "semantic_pass_failed";
-
-export interface SemanticServiceStatusRecord {
-  schema_version: typeof SEMANTIC_SERVICE_STATUS_SCHEMA_VERSION;
-  pid: number;
-  host: string;
-  nonce: string;
-  state: SemanticServiceState;
-  started_at: string;
-  heartbeat_at: string;
-  calls_per_hour?: number;
-  sweep_count: number;
-  pass_count: number;
-  model_calls: number;
-  cache_hits: number;
-  last_sweep_at?: string;
-  last_pass_at?: string;
-  last_error_code?: SemanticServiceErrorCode;
-  stopped_at?: string;
-}
-
-export interface SemanticServiceStatus {
-  running: boolean;
-  stale: boolean;
-  record?: SemanticServiceStatusRecord;
-  newest_successful_pass?: string;
-  pending_count: number;
-}
 
 interface SemanticServiceLease {
   pid: number;
@@ -82,28 +67,6 @@ export interface RunSemanticServiceDaemonInput {
     debounceMs: number;
   }) => Promise<SemanticOnceReport>;
   waitForWake?: (milliseconds: number) => Promise<void>;
-}
-
-export function readSemanticServiceStatus(coordRootRaw: string): SemanticServiceStatus {
-  const coordRoot = resolve(coordRootRaw);
-  const record = readStatusRecord(coordRoot);
-  const manifest = safeManifest(coordRoot);
-  if (!record) {
-    return {
-      running: false,
-      stale: false,
-      newest_successful_pass: manifest?.newest_successful_pass,
-      pending_count: manifest?.pending.length ?? 0,
-    };
-  }
-  const running = statusOwnerIsLive(record);
-  return {
-    running,
-    stale: !running && record.state !== "stopped",
-    record,
-    newest_successful_pass: manifest?.newest_successful_pass,
-    pending_count: manifest?.pending.length ?? 0,
-  };
 }
 
 export async function spawnSemanticService(
@@ -374,35 +337,6 @@ function safeManifest(coordRoot: string) {
   }
 }
 
-function readStatusRecord(coordRoot: string): SemanticServiceStatusRecord | undefined {
-  const path = semanticPaths(coordRoot).service;
-  if (!existsSync(path)) return undefined;
-  try {
-    const value = readBoundedJson<SemanticServiceStatusRecord>(path, "semantic service status");
-    if (
-      value.schema_version !== SEMANTIC_SERVICE_STATUS_SCHEMA_VERSION ||
-      !Number.isSafeInteger(value.pid) ||
-      value.pid < 1 ||
-      typeof value.host !== "string" ||
-      typeof value.nonce !== "string" ||
-      !validTimestamp(value.started_at) ||
-      !validTimestamp(value.heartbeat_at)
-    ) {
-      return undefined;
-    }
-    return value;
-  } catch {
-    return undefined;
-  }
-}
-
-function statusOwnerIsLive(record: SemanticServiceStatusRecord): boolean {
-  if (record.state === "stopped") return false;
-  if (record.host === hostname()) return pidAlive(record.pid);
-  const age = Date.now() - Date.parse(record.heartbeat_at);
-  return Number.isFinite(age) && age < FOREIGN_STATUS_STALE_MS;
-}
-
 function readLease(path: string): SemanticServiceLease | undefined {
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as Partial<SemanticServiceLease>;
@@ -475,12 +409,6 @@ function appendSemanticServiceLog(coordRoot: string, entry: Record<string, unkno
   const temporary = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
   writeFileSync(temporary, body, { flag: "wx", mode: 0o600 });
   renameSync(temporary, path);
-}
-
-function readBoundedJson<T>(path: string, label: string): T {
-  const size = statSync(path).size;
-  if (size <= 0 || size > MAX_FILE_BYTES) throw new Error(`${label} has invalid size ${size}`);
-  return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
 function writePrivateJsonAtomic(path: string, value: unknown): void {

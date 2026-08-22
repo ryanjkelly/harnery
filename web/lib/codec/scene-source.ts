@@ -24,6 +24,7 @@ import {
 } from "../../../src/core/events/v3/live-feed";
 import { readLedgerV3 } from "../../../src/core/events/v3/reader";
 import { eventV3Paths } from "../../../src/core/events/v3/writer";
+import { readSemanticServiceStatus } from "../../../src/core/semantic/service-status";
 
 import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { allocateCharacters } from "./packs";
@@ -121,6 +122,22 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
     applySemanticReadModel(scene, events, coordRoot(), now ? new Date(now) : new Date());
   } catch {
     // deterministic scene stands
+  }
+  try {
+    const status = readSemanticServiceStatus(coordRoot());
+    scene.semantic_service = {
+      running: status.running,
+      stale: status.stale,
+      state: status.record?.state ?? "not-started",
+      pending_count: status.pending_count,
+      model_calls: status.record?.model_calls ?? 0,
+      ...(status.newest_successful_pass
+        ? { newest_successful_pass: status.newest_successful_pass }
+        : {}),
+      ...(status.record?.last_error_code ? { last_error_code: status.record.last_error_code } : {}),
+    };
+  } catch {
+    // Service health is optional; opening Codec never starts or repairs it.
   }
   // Remote panels from peer machines' presence blobs (relay cache). Local
   // panels win instance-id collisions: the local view is closer to the
@@ -236,8 +253,9 @@ export function applyLiveFeedOverlay(
 /** Drop local #intent history, exact context counts, image blob references,
  * and every feed-derived focus value before relay publication. */
 export function stripLiveFeedOverlay(scene: CodecScene): CodecScene {
+  const { semantic_service: _semanticService, ...relaySafeScene } = scene;
   return {
-    ...scene,
+    ...relaySafeScene,
     panels: scene.panels.map((panel) => {
       const { intent_history: _localIntents, ...withoutIntents } = panel;
       let sanitized: CodecScene["panels"][number] = stripCodecSemantic(withoutIntents);

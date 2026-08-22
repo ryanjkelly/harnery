@@ -55,6 +55,7 @@ import {
 import { codecEvidenceReceiptRows } from "@/lib/codec/evidence-receipt";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
 import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
+import { codecSemantic } from "@/lib/codec/semantic-contract";
 import { summarizeCodecTeam } from "@/lib/codec/team-summary";
 import { useLiveSignal } from "@/lib/useLiveSignal";
 import { CodecRuntimeStrip } from "./CodecRuntimeStrip";
@@ -432,6 +433,23 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
             <Badge variant="outline" title="Agent presence summary">
               {current.length} live · {stale.length} stale · {ended.length} ended
             </Badge>
+            {scene.semantic_service && (
+              <Badge
+                data-codec-semantic-service
+                data-state={scene.semantic_service.state}
+                variant={scene.semantic_service.running ? "outline" : "secondary"}
+                title={
+                  scene.semantic_service.running
+                    ? `Semantic reader running · ${scene.semantic_service.model_calls} model calls · ${scene.semantic_service.pending_count} pending`
+                    : "Semantic reader stopped. Start explicitly with: harn semantic service start"
+                }
+              >
+                semantic {scene.semantic_service.running ? "on" : "off"}
+                {scene.semantic_service.last_error_code
+                  ? ` · ${humanizeCueToken(scene.semantic_service.last_error_code)}`
+                  : ""}
+              </Badge>
+            )}
           </div>
           <SceneControls
             remoteAvailable={scene.remote_machines.length > 0}
@@ -988,6 +1006,7 @@ function CodecPanel({
         <CodecRuntimeStrip panel={panel} />
         <FocusBubble panel={panel} />
         <OperationCue panel={panel} />
+        <SemanticRead panel={panel} />
         <IntentHistory intents={panel.intent_history ?? []} />
 
         <div className={styles.statusRail}>
@@ -1145,6 +1164,77 @@ function CodecPanel({
         <EvidenceReceipt panel={panel} />
       </div>
     </section>
+  );
+}
+
+function SemanticRead({ panel }: { panel: CodecPanelScene }) {
+  const semantic = codecSemantic(panel);
+  if (!semantic) return null;
+
+  const readerLabel = semantic.reader.resolved_model_id ?? semantic.reader.configured_model;
+  const stateLabel = semantic.state === "current" ? "current" : humanizeCueToken(semantic.state);
+  const receiptReason = semantic.receipt?.reason_code
+    ? humanizeCueToken(semantic.receipt.reason_code)
+    : undefined;
+
+  return (
+    <details
+      data-codec-semantic-read
+      data-state={semantic.state}
+      className={cn(styles.semanticRead, semantic.state !== "current" && styles.semanticReadMuted)}
+    >
+      <summary className={styles.semanticSummaryLine}>
+        <span className={styles.semanticEyebrow}>Semantic read</span>
+        {semantic.phase?.value && semantic.phase.value !== "unknown" && (
+          <span className={styles.semanticPhase}>{humanizeCueToken(semantic.phase.value)}</span>
+        )}
+        <span className={styles.semanticState}>{stateLabel}</span>
+      </summary>
+      <div className={styles.semanticBody}>
+        {semantic.state === "current" ? (
+          <>
+            {semantic.summary && <p className={styles.semanticCopy}>{semantic.summary.value}</p>}
+            {semantic.purpose && (
+              <p className={styles.semanticDetail}>
+                <span>Purpose</span> {semantic.purpose.value}
+              </p>
+            )}
+            {semantic.recent_result && (
+              <p className={styles.semanticDetail}>
+                <span>Recent result</span> {semantic.recent_result.value}
+              </p>
+            )}
+            {semantic.attention && (
+              <p className={styles.semanticDetail}>
+                <span>Attention</span> {semantic.attention.value}
+              </p>
+            )}
+            {semantic.next_step && (
+              <p data-codec-semantic-prediction className={styles.semanticPrediction}>
+                <span>Predicted next</span> {semantic.next_step.value}
+              </p>
+            )}
+            {semantic.tags && semantic.tags.value.length > 0 && (
+              <p className={styles.semanticTags}>{semantic.tags.value.join(" · ")}</p>
+            )}
+          </>
+        ) : (
+          <p className={styles.semanticCopy}>
+            Reader {stateLabel}
+            {receiptReason ? ` · ${receiptReason}` : ""}. No model meaning is being shown.
+          </p>
+        )}
+        <p className={styles.semanticReceipt}>
+          {semantic.reader.harness} · {readerLabel} · model synthesis
+          {semantic.reader.model_attestation
+            ? ` · ${humanizeCueToken(semantic.reader.model_attestation)}`
+            : ""}
+          {semantic.state === "current"
+            ? ` · expires ${formatReceiptTime(semantic.expires_at)}`
+            : ""}
+        </p>
+      </div>
+    </details>
   );
 }
 
