@@ -66,6 +66,7 @@ export interface RunSemanticServiceDaemonInput {
     coordRoot: string;
     callsPerHour?: number;
     debounceMs: number;
+    shouldStop: () => boolean;
   }) => Promise<SemanticOnceReport>;
   waitForWake?: (milliseconds: number) => Promise<void>;
 }
@@ -162,6 +163,7 @@ export async function runSemanticServiceDaemon(
         coordRoot: options.coordRoot,
         callsPerHour: options.callsPerHour,
         debounceMs: options.debounceMs,
+        shouldStop: options.shouldStop,
       }));
   const startedAt = now().toISOString();
   const status: SemanticServiceStatusRecord = {
@@ -221,6 +223,7 @@ export async function runSemanticServiceDaemon(
             coordRoot,
             ...(input.callsPerHour !== undefined ? { callsPerHour: input.callsPerHour } : {}),
             debounceMs,
+            shouldStop: () => stopRequested || existsSync(paths.stop),
           });
           status.pass_count += 1;
           status.model_calls += report.model_calls;

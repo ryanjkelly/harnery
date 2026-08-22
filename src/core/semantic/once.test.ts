@@ -256,4 +256,40 @@ describe("semantic once", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("stops between model calls and leaves later evidence pending", async () => {
+    const root = fixtureRoot();
+    const first = evidence("a");
+    const second: SemanticEvidenceV1 = {
+      ...evidence("b"),
+      instance_id: "inst_fixture_two",
+      generation_id: "gen_01922e33-7abd-7def-8abc-0123456789ab",
+    };
+    const calls = { count: 0 };
+    let stopRequested = false;
+    try {
+      const adapters = fakeAdapters(first, calls);
+      const invoke = adapters.codex.invoke.bind(adapters.codex);
+      adapters.codex.invoke = async (...args) => {
+        const result = await invoke(...args);
+        stopRequested = true;
+        return result;
+      };
+      const report = await runSemanticOnce({
+        coordRoot: root,
+        evidence: [first, second],
+        adapters,
+        now: () => new Date(NOW),
+        shouldStop: () => stopRequested,
+      });
+
+      expect(report).toMatchObject({ model_calls: 1, cache_hits: 0 });
+      expect(report.outcomes).toHaveLength(1);
+      expect(readSemanticManifest(root)?.pending).toEqual([
+        expect.objectContaining({ generation_id: second.generation_id }),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

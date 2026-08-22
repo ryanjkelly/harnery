@@ -65,6 +65,7 @@ export interface RunSemanticOnceInput {
   callsPerHour?: number;
   debounceMs?: number;
   minimumGenerationCallIntervalMs?: number;
+  shouldStop?: () => boolean;
 }
 
 export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<SemanticOnceReport> {
@@ -123,6 +124,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
   let cacheHits = 0;
   const heldGenerations = new Set<string>();
   while (current.pending.length > 0) {
+    if (input.shouldStop?.()) break;
     const eligiblePending = current.pending.filter(
       (pending) =>
         !heldGenerations.has(pending.generation_id) &&
