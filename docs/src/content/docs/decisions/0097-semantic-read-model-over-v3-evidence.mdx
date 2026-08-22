@@ -1,0 +1,84 @@
+---
+title: "0097: Keep semantic readings separate from V3 authority"
+description: "ADR: derive evidence-cited agent meaning through harness-routed readers, persist it as rebuildable local state, and leave Event Ledger V3 authoritative."
+---
+
+**Status:** accepted (2026-08-22) · **Scope:** product tier (`core/semantic`, `harn semantic`, Codec)
+
+## Context
+
+Event Ledger V3 can prove what an agent did, which generation owns an event,
+and whether coordination state is authoritative. Codec can project that
+evidence into deterministic activity cues. Neither layer should guess why the
+work matters or condense several related facts into a useful explanation.
+
+A language model can supply that explanation, but its output is
+nondeterministic and may overstate weak evidence. Putting inferred prose in the
+ledger would make a derived interpretation look canonical. Letting Codec invoke
+models directly would mix recurring cost and failure with a read-only page.
+
+## Alternatives
+
+**Append inferred events to V3.** Rejected because a projection would become
+source evidence and could feed later inferences. The ledger must stay factual
+and replayable without a model.
+
+**Extend the existing Codec suggestion file.** Rejected because that prototype
+stores presentation hints, uses one shared file, and allows interpreter
+fallback. It cannot carry field-level evidence or per-generation reader
+identity without becoming a second, incompatible contract.
+
+**Use one available harness for every generation.** Rejected because reader
+availability would silently change the model and voice assigned to work from a
+different harness.
+
+**Keep the last accepted meaning during rate deferral.** Rejected for version
+1. A deferred document represents a new evidence digest. Showing old prose
+beside it would invite the operator to treat a mismatched summary as current.
+
+## Decision
+
+Harnery adds `SemanticEvidenceV1` and `SemanticAgentReadModelV1` under the
+product-tier `harnery/core/semantic` export. Deterministic code builds a bounded
+evidence envelope from the canonical V3 reader, the authority-safe coordination
+view, and controlled Codec operation labels. Raw prompts, transcripts, tool or
+command bodies, paths, URLs, environment assignments, and secret-shaped text
+are refused at this boundary.
+
+Reader routing is fixed by the source adapter:
+
+| Source adapter | Configured reader | Invocation identity | Attestation |
+|---|---|---|---|
+| Claude Code | Haiku 4.5 | `claude-haiku-4-5-20251001` | requested-only |
+| Codex | GPT-5.6 Luna | `gpt-5.6-luna` | requested-only |
+| Cursor | Composer 2.5 | `composer-2.5` | requested-only |
+
+All three installed CLIs expose an explicit model flag. Cursor also lists
+`composer-2.5` through its discovery surface. Their one-shot result envelopes
+do not attest the executed model, so version 1 records `requested-only`. If a
+future result exposes an executed identity, Harnery records `verified` when it
+matches and fails closed with `model_mismatch` when it does not. No adapter may
+fall sideways to another harness or model.
+
+The persisted read model is a discriminated union. Accepted output requires a
+resolved model identity, attestation, and meaning. A harness or authentication
+failure may omit resolution fields because no adapter ran. Invalid output
+requires a resolved reader. Deferral carries only `rate_cap` and
+`eligible_after`; it replaces, rather than accompanies, older meaning.
+
+Freshness is consumer-derived. Documents do not store `current`, `stale`, or an
+expiry timestamp. Codec compares the evidence timestamp with current ledger
+authority and its deterministic freshness policy at read time. Cache identity
+includes the evidence digest, harness, configured and resolved model IDs, and
+both evidence and prompt contract versions.
+
+## Result
+
+The first contract slice exports strict schemas, stable evidence projection,
+field-level citation validation, and privacy guards. Replay tests prove that
+command-output traffic does not change the evidence digest while typed waits
+do. Contract tests reject unknown citations, unsupported completion and
+attention claims, stale model replies, path and command sentinels, unsafe
+reducer labels, percent estimates, and missing accepted-reader attestation.
+Empty or absent tags need no fabricated citation.
+

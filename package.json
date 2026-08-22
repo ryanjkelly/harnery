@@ -102,6 +102,11 @@
       "types": "./dist/core/events/v3/index.d.ts",
       "import": "./dist/core/events/v3/index.js"
     },
+    "./core/semantic": {
+      "bun": "./src/core/semantic/index.ts",
+      "types": "./dist/core/semantic/index.d.ts",
+      "import": "./dist/core/semantic/index.js"
+    },
     "./core/governor/plans": {
       "bun": "./src/core/governor/plan-read.ts",
       "types": "./dist/core/governor/plan-read.d.ts",
