@@ -78,13 +78,18 @@ describe("semantic service", () => {
           schema_version: 1,
           ledger_genesis_id: "gex_fixture",
           evidence_count: 1,
+          evidence_by_harness: { "claude-code": 0, codex: 1, cursor: 0 },
           model_calls: 1,
           cache_hits: 0,
           outcomes: [
             {
               generation_id: "gen_01922e33-7abc-7def-8abc-0123456789ab",
+              source_harness: "codex",
               action: "accepted",
               model_call: true,
+              duration_ms: 1250,
+              input_bytes: 4096,
+              output_bytes: 512,
             },
           ],
           completed_at: "2026-08-22T20:00:01.000Z",
@@ -107,6 +112,9 @@ describe("semantic service", () => {
     });
     const log = readFileSync(semanticPaths(root).log, "utf8");
     expect(log).toContain('"event":"pass"');
+    expect(log).toContain(
+      '"codex":{"evidence_count":1,"model_calls":1,"cache_hits":0,"accepted":1,"unavailable":0,"invalid":0,"deferred":0,"duration_ms":[1250],"input_bytes":[4096],"output_bytes":[512]}',
+    );
     expect(log).not.toContain("gen_01922e33");
   });
 });

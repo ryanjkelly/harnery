@@ -38,6 +38,7 @@ import { validateSemanticModelReply } from "./validate.ts";
 
 export interface SemanticOnceOutcome {
   generation_id: string;
+  source_harness: SemanticHarness;
   action: "unchanged" | "cached" | "accepted" | "unavailable" | "invalid" | "deferred";
   model_call: boolean;
   duration_ms?: number;
@@ -49,6 +50,7 @@ export interface SemanticOnceReport {
   schema_version: 1;
   ledger_genesis_id?: string;
   evidence_count: number;
+  evidence_by_harness: Record<SemanticHarness, number>;
   model_calls: number;
   cache_hits: number;
   outcomes: SemanticOnceOutcome[];
@@ -106,7 +108,12 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
   for (const item of evidence) {
     const existing = safeAgentDocument(input.coordRoot, item.generation_id);
     if (!semanticDocumentEligible(existing, item, nowDate.getTime())) {
-      outcomes.push({ generation_id: item.generation_id, action: "unchanged", model_call: false });
+      outcomes.push({
+        generation_id: item.generation_id,
+        source_harness: item.source_harness,
+        action: "unchanged",
+        model_call: false,
+      });
       continue;
     }
     current.pending = enqueueSemanticPending(current.pending, item, nowIso);
@@ -135,6 +142,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       writeSemanticAgentDocument(input.coordRoot, unavailableDocument(item, resolution, nowIso));
       outcomes.push({
         generation_id: item.generation_id,
+        source_harness: item.source_harness,
         action: "unavailable",
         model_call: false,
       });
@@ -158,7 +166,12 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     ) {
       writeSemanticAgentDocument(input.coordRoot, cached);
       cacheHits += 1;
-      outcomes.push({ generation_id: item.generation_id, action: "cached", model_call: false });
+      outcomes.push({
+        generation_id: item.generation_id,
+        source_harness: item.source_harness,
+        action: "cached",
+        model_call: false,
+      });
       current.newest_successful_pass = nowIso;
       removePending(current, pending.generation_id);
       continue;
@@ -167,7 +180,12 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     if (cap.available === 0) {
       const deferred = deferredDocument(item, resolution, cap.eligible_after!, nowIso);
       writeSemanticAgentDocument(input.coordRoot, deferred);
-      outcomes.push({ generation_id: item.generation_id, action: "deferred", model_call: false });
+      outcomes.push({
+        generation_id: item.generation_id,
+        source_harness: item.source_harness,
+        action: "deferred",
+        model_call: false,
+      });
       removePending(current, pending.generation_id);
       continue;
     }
@@ -194,6 +212,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     }
     outcomes.push({
       generation_id: item.generation_id,
+      source_harness: item.source_harness,
       action: outcome.document.reader_outcome,
       model_call: true,
       duration_ms: result.duration_ms,
@@ -214,11 +233,20 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     schema_version: 1,
     ...(ledgerGenesisId ? { ledger_genesis_id: ledgerGenesisId } : {}),
     evidence_count: evidence.length,
+    evidence_by_harness: countEvidenceByHarness(evidence),
     model_calls: calls,
     cache_hits: cacheHits,
     outcomes,
     completed_at: nowIso,
   };
+}
+
+function countEvidenceByHarness(
+  evidence: readonly SemanticEvidenceV1[],
+): Record<SemanticHarness, number> {
+  const counts: Record<SemanticHarness, number> = { "claude-code": 0, codex: 0, cursor: 0 };
+  for (const item of evidence) counts[item.source_harness] += 1;
+  return counts;
 }
 
 function resolveReaders(

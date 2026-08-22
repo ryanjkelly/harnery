@@ -19,6 +19,7 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { type ReadLedgerV3SinceResult, readLedgerV3Since } from "../events/v3/index.ts";
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
+import type { SemanticHarness } from "./contract.ts";
 import { runSemanticOnce, type SemanticOnceReport } from "./once.ts";
 import {
   readSemanticServiceStatus,
@@ -235,6 +236,7 @@ export async function runSemanticServiceDaemon(
           appendSemanticServiceLog(coordRoot, {
             event: "pass",
             evidence_count: report.evidence_count,
+            evidence_by_harness: report.evidence_by_harness,
             model_calls: report.model_calls,
             cache_hits: report.cache_hits,
             accepted: report.outcomes.filter((outcome) => outcome.action === "accepted").length,
@@ -242,6 +244,7 @@ export async function runSemanticServiceDaemon(
               .length,
             invalid: report.outcomes.filter((outcome) => outcome.action === "invalid").length,
             deferred: report.outcomes.filter((outcome) => outcome.action === "deferred").length,
+            harness_metrics: semanticHarnessMetrics(report),
           });
         }
       } catch (error) {
@@ -316,6 +319,57 @@ export function acquireSemanticServiceLease(coordRootRaw: string): () => void {
     } catch {
       // A later explicit start can recover a stale private lease.
     }
+  };
+}
+
+interface SemanticHarnessPassMetrics {
+  evidence_count: number;
+  model_calls: number;
+  cache_hits: number;
+  accepted: number;
+  unavailable: number;
+  invalid: number;
+  deferred: number;
+  duration_ms: number[];
+  input_bytes: number[];
+  output_bytes: number[];
+}
+
+function semanticHarnessMetrics(
+  report: SemanticOnceReport,
+): Record<SemanticHarness, SemanticHarnessPassMetrics> {
+  const metrics: Record<SemanticHarness, SemanticHarnessPassMetrics> = {
+    "claude-code": emptyHarnessMetrics(report.evidence_by_harness["claude-code"]),
+    codex: emptyHarnessMetrics(report.evidence_by_harness.codex),
+    cursor: emptyHarnessMetrics(report.evidence_by_harness.cursor),
+  };
+  for (const outcome of report.outcomes) {
+    const harness = metrics[outcome.source_harness];
+    if (outcome.model_call) harness.model_calls += 1;
+    if (outcome.action === "cached") harness.cache_hits += 1;
+    if (outcome.action === "accepted") harness.accepted += 1;
+    if (outcome.action === "unavailable") harness.unavailable += 1;
+    if (outcome.action === "invalid") harness.invalid += 1;
+    if (outcome.action === "deferred") harness.deferred += 1;
+    if (outcome.duration_ms !== undefined) harness.duration_ms.push(outcome.duration_ms);
+    if (outcome.input_bytes !== undefined) harness.input_bytes.push(outcome.input_bytes);
+    if (outcome.output_bytes !== undefined) harness.output_bytes.push(outcome.output_bytes);
+  }
+  return metrics;
+}
+
+function emptyHarnessMetrics(evidenceCount: number): SemanticHarnessPassMetrics {
+  return {
+    evidence_count: evidenceCount,
+    model_calls: 0,
+    cache_hits: 0,
+    accepted: 0,
+    unavailable: 0,
+    invalid: 0,
+    deferred: 0,
+    duration_ms: [],
+    input_bytes: [],
+    output_bytes: [],
   };
 }
 
