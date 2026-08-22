@@ -286,10 +286,10 @@ export function deriveExpressiveChannels(
     const withIntent = [...turnActions].reverse().find((a) => a.intent);
     const intentTs = ms(withIntent?.ts);
     if (withIntent?.intent && Number.isFinite(intentTs) && age(intentTs) <= BUBBLE_MS) {
-      const summaryWords = withIntent.intent.trim().split(/\s+/).slice(0, 8);
+      const summaryWords = withIntent.intent.trim().split(/\s+/).slice(0, 4);
       while (
         summaryWords.length > 1 &&
-        /^(?:a|an|and|at|but|by|for|from|in|nor|of|on|or|the|to|with)$/i.test(
+        /^(?:a|an|and|at|but|by|for|from|in|nor|of|on|or|so|the|to|with)$/i.test(
           summaryWords.at(-1)!.replace(/[,;:]$/, ""),
         )
       ) {

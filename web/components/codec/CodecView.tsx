@@ -987,7 +987,7 @@ function FocusBubble({ panel }: { panel: CodecPanelScene }) {
   return (
     <p
       className={cn(
-        "mt-2 inline-flex max-w-full flex-wrap items-center gap-x-1 gap-y-0 rounded-2xl border px-2.5 py-1 text-pretty text-xs leading-relaxed",
+        "mt-2 flex w-full max-w-full flex-wrap items-center gap-x-1 gap-y-0 rounded-2xl border px-2.5 py-1 text-pretty text-xs leading-relaxed",
         styles.focusBubble,
         inferred ? "border-dashed text-muted-foreground" : "text-foreground",
       )}

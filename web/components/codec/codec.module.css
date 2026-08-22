@@ -799,7 +799,7 @@
 
 .focusBubble,
 .focusText {
-  text-wrap: balance;
+  text-wrap: pretty;
 }
 
 .focusText {

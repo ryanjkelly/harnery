@@ -175,13 +175,13 @@ describe("deriveExpressiveChannels", () => {
           action({
             ts: at(20),
             outcome: "started",
-            intent: "verify the published plan page is now live on production host",
+            intent: "review the historical project Codex config changes so every adapter agrees",
           }),
         ],
       }),
       NOW,
     );
-    expect(c.focus_bubble?.value.text).toBe("verify the published plan page is now live");
+    expect(c.focus_bubble?.value.text).toBe("review the historical project");
     expect(c.focus_bubble?.value.basis).toBe("event-backed");
     expect(c.focus_bubble?.expires_at).toBeDefined();
     expect(c.focus_bubble?.evidence_event_ids).toHaveLength(1);
