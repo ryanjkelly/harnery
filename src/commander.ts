@@ -55,6 +55,7 @@ import { registerReadCommand } from "./commands/read.ts";
 import { registerRelayCommand } from "./commands/relay.ts";
 import { registerSyncCommand } from "./commands/sync.ts";
 import { registerSectionCommand, registerTocCommand } from "./commands/toc.ts";
+import { registerSemanticCommand } from "./commands/semantic.ts";
 import { registerTokensCommand } from "./commands/tokens.ts";
 import { registerTunnelCommand } from "./commands/tunnel.ts";
 import { registerWebCommand } from "./commands/web.ts";
@@ -290,6 +291,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerCheckpointCommand(program, emit, opts.context);
   registerJournalCommand(program, emit);
   registerLedgerV3Command(program, emit, opts.context);
+  registerSemanticCommand(program, emit, opts.context);
   registerEventsCommand(program, emit, opts.context);
   registerArtifactsCommand(program, emit, opts.context);
   registerDecisionCommand(program, emit);

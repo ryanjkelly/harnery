@@ -1,0 +1,77 @@
+---
+title: harn semantic
+description: "Build and inspect evidence-cited semantic readings of active Event Ledger V3 generations."
+sidebar:
+  order: 13
+---
+
+```
+harn semantic <subcommand> [options]
+```
+
+`harn semantic` turns the bounded facts in an active Event Ledger V3 generation
+into a broader read model for operator-facing surfaces. The generated meaning is
+derived state. It lives separately under `.harnery/semantic/v1/` and never writes
+back to the canonical ledger.
+
+Every claim carries the event IDs that support it. Invalid output, an unavailable
+model, and a rate-limited request produce typed receipts instead of silently
+keeping old meaning.
+
+## Model routing
+
+The source harness determines the reader. Harnery does not fall back to a model
+from another harness.
+
+| Source harness | Configured reader |
+| --- | --- |
+| Claude Code | Haiku 4.5 |
+| Codex | GPT-5.6 Luna |
+| Cursor | Composer 2.5 |
+
+The adapters request those exact models. When a harness does not attest the
+executed model in its result envelope, the stored reader records
+`model_attestation: "requested-only"` rather than claiming that the model was
+verified.
+
+## Subcommands
+
+```bash
+harn semantic once                         # run one bounded pass
+harn semantic once --calls-per-hour 12     # use a lower local ceiling
+harn semantic doctor                       # check readers without a model call
+harn semantic inspect <instance-or-generation>
+```
+
+`once` is the only command here that spends model calls. It projects safe evidence
+from active V3 generations, schedules the oldest eligible work, reuses an exact
+input cache, validates citations and privacy boundaries, and atomically publishes
+the resulting agent document.
+
+The hard ceiling is 60 calls per coordination root in any rolling hour. A lower
+`--calls-per-hour` value is allowed. Requests beyond the active ceiling receive a
+`deferred` document with an `eligible_after` time.
+
+`doctor` reports which harness binaries are available, the configured model for
+each one, and the current semantic manifest. It makes no model request.
+
+`inspect` accepts either an instance ID or generation ID and returns the current
+semantic document. Consumers decide whether a document is fresh by comparing its
+source cursor to the current V3 projection. Freshness is not stored as a second
+authority in the document.
+
+## Storage boundary
+
+All state is disposable and rebuildable:
+
+```text
+.harnery/semantic/v1/
+├── manifest.json
+├── agents/<generation_id>.json
+└── cache/<cache_key>.json
+```
+
+The cache key includes the evidence digest, source harness, configured and
+resolved model IDs, evidence contract version, and prompt contract version.
+Changing any of those inputs prevents stale reuse.
+
