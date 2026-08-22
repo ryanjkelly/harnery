@@ -24,6 +24,7 @@ import {
   CODEC_SCHEMA_VERSION,
   type CodecActivity,
   type CodecContextBand,
+  type CodecIntentSignal,
   type CodecLifecycle,
   type CodecPanelScene,
   type CodecPresence,
@@ -82,6 +83,8 @@ interface InstanceEvidence {
    * panel can survive a swept heartbeat without inventing state. */
   activityEvidence?: { value: CodecActivity; ts: string; event_id: string };
   recentActions: CodecRecentAction[];
+  /** Newest operator-authored #intent labels, capped at the presentation limit. */
+  intentHistory: CodecIntentSignal[];
   /** Full recent action list for the expressive rules, ascending, capped. */
   actionsFull: ExpressiveAction[];
   /** Successful terminal/progress evidence for bounded cadence inference. */
@@ -108,7 +111,13 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     seenEventIds.add(ev.event_id);
     let slot = byInstance.get(ev.instance_id);
     if (!slot) {
-      slot = { recentActions: [], actionsFull: [], successfulProgress: [], openSubagents: 0 };
+      slot = {
+        recentActions: [],
+        intentHistory: [],
+        actionsFull: [],
+        successfulProgress: [],
+        openSubagents: 0,
+      };
       byInstance.set(ev.instance_id, slot);
     }
     if (ev.parent_session_id) {
@@ -224,6 +233,19 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         ...(ev.live_overlay ? { live_overlay: true } : {}),
       });
       if (slot.actionsFull.length > ACTIONS_FULL_CAP) slot.actionsFull.shift();
+      if (ev.intent) {
+        slot.intentHistory.unshift({
+          text: ev.intent,
+          event_id: ev.event_id,
+          observed_at: ev.ts,
+          event_type: ev.event_type,
+          category: ev.category ?? "other",
+          ...(ev.tool_name ? { tool_name: ev.tool_name } : {}),
+          ...(ev.adapter ? { adapter: ev.adapter } : {}),
+          ...(ev.live_overlay ? { live_overlay: true } : {}),
+        });
+        if (slot.intentHistory.length > 3) slot.intentHistory.length = 3;
+      }
       // `tool.requested` opens an action and its completion closes it; the trail
       // wants completed-or-started glyphs, newest first, capped at three.
       if (ev.event_type !== "tool.requested" && ev.event_type !== "command.started") {
@@ -586,6 +608,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       context_band: contextBand(hb.instance_id, ev, hb.last_heartbeat),
       progress_rhythm: progressRhythm(ev, nowMs, hb.last_heartbeat),
       recent_actions: ev?.recentActions ?? [],
+      intent_history: ev?.intentHistory ?? [],
       ...(channels.focus_bubble ? { focus_bubble: channels.focus_bubble } : {}),
       ...(activityChannels.get(hb.instance_id) ?? unknownActivityChannels(now)),
       character: { ...FALLBACK_PACK },
@@ -678,6 +701,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       context_band: contextBand(instanceId, ev, fallbackTs),
       progress_rhythm: progressRhythm(ev, nowMs, fallbackTs),
       recent_actions: ev.recentActions,
+      intent_history: ev.intentHistory,
       ...(channels.focus_bubble ? { focus_bubble: channels.focus_bubble } : {}),
       ...(activityChannels.get(instanceId) ?? unknownActivityChannels(now)),
       character: { ...FALLBACK_PACK },

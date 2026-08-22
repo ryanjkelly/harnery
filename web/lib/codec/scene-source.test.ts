@@ -182,6 +182,16 @@ describe("Codec live-display overlay", () => {
             observed_at: overlay.written_at,
           },
           recent_actions: [],
+          intent_history: [
+            {
+              text: "Inspect the adapter matrix",
+              event_id: eventId,
+              observed_at: overlay.written_at,
+              event_type: "command.started",
+              category: "diagnostic",
+              live_overlay: true,
+            },
+          ],
           focus_bubble: {
             value: { text: "Inspect the adapter", basis: "event-backed", live_overlay: true },
             provenance: "event",
@@ -203,8 +213,11 @@ describe("Codec live-display overlay", () => {
       },
       generated_at: overlay.written_at,
     };
-    expect(stripLiveFeedOverlay(scene).panels[0]?.focus_bubble).toBeUndefined();
+    const stripped = stripLiveFeedOverlay(scene).panels[0];
+    expect(stripped?.focus_bubble).toBeUndefined();
+    expect(stripped?.intent_history).toBeUndefined();
     expect(scene.panels[0]?.focus_bubble).toBeDefined();
+    expect(scene.panels[0]?.intent_history).toHaveLength(1);
 
     const localPanel = scene.panels[0];
     if (!localPanel) throw new Error("local panel missing");

@@ -327,6 +327,57 @@ describe("projectScene", () => {
     expect(trail.map((a) => a.category)).toEqual(["test", "diagnostic", "edit"]);
   });
 
+  test("intent history keeps the newest three bounded labels with source metadata", () => {
+    const scene = projectScene({
+      snapshot: snapshot([hb({})]),
+      events: [
+        ev({
+          event_type: "tool.requested",
+          category: "research",
+          tool_name: "Read",
+          intent: "Read the oldest source",
+          ts: "2026-08-16T10:01:00.000Z",
+        }),
+        ev({
+          event_type: "command.started",
+          category: "diagnostic",
+          tool_name: "Bash",
+          intent: "Measure the first overflow",
+          ts: "2026-08-16T10:02:00.000Z",
+        }),
+        ev({
+          event_type: "tool.requested",
+          category: "edit",
+          tool_name: "apply_patch",
+          intent: "Clip the animated paint",
+          ts: "2026-08-16T10:03:00.000Z",
+        }),
+        ev({
+          event_type: "tool.requested",
+          adapter: "codex",
+          category: "test",
+          tool_name: "exec_command",
+          intent: "Verify the repaired viewport",
+          live_overlay: true,
+          ts: "2026-08-16T10:04:00.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+
+    expect(scene.panels[0]?.intent_history).toEqual([
+      expect.objectContaining({
+        text: "Verify the repaired viewport",
+        category: "test",
+        tool_name: "exec_command",
+        adapter: "codex",
+        live_overlay: true,
+      }),
+      expect.objectContaining({ text: "Clip the animated paint", category: "edit" }),
+      expect.objectContaining({ text: "Measure the first overflow", category: "diagnostic" }),
+    ]);
+  });
+
   test("evidence-backed panel survives a swept heartbeat; noise and stale evidence do not", () => {
     const events = [
       ev({

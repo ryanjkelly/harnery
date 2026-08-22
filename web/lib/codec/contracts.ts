@@ -130,6 +130,20 @@ export interface CodecRecentAction {
   observed_at: string;
 }
 
+/** One bounded operator-authored #intent label. The full command, tool input,
+ * output, prompt, and transcript remain outside the Codec boundary. */
+export interface CodecIntentSignal {
+  text: string;
+  event_id: string;
+  observed_at: string;
+  event_type: EventTypeV3;
+  category: CodecActionCategory;
+  tool_name?: string;
+  adapter?: CodecSourceEvidence["adapter"];
+  /** True when the local live-display overlay supplied this label. */
+  live_overlay?: boolean;
+}
+
 /**
  * The bounded per-event evidence the sanitizer emits. This is the ONLY shape
  * raw canonical rows are reduced to; prompts, transcripts, tool inputs/outputs,
@@ -231,6 +245,8 @@ export interface CodecPanelScene {
   context_band: Presented<CodecContextBand>;
   progress_rhythm: Presented<CodecProgressRhythm>;
   recent_actions: CodecRecentAction[];
+  /** Newest first, capped at three; omitted from remote relay payloads. */
+  intent_history?: CodecIntentSignal[];
   focus_bubble?: Presented<{
     text: string;
     basis: "event-backed" | "inferred";

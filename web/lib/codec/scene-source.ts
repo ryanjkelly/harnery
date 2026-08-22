@@ -233,14 +233,16 @@ export function applyLiveFeedOverlay(
   });
 }
 
-/** Drop every feed-derived display value before relay publication. */
+/** Drop local #intent history and every feed-derived focus value before relay
+ * publication. Remote machines never receive operator-authored intent text. */
 export function stripLiveFeedOverlay(scene: CodecScene): CodecScene {
   return {
     ...scene,
     panels: scene.panels.map((panel) => {
-      if (!panel.focus_bubble?.value.live_overlay) return panel;
-      const { focus_bubble: _overlay, ...rest } = panel;
-      return rest;
+      const { intent_history: _localIntents, ...withoutIntents } = panel;
+      if (!withoutIntents.focus_bubble?.value.live_overlay) return withoutIntents;
+      const { focus_bubble: _overlay, ...withoutOverlay } = withoutIntents;
+      return withoutOverlay;
     }),
   };
 }

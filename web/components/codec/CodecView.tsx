@@ -33,9 +33,11 @@ import {
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { AgentChip } from "@/components/AgentChip";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import {
   CODEC_SCHEMA_VERSION,
+  type CodecIntentSignal,
   type CodecPanelScene,
   type CodecRecentAction,
   type CodecRemoteMachine,
@@ -714,11 +716,31 @@ function CodecPanel({
       )}
     >
       <div className={styles.portraitColumn}>
-        <Portrait panel={panel} />
-        <div className={styles.portraitReadout}>
-          <span>{humanizeCueToken(panel.expression.value)}</span>
-          <span>{humanizeCueToken(panel.activity.value)}</span>
-        </div>
+        <Tooltip
+          side="right"
+          triggerClassName={styles.portraitTooltipTrigger}
+          content={
+            <div className="space-y-1">
+              <p className="font-semibold">{panel.identity.display_name}&apos;s live portrait</p>
+              <p>
+                Expression {humanizeCueToken(panel.expression.value)} · activity{" "}
+                {humanizeCueToken(panel.activity.value)} · presence {panel.presence.value}
+              </p>
+              <p className="text-muted-foreground">
+                Character pack {panel.character.pack_id} · expression and activity are
+                evidence-backed when provenance allows.
+              </p>
+            </div>
+          }
+        >
+          <div data-codec-portrait-surface className={styles.portraitTooltipSurface}>
+            <Portrait panel={panel} />
+            <div className={styles.portraitReadout}>
+              <span>{humanizeCueToken(panel.expression.value)}</span>
+              <span>{humanizeCueToken(panel.activity.value)}</span>
+            </div>
+          </div>
+        </Tooltip>
       </div>
 
       <div className={styles.panelBody}>
@@ -727,18 +749,36 @@ function CodecPanel({
             <div className="truncate">
               <AgentChip name={panel.identity.display_name} />
             </div>
-            <p
-              className="break-words text-pretty text-xs text-muted-foreground"
-              title={panel.identity.task?.value}
+            <Tooltip
+              side="bottom"
+              align="start"
+              triggerClassName={styles.fullWidthTooltip}
+              content={
+                panel.identity.task ? (
+                  <div className="space-y-1">
+                    <p className="font-semibold">Declared task</p>
+                    <p>{panel.identity.task.value}</p>
+                    <p className="text-muted-foreground">
+                      {panel.identity.task.provenance} · {panel.identity.task.confidence} confidence
+                      · observed {formatReceiptTime(panel.identity.task.observed_at)}
+                    </p>
+                  </div>
+                ) : (
+                  "No task has been declared for this agent."
+                )
+              }
             >
-              {panel.identity.task?.value ?? "no declared task"}
-            </p>
+              <p data-codec-task className="break-words text-pretty text-xs text-muted-foreground">
+                {panel.identity.task?.value ?? "no declared task"}
+              </p>
+            </Tooltip>
           </div>
           <ContextGauge panel={panel} />
         </div>
 
         <FocusBubble panel={panel} />
         <OperationCue panel={panel} />
+        <IntentHistory intents={panel.intent_history ?? []} />
 
         <div className={styles.statusRail}>
           <Badge
@@ -868,23 +908,26 @@ function CodecPanel({
         </div>
 
         {panel.remote_source && (
-          <p
-            data-codec-remote-source
-            className="mt-2 text-[11px] text-muted-foreground"
-            title="Remote source freshness is measured from the encrypted presence relay and its bounded Codec digest"
+          <Tooltip
+            side="top"
+            align="start"
+            triggerClassName={styles.fullWidthTooltip}
+            content="Remote freshness is measured from the encrypted presence relay and its bounded Codec digest. Raw #intent text never crosses the relay."
           >
-            relay {panel.remote_source.relay.value.state} ·{" "}
-            {formatElapsed(panel.remote_source.relay.value.age_ms)} old
-            {panel.remote_source.digest ? (
-              <>
-                {" "}
-                · digest {panel.remote_source.digest.value.state} ·{" "}
-                {formatElapsed(panel.remote_source.digest.value.age_ms)} old
-              </>
-            ) : (
-              <> · digest unavailable</>
-            )}
-          </p>
+            <p data-codec-remote-source className="mt-2 text-[11px] text-muted-foreground">
+              relay {panel.remote_source.relay.value.state} ·{" "}
+              {formatElapsed(panel.remote_source.relay.value.age_ms)} old
+              {panel.remote_source.digest ? (
+                <>
+                  {" "}
+                  · digest {panel.remote_source.digest.value.state} ·{" "}
+                  {formatElapsed(panel.remote_source.digest.value.age_ms)} old
+                </>
+              ) : (
+                <> · digest unavailable</>
+              )}
+            </p>
+          </Tooltip>
         )}
 
         <ActionTrail
@@ -909,7 +952,12 @@ function EvidenceReceipt({ panel }: { panel: CodecPanelScene }) {
   return (
     <details data-codec-evidence-receipt className="mt-2 border-t pt-2 text-xs">
       <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        Evidence receipt · {rows.length} signals
+        <Tooltip
+          side="top"
+          content={`Open the bounded evidence receipt for ${panel.identity.display_name}. It contains ${rows.length} provenance signals and no raw prompts, commands, tool input, or output.`}
+        >
+          <span>Evidence receipt · {rows.length} signals</span>
+        </Tooltip>
       </summary>
       <section
         className="mt-2 max-h-64 overflow-auto overscroll-contain rounded-md border bg-muted/20 shadow-inner"
@@ -971,6 +1019,57 @@ function EvidenceReceipt({ panel }: { panel: CodecPanelScene }) {
   );
 }
 
+function IntentHistory({ intents }: { intents: CodecIntentSignal[] }) {
+  const visible = intents.slice(0, 3);
+  return (
+    <section data-codec-intent-history className={styles.intentHistory} aria-label="Recent intents">
+      <header>
+        <span>#intent trail</span>
+        <small>{visible.length} / 3</small>
+      </header>
+      {visible.length > 0 ? (
+        <ol>
+          {visible.map((intent, index) => (
+            <li key={intent.event_id} data-depth={index + 1}>
+              <Tooltip
+                side="bottom"
+                align="start"
+                triggerClassName={styles.intentTooltipTrigger}
+                className="max-w-sm"
+                content={
+                  <div className="space-y-1">
+                    <p className="font-semibold">
+                      #{index + 1} · {intent.text}
+                    </p>
+                    <p className="text-muted-foreground">
+                      {intent.tool_name ?? humanizeCueToken(intent.category)} ·{" "}
+                      {humanizeCueToken(intent.event_type)} · observed{" "}
+                      {formatReceiptTime(intent.observed_at)}
+                    </p>
+                    <p className="text-muted-foreground">
+                      {intent.live_overlay ? "Local live-display overlay" : "Sanitized event label"}
+                      {intent.adapter ? ` · ${intent.adapter}` : ""}
+                    </p>
+                    <code className="block break-all text-[10px] text-foreground/75">
+                      {intent.event_id}
+                    </code>
+                  </div>
+                }
+              >
+                <span data-codec-intent-line className={styles.intentLine}>
+                  {intent.text}
+                </span>
+              </Tooltip>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className={styles.intentEmpty}>No recent local #intent signals</p>
+      )}
+    </section>
+  );
+}
+
 function formatReceiptTime(value: string): string {
   const date = new Date(value);
   return Number.isFinite(date.getTime())
@@ -986,33 +1085,54 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
   const Icon = CATEGORY_ICONS[operation.value.category] ?? CircleDashed;
   const stateLabel = humanizeCueToken(operation.value.state);
   return (
-    <div
-      role="status"
-      className={cn(
-        styles.operationCue,
-        panel.presence.value === "online" &&
-          panel.activity.value === "working" &&
-          panel.telemetry?.value !== "degraded" &&
-          styles.operationCueLive,
-      )}
-      aria-label={`Current operation: ${operation.value.label}, ${stateLabel}`}
-      title={`Current operation (${operation.provenance}): ${operation.value.label} · ${stateLabel}`}
+    <Tooltip
+      side="bottom"
+      align="start"
+      triggerClassName={styles.fullWidthTooltip}
+      content={
+        <div className="space-y-1">
+          <p className="font-semibold">Current operation · {operation.value.label}</p>
+          <p>
+            {stateLabel}
+            {operation.value.elapsed_ms !== undefined
+              ? ` · ${formatElapsed(operation.value.elapsed_ms)} elapsed`
+              : ""}
+          </p>
+          <p className="text-muted-foreground">
+            {operation.provenance} · {operation.confidence} confidence · observed{" "}
+            {formatReceiptTime(operation.observed_at)}
+          </p>
+        </div>
+      }
     >
-      <Icon className={styles.operationIcon} aria-hidden />
-      <span className={styles.operationLabel}>{operation.value.label}</span>
-      <span
+      <div
+        data-codec-operation-cue
+        role="status"
         className={cn(
-          styles.operationState,
-          operation.value.state === "output-flow" &&
+          styles.operationCue,
+          panel.presence.value === "online" &&
+            panel.activity.value === "working" &&
             panel.telemetry?.value !== "degraded" &&
-            styles.outputFlow,
+            styles.operationCueLive,
         )}
+        aria-label={`Current operation: ${operation.value.label}, ${stateLabel}`}
       >
-        {stateLabel}
-        {operation.value.elapsed_ms !== undefined &&
-          ` · ${formatElapsed(operation.value.elapsed_ms)}`}
-      </span>
-    </div>
+        <Icon className={styles.operationIcon} aria-hidden />
+        <span className={styles.operationLabel}>{operation.value.label}</span>
+        <span
+          className={cn(
+            styles.operationState,
+            operation.value.state === "output-flow" &&
+              panel.telemetry?.value !== "degraded" &&
+              styles.outputFlow,
+          )}
+        >
+          {stateLabel}
+          {operation.value.elapsed_ms !== undefined &&
+            ` · ${formatElapsed(operation.value.elapsed_ms)}`}
+        </span>
+      </div>
+    </Tooltip>
   );
 }
 
@@ -1034,17 +1154,32 @@ function FocusBubble({ panel }: { panel: CodecPanelScene }) {
   if (!bubble) return null;
   const inferred = bubble.value.basis === "inferred";
   return (
-    <p
-      className={cn(
-        "mt-2 flex w-full max-w-full flex-wrap items-center gap-x-1 gap-y-0 rounded-2xl border px-2.5 py-1 text-pretty text-xs leading-relaxed",
-        styles.focusBubble,
-        inferred ? "border-dashed text-muted-foreground" : "text-foreground",
-      )}
-      title={`Focus (${bubble.value.basis}): ${bubble.value.text}`}
+    <Tooltip
+      side="bottom"
+      align="start"
+      triggerClassName={styles.fullWidthTooltip}
+      content={
+        <div className="space-y-1">
+          <p className="font-semibold">Focus capsule · {bubble.value.text}</p>
+          <p className="text-muted-foreground">
+            {bubble.value.basis} · {bubble.provenance} provenance · {bubble.confidence} confidence
+            {bubble.value.live_overlay ? " · local live-display overlay" : ""}
+          </p>
+        </div>
+      }
     >
-      <span className={styles.focusText}>{bubble.value.text}</span>
-      {inferred && <span className="flex-none opacity-90">· inferred</span>}
-    </p>
+      <p
+        data-codec-focus
+        className={cn(
+          "mt-2 flex w-full max-w-full flex-wrap items-center gap-x-1 gap-y-0 rounded-2xl border px-2.5 py-1 text-pretty text-xs leading-relaxed",
+          styles.focusBubble,
+          inferred ? "border-dashed text-muted-foreground" : "text-foreground",
+        )}
+      >
+        <span className={styles.focusText}>{bubble.value.text}</span>
+        {inferred && <span className="flex-none opacity-90">· inferred</span>}
+      </p>
+    </Tooltip>
   );
 }
 
@@ -1096,18 +1231,28 @@ function ContextGauge({ panel }: { panel: CodecPanelScene }) {
   const lit = band === "ample" ? 3 : band === "reduced" ? 2 : 1;
   const label = `Context capacity ${band}`;
   return (
-    <div className="flex flex-none flex-col items-center gap-0.5" aria-label={label} role="img">
-      {[3, 2, 1].map((segment) => (
-        <span
-          key={segment}
-          className={cn(
-            "h-1.5 w-5 rounded-sm",
-            segment <= lit ? (band === "low" ? "bg-amber-500" : "bg-emerald-500") : "bg-muted",
-          )}
-        />
-      ))}
-      <span className="sr-only">{label}</span>
-    </div>
+    <Tooltip
+      side="left"
+      content={`Context capacity is ${band} (${panel.context_band.provenance}, ${panel.context_band.confidence} confidence), observed ${formatReceiptTime(panel.context_band.observed_at)}.`}
+    >
+      <div
+        data-codec-context-gauge
+        className="flex flex-none flex-col items-center gap-0.5"
+        aria-label={label}
+        role="img"
+      >
+        {[3, 2, 1].map((segment) => (
+          <span
+            key={segment}
+            className={cn(
+              "h-1.5 w-5 rounded-sm",
+              segment <= lit ? (band === "low" ? "bg-amber-500" : "bg-emerald-500") : "bg-muted",
+            )}
+          />
+        ))}
+        <span className="sr-only">{label}</span>
+      </div>
+    </Tooltip>
   );
 }
 
@@ -1121,21 +1266,27 @@ function ActionTrail({ actions, active }: { actions: CodecRecentAction[]; active
       {actions.map((action, index) => {
         const Icon = CATEGORY_ICONS[action.category] ?? CircleDashed;
         return (
-          <li
-            key={action.event_id}
-            style={{ "--trail-index": index } as CSSProperties}
-            className={cn(
-              styles.actionIcon,
-              action.outcome === "error"
-                ? "border-red-300 text-red-600 dark:border-red-900 dark:text-red-400"
-                : "text-muted-foreground",
-            )}
-            title={`${action.category}: ${action.outcome}`}
-          >
-            <Icon className="size-3.5" aria-hidden />
-            <span className="sr-only">
-              {action.category} {action.outcome}
-            </span>
+          <li key={action.event_id}>
+            <Tooltip
+              side="top"
+              content={`${humanizeCueToken(action.category)} action · ${action.outcome} · observed ${formatReceiptTime(action.observed_at)} · event ${action.event_id}`}
+            >
+              <span
+                data-codec-action
+                style={{ "--trail-index": index } as CSSProperties}
+                className={cn(
+                  styles.actionIcon,
+                  action.outcome === "error"
+                    ? "border-red-300 text-red-600 dark:border-red-900 dark:text-red-400"
+                    : "text-muted-foreground",
+                )}
+              >
+                <Icon className="size-3.5" aria-hidden />
+                <span className="sr-only">
+                  {action.category} {action.outcome}
+                </span>
+              </span>
+            </Tooltip>
           </li>
         );
       })}

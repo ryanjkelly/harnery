@@ -21,7 +21,7 @@
   color: rgb(244 244 245);
   isolation: isolate;
   min-height: 100dvh;
-  overflow: auto;
+  overflow-x: clip;
   background: #080a0f;
 }
 
@@ -147,7 +147,7 @@
   content: "";
   position: absolute;
   z-index: -1;
-  inset: -2rem;
+  inset: 0;
   pointer-events: none;
   opacity: 0.55;
   background:
@@ -262,7 +262,8 @@
   align-self: stretch;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid rgb(168 85 247 / 0.25);
   border-radius: 0.9rem;
   padding: 0.62rem 0.75rem;
@@ -349,7 +350,8 @@
   min-width: 0;
   min-height: 0;
   align-content: start;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid rgb(255 255 255 / 0.1);
   border-radius: 1rem;
   padding: 0.65rem 0.75rem;
@@ -362,9 +364,9 @@
 .teamPulse::after {
   content: "";
   position: absolute;
-  right: -10%;
+  right: 0;
   bottom: 0;
-  left: -10%;
+  left: 0;
   height: 1px;
   background: linear-gradient(90deg, transparent, rgb(34 211 238 / 0.72), transparent);
 }
@@ -800,6 +802,18 @@
   padding: 0.75rem 0 0.75rem 0.75rem;
 }
 
+.portraitTooltipTrigger,
+.portraitTooltipSurface {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 13rem;
+}
+
+.portraitTooltipSurface {
+  position: relative;
+}
+
 .portraitFrame {
   position: relative;
   display: block;
@@ -876,6 +890,18 @@
   padding: 1rem;
 }
 
+.fullWidthTooltip,
+.intentTooltipTrigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.intentTooltipTrigger {
+  contain: inline-size paint;
+  overflow: hidden;
+}
+
 .statusRail {
   display: flex;
   flex-wrap: wrap;
@@ -938,6 +964,74 @@
 .focusBubble,
 .focusText {
   text-wrap: pretty;
+}
+
+.intentHistory {
+  min-width: 0;
+  margin-top: 0.65rem;
+  overflow: hidden;
+  border: 1px solid rgb(var(--codec-accent) / 0.25);
+  border-radius: 0.55rem;
+  padding: 0.4rem 0.5rem 0.45rem;
+  background:
+    linear-gradient(90deg, rgb(var(--codec-accent) / 0.08), transparent 70%), rgb(7 9 14 / 0.72);
+}
+
+.intentHistory header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.48rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgb(var(--codec-accent));
+}
+
+.intentHistory header small {
+  font-size: 0.45rem;
+  color: rgb(161 161 170);
+}
+
+.intentHistory ol {
+  display: grid;
+  min-width: 0;
+  gap: 0.18rem;
+}
+
+.intentHistory li {
+  min-width: 0;
+  opacity: 1;
+}
+
+.intentHistory li[data-depth="2"] {
+  opacity: 0.58;
+}
+
+.intentHistory li[data-depth="3"] {
+  opacity: 0.32;
+}
+
+.intentLine,
+.intentEmpty {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.58rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  color: rgb(228 228 231);
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 1.75rem), transparent 100%);
+}
+
+.intentEmpty {
+  opacity: 0.42;
 }
 
 .focusText {
@@ -1219,11 +1313,15 @@
   @keyframes codec-ambience-drift {
     from {
       opacity: 0.38;
-      transform: translate3d(-1.25rem, 0, 0) scale(0.98);
+      background-position:
+        -1.25rem 0,
+        1.25rem 0;
     }
     to {
       opacity: 0.7;
-      transform: translate3d(1.25rem, -0.5rem, 0) scale(1.02);
+      background-position:
+        1.25rem -0.5rem,
+        -1.25rem 0.5rem;
     }
   }
 
