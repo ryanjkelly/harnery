@@ -51,7 +51,14 @@ describe("sanitizeEvent", () => {
 
   test("validates and maps V3 lifecycle, tool, command, and context evidence", () => {
     const started = sanitizeEvent(v3Event("session.started", startedPayload()));
-    expect(started).toMatchObject({ event_type: "session.started", instance_id: "inst_fixture" });
+    expect(started).toMatchObject({
+      event_type: "session.started",
+      instance_id: "inst_fixture",
+      runtime_harness: "claude-code",
+      runtime_harness_version: "1.2.3",
+      runtime_model: "claude-sonnet-4-6",
+      runtime_model_provider: "anthropic",
+    });
 
     const requested = sanitizeEvent(
       v3Event(
@@ -620,11 +627,16 @@ function startedPayload() {
       },
       harness: {
         state: "observed",
-        value: { id: "fixture" },
+        value: { id: "claude-code", version: "1.2.3" },
         attestation: "native",
         confidence: "exact",
       },
-      model: { state: "unsupported", capability: "model_identity" },
+      model: {
+        state: "observed",
+        value: { provider: "anthropic", id: "claude-sonnet-4-6" },
+        attestation: "native",
+        confidence: "exact",
+      },
       capability_profile: `cap_${"c".repeat(64)}`,
       declared_by_event_id: "evt_00000000-0000-7000-8000-000000000000",
     },

@@ -79,11 +79,53 @@ describe("projectScene", () => {
     // the heartbeat's compatibility default.
     expect(panel.lifecycle.value).toBe("unknown");
     expect(panel.context_band).toMatchObject({ value: "unknown", provenance: "unknown" });
+    expect(panel.runtime).toMatchObject({
+      value: { harness: null, model: null, effort: null, speed: null },
+      provenance: "unknown",
+    });
     expect(panel.expression.value).toBe("neutral");
     expect(panel.attention.value).toBe("none");
     expect(panel.character.pack_id).toBe("fallback-neutral");
     expect(scene.relationships).toEqual([]);
     expect(scene.transients).toEqual([]);
+  });
+
+  test("projects exact runtime identity and only explicit model-encoded tuning", () => {
+    const cursor = projectScene({
+      snapshot: snapshot([hb({ platform: "cursor" })]),
+      events: [
+        ev({
+          event_type: "session.started",
+          runtime_harness: "cursor",
+          runtime_harness_version: "2.4.0",
+          runtime_model: "cursor-grok-4.6-high-fast",
+          runtime_model_provider: "cursor",
+        }),
+      ],
+      now: NOW,
+    }).panels[0];
+    expect(cursor?.runtime).toMatchObject({
+      value: {
+        harness: "cursor",
+        harness_version: "2.4.0",
+        model: "cursor-grok-4.6-high-fast",
+        model_provider: "cursor",
+        effort: "high",
+        speed: "fast",
+      },
+      provenance: "event",
+      confidence: "high",
+    });
+
+    const codex = projectScene({
+      snapshot: snapshot([hb({ platform: "codex", model: "gpt-5.6-sol" })]),
+      events: [],
+      now: NOW,
+    }).panels[0];
+    expect(codex?.runtime).toMatchObject({
+      value: { harness: "codex", model: "gpt-5.6-sol", effort: null, speed: null },
+      provenance: "projection",
+    });
   });
 
   test("determinism: same inputs produce the same scene", () => {

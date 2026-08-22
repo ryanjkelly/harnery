@@ -31,6 +31,7 @@ import {
   type CodecPresence,
   type CodecProgressRhythm,
   type CodecRecentAction,
+  type CodecRuntimeValue,
   type CodecScene,
   type CodecSourceEvidence,
   type Confidence,
@@ -62,6 +63,7 @@ const MESSAGE_TRANSIENT_TTL_MS = 8_000;
 const lastBandByInstance = new Map<string, { band: CodecContextBand; remaining: number }>();
 
 interface InstanceEvidence {
+  lastRuntime?: CodecSourceEvidence;
   lastSessionStarted?: CodecSourceEvidence;
   lastSessionEnded?: CodecSourceEvidence;
   lastTurnOrSessionStarted?: CodecSourceEvidence;
@@ -184,6 +186,10 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
       case "session.resumed":
         slot.lastSessionStarted = ev;
         slot.lastTurnOrSessionStarted = ev;
+        if (ev.runtime_harness || ev.runtime_model) slot.lastRuntime = ev;
+        break;
+      case "session.attestation_changed":
+        if (ev.runtime_harness || ev.runtime_model) slot.lastRuntime = ev;
         break;
       case "agent.delegated":
       case "agent.started":
@@ -289,6 +295,70 @@ function present<T>(
   const out: Presented<T> = { value, provenance, confidence, observed_at: observedAt };
   if (evidenceIds && evidenceIds.length > 0) out.evidence_event_ids = evidenceIds;
   return out;
+}
+
+const RUNTIME_EFFORT_TOKENS = new Set([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]);
+
+/** Cursor makes tuning part of its canonical model id. Other adapters do not,
+ * so absent effort/speed must remain null instead of being guessed. */
+function tuningFromModel(
+  harness: string | null,
+  model: string | null,
+): Pick<CodecRuntimeValue, "effort" | "speed"> {
+  if (harness !== "cursor" || !model) return { effort: null, speed: null };
+  const tokens = model.toLowerCase().split("-");
+  let effort: string | null = null;
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const token = tokens[index];
+    if (token && RUNTIME_EFFORT_TOKENS.has(token)) {
+      effort = token;
+      break;
+    }
+  }
+  return { effort, speed: tokens.includes("fast") ? "fast" : null };
+}
+
+function runtimeInfo(
+  hb: Heartbeat | undefined,
+  ev: InstanceEvidence | undefined,
+  fallbackObservedAt: string,
+): Presented<CodecRuntimeValue> {
+  const observed = ev?.lastRuntime;
+  const harness = cleanRuntimeToken(observed?.runtime_harness ?? hb?.platform);
+  const model = cleanRuntimeToken(observed?.runtime_model ?? hb?.model);
+  const tuning = tuningFromModel(harness, model);
+  const value: CodecRuntimeValue = {
+    harness,
+    ...(observed?.runtime_harness_version
+      ? { harness_version: observed.runtime_harness_version }
+      : {}),
+    model,
+    ...(observed?.runtime_model_provider
+      ? { model_provider: observed.runtime_model_provider }
+      : {}),
+    ...tuning,
+  };
+  if (observed) {
+    return present(value, "event", "high", observed.ts, [observed.event_id]);
+  }
+  if (harness || model) {
+    return present(value, "projection", "medium", hb?.last_heartbeat ?? fallbackObservedAt);
+  }
+  return present(value, "unknown", "low", fallbackObservedAt);
+}
+
+function cleanRuntimeToken(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
 }
 
 function presence(
@@ -634,6 +704,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       expression: channels.expression,
       attention: channels.attention,
       context_band: contextBand(hb.instance_id, ev, hb.last_heartbeat),
+      runtime: runtimeInfo(hb, ev, hb.last_heartbeat),
       ...(usage ? { context_usage: usage } : {}),
       progress_rhythm: progressRhythm(ev, nowMs, hb.last_heartbeat),
       recent_actions: ev?.recentActions ?? [],
@@ -729,6 +800,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       expression: channels.expression,
       attention: channels.attention,
       context_band: contextBand(instanceId, ev, fallbackTs),
+      runtime: runtimeInfo(undefined, ev, fallbackTs),
       ...(usage ? { context_usage: usage } : {}),
       progress_rhythm: progressRhythm(ev, nowMs, fallbackTs),
       recent_actions: ev.recentActions,

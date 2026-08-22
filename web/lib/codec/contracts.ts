@@ -130,6 +130,18 @@ export interface CodecContextUsage {
   remaining_tokens?: number;
 }
 
+/** Public-safe runtime identity for one agent generation. Tuning fields stay
+ * null unless the adapter reports them explicitly or encodes them in its
+ * canonical model id (for example Cursor's `-high-fast` suffixes). */
+export interface CodecRuntimeValue {
+  harness: string | null;
+  harness_version?: string;
+  model: string | null;
+  model_provider?: string;
+  effort: string | null;
+  speed: string | null;
+}
+
 export interface CodecComparableFingerprint {
   digest: string;
   scope: "generation" | "root";
@@ -245,6 +257,11 @@ export interface CodecSourceEvidence {
   context_confidence?: "exact" | "reported" | "estimated";
   /** Capability state retained even when a context value is unavailable. */
   context_observation_state?: "observed" | "unsupported" | "expected_but_missing" | "unknown";
+  /** Public runtime attestation lifted from session.started/attestation_changed. */
+  runtime_harness?: string;
+  runtime_harness_version?: string;
+  runtime_model?: string;
+  runtime_model_provider?: string;
   /** Durable display name from identity.assumed. */
   identity_name?: string;
   /** Message recipient from coord.message_observed; body never crosses. */
@@ -263,6 +280,8 @@ export interface CodecPanelScene {
   /** Non-none states must carry expires_at. */
   attention: Presented<CodecAttention>;
   context_band: Presented<CodecContextBand>;
+  /** Harness/model identity plus adapter-reported tuning when available. */
+  runtime?: Presented<CodecRuntimeValue>;
   /** Exact usage locally; percentage-only when sourced from a remote digest. */
   context_usage?: Presented<CodecContextUsage>;
   progress_rhythm: Presented<CodecProgressRhythm>;

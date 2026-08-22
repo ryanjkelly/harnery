@@ -425,6 +425,7 @@ function heartbeatFromLedgerRecord(record: AgentLedgerRecordV3): Heartbeat {
   const observedAt = generation.last_observed_at;
   const observedMs = Date.parse(observedAt);
   const adapter = generation.runtime_attestation.adapter;
+  const model = generation.runtime_attestation.model;
   return {
     instance_id: generation.instance_id,
     name: nameForLedgerInstance(generation.instance_id),
@@ -441,7 +442,7 @@ function heartbeatFromLedgerRecord(record: AgentLedgerRecordV3): Heartbeat {
     task_state: normalizeTaskState(generation.task_state),
     task_state_updated_at: observedAt,
     task_state_reason: null,
-    model: null,
+    model: model.state === "observed" ? model.value.id : null,
     age_seconds: Number.isFinite(observedMs)
       ? Math.max(0, Math.floor((Date.now() - observedMs) / 1000))
       : 0,

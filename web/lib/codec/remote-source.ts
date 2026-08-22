@@ -229,6 +229,17 @@ export function readRemotePresence(
                 contextObservedAt,
                 contextEventId ? [contextEventId] : undefined,
               ),
+        runtime: present(
+          {
+            harness: clampLabel(raw.platform) ?? null,
+            model: null,
+            effort: null,
+            speed: null,
+          },
+          raw.platform ? "projection" : "unknown",
+          raw.platform ? "medium" : "low",
+          publishedAt,
+        ),
         ...(contextPercent !== undefined
           ? {
               context_usage: present(

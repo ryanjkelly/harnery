@@ -84,6 +84,15 @@ function replayPanel(seed: PanelSeed, phase: number): CodecPanelScene {
     expression: shown(seed.expression, observedAt),
     attention: shown(attention, observedAt, attention === "none" ? undefined : at(phase * 18 + 30)),
     context_band: shown(phase === 2 && seed.id === "replay-nova" ? "reduced" : "ample", observedAt),
+    runtime: shown(
+      {
+        harness: "replay",
+        model: "recorded-scene",
+        effort: null,
+        speed: null,
+      },
+      observedAt,
+    ),
     progress_rhythm: shown(seed.rhythm ?? "in-motion", observedAt),
     recent_actions: [
       {

@@ -50,6 +50,7 @@ import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
 import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
 import { summarizeCodecTeam } from "@/lib/codec/team-summary";
 import { useLiveSignal } from "@/lib/useLiveSignal";
+import { CodecRuntimeStrip } from "./CodecRuntimeStrip";
 import styles from "./codec.module.css";
 
 /* eslint-disable @next/next/no-img-element -- pack portraits are local
@@ -796,6 +797,7 @@ function CodecPanel({
           </div>
         </div>
 
+        <CodecRuntimeStrip panel={panel} />
         <FocusBubble panel={panel} />
         <OperationCue panel={panel} />
         <IntentHistory intents={panel.intent_history ?? []} />

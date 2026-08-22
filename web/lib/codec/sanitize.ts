@@ -13,7 +13,7 @@
  * rows are dropped, and accepted rows keep their canonical V3 event names.
  */
 
-import type { EventV3 } from "../../../src/core/events/v3/contract";
+import type { EventV3, RuntimeAttestationV3 } from "../../../src/core/events/v3/contract";
 import { validateEventV3 } from "../../../src/core/events/v3/validate";
 import type {
   CodecActionCategory,
@@ -160,6 +160,11 @@ function sanitizeEventV3(raw: unknown): CodecSourceEvidence | null {
 
   switch (event.event_type) {
     case "session.started":
+      liftRuntimeAttestation(base, event.payload.runtime_attestation);
+      return base;
+    case "session.attestation_changed":
+      liftRuntimeAttestation(base, event.payload.runtime_attestation);
+      return base;
     case "session.resumed":
       return base;
     case "session.ended":
@@ -286,6 +291,22 @@ function sanitizeEventV3(raw: unknown): CodecSourceEvidence | null {
       return base;
     default:
       return null;
+  }
+}
+
+function liftRuntimeAttestation(
+  base: CodecSourceEvidence,
+  attestation: RuntimeAttestationV3,
+): void {
+  if (attestation.harness.state === "observed") {
+    base.runtime_harness = attestation.harness.value.id;
+    if (attestation.harness.value.version) {
+      base.runtime_harness_version = attestation.harness.value.version;
+    }
+  }
+  if (attestation.model.state === "observed") {
+    base.runtime_model = attestation.model.value.id;
+    base.runtime_model_provider = attestation.model.value.provider;
   }
 }
 

@@ -936,6 +936,70 @@
   overflow: hidden;
 }
 
+.runtimeStrip {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.45fr) repeat(2, minmax(0, 1fr));
+  gap: 0.25rem;
+  margin-top: 0.55rem;
+}
+
+.runtimeTooltipTrigger {
+  width: 100%;
+  min-width: 0;
+}
+
+.runtimeListItem {
+  min-width: 0;
+  list-style: none;
+}
+
+.runtimeField {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 0.08rem;
+  padding: 0.3rem 0.32rem;
+  overflow: hidden;
+  border: 1px solid rgb(var(--codec-accent) / 0.22);
+  border-radius: 0.4rem;
+  background: rgb(var(--codec-accent) / 0.055);
+  text-align: left;
+}
+
+.runtimeField:focus-visible {
+  border-color: rgb(var(--codec-accent) / 0.72);
+  outline: 2px solid rgb(var(--codec-accent) / 0.28);
+  outline-offset: 1px;
+}
+
+.runtimeLabel {
+  color: rgb(var(--codec-accent));
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.46rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.runtimeValue {
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(228 228 231);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.53rem;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 0.8rem), transparent 100%);
+}
+
+.runtimeField[data-runtime-missing="true"] {
+  border-style: dashed;
+  opacity: 0.5;
+}
+
 .statusRail {
   display: flex;
   flex-wrap: wrap;
@@ -1586,6 +1650,10 @@
 
   .panelBody {
     padding: 0.85rem;
+  }
+
+  .runtimeStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (prefers-reduced-motion: no-preference) {
