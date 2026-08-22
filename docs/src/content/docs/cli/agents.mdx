@@ -457,10 +457,14 @@ command's Git guard or any hook verdict.
 
 ## Notes
 
-- **Bash identity is process-level.** When resolving "who am I" from a shell
-  command, resolution walks the process tree to the session anchor. Inside a
-  subagent that shares the parent's process group, `whoami` reports the parent
-  group's name, not the subagent's.
+- **Native children have their own identity.** After the adapter hook observes
+  a delegation, the child gets the exact parent-minted generation, its own
+  heartbeat, and its own `whoami` / `set-task` authority. Child-owned tool
+  signals land on that generation. Delegation start and stop remain
+  parent-owned because they define the parent-child span.
+- **Unbridged subprocesses still inherit the parent.** A shell with no native
+  child session ID falls back to the process tree and reports the parent. This
+  avoids guessing when a generic subprocess has no independent identity.
 - **Name vs instance_id.** `show`, `trace`, `ping`, and `wait` all accept a
   human name (case-insensitive, with or without the `agent-` prefix) and resolve
   it to an `instance_id` by prefix match. Pass the `instance_id` directly if a

@@ -10,7 +10,7 @@ import {
   livePlatformV3,
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
-import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
+import { readJoinableHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
 import { writeEventV3 } from "../events/v3/writer.ts";
 import { LiveCoordinationAuthorityV3Error } from "./live-authority-v3.ts";
 import { liveCoordinationAdapterV3 } from "./state/live-coordination-view.ts";
@@ -132,8 +132,13 @@ function withAttestedAdapter<T extends LiveLifecycleObservationBaseV3>(input: T)
 }
 
 function requireHookState(input: LiveLifecycleObservationBaseV3) {
-  const hook = readHookProducerStateV3(input.coordRoot, input.adapter, input.nativeSessionId);
-  if (!hook || hook.instance_id !== liveInstanceIdV3(input.owner)) {
+  const hook = readJoinableHookProducerStateV3(
+    input.coordRoot,
+    input.adapter,
+    input.nativeSessionId,
+    liveInstanceIdV3(input.owner),
+  );
+  if (!hook) {
     throw new LiveCoordinationAuthorityV3Error("hook_generation_not_joinable");
   }
   return hook;

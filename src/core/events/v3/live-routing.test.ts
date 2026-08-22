@@ -15,9 +15,12 @@ import {
   hookSignalV3,
   liveEventV3BuildId,
   liveInstanceIdV3,
+  recordLiveDelegatedChildSessionV3,
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "./live-routing.ts";
+import { readCoordinationViewV3 } from "./coordination-view.ts";
+import type { EventV3 } from "./contract.ts";
 import { readLedgerV3 } from "./reader.ts";
 import { eventV3Paths } from "./writer.ts";
 
@@ -102,6 +105,106 @@ describe("live V3 ledger routing", () => {
       state: "gate_closed",
       reason: "signal_not_approved:post_compaction",
     });
+  });
+
+  test("opens the minted child generation and routes its tools away from the parent", () => {
+    const root = candidateRoot("codex");
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    const parent = "codex-parent";
+    const child = "codex-child";
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "session-start",
+        payload: { session_id: parent, raw: {} },
+        adapter: "codex",
+        instanceId: parent,
+      }).state,
+    ).toBe("recorded");
+    const nativeStart = recordLiveHookSignalV3({
+      coordRoot: root,
+      route,
+      eventName: "sub-agent-start",
+      payload: {
+        session_id: parent,
+        agent_id: child,
+        raw: { agent_type: "explorer" },
+      },
+      adapter: "codex",
+      instanceId: parent,
+    });
+    if (nativeStart.state !== "recorded" || nativeStart.event.event_type !== "agent.started") {
+      throw new Error("native child start missing");
+    }
+    expect(
+      recordLiveDelegatedChildSessionV3({
+        coordRoot: root,
+        route,
+        parentEvent: nativeStart.event,
+        payload: {
+          session_id: parent,
+          agent_id: child,
+          turn_id: "child-turn",
+          raw: { agent_type: "explorer" },
+        },
+        adapter: "codex",
+      }).state,
+    ).toBe("recorded");
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "pre-tool-use",
+        payload: {
+          session_id: parent,
+          agent_id: child,
+          tool_name: "Bash",
+          tool_use_id: "child-tool",
+          tool_input: { command: "harn agents whoami" },
+          raw: {},
+        },
+        adapter: "codex",
+        instanceId: child,
+      }).state,
+    ).toBe("recorded");
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const starts = events.filter(
+      (event): event is Extract<EventV3, { event_type: "session.started" }> =>
+        event.event_type === "session.started",
+    );
+    const childGeneration = nativeStart.event.payload.child_generation_id as `gen_${string}`;
+    const childStart = starts.find(
+      (event) =>
+        (event.scope as { generation_id?: `gen_${string}` }).generation_id === childGeneration,
+    );
+    const childTool = events.find((event) => event.event_type === "tool.requested");
+    const childTurn = events.find(
+      (event) =>
+        event.event_type === "turn.started" &&
+        (event.scope as { generation_id?: `gen_${string}` }).generation_id === childGeneration,
+    );
+    expect(starts).toHaveLength(2);
+    expect(childStart?.links).toMatchObject({
+      parent_generation_id: (
+        nativeStart.event.links as { parent_generation_id?: `gen_${string}` }
+      ).parent_generation_id,
+      delegation_id: nativeStart.event.payload.delegation_id,
+    });
+    expect(childTool?.scope).toMatchObject({
+      instance_id: liveInstanceIdV3(child),
+      generation_id: childGeneration,
+    });
+    expect(childTurn?.provenance).toMatchObject({
+      source_event: "codex.subagent-start.child-turn",
+      attestation: "derived",
+      confidence: "high",
+    });
+    expect(new Set(Object.keys(readCoordinationViewV3(root).instances))).toEqual(
+      new Set([liveInstanceIdV3(child), liveInstanceIdV3(parent)]),
+    );
   });
 
   test("blocks a candidate that did not approve the live producer build", () => {

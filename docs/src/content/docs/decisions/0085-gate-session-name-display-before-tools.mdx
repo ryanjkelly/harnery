@@ -114,3 +114,10 @@ the exempt `agents set-task` command now returns the unchanged suggestion with
 `session_name_retry: true`. PostToolUse treats that response as fresh mint
 evidence, which lets the next exact block satisfy the latch without renaming the
 session or claiming an unobserved display.
+
+Native Codex child hooks exposed another trust boundary. Their
+`agent_message` field can carry adapter-supplied or inherited text rather than
+the child's displayed assistant reply. Cursor remains the only adapter that
+uses native `agent_message` as display evidence. Codex and Claude Code use the
+transcript resolver; when that transcript is unavailable or not flushed, the
+gate stays pending and fails open instead of accepting unrelated text.

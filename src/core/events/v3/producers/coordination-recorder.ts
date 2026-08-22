@@ -38,7 +38,7 @@ import {
   type CoordinationObservationBySignalV3,
   normalizeCoordinationAuthorityV3,
 } from "./coordination.ts";
-import { readHookProducerStateV3 } from "./recorder.ts";
+import { readJoinableHookProducerStateV3 } from "./recorder.ts";
 
 const COORDINATION_STATE_FORMAT = "harnery-v3-coordination-producer" as const;
 const COORDINATION_STATE_VERSION = 2 as const;
@@ -124,10 +124,11 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
 ): RecordCoordinationAuthorityV3Result {
   const control = readEventV3ControlState(input.coordRoot);
   if (control.state !== input.mode) return { state: "gate_closed", reason: control.state };
-  const hook = readHookProducerStateV3(
+  const hook = readJoinableHookProducerStateV3(
     input.coordRoot,
     input.adapter,
     input.native_actor_session_id,
+    input.actor_instance_id,
   );
   if (
     !hook ||
@@ -313,7 +314,7 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
 
 function newCoordinationState<S extends CoordinationAuthoritySignalV3>(
   input: RecordCoordinationAuthorityV3Input<S>,
-  hook: NonNullable<ReturnType<typeof readHookProducerStateV3>>,
+  hook: NonNullable<ReturnType<typeof readJoinableHookProducerStateV3>>,
   epochId: `pep_${string}`,
 ): CoordinationRecorderStateV3 {
   return {
@@ -340,7 +341,7 @@ function newCoordinationState<S extends CoordinationAuthoritySignalV3>(
 
 function matchesHookState<S extends CoordinationAuthoritySignalV3>(
   state: CoordinationRecorderStateV3,
-  hook: NonNullable<ReturnType<typeof readHookProducerStateV3>>,
+  hook: NonNullable<ReturnType<typeof readJoinableHookProducerStateV3>>,
   input: RecordCoordinationAuthorityV3Input<S>,
   epochId: string,
 ): boolean {

@@ -347,9 +347,10 @@ function readPidmapRow(pidmapDir: string, pid: number): string | null {
  * Prefer a row whose platform matches `HARNERY_AGENT_COORD_PLATFORM` (default
  * `claude-code`); otherwise return the first owner seen on the walk.
  *
- * Subagents intentionally do not write pid-map entries; a Bash-tool ppid-walk
- * from inside a subagent therefore resolves to the *parent's* pid-map entry.
- * v1 ships this behavior; a real subagent-aware bridge is out of scope.
+ * Subagents intentionally do not write pid-map entries; a bare Bash-tool
+ * ppid-walk from inside an unbridged child therefore resolves to the parent's
+ * pid-map entry. Native hook bridges supersede this fallback through the
+ * child session environment.
  */
 export function resolveOwner(): string | null {
   return resolveOwnerWithSource().owner;

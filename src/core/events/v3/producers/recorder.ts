@@ -209,6 +209,12 @@ export interface RecordHookSignalV3Input {
   stop_remediation?: boolean;
   turn_ritual?: TurnRitualEvidenceV3;
   session_start_derivation?: "approved_lifecycle_reopen";
+  delegated_child?: {
+    generation_id: `gen_${string}`;
+    parent_generation_id: `gen_${string}`;
+    delegation_id: `del_${string}`;
+    caused_by_event_id: `evt_${string}`;
+  };
   writerOptions?: WriteEventV3Options;
 }
 
@@ -338,11 +344,21 @@ function hookSignalGate(
 }
 
 function sessionHashForSignal(
-  input: Pick<RecordHookSignalV3Input, "coordRoot" | "payload" | "adapter" | "instance_id">,
+  input: Pick<
+    RecordHookSignalV3Input,
+    "coordRoot" | "payload" | "adapter" | "instance_id" | "signal"
+  >,
   context: ReturnType<typeof fingerprintContextV3>,
 ): `hid_${string}` {
-  const nativeSession =
-    input.payload.session_id ?? input.payload.conversation_id ?? input.payload.agent_id;
+  const nativeChild = input.payload.subagent_id ?? input.payload.agent_id;
+  const childOwnsSignal =
+    input.signal !== "sub-agent-start" &&
+    input.signal !== "sub-agent-stop" &&
+    nativeChild !== undefined &&
+    input.instance_id === asLiveInstanceId(nativeChild);
+  const nativeSession = childOwnsSignal
+    ? nativeChild
+    : (input.payload.session_id ?? input.payload.conversation_id ?? input.payload.agent_id);
   if (nativeSession !== undefined) {
     return normalizeNativeIdV3(context, `${input.adapter}.session`, nativeSession);
   }
@@ -388,6 +404,7 @@ function intakeRecord(input: RecordHookSignalV3Input): HookIntakeRecordV3 {
       : {}),
     ...(input.stop_remediation !== undefined ? { stop_remediation: input.stop_remediation } : {}),
     ...(input.turn_ritual ? { turn_ritual: input.turn_ritual } : {}),
+    ...(input.delegated_child ? { delegated_child: input.delegated_child } : {}),
   };
 }
 
@@ -414,6 +431,7 @@ function inputForIntakeRecord(
     ...(record.hook_duration_ms !== undefined ? { hook_duration_ms: record.hook_duration_ms } : {}),
     ...(record.stop_remediation !== undefined ? { stop_remediation: record.stop_remediation } : {}),
     ...(record.turn_ritual ? { turn_ritual: record.turn_ritual } : {}),
+    ...(record.delegated_child ? { delegated_child: record.delegated_child } : {}),
   };
 }
 
@@ -1041,6 +1059,48 @@ function processHookSignalLocked(
       turn_ritual: input.turn_ritual,
     });
     if (!event) return { state: "ignored" };
+    if (
+      input.signal === "session-start" &&
+      input.delegated_child &&
+      event.event_type === "session.started"
+    ) {
+      event.links = {
+        caused_by: [input.delegated_child.caused_by_event_id],
+        parent_generation_id: input.delegated_child.parent_generation_id,
+        delegation_id: input.delegated_child.delegation_id,
+      };
+      event.provenance = {
+        ...event.provenance,
+        source_event: `${input.adapter}.subagent-start.child-generation`,
+        attestation: "derived",
+        confidence: "high",
+        attribution: {
+          method: "native_payload",
+          state: "verified",
+          subject_instance_id: state.instance_id,
+        },
+      };
+      assertEventV3(event);
+    }
+    if (
+      input.signal === "user-prompt-submit" &&
+      input.delegated_child &&
+      event.event_type === "turn.started"
+    ) {
+      event.links = { caused_by: [input.delegated_child.caused_by_event_id] };
+      event.provenance = {
+        ...event.provenance,
+        source_event: `${input.adapter}.subagent-start.child-turn`,
+        attestation: "derived",
+        confidence: "high",
+        attribution: {
+          method: "native_payload",
+          state: "verified",
+          subject_instance_id: state.instance_id,
+        },
+      };
+      assertEventV3(event);
+    }
     if (
       input.signal === "session-start" &&
       input.session_start_derivation === "approved_lifecycle_reopen" &&
@@ -2472,6 +2532,26 @@ export function readHookProducerStateByInstanceV3(
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+/**
+ * Join a coordination actor to its hook producer.
+ *
+ * Native subagent commands can retain the parent's session id even after the
+ * child has its own canonical generation. Prefer the native session join, but
+ * when that points at a different instance accept only one exact live
+ * instance match for the same adapter.
+ */
+export function readJoinableHookProducerStateV3(
+  coordRoot: string,
+  adapter: Adapter,
+  nativeSessionId: string,
+  instanceId: `inst_${string}`,
+): HookProducerStateV3 | undefined {
+  const direct = readHookProducerStateV3(coordRoot, adapter, nativeSessionId);
+  if (direct?.instance_id === instanceId && !direct.terminal) return direct;
+  const byInstance = readHookProducerStateByInstanceV3(coordRoot, instanceId);
+  return byInstance?.adapter === adapter && !byInstance.terminal ? byInstance : undefined;
+}
+
 function newProducerState(
   input: RecordHookSignalV3Input,
   sessionId: `sid_${string}`,
@@ -2485,7 +2565,7 @@ function newProducerState(
     adapter: input.adapter,
     instance_id: input.instance_id,
     session_id: sessionId,
-    generation_id: generationIdV3(),
+    generation_id: input.delegated_child?.generation_id ?? generationIdV3(),
     attestation_id: attestationIdV3(),
     capability_profile: adapterCapabilityProfileDigestV3(input.adapter),
     cursor_mode: input.adapter === "cursor" ? (input.payload.cursor_mode ?? "unknown") : undefined,
@@ -2800,6 +2880,14 @@ function safeRole(value: unknown): string {
     .replace(/[^a-zA-Z0-9._:/+-]/g, "_")
     .slice(0, 128);
   return /^[a-zA-Z0-9]/.test(normalized) ? normalized : "agent";
+}
+
+function asLiveInstanceId(nativeInstanceId: string): `inst_${string}` {
+  if (/^inst_[a-zA-Z0-9._-]{1,128}$/.test(nativeInstanceId)) {
+    return nativeInstanceId as `inst_${string}`;
+  }
+  if (/^[a-zA-Z0-9._-]{1,128}$/.test(nativeInstanceId)) return `inst_${nativeInstanceId}`;
+  return `inst_${createHash("sha256").update(nativeInstanceId.normalize("NFC")).digest("hex")}`;
 }
 
 function safeTokenOrUndefined(value: unknown): string | undefined {

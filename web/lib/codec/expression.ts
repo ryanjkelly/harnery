@@ -286,12 +286,24 @@ export function deriveExpressiveChannels(
     const withIntent = [...turnActions].reverse().find((a) => a.intent);
     const intentTs = ms(withIntent?.ts);
     if (withIntent?.intent && Number.isFinite(intentTs) && age(intentTs) <= BUBBLE_MS) {
-      const allWords = withIntent.intent.split(/\s+/).filter(Boolean);
-      const words = allWords.slice(0, 4);
-      if (words.length > 0) {
+      const summaryWords = withIntent.intent.trim().split(/\s+/).slice(0, 8);
+      while (
+        summaryWords.length > 1 &&
+        /^(?:a|an|and|at|but|by|for|from|in|nor|of|on|or|the|to|with)$/i.test(
+          summaryWords.at(-1)!.replace(/[,;:]$/, ""),
+        )
+      ) {
+        summaryWords.pop();
+      }
+      const text = summaryWords.join(" ").replace(/[,;:]$/, "");
+      if (text) {
         focusBubble = {
           value: {
-            text: `${words.join(" ")}${allWords.length > words.length ? "…" : ""}`,
+            // This is a focus summary, not a transcript excerpt. Keep it short
+            // enough to wrap cleanly, and do not append an ellipsis that makes
+            // the capsule look like broken overflow. The complete declared
+            // task remains visible in the card header.
+            text,
             basis: "event-backed",
             ...(withIntent.live_overlay ? { live_overlay: true } : {}),
           },

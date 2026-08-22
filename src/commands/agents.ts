@@ -153,9 +153,8 @@ function freshnessCutoffSecs(): number {
 }
 
 const SUBAGENT_NOTE =
-  "Bash identity is process-level; if you're running inside a subagent, " +
-  "this resolves to the parent group's name, not the subagent's. A subagent-aware " +
-  "bridge (per-shell marker file at .harnery/shells/<pid>) is out of scope.";
+  "Native adapter subagents resolve to their own child generation after the hook bridge " +
+  "observes delegation. An unbridged subprocess shell still resolves through its parent.";
 
 /**
  * Spawn options for agent-coord child processes: pin the coord root the

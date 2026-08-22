@@ -679,7 +679,7 @@ function CodecPanel({
               <AgentChip name={panel.identity.display_name} />
             </div>
             <p
-              className="break-words text-xs text-muted-foreground"
+              className="break-words text-pretty text-xs text-muted-foreground"
               title={panel.identity.task?.value}
             >
               {panel.identity.task?.value ?? "no declared task"}
@@ -987,7 +987,7 @@ function FocusBubble({ panel }: { panel: CodecPanelScene }) {
   return (
     <p
       className={cn(
-        "mt-2 inline-flex max-w-full items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs",
+        "mt-2 inline-flex max-w-full flex-wrap items-center gap-x-1 gap-y-0 rounded-2xl border px-2.5 py-1 text-pretty text-xs leading-relaxed",
         styles.focusBubble,
         inferred ? "border-dashed text-muted-foreground" : "text-foreground",
       )}

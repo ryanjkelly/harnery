@@ -168,20 +168,20 @@ describe("deriveExpressiveChannels", () => {
     expect(c.expression.value).toBe("focused");
   });
 
-  test("focus bubble: event-backed, at most four words, cites its event", () => {
+  test("focus bubble: event-backed, summarizes without a clipping ellipsis and cites its event", () => {
     const c = deriveExpressiveChannels(
       inputs({
         actions: [
           action({
             ts: at(20),
             outcome: "started",
-            intent: "sync vendor mirror after library change",
+            intent: "verify the published plan page is now live on production host",
           }),
         ],
       }),
       NOW,
     );
-    expect(c.focus_bubble?.value.text).toBe("sync vendor mirror after…");
+    expect(c.focus_bubble?.value.text).toBe("verify the published plan page is now live");
     expect(c.focus_bubble?.value.basis).toBe("event-backed");
     expect(c.focus_bubble?.expires_at).toBeDefined();
     expect(c.focus_bubble?.evidence_event_ids).toHaveLength(1);

@@ -241,6 +241,7 @@ describe("agent-hook V3 hard cut", () => {
       session_id: owner,
       thread_id: owner,
       cwd: root,
+      agent_message: "Codex hook metadata is not authoritative assistant transcript text.",
       tool_name: "Bash",
       tool_use_id: "codex-unflushed-display",
       tool_input: { command: "echo allowed-with-pending-verification" },

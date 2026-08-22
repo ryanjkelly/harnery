@@ -95,6 +95,12 @@ export interface HookIntakeRecordV3 {
   hook_duration_ms?: number;
   stop_remediation?: boolean;
   turn_ritual?: TurnRitualEvidenceV3;
+  delegated_child?: {
+    generation_id: `gen_${string}`;
+    parent_generation_id: `gen_${string}`;
+    delegation_id: `del_${string}`;
+    caused_by_event_id: `evt_${string}`;
+  };
 }
 
 export interface HookIntakeGroupV3 {
@@ -245,11 +251,23 @@ function readIntakeRecord(path: string): HookIntakeRecordV3 | undefined {
     (record.hook_duration_ms !== undefined &&
       (!Number.isSafeInteger(record.hook_duration_ms) || record.hook_duration_ms < 0)) ||
     (record.stop_remediation !== undefined && typeof record.stop_remediation !== "boolean") ||
+    !validDelegatedChild(record.delegated_child) ||
     !validTurnRitual(record.turn_ritual)
   ) {
     return undefined;
   }
   return record;
+}
+
+function validDelegatedChild(value: HookIntakeRecordV3["delegated_child"]): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return (
+    /^gen_[0-9a-f-]{36}$/.test(value.generation_id) &&
+    /^gen_[0-9a-f-]{36}$/.test(value.parent_generation_id) &&
+    /^del_[0-9a-f-]{36}$/.test(value.delegation_id) &&
+    /^evt_[0-9a-f-]{36}$/.test(value.caused_by_event_id)
+  );
 }
 
 function validTurnRitual(value: TurnRitualEvidenceV3 | undefined): boolean {

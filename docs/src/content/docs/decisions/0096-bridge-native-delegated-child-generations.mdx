@@ -1,0 +1,81 @@
+---
+title: "0096: Bridge native delegated children into exact V3 generations"
+description: "ADR: open adapter-native subagents as distinct child generations, preserve parent-owned delegation spans, and join child authority without guessing."
+---
+
+**Status:** accepted (2026-08-22) · **Scope:** product tier (`core/hooks`, `core/events/v3`, `core/agents`, `harn agents`)
+
+## Context
+
+Codex exposes native subagent start and stop hooks, but child tool calls can
+arrive with the parent process environment. Harnery recorded the delegation
+span yet did not open the child as a V3 session. Codec could therefore show a
+parent delegation count without a distinct live child card, heartbeat, or
+relationship.
+
+The parent already mints the child generation ID when it records
+`agent.delegated`. Creating another child ID would split one delegation across
+two identities. Treating child tool calls as parent activity would preserve a
+single ledger, but would erase the child ownership that Codec and coordination
+commands need.
+
+## Alternatives
+
+**Keep native children folded into the parent.** Rejected because the parent
+card cannot truthfully represent concurrent child activity or child-owned
+files and tasks.
+
+**Let the first child tool call mint a new session.** Rejected because it loses
+the exact lineage already established by `agent.delegated` and creates a race
+between the parent and child producers.
+
+**Resolve a child by taking the newest matching heartbeat.** Rejected because
+recency is not identity. Concurrent children would make the mutation
+ambiguous.
+
+**Write child IDs into the public ledger before validation.** Rejected because
+native adapter IDs are private join material. The public contract needs the
+opaque V3 generation and delegation lineage, not a raw runtime identifier.
+
+## Decision
+
+The native subagent start hook remains parent-owned. It records
+`agent.delegated`, then uses the exact child generation ID from that result to
+open a derived child `session.started` event and materialize the child
+heartbeat. The child start carries the parent generation, delegation ID, and
+causing event. Codex has no native child prompt hook, so Harnery also opens a
+derived child turn. Its provenance is `derived/high`, not a claim that Codex
+delivered a prompt event.
+
+Child-owned tool signals normalize their event scope to the child generation.
+Subagent start and stop signals stay on the parent because they open and close
+the parent's delegation span. Natural native completion runs the normal child
+finalizer, closes the exact generation, and removes the live heartbeat.
+
+Child coordination writes use a bounded authority join:
+
+1. prefer a producer whose native session directly matches the hook input;
+2. otherwise require exactly one live instance on the same adapter whose
+   instance ID matches the child; and
+3. fail when the join is absent or ambiguous.
+
+This join lets `harn agents whoami` and `set-task` act on a native child even
+when its shell still carries the parent process lineage. Private producer state
+may retain the native join fields. The canonical ledger receives only the
+validated V3 generation and lineage fields.
+
+## Result
+
+A live Codex run created child cards for Xander and Yara under Patty. Codec
+projected each as a separate live subagent with an event-backed active parent
+relationship. Child `whoami` and `set-task` resolved to the child generation,
+not Patty. After each child completed naturally, the live roster removed its
+heartbeat through the native completion path.
+
+The regression suite opens a parent generation, records native delegation,
+opens the exact child generation and derived child turn, records a child-owned
+tool action, and asserts two projected instances plus the parent relationship.
+It also covers coordination mutation through the bounded child join. Codec QA
+passes desktop and mobile in light and dark modes with no overflow, clipping,
+runts, placeholder leaks, broken images, active text truncation, hit-target
+failures, or vision findings.

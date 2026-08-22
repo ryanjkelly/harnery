@@ -100,6 +100,82 @@ describe("event ledger V3 persistent coordination recorder", () => {
     expect(durable).not.toContain("native-task-1");
   });
 
+  test("joins a delegated child by exact instance when its command retains the parent session", () => {
+    const root = startedRoot();
+    const childInstance = "inst_native-child" as const;
+    const delegation = recordHookSignalV3({
+      coordRoot: root,
+      mode: "candidate",
+      signal: "sub-agent-start",
+      payload: parsed({ session_id: "native-session", agent_id: "native-child" }),
+      adapter: "claude-code",
+      instance_id: "inst_operator",
+      producer_id: "prd_hook",
+      build_id: "build_fixture",
+      platform: "linux",
+    });
+    if (delegation.state !== "recorded" || delegation.event.event_type !== "agent.started") {
+      throw new Error("expected native delegation");
+    }
+    const childGeneration = delegation.event.payload.child_generation_id as `gen_${string}`;
+    expect(
+      recordHookSignalV3({
+        coordRoot: root,
+        mode: "candidate",
+        signal: "session-start",
+        payload: parsed({ session_id: "native-child" }),
+        adapter: "claude-code",
+        instance_id: childInstance,
+        producer_id: "prd_hook",
+        build_id: "build_fixture",
+        platform: "linux",
+        delegated_child: {
+          generation_id: childGeneration,
+          parent_generation_id: (
+            delegation.event.links as unknown as { parent_generation_id: `gen_${string}` }
+          ).parent_generation_id,
+          delegation_id: delegation.event.payload.delegation_id as `del_${string}`,
+          caused_by_event_id: delegation.event.event_id as `evt_${string}`,
+        },
+      }).state,
+    ).toBe("recorded");
+    let state = sha256V3("task-empty");
+    const result = recordCoordinationAuthorityV3({
+      coordRoot: root,
+      mode: "candidate",
+      signal: "task-changed",
+      observation: {
+        native_observation_id: "native-child-task",
+        state: "set",
+        task: "Inspect the child bridge",
+      },
+      adapter: "claude-code",
+      native_actor_session_id: "native-session",
+      actor_instance_id: childInstance,
+      subject_instance_id: childInstance,
+      producer_id: "prd_coord",
+      build_id: "build_fixture",
+      platform: "linux",
+      expected_prior_state_digest: state,
+      desired_state_digest: sha256V3("task-set"),
+      reconciler: {
+        readStateDigest: () => state,
+        apply: () => {
+          state = sha256V3("task-set");
+        },
+      },
+    });
+
+    expect(result.state).toBe("recorded");
+    const task = readLedgerV3(root).events
+      .map(({ event }) => event)
+      .find((event) => event.event_type === "coord.task_changed");
+    expect(task?.scope).toMatchObject({
+      instance_id: childInstance,
+      generation_id: childGeneration,
+    });
+  });
+
   test("recovers the same pending transaction and blocks an unrelated mutation", () => {
     const root = startedRoot();
     const secretTask = "Recover SECRET_PENDING_456";

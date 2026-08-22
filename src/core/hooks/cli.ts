@@ -39,7 +39,10 @@ import {
   toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
 import { stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
-import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
+import {
+  ensureLiveCoordinationHeartbeat,
+  readLiveCoordinationRow,
+} from "../agents/state/live-coordination-view.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
 import {
@@ -54,6 +57,7 @@ import {
 } from "../context/index.ts";
 import { tryWriteLiveDisplayV3 } from "../events/v3/live-feed.ts";
 import {
+  recordLiveDelegatedChildSessionV3,
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
@@ -426,7 +430,8 @@ function buildEventData(
       // Subagents inherit parent's name via the resolve-name session_id path
       // (agent-coord/state/names.ts → kind=transient). Use the call ID as the
       // instance_id input; assignName falls through to transient.
-      const assigned = assignNameViaAgentCoord(ctx.coordRoot, ctx.instanceId, "subagent");
+      const childInstanceId = subagentCallId ?? ctx.instanceId;
+      const assigned = assignNameViaAgentCoord(ctx.coordRoot, childInstanceId, "subagent");
       return {
         agent_type:
           (p?.raw.agent_type as string | undefined) ??
@@ -435,7 +440,7 @@ function buildEventData(
         prompt_summary: p?.raw.prompt_summary as string | undefined,
         name: assigned?.name,
         kind: "subagent",
-        agent_id: ctx.instanceId,
+        agent_id: childInstanceId,
         subagent_call_id: subagentCallId,
         parent_session_id: p?.parent_session_id,
       };
@@ -735,6 +740,36 @@ async function main(): Promise<number> {
         ? v3Result.event_id
         : undefined;
 
+  if (
+    norm.event_type === "agent.started" &&
+    payload &&
+    v3Result?.state === "recorded" &&
+    v3Result.event.event_type === "agent.started"
+  ) {
+    try {
+      const childResult = recordLiveDelegatedChildSessionV3({
+        coordRoot,
+        route: ledgerRoute,
+        parentEvent: v3Result.event,
+        payload,
+        adapter,
+        ...(adapter === "codex" && isWslUncPath(payload.cwd)
+          ? { bridge: "codex-wsl" as const }
+          : {}),
+        monotonic_ns: hookClock.monotonic_ns,
+      });
+      const nativeChild = payload.subagent_id ?? payload.agent_id;
+      if (
+        nativeChild &&
+        (childResult.state === "recorded" || childResult.state === "already_started")
+      ) {
+        ensureLiveCoordinationHeartbeat(coordRoot, nativeChild, sessionId, adapter, payload.model);
+      }
+    } catch (err) {
+      logError(coordRoot, err, { phase: "subagent-child-session-start" });
+    }
+  }
+
   if (v3Result?.state === "recorded" && capturedImages.length > 0) {
     try {
       recordImageArtifactsV3(coordRoot, v3Result.event, capturedImages);
@@ -887,11 +922,12 @@ async function main(): Promise<number> {
     }
   }
 
-  // Phase 8: SubagentStart: sync-project to create the subagent heartbeat,
-  // log the lifecycle event, and emit a context message announcing the
-  // subagent (claude-code + cursor; codex doesn't fan out subagents today).
+  // Phase 8: SubagentStart: the child generation was opened above from the
+  // native delegation identity. Refresh its disposable projection, log the
+  // lifecycle event, and emit a context message announcing the subagent.
   if (norm.event_type === "agent.started") {
     try {
+      const childInstanceId = (data.agent_id as string | undefined) ?? owner.instance_id;
       const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
       if (existsSync(agentCoordBin)) {
         spawnSync(agentCoordBin, ["project"], {
@@ -903,14 +939,14 @@ async function main(): Promise<number> {
           agentCoordBin,
           [
             "log",
-            `SUBAGENT_START  agent_type=${(data.agent_type as string) ?? "unknown"} agent_id=${owner.instance_id.slice(0, 8)} platform=${adapterPlatform(adapter)}`,
+            `SUBAGENT_START  agent_type=${(data.agent_type as string) ?? "unknown"} agent_id=${childInstanceId.slice(0, 8)} platform=${adapterPlatform(adapter)}`,
             "--instance",
-            owner.instance_id,
+            childInstanceId,
           ],
           { encoding: "utf8", timeout: 2000, env: childEnv(coordRoot) },
         );
       }
-      emitSubagentStartContext(coordRoot, owner.instance_id, sessionId, data, adapter);
+      emitSubagentStartContext(coordRoot, childInstanceId, sessionId, data, adapter);
     } catch (err) {
       logError(coordRoot, err, { phase: "subagent-start-project" });
     }
@@ -919,20 +955,26 @@ async function main(): Promise<number> {
   // Phase 8: SubagentStop: delete subagent heartbeat + log.
   if (norm.event_type === "agent.completed") {
     try {
-      cleanupSessionEnd(coordRoot, owner.instance_id, (data.reason as string) ?? "unknown");
+      const childInstanceId =
+        payload?.subagent_id ?? payload?.agent_id ?? owner.instance_id;
+      cleanupSessionEnd(coordRoot, childInstanceId, (data.reason as string) ?? "unknown");
       const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
       if (existsSync(agentCoordBin)) {
         spawnSync(
           agentCoordBin,
           [
             "log",
-            `SUBAGENT_STOP   agent_id=${owner.instance_id.slice(0, 8)} platform=${adapterPlatform(adapter)}`,
+            `SUBAGENT_STOP   agent_id=${childInstanceId.slice(0, 8)} platform=${adapterPlatform(adapter)}`,
             "--instance",
-            owner.instance_id,
+            childInstanceId,
           ],
           { encoding: "utf8", timeout: 2000, env: childEnv(coordRoot) },
         );
       }
+      const { reconcileSessionFinalizationV3 } = await import(
+        "../agents/session-finalizer-v3.ts"
+      );
+      reconcileSessionFinalizationV3(coordRoot, { archive_observations: [] });
     } catch (err) {
       logError(coordRoot, err, { phase: "subagent-stop-cleanup" });
     }
@@ -1158,7 +1200,7 @@ async function enforcePendingSessionNameDisplay(
   if (isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) return true;
 
   const inspection =
-    payload?.agent_message !== undefined
+    adapter === "cursor" && payload?.agent_message !== undefined
       ? {
           state: assistantTextStartsWithSessionNameBlock(payload.agent_message, name)
             ? ("present" as const)
