@@ -39,6 +39,9 @@ verified.
 ```bash
 harn semantic once                         # run one bounded pass
 harn semantic once --calls-per-hour 12     # use a lower local ceiling
+harn semantic service start                # opt in to recurring model calls
+harn semantic service status               # inspect liveness and bounded metrics
+harn semantic service stop                 # finish the current call, then stop
 harn semantic doctor                       # check readers without a model call
 harn semantic inspect <instance-or-generation>
 ```
@@ -60,6 +63,16 @@ semantic document. Consumers decide whether a document is fresh by comparing its
 source cursor to the current V3 projection. Freshness is not stored as a second
 authority in the document.
 
+`service start` is an explicit authorization for recurring model calls. It
+starts one detached service per coordination root. The service watches the
+canonical active-ledger path, debounces changes for five seconds, consumes an
+incremental ledger cursor, and keeps at least 30 seconds between calls for one
+generation. A stale process lease is recovered by the next explicit start.
+
+Stopping is graceful. An in-flight model request may finish, but no next request
+starts. The deterministic ledger, coordination commands, and Codec remain usable
+whether the service is stopped, unavailable, or recovering.
+
 ## Storage boundary
 
 All state is disposable and rebuildable:
@@ -74,4 +87,3 @@ All state is disposable and rebuildable:
 The cache key includes the evidence digest, source harness, configured and
 resolved model IDs, evidence contract version, and prompt contract version.
 Changing any of those inputs prevents stale reuse.
-

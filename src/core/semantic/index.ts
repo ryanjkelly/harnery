@@ -46,6 +46,7 @@ export {
   buildSemanticEvidenceV1,
   projectSemanticEvidenceFromViewV1,
   projectSemanticEvidenceV1,
+  SEMANTIC_RECENTLY_ENDED_WINDOW_MS,
 } from "./evidence.ts";
 export {
   type RunSemanticOnceInput,
@@ -64,11 +65,29 @@ export {
   enqueueSemanticPending,
   SEMANTIC_HARD_CALLS_PER_HOUR,
   SEMANTIC_INVALID_RETRY_COOLDOWN_MS,
+  SEMANTIC_MIN_GENERATION_CALL_INTERVAL_MS,
   selectSemanticPending,
   semanticDocumentEligible,
+  semanticGenerationCallEligible,
   semanticPriorityBand,
   semanticRateCap,
 } from "./scheduler.ts";
+export {
+  acquireSemanticServiceLease,
+  type RunSemanticServiceDaemonInput,
+  readSemanticServiceStatus,
+  requestSemanticServiceStop,
+  runSemanticServiceDaemon,
+  SEMANTIC_SERVICE_DEFAULT_DEBOUNCE_MS,
+  SEMANTIC_SERVICE_DEFAULT_HEARTBEAT_MS,
+  SEMANTIC_SERVICE_DEFAULT_WAKE_MS,
+  SEMANTIC_SERVICE_STATUS_SCHEMA_VERSION,
+  type SemanticServiceErrorCode,
+  type SemanticServiceState,
+  type SemanticServiceStatus,
+  type SemanticServiceStatusRecord,
+  spawnSemanticService,
+} from "./service.ts";
 export {
   inspectSemanticDocument,
   invalidateSemanticDerivedState,

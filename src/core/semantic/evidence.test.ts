@@ -94,4 +94,19 @@ describe("semantic evidence projection", () => {
     expect(waiting?.evidence_digest).not.toBe(baseline?.evidence_digest);
     expect(waiting?.attention).toMatchObject({ kind: "wait", label: "Waiting for input" });
   });
+
+  test("keeps an ended generation only for Codec's thirty-minute evidence window", () => {
+    const ended = eventV3Fixture("session.ended", 4) as unknown as Extract<
+      EventV3,
+      { event_type: "session.ended" }
+    >;
+    fixtureObject(ended.time).observed_at = "2026-08-22T20:00:00.000Z";
+    const read = semanticRead([ended]);
+    expect(
+      projectSemanticEvidenceV1(read, [], Date.parse("2026-08-22T20:29:59.999Z")),
+    ).toHaveLength(1);
+    expect(
+      projectSemanticEvidenceV1(read, [], Date.parse("2026-08-22T20:30:00.001Z")),
+    ).toHaveLength(0);
+  });
 });

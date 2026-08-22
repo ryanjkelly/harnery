@@ -2,16 +2,13 @@ import type { V3HeartbeatMaterialization } from "../agents/state/live-coordinati
 import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 import type { EventV3 } from "../events/v3/contract.ts";
 import {
-  projectCoordinationViewV3,
   type CoordinationGenerationViewV3,
   type CoordinationViewV3,
+  projectCoordinationViewV3,
 } from "../events/v3/coordination-view.ts";
 import { canonicalJsonV3, sha256V3 } from "../events/v3/index.ts";
 import { type ReadLedgerV3Result, readLedgerV3 } from "../events/v3/reader.ts";
-import {
-  type PresenceCodecDigest,
-  projectPresenceCodecDigests,
-} from "../presence/codec-digest.ts";
+import { type PresenceCodecDigest, projectPresenceCodecDigests } from "../presence/codec-digest.ts";
 import {
   SEMANTIC_EVIDENCE_CONTRACT_VERSION,
   SEMANTIC_EVIDENCE_SCHEMA_VERSION,
@@ -22,36 +19,51 @@ import {
 import { isSemanticPrivacySafe, validateSemanticEvidencePrivacy } from "./validate.ts";
 
 const MAX_RECENT = 8;
+export const SEMANTIC_RECENTLY_ENDED_WINDOW_MS = 30 * 60_000;
 
 /** Read canonical V3 authority and project one privacy-safe envelope per active generation. */
-export function buildSemanticEvidenceV1(coordRoot: string): SemanticEvidenceV1[] {
-  const read = readLedgerV3(coordRoot);
+export function buildSemanticEvidenceV1(
+  coordRoot: string,
+  nowMs = Date.now(),
+): SemanticEvidenceV1[] {
+  const read = readLedgerV3(coordRoot, { authority: "active" });
   if (!read.complete || !read.genesis_id) return [];
-  return projectSemanticEvidenceV1(read, readLiveCoordinationRows(coordRoot));
+  return projectSemanticEvidenceV1(read, readLiveCoordinationRows(coordRoot), nowMs);
 }
 
 /** Pure projection seam used by replay and contract tests. */
 export function projectSemanticEvidenceV1(
   read: ReadLedgerV3Result,
   liveRows: readonly V3HeartbeatMaterialization[] = [],
+  nowMs = Date.now(),
 ): SemanticEvidenceV1[] {
   if (!read.complete || !read.genesis_id) return [];
   const view = projectCoordinationViewV3(read);
   if (!view.authority_safe) return [];
-  return projectSemanticEvidenceFromViewV1(read, view, liveRows);
+  return projectSemanticEvidenceFromViewV1(read, view, liveRows, nowMs);
 }
 
 export function projectSemanticEvidenceFromViewV1(
   read: ReadLedgerV3Result,
   view: CoordinationViewV3,
   liveRows: readonly V3HeartbeatMaterialization[] = [],
+  nowMs = Date.now(),
 ): SemanticEvidenceV1[] {
   if (!read.complete || !read.genesis_id || !view.authority_safe) return [];
   const events = read.events.map(({ event }) => event);
   const codec = projectPresenceCodecDigests(events);
   const rows = new Map(liveRows.map((row) => [row.v3_generation_id, row]));
-  return Object.values(view.instances)
-    .filter((generation) => generation.authority_eligible)
+  const recentTerminal = Object.values(view.terminal_generations).filter((generation) => {
+    const endedAt = Date.parse(generation.terminal?.observed_at ?? "");
+    return (
+      generation.evidence_complete &&
+      Number.isFinite(endedAt) &&
+      nowMs - endedAt >= 0 &&
+      nowMs - endedAt <= SEMANTIC_RECENTLY_ENDED_WINDOW_MS
+    );
+  });
+  return [...Object.values(view.instances), ...recentTerminal]
+    .filter((generation) => generation.authority_eligible || generation.phase === "terminal")
     .sort((left, right) => left.generation_id.localeCompare(right.generation_id))
     .flatMap((generation) => {
       const evidence = projectGeneration(
@@ -81,10 +93,7 @@ function projectGeneration(
   const latestLifecycle = latest(events, "coord.lifecycle_changed");
   const latestIntent = latest(events, "turn.started");
   const task =
-    latestTask &&
-    row?.task &&
-    row.v3_task_state === "set" &&
-    isSemanticPrivacySafe(row.task)
+    latestTask && row?.task && row.v3_task_state === "set" && isSemanticPrivacySafe(row.task)
       ? { value: row.task.slice(0, 200), event_id: latestTask.event_id }
       : undefined;
   const lifecycle = latestLifecycle
@@ -165,15 +174,30 @@ function toRecentObservation(event: EventV3): SemanticEvidenceObservationV1[] {
   const base = { event_id: event.event_id, observed_at: event.time.observed_at };
   switch (event.event_type) {
     case "progress.observed":
-      return [{ ...base, kind: "progress", label: progressLabel(event.payload.kind), outcome: "succeeded" }];
+      return [
+        {
+          ...base,
+          kind: "progress",
+          label: progressLabel(event.payload.kind),
+          outcome: "succeeded",
+        },
+      ];
     case "artifact.observed":
-      return [{ ...base, kind: "artifact", label: artifactLabel(event.payload.operation), outcome: "succeeded" }];
+      return [
+        {
+          ...base,
+          kind: "artifact",
+          label: artifactLabel(event.payload.operation),
+          outcome: "succeeded",
+        },
+      ];
     case "tool.completed":
       return [
         {
           ...base,
           kind: event.payload.outcome === "failed" ? "error" : "action",
-          label: event.payload.outcome === "succeeded" ? "Tool action succeeded" : "Tool action ended",
+          label:
+            event.payload.outcome === "succeeded" ? "Tool action succeeded" : "Tool action ended",
           outcome: event.payload.outcome,
           ...(event.payload.error?.class ? { error_class: event.payload.error.class } : {}),
         },
@@ -191,7 +215,9 @@ function toRecentObservation(event: EventV3): SemanticEvidenceObservationV1[] {
     case "turn.completed":
       return [{ ...base, kind: "action", label: "Turn completed", outcome: event.payload.outcome }];
     case "session.ended":
-      return [{ ...base, kind: "terminal", label: "Session ended", outcome: event.payload.outcome }];
+      return [
+        { ...base, kind: "terminal", label: "Session ended", outcome: event.payload.outcome },
+      ];
     case "session.resumed":
     case "lifecycle.recovered":
       return [{ ...base, kind: "recovery", label: "Work recovered", outcome: "succeeded" }];
@@ -233,7 +259,10 @@ function attentionObservation(
 }
 
 function observedHarness(
-  observation: Extract<EventV3, { event_type: "session.started" }>["payload"]["runtime_attestation"]["adapter"],
+  observation: Extract<
+    EventV3,
+    { event_type: "session.started" }
+  >["payload"]["runtime_attestation"]["adapter"],
 ): SemanticHarness | undefined {
   if (observation.state !== "observed") return undefined;
   const id = observation.value.id;
@@ -253,7 +282,10 @@ function eventGenerationId(event: EventV3): string | undefined {
   return "generation_id" in event.scope ? event.scope.generation_id : undefined;
 }
 
-function newestEvidenceEvent(events: readonly EventV3[], ids: readonly string[]): EventV3 | undefined {
+function newestEvidenceEvent(
+  events: readonly EventV3[],
+  ids: readonly string[],
+): EventV3 | undefined {
   const allowed = new Set(ids);
   return [...events].reverse().find((event) => allowed.has(event.event_id));
 }
@@ -263,36 +295,42 @@ function unique(values: Array<string | undefined>): string[] {
 }
 
 function progressLabel(kind: string): string {
-  return {
-    write: "Files changed",
-    test: "Tests observed",
-    commit: "Commit observed",
-    deploy: "Deployment observed",
-    publication: "Publication observed",
-    review: "Review observed",
-    artifact: "Artifact observed",
-  }[kind] ?? "Progress observed";
+  return (
+    {
+      write: "Files changed",
+      test: "Tests observed",
+      commit: "Commit observed",
+      deploy: "Deployment observed",
+      publication: "Publication observed",
+      review: "Review observed",
+      artifact: "Artifact observed",
+    }[kind] ?? "Progress observed"
+  );
 }
 
 function artifactLabel(operation: string): string {
-  return {
-    created: "Artifact created",
-    updated: "Artifact updated",
-    viewed: "Artifact viewed",
-    published: "Artifact published",
-  }[operation] ?? "Artifact observed";
+  return (
+    {
+      created: "Artifact created",
+      updated: "Artifact updated",
+      viewed: "Artifact viewed",
+      published: "Artifact published",
+    }[operation] ?? "Artifact observed"
+  );
 }
 
 function waitLabel(kind: string): string {
-  return {
-    permission: "permission",
-    needs_input: "input",
-    operator_input: "operator input",
-    approval: "approval",
-    decision: "a decision",
-    dependency: "a dependency",
-    scheduled: "a scheduled time",
-    rate_limit: "a rate limit",
-    unknown: "attention",
-  }[kind] ?? "attention";
+  return (
+    {
+      permission: "permission",
+      needs_input: "input",
+      operator_input: "operator input",
+      approval: "approval",
+      decision: "a decision",
+      dependency: "a dependency",
+      scheduled: "a scheduled time",
+      rate_limit: "a rate limit",
+      unknown: "attention",
+    }[kind] ?? "attention"
+  );
 }

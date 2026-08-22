@@ -60,4 +60,11 @@ describe("semantic command", () => {
       message: "no semantic document for inst_missing",
     });
   });
+
+  test("service status is healthy and stopped before explicit enrollment", async () => {
+    const root = fixture();
+    const { data, error } = await run(["semantic", "service", "status", "--root", root]);
+    expect(error).toBeUndefined();
+    expect(data).toEqual({ running: false, stale: false, pending_count: 0 });
+  });
 });

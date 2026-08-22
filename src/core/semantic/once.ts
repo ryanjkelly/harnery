@@ -17,6 +17,7 @@ import {
   enqueueSemanticPending,
   selectSemanticPending,
   semanticDocumentEligible,
+  semanticGenerationCallEligible,
   semanticRateCap,
 } from "./scheduler.ts";
 import {
@@ -60,13 +61,15 @@ export interface RunSemanticOnceInput {
   adapters?: Record<SemanticHarness, SemanticAdapter>;
   now?: () => Date;
   callsPerHour?: number;
+  debounceMs?: number;
+  minimumGenerationCallIntervalMs?: number;
 }
 
 export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<SemanticOnceReport> {
   const now = input.now ?? (() => new Date());
   const nowDate = now();
   const nowIso = nowDate.toISOString();
-  const evidence = input.evidence ?? buildSemanticEvidenceV1(input.coordRoot);
+  const evidence = input.evidence ?? buildSemanticEvidenceV1(input.coordRoot, nowDate.getTime());
   const ledgerGenesisId = evidence[0]?.source.ledger_genesis_id;
   const adapters = input.adapters ?? createSemanticAdapters();
   const resolutions = resolveReaders(adapters, now);
@@ -111,8 +114,14 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
 
   let calls = 0;
   let cacheHits = 0;
+  const heldGenerations = new Set<string>();
   while (current.pending.length > 0) {
-    const pending = selectSemanticPending(current.pending, current.last_first_band_generation_id);
+    const eligiblePending = current.pending.filter(
+      (pending) =>
+        !heldGenerations.has(pending.generation_id) &&
+        Date.parse(pending.pending_since) <= nowDate.getTime() - (input.debounceMs ?? 0),
+    );
+    const pending = selectSemanticPending(eligiblePending, current.last_first_band_generation_id);
     if (!pending) break;
     const item = evidenceByGeneration.get(pending.generation_id);
     if (!item || item.evidence_digest !== pending.evidence_digest) {
@@ -160,6 +169,17 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       writeSemanticAgentDocument(input.coordRoot, deferred);
       outcomes.push({ generation_id: item.generation_id, action: "deferred", model_call: false });
       removePending(current, pending.generation_id);
+      continue;
+    }
+    if (
+      !semanticGenerationCallEligible(
+        current.call_history,
+        pending.generation_id,
+        nowDate.getTime(),
+        input.minimumGenerationCallIntervalMs,
+      )
+    ) {
+      heldGenerations.add(pending.generation_id);
       continue;
     }
     const prompt = buildSemanticPrompt(item);

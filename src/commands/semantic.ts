@@ -6,8 +6,12 @@ import {
   discoverSemanticReaders,
   inspectSemanticDocument,
   readSemanticManifest,
+  readSemanticServiceStatus,
+  requestSemanticServiceStop,
   runSemanticOnce,
+  runSemanticServiceDaemon,
   semanticPaths,
+  spawnSemanticService,
 } from "../core/semantic/index.ts";
 
 export function registerSemanticCommand(
@@ -34,6 +38,76 @@ export function registerSemanticCommand(
         );
       } catch (error) {
         emitFailure(emit, "semantic_once_failed", error);
+      }
+    });
+
+  const service = semantic
+    .command("service")
+    .description("Run semantic reading as an explicit-start singleton service");
+
+  service
+    .command("start")
+    .description("Start the detached per-root semantic reader service")
+    .option("--root <path>", "Explicit coordination root")
+    .option("--calls-per-hour <count>", "Configured call ceiling below the hard limit", integer)
+    .action(async (options: { root?: string; callsPerHour?: number }) => {
+      try {
+        emit.data(
+          await spawnSemanticService(resolve(options.root ?? coordRoot(context)), {
+            callsPerHour: options.callsPerHour,
+          }),
+        );
+      } catch (error) {
+        emitFailure(emit, "semantic_service_start_failed", error);
+      }
+    });
+
+  service
+    .command("status")
+    .description("Show singleton liveness, pass metrics, and pending work")
+    .option("--root <path>", "Explicit coordination root")
+    .action((options: { root?: string }) => {
+      try {
+        emit.data(readSemanticServiceStatus(resolve(options.root ?? coordRoot(context))));
+      } catch (error) {
+        emitFailure(emit, "semantic_service_status_failed", error);
+      }
+    });
+
+  service
+    .command("stop")
+    .description("Request a graceful stop after the current model call")
+    .option("--root <path>", "Explicit coordination root")
+    .action(async (options: { root?: string }) => {
+      try {
+        const root = resolve(options.root ?? coordRoot(context));
+        let status = requestSemanticServiceStop(root);
+        const deadline = Date.now() + 5_000;
+        while (status.running && Date.now() < deadline) {
+          await new Promise((done) => setTimeout(done, 50));
+          status = readSemanticServiceStatus(root);
+        }
+        emit.data(status);
+      } catch (error) {
+        emitFailure(emit, "semantic_service_stop_failed", error);
+      }
+    });
+
+  service
+    .command("daemon", { hidden: true })
+    .description("Internal detached semantic service entrypoint")
+    .option("--root <path>", "Explicit coordination root")
+    .option("--calls-per-hour <count>", "Configured call ceiling below the hard limit", integer)
+    .action(async (options: { root?: string; callsPerHour?: number }) => {
+      try {
+        emit.data(
+          await runSemanticServiceDaemon({
+            coordRoot: resolve(options.root ?? coordRoot(context)),
+            callsPerHour: options.callsPerHour,
+          }),
+        );
+      } catch (error) {
+        emitFailure(emit, "semantic_service_daemon_failed", error);
       }
     });
 

@@ -3,6 +3,7 @@ import type { SemanticCallReceipt, SemanticPendingItem } from "./storage.ts";
 
 export const SEMANTIC_HARD_CALLS_PER_HOUR = 60;
 export const SEMANTIC_INVALID_RETRY_COOLDOWN_MS = 5 * 60_000;
+export const SEMANTIC_MIN_GENERATION_CALL_INTERVAL_MS = 30_000;
 
 export function semanticPriorityBand(evidence: SemanticEvidenceV1): 1 | 2 {
   if (
@@ -72,6 +73,20 @@ export function semanticRateCap(
     available: 0,
     eligible_after: new Date(Date.parse(active[0]!.started_at) + 60 * 60_000).toISOString(),
   };
+}
+
+export function semanticGenerationCallEligible(
+  history: readonly SemanticCallReceipt[],
+  generationId: string,
+  nowMs: number,
+  minimumIntervalMs = SEMANTIC_MIN_GENERATION_CALL_INTERVAL_MS,
+): boolean {
+  const newest = history
+    .filter((call) => call.generation_id === generationId)
+    .map((call) => Date.parse(call.started_at))
+    .filter(Number.isFinite)
+    .sort((left, right) => right - left)[0];
+  return newest === undefined || nowMs - newest >= Math.max(0, minimumIntervalMs);
 }
 
 export function semanticDocumentEligible(

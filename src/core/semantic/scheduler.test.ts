@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { selectSemanticPending, semanticRateCap } from "./scheduler.ts";
+import {
+  selectSemanticPending,
+  semanticGenerationCallEligible,
+  semanticRateCap,
+} from "./scheduler.ts";
 
 describe("semantic fair scheduler", () => {
   test("serves the oldest first-band item but rotates away from the last generation", () => {
@@ -36,5 +40,18 @@ describe("semantic fair scheduler", () => {
       available: 0,
       eligible_after: "2026-08-22T21:00:00.000Z",
     });
+  });
+
+  test("holds one hot generation for thirty seconds without delaying its peers", () => {
+    const history = [{ generation_id: "gen_a", started_at: "2026-08-22T20:00:00.000Z" }];
+    expect(
+      semanticGenerationCallEligible(history, "gen_a", Date.parse("2026-08-22T20:00:29.999Z")),
+    ).toBe(false);
+    expect(
+      semanticGenerationCallEligible(history, "gen_b", Date.parse("2026-08-22T20:00:01.000Z")),
+    ).toBe(true);
+    expect(
+      semanticGenerationCallEligible(history, "gen_a", Date.parse("2026-08-22T20:00:30.000Z")),
+    ).toBe(true);
   });
 });
