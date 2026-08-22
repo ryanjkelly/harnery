@@ -13,6 +13,7 @@ import { Code2, Eye } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { FileText } from "@/lib/file-viewer/types";
 import CodeRenderer from "./CodeRenderer";
+import { useWrapPref, WrapToggle } from "./WrapToggle";
 
 export default function HtmlRenderer({
   file,
@@ -24,6 +25,7 @@ export default function HtmlRenderer({
   const isXml = file.relPath.toLowerCase().endsWith(".xml");
   const seed: "source" | "preview" = isXml ? "source" : initialMode;
   const [mode, setMode] = useState<"source" | "preview">(seed);
+  const [wrap, toggleWrap] = useWrapPref();
 
   // Path / deep-link mode changes (standalone replaceState, sequence nav).
   useEffect(() => {
@@ -64,12 +66,17 @@ export default function HtmlRenderer({
             sandboxed · scripts disabled · isolated origin
           </span>
         )}
+        {mode === "source" && (
+          <div className="ml-auto">
+            <WrapToggle wrap={wrap} onToggle={toggleWrap} />
+          </div>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "preview" && !isXml ? (
           <HtmlPreview content={file.content} />
         ) : (
-          <CodeRenderer file={file} />
+          <CodeRenderer file={file} wrap={wrap} />
         )}
       </div>
     </div>
