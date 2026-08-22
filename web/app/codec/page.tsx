@@ -4,8 +4,8 @@
  * Server component: builds the initial sanitized scene on the server so the
  * page renders complete without JS, then hands live updates to the CodecView
  * client leaf (SSE with polling fallback). Read-only by contract; there are
- * no control affordances on this surface and never will be (see the host
- * repo's Codec visual-director plan).
+ * presentation controls on this surface never mutate the underlying ledger
+ * or coordination state (see the host repo's Codec visual-director plan).
  */
 
 import Link from "next/link";

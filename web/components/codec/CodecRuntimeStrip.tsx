@@ -44,9 +44,10 @@ export function CodecRuntimeStrip({ panel }: { panel: CodecPanelScene }) {
                 data-runtime-field={field}
                 data-runtime-missing={value ? undefined : "true"}
                 className={styles.runtimeField}
+                aria-label={`${LABELS[field]}: ${value ?? "not reported"}`}
               >
                 <span className={styles.runtimeLabel}>{LABELS[field]}</span>
-                <strong className={styles.runtimeValue}>{value ?? "not reported"}</strong>
+                <strong className={styles.runtimeValue}>{value ?? "—"}</strong>
               </button>
             </Tooltip>
           </li>

@@ -103,8 +103,16 @@ export interface CodecOperationValue {
   category: CodecActionCategory;
   /** Public-safe operation label derived from namespace/name, never arguments. */
   label: string;
+  /** Exact public-safe tool or executable token for the open leaf span. */
+  tool_name?: string;
+  tool_namespace?: string;
+  /** Bounded operator-authored intent inherited from the open span chain. */
+  intent?: string;
   state: CodecOperationState;
   elapsed_ms?: number;
+  /** Aggregate output telemetry only; output content never crosses this boundary. */
+  output_observations?: number;
+  output_bytes?: number;
   /** Successful same-adapter/tool durations available to the baseline. */
   duration_sample_count?: number;
   /** Omitted until the minimum history requirement is met. */

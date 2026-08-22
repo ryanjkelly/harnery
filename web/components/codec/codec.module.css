@@ -143,6 +143,30 @@
   border-radius: 1.5rem;
 }
 
+.codecArena[data-remote-panel="closed"][data-team-panel="open"] {
+  grid-template-columns: minmax(44rem, 5fr) minmax(13rem, 1fr);
+  grid-template-areas:
+    "status status"
+    "cards team"
+    "activity activity";
+}
+
+.codecArena[data-remote-panel="open"][data-team-panel="closed"] {
+  grid-template-columns: minmax(13rem, 1fr) minmax(44rem, 5fr);
+  grid-template-areas:
+    "status status"
+    "remote cards"
+    "activity activity";
+}
+
+.codecArena[data-remote-panel="closed"][data-team-panel="closed"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "status"
+    "cards"
+    "activity";
+}
+
 .codecArena::before {
   content: "";
   position: absolute;
@@ -160,6 +184,14 @@
   min-width: 0;
 }
 
+.sceneStatusBar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .sceneRail {
   display: flex;
   flex-wrap: wrap;
@@ -168,6 +200,57 @@
   min-height: 1.8rem;
   color: rgb(161 161 170);
   font-size: 0.72rem;
+}
+
+.sceneControls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.sceneControls button {
+  display: inline-flex;
+  min-width: 2rem;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.32rem;
+  border: 1px solid rgb(34 211 238 / 0.28);
+  border-radius: 0.55rem;
+  padding: 0.32rem 0.48rem;
+  color: rgb(165 243 252);
+  background: rgb(8 145 178 / 0.08);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.55rem;
+  font-weight: 750;
+  letter-spacing: 0.035em;
+  white-space: nowrap;
+}
+
+.sceneControls button[data-codec-panel-toggle][aria-pressed="false"] {
+  border-color: rgb(161 161 170 / 0.22);
+  color: rgb(161 161 170);
+  background: rgb(24 24 31 / 0.36);
+}
+
+.sceneControls button:hover:not(:disabled),
+.sceneControls button:focus-visible:not(:disabled) {
+  border-color: rgb(34 211 238 / 0.72);
+  color: rgb(207 250 254);
+  background: rgb(8 145 178 / 0.2);
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(34 211 238 / 0.18);
+}
+
+.sceneControls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.sceneControls svg {
+  width: 0.85rem;
+  height: 0.85rem;
 }
 
 .replayBanner {
@@ -1015,6 +1098,7 @@
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   column-gap: 0.55rem;
+  min-height: 3.2rem;
   margin-top: 0.5rem;
   padding: 0.45rem 0.65rem;
   border: 1px solid var(--border);
@@ -1053,16 +1137,21 @@
 
 .operationLabel {
   min-width: 0;
+  overflow: hidden;
   font-weight: 600;
   line-height: 1.25;
-  overflow-wrap: normal;
-  word-break: normal;
+  white-space: nowrap;
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 0.9rem), transparent 100%);
 }
 
 .operationState {
+  min-width: 0;
+  overflow: hidden;
   color: var(--muted-foreground);
   font-size: 0.64rem;
   line-height: 1.25;
+  white-space: nowrap;
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 0.9rem), transparent 100%);
 }
 
 .focusBubble,
@@ -1230,14 +1319,54 @@
 
 /* Ping arrival glow on the recipient panel (static-friendly). */
 .pingArrive {
-  outline: 2px solid rgba(56, 189, 248, 0.65);
-  outline-offset: 2px;
+  outline: 4px solid rgba(125, 211, 252, 0.88);
+  outline-offset: 4px;
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 0.42),
+    0 0 42px 10px rgb(56 189 248 / 0.42),
+    0 20px 60px rgb(0 0 0 / 0.36),
+    inset 0 1px 0 rgb(255 255 255 / 0.09);
   transition: outline-color 1.4s ease-out;
 }
 .pingArriveFade {
   outline: 2px solid transparent;
   outline-offset: 2px;
-  transition: outline-color 1.4s ease-out;
+  transition:
+    outline-color 1.4s ease-out,
+    box-shadow 1.4s ease-out;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pingArrive {
+    animation: codec-ping-arrive 1.6s ease-out both;
+  }
+
+  @keyframes codec-ping-arrive {
+    0% {
+      outline-color: rgb(165 243 252 / 0);
+      box-shadow:
+        0 0 0 0 rgb(165 243 252 / 0),
+        0 0 0 0 rgb(168 85 247 / 0),
+        0 20px 60px rgb(0 0 0 / 0.36),
+        inset 0 1px 0 rgb(255 255 255 / 0.06);
+    }
+    28% {
+      outline-color: rgb(165 243 252 / 1);
+      box-shadow:
+        0 0 0 8px rgb(165 243 252 / 0.42),
+        0 0 54px 16px rgb(168 85 247 / 0.5),
+        0 20px 60px rgb(0 0 0 / 0.36),
+        inset 0 1px 0 rgb(255 255 255 / 0.12);
+    }
+    100% {
+      outline-color: rgb(125 211 252 / 0.18);
+      box-shadow:
+        0 0 0 18px rgb(165 243 252 / 0),
+        0 0 24px 5px rgb(56 189 248 / 0.12),
+        0 20px 60px rgb(0 0 0 / 0.36),
+        inset 0 1px 0 rgb(255 255 255 / 0.06);
+    }
+  }
 }
 
 /* Completion is an expiring attention channel, so its burst is deliberately
@@ -1252,13 +1381,52 @@
 /* Traveling message particle (created imperatively, motion-gated in JS). */
 .pingDot {
   position: fixed;
-  z-index: 60;
-  width: 10px;
-  height: 10px;
+  z-index: 80;
+  width: 24px;
+  height: 24px;
   border-radius: 999px;
   pointer-events: none;
-  background: radial-gradient(circle, rgba(125, 211, 252, 1), rgba(56, 189, 248, 0.4));
-  box-shadow: 0 0 10px 2px rgba(56, 189, 248, 0.7);
+  background: radial-gradient(
+    circle,
+    #fff 0 18%,
+    rgb(165 243 252) 30%,
+    rgb(56 189 248) 58%,
+    transparent 74%
+  );
+  box-shadow:
+    0 0 16px 6px rgb(56 189 248 / 0.88),
+    0 0 42px 14px rgb(168 85 247 / 0.42);
+  filter: saturate(1.3);
+}
+
+.pingDot::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 50%;
+  width: 72px;
+  height: 12px;
+  border-radius: 999px 0 0 999px;
+  opacity: 0.9;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(168 85 247 / 0.4),
+    rgb(103 232 249 / 0.9),
+    #fff
+  );
+  filter: blur(2px);
+  transform: translateY(-50%) rotate(var(--ping-angle, 0rad));
+  transform-origin: right center;
+}
+
+.pingDot::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border: 2px solid rgb(165 243 252 / 0.78);
+  border-radius: 999px;
+  box-shadow: 0 0 18px rgb(56 189 248 / 0.72);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1559,6 +1727,23 @@
 
   .codecArena::before {
     inset-inline: 0;
+  }
+
+  .sceneStatusBar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sceneControls {
+    width: 100%;
+  }
+
+  .sceneControls > * {
+    flex: 1 1 0;
+  }
+
+  .sceneControls button {
+    width: 100%;
   }
 
   .replayBanner,

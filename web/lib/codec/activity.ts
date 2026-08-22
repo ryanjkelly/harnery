@@ -44,6 +44,9 @@ interface OpenOperation {
   turnId?: string;
   category: CodecActionCategory;
   label: string;
+  toolName?: string;
+  toolNamespace?: string;
+  intent?: string;
   baselineKey: string;
   fingerprint?: string;
   targetFingerprint?: string;
@@ -249,6 +252,9 @@ function recordStart(
     ...(event.turn_id ? { turnId: event.turn_id } : {}),
     category: event.category ?? "coordinate",
     label: operationLabel(event),
+    ...(event.tool_name ? { toolName: event.tool_name } : {}),
+    ...(event.tool_namespace ? { toolNamespace: event.tool_namespace } : {}),
+    ...(event.intent ? { intent: event.intent } : {}),
     baselineKey: `${event.adapter ?? "unknown"}/${event.tool_namespace ?? "wait"}/${event.tool_name ?? event.wait_kind ?? "unknown"}`,
     ...(operationFingerprint ? { fingerprint: operationFingerprint } : {}),
     ...(targetFingerprint ? { targetFingerprint } : {}),
@@ -375,6 +381,26 @@ function newestOpen(slot: InstanceActivityState): OpenOperation | undefined {
     return candidates.sort((a, b) => millis(b.ts) - millis(a.ts))[0];
   }
   return candidates.at(-1);
+}
+
+/** The visible operation is the newest leaf, while operator-authored intent
+ * commonly belongs to its enclosing tool span (for example exec_command →
+ * command.started). Walk only the already-bounded in-memory span chain. */
+function inheritedIntent(
+  slot: InstanceActivityState,
+  operation: OpenOperation,
+): string | undefined {
+  let current: OpenOperation | undefined = operation;
+  const visited = new Set<string>();
+  while (current && !visited.has(current.key)) {
+    visited.add(current.key);
+    if (current.intent) return current.intent;
+    const parentSpanId: string | undefined = current.parentSpanId;
+    current = parentSpanId
+      ? [...slot.open.values()].find((candidate) => candidate.spanId === parentSpanId)
+      : undefined;
+  }
+  return undefined;
 }
 
 /** Fold V3-safe evidence into per-panel activity channels. */
@@ -556,6 +582,7 @@ export function projectActivityChannels(
             ? "long-running"
             : "active";
       const evidenceIds = [...(open.retryEvidenceIds ?? [open.eventId])];
+      const intent = inheritedIntent(slot, open);
       if (outputFresh && open.lastOutputTs) {
         const outputEvent = events.findLast(
           (event) =>
@@ -569,8 +596,13 @@ export function projectActivityChannels(
         {
           category: open.category,
           label: open.label,
+          ...(open.toolName ? { tool_name: open.toolName } : {}),
+          ...(open.toolNamespace ? { tool_namespace: open.toolNamespace } : {}),
+          ...(intent ? { intent } : {}),
           state,
           ...(elapsedMs !== undefined ? { elapsed_ms: elapsedMs } : {}),
+          ...(open.outputCount > 0 ? { output_observations: open.outputCount } : {}),
+          ...(open.outputBytes > 0 ? { output_bytes: open.outputBytes } : {}),
           duration_sample_count: samples.length,
           ...(Number.isFinite(thresholdMs) ? { long_running_threshold_ms: thresholdMs } : {}),
         },

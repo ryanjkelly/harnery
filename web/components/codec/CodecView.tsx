@@ -7,7 +7,8 @@
  * it current over /api/codec-stream via the shared useLiveSignal primitive
  * (SSE, watchdogs, polling fallback, visibility handling). Every visual cue
  * keeps a text equivalent, all motion sits behind prefers-reduced-motion,
- * and there are no control affordances by design.
+ * View-only controls may change presentation (side panels, replay, fullscreen)
+ * but never mutate coordination state.
  *
  * Transient rule (plan § browser transport): snapshot hydration is static —
  * cue ids arriving in a snapshot are marked seen without animating; effects
@@ -22,8 +23,14 @@ import {
   ExternalLink,
   FolderOpen,
   Hammer,
+  Maximize2,
+  Minimize2,
   Network,
   PackageCheck,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Pause,
   Pencil,
   Play,
@@ -73,6 +80,9 @@ const AMBIENCE_CLASS: Record<string, string | undefined> = {
   alert: styles.ambAlert,
 };
 
+const REMOTE_PANEL_STORAGE_KEY = "harnery.codec.remote-panel";
+const TEAM_PANEL_STORAGE_KEY = "harnery.codec.team-panel";
+
 interface CodecViewProps {
   initialScene: CodecScene;
   mode?: "live" | "replay";
@@ -87,6 +97,10 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   const [clockNow, setClockNow] = useState<number | null>(null);
   const [replayIndex, setReplayIndex] = useState(0);
   const [replayPlaying, setReplayPlaying] = useState(true);
+  const [showRemotePanel, setShowRemotePanel] = useState(true);
+  const [showTeamPanel, setShowTeamPanel] = useState(true);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenAvailable, setFullscreenAvailable] = useState(false);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const replayHydrated = useRef(false);
   // The server-rendered scene counts as a snapshot: its cues never animate.
@@ -97,6 +111,56 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
     setClockNow(Date.now());
     const timer = setInterval(() => setClockNow(Date.now()), 1_000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    try {
+      setShowRemotePanel(localStorage.getItem(REMOTE_PANEL_STORAGE_KEY) !== "hidden");
+      setShowTeamPanel(localStorage.getItem(TEAM_PANEL_STORAGE_KEY) !== "hidden");
+    } catch {
+      // Storage can be unavailable in hardened browser contexts; defaults stay open.
+    }
+    const syncFullscreen = () => setFullscreen(Boolean(document.fullscreenElement));
+    setFullscreenAvailable(Boolean(document.fullscreenEnabled));
+    syncFullscreen();
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+
+  const toggleRemotePanel = useCallback(() => {
+    setShowRemotePanel((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(REMOTE_PANEL_STORAGE_KEY, next ? "visible" : "hidden");
+      } catch {
+        // The in-memory preference still works for this page lifetime.
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleTeamPanel = useCallback(() => {
+    setShowTeamPanel((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(TEAM_PANEL_STORAGE_KEY, next ? "visible" : "hidden");
+      } catch {
+        // The in-memory preference still works for this page lifetime.
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      setAnnouncement("Browser fullscreen request was blocked");
+    }
   }, []);
 
   const animatePing = useCallback((fromId: string, toId: string, next: CodecScene) => {
@@ -130,20 +194,37 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
     const b = toEl.getBoundingClientRect();
     const dot = document.createElement("div");
     dot.className = styles.pingDot ?? "";
-    dot.style.left = `${a.left + a.width / 2 - 5}px`;
-    dot.style.top = `${a.top + a.height / 2 - 5}px`;
+    dot.dataset.codecPingParticle = "true";
+    dot.dataset.fromInstance = fromId;
+    dot.dataset.toInstance = toId;
+    const startX = a.left + a.width / 2;
+    const startY = a.top + a.height / 2;
+    const deltaX = b.left + b.width / 2 - startX;
+    const deltaY = b.top + b.height / 2 - startY;
+    dot.style.left = `${startX - 12}px`;
+    dot.style.top = `${startY - 12}px`;
+    dot.style.setProperty("--ping-angle", `${Math.atan2(deltaY, deltaX)}rad`);
     document.body.appendChild(dot);
     const travel = dot.animate(
       [
-        { transform: "translate(0, 0)", opacity: 1 },
+        { transform: "translate(0, 0) scale(0.55)", opacity: 0 },
+        { transform: "translate(0, 0) scale(1.3)", opacity: 1, offset: 0.12 },
         {
-          transform: `translate(${b.left + b.width / 2 - (a.left + a.width / 2)}px, ${
-            b.top + b.height / 2 - (a.top + a.height / 2)
-          }px)`,
-          opacity: 0.85,
+          transform: `translate(${deltaX * 0.72}px, ${deltaY * 0.72}px) scale(1)`,
+          opacity: 1,
+          offset: 0.72,
+        },
+        {
+          transform: `translate(${deltaX}px, ${deltaY}px) scale(2.35)`,
+          opacity: 1,
+          offset: 0.9,
+        },
+        {
+          transform: `translate(${deltaX}px, ${deltaY}px) scale(3.2)`,
+          opacity: 0,
         },
       ],
-      { duration: 650, easing: "ease-in-out" },
+      { duration: 1_050, easing: "cubic-bezier(0.2, 0.75, 0.2, 1)" },
     );
     travel.onfinish = () => dot.remove();
     travel.oncancel = () => dot.remove();
@@ -266,10 +347,15 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
       ? scene.panels.find((p) => p.instance_id === panel.parent_instance_id?.value)?.identity
           .display_name
       : undefined;
+  const remotePanelOpen = showRemotePanel && scene.remote_machines.length > 0;
+  const teamPanelOpen = showTeamPanel && panels.length > 0;
 
   return (
     <div
       data-codec-scene
+      data-remote-panel={remotePanelOpen ? "open" : "closed"}
+      data-team-panel={teamPanelOpen ? "open" : "closed"}
+      data-fullscreen={fullscreen ? "true" : "false"}
       className={cn(styles.codecArena, AMBIENCE_CLASS[scene.team_ambience.value])}
     >
       <p aria-live="polite" className="sr-only">
@@ -325,32 +411,45 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
             </div>
           </section>
         )}
-        <div className={styles.sceneRail}>
-          <Badge
-            data-codec-feed-status
-            variant={degraded ? "secondary" : "outline"}
-            className={styles.feedBadge}
-            title={
-              mode === "replay"
-                ? `Synthetic phase: ${signalAge}; no live transport`
-                : `Transport: ${transportLabel}; last signal ${signalAge}`
-            }
-          >
-            {mode === "replay" ? "demo" : "feed"} {transportLabel} · {signalAge}
-          </Badge>
-          {degraded && <span>showing the last known scene</span>}
-          <Badge variant="outline" title={`Team ambience: ${scene.team_ambience.value}`}>
-            ambience {scene.team_ambience.value}
-          </Badge>
-          <Badge variant="outline" title="Agent presence summary">
-            {current.length} live · {stale.length} stale · {ended.length} ended
-          </Badge>
+        <div className={styles.sceneStatusBar}>
+          <div className={styles.sceneRail}>
+            <Badge
+              data-codec-feed-status
+              variant={degraded ? "secondary" : "outline"}
+              className={styles.feedBadge}
+              title={
+                mode === "replay"
+                  ? `Synthetic phase: ${signalAge}; no live transport`
+                  : `Transport: ${transportLabel}; last signal ${signalAge}`
+              }
+            >
+              {mode === "replay" ? "demo" : "feed"} {transportLabel} · {signalAge}
+            </Badge>
+            {degraded && <span>showing the last known scene</span>}
+            <Badge variant="outline" title={`Team ambience: ${scene.team_ambience.value}`}>
+              ambience {scene.team_ambience.value}
+            </Badge>
+            <Badge variant="outline" title="Agent presence summary">
+              {current.length} live · {stale.length} stale · {ended.length} ended
+            </Badge>
+          </div>
+          <SceneControls
+            remoteAvailable={scene.remote_machines.length > 0}
+            teamAvailable={panels.length > 0}
+            remoteOpen={remotePanelOpen}
+            teamOpen={teamPanelOpen}
+            fullscreen={fullscreen}
+            fullscreenAvailable={fullscreenAvailable}
+            onToggleRemote={toggleRemotePanel}
+            onToggleTeam={toggleTeamPanel}
+            onToggleFullscreen={toggleFullscreen}
+          />
         </div>
       </div>
 
-      {scene.remote_machines.length > 0 && <RemoteFleet machines={scene.remote_machines} />}
+      {remotePanelOpen && <RemoteFleet machines={scene.remote_machines} />}
 
-      {panels.length > 0 && <TeamPulse scene={scene} />}
+      {teamPanelOpen && <TeamPulse scene={scene} />}
 
       {panels.length === 0 ? (
         <p className={styles.emptyScene}>No active agents. Panels appear when a session starts.</p>
@@ -380,6 +479,95 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   );
 }
 
+function SceneControls({
+  remoteAvailable,
+  teamAvailable,
+  remoteOpen,
+  teamOpen,
+  fullscreen,
+  fullscreenAvailable,
+  onToggleRemote,
+  onToggleTeam,
+  onToggleFullscreen,
+}: {
+  remoteAvailable: boolean;
+  teamAvailable: boolean;
+  remoteOpen: boolean;
+  teamOpen: boolean;
+  fullscreen: boolean;
+  fullscreenAvailable: boolean;
+  onToggleRemote: () => void;
+  onToggleTeam: () => void;
+  onToggleFullscreen: () => Promise<void>;
+}) {
+  const RemoteIcon = remoteOpen ? PanelLeftClose : PanelLeftOpen;
+  const TeamIcon = teamOpen ? PanelRightClose : PanelRightOpen;
+  const FullscreenIcon = fullscreen ? Minimize2 : Maximize2;
+  return (
+    <nav
+      data-codec-scene-controls
+      className={styles.sceneControls}
+      aria-label="Codec view controls"
+    >
+      <Tooltip
+        side="bottom"
+        align="end"
+        content={`${remoteOpen ? "Hide" : "Show"} the Remote fleet side panel. This preference persists in this browser.`}
+      >
+        <button
+          type="button"
+          data-codec-panel-toggle="remote"
+          aria-label={`${remoteOpen ? "Hide" : "Show"} Remote fleet panel`}
+          aria-pressed={remoteOpen}
+          disabled={!remoteAvailable}
+          onClick={onToggleRemote}
+        >
+          <RemoteIcon aria-hidden />
+          <span>Fleet</span>
+        </button>
+      </Tooltip>
+      <Tooltip
+        side="bottom"
+        align="end"
+        content={`${teamOpen ? "Hide" : "Show"} the Coordination field side panel. This preference persists in this browser.`}
+      >
+        <button
+          type="button"
+          data-codec-panel-toggle="team"
+          aria-label={`${teamOpen ? "Hide" : "Show"} Coordination field panel`}
+          aria-pressed={teamOpen}
+          disabled={!teamAvailable}
+          onClick={onToggleTeam}
+        >
+          <TeamIcon aria-hidden />
+          <span>Field</span>
+        </button>
+      </Tooltip>
+      <Tooltip
+        side="bottom"
+        align="end"
+        content={
+          fullscreenAvailable
+            ? `${fullscreen ? "Exit" : "Enter"} browser fullscreen mode.`
+            : "This browser does not expose the Fullscreen API."
+        }
+      >
+        <button
+          type="button"
+          data-codec-fullscreen-toggle
+          aria-label={`${fullscreen ? "Exit" : "Enter"} browser fullscreen`}
+          aria-pressed={fullscreen}
+          disabled={!fullscreenAvailable}
+          onClick={() => void onToggleFullscreen()}
+        >
+          <FullscreenIcon aria-hidden />
+          <span>{fullscreen ? "Exit full screen" : "Full screen"}</span>
+        </button>
+      </Tooltip>
+    </nav>
+  );
+}
+
 function ActivityLedger({ panels }: { panels: CodecPanelScene[] }) {
   return (
     <section
@@ -401,7 +589,7 @@ function ActivityLedger({ panels }: { panels: CodecPanelScene[] }) {
               <strong>{panel.identity.display_name}</strong>
               <span>
                 {operation
-                  ? `${operation.label} · ${humanizeCueToken(operation.state)}`
+                  ? `${operation.intent ?? operation.label} · ${humanizeCueToken(operation.state)}`
                   : (panel.identity.task?.value ?? "No declared task")}
               </span>
               <small>
@@ -1177,6 +1365,29 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
       ? "Between operations"
       : "No active operation";
   const stateLabel = operation ? humanizeCueToken(operation.value.state) : "standby";
+  const headline = operation?.value.intent ?? label;
+  const toolLabel = operation?.value.tool_name
+    ? humanizeCueToken(operation.value.tool_name)
+    : label;
+  const metadata = operation
+    ? [
+        toolLabel,
+        humanizeCueToken(operation.value.category),
+        stateLabel,
+        operation.value.elapsed_ms !== undefined
+          ? formatElapsed(operation.value.elapsed_ms)
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "standby";
+  const outputSummary = operation?.value.output_observations
+    ? `${operation.value.output_observations} output ${operation.value.output_observations === 1 ? "signal" : "signals"}${
+        operation.value.output_bytes !== undefined
+          ? ` · ${formatCompactBytes(operation.value.output_bytes)}`
+          : ""
+      }`
+    : undefined;
   return (
     <Tooltip
       side="bottom"
@@ -1185,13 +1396,20 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
       content={
         operation ? (
           <div className="space-y-1">
-            <p className="font-semibold">Current operation · {operation.value.label}</p>
-            <p>
-              {stateLabel}
-              {operation.value.elapsed_ms !== undefined
-                ? ` · ${formatElapsed(operation.value.elapsed_ms)} elapsed`
-                : ""}
-            </p>
+            <p className="font-semibold">{headline}</p>
+            {operation.value.intent && (
+              <p className="text-muted-foreground">Observed operation · {operation.value.label}</p>
+            )}
+            <p>{metadata}</p>
+            {outputSummary && <p>{outputSummary}</p>}
+            {operation.value.duration_sample_count !== undefined && (
+              <p className="text-muted-foreground">
+                {operation.value.duration_sample_count} comparable successful duration samples
+                {operation.value.long_running_threshold_ms !== undefined
+                  ? ` · long-running after ${formatElapsed(operation.value.long_running_threshold_ms)}`
+                  : " · baseline still forming"}
+              </p>
+            )}
             <p className="text-muted-foreground">
               {operation.provenance} · {operation.confidence} confidence · observed{" "}
               {formatReceiptTime(operation.observed_at)}
@@ -1209,6 +1427,7 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
     >
       <div
         data-codec-operation-cue
+        data-enriched={operation ? "true" : undefined}
         data-placeholder={operation ? undefined : "true"}
         role="status"
         className={cn(
@@ -1220,12 +1439,10 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
             styles.operationCueLive,
           !operation && styles.operationCuePlaceholder,
         )}
-        aria-label={
-          operation ? `Current operation: ${operation.value.label}, ${stateLabel}` : label
-        }
+        aria-label={operation ? `Current operation: ${headline}. ${metadata}` : label}
       >
         <Icon className={styles.operationIcon} aria-hidden />
-        <span className={styles.operationLabel}>{label}</span>
+        <span className={styles.operationLabel}>{headline}</span>
         <span
           className={cn(
             styles.operationState,
@@ -1234,9 +1451,8 @@ function OperationCue({ panel }: { panel: CodecPanelScene }) {
               styles.outputFlow,
           )}
         >
-          {stateLabel}
-          {operation?.value.elapsed_ms !== undefined &&
-            ` · ${formatElapsed(operation.value.elapsed_ms)}`}
+          {metadata}
+          {outputSummary && ` · ${outputSummary}`}
         </span>
       </div>
     </Tooltip>

@@ -59,6 +59,7 @@ describe("projectActivityChannels", () => {
           tool_namespace: "functions",
           tool_name: "exec_command",
           category: "diagnostic",
+          intent: "Inspect the operation evidence projection",
           operation_fingerprint: fingerprint("tool"),
         }),
         event({
@@ -84,8 +85,13 @@ describe("projectActivityChannels", () => {
 
     expect(channels?.operation?.value).toMatchObject({
       label: "Running rg",
+      tool_name: "rg",
+      tool_namespace: "command",
+      intent: "Inspect the operation evidence projection",
       state: "output-flow",
       elapsed_ms: 30_000,
+      output_observations: 1,
+      output_bytes: 48,
     });
     expect(channels?.operation?.evidence_event_ids).toHaveLength(2);
   });
