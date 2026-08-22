@@ -1173,6 +1173,7 @@
   cursor: pointer;
   list-style: none;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.45rem;
   padding: 0.42rem 0.6rem;
 }
@@ -1205,13 +1206,13 @@
 
 .semanticEyebrow {
   min-width: 0;
+  flex: 1 1 5rem;
   overflow: hidden;
   color: rgb(228 228 231);
   font-size: 0.61rem;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  white-space: nowrap;
 }
 
 .semanticPhase,
@@ -1226,15 +1227,21 @@
 }
 
 .semanticState {
-  margin-left: auto;
   color: var(--muted-foreground);
 }
 
 .semanticBody {
   display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.42rem;
-  padding: 0.15rem 0.65rem 0.65rem 1.5rem;
+  padding: 0.4rem 0.65rem 0.65rem;
   border-top: 1px solid rgb(var(--codec-accent) / 0.16);
+}
+
+.semanticBody > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .semanticCopy,
@@ -1271,8 +1278,23 @@
 }
 
 .semanticReceipt {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.7rem;
+  row-gap: 0.2rem;
   padding-top: 0.32rem;
   border-top: 1px solid rgb(var(--codec-accent) / 0.12);
+}
+
+.semanticReceipt span {
+  position: relative;
+  white-space: nowrap;
+}
+
+.semanticReceipt span + span::before {
+  content: "·";
+  position: absolute;
+  left: -0.45rem;
 }
 
 .focusBubble,

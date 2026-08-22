@@ -148,7 +148,7 @@ function replaySemantic(
       state: "current",
       reader_outcome: "accepted",
       summary: replaySemanticField(
-        "Atlas is turning the shared scene contract into a reviewable implementation.",
+        "Atlas implements scene contracts.",
         "model-synthesis",
         "high",
         observedAt,
@@ -162,7 +162,7 @@ function replaySemantic(
         observedThroughEventId,
       ),
       next_step: replaySemanticField(
-        "Run the scene adapter checks.",
+        "Run the adapter checks next.",
         "prediction",
         "low",
         observedAt,

@@ -1225,17 +1225,26 @@ function SemanticRead({ panel }: { panel: CodecPanelScene }) {
           </p>
         )}
         <p className={styles.semanticReceipt}>
-          {semantic.reader.harness} · {readerLabel} · model synthesis
-          {semantic.reader.model_attestation
-            ? ` · ${humanizeCueToken(semantic.reader.model_attestation)}`
-            : ""}
-          {semantic.state === "current"
-            ? ` · expires ${formatReceiptTime(semantic.expires_at)}`
-            : ""}
+          <span>{semantic.reader.harness}</span>
+          <span>{readerLabel}</span>
+          <span>model synthesis</span>
+          {semantic.reader.model_attestation && (
+            <span>{humanizeCueToken(semantic.reader.model_attestation)}</span>
+          )}
+          {semantic.state === "current" && (
+            <span>expires {formatSemanticTime(semantic.expires_at)}</span>
+          )}
         </p>
       </div>
     </details>
   );
+}
+
+function formatSemanticTime(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : "unknown";
 }
 
 function EvidenceReceipt({ panel }: { panel: CodecPanelScene }) {
