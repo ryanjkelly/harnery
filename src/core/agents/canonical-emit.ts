@@ -14,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import type { LiveCoordinationObservationV3 } from "../events/v3/live-observation.ts";
 import { coordBinPath } from "./coord-bin.ts";
 import { resolveCoordRoot } from "./coord-client.ts";
+import type { Heartbeat } from "./state/heartbeat-reader.ts";
 
 export type EventV3EmitObservation =
   | LiveCoordinationObservationV3
@@ -95,4 +96,18 @@ export function normalizeAdapter(platform: string | undefined): "claude-code" | 
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
   return "claude-code";
+}
+
+/** Producer joins use the private native session ID, never its V3 fingerprint. */
+export function nativeSessionIdentity(
+  row: Pick<Heartbeat, "native_session_id" | "session_id"> | null | undefined,
+  fallback: string,
+): string {
+  if (row?.native_session_id) return row.native_session_id;
+  // A projection-only row carries the privacy-safe canonical session
+  // fingerprint, not the adapter's native session ID needed to join the hook
+  // producer. Until a disposable cache exists, the resolved owner is the only
+  // native identity available to command surfaces.
+  if (row?.session_id && !/^sid_[a-f0-9]{64}$/.test(row.session_id)) return row.session_id;
+  return fallback;
 }

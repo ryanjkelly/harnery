@@ -1,7 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { emitEventV3, monorepoRoot, normalizeAdapter, resolveOwner } from "../core/agents/index.ts";
+import {
+  emitEventV3,
+  monorepoRoot,
+  nativeSessionIdentity,
+  normalizeAdapter,
+  resolveOwner,
+} from "../core/agents/index.ts";
 import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
@@ -442,7 +448,7 @@ function emitDecisionEvent(
   const hb = root ? readLiveCoordinationRow(root, owner) : null;
   emitEventV3({
     owner,
-    session: hb?.session_id ?? owner,
+    session: nativeSessionIdentity(hb, owner),
     adapter: normalizeAdapter(hb?.platform),
     observation: {
       event_type: "decision.state_changed",

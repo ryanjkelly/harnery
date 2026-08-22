@@ -37,6 +37,7 @@ import {
 import {
   emitEventV3,
   monorepoRoot,
+  nativeSessionIdentity,
   normalizeAdapter,
   resolveOwner,
   resolveOwnerBySessionEnv,
@@ -248,19 +249,7 @@ function taskStateOf(hb: Pick<Heartbeat, "task_state">): TaskState {
   return hb.task_state ?? "active";
 }
 
-/** Producer joins use the private native session ID; `session_id` is the canonical V3 fingerprint. */
-export function nativeSessionIdentity(
-  row: Pick<Heartbeat, "native_session_id" | "session_id"> | null | undefined,
-  fallback: string,
-): string {
-  if (row?.native_session_id) return row.native_session_id;
-  // A projection-only row carries the privacy-safe canonical session
-  // fingerprint, not the adapter's native session ID needed to join the hook
-  // producer. Until a disposable cache exists, the resolved owner is the only
-  // native identity available to command surfaces such as `agents status`.
-  if (row?.session_id && !/^sid_[a-f0-9]{64}$/.test(row.session_id)) return row.session_id;
-  return fallback;
-}
+export { nativeSessionIdentity };
 
 function lifecycleLabel(hb: Pick<Heartbeat, "task_state" | "task_state_reason">): string {
   const state = taskStateOf(hb);

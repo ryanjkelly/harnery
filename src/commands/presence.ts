@@ -1,7 +1,12 @@
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { monorepoRoot } from "../core/agents/coord-client.ts";
-import { emitEventV3, normalizeAdapter, resolveOwner } from "../core/agents/index.ts";
+import {
+  emitEventV3,
+  nativeSessionIdentity,
+  normalizeAdapter,
+  resolveOwner,
+} from "../core/agents/index.ts";
 import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import {
   fetchPresence,
@@ -253,7 +258,7 @@ function emitPresenceChange(
   const hb = root ? readLiveCoordinationRow(root, owner) : null;
   emitEventV3({
     owner,
-    session: hb?.session_id ?? owner,
+    session: nativeSessionIdentity(hb, owner),
     adapter: normalizeAdapter(hb?.platform),
     observation: {
       event_type: "coord.presence_changed",
