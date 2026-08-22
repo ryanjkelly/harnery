@@ -8,6 +8,7 @@ import {
   listPacks,
   REQUIRED_EXPRESSIONS,
   resolvePackAsset,
+  summarizePackRoster,
   validatePackDir,
 } from "./packs";
 
@@ -128,6 +129,54 @@ describe("allocateCharacters", () => {
     expect(bindings[0]).toMatchObject({ pack_version: "1", released_at: LATER });
     expect(bindings[1]).toMatchObject({ pack_version: "2" });
     expect(bindings[1].released_at).toBeUndefined();
+  });
+});
+
+describe("summarizePackRoster", () => {
+  test("reports active assignments, reserve capacity, history, and orphaned bindings", () => {
+    makePack("aurora");
+    makePack("basalt");
+    const packs = listPacks(root);
+    const summary = summarizePackRoster(packs, {
+      schema_version: 1,
+      bindings: [
+        { instance_id: "active", pack_id: "aurora", pack_version: "1", bound_at: NOW },
+        {
+          instance_id: "past",
+          pack_id: "aurora",
+          pack_version: "1",
+          bound_at: NOW,
+          released_at: LATER,
+        },
+        { instance_id: "lost", pack_id: "missing", pack_version: "1", bound_at: NOW },
+      ],
+    });
+
+    expect(summary.active_bindings.map((binding) => binding.instance_id)).toEqual([
+      "active",
+      "lost",
+    ]);
+    expect(summary.released_bindings).toHaveLength(1);
+    expect(summary.reserve_pack_ids).toEqual(["basalt"]);
+    expect(summary.orphaned_bindings.map((binding) => binding.instance_id)).toEqual(["lost"]);
+    expect(summary.historical_uses_by_pack).toEqual({ aurora: 2, missing: 1 });
+    expect(summary.coverage).toBe("attention");
+  });
+
+  test("distinguishes reserve capacity from an entirely assigned roster", () => {
+    makePack("aurora");
+    makePack("basalt");
+    const packs = listPacks(root);
+    expect(summarizePackRoster(packs, { schema_version: 1, bindings: [] }).coverage).toBe("ready");
+    expect(
+      summarizePackRoster(packs, {
+        schema_version: 1,
+        bindings: [
+          { instance_id: "one", pack_id: "aurora", pack_version: "1", bound_at: NOW },
+          { instance_id: "two", pack_id: "basalt", pack_version: "1", bound_at: NOW },
+        ],
+      }).coverage,
+    ).toBe("at-capacity");
   });
 });
 

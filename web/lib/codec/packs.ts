@@ -62,6 +62,15 @@ export interface PackRegistry {
   bindings: PackBinding[];
 }
 
+export interface CodecRosterSummary {
+  active_bindings: PackBinding[];
+  released_bindings: PackBinding[];
+  reserve_pack_ids: string[];
+  orphaned_bindings: PackBinding[];
+  historical_uses_by_pack: Record<string, number>;
+  coverage: "ready" | "at-capacity" | "attention";
+}
+
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FILE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -163,6 +172,46 @@ export function readPackRegistry(root = harneryDir()): PackRegistry {
     // fall through to a fresh registry
   }
   return { schema_version: 1, bindings: [] };
+}
+
+/** Read-only operational rollup for the roster lab. */
+export function summarizePackRoster(
+  packs: readonly CodecPack[],
+  registry: PackRegistry,
+): CodecRosterSummary {
+  const byId = new Map(packs.map((pack) => [pack.pack_id, pack]));
+  const activeBindings = registry.bindings.filter((binding) => !binding.released_at);
+  const releasedBindings = registry.bindings.filter((binding) => Boolean(binding.released_at));
+  const orphanedBindings = activeBindings.filter((binding) => {
+    const pack = byId.get(binding.pack_id);
+    return !pack || pack.pack_version !== binding.pack_version;
+  });
+  const healthyAssigned = new Set(
+    activeBindings
+      .filter((binding) => !orphanedBindings.includes(binding))
+      .map((binding) => binding.pack_id),
+  );
+  const reservePackIds = packs
+    .map((pack) => pack.pack_id)
+    .filter((packId) => !healthyAssigned.has(packId));
+  const historicalUsesByPack: Record<string, number> = {};
+  for (const binding of registry.bindings) {
+    historicalUsesByPack[binding.pack_id] = (historicalUsesByPack[binding.pack_id] ?? 0) + 1;
+  }
+
+  return {
+    active_bindings: activeBindings,
+    released_bindings: releasedBindings,
+    reserve_pack_ids: reservePackIds,
+    orphaned_bindings: orphanedBindings,
+    historical_uses_by_pack: historicalUsesByPack,
+    coverage:
+      orphanedBindings.length > 0
+        ? "attention"
+        : reservePackIds.length > 0
+          ? "ready"
+          : "at-capacity",
+  };
 }
 
 function writeRegistry(root: string, registry: PackRegistry): void {

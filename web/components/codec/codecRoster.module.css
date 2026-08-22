@@ -84,6 +84,137 @@
   background: rgb(8 145 178 / 0.2);
 }
 
+.operations {
+  position: relative;
+  z-index: 1;
+  max-width: 100rem;
+  margin: 0 auto 1.5rem;
+  overflow: hidden;
+  border: 1px solid rgb(34 211 238 / 0.18);
+  border-radius: 1.15rem;
+  background:
+    linear-gradient(115deg, rgb(34 211 238 / 0.08), transparent 42%),
+    linear-gradient(245deg, rgb(168 85 247 / 0.07), transparent 48%), rgb(13 15 22 / 0.92);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.22);
+}
+
+.operationsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid rgb(255 255 255 / 0.08);
+}
+
+.operationsHeader .kicker {
+  margin-bottom: 0.15rem;
+  font-size: 0.52rem;
+}
+
+.operationsHeader h2 {
+  font-size: 1.15rem;
+  font-weight: 780;
+  letter-spacing: -0.035em;
+}
+
+.coverageState {
+  border: 1px solid rgb(52 211 153 / 0.35);
+  border-radius: 999px;
+  padding: 0.38rem 0.62rem;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(110 231 183);
+  background: rgb(6 78 59 / 0.16);
+}
+
+.coverageState[data-coverage="at-capacity"] {
+  border-color: rgb(245 158 11 / 0.42);
+  color: rgb(252 211 77);
+  background: rgb(120 53 15 / 0.16);
+}
+
+.coverageState[data-coverage="attention"] {
+  border-color: rgb(239 68 68 / 0.48);
+  color: rgb(252 165 165);
+  background: rgb(127 29 29 / 0.18);
+}
+
+.operationGrid {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr 1.15fr;
+  gap: 0.65rem;
+  padding: 0.7rem;
+}
+
+.operationGrid > article {
+  min-width: 0;
+  border: 1px solid rgb(255 255 255 / 0.09);
+  border-radius: 0.75rem;
+  padding: 0.7rem 0.8rem;
+  background: rgb(9 11 17 / 0.7);
+}
+
+.operationGrid > article > p {
+  margin-bottom: 0.28rem;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.52rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgb(103 232 249);
+}
+
+.operationGrid > article > strong {
+  display: block;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: rgb(228 228 231);
+}
+
+.operationGrid > article > span {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.64rem;
+  line-height: 1.45;
+  color: rgb(161 161 170);
+}
+
+.bindingList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.32rem;
+}
+
+.bindingList li {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid rgb(168 85 247 / 0.25);
+  border-radius: 0.45rem;
+  padding: 0.24rem 0.38rem;
+  font-size: 0.56rem;
+  color: rgb(161 161 170);
+  background: rgb(76 29 149 / 0.1);
+}
+
+.bindingList code,
+.packAssignment code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  white-space: nowrap;
+  color: rgb(196 181 253);
+}
+
+.bindingList li strong {
+  color: rgb(228 228 231);
+}
+
 .packStack {
   position: relative;
   z-index: 1;
@@ -132,6 +263,38 @@
   font-size: 0.76rem;
   line-height: 1.45;
   color: rgb(161 161 170);
+}
+
+.packAssignment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.packAssignment > span {
+  border: 1px solid rgb(52 211 153 / 0.35);
+  border-radius: 999px;
+  padding: 0.23rem 0.42rem;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.5rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(110 231 183);
+  background: rgb(6 78 59 / 0.15);
+}
+
+.packAssignment[data-assigned="false"] > span {
+  border-color: rgb(34 211 238 / 0.3);
+  color: rgb(103 232 249);
+  background: rgb(8 145 178 / 0.1);
+}
+
+.packAssignment code {
+  max-width: 10rem;
+  font-size: 0.54rem;
 }
 
 .packMeta {
@@ -234,6 +397,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .operationGrid {
+    grid-template-columns: 1fr;
+  }
+
   .expressionGrid {
     grid-template-columns: repeat(11, 7.5rem);
   }
@@ -246,6 +413,11 @@
 
   .packMeta {
     grid-template-columns: 1fr;
+  }
+
+  .operationsHeader {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .expressionGrid {

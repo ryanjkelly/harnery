@@ -48,3 +48,11 @@ Presence becomes a pluggable transport interface with two implementations, layer
 - Remote peers are advisory in v1. Cross-machine claim *enforcement* (blocking a commit because a remote agent holds the file) is deferred until presence data proves reliable; enforcing on minute-stale data would produce false blocks.
 - The project takes on operating a public relay (`relay.harnery.com`). The E2E design keeps that burden low (no user data visible, no accounts, no persistence), and abuse is bounded by per-room/per-sender rate limits and unguessable HKDF room names. If it ever outgrows the free plan, the paid Workers plan is a dashboard toggle.
 - Clock skew across machines affects staleness rendering; beacons carry their own timestamps and the renderer tolerates a couple of minutes before flagging.
+
+## Result
+
+Codec now uses the relay's local cache as a read-only cross-machine observability source. Its adapter reads `.harnery/presence/remote/*.json` through a strict allowlist, labels every remote panel with its machine, and keeps relay freshness separate from any per-agent digest freshness. Local evidence wins if the same instance appears in both sources. An aging remote machine fades to unknown; after the bounded expiry window, it leaves the scene.
+
+This use does not add another relay room or replicate the event ledger. It treats the cache produced by the existing presence daemon as the transport boundary, so the Codec import graph remains free of coordination writers, process launchers, sockets, and git commands. Remote character art also stays local to its source machine; the receiving Codec uses its neutral fallback portrait rather than transporting pack assets.
+
+The deployed path has received caches from multiple remote machines. Those caches also demonstrated the expiry behavior: once publication stopped, the machines aged out of the live scene without affecting local panels. A richer structural scene digest remains a possible later extension, not a requirement for cross-machine visibility.

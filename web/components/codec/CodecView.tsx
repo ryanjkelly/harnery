@@ -38,6 +38,7 @@ import {
 } from "@/lib/codec/contracts";
 import { codecEvidenceReceiptRows } from "@/lib/codec/evidence-receipt";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
+import { summarizeCodecTeam } from "@/lib/codec/team-summary";
 import { useLiveSignal } from "@/lib/useLiveSignal";
 import styles from "./codec.module.css";
 
@@ -242,6 +243,8 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
         </Badge>
       </div>
 
+      {panels.length > 0 && <TeamPulse scene={scene} />}
+
       {panels.length === 0 ? (
         <p className={styles.emptyScene}>No active agents. Panels appear when a session starts.</p>
       ) : (
@@ -286,6 +289,8 @@ interface LineGeom {
   y2: number;
   color: string;
   label: string;
+  kind: "dependency" | "shared-coordination";
+  status: "active" | "waiting" | "blocked";
 }
 
 /** Persistent directional lines between panels, measured from the rendered
@@ -323,6 +328,8 @@ function RelationshipLines({
           x2: b.left + b.width / 2 - gridRect.left,
           y2: b.top + b.height / 2 - gridRect.top,
           color: LINE_COLORS[colorKey] ?? LINE_COLORS.active ?? "",
+          kind: rel.kind,
+          status: rel.status,
           label:
             rel.kind === "shared-coordination"
               ? `${nameOf(rel.to_instance_id)} delegated by ${nameOf(rel.from_instance_id)}`
@@ -361,7 +368,14 @@ function RelationshipLines({
             stroke={line.color}
             strokeWidth={2}
             strokeLinecap="round"
-            className={styles.flowLine}
+            data-relationship-kind={line.kind}
+            data-relationship-status={line.status}
+            className={cn(
+              styles.flowLine,
+              line.kind === "shared-coordination" && styles.flowLineCoordination,
+              line.status === "waiting" && styles.flowLineWaiting,
+              line.status === "blocked" && styles.flowLineBlocked,
+            )}
           />
         ))}
       </svg>
@@ -371,6 +385,90 @@ function RelationshipLines({
         ))}
       </ul>
     </>
+  );
+}
+
+function TeamPulse({ scene }: { scene: CodecScene }) {
+  const summary = summarizeCodecTeam(scene);
+  const dependencyTotal =
+    summary.dependencies.active + summary.dependencies.waiting + summary.dependencies.blocked;
+
+  return (
+    <section
+      data-codec-team-map
+      className={styles.teamPulse}
+      aria-labelledby="codec-team-map-title"
+    >
+      <header className={styles.teamPulseHeader}>
+        <div>
+          <p className={styles.teamPulseKicker}>Coordination field</p>
+          <h2 id="codec-team-map-title">
+            {summary.machines.length} {summary.machines.length === 1 ? "machine" : "machines"} ·{" "}
+            {summary.relationships.length} live{" "}
+            {summary.relationships.length === 1 ? "link" : "links"}
+          </h2>
+        </div>
+        <div className={styles.relationshipLegend}>
+          <span data-tone="coordination">delegation</span>
+          <span data-tone="active">active dependency</span>
+          <span data-tone="waiting">waiting</span>
+          <span data-tone="blocked">blocked</span>
+        </div>
+      </header>
+
+      <div className={styles.teamPulseBody}>
+        <section className={styles.machineLanes} aria-label="Agents by machine">
+          {summary.machines.map((machine) => (
+            <article
+              key={machine.key}
+              className={cn(styles.machineLane, machine.remote && styles.machineLaneRemote)}
+            >
+              <header>
+                <span className={styles.machineBeacon} aria-hidden />
+                <strong>{machine.label}</strong>
+                <small>{machine.remote ? "relay" : "local"}</small>
+              </header>
+              <ul>
+                {machine.panels.map((panel) => (
+                  <li
+                    key={panel.instance_id}
+                    data-presence={panel.presence.value}
+                    data-activity={panel.activity.value}
+                    title={`${panel.identity.display_name}: ${panel.activity.value}, ${panel.presence.value}`}
+                  >
+                    <span aria-hidden />
+                    {panel.identity.display_name}
+                  </li>
+                ))}
+              </ul>
+            </article>
+          ))}
+        </section>
+
+        <dl className={styles.teamMetrics}>
+          <div data-tone="coordination">
+            <dt>Delegated</dt>
+            <dd>{summary.delegated}</dd>
+          </div>
+          <div data-tone="active">
+            <dt>Active</dt>
+            <dd>{summary.dependencies.active}</dd>
+          </div>
+          <div data-tone="waiting">
+            <dt>Waiting</dt>
+            <dd>{summary.dependencies.waiting}</dd>
+          </div>
+          <div data-tone="blocked">
+            <dt>Blocked</dt>
+            <dd>{summary.dependencies.blocked}</dd>
+          </div>
+        </dl>
+        <p className="sr-only">
+          {summary.local_agents} local agents, {summary.remote_agents} remote agents,{" "}
+          {dependencyTotal} dependencies.
+        </p>
+      </div>
+    </section>
   );
 }
 

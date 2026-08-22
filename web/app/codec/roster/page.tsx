@@ -1,7 +1,12 @@
 import Link from "next/link";
 
 import styles from "@/components/codec/codecRoster.module.css";
-import { listPacks, REQUIRED_EXPRESSIONS, readPackRegistry } from "@/lib/codec/packs";
+import {
+  listPacks,
+  REQUIRED_EXPRESSIONS,
+  readPackRegistry,
+  summarizePackRoster,
+} from "@/lib/codec/packs";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -9,7 +14,7 @@ export const revalidate = 0;
 export default function CodecRosterPage() {
   const packs = listPacks();
   const registry = readPackRegistry();
-  const activeBindings = registry.bindings.filter((binding) => !binding.released_at);
+  const summary = summarizePackRoster(packs, registry);
 
   return (
     <main className={styles.rosterPage}>
@@ -27,19 +32,80 @@ export default function CodecRosterPage() {
         <div className={styles.headerStats}>
           <span>{packs.length} complete packs</span>
           <span>{REQUIRED_EXPRESSIONS.length} expressions each</span>
-          <span>{activeBindings.length} active bindings</span>
+          <span>{summary.active_bindings.length} active bindings</span>
           <Link href="/codec" prefetch={false}>
             Return to live Codec
           </Link>
         </div>
       </header>
 
+      <section
+        data-codec-roster-operations
+        className={styles.operations}
+        aria-labelledby="roster-operations-title"
+      >
+        <header className={styles.operationsHeader}>
+          <div>
+            <p className={styles.kicker}>Operational view</p>
+            <h2 id="roster-operations-title">Roster coverage</h2>
+          </div>
+          <span data-coverage={summary.coverage} className={styles.coverageState}>
+            {summary.coverage === "ready"
+              ? "reserve ready"
+              : summary.coverage === "at-capacity"
+                ? "at capacity"
+                : "needs attention"}
+          </span>
+        </header>
+
+        <div className={styles.operationGrid}>
+          <article>
+            <p>Capacity</p>
+            <strong>
+              {summary.active_bindings.length} assigned · {summary.reserve_pack_ids.length} reserve
+            </strong>
+            <span>
+              {summary.orphaned_bindings.length > 0
+                ? `${summary.orphaned_bindings.length} active bindings point to missing or changed packs.`
+                : "Every active binding resolves to its installed pack version."}
+            </span>
+          </article>
+          <article>
+            <p>Active assignments</p>
+            {summary.active_bindings.length === 0 ? (
+              <strong>None right now</strong>
+            ) : (
+              <ul className={styles.bindingList}>
+                {summary.active_bindings.map((binding) => (
+                  <li key={`${binding.instance_id}:${binding.bound_at}`}>
+                    <code>{shortInstanceId(binding.instance_id)}</code>
+                    <span>→</span>
+                    <strong>{binding.pack_id}</strong>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </article>
+          <article>
+            <p>Binding history</p>
+            <strong>{summary.released_bindings.length} released assignments retained</strong>
+            <span>
+              The registry is append-only: released characters return to the reserve pool without
+              rewriting their session history.
+            </span>
+          </article>
+        </div>
+      </section>
+
       {packs.length === 0 ? (
         <p className={styles.empty}>No complete character packs are installed.</p>
       ) : (
         <section data-codec-roster className={styles.packStack} aria-label="Codec character packs">
           {packs.map((pack) => {
-            const bound = activeBindings.filter((binding) => binding.pack_id === pack.pack_id);
+            const bound = summary.active_bindings.filter(
+              (binding) => binding.pack_id === pack.pack_id,
+            );
+            const historicalUses = summary.historical_uses_by_pack[pack.pack_id] ?? 0;
             return (
               <article data-codec-pack={pack.pack_id} className={styles.pack} key={pack.pack_id}>
                 <header className={styles.packHeader}>
@@ -51,6 +117,14 @@ export default function CodecRosterPage() {
                     <p className={styles.character}>
                       {pack.character ?? "Original Codec character"}
                     </p>
+                    <div className={styles.packAssignment} data-assigned={bound.length > 0}>
+                      <span>{bound.length > 0 ? "assigned" : "reserve"}</span>
+                      {bound.map((binding) => (
+                        <code key={binding.instance_id}>
+                          {shortInstanceId(binding.instance_id)}
+                        </code>
+                      ))}
+                    </div>
                   </div>
                   <dl className={styles.packMeta}>
                     <div>
@@ -69,8 +143,10 @@ export default function CodecRosterPage() {
                       </dd>
                     </div>
                     <div>
-                      <dt>Live</dt>
-                      <dd>{bound.length}</dd>
+                      <dt>Use</dt>
+                      <dd>
+                        {bound.length} live · {historicalUses} total
+                      </dd>
                     </div>
                   </dl>
                 </header>
@@ -102,4 +178,9 @@ export default function CodecRosterPage() {
       )}
     </main>
   );
+}
+
+function shortInstanceId(instanceId: string): string {
+  if (instanceId.length <= 14) return instanceId;
+  return `${instanceId.slice(0, 7)}…${instanceId.slice(-5)}`;
 }
