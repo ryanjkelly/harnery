@@ -63,6 +63,7 @@ interface PanelSeed {
 function replayPanel(seed: PanelSeed, phase: number): CodecPanelScene {
   const observedAt = at(phase * 18);
   const attention = seed.attention ?? "none";
+  const semantic = replaySemantic(seed, observedAt);
   return {
     instance_id: seed.id,
     identity: {
@@ -116,8 +117,91 @@ function replayPanel(seed: PanelSeed, phase: number): CodecPanelScene {
     ...(attention === "friction" ? { friction: shown("target-contention", observedAt) } : {}),
     ...(seed.parent ? { parent_instance_id: shown(seed.parent, observedAt) } : {}),
     telemetry: shown("healthy", observedAt),
+    ...(semantic ? { semantic } : {}),
     character: { pack_id: seed.pack, pack_version: "2" },
     updated_at: observedAt,
+  };
+}
+
+function replaySemantic(
+  seed: PanelSeed,
+  observedAt: string,
+): CodecPanelScene["semantic"] | undefined {
+  const reader = {
+    harness: "codex",
+    configured_model: "gpt-5.6-luna",
+    resolved_model_id: "gpt-5.6-luna",
+    model_attestation: "requested-only" as const,
+  };
+  const observedThroughEventId = `evt_replay_semantic_${seed.id.replace("replay-", "")}`;
+  const common = {
+    reader,
+    evidence_digest: `sha256:${"a".repeat(64)}`,
+    observed_through_event_id: observedThroughEventId,
+    observed_through_ts: observedAt,
+    generated_at: observedAt,
+    expires_at: at(30 * 60),
+  };
+  if (seed.id === "replay-atlas") {
+    return {
+      ...common,
+      state: "current",
+      reader_outcome: "accepted",
+      summary: replaySemanticField(
+        "Atlas is turning the shared scene contract into a reviewable implementation.",
+        "model-synthesis",
+        "high",
+        observedAt,
+        observedThroughEventId,
+      ),
+      phase: replaySemanticField(
+        "implementing",
+        "model-synthesis",
+        "high",
+        observedAt,
+        observedThroughEventId,
+      ),
+      next_step: replaySemanticField(
+        "Run the scene adapter checks.",
+        "prediction",
+        "low",
+        observedAt,
+        observedThroughEventId,
+      ),
+      tags: replaySemanticField(
+        ["implementation", "verification"],
+        "model-synthesis",
+        "medium",
+        observedAt,
+        observedThroughEventId,
+      ),
+    };
+  }
+  if (seed.id === "replay-ember") {
+    return {
+      ...common,
+      state: "unavailable",
+      reader_outcome: "unavailable",
+      receipt: { reason_code: "model_unavailable" },
+    };
+  }
+  return undefined;
+}
+
+function replaySemanticField<T>(
+  value: T,
+  basis: "model-synthesis" | "prediction",
+  confidence: "high" | "medium" | "low",
+  observedAt: string,
+  eventId: string,
+) {
+  return {
+    value,
+    basis,
+    provenance: "inferred" as const,
+    confidence,
+    observed_at: observedAt,
+    evidence_event_ids: [eventId],
   };
 }
 

@@ -14,6 +14,12 @@ describe("createCodecReplayPhases", () => {
     expect(first.flatMap((phase) => phase.scene.transients).map((cue) => cue.kind)).toContain(
       "dependency-completed",
     );
+    expect(
+      first[0]?.scene.panels.find((panel) => panel.instance_id === "replay-atlas")?.semantic,
+    ).toMatchObject({ state: "current", next_step: { basis: "prediction" } });
+    expect(
+      first[0]?.scene.panels.find((panel) => panel.instance_id === "replay-ember")?.semantic,
+    ).toMatchObject({ state: "unavailable", receipt: { reason_code: "model_unavailable" } });
   });
 
   test("keeps every endpoint paneled and clearly synthetic", () => {
