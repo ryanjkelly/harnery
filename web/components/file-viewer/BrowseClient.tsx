@@ -22,7 +22,13 @@ import { usePaletteFileOpenOverride } from "@/components/palette/PaletteProvider
 import { DirectoryTree } from "./DirectoryTree";
 import { FileViewerPane } from "./FileViewerPane";
 
-export function BrowseClient({ initialPath }: { initialPath: string | null }) {
+export function BrowseClient({
+  initialPath,
+  initialDirectory,
+}: {
+  initialPath: string | null;
+  initialDirectory: string | null;
+}) {
   const [selected, setSelected] = useState<string | null>(initialPath);
   const [mobileView, setMobileView] = useState<"tree" | "file">(initialPath ? "file" : "tree");
 
@@ -59,7 +65,11 @@ export function BrowseClient({ initialPath }: { initialPath: string | null }) {
       >
         <SearchTrigger onClick={openSearch} />
         <div className="min-h-0 flex-1 overflow-auto">
-          <DirectoryTree selectedPath={selected} onSelect={select} />
+          <DirectoryTree
+            selectedPath={selected}
+            revealDirectory={selected ? null : initialDirectory}
+            onSelect={select}
+          />
         </div>
       </aside>
 

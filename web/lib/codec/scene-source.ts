@@ -233,15 +233,40 @@ export function applyLiveFeedOverlay(
   });
 }
 
-/** Drop local #intent history and every feed-derived focus value before relay
- * publication. Remote machines never receive operator-authored intent text. */
+/** Drop local #intent history, exact context counts, image blob references,
+ * and every feed-derived focus value before relay publication. */
 export function stripLiveFeedOverlay(scene: CodecScene): CodecScene {
   return {
     ...scene,
     panels: scene.panels.map((panel) => {
       const { intent_history: _localIntents, ...withoutIntents } = panel;
-      if (!withoutIntents.focus_bubble?.value.live_overlay) return withoutIntents;
-      const { focus_bubble: _overlay, ...withoutOverlay } = withoutIntents;
+      let sanitized: CodecScene["panels"][number] = withoutIntents;
+      if (sanitized.context_usage) {
+        const {
+          used_tokens: _usedTokens,
+          limit_tokens: _limitTokens,
+          remaining_tokens: _remainingTokens,
+          ...percentages
+        } = sanitized.context_usage.value;
+        sanitized = {
+          ...sanitized,
+          context_usage: { ...sanitized.context_usage, value: percentages },
+        };
+      }
+      if (sanitized.artifact_cue?.value.image_hash) {
+        const {
+          image_hash: _imageHash,
+          image_media_type: _imageMediaType,
+          image_bytes: _imageBytes,
+          ...artifactLabel
+        } = sanitized.artifact_cue.value;
+        sanitized = {
+          ...sanitized,
+          artifact_cue: { ...sanitized.artifact_cue, value: artifactLabel },
+        };
+      }
+      if (!sanitized.focus_bubble?.value.live_overlay) return sanitized;
+      const { focus_bubble: _overlay, ...withoutOverlay } = sanitized;
       return withoutOverlay;
     }),
   };

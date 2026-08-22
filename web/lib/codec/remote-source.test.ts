@@ -102,6 +102,7 @@ describe("readRemotePanels", () => {
       evidence_event_ids: ["evt_remote_open"],
     });
     expect(panel?.context_band.value).toBe("low");
+    expect(panel?.context_usage?.value).toEqual({ used_percent: 88, remaining_percent: 12 });
     expect(panel?.remote_source?.digest).toMatchObject({
       value: { state: "fresh", age_ms: 25_000 },
       observed_at: "2026-08-16T11:59:35.000Z",

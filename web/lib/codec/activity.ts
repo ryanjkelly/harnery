@@ -432,7 +432,17 @@ export function projectActivityChannels(
       case "artifact.observed":
         if (event.artifact_kind && event.artifact_operation) {
           slot.artifact = {
-            value: { kind: event.artifact_kind.slice(0, 48), operation: event.artifact_operation },
+            value: {
+              kind: event.artifact_kind.slice(0, 48),
+              operation: event.artifact_operation,
+              ...(event.artifact_image_hash ? { image_hash: event.artifact_image_hash } : {}),
+              ...(event.artifact_image_media_type
+                ? { image_media_type: event.artifact_image_media_type }
+                : {}),
+              ...(event.artifact_image_bytes !== undefined
+                ? { image_bytes: event.artifact_image_bytes }
+                : {}),
+            },
             ts: event.ts,
             eventId: event.event_id,
           };

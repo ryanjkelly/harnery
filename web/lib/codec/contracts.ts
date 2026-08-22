@@ -115,6 +115,19 @@ export interface CodecArtifactValue {
   operation: CodecArtifactOperation;
   /** Contract-safe artifact kind token; paths and artifact contents never cross. */
   kind: string;
+  /** Local content-addressed image reference; stripped before relay publication. */
+  image_hash?: string;
+  image_media_type?: string;
+  image_bytes?: number;
+}
+
+export interface CodecContextUsage {
+  used_percent: number;
+  remaining_percent: number;
+  /** Exact local measurements when the adapter supplies them. */
+  used_tokens?: number;
+  limit_tokens?: number;
+  remaining_tokens?: number;
 }
 
 export interface CodecComparableFingerprint {
@@ -204,6 +217,10 @@ export interface CodecSourceEvidence {
   output_lines?: number;
   artifact_kind?: string;
   artifact_operation?: CodecArtifactOperation;
+  /** Bounded local image metadata; source paths and contents are still dropped. */
+  artifact_image_hash?: string;
+  artifact_image_media_type?: string;
+  artifact_image_bytes?: number;
   claim_operation?: "acquired" | "released" | "denied";
   claim_access?: "read" | "write";
   /** Observation-quality defect, not an agent error. */
@@ -222,6 +239,9 @@ export interface CodecSourceEvidence {
   task_state?: "active" | "blocked" | "done";
   /** Context capacity from context.sampled. */
   used_percent?: number;
+  context_used_tokens?: number;
+  context_limit_tokens?: number;
+  context_remaining_tokens?: number;
   context_confidence?: "exact" | "reported" | "estimated";
   /** Capability state retained even when a context value is unavailable. */
   context_observation_state?: "observed" | "unsupported" | "expected_but_missing" | "unknown";
@@ -243,6 +263,8 @@ export interface CodecPanelScene {
   /** Non-none states must carry expires_at. */
   attention: Presented<CodecAttention>;
   context_band: Presented<CodecContextBand>;
+  /** Exact usage locally; percentage-only when sourced from a remote digest. */
+  context_usage?: Presented<CodecContextUsage>;
   progress_rhythm: Presented<CodecProgressRhythm>;
   recent_actions: CodecRecentAction[];
   /** Newest first, capped at three; omitted from remote relay payloads. */

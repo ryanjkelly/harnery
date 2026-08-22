@@ -19,6 +19,8 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleDashed,
+  ExternalLink,
+  FolderOpen,
   Hammer,
   Network,
   PackageCheck,
@@ -773,7 +775,25 @@ function CodecPanel({
               </p>
             </Tooltip>
           </div>
-          <ContextGauge panel={panel} />
+          <div className={styles.cardUtilities}>
+            <Tooltip
+              side="bottom"
+              align="end"
+              content="Open Harnery Browse in a new tab and reveal this agent's newest managed artifact workspace. If none exists yet, Browse opens at the artifact root."
+            >
+              <a
+                data-codec-artifacts-link
+                href={`/browse?agent=${encodeURIComponent(panel.instance_id)}`}
+                target="_blank"
+                rel="noreferrer"
+                className={styles.artifactFolderButton}
+                aria-label={`Browse ${panel.identity.display_name}'s artifacts in a new tab`}
+              >
+                <FolderOpen aria-hidden />
+              </a>
+            </Tooltip>
+            <ContextGauge panel={panel} />
+          </div>
         </div>
 
         <FocusBubble panel={panel} />
@@ -861,15 +881,7 @@ function CodecPanel({
               {panel.attention.value}
             </Badge>
           )}
-          {panel.artifact_cue && (
-            <Badge
-              variant="secondary"
-              title={`Artifact: ${panel.artifact_cue.value.operation} ${panel.artifact_cue.value.kind} (${panel.artifact_cue.provenance})`}
-            >
-              <PackageCheck className="mr-1 size-3" aria-hidden />
-              {panel.artifact_cue.value.operation} {humanizeCueToken(panel.artifact_cue.value.kind)}
-            </Badge>
-          )}
+          {panel.artifact_cue && <ArtifactCue cue={panel.artifact_cue} />}
           {panel.friction && (
             <Badge
               variant="secondary"
@@ -1019,14 +1031,87 @@ function EvidenceReceipt({ panel }: { panel: CodecPanelScene }) {
   );
 }
 
+function ArtifactCue({ cue }: { cue: NonNullable<CodecPanelScene["artifact_cue"]> }) {
+  return (
+    <Tooltip
+      side="top"
+      align="start"
+      className="max-w-sm p-2"
+      content={<ArtifactCueDetails cue={cue} />}
+    >
+      <Badge data-codec-artifact-cue variant="secondary">
+        <PackageCheck className="mr-1 size-3" aria-hidden />
+        {cue.value.operation} {humanizeCueToken(cue.value.kind)}
+      </Badge>
+    </Tooltip>
+  );
+}
+
+function ArtifactCueDetails({ cue }: { cue: NonNullable<CodecPanelScene["artifact_cue"]> }) {
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const imageHash = cue.value.kind === "image" ? cue.value.image_hash : undefined;
+  const imageUrl = imageHash ? `/api/image/${imageHash}` : undefined;
+  return (
+    <div className="space-y-2">
+      <div>
+        <p className="font-semibold">
+          Artifact · {cue.value.operation} {humanizeCueToken(cue.value.kind)}
+        </p>
+        <p className="text-muted-foreground">
+          {cue.provenance} · {cue.confidence} confidence · observed{" "}
+          {formatReceiptTime(cue.observed_at)}
+        </p>
+        {(cue.value.image_media_type || cue.value.image_bytes !== undefined) && (
+          <p className="text-muted-foreground">
+            {[cue.value.image_media_type, formatCompactBytes(cue.value.image_bytes)]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        )}
+      </div>
+      {imageUrl && (
+        <a
+          data-codec-artifact-image-link
+          href={imageUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="group block overflow-hidden rounded-md border border-border bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {previewFailed ? (
+            <span className="flex h-28 items-center justify-center px-4 text-center text-muted-foreground">
+              Preview unavailable · open the retained image in a new tab
+            </span>
+          ) : (
+            // biome-ignore lint/performance/noImgElement: content-addressed Harnery thumbnail is already resized by the image API
+            <img
+              src={`${imageUrl}?w=360`}
+              alt="Created artifact preview"
+              loading="lazy"
+              decoding="async"
+              onError={() => setPreviewFailed(true)}
+              className="max-h-52 w-full object-contain"
+            />
+          )}
+          <span className="flex items-center justify-center gap-1 border-t border-border px-2 py-1.5 font-medium text-foreground group-hover:bg-muted/50">
+            Open full-size image in a new tab <ExternalLink className="size-3" aria-hidden />
+          </span>
+        </a>
+      )}
+    </div>
+  );
+}
+
+function formatCompactBytes(value: number | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function IntentHistory({ intents }: { intents: CodecIntentSignal[] }) {
   const visible = intents.slice(0, 3);
   return (
     <section data-codec-intent-history className={styles.intentHistory} aria-label="Recent intents">
-      <header>
-        <span>#intent trail</span>
-        <small>{visible.length} / 3</small>
-      </header>
       {visible.length > 0 ? (
         <ol>
           {visible.map((intent, index) => (
@@ -1081,54 +1166,74 @@ function formatReceiptTime(value: string): string {
  * expressive styling. Its state names observable flow, never cognition. */
 function OperationCue({ panel }: { panel: CodecPanelScene }) {
   const operation = panel.operation;
-  if (!operation) return null;
-  const Icon = CATEGORY_ICONS[operation.value.category] ?? CircleDashed;
-  const stateLabel = humanizeCueToken(operation.value.state);
+  const Icon = operation
+    ? (CATEGORY_ICONS[operation.value.category] ?? CircleDashed)
+    : CircleDashed;
+  const label = operation
+    ? operation.value.label
+    : panel.presence.value === "online"
+      ? "Between operations"
+      : "No active operation";
+  const stateLabel = operation ? humanizeCueToken(operation.value.state) : "standby";
   return (
     <Tooltip
       side="bottom"
       align="start"
       triggerClassName={styles.fullWidthTooltip}
       content={
-        <div className="space-y-1">
-          <p className="font-semibold">Current operation · {operation.value.label}</p>
-          <p>
-            {stateLabel}
-            {operation.value.elapsed_ms !== undefined
-              ? ` · ${formatElapsed(operation.value.elapsed_ms)} elapsed`
-              : ""}
-          </p>
-          <p className="text-muted-foreground">
-            {operation.provenance} · {operation.confidence} confidence · observed{" "}
-            {formatReceiptTime(operation.observed_at)}
-          </p>
-        </div>
+        operation ? (
+          <div className="space-y-1">
+            <p className="font-semibold">Current operation · {operation.value.label}</p>
+            <p>
+              {stateLabel}
+              {operation.value.elapsed_ms !== undefined
+                ? ` · ${formatElapsed(operation.value.elapsed_ms)} elapsed`
+                : ""}
+            </p>
+            <p className="text-muted-foreground">
+              {operation.provenance} · {operation.confidence} confidence · observed{" "}
+              {formatReceiptTime(operation.observed_at)}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <p className="font-semibold">No open operation span</p>
+            <p className="text-muted-foreground">
+              This stable placeholder holds the card layout between observed operation events.
+            </p>
+          </div>
+        )
       }
     >
       <div
         data-codec-operation-cue
+        data-placeholder={operation ? undefined : "true"}
         role="status"
         className={cn(
           styles.operationCue,
           panel.presence.value === "online" &&
+            operation &&
             panel.activity.value === "working" &&
             panel.telemetry?.value !== "degraded" &&
             styles.operationCueLive,
+          !operation && styles.operationCuePlaceholder,
         )}
-        aria-label={`Current operation: ${operation.value.label}, ${stateLabel}`}
+        aria-label={
+          operation ? `Current operation: ${operation.value.label}, ${stateLabel}` : label
+        }
       >
         <Icon className={styles.operationIcon} aria-hidden />
-        <span className={styles.operationLabel}>{operation.value.label}</span>
+        <span className={styles.operationLabel}>{label}</span>
         <span
           className={cn(
             styles.operationState,
-            operation.value.state === "output-flow" &&
+            operation?.value.state === "output-flow" &&
               panel.telemetry?.value !== "degraded" &&
               styles.outputFlow,
           )}
         >
           {stateLabel}
-          {operation.value.elapsed_ms !== undefined &&
+          {operation?.value.elapsed_ms !== undefined &&
             ` · ${formatElapsed(operation.value.elapsed_ms)}`}
         </span>
       </div>
@@ -1230,10 +1335,38 @@ function ContextGauge({ panel }: { panel: CodecPanelScene }) {
   if (band === "unknown") return null;
   const lit = band === "ample" ? 3 : band === "reduced" ? 2 : 1;
   const label = `Context capacity ${band}`;
+  const usage = panel.context_usage?.value;
   return (
     <Tooltip
       side="left"
-      content={`Context capacity is ${band} (${panel.context_band.provenance}, ${panel.context_band.confidence} confidence), observed ${formatReceiptTime(panel.context_band.observed_at)}.`}
+      content={
+        <div className="space-y-1">
+          <p className="font-semibold">Context capacity · {band}</p>
+          {usage ? (
+            <>
+              <p>
+                {usage.used_percent.toFixed(1)}% used · {usage.remaining_percent.toFixed(1)}%
+                remaining
+              </p>
+              {usage.used_tokens !== undefined && usage.limit_tokens !== undefined && (
+                <p>
+                  {usage.used_tokens.toLocaleString()} / {usage.limit_tokens.toLocaleString()}{" "}
+                  tokens
+                  {usage.remaining_tokens !== undefined
+                    ? ` · ${usage.remaining_tokens.toLocaleString()} remaining`
+                    : ""}
+                </p>
+              )}
+            </>
+          ) : (
+            <p>Exact usage is unavailable for this observation.</p>
+          )}
+          <p className="text-muted-foreground">
+            {panel.context_band.provenance} · {panel.context_band.confidence} confidence · observed{" "}
+            {formatReceiptTime(panel.context_band.observed_at)}
+          </p>
+        </div>
+      }
     >
       <div
         data-codec-context-gauge

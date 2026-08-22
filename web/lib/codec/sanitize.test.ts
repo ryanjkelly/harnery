@@ -126,6 +126,9 @@ describe("sanitizeEvent", () => {
     expect(context).toMatchObject({
       event_type: "context.observed",
       used_percent: 75,
+      context_used_tokens: 750,
+      context_limit_tokens: 1000,
+      context_remaining_tokens: 250,
       context_confidence: "exact",
       context_observation_state: "observed",
     });
@@ -258,6 +261,29 @@ describe("sanitizeEvent", () => {
       artifact_operation: "published",
     });
     expect(JSON.stringify(artifact)).not.toContain(SECRET_INPUT);
+
+    const imageHash = "a".repeat(64);
+    const image = sanitizeEvent(
+      v3Event("artifact.observed", {
+        artifact: {
+          artifact_id: `art_${imageHash}`,
+          kind: "image",
+          media_type: "image/png",
+          bytes: 4096,
+          retention_class: "bounded_local",
+          workspace_path: "screens/private-output.png",
+        },
+        operation: "created",
+      }),
+    );
+    expect(image).toMatchObject({
+      artifact_kind: "image",
+      artifact_operation: "created",
+      artifact_image_hash: imageHash,
+      artifact_image_media_type: "image/png",
+      artifact_image_bytes: 4096,
+    });
+    expect(JSON.stringify(image)).not.toContain("screens/private-output.png");
 
     const drift = sanitizeEvent(
       v3Event("health.capability_drift", {

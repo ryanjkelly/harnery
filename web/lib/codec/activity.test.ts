@@ -523,14 +523,23 @@ describe("projectActivityChannels", () => {
         event({
           event_type: "artifact.observed",
           ts: at(20),
-          artifact_kind: "report",
-          artifact_operation: "published",
+          artifact_kind: "image",
+          artifact_operation: "created",
+          artifact_image_hash: "a".repeat(64),
+          artifact_image_media_type: "image/png",
+          artifact_image_bytes: 4096,
           telemetry_issue: "clock-regressed",
         }),
       ],
       NOW,
     ).get("inst-a");
-    expect(fresh?.artifact_cue?.value).toEqual({ kind: "report", operation: "published" });
+    expect(fresh?.artifact_cue?.value).toEqual({
+      kind: "image",
+      operation: "created",
+      image_hash: "a".repeat(64),
+      image_media_type: "image/png",
+      image_bytes: 4096,
+    });
     expect(fresh?.telemetry?.value).toBe("degraded");
     expect(fresh?.telemetry_reason?.value).toBe("clock-regressed");
     expect(fresh?.telemetry_reason?.expires_at).toBe(fresh?.telemetry?.expires_at);

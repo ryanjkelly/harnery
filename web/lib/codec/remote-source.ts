@@ -229,6 +229,20 @@ export function readRemotePresence(
                 contextObservedAt,
                 contextEventId ? [contextEventId] : undefined,
               ),
+        ...(contextPercent !== undefined
+          ? {
+              context_usage: present(
+                {
+                  used_percent: contextPercent,
+                  remaining_percent: Math.max(0, 100 - contextPercent),
+                },
+                "projection",
+                contextRaw?.confidence === "exact" ? "high" : "medium",
+                contextObservedAt,
+                contextEventId ? [contextEventId] : undefined,
+              ),
+            }
+          : {}),
         progress_rhythm: present("unknown", "unknown", "low", publishedAt),
         recent_actions: recentActions,
         ...(operationRaw && operationCategory && operationLabel && operationEventId

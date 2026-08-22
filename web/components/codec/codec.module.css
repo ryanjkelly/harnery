@@ -897,6 +897,40 @@
   min-width: 0;
 }
 
+.cardUtilities {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.artifactFolderButton {
+  display: inline-flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(var(--codec-accent) / 0.35);
+  border-radius: 0.45rem;
+  color: rgb(var(--codec-accent));
+  background: rgb(var(--codec-accent) / 0.08);
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+
+.artifactFolderButton:hover,
+.artifactFolderButton:focus-visible {
+  border-color: rgb(var(--codec-accent) / 0.8);
+  background: rgb(var(--codec-accent) / 0.16);
+  outline: none;
+}
+
+.artifactFolderButton svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
 .intentTooltipTrigger {
   contain: inline-size paint;
   overflow: hidden;
@@ -940,6 +974,12 @@
   opacity: 0.55;
 }
 
+.operationCuePlaceholder {
+  border-style: dashed;
+  color: rgb(161 161 170);
+  background: rgb(24 24 31 / 0.34);
+}
+
 .operationIcon {
   grid-row: 1 / span 2;
   width: 0.9rem;
@@ -972,28 +1012,9 @@
   overflow: hidden;
   border: 1px solid rgb(var(--codec-accent) / 0.25);
   border-radius: 0.55rem;
-  padding: 0.4rem 0.5rem 0.45rem;
+  padding: 0.42rem 0.5rem;
   background:
     linear-gradient(90deg, rgb(var(--codec-accent) / 0.08), transparent 70%), rgb(7 9 14 / 0.72);
-}
-
-.intentHistory header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 0.48rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: rgb(var(--codec-accent));
-}
-
-.intentHistory header small {
-  font-size: 0.45rem;
-  color: rgb(161 161 170);
 }
 
 .intentHistory ol {

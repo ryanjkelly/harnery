@@ -230,6 +230,14 @@ function sanitizeEventV3(raw: unknown): CodecSourceEvidence | null {
     case "artifact.observed":
       base.artifact_kind = event.payload.artifact.kind;
       base.artifact_operation = event.payload.operation;
+      if (
+        event.payload.artifact.kind === "image" &&
+        /^art_[a-f0-9]{64}$/.test(event.payload.artifact.artifact_id)
+      ) {
+        base.artifact_image_hash = event.payload.artifact.artifact_id.slice("art_".length);
+        base.artifact_image_media_type = event.payload.artifact.media_type;
+        base.artifact_image_bytes = event.payload.artifact.bytes;
+      }
       return base;
     case "progress.observed":
       base.category = PROGRESS_CATEGORIES[event.payload.kind] ?? "other";
@@ -361,7 +369,7 @@ function liftMeasurement(
   base: CodecSourceEvidence,
   measurement: {
     state: string;
-    value?: { used_tokens: number; limit_tokens: number };
+    value?: { used_tokens: number; limit_tokens: number; remaining_tokens?: number };
     attestation?: string;
     confidence?: string;
   },
@@ -378,7 +386,12 @@ function liftMeasurement(
   if (measurement.state !== "observed" || !measurement.value) return base;
   const limit = measurement.value.limit_tokens;
   if (!Number.isFinite(limit) || limit <= 0) return null;
-  base.used_percent = Math.min(100, (measurement.value.used_tokens / limit) * 100);
+  const used = measurement.value.used_tokens;
+  if (!Number.isFinite(used) || used < 0) return null;
+  base.used_percent = Math.min(100, (used / limit) * 100);
+  base.context_used_tokens = used;
+  base.context_limit_tokens = limit;
+  base.context_remaining_tokens = Math.max(0, measurement.value.remaining_tokens ?? limit - used);
   base.context_confidence = evidenceConfidence(
     measurement.attestation ?? "",
     measurement.confidence ?? "",

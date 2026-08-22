@@ -234,6 +234,34 @@ describe("projectScene", () => {
     expect(band(30)).toBe("ample");
   });
 
+  test("projects exact context counts alongside the capacity band", () => {
+    const panel = projectScene({
+      snapshot: snapshot([hb({})]),
+      events: [
+        ev({
+          event_type: "context.observed",
+          used_percent: 75,
+          context_used_tokens: 150_000,
+          context_limit_tokens: 200_000,
+          context_remaining_tokens: 50_000,
+          context_confidence: "exact",
+        }),
+      ],
+      now: NOW,
+    }).panels[0];
+    expect(panel?.context_usage).toMatchObject({
+      value: {
+        used_percent: 75,
+        remaining_percent: 25,
+        used_tokens: 150_000,
+        limit_tokens: 200_000,
+        remaining_tokens: 50_000,
+      },
+      provenance: "event",
+      confidence: "high",
+    });
+  });
+
   test("progress rhythm follows evidence windows, never silence forecasts", () => {
     const rhythm = (events: CodecSourceEvidence[]) =>
       projectScene({ snapshot: snapshot([hb({})]), events, now: NOW }).panels[0]?.progress_rhythm

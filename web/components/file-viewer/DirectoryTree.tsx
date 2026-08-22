@@ -19,9 +19,11 @@ import { iconForFile } from "./file-icons";
 
 export function DirectoryTree({
   selectedPath,
+  revealDirectory,
   onSelect,
 }: {
   selectedPath: string | null;
+  revealDirectory?: string | null;
   onSelect: (relPath: string) => void;
 }) {
   const listings = useRef(new Map<string, DirEntry[]>());
@@ -62,15 +64,17 @@ export function DirectoryTree({
     [loadDir],
   );
 
-  // Auto-reveal: expand every ancestor of the selected path, then scroll the row
-  // into view. Runs once per distinct selectedPath (manual clicks re-scroll, but
-  // never collapse — reveal only ever adds to `expanded`).
+  // Auto-reveal a selected file or a directly requested directory, then scroll
+  // its row into view. Reveal only adds expansions; it never collapses the tree.
   useEffect(() => {
-    if (!selectedPath || revealed.current === selectedPath) return;
-    revealed.current = selectedPath;
-    const segs = selectedPath.split("/");
+    const target = selectedPath ?? revealDirectory;
+    if (!target || revealed.current === target) return;
+    revealed.current = target;
+    const targetIsDirectory = !selectedPath && Boolean(revealDirectory);
+    const segs = target.split("/");
     const ancestors: string[] = [];
-    for (let i = 0; i < segs.length - 1; i++) ancestors.push(segs.slice(0, i + 1).join("/"));
+    const segmentLimit = targetIsDirectory ? segs.length : segs.length - 1;
+    for (let i = 0; i < segmentLimit; i++) ancestors.push(segs.slice(0, i + 1).join("/"));
     (async () => {
       for (const a of ancestors) {
         expanded.current.add(a);
@@ -78,11 +82,11 @@ export function DirectoryTree({
       }
       force();
       requestAnimationFrame(() => {
-        const sel = `[data-tree-path="${selectedPath.replace(/["\\]/g, "\\$&")}"]`;
+        const sel = `[data-tree-path="${target.replace(/["\\]/g, "\\$&")}"]`;
         document.querySelector(sel)?.scrollIntoView({ block: "nearest" });
       });
     })();
-  }, [selectedPath, loadDir]);
+  }, [selectedPath, revealDirectory, loadDir]);
 
   if (failed.current.has("")) {
     return <p className="p-3 text-xs text-muted-foreground">Couldn&apos;t load the file tree.</p>;
@@ -113,7 +117,10 @@ export function DirectoryTree({
             entry={e}
             depth={depth}
             open={open}
-            selected={!isDir && selectedPath === e.relPath}
+            selected={
+              (!isDir && selectedPath === e.relPath) ||
+              (isDir && !selectedPath && revealDirectory === e.relPath)
+            }
             bytes={bytesOf(e)}
             maxBytes={maxBytes}
             stats={stats}
@@ -197,6 +204,7 @@ function Row({
     <button
       type="button"
       data-tree-path={entry.relPath}
+      aria-current={selected ? "location" : undefined}
       onClick={onClick}
       aria-expanded={isDir ? open : undefined}
       title={title}

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 const OPEN_DELAY_MS = 200;
 const CLOSE_DELAY_MS = 80;
@@ -14,10 +15,11 @@ const CLOSE_DELAY_MS = 80;
  *     <button>...</button>
  *   </Tooltip>
  *
- * The popup is `position: fixed` and positioned via getBoundingClientRect of
- * the trigger, so it escapes overflow:hidden ancestors (cards, table
- * cells) without needing a real portal. Flips top↔bottom when too close to
- * the viewport edge.
+ * The popup is portaled to `document.body`, then positioned with fixed
+ * viewport coordinates from the trigger's getBoundingClientRect. The portal
+ * is load-bearing: transformed cards otherwise establish a containing block
+ * that reinterprets fixed coordinates and sends the popup far from its trigger.
+ * Flips top↔bottom when too close to the viewport edge.
  *
  * `content` accepts strings or arbitrary JSX, so the tooltip can carry rich
  * markup (rows, multiple paragraphs, formatted timestamps).
@@ -157,6 +159,7 @@ export function Tooltip({
 
   return (
     <>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: wrapper must preserve arbitrary child semantics while receiving delegated hover/focus events */}
       <span
         ref={triggerRef}
         onMouseEnter={onEnter}
@@ -167,27 +170,30 @@ export function Tooltip({
       >
         {children}
       </span>
-      {open && (
-        <div
-          ref={popupRef}
-          role="tooltip"
-          onMouseEnter={cancel}
-          onMouseLeave={onLeave}
-          style={{
-            position: "fixed",
-            top: coords?.top ?? 0,
-            left: coords?.left ?? 0,
-            zIndex: 200,
-            // Hidden rather than unmounted so the layout effect above can
-            // measure it. `visibility` keeps the layout box that `display: none`
-            // would throw away, and the effect reveals it before paint.
-            visibility: coords ? "visible" : "hidden",
-          }}
-          className={`pointer-events-auto rounded-md border border-border bg-popover px-2 py-1.5 text-[11px] leading-relaxed text-popover-foreground shadow-lg max-w-xs whitespace-normal ${className}`}
-        >
-          {content}
-        </div>
-      )}
+      {open &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            ref={popupRef}
+            role="tooltip"
+            onMouseEnter={cancel}
+            onMouseLeave={onLeave}
+            style={{
+              position: "fixed",
+              top: coords?.top ?? 0,
+              left: coords?.left ?? 0,
+              zIndex: 200,
+              // Hidden rather than unmounted so the layout effect above can
+              // measure it. `visibility` keeps the layout box that `display: none`
+              // would throw away, and the effect reveals it before paint.
+              visibility: coords ? "visible" : "hidden",
+            }}
+            className={`pointer-events-auto rounded-md border border-border bg-popover px-2 py-1.5 text-[11px] leading-relaxed text-popover-foreground shadow-lg max-w-xs whitespace-normal ${className}`}
+          >
+            {content}
+          </div>,
+          document.body,
+        )}
     </>
   );
 }

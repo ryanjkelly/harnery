@@ -24,6 +24,7 @@ import {
   CODEC_SCHEMA_VERSION,
   type CodecActivity,
   type CodecContextBand,
+  type CodecContextUsage,
   type CodecIntentSignal,
   type CodecLifecycle,
   type CodecPanelScene,
@@ -383,6 +384,32 @@ function contextBand(
   return present(band, "event", confidence, sample.ts, [sample.event_id]);
 }
 
+function contextUsage(ev: InstanceEvidence | undefined): Presented<CodecContextUsage> | undefined {
+  const sample = ev?.lastContext;
+  if (!sample || sample.used_percent === undefined) return undefined;
+  const usedPercent = Math.max(0, Math.min(100, sample.used_percent));
+  const confidence: Confidence = sample.context_confidence === "estimated" ? "medium" : "high";
+  return present(
+    {
+      used_percent: usedPercent,
+      remaining_percent: Math.max(0, 100 - usedPercent),
+      ...(sample.context_used_tokens !== undefined
+        ? { used_tokens: sample.context_used_tokens }
+        : {}),
+      ...(sample.context_limit_tokens !== undefined
+        ? { limit_tokens: sample.context_limit_tokens }
+        : {}),
+      ...(sample.context_remaining_tokens !== undefined
+        ? { remaining_tokens: sample.context_remaining_tokens }
+        : {}),
+    },
+    "event",
+    confidence,
+    sample.ts,
+    [sample.event_id],
+  );
+}
+
 function progressRhythm(
   ev: InstanceEvidence | undefined,
   nowMs: number,
@@ -572,6 +599,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     paneledFromRows.add(hb.instance_id);
     const ev = evidence.get(hb.instance_id);
     const task = taskLabel(hb, ev);
+    const usage = contextUsage(ev);
     const panelActivity = activity(hb);
     const channels = deriveExpressiveChannels(
       {
@@ -606,6 +634,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       expression: channels.expression,
       attention: channels.attention,
       context_band: contextBand(hb.instance_id, ev, hb.last_heartbeat),
+      ...(usage ? { context_usage: usage } : {}),
       progress_rhythm: progressRhythm(ev, nowMs, hb.last_heartbeat),
       recent_actions: ev?.recentActions ?? [],
       intent_history: ev?.intentHistory ?? [],
@@ -680,6 +709,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
           )
         : undefined;
     const fallbackTs = ev.lastEventTs ?? now;
+    const usage = contextUsage(ev);
     const evidencePanel: CodecPanelScene = {
       instance_id: instanceId,
       identity: {
@@ -699,6 +729,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       expression: channels.expression,
       attention: channels.attention,
       context_band: contextBand(instanceId, ev, fallbackTs),
+      ...(usage ? { context_usage: usage } : {}),
       progress_rhythm: progressRhythm(ev, nowMs, fallbackTs),
       recent_actions: ev.recentActions,
       intent_history: ev.intentHistory,

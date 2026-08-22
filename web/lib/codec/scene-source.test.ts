@@ -175,6 +175,18 @@ describe("Codec live-display overlay", () => {
             confidence: "low",
             observed_at: overlay.written_at,
           },
+          context_usage: {
+            value: {
+              used_percent: 75,
+              remaining_percent: 25,
+              used_tokens: 150_000,
+              limit_tokens: 200_000,
+              remaining_tokens: 50_000,
+            },
+            provenance: "event",
+            confidence: "high",
+            observed_at: overlay.written_at,
+          },
           progress_rhythm: {
             value: "unknown",
             provenance: "unknown",
@@ -198,6 +210,18 @@ describe("Codec live-display overlay", () => {
             confidence: "high",
             observed_at: overlay.written_at,
           },
+          artifact_cue: {
+            value: {
+              kind: "image",
+              operation: "created",
+              image_hash: "a".repeat(64),
+              image_media_type: "image/png",
+              image_bytes: 4096,
+            },
+            provenance: "event",
+            confidence: "high",
+            observed_at: overlay.written_at,
+          },
           character: { ...FALLBACK_PACK },
           updated_at: overlay.written_at,
         },
@@ -216,8 +240,15 @@ describe("Codec live-display overlay", () => {
     const stripped = stripLiveFeedOverlay(scene).panels[0];
     expect(stripped?.focus_bubble).toBeUndefined();
     expect(stripped?.intent_history).toBeUndefined();
+    expect(stripped?.context_usage?.value).toEqual({
+      used_percent: 75,
+      remaining_percent: 25,
+    });
+    expect(stripped?.artifact_cue?.value).toEqual({ kind: "image", operation: "created" });
     expect(scene.panels[0]?.focus_bubble).toBeDefined();
     expect(scene.panels[0]?.intent_history).toHaveLength(1);
+    expect(scene.panels[0]?.context_usage?.value.used_tokens).toBe(150_000);
+    expect(scene.panels[0]?.artifact_cue?.value.image_hash).toBe("a".repeat(64));
 
     const localPanel = scene.panels[0];
     if (!localPanel) throw new Error("local panel missing");
