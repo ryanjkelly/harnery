@@ -99,7 +99,9 @@ describe("renderPromptContext on the V3 coordination projection", () => {
     const pending = render({ sessionNameNudge: true });
     expect(pending).toContain("still pending display");
     expect(pending).toContain(`\`\`\`\n${name}\n\`\`\``);
-    expect(render({ sessionNameNudge: true })).toContain("still pending display");
+    expect(render({ sessionNameNudge: true })).toBe("");
+    updateSelf({ task: "A different current focus", task_updated_at: new Date().toISOString() });
+    expect(render({ sessionNameNudge: true })).toBe("");
 
     updateSelf({ session_name_seen_for: name });
     expect(render({ sessionNameNudge: true })).toBe("");

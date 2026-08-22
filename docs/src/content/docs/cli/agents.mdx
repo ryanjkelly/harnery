@@ -166,23 +166,25 @@ operator gets the exact title without hand-selecting.
 For transcript-backed adapters, the evidence boundary is the first assistant
 message after the mint result. Later commentary or a user prompt does not erase
 an exact display. If the adapter transcript is unavailable or has not flushed
-yet, Harnery reports the check as pending and allows the tool. A readable
-missing or malformed display is still denied.
+yet, Harnery keeps the check pending and allows the tool without injecting
+another reminder. The exact PostToolUse instruction was already delivered for
+that mint, so repeating a generic reminder on every tool cannot create an
+unbounded loop. A readable missing or malformed display is still denied.
 
-The gate always allows a single `agents set-task` or `agents status` command.
-Those are the ritual's repair and turn-closing paths, so the naming check must
-not block them. If the current name is still pending, repeating `set-task`
-returns that unchanged name with `session_name_retry: true`. The retry result
-creates a fresh evidence boundary, so displaying its exact block can recover
-from an earlier transcript misclassification. Shell control syntax disqualifies
-the exemption.
+The gate always allows a single `agents set-task`, `agents status`, or
+`agents suggest-name` command. Those are the focus, recovery, and turn-closing
+paths, so the naming check must not block them. Routine `set-task` calls stay
+title-silent even while a display is pending. For an explicit retry, run
+`agents suggest-name --json`; it returns the exact stored pending name with
+`session_name_retry: true` and creates a fresh evidence boundary. Shell control
+syntax disqualifies the exemption.
 
-The same pending comparison drives every prompt reminder, including the one
-terminal name re-mint when lifecycle becomes `done`. Subagents and workflow
-children are skipped. Every later ordinary `set-task` returns
-`first_of_session: false`. It returns a null name after the current suggestion
-has been seen; while the suggestion is pending, it returns the same name with
-`session_name_retry: true` for recovery.
+The same pending comparison drives prompt reminders, including the one terminal
+name re-mint when lifecycle becomes `done`. An unminted session is reminded on
+every prompt until its first focus declaration. A pending session is reminded
+once per exact minted name, even if the current task later changes. Subagents
+and workflow children are skipped. Every later ordinary `set-task` returns
+`first_of_session: false`, `session_name_retry: false`, and a null name.
 
 `set-task` never changes task lifecycle. If task text changes while the session
 is `blocked` or `done`, the command returns a warning to reopen the lifecycle
@@ -274,7 +276,9 @@ Reprints a session name (`Agent <you> - <description>`) for the operator's tab
 title, **read-only**. This is the secondary path: `set-task` already suggests a
 name on the first focus declaration (above). Reach for `suggest-name` to reprint
 the current session's name or re-suggest one after a topic pivot. With an explicit
-arg it uses that; with no arg it derives the name from your current task:
+arg it uses that. With no arg it returns the exact stored pending name when one
+exists, even if the current task has changed; otherwise it derives a name from
+the current task:
 
 ```
 $ harn agents suggest-name "Auth Refactor"
@@ -284,8 +288,10 @@ Agent Hollis - Auth Refactor
 ```
 
 It prints the bare name on stdout (not a drawn box, since a box would copy its
-borders and labels too). `--json` returns `{ suggested_session_name, agent_name,
-description }`. Like `status`, it accepts `--session-id <id>`. Mutates no state.
+borders and labels too). `--json` also returns `session_name_retry: true` when
+it reprints the exact pending suggestion. PostToolUse treats that explicit
+response as a fresh display boundary. Like `status`, it accepts
+`--session-id <id>`. Mutates no state.
 
 ### show, trace
 

@@ -52,7 +52,10 @@ import {
   requestSessionEndExplicitV3,
   type SessionFinalizationRequestV3,
 } from "../core/agents/session-finalizer-v3.ts";
-import { SESSION_NAME_DISPLAY_NOTE } from "../core/agents/session-name-display.ts";
+import {
+  SESSION_NAME_DISPLAY_NOTE,
+  sessionNameDisplayPending,
+} from "../core/agents/session-name-display.ts";
 import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
@@ -317,9 +320,9 @@ export function registerAgentsCommand(
     .command("suggest-name [description...]")
     .description(
       'Reprint a session name ("Agent <you> - <description>") for the operator to set as their ' +
-        "adapter tab title. With no arg, derives it from your current task. The primary naming path " +
+        "adapter tab title. With no arg, prefers the exact pending name, then derives from your current task. The primary naming path " +
         "is set-task (it suggests a name on the first focus declaration); reach for this to reprint " +
-        "or re-suggest after a topic pivot. Read-only.",
+        "or to create an explicit pending-display retry with --json. Read-only.",
     )
     .option("--json", "JSON output instead of the bare name")
     .option(
@@ -1847,22 +1850,12 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
       ? hb.suggested_session_name
       : null;
 
-  // A readable but misclassified first display would otherwise leave the
-  // session permanently latched: set-task is allowed through the gate, but a
-  // normal repeat used to return no name and therefore could not establish a
-  // fresh ordered transcript boundary. Re-emit the unchanged pending name as
-  // an explicit retry. This does not rename the session or claim that the
-  // display was seen; it only gives the next exact block new mint evidence.
-  const retriedSuggestedName =
-    !firstSuggestedName &&
-    priorHb?.suggested_session_name &&
-    priorHb.session_name_seen_for !== priorHb.suggested_session_name &&
-    hb?.suggested_session_name === priorHb.suggested_session_name
-      ? hb.suggested_session_name
-      : null;
-  const suggestedName = firstSuggestedName ?? retriedSuggestedName;
+  // Routine focus declarations stay title-silent. A pending display no longer
+  // turns every repeated set-task into a fresh name instruction; explicit
+  // recovery belongs to `agents suggest-name --json`.
+  const suggestedName = firstSuggestedName;
   const firstOfSession = firstSuggestedName !== null;
-  const sessionNameRetry = retriedSuggestedName !== null;
+  const sessionNameRetry = false;
 
   emit.data({
     instance_id: myOwner,
@@ -2098,12 +2091,16 @@ function runSuggestName(
 
   const hb = readCurrentCoordinationRow(myOwner);
   const agentName = hb?.name || "unknown";
-  // Description resolution: an explicit arg wins; with no arg, fall back to the
-  // agent's current declared task, so a bare `suggest-name` reprints the running
-  // session's name (handy after a topic pivot). Read-only — mutates no state;
-  // the primary naming path is set-task's first-of-session suggestion.
+  // A bare suggest-name must prefer the exact pending suggestion over rebuilding
+  // from the current task. The task may have changed since the title was minted;
+  // reconstructing it would produce a block the display latch can never accept.
+  // An explicit description keeps the read-only re-suggest behavior.
+  const pendingName = sessionNameDisplayPending(hb);
   const parts = descriptionParts.length > 0 ? descriptionParts : hb?.task ? [hb.task] : [];
-  const built = buildSuggestedName(agentName, parts);
+  const built =
+    descriptionParts.length === 0 && pendingName
+      ? { suggestedName: pendingName, description: hb?.task ?? pendingName }
+      : buildSuggestedName(agentName, parts);
   if (!built) {
     emit.error({
       code: "no_description",
@@ -2120,6 +2117,7 @@ function runSuggestName(
     emit.data({
       name: displayName,
       suggested_session_name: suggestedName,
+      session_name_retry: pendingName === suggestedName,
       agent_name: agentName,
       description,
     });

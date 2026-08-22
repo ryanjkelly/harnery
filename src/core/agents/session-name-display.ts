@@ -36,6 +36,14 @@ export function sessionNameDisplayInstruction(name: string): string {
   ].join("\n");
 }
 
+export function sessionNameDisplayRecoveryInstruction(name: string, binName: string): string {
+  return [
+    sessionNameDisplayInstruction(name),
+    "",
+    `If that exact block was already shown but the gate still rejects tools, run \`${binName} agents suggest-name --json\` as the only tool call. That read-only command is exempt and creates a fresh verification boundary.`,
+  ].join("\n");
+}
+
 /**
  * A PostToolUse result should announce the display protocol only when that
  * exact tool call minted or retried the current suggestion. The coordination row keeps
@@ -143,7 +151,7 @@ export function isSessionNameRemediationCommand(
   if (!body || /[\n;&|<>`$]/.test(body)) return false;
   const escapedBin = binName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
-    `^(?:codex-wsl\\s+--\\s+)?${escapedBin}\\s+agents\\s+(?:set-task|status)(?:\\s+.*)?$`,
+    `^(?:codex-wsl\\s+--\\s+)?${escapedBin}\\s+agents\\s+(?:set-task|status|suggest-name)(?:\\s+.*)?$`,
   );
   return pattern.test(body);
 }

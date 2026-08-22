@@ -61,11 +61,12 @@ denied until the message begins with a block containing only the current
 suggested name. A successful check stamps `session_name_seen_for` and lets the
 tool continue.
 
-`agents set-task` and `agents status` are narrow escape hatches. The latch
-allows either as a single command even while display is pending, because they
-are the commands used to repair and close the coordination ritual. Commands
-with shell control syntax do not qualify for the exemption. This prevents a
-failed display check from blocking its own remediation path.
+`agents set-task`, `agents status`, and `agents suggest-name` are narrow escape
+hatches. The latch allows any one as a single command while display is pending,
+because they declare focus, create an explicit display retry, or close the
+coordination ritual. Commands with shell control syntax do not qualify for the
+exemption. This prevents a failed display check from blocking its own
+remediation path.
 
 When PreToolUse fires after a tool-use-only assistant row has been appended,
 the transcript resolver skips that empty user-facing row and checks the prior
@@ -109,11 +110,11 @@ allows the tool.
 A later Claude Code incident showed that ordered evidence also needs an
 explicit retry boundary. The display was correct, but the scanner had already
 classified the original post-mint reply as absent. Later copies could never
-change that historical result. While a suggestion remains pending, repeating
-the exempt `agents set-task` command now returns the unchanged suggestion with
-`session_name_retry: true`. PostToolUse treats that response as fresh mint
-evidence, which lets the next exact block satisfy the latch without renaming the
-session or claiming an unobserved display.
+change that historical result. `agents suggest-name --json` now returns the
+exact stored pending suggestion with `session_name_retry: true`. PostToolUse
+treats that response as fresh mint evidence, which lets the next exact block
+satisfy the latch without renaming the session or claiming an unobserved
+display. Routine `set-task` calls remain title-silent.
 
 Native Codex child hooks exposed another trust boundary. Their
 `agent_message` field can carry adapter-supplied or inherited text rather than
@@ -121,3 +122,10 @@ the child's displayed assistant reply. Cursor remains the only adapter that
 uses native `agent_message` as display evidence. Codex and Claude Code use the
 transcript resolver; when that transcript is unavailable or not flushed, the
 gate stays pending and fails open instead of accepting unrelated text.
+
+A resumed Codex session then showed the remaining fail-open loop. Codex
+PreToolUse payloads had no transcript path, so every tool received a generic
+pending-verification reminder and every routine `set-task` created another
+retry boundary. The hook now stays silent when evidence is unavailable, and
+the prompt reminder is deduplicated by exact minted name. The latch remains
+pending for honest V3 telemetry; only the automatic re-request is bounded.

@@ -224,7 +224,7 @@ function computeFocusNudgeIfChanged(
     // Keyed on "a name was ever produced", not task_updated_at: a bare clear
     // as the first declaration must not end the naming window.
     needsNudge = true;
-    nudgeKind = "session-name";
+    nudgeKind = pendingSessionName ? "session-name-pending" : "session-name-unminted";
     message = pendingSessionName
       ? `This session name is still pending display. Before any prose or another tool call, send this exact block as your next assistant text:\n\n${sessionNameDisplayBlock(pendingSessionName)}`
       : `This session has no name yet: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
@@ -254,19 +254,22 @@ function computeFocusNudgeIfChanged(
     return "";
   }
 
-  // The session-name reminder is deliberately NOT deduped: it re-emits on
-  // every prompt until a name is produced, because the "still unnamed" state
-  // is the failure state — deduping it erases the only reminder after one
-  // ignored prompt (the miss mode operators reported). Bounded in practice:
-  // Stop rule 3/3 forces a set-task on the first tool-using turn.
-  if (nudgeKind === "session-name") {
+  // An unminted session still gets a fresh reminder on every prompt until its
+  // first focus declaration. Once a name exists, the exact pending-name prompt
+  // is delivered once per minted value. Repeating it on every prompt creates
+  // an unbounded loop on adapters that cannot verify assistant reply text.
+  if (nudgeKind === "session-name-unminted") {
     clearHashFile(hashFile);
     return message;
   }
 
-  // Dedup the task-unset/stale reminders on kind + task state so a repeat
-  // prompt in the same state stays quiet.
-  const state = `${nudgeKind}|task=${taskValue}|updated=${hb.task_updated_at ?? ""}|threshold=${threshold}`;
+  // A pending reminder is keyed only to the minted name: changing the task
+  // must not reconstruct or re-request that older title. Task reminders retain
+  // their own task-state key.
+  const state =
+    nudgeKind === "session-name-pending"
+      ? `${nudgeKind}|name=${pendingSessionName ?? ""}`
+      : `${nudgeKind}|task=${taskValue}|updated=${hb.task_updated_at ?? ""}|threshold=${threshold}`;
   const newHash = sha256Hex16(state);
   const oldHash = safeRead(hashFile);
   if (oldHash && oldHash === newHash) return "";

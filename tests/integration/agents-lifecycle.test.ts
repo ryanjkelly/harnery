@@ -115,12 +115,25 @@ afterEach(() => {
 });
 
 describe("harn agents lifecycle on the V3 ledger", () => {
-  test("repeating set-task re-emits a pending name as a fresh display boundary", () => {
+  test("routine set-task stays title-silent and suggest-name explicitly retries", () => {
     const pendingRoot = makeSandbox();
-    const retry = harn(pendingRoot, ["agents", "set-task", "Auth Refactor", "--session-id", OWNER]);
+    const repeated = harn(pendingRoot, [
+      "agents",
+      "set-task",
+      "Current Work",
+      "--session-id",
+      OWNER,
+    ]);
+    expect(repeated.status).toBe(0);
+    expect(outputObject(repeated)).toMatchObject({
+      first_of_session: false,
+      session_name_retry: false,
+      suggested_session_name: null,
+    });
+
+    const retry = harn(pendingRoot, ["agents", "suggest-name", "--json", "--session-id", OWNER]);
     expect(retry.status).toBe(0);
     expect(outputObject(retry)).toMatchObject({
-      first_of_session: false,
       session_name_retry: true,
       suggested_session_name: "Agent Hollis - Auth Refactor",
     });
@@ -134,6 +147,9 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       session_name_retry: false,
       suggested_session_name: null,
     });
+
+    const reprint = harn(root, ["agents", "suggest-name", "--json", "--session-id", OWNER]);
+    expect(outputObject(reprint)).toMatchObject({ session_name_retry: false });
   });
 
   test("blocks without changing the title and records one canonical lifecycle event", () => {

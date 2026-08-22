@@ -4,6 +4,7 @@ import {
   isSessionNameRemediationCommand,
   sessionNameDisplayBlock,
   sessionNameDisplayPending,
+  sessionNameDisplayRecoveryInstruction,
   toolResponseMintedSessionName,
 } from "./session-name-display.ts";
 
@@ -47,9 +48,10 @@ describe("session name display latch", () => {
     );
   });
 
-  test("exempts only single set-task and status remediation commands", () => {
+  test("exempts only single set-task, status, and suggest-name remediation commands", () => {
     expect(isSessionNameRemediationCommand('harn agents set-task "Fix naming"', "harn")).toBe(true);
     expect(isSessionNameRemediationCommand("harn agents status --end-turn", "harn")).toBe(true);
+    expect(isSessionNameRemediationCommand("harn agents suggest-name --json", "harn")).toBe(true);
     expect(
       isSessionNameRemediationCommand(
         "# intent: Close the turn.\ncodex-wsl -- acme agents status --end-turn",
@@ -63,6 +65,12 @@ describe("session name display latch", () => {
     expect(isSessionNameRemediationCommand('harn agents set-task "$(echo bypass)"', "harn")).toBe(
       false,
     );
+  });
+
+  test("names the exact explicit recovery command after a rejected display", () => {
+    const instruction = sessionNameDisplayRecoveryInstruction(NAME, "acme");
+    expect(instruction).toContain(sessionNameDisplayBlock(NAME));
+    expect(instruction).toContain("`acme agents suggest-name --json`");
   });
 
   test("tolerates trailing stream redirects on remediation commands", () => {

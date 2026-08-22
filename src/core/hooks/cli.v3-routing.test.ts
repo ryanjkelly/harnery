@@ -206,7 +206,7 @@ describe("agent-hook V3 hard cut", () => {
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
   });
 
-  test("Codex preserves the ordered display and cannot deadlock on an unavailable transcript", () => {
+  test("Codex preserves ordered display and stays silent when its transcript is unavailable", () => {
     const root = candidateRoot("codex");
     const owner = "codex-session-name-owner";
     const name = "Agent Maya - Auth refactor";
@@ -248,8 +248,19 @@ describe("agent-hook V3 hard cut", () => {
     });
     expect(unavailable.status).toBe(0);
     expect(unavailable.stdout).not.toContain('"permissionDecision":"deny"');
-    expect(unavailable.stdout).toContain("transcript is unavailable or not flushed yet");
+    expect(unavailable.stdout).not.toContain("pending session-name display");
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
+
+    const unavailableAgain = runHook("pre-tool-use", {
+      session_id: owner,
+      thread_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "codex-still-unavailable",
+      tool_input: { command: "echo still-allowed-with-pending-verification" },
+    });
+    expect(unavailableAgain.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(unavailableAgain.stdout).not.toContain("pending session-name display");
 
     const transcript = join(root, "codex-rollout.jsonl");
     const block = `\`\`\`\n${name}\n\`\`\``;
@@ -381,6 +392,7 @@ describe("agent-hook V3 hard cut", () => {
       tool_input: { command: "echo denied" },
     });
     expect(denied.stdout).toContain('"permissionDecision":"deny"');
+    expect(denied.stdout).toContain("agents suggest-name --json");
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
   });
 

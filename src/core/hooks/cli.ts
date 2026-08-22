@@ -36,6 +36,7 @@ import {
   isSessionNameRemediationCommand,
   sessionNameDisplayInstruction,
   sessionNameDisplayPending,
+  sessionNameDisplayRecoveryInstruction,
   toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
 import { stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
@@ -955,8 +956,7 @@ async function main(): Promise<number> {
   // Phase 8: SubagentStop: delete subagent heartbeat + log.
   if (norm.event_type === "agent.completed") {
     try {
-      const childInstanceId =
-        payload?.subagent_id ?? payload?.agent_id ?? owner.instance_id;
+      const childInstanceId = payload?.subagent_id ?? payload?.agent_id ?? owner.instance_id;
       cleanupSessionEnd(coordRoot, childInstanceId, (data.reason as string) ?? "unknown");
       const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
       if (existsSync(agentCoordBin)) {
@@ -971,9 +971,7 @@ async function main(): Promise<number> {
           { encoding: "utf8", timeout: 2000, env: childEnv(coordRoot) },
         );
       }
-      const { reconcileSessionFinalizationV3 } = await import(
-        "../agents/session-finalizer-v3.ts"
-      );
+      const { reconcileSessionFinalizationV3 } = await import("../agents/session-finalizer-v3.ts");
       reconcileSessionFinalizationV3(coordRoot, { archive_observations: [] });
     } catch (err) {
       logError(coordRoot, err, { phase: "subagent-stop-cleanup" });
@@ -1217,17 +1215,16 @@ async function enforcePendingSessionNameDisplay(
   }
 
   if (inspection.state === "unavailable") {
-    const { emitContext } = await import("./adapter/output.ts");
-    emitContext(
-      adapter,
-      "PreToolUse",
-      "Harnery could not verify the pending session-name display because the adapter transcript is unavailable or not flushed yet. This tool is allowed so the session cannot deadlock; display the requested block before later work. Verification remains pending.",
-    );
+    // PostToolUse already delivered the exact block for this mint. An
+    // unavailable transcript cannot become evidence, and repeating a generic
+    // reminder on every tool creates an unbounded Codex loop. Keep the latch
+    // honestly pending and fail open without another instruction. A later
+    // readable transcript can still verify it.
     return true;
   }
 
   const { emitDeny } = await import("./adapter/output.ts");
-  emitDeny(adapter, sessionNameDisplayInstruction(name));
+  emitDeny(adapter, sessionNameDisplayRecoveryInstruction(name, resolveBinName(coordRoot)));
   return false;
 }
 
