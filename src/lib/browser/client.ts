@@ -43,6 +43,12 @@ import {
   type RuntsResult,
 } from "./runts.js";
 import {
+  buildStandaloneHtmlScript,
+  DEFAULT_MAX_RESOURCE_BYTES,
+  DEFAULT_MAX_TOTAL_RESOURCE_BYTES,
+  type StandaloneHtmlResult,
+} from "./standalone-html.js";
+import {
   buildClearTargetSizeAnnotationsScript,
   buildTargetSizeAnnotateScript,
   buildTargetSizeCheck,
@@ -1009,6 +1015,21 @@ export class Browser {
       return await el.evaluate((node) => (node as Element).outerHTML);
     }
     return await page.content();
+  }
+
+  /**
+   * Self-contained snapshot of the page: stylesheets inlined, fonts and images
+   * embedded as data: URIs, everything else rewritten to absolute URLs on the
+   * captured origin. Use this for anything written to a file — a raw
+   * `htmlContent()` dump renders unstyled once it leaves the page's own origin.
+   */
+  async standaloneHtml(
+    opts: { maxResourceBytes?: number; maxTotalResourceBytes?: number } = {},
+  ): Promise<StandaloneHtmlResult> {
+    return await this.currentPage.evaluate(buildStandaloneHtmlScript(), {
+      maxResourceBytes: opts.maxResourceBytes ?? DEFAULT_MAX_RESOURCE_BYTES,
+      maxTotalResourceBytes: opts.maxTotalResourceBytes ?? DEFAULT_MAX_TOTAL_RESOURCE_BYTES,
+    });
   }
 
   async click(selector: string): Promise<void> {

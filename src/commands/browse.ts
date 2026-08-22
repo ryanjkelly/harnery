@@ -24,6 +24,7 @@ import {
   parseAssertSpec,
   type RuntsResult,
   runCritique,
+  type StandaloneHtmlResult,
   type TargetSizeProfile,
   type TargetSizeResult,
   tilesFromFullPage,
@@ -1529,9 +1530,22 @@ async function runTrioMode(
     throw new Error("--capture-evaluate requires a screenshot; remove --no-screenshot.");
   }
 
+  // A trio `.html` is opened in a browser later — from the files origin, from
+  // another machine, from disk — so it has to carry its own CSS and media. A
+  // selector capture is a DOM fragment, not a document, and stays raw.
   const htmlPath = `${prefix}.html`;
-  const html = await browser.htmlContent(opts.selector);
-  writeFileSync(htmlPath, html);
+  let snapshot: StandaloneHtmlResult | undefined;
+  if (opts.selector) {
+    writeFileSync(htmlPath, await browser.htmlContent(opts.selector));
+  } else {
+    try {
+      snapshot = await browser.standaloneHtml();
+      writeFileSync(htmlPath, snapshot.html);
+    } catch {
+      // Inlining is best-effort; a raw serialization beats no snapshot at all.
+      writeFileSync(htmlPath, await browser.htmlContent());
+    }
+  }
   written.push(htmlPath);
 
   const diag = browser.diagnostics();
@@ -1548,6 +1562,15 @@ async function runTrioMode(
     ...summarizeDiagnostics(diag),
   };
   if (pngBytes !== undefined) envelope.screenshotBytes = pngBytes;
+  if (snapshot) {
+    envelope.htmlSnapshot = {
+      stylesheetsInlined: snapshot.stylesheetsInlined,
+      stylesheetsLinked: snapshot.stylesheetsLinked,
+      resourcesInlined: snapshot.resourcesInlined,
+      resourcesLinked: snapshot.resourcesLinked,
+      inlinedBytes: snapshot.inlinedBytes,
+    };
+  }
   if (opts.evaluate) envelope.eval = evalResult;
   if (opts.captureEvaluate) {
     envelope.captureEval = captureEvalResult;

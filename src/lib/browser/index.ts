@@ -141,6 +141,10 @@ export {
   startBrowserSessionServer,
 } from "./session-control.js";
 export type {
+  StandaloneHtmlRequest,
+  StandaloneHtmlResult,
+} from "./standalone-html.js";
+export type {
   TargetSizeNode,
   TargetSizeOutcome,
   TargetSizeProfile,
