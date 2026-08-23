@@ -899,6 +899,7 @@
 
 .portraitTooltipSurface {
   position: relative;
+  container-type: inline-size;
 }
 
 .portraitFrame {
@@ -952,21 +953,214 @@
   left: 1rem;
   right: 0.25rem;
   bottom: 1rem;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.36rem 0.5rem;
-  border: 1px solid rgb(var(--codec-accent) / 0.28);
-  border-radius: 0.45rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.2rem 0.55rem;
+  overflow: hidden;
+  padding: 0.42rem 0.55rem 0.48rem 0.68rem;
+  border: 1px solid rgb(var(--codec-accent) / 0.5);
+  border-left: 3px solid rgb(var(--codec-accent) / 0.95);
+  border-radius: 0.3rem 0.72rem 0.3rem 0.3rem;
   font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 0.56rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: 0.52rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgb(244 244 245 / 0.86);
+  color: rgb(244 244 245 / 0.92);
   background: rgb(5 7 12);
-  backdrop-filter: blur(8px);
+  box-shadow:
+    0 12px 28px rgb(0 0 0 / 0.46),
+    0 0 20px rgb(var(--codec-accent) / 0.16),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
+  backdrop-filter: blur(12px) saturate(1.2);
+}
+
+.portraitReadout::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgb(var(--codec-accent) / 0.55), transparent) top left / 42% 1px
+    no-repeat,
+    repeating-linear-gradient(90deg, transparent 0 8px, rgb(var(--codec-accent) / 0.08) 8px 9px);
+  mask-image: linear-gradient(90deg, black, transparent 78%);
+}
+
+.portraitReadoutHeader {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 0.32rem;
+  padding-bottom: 0.27rem;
+  border-bottom: 1px solid rgb(var(--codec-accent) / 0.2);
+}
+
+.portraitReadoutBeacon {
+  width: 0.38rem;
+  height: 0.38rem;
+  flex: none;
+  border: 1px solid rgb(var(--codec-accent) / 0.9);
+  border-radius: 999px;
+  background: rgb(var(--codec-accent));
+  box-shadow: 0 0 9px rgb(var(--codec-accent) / 0.88);
+}
+
+.portraitReadoutKicker {
+  min-width: 0;
+  flex: 1;
+  color: rgb(var(--codec-accent));
+  font-size: 0.43rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.portraitReadoutPresence {
+  flex: none;
+  margin-left: auto;
+  color: rgb(244 244 245 / 0.92);
+  font-size: 0.44rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.portraitReadoutExpression {
+  position: relative;
+  min-width: 0;
+  align-self: end;
+  color: rgb(255 255 255);
+  font-size: clamp(0.62rem, 0.8vw, 0.76rem);
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  line-height: 1.05;
+  text-shadow: 0 0 14px rgb(var(--codec-accent) / 0.35);
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.portraitReadoutActivity {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  grid-column: 1;
+  align-items: baseline;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.portraitReadoutActivityLabel {
+  color: rgb(244 244 245 / 0.72);
+  font-size: 0.39rem;
+  letter-spacing: 0.11em;
+}
+
+.portraitReadoutActivityValue {
+  color: rgb(244 244 245 / 0.95);
+  font-size: 0.49rem;
+  font-weight: 760;
+  text-overflow: clip;
+}
+
+.portraitReadoutMeter {
+  position: relative;
+  display: flex;
+  height: 0.76rem;
+  grid-column: 2;
+  grid-row: 2 / span 2;
+  align-self: end;
+  align-items: flex-end;
+  gap: 0.12rem;
+}
+
+.portraitReadoutMeter i {
+  display: block;
+  width: 0.16rem;
+  border-radius: 1px;
+  background: rgb(var(--codec-accent));
+  box-shadow: 0 0 7px rgb(var(--codec-accent) / 0.6);
+}
+
+.portraitReadoutMeter i:nth-child(1) {
+  height: 35%;
+}
+
+.portraitReadoutMeter i:nth-child(2) {
+  height: 65%;
+}
+
+.portraitReadoutMeter i:nth-child(3) {
+  height: 100%;
+}
+
+.portraitReadout[data-presence="unknown"] .portraitReadoutBeacon,
+.portraitReadout[data-presence="offline"] .portraitReadoutBeacon {
+  background: transparent;
+  box-shadow: none;
+}
+
+.portraitReadout[data-presence="unknown"] .portraitReadoutMeter i:nth-child(n + 2),
+.portraitReadout[data-presence="offline"] .portraitReadoutMeter i {
+  opacity: 0.18;
+}
+
+@container (max-width: 8.5rem) {
+  .portraitReadout {
+    left: 0.5rem;
+    right: 0.1rem;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.18rem;
+    padding: 0.36rem 0.42rem 0.4rem 0.52rem;
+  }
+
+  .portraitReadoutHeader {
+    grid-column: 1;
+    gap: 0.25rem;
+  }
+
+  .portraitReadoutKicker {
+    display: none;
+  }
+
+  .portraitReadoutPresence {
+    font-size: 0.4rem;
+    letter-spacing: 0.08em;
+  }
+
+  .portraitReadoutExpression {
+    padding-right: 0.8rem;
+    font-size: 0.54rem;
+    letter-spacing: 0.035em;
+  }
+
+  .portraitReadoutActivity {
+    padding-right: 0.8rem;
+    gap: 0.25rem;
+  }
+
+  .portraitReadoutActivityLabel {
+    font-size: 0.34rem;
+    letter-spacing: 0.06em;
+  }
+
+  .portraitReadoutActivityValue {
+    font-size: 0.43rem;
+  }
+
+  .portraitReadoutMeter {
+    position: absolute;
+    right: 0.42rem;
+    bottom: 0.4rem;
+    height: 0.62rem;
+    gap: 0.09rem;
+  }
+
+  .portraitReadoutMeter i {
+    width: 0.12rem;
+  }
 }
 
 .panelBody {
@@ -1984,7 +2178,11 @@
   .portraitReadout {
     left: 0.9rem;
     bottom: 0.9rem;
-    font-size: 0.5rem;
+    padding: 0.38rem 0.46rem 0.42rem 0.58rem;
+  }
+
+  .portraitReadoutExpression {
+    font-size: 0.6rem;
   }
 
   .panelBody {

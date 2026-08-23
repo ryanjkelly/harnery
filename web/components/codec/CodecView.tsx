@@ -942,9 +942,32 @@ function CodecPanel({
         >
           <div data-codec-portrait-surface className={styles.portraitTooltipSurface}>
             <Portrait panel={panel} />
-            <div className={styles.portraitReadout}>
-              <span>{humanizeCueToken(panel.expression.value)}</span>
-              <span>{humanizeCueToken(panel.activity.value)}</span>
+            <div
+              data-codec-portrait-readout
+              data-presence={panel.presence.value}
+              className={styles.portraitReadout}
+            >
+              <div className={styles.portraitReadoutHeader}>
+                <span className={styles.portraitReadoutBeacon} aria-hidden />
+                <span className={styles.portraitReadoutKicker}>Live state</span>
+                <span className={styles.portraitReadoutPresence}>
+                  {humanizeCueToken(panel.presence.value)}
+                </span>
+              </div>
+              <strong className={styles.portraitReadoutExpression}>
+                {humanizeCueToken(panel.expression.value)}
+              </strong>
+              <div className={styles.portraitReadoutActivity}>
+                <span className={styles.portraitReadoutActivityLabel}>Activity</span>
+                <strong className={styles.portraitReadoutActivityValue}>
+                  {humanizeCueToken(panel.activity.value)}
+                </strong>
+              </div>
+              <span className={styles.portraitReadoutMeter} aria-hidden>
+                <i />
+                <i />
+                <i />
+              </span>
             </div>
           </div>
         </Tooltip>
