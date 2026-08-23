@@ -8,6 +8,7 @@ import {
   discoverCodexSessionTranscript,
   readRuntimeContextTelemetry,
   readRuntimeContextUsage,
+  readRuntimeTuning,
 } from "./runtime-telemetry.ts";
 
 const SESSION = "01a025fb-2214-7943-be54-30f5ba66c9e0";
@@ -331,3 +332,193 @@ function taskComplete(ordinal: number, turnId = TURN): object {
     payload: { type: "task_complete", turn_id: turnId },
   };
 }
+
+describe("runtime tuning telemetry", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "harn-runtime-tuning-"));
+    clearRuntimeTelemetryCachesForTest();
+  });
+
+  afterEach(() => {
+    clearRuntimeTelemetryCachesForTest();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeCodexRollout(rows: object[], session = SESSION): string {
+    const directory = join(root, "2026", "08", "22");
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, `rollout-${session}.jsonl`);
+    writeFileSync(path, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    return path;
+  }
+
+  function writeClaudeTranscript(rows: object[]): string {
+    const path = join(root, "transcript.jsonl");
+    writeFileSync(path, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    return path;
+  }
+
+  function turnContext(ordinal: number, effort: string, model = "gpt-5.6-sol"): object {
+    return {
+      timestamp: TOKEN_TIME,
+      ordinal,
+      type: "turn_context",
+      payload: { turn_id: TURN, model, effort, summary: "auto" },
+    };
+  }
+
+  test("reads the newest Codex turn_context effort and model", () => {
+    const transcript = writeCodexRollout([
+      turnContext(1, "high"),
+      taskStarted(2),
+      turnContext(3, "xhigh"),
+    ]);
+    expect(
+      readRuntimeTuning({ adapter: "codex", session_id: SESSION, transcript_path: transcript }),
+    ).toMatchObject({
+      state: "observed",
+      effort: "xhigh",
+      model: "gpt-5.6-sol",
+      measured_at: TOKEN_TIME,
+      method: "codex_transcript_turn_context",
+      source_event: "codex.rollout_turn_context",
+    });
+  });
+
+  test("falls back to the head when a long turn pushes turn_context past the tail", () => {
+    const filler = {
+      timestamp: TOKEN_TIME,
+      ordinal: 2,
+      type: "response_item",
+      payload: { type: "message", content: "x".repeat(600 * 1024) },
+    };
+    const transcript = writeCodexRollout([turnContext(1, "medium"), filler, taskComplete(3)]);
+    expect(
+      readRuntimeTuning(
+        { adapter: "codex", session_id: SESSION, transcript_path: transcript },
+        { maxTailBytes: 64 * 1024 },
+      ),
+    ).toMatchObject({ state: "observed", effort: "medium", model: "gpt-5.6-sol" });
+  });
+
+  test("keeps a Codex rollout without turn_context partial, not observed", () => {
+    const transcript = writeCodexRollout([taskStarted(1), tokenCount(2, 100, 1_000)]);
+    expect(
+      readRuntimeTuning({ adapter: "codex", session_id: SESSION, transcript_path: transcript }),
+    ).toMatchObject({ state: "partial", reason: "codex_transcript_turn_context_missing" });
+  });
+
+  test("reads CC model, effort, and speed from the same assistant row", () => {
+    const transcript = writeClaudeTranscript([
+      {
+        type: "assistant",
+        timestamp: TOKEN_TIME,
+        effort: "low",
+        message: { model: "claude-sonnet-5", usage: { speed: "standard" } },
+      },
+    ]);
+    expect(
+      readRuntimeTuning({ adapter: "claude-code", transcript_path: transcript }),
+    ).toMatchObject({
+      state: "observed",
+      model: "claude-sonnet-5",
+      effort: "low",
+      speed: "standard",
+      method: "claude_transcript_assistant_row",
+    });
+  });
+
+  test("observes a no-dial CC model with no effort rather than failing", () => {
+    const transcript = writeClaudeTranscript([
+      {
+        type: "assistant",
+        timestamp: TOKEN_TIME,
+        message: { model: "claude-haiku-4-5-20251001", usage: { speed: "standard" } },
+      },
+    ]);
+    const result = readRuntimeTuning({ adapter: "claude-code", transcript_path: transcript });
+    expect(result).toMatchObject({
+      state: "observed",
+      model: "claude-haiku-4-5-20251001",
+      speed: "standard",
+    });
+    expect("effort" in result).toBe(false);
+  });
+
+  test("does not blend rows across a mid-session model swap", () => {
+    const transcript = writeClaudeTranscript([
+      {
+        type: "assistant",
+        timestamp: "2026-08-22T23:00:00.000Z",
+        effort: "low",
+        message: { model: "claude-sonnet-5", usage: { speed: "standard" } },
+      },
+      {
+        type: "assistant",
+        timestamp: TOKEN_TIME,
+        effort: "high",
+        message: { model: "claude-fable-5", usage: { speed: "fast" } },
+      },
+    ]);
+    expect(
+      readRuntimeTuning({ adapter: "claude-code", transcript_path: transcript }),
+    ).toMatchObject({ state: "observed", model: "claude-fable-5", effort: "high", speed: "fast" });
+  });
+
+  test("skips synthetic CC rows and tool-use-only rows without model", () => {
+    const transcript = writeClaudeTranscript([
+      {
+        type: "assistant",
+        timestamp: TOKEN_TIME,
+        effort: "high",
+        message: { model: "claude-opus-5", usage: { speed: "standard" } },
+      },
+      { type: "assistant", effort: "low", message: { model: "<synthetic>" } },
+      { type: "user", message: { role: "user" } },
+    ]);
+    expect(
+      readRuntimeTuning({ adapter: "claude-code", transcript_path: transcript }),
+    ).toMatchObject({ state: "observed", model: "claude-opus-5", effort: "high" });
+  });
+
+  test("stays partial when the CC transcript has no assistant row", () => {
+    const transcript = writeClaudeTranscript([{ type: "user", message: { role: "user" } }]);
+    expect(
+      readRuntimeTuning({ adapter: "claude-code", transcript_path: transcript }),
+    ).toMatchObject({ state: "partial", reason: "claude_transcript_assistant_row_missing" });
+  });
+
+  test("is unsupported for adapters with no known tuning source and for missing inputs", () => {
+    expect(readRuntimeTuning({ adapter: "cursor" })).toMatchObject({
+      state: "unsupported",
+      reason: "runtime_adapter_not_supported",
+    });
+    expect(readRuntimeTuning({ adapter: "codex" })).toMatchObject({
+      state: "unsupported",
+      reason: "runtime_session_id_not_reported",
+    });
+    expect(readRuntimeTuning({ adapter: "claude-code" })).toMatchObject({
+      state: "unsupported",
+      reason: "runtime_context_telemetry_unavailable",
+    });
+  });
+
+  test("never crosses message bodies through the typed boundary", () => {
+    const transcript = writeClaudeTranscript([
+      {
+        type: "assistant",
+        timestamp: TOKEN_TIME,
+        effort: "high",
+        message: {
+          model: "claude-opus-5",
+          content: [{ type: "text", text: "PRIVATE_BODY_SENTINEL" }],
+          usage: { speed: "standard" },
+        },
+      },
+    ]);
+    const result = readRuntimeTuning({ adapter: "claude-code", transcript_path: transcript });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_BODY_SENTINEL");
+  });
+});

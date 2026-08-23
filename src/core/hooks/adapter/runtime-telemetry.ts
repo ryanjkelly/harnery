@@ -82,6 +82,8 @@ interface ParsedRuntimeRow {
   timestamp?: string;
   ordinal?: number;
   type?: string;
+  /** CC stamps the effective effort level at the row's top level. */
+  effort?: string;
   payload?: Record<string, unknown>;
 }
 
@@ -157,6 +159,202 @@ export function readRuntimeContextUsage(
 
 export function clearRuntimeTelemetryCachesForTest(): void {
   codexTranscriptCache.clear();
+}
+
+export type RuntimeTuningMissingReason =
+  | "codex_transcript_ambiguous"
+  | "codex_transcript_session_mismatch"
+  | "codex_transcript_unreadable"
+  | "codex_transcript_turn_context_missing"
+  | "claude_transcript_unreadable"
+  | "claude_transcript_assistant_row_missing";
+
+/**
+ * Privacy-safe tuning identity read from a local runtime transcript.
+ *
+ * `observed` means the newest identity-bearing row was read: a Codex
+ * `turn_context` row or a CC assistant row with a real model id. An observed
+ * result with NO `effort` is itself evidence — CC omits the field exactly when
+ * the model has no effort dial — so callers must distinguish it from
+ * `partial`/`unsupported`, where nothing was established.
+ */
+export type RuntimeTuningTelemetry =
+  | {
+      state: "observed";
+      model?: string;
+      effort?: string;
+      speed?: string;
+      measured_at?: string;
+      method: "codex_transcript_turn_context" | "claude_transcript_assistant_row";
+      source_event: string;
+      bytes_read: number;
+      io_duration_ms: number;
+    }
+  | {
+      state: "partial";
+      reason: RuntimeTuningMissingReason;
+      bytes_read: number;
+      io_duration_ms: number;
+    }
+  | {
+      state: "unsupported";
+      reason: RuntimeContextUnsupportedReason;
+      bytes_read: 0;
+      io_duration_ms: number;
+    };
+
+export interface RuntimeTuningRequest {
+  adapter: Adapter;
+  session_id?: string;
+  transcript_path?: string;
+}
+
+/**
+ * Read the newest observed tuning (effort, and speed where reported) for a
+ * session from its local runtime transcript.
+ *
+ * Codex: the newest `turn_context` row carries the EFFECTIVE per-turn effort,
+ * including `-c model_reasoning_effort` overrides (the config default is
+ * deliberately not consulted — it is the default, not the effective value).
+ * CC: the newest assistant row carries effort at the row's top level and
+ * speed inside `message.usage`; model, effort, and speed are read from the
+ * SAME row so a mid-session model swap cannot blend two rows' values.
+ *
+ * Same bounded tail-read and privacy posture as `readRuntimeContextTelemetry`:
+ * only tokens, timestamps, and I/O counters cross this interface.
+ */
+export function readRuntimeTuning(
+  request: RuntimeTuningRequest,
+  options: RuntimeTelemetryOptions = {},
+): RuntimeTuningTelemetry {
+  const startedAt = performance.now();
+  if (request.adapter === "codex") {
+    if (!request.session_id) return unsupported("runtime_session_id_not_reported", startedAt);
+    return readCodexTuning(request, options, startedAt);
+  }
+  if (request.adapter === "claude-code") return readClaudeTuning(request, options, startedAt);
+  return unsupported("runtime_adapter_not_supported", startedAt);
+}
+
+function readCodexTuning(
+  request: RuntimeTuningRequest,
+  options: RuntimeTelemetryOptions,
+  startedAt: number,
+): RuntimeTuningTelemetry {
+  const resolved = resolveCodexTranscript(
+    {
+      adapter: "codex",
+      session_id: request.session_id,
+      transcript_path: request.transcript_path,
+      mode: "status",
+    },
+    options,
+  );
+  if (resolved.state === "missing") {
+    return unsupported("runtime_context_telemetry_unavailable", startedAt);
+  }
+  if (resolved.state === "ambiguous") {
+    return tuningPartial("codex_transcript_ambiguous", 0, startedAt);
+  }
+  if (resolved.state === "mismatch") {
+    return tuningPartial("codex_transcript_session_mismatch", 0, startedAt);
+  }
+  const tail = readTail(resolved.path, options.maxTailBytes ?? DEFAULT_TAIL_BYTES);
+  if (!tail) return tuningPartial("codex_transcript_unreadable", 0, startedAt);
+  const fromTail = newestTurnContextTuning(parseRuntimeRows(tail.text), tail.bytes, startedAt);
+  if (fromTail) return fromTail;
+  // `turn_context` is written at the START of a turn, so one long turn pushes
+  // it past the bounded tail. The head is then the reliable place: a rollout
+  // opens with session_meta followed by the first turn_context. A newer row
+  // in the unread middle of a very long multi-turn session is missed and the
+  // head value (older but genuine) is returned; the change-detection path
+  // re-reads at every turn terminal, so the staleness self-heals.
+  const head = readHead(resolved.path, TUNING_HEAD_BYTES);
+  if (head) {
+    const fromHead = newestTurnContextTuning(
+      parseRuntimeRows(head.text),
+      tail.bytes + head.bytes,
+      startedAt,
+    );
+    if (fromHead) return fromHead;
+  }
+  return tuningPartial(
+    "codex_transcript_turn_context_missing",
+    tail.bytes + (head?.bytes ?? 0),
+    startedAt,
+  );
+}
+
+function newestTurnContextTuning(
+  rows: ParsedRuntimeRow[],
+  bytesRead: number,
+  startedAt: number,
+): RuntimeTuningTelemetry | undefined {
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index]!;
+    if (row.type !== "turn_context") continue;
+    const effort = row.payload?.effort;
+    const model = row.payload?.model;
+    if (typeof effort !== "string" || effort.length === 0) continue;
+    return {
+      state: "observed",
+      effort,
+      ...(typeof model === "string" && model.length > 0 ? { model } : {}),
+      ...(row.timestamp ? { measured_at: row.timestamp } : {}),
+      method: "codex_transcript_turn_context",
+      source_event: "codex.rollout_turn_context",
+      bytes_read: bytesRead,
+      io_duration_ms: elapsed(startedAt),
+    };
+  }
+  return undefined;
+}
+
+function readClaudeTuning(
+  request: RuntimeTuningRequest,
+  options: RuntimeTelemetryOptions,
+  startedAt: number,
+): RuntimeTuningTelemetry {
+  const readablePath = transcriptPathCandidates(request.transcript_path).find((candidate) =>
+    existsSync(candidate),
+  );
+  if (!readablePath) return unsupported("runtime_context_telemetry_unavailable", startedAt);
+  const tail = readTail(readablePath, options.maxTailBytes ?? DEFAULT_TAIL_BYTES);
+  if (!tail) return tuningPartial("claude_transcript_unreadable", 0, startedAt);
+  const rows = parseRuntimeRows(tail.text);
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index]!;
+    if (row.type !== "assistant") continue;
+    const model = row.payload?.model;
+    if (typeof model !== "string" || model.length === 0 || model.startsWith("<")) continue;
+    const usage = objectValue(row.payload?.usage);
+    const speed = usage?.speed;
+    return {
+      state: "observed",
+      model,
+      ...(row.effort ? { effort: row.effort } : {}),
+      ...(typeof speed === "string" && speed.length > 0 ? { speed } : {}),
+      ...(row.timestamp ? { measured_at: row.timestamp } : {}),
+      method: "claude_transcript_assistant_row",
+      source_event: "claude-code.transcript_assistant_row",
+      bytes_read: tail.bytes,
+      io_duration_ms: elapsed(startedAt),
+    };
+  }
+  return tuningPartial("claude_transcript_assistant_row_missing", tail.bytes, startedAt);
+}
+
+function tuningPartial(
+  reason: RuntimeTuningMissingReason,
+  bytesRead: number,
+  startedAt: number,
+): RuntimeTuningTelemetry {
+  return {
+    state: "partial",
+    reason,
+    bytes_read: bytesRead,
+    io_duration_ms: elapsed(startedAt),
+  };
 }
 
 function readCodexContext(
@@ -346,6 +544,7 @@ function parseRuntimeRows(text: string): ParsedRuntimeRow[] {
         timestamp: timestamp(row.timestamp),
         ordinal: safeInteger(row.ordinal),
         type: typeof row.type === "string" ? row.type : undefined,
+        ...(typeof row.effort === "string" && row.effort.length > 0 ? { effort: row.effort } : {}),
         payload: objectValue(row.payload) ?? objectValue(row.message) ?? undefined,
       });
     } catch {
@@ -353,6 +552,29 @@ function parseRuntimeRows(text: string): ParsedRuntimeRow[] {
     }
   }
   return rows;
+}
+
+/** Head window for the Codex tuning fallback: session_meta plus the first
+ * turn_context always fit well inside this. */
+const TUNING_HEAD_BYTES = 64 * 1024;
+
+/** Bounded read from the start of a file; drops the final partial line. */
+function readHead(path: string, maxBytes: number): TailRead | undefined {
+  let fd: number | undefined;
+  try {
+    const size = statSync(path).size;
+    const bytes = Math.max(0, Math.min(size, Math.max(1, Math.floor(maxBytes))));
+    fd = openSync(path, "r");
+    const buffer = Buffer.alloc(bytes);
+    const read = readSync(fd, buffer, 0, bytes, 0);
+    let text = buffer.subarray(0, read).toString("utf8");
+    if (bytes < size) text = text.slice(0, Math.max(0, text.lastIndexOf("\n") + 1));
+    return { text, bytes: read };
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function readTail(path: string, maxBytes: number): TailRead | undefined {
@@ -468,10 +690,16 @@ function transcriptMatches(path: string, sessionId: string): boolean {
   return basename(path).endsWith(`-${sessionId}.jsonl`);
 }
 
+/** Narrow return: this exact shape is a member of both telemetry unions. */
 function unsupported(
   reason: RuntimeContextUnsupportedReason,
   startedAt: number,
-): RuntimeContextTelemetry {
+): {
+  state: "unsupported";
+  reason: RuntimeContextUnsupportedReason;
+  bytes_read: 0;
+  io_duration_ms: number;
+} {
   return { state: "unsupported", reason, bytes_read: 0, io_duration_ms: elapsed(startedAt) };
 }
 

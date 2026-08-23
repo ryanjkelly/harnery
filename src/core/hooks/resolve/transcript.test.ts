@@ -10,7 +10,7 @@ import {
   scanAssistantTextIncludes,
   scanLatestAssistantText,
   scanSessionNameDisplayedImmediately,
-  scanTranscriptModel,
+  scanTranscriptRuntime,
   transcriptPathCandidates,
 } from "./transcript.ts";
 
@@ -363,7 +363,7 @@ describe("ordered session-name transcript scans", () => {
   });
 });
 
-describe("scanTranscriptModel", () => {
+describe("scanTranscriptRuntime", () => {
   let dir: string;
 
   beforeEach(() => {
@@ -384,7 +384,7 @@ describe("scanTranscriptModel", () => {
       { type: "user", message: { role: "user" } },
       { type: "assistant", message: { role: "assistant", model: "claude-opus-4-8" } },
     ]);
-    expect(scanTranscriptModel(p)).toBe("claude-opus-4-8");
+    expect(scanTranscriptRuntime(p)?.model).toBe("claude-opus-4-8");
   });
 
   test("walks from the end and returns the latest model", () => {
@@ -392,12 +392,12 @@ describe("scanTranscriptModel", () => {
       { type: "assistant", message: { model: "claude-sonnet-4-6" } },
       { type: "assistant", message: { model: "claude-opus-4-8" } },
     ]);
-    expect(scanTranscriptModel(p)).toBe("claude-opus-4-8");
+    expect(scanTranscriptRuntime(p)?.model).toBe("claude-opus-4-8");
   });
 
   test("falls back to a top-level model field", () => {
     const p = writeTranscript([{ type: "assistant", model: "gpt-5.5" }]);
-    expect(scanTranscriptModel(p)).toBe("gpt-5.5");
+    expect(scanTranscriptRuntime(p)?.model).toBe("gpt-5.5");
   });
 
   test("skips synthetic placeholders", () => {
@@ -405,14 +405,80 @@ describe("scanTranscriptModel", () => {
       { type: "assistant", message: { model: "claude-opus-4-8" } },
       { type: "assistant", message: { model: "<synthetic>" } },
     ]);
-    expect(scanTranscriptModel(p)).toBe("claude-opus-4-8");
+    expect(scanTranscriptRuntime(p)?.model).toBe("claude-opus-4-8");
   });
 
   test("returns undefined for missing / undefined / model-less transcripts", () => {
-    expect(scanTranscriptModel(undefined)).toBeUndefined();
-    expect(scanTranscriptModel(join(dir, "nope.jsonl"))).toBeUndefined();
+    expect(scanTranscriptRuntime(undefined)).toBeUndefined();
+    expect(scanTranscriptRuntime(join(dir, "nope.jsonl"))).toBeUndefined();
     const p = writeTranscript([{ type: "user", message: { role: "user" } }]);
-    expect(scanTranscriptModel(p)).toBeUndefined();
+    expect(scanTranscriptRuntime(p)).toBeUndefined();
+  });
+
+  test("returns effort and speed from the same row as the model", () => {
+    const p = writeTranscript([
+      {
+        type: "assistant",
+        effort: "high",
+        message: { model: "claude-opus-5", usage: { speed: "standard" } },
+      },
+    ]);
+    expect(scanTranscriptRuntime(p)).toEqual({
+      model: "claude-opus-5",
+      effort: "high",
+      speed: "standard",
+    });
+  });
+
+  test("omits effort for a model with no effort dial", () => {
+    const p = writeTranscript([
+      {
+        type: "assistant",
+        message: { model: "claude-haiku-4-5-20251001", usage: { speed: "standard" } },
+      },
+    ]);
+    expect(scanTranscriptRuntime(p)).toEqual({
+      model: "claude-haiku-4-5-20251001",
+      speed: "standard",
+    });
+  });
+
+  test("pairs tuning with the newest row across a mid-session model swap", () => {
+    // The swap is the hazard: pairing the newest model with a separately
+    // scanned newest effort would blend two rows.
+    const p = writeTranscript([
+      {
+        type: "assistant",
+        effort: "low",
+        message: { model: "claude-sonnet-5", usage: { speed: "standard" } },
+      },
+      {
+        type: "assistant",
+        effort: "high",
+        message: { model: "claude-fable-5", usage: { speed: "fast" } },
+      },
+    ]);
+    expect(scanTranscriptRuntime(p)).toEqual({
+      model: "claude-fable-5",
+      effort: "high",
+      speed: "fast",
+    });
+  });
+
+  test("skips a synthetic row entirely rather than mixing its tuning in", () => {
+    const p = writeTranscript([
+      {
+        type: "assistant",
+        effort: "high",
+        message: { model: "claude-opus-5", usage: { speed: "standard" } },
+      },
+      { type: "assistant", effort: "low", message: { model: "<synthetic>" } },
+    ]);
+    expect(scanTranscriptRuntime(p)).toEqual({
+      model: "claude-opus-5",
+      effort: "high",
+      speed: "standard",
+    });
   });
 });
 

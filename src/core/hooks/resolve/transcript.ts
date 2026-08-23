@@ -225,19 +225,38 @@ function textFromContent(content: unknown): string {
   return parts.join("\n");
 }
 
+/** Runtime identity read from one transcript row: the model plus the tuning
+ * values that row reported alongside it. */
+export interface TranscriptRuntimeScan {
+  model: string;
+  /** CC stamps the effective effort level on each assistant row; absent when
+   * the model has no effort dial (verified: haiku rows omit it entirely). */
+  effort?: string;
+  /** CC reports the response speed tier inside `message.usage`. */
+  speed?: string;
+}
+
 /**
- * Resolve the agent's model from a CC-style JSONL transcript by reading the
- * most-recent assistant message's `message.model`. Claude Code's SessionStart
- * payload omits `model` (Codex + Cursor supply it directly), so this is the
- * fallback that lets `session.started` / `turn.completed` populate the cache's
- * model field once the transcript has at least one assistant turn.
+ * Resolve the agent's runtime identity from a CC-style JSONL transcript by
+ * reading the most-recent assistant row. Claude Code's SessionStart payload
+ * omits `model` and `effort` (Codex + Cursor supply model directly), so this
+ * is the fallback that lets `session.started` / `turn.completed` populate
+ * model and tuning once the transcript has at least one assistant turn.
+ *
+ * Model, effort, and speed are read from the SAME row, never independently:
+ * effort varies with model inside one transcript (a mid-session model swap
+ * changes both), so pairing the newest model with a separately scanned newest
+ * effort can mislabel the session.
  *
  * Tail-reads the same 256KB window as the status-box scan and walks lines from
- * the end, returning the first real model id found. Synthetic placeholders
- * (`<synthetic>`) and empty values are skipped. Returns undefined when the
- * transcript is missing/empty (e.g. a fresh session's first SessionStart).
+ * the end, returning the first row with a real model id. Synthetic
+ * placeholders (`<synthetic>`) and empty values are skipped. Returns undefined
+ * when the transcript is missing/empty (e.g. a fresh session's first
+ * SessionStart).
  */
-export function scanTranscriptModel(transcriptPath: string | undefined): string | undefined {
+export function scanTranscriptRuntime(
+  transcriptPath: string | undefined,
+): TranscriptRuntimeScan | undefined {
   const readablePath = resolveTranscriptPath(transcriptPath);
   if (!readablePath) return undefined;
   const text = tailText(readablePath);
@@ -248,12 +267,19 @@ export function scanTranscriptModel(transcriptPath: string | undefined): string 
     if (!line?.includes('"model"')) continue;
     try {
       const obj = JSON.parse(line) as {
-        message?: { model?: unknown };
+        effort?: unknown;
+        message?: { model?: unknown; usage?: { speed?: unknown } };
         model?: unknown;
       };
       const model = obj.message?.model ?? obj.model;
       if (typeof model === "string" && model.length > 0 && !model.startsWith("<")) {
-        return model;
+        const effort = obj.effort;
+        const speed = obj.message?.usage?.speed;
+        return {
+          model,
+          ...(typeof effort === "string" && effort.length > 0 ? { effort } : {}),
+          ...(typeof speed === "string" && speed.length > 0 ? { speed } : {}),
+        };
       }
     } catch {
       // Partial/truncated first line of the tail window; skip it.

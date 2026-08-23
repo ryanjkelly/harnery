@@ -105,7 +105,7 @@ import {
   scanAssistantTextIncludes,
   scanSessionNameDisplayedImmediately,
   scanStatusBoxPresent,
-  scanTranscriptModel,
+  scanTranscriptRuntime,
 } from "./resolve/transcript.ts";
 import { sessionNamePresence } from "./session-name-presence.ts";
 import { unsafeCrossShellReason } from "./unsafe-cross-shell.ts";
@@ -318,7 +318,7 @@ function buildEventData(
         // Claude Code's SessionStart payload omits `model` (Codex + Cursor
         // supply it). Fall back to the transcript, populated on `resume`, and
         // backfilled later by `turn.completed` for a fresh startup session.
-        model: p?.model ?? scanTranscriptModel(p?.transcript_path),
+        model: p?.model ?? scanTranscriptRuntime(p?.transcript_path)?.model,
         pid: adapterPid,
         source: p?.source,
         platform: adapterPlatform,
@@ -385,7 +385,7 @@ function buildEventData(
         // Backfill the model for adapters that omit it at session.started
         // (Claude Code). The transcript is populated with assistant turns by
         // Stop-hook time, so this resolves even for fresh `startup` sessions.
-        model: p?.model ?? scanTranscriptModel(p?.transcript_path),
+        model: p?.model ?? scanTranscriptRuntime(p?.transcript_path)?.model,
         // Phase 2: tool_call_count + text_length aren't cheaply available
         // from the Stop payload alone (they'd require a transcript scan that
         // races with the JSONL flush). Emit `-1` / `0` sentinels and let
