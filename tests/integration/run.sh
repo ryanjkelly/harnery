@@ -75,22 +75,19 @@ printf "hello world\n" > "$TOKENS_TMP"
 check "harn tokens counts a small file" "$HARN tokens '$TOKENS_TMP'" "tokens"
 rm -f "$TOKENS_TMP"
 
-# 4. harn artifacts manages a complete preview-before-delete lifecycle
+# 4. harn artifacts manages a preview-before-delete lifecycle. Rolling
+# retention anchors expiry to the newest tree change (mtime AND ctime, and
+# ctime cannot be backdated), so a smoke run on a real clock can never
+# observe managed-expired; that path is covered by the unit tests with an
+# injected clock (src/core/artifacts/index.test.ts). Assert the live
+# classifications and the nothing-expired delete accounting instead.
 check "harn artifacts creates a managed workspace" \
   "$HARN artifacts create integration-artifact --purpose 'integration smoke' --days 1" \
   '"artifact_id"'
-
-# Retention is a whole number of days, so the expiry path is reached by
-# backdating the manifest rather than asking for a fractional day.
-expire_managed_artifacts() {
-  node -e 'const fs=require("fs"),p=require("path");const d=process.argv[1];if(!fs.existsSync(d))process.exit(0);for(const n of fs.readdirSync(d)){const f=p.join(d,n,".harnery-artifact.json");if(!fs.existsSync(f))continue;const m=JSON.parse(fs.readFileSync(f,"utf8"));m.retention.expires_at=new Date(Date.now()-86400000).toISOString();fs.writeFileSync(f,JSON.stringify(m,null,2));}' "$1"
-}
-expire_managed_artifacts "$TMPDIR_TEST/.harnery/artifacts"
-
-check "harn artifacts cleanup previews an expired unit" \
-  "$HARN artifacts clean" '"managed-expired"'
-check "harn artifacts cleanup deletes only with confirmation" \
-  "$HARN artifacts clean --yes" '"deleted"'
+check "harn artifacts classifies a fresh workspace as current" \
+  "$HARN artifacts clean" '"managed-current"'
+check "harn artifacts cleanup deletes nothing without expiry" \
+  "$HARN artifacts clean --yes" '"deleted":0'
 
 # 5. harn adapter catalog + offline bench
 check "harn adapter list includes all built-ins" \
