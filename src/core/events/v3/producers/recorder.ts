@@ -212,6 +212,9 @@ export interface HookProducerStateV3 {
    * different attestation channel changes. */
   last_attested_model_observation?: RuntimeAttestationV3Base["model"];
   last_attested_tuning_observation?: RuntimeAttestationV3Base["tuning"];
+  /** Turn already probed for Codex tuning while effort is unknown; bounds the
+   * rollout forward-scan to one attempt per turn. */
+  tuning_probe_turn_id?: `tid_${string}`;
 }
 
 export interface RecordHookSignalV3Input {
@@ -2013,7 +2016,17 @@ function maybeAttestTuningChange(
   if (input.adapter === "claude-code" || input.adapter === "cursor") {
     if (!input.payload.effort) return;
     candidate = { effort: input.payload.effort };
-  } else if (input.adapter === "codex" && input.signal === "stop") {
+  } else if (
+    input.adapter === "codex" &&
+    (input.signal === "stop" ||
+      // Early probe: without it, a Codex card shows no effort until the first
+      // turn terminal. One rollout read per turn while effort is unknown.
+      (input.signal === "post-tool-use" &&
+        !state.last_attested_tuning?.effort &&
+        state.current_turn_id !== undefined &&
+        state.tuning_probe_turn_id !== state.current_turn_id))
+  ) {
+    if (input.signal === "post-tool-use") state.tuning_probe_turn_id = state.current_turn_id;
     const runtime = readRuntimeTuning({
       adapter: "codex",
       session_id: input.payload.session_id ?? input.payload.conversation_id,
@@ -3325,6 +3338,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "last_attested_telemetry",
     "last_attested_tuning",
     "last_attested_tuning_observation",
+    "tuning_probe_turn_id",
     "last_event_id",
     "last_monotonic_ns",
     "last_observed_at",

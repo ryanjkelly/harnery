@@ -270,25 +270,68 @@ function readCodexTuning(
   const fromTail = newestTurnContextTuning(parseRuntimeRows(tail.text), tail.bytes, startedAt);
   if (fromTail) return fromTail;
   // `turn_context` is written at the START of a turn, so one long turn pushes
-  // it past the bounded tail. The head is then the reliable place: a rollout
-  // opens with session_meta followed by the first turn_context. A newer row
-  // in the unread middle of a very long multi-turn session is missed and the
-  // head value (older but genuine) is returned; the change-detection path
-  // re-reads at every turn terminal, so the staleness self-heals.
-  const head = readHead(resolved.path, TUNING_HEAD_BYTES);
-  if (head) {
-    const fromHead = newestTurnContextTuning(
-      parseRuntimeRows(head.text),
-      tail.bytes + head.bytes,
+  // it past the bounded tail. The front of the file is then the reliable
+  // place, but not a fixed-size head: a real interactive rollout opens with
+  // hundreds of KB of session_meta, instruction, and world_state rows before
+  // the first turn_context (observed live: 272KB in a desktop session). Scan
+  // forward in bounded chunks and keep the LAST match inside the cap; rows
+  // between the cap and the tail window stay unscanned, and the stop-time
+  // re-read heals any staleness that gap could cause.
+  const forward = scanForwardTurnContext(resolved.path, TUNING_FORWARD_SCAN_MAX_BYTES);
+  if (forward.row) {
+    const fromForward = newestTurnContextTuning(
+      [forward.row],
+      tail.bytes + forward.bytes,
       startedAt,
     );
-    if (fromHead) return fromHead;
+    if (fromForward) return fromForward;
   }
   return tuningPartial(
     "codex_transcript_turn_context_missing",
-    tail.bytes + (head?.bytes ?? 0),
+    tail.bytes + forward.bytes,
     startedAt,
   );
+}
+
+/** Forward-scan budget for the first turn_context; generous against
+ * instruction/world_state bloat while still bounding a runaway file. */
+const TUNING_FORWARD_SCAN_MAX_BYTES = 4 * 1024 * 1024;
+const TUNING_FORWARD_CHUNK_BYTES = 256 * 1024;
+
+/** Stream the file from the start in bounded chunks, returning the last
+ * parseable `turn_context` row inside the budget and the bytes read. */
+function scanForwardTurnContext(
+  path: string,
+  maxBytes: number,
+): { row?: ParsedRuntimeRow; bytes: number } {
+  let fd: number | undefined;
+  let bytesRead = 0;
+  let remainder = "";
+  let match: ParsedRuntimeRow | undefined;
+  try {
+    fd = openSync(path, "r");
+    const buffer = Buffer.alloc(TUNING_FORWARD_CHUNK_BYTES);
+    while (bytesRead < maxBytes) {
+      const read = readSync(fd, buffer, 0, buffer.length, bytesRead);
+      if (read <= 0) break;
+      bytesRead += read;
+      const text = remainder + buffer.subarray(0, read).toString("utf8");
+      const lines = text.split("\n");
+      remainder = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.includes('"turn_context"')) continue;
+        const rows = parseRuntimeRows(line);
+        const row = rows.find((candidate) => candidate.type === "turn_context");
+        if (row) match = row;
+      }
+      if (read < buffer.length) break;
+    }
+    return { row: match, bytes: bytesRead };
+  } catch {
+    return { row: match, bytes: bytesRead };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function newestTurnContextTuning(
@@ -598,29 +641,6 @@ function parseRuntimeRows(text: string): ParsedRuntimeRow[] {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-/** Head window for the Codex tuning fallback: session_meta plus the first
- * turn_context always fit well inside this. */
-const TUNING_HEAD_BYTES = 64 * 1024;
-
-/** Bounded read from the start of a file; drops the final partial line. */
-function readHead(path: string, maxBytes: number): TailRead | undefined {
-  let fd: number | undefined;
-  try {
-    const size = statSync(path).size;
-    const bytes = Math.max(0, Math.min(size, Math.max(1, Math.floor(maxBytes))));
-    fd = openSync(path, "r");
-    const buffer = Buffer.alloc(bytes);
-    const read = readSync(fd, buffer, 0, bytes, 0);
-    let text = buffer.subarray(0, read).toString("utf8");
-    if (bytes < size) text = text.slice(0, Math.max(0, text.lastIndexOf("\n") + 1));
-    return { text, bytes: read };
-  } catch {
-    return undefined;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
 }
 
 function readTail(path: string, maxBytes: number): TailRead | undefined {

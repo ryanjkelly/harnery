@@ -605,6 +605,37 @@ describe("runtime tuning telemetry", () => {
     ).toMatchObject({ state: "observed", effort: "medium", model: "gpt-5.6-sol" });
   });
 
+  test("forward-scans past a fat instruction prefix to find turn_context", () => {
+    // Real interactive rollouts open with hundreds of KB of session_meta,
+    // instructions, and world_state before the first turn_context.
+    const fat = (ordinal: number) => ({
+      timestamp: TOKEN_TIME,
+      ordinal,
+      type: "response_item",
+      payload: { type: "message", content: "y".repeat(120 * 1024) },
+    });
+    const tailFiller = {
+      timestamp: TOKEN_TIME,
+      ordinal: 9,
+      type: "response_item",
+      payload: { type: "message", content: "z".repeat(400 * 1024) },
+    };
+    const transcript = writeCodexRollout([
+      fat(1),
+      fat(2),
+      fat(3),
+      turnContext(4, "high"),
+      tailFiller,
+      taskComplete(10),
+    ]);
+    expect(
+      readRuntimeTuning(
+        { adapter: "codex", session_id: SESSION, transcript_path: transcript },
+        { maxTailBytes: 64 * 1024 },
+      ),
+    ).toMatchObject({ state: "observed", effort: "high", model: "gpt-5.6-sol" });
+  });
+
   test("keeps a Codex rollout without turn_context partial, not observed", () => {
     const transcript = writeCodexRollout([taskStarted(1), tokenCount(2, 100, 1_000)]);
     expect(

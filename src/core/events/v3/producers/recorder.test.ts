@@ -2602,6 +2602,75 @@ describe("event ledger V3 runtime tuning attestation changes", () => {
     expect(laterTool?.attestation_id).toBe(second.attestation_id);
   });
 
+  test("probes Codex tuning once per turn on post-tool-use while effort is unknown", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "01a02cc5-0000-7000-8000-000000000001";
+    const rolloutDir = join(root, "sessions", "2026", "08", "22");
+    mkdirSync(rolloutDir, { recursive: true });
+    const rolloutPath = join(rolloutDir, `rollout-fixture-${nativeSession}.jsonl`);
+    writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        timestamp: "2026-08-23T02:00:00.000Z",
+        type: "turn_context",
+        payload: { turn_id: "t1", model: "gpt-5.6-sol", effort: "xhigh" },
+      })}\n`,
+    );
+    recordHookSignalV3({
+      ...baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    });
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "t1" }),
+        "codex",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "post-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "c1",
+          tool_name: "shell",
+          transcript_path: rolloutPath,
+        }),
+        "codex",
+      ),
+    );
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const changes = events.filter((event) => event.event_type === "session.attestation_changed");
+    expect(changes.length).toBe(1);
+    expect(
+      (
+        changes[0] as Extract<
+          (typeof events)[number],
+          { event_type: "session.attestation_changed" }
+        >
+      ).payload.runtime_attestation.tuning,
+    ).toMatchObject({ state: "observed", value: { effort: "xhigh" } });
+    // A second tool event in the same turn does not re-probe or re-emit.
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "post-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "c2",
+          tool_name: "shell",
+          transcript_path: rolloutPath,
+        }),
+        "codex",
+      ),
+    );
+    const after = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "session.attestation_changed");
+    expect(after.length).toBe(1);
+  });
+
   test("stays silent when effort never moves and for payloads without effort", () => {
     const root = candidateRoot();
     const nativeSession = "native-session-static";
