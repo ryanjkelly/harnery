@@ -2,4 +2,4 @@
 "harnery": patch
 ---
 
-Record exact Codex context usage when Stop hooks omit transcript paths by caching a verified rollout source in owner-only V3 producer state and covering the bounded terminal-row flush race.
+Retry the bounded Codex terminal-row lookup for up to 250 ms at Stop so a just-flushed context row is not missed.
