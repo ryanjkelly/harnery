@@ -20,9 +20,11 @@ import { extractBashCommand, type ParsedPayload } from "../../../hooks/adapter/p
 import {
   type RuntimeContextTelemetry,
   readRuntimeContextTelemetry,
+  readRuntimeTuning,
 } from "../../../hooks/adapter/runtime-telemetry.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
+import type { RuntimeAttestationV3Base } from "../base-contract.ts";
 import { buildEventV3 } from "../builder.ts";
 import { fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
 import {
@@ -37,8 +39,16 @@ import { markObservedClockRegressionV3 } from "../clock-order.ts";
 import type { EventV3 } from "../contract.ts";
 import { type EventV3WriteMode, readEventV3ControlState } from "../control.ts";
 import { fingerprintContextV3 } from "../fingerprint-keys.ts";
-import { attestationIdV3, clockIdV3, delegationIdV3, generationIdV3, spanIdV3 } from "../ids.ts";
+import {
+  attestationIdV3,
+  clockIdV3,
+  delegationIdV3,
+  eventIdV3,
+  generationIdV3,
+  spanIdV3,
+} from "../ids.ts";
 import { readLedgerV3 } from "../reader.ts";
+import type { RuntimeTelemetryCapabilitiesV3 } from "../runtime-telemetry-capabilities.ts";
 import {
   closeSpanStateV3,
   type OpenSpanStateV3,
@@ -184,6 +194,15 @@ export interface HookProducerStateV3 {
   turn_ordinal: number;
   pending?: PendingEventV3;
   pending_runtime_contexts?: PendingRuntimeContextV3[];
+  /** Tuning carried by the current attestation; {} means attested-none.
+   * Absent on pre-upgrade state files, which seed silently on first sight. */
+  last_attested_tuning?: { effort?: string; speed?: string };
+  /** Model observation carried forward into a refreshed attestation when the
+   * change-time transcript read does not pair a model with the new tuning. */
+  last_attested_model?: { provider: string; id: string };
+  /** Telemetry evidence carried forward verbatim: a tuning change does not
+   * alter what telemetry the runtime proved it can deliver. */
+  last_attested_telemetry?: RuntimeTelemetryCapabilitiesV3;
 }
 
 export interface RecordHookSignalV3Input {
@@ -999,6 +1018,9 @@ function processHookSignalLocked(
     const toolCallCountScopeMismatch =
       (input.signal === "stop" || input.signal === "stop-failure") &&
       (!state.current_turn_id || state.tool_call_count_turn_id !== state.current_turn_id);
+    // Before the signal's own event: the tool call or turn that carries the
+    // new effort already ran under it, so it must ride the new attestation.
+    maybeAttestTuningChange(input, state, path, rootId);
     const event = normalizeHookEventV3(input.signal, eventInput.payload, {
       coordRoot: input.coordRoot,
       adapter: input.adapter,
@@ -1022,6 +1044,7 @@ function processHookSignalLocked(
       platform: input.platform,
       bridge: input.bridge,
       capability_profile: state.capability_profile,
+      cursor_mode: state.cursor_mode,
       fingerprintContext,
       turn_id: state.current_turn_id,
       span_id: openingSpan?.span_id ?? closingSpan?.span_id,
@@ -1886,6 +1909,231 @@ function runtimeContextObservation(
   };
 }
 
+/** Seed the change-detection baseline from a committed session.started. */
+function seedAttestedTuning(state: HookProducerStateV3, event: { payload: unknown }): void {
+  const attestation = (
+    event.payload as {
+      runtime_attestation?: {
+        tuning?: { state?: string; value?: { effort?: string; speed?: string } };
+        model?: { state?: string; value?: { provider?: string; id?: string } };
+      };
+    }
+  ).runtime_attestation;
+  if (!attestation) return;
+  const tuning = attestation.tuning;
+  state.last_attested_tuning =
+    tuning?.state === "observed"
+      ? {
+          ...(tuning.value?.effort ? { effort: tuning.value.effort } : {}),
+          ...(tuning.value?.speed ? { speed: tuning.value.speed } : {}),
+        }
+      : {};
+  const model = attestation.model;
+  if (model?.state === "observed" && model.value?.provider && model.value.id) {
+    state.last_attested_model = { provider: model.value.provider, id: model.value.id };
+  }
+  const telemetry = (event.payload as { runtime_attestation?: { telemetry?: unknown } })
+    .runtime_attestation?.telemetry;
+  if (telemetry) state.last_attested_telemetry = telemetry as RuntimeTelemetryCapabilitiesV3;
+}
+
+/**
+ * Emit `session.attestation_changed` when the observed tuning moves.
+ *
+ * Detection channels are deliberately cheap: CC stamps `effort.level` on
+ * every tool hook and Stop (zero I/O), and Codex tuning is read from the
+ * rollout only at turn terminals, where the context enrichment already pays
+ * for a bounded tail read. A pre-upgrade state file (no baseline) seeds
+ * silently so existing sessions do not fire a spurious change on their next
+ * tool event; a fresh session's baseline comes from its session.started.
+ */
+function maybeAttestTuningChange(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+): void {
+  if (
+    input.signal !== "pre-tool-use" &&
+    input.signal !== "post-tool-use" &&
+    input.signal !== "stop"
+  ) {
+    return;
+  }
+  if (state.terminal) return;
+
+  let candidate: { effort?: string; speed?: string; model?: string } | undefined;
+  let attestationSource: "native" | "derived" = "native";
+  let sourceEvent = `${input.adapter}.effort-payload`;
+  if (input.adapter === "claude-code" || input.adapter === "cursor") {
+    if (!input.payload.effort) return;
+    candidate = { effort: input.payload.effort };
+  } else if (input.adapter === "codex" && input.signal === "stop") {
+    const runtime = readRuntimeTuning({
+      adapter: "codex",
+      session_id: input.payload.session_id ?? input.payload.conversation_id,
+      transcript_path: input.payload.transcript_path,
+    });
+    if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
+    if (runtime.state !== "observed") return;
+    candidate = {
+      ...(runtime.effort ? { effort: runtime.effort } : {}),
+      ...(runtime.speed ? { speed: runtime.speed } : {}),
+      ...(runtime.model ? { model: runtime.model } : {}),
+    };
+    attestationSource = "derived";
+    sourceEvent = runtime.source_event;
+  } else {
+    return;
+  }
+
+  const baseline = state.last_attested_tuning;
+  const next = { effort: candidate.effort, speed: candidate.speed ?? baseline?.speed };
+  if (baseline === undefined || state.last_attested_telemetry === undefined) {
+    // Pre-upgrade state: adopt without emitting; there is no attested prior.
+    state.last_attested_tuning = { ...(next.effort ? { effort: next.effort } : {}) };
+    if (next.speed) state.last_attested_tuning.speed = next.speed;
+    return;
+  }
+  if (baseline.effort === next.effort && (candidate.speed ?? baseline.speed) === baseline.speed) {
+    return;
+  }
+
+  // CC change detection rides the payload; the paired transcript row also
+  // carries speed and the (possibly swapped) model, so refresh from it.
+  if (input.adapter === "claude-code") {
+    const runtime = readRuntimeTuning({
+      adapter: "claude-code",
+      transcript_path: input.payload.transcript_path,
+    });
+    if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
+    if (runtime.state === "observed" && runtime.effort === candidate.effort) {
+      if (runtime.speed) candidate.speed = runtime.speed;
+      if (runtime.model) candidate.model = runtime.model;
+    }
+  }
+
+  const priorAttestationId = state.attestation_id;
+  const nextAttestationId = attestationIdV3();
+  const eventId = eventIdV3();
+  const model: RuntimeAttestationV3Base["model"] = candidate.model
+    ? {
+        state: "observed",
+        value: { provider: modelProviderFor(input.adapter), id: safeRole(candidate.model) },
+        attestation: "derived",
+        confidence: "high",
+      }
+    : state.last_attested_model
+      ? {
+          state: "observed",
+          value: state.last_attested_model,
+          attestation: "derived",
+          confidence: "high",
+        }
+      : { state: "expected_but_missing", capability: "model_identity", reason: "not_reported" };
+  const runtimeAttestation: RuntimeAttestationV3Base = {
+    attestation_id: nextAttestationId,
+    generation_id: state.generation_id,
+    adapter: {
+      state: "observed",
+      value: {
+        id: input.adapter,
+        ...(input.adapterVersion ? { version: input.adapterVersion } : {}),
+      },
+      attestation: "native",
+      confidence: "exact",
+    },
+    harness: {
+      state: "observed",
+      value: {
+        id: input.adapter,
+        ...(input.harnessVersion ? { version: input.harnessVersion } : {}),
+      },
+      attestation: "native",
+      confidence: "exact",
+    },
+    model,
+    tuning:
+      candidate.effort || candidate.speed
+        ? {
+            state: "observed",
+            value: {
+              ...(candidate.effort ? { effort: candidate.effort } : {}),
+              ...(candidate.speed ? { speed: candidate.speed } : {}),
+            },
+            attestation: attestationSource,
+            confidence: "exact",
+          }
+        : { state: "unsupported", capability: "effort_selection" },
+    telemetry: state.last_attested_telemetry,
+    capability_profile: state.capability_profile,
+    declared_by_event_id: eventId,
+  };
+  const event = buildEventV3("session.attestation_changed", {
+    event_id: eventId,
+    producer: {
+      producer_id: input.producer_id,
+      boot_id: state.boot_id,
+      sequence: state.next_sequence,
+      component: "agent-hook",
+      build_id: input.build_id,
+      platform: input.platform,
+      ...(input.bridge ? { bridge: input.bridge } : {}),
+    },
+    scope: {
+      root_id: rootId,
+      instance_id: state.instance_id,
+      session_id: state.session_id,
+      generation_id: state.generation_id,
+      ...(input.run_id ? { run_id: input.run_id } : {}),
+      ...(input.workflow_id ? { workflow_id: input.workflow_id } : {}),
+      ...(input.workflow_agent_id ? { workflow_agent_id: input.workflow_agent_id } : {}),
+    },
+    attestation_id: nextAttestationId,
+    links: { caused_by: state.last_event_id ? [state.last_event_id] : [] },
+    provenance: {
+      source_event: safeRole(sourceEvent),
+      attestation: attestationSource,
+      confidence: attestationSource === "native" ? "exact" : "high",
+      attribution: {
+        method: "native_payload",
+        state: "verified",
+        subject_instance_id: state.instance_id,
+      },
+    },
+    observed_at: input.observed_at ?? new Date().toISOString(),
+    monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
+    clock_id: state.clock_id,
+    payload: {
+      prior_attestation_id: priorAttestationId,
+      runtime_attestation: runtimeAttestation,
+      reason: "runtime_tuning_changed",
+    },
+  }) as EventV3;
+  // Mutate BEFORE the commit: commitEventLocked publishes the state file, so
+  // post-commit mutations would be dropped by the next signal's fresh read.
+  // A crash between publishes replays the pending event against a state that
+  // already carries the new attestation id, which is the id the event declares.
+  state.attestation_id = nextAttestationId;
+  state.last_attested_tuning = {
+    ...(candidate.effort ? { effort: candidate.effort } : {}),
+    ...(candidate.speed ? { speed: candidate.speed } : {}),
+  };
+  if (candidate.model) {
+    state.last_attested_model = {
+      provider: modelProviderFor(input.adapter),
+      id: safeRole(candidate.model),
+    };
+  }
+  commitEventLocked(input, state, path, event);
+}
+
+function modelProviderFor(adapter: Adapter): string {
+  if (adapter === "claude-code") return "anthropic";
+  if (adapter === "codex") return "openai";
+  return "cursor";
+}
+
 function recordRuntimeTelemetryTiming(state: HookProducerStateV3, durationMs: number): void {
   const duration = Math.max(0, Math.ceil(durationMs));
   if (!Number.isSafeInteger(duration)) return;
@@ -2605,6 +2853,7 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
   if (event.event_type === "session.started") {
     state.started_event_id = event.event_id as `evt_${string}`;
     state.session_span.open_event_id = event.event_id as `evt_${string}`;
+    seedAttestedTuning(state, event);
   }
   if (event.event_type === "turn.started") {
     const nextTurnId = (event.scope as { turn_id: `tid_${string}` }).turn_id;
@@ -2999,6 +3248,9 @@ function readProducerState(path: string): HookProducerStateV3 {
     "format_version",
     "generation_id",
     "instance_id",
+    "last_attested_model",
+    "last_attested_telemetry",
+    "last_attested_tuning",
     "last_event_id",
     "last_monotonic_ns",
     "last_observed_at",

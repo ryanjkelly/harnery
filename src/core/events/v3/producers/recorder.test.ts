@@ -2335,6 +2335,133 @@ function temporaryRoot(): string {
   return root;
 }
 
+describe("event ledger V3 runtime tuning attestation changes", () => {
+  test("emits attestation_changed when CC effort moves, once, with refreshed state", () => {
+    const root = candidateRoot();
+    const nativeSession = "native-session-tuning";
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "session-start",
+        parsed({ session_id: nativeSession, model: "claude-fable-5" }),
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession, turn_id: "t1" })),
+    );
+    // First observed effort: the session started expected_but_missing, so the
+    // first native observation lands as a change.
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "call-1",
+          tool_name: "Bash",
+          effort: "high",
+        }),
+      ),
+    );
+    // Same effort again: no second event.
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "post-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "call-1",
+          tool_name: "Bash",
+          effort: "high",
+        }),
+      ),
+    );
+    // Operator moves the slider: one more event.
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "call-2",
+          tool_name: "Bash",
+          effort: "xhigh",
+        }),
+      ),
+    );
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const changes = events.filter((event) => event.event_type === "session.attestation_changed");
+    expect(changes.length).toBe(2);
+    const started = events.find((event) => event.event_type === "session.started");
+    if (started?.event_type !== "session.started") throw new Error("session start missing");
+    const [first, second] = changes as [
+      Extract<(typeof events)[number], { event_type: "session.attestation_changed" }>,
+      Extract<(typeof events)[number], { event_type: "session.attestation_changed" }>,
+    ];
+    expect(first.payload.prior_attestation_id).toBe(started.attestation_id);
+    expect(first.payload.runtime_attestation.tuning).toMatchObject({
+      state: "observed",
+      value: { effort: "high" },
+      attestation: "native",
+    });
+    expect(second.payload.prior_attestation_id).toBe(first.attestation_id);
+    expect(second.payload.runtime_attestation.tuning).toMatchObject({
+      state: "observed",
+      value: { effort: "xhigh" },
+    });
+    // The refreshed attestation keeps the session's observed model.
+    expect(second.payload.runtime_attestation.model).toMatchObject({
+      state: "observed",
+      value: { provider: "anthropic", id: "claude-fable-5" },
+    });
+    // A tuning refresh must preserve effective telemetry evidence verbatim.
+    expect(second.payload.runtime_attestation.telemetry).toEqual(
+      started.payload.runtime_attestation.telemetry,
+    );
+    // Later events ride the new attestation id.
+    const laterTool = [...events].reverse().find((event) => event.event_type === "tool.requested");
+    expect(laterTool?.attestation_id).toBe(second.attestation_id);
+  });
+
+  test("stays silent when effort never moves and for payloads without effort", () => {
+    const root = candidateRoot();
+    const nativeSession = "native-session-static";
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession, effort: "high" })),
+    );
+    recordHookSignalV3(
+      baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession, turn_id: "t1" })),
+    );
+    for (const id of ["a", "b"]) {
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "pre-tool-use",
+          parsed({
+            session_id: nativeSession,
+            tool_use_id: id,
+            tool_name: "Bash",
+            effort: "high",
+          }),
+        ),
+      );
+    }
+    // A no-dial payload (no effort) must not flap the baseline.
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "post-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "b", tool_name: "Bash" }),
+      ),
+    );
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    expect(
+      events.filter((event) => event.event_type === "session.attestation_changed").length,
+    ).toBe(0);
+  });
+});
+
 describe("event ledger V3 hook intake spool", () => {
   const LEDGER_ROOT = ".harnery/ledgers/v3";
 
