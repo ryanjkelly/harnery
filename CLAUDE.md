@@ -85,6 +85,16 @@ harnery can be developed standalone or embedded in a host monorepo as a **git su
 
 `main` is the released, CI-verified line. Day-to-day work lands on `next`, the long-lived integration branch; CI and the Release workflow only run on `main`, so commits to `next` are quiet, and a release happens when `next` merges to `main` (with a changeset present). Active development from a host therefore happens on `next`, and the host's superproject pointer tracks a `next` commit until a release is cut.
 
+Treat `gh run watch` as progress display, not the final scripted verdict. Never pipe it through `tail` or another consumer when relying on its status: without `set -o pipefail`, the shell reports the consumer's exit code. Capture the run with both workflow and commit filters, then read the terminal result explicitly:
+
+```bash
+run_id=$(gh run list --repo "$repo" --workflow CI --commit "$sha" --event push --limit 1 --json databaseId --jq '.[0].databaseId')
+test -n "$run_id" && test "$run_id" != null
+gh run watch "$run_id" --repo "$repo" --exit-status --interval 30 || true
+conclusion=$(gh run view "$run_id" --repo "$repo" --json status,conclusion --jq 'select(.status == "completed") | .conclusion')
+test "$conclusion" = success
+```
+
 When more than one host checks out harnery (e.g. two separate monorepos each carrying it as a submodule), every checkout is an **independent clone of the same remote branch**. The single rule that keeps them from diverging: **pull before you edit, push immediately after.** Before touching harnery in any host, run `git -C harnery pull --ff-only`; after committing, push right away, then bump that host's pointer. Whoever pushes second without pulling first gets a non-fast-forward rejection.
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
