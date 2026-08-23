@@ -71,6 +71,7 @@ export interface ArtifactInventoryEntry {
   artifact_id: string | null;
   slug: string | null;
   created_at: string | null;
+  last_modified_at: string | null;
   expires_at: string | null;
   owner_instance_id: string | null;
 }
@@ -327,16 +328,22 @@ function classifyArtifactPath(
   }
   const manifest = parsed.manifest;
   const bytes = safeTreeSize(path);
+  const lastModifiedMs = safeTreeLastModified(path, now);
+  const retentionAnchorMs = Date.parse(manifest.retention.renewed_at ?? manifest.created_at);
+  const retentionWindowMs = Date.parse(manifest.retention.expires_at) - retentionAnchorMs;
+  const effectiveLastModifiedMs = Math.max(retentionAnchorMs, lastModifiedMs ?? 0);
+  const effectiveExpiresAt = new Date(effectiveLastModifiedMs + retentionWindowMs).toISOString();
   const base = rowFor(path, name, repoRoot, "managed-current", "retention has not expired", bytes);
   Object.assign(base, {
     artifact_id: manifest.artifact_id,
     slug: manifest.slug,
     created_at: manifest.created_at,
-    expires_at: manifest.retention.expires_at,
+    last_modified_at: new Date(effectiveLastModifiedMs).toISOString(),
+    expires_at: effectiveExpiresAt,
     owner_instance_id: manifest.created_by?.instance_id ?? null,
   });
 
-  if (base.bytes === null) {
+  if (base.bytes === null || lastModifiedMs === null) {
     return {
       ...base,
       classification: "unknown",
@@ -371,11 +378,11 @@ function classifyArtifactPath(
       };
     }
   }
-  if (Date.parse(manifest.retention.expires_at) > now.getTime()) return base;
+  if (Date.parse(effectiveExpiresAt) > now.getTime()) return base;
   return {
     ...base,
     classification: "managed-expired",
-    reason: `retention expired at ${manifest.retention.expires_at}`,
+    reason: `retention expired at ${effectiveExpiresAt}`,
     action: "would-delete",
   };
 }
@@ -408,6 +415,13 @@ function readManifest(path: string): ParsedManifest | ManifestError {
   if (!validIso(m.created_at)) return { ok: false, reason: "invalid created_at" };
   if (!m.retention || typeof m.retention !== "object" || !validIso(m.retention.expires_at)) {
     return { ok: false, reason: "invalid retention.expires_at" };
+  }
+  if (m.retention.renewed_at !== undefined && !validIso(m.retention.renewed_at)) {
+    return { ok: false, reason: "invalid retention.renewed_at" };
+  }
+  const retentionAnchor = Date.parse(m.retention.renewed_at ?? m.created_at);
+  if (Date.parse(m.retention.expires_at) <= retentionAnchor) {
+    return { ok: false, reason: "retention.expires_at must follow its retention anchor" };
   }
   if (m.released_at !== undefined && !validIso(m.released_at)) {
     return { ok: false, reason: "invalid released_at" };
@@ -477,6 +491,34 @@ function safeTreeSize(path: string): number | null {
   }
 }
 
+/**
+ * Return the newest filesystem change in a managed tree without following
+ * symlinks. A small future tolerance protects a write racing the inventory
+ * scan; timestamps farther ahead are ignored as clock-skewed metadata.
+ */
+function safeTreeLastModified(path: string, now: Date): number | null {
+  const nowMs = now.getTime();
+  const futureToleranceMs = 5 * 60 * 1000;
+  try {
+    const st = lstatSync(path);
+    let latest = 0;
+    for (const timestamp of [st.mtimeMs, st.ctimeMs]) {
+      if (Number.isFinite(timestamp) && timestamp <= nowMs + futureToleranceMs) {
+        latest = Math.max(latest, Math.min(timestamp, nowMs));
+      }
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) return latest;
+    for (const child of readdirSync(path)) {
+      const childLatest = safeTreeLastModified(join(path, child), now);
+      if (childLatest === null) return null;
+      latest = Math.max(latest, childLatest);
+    }
+    return latest;
+  } catch {
+    return null;
+  }
+}
+
 function rowFor(
   path: string,
   name: string,
@@ -496,6 +538,7 @@ function rowFor(
     artifact_id: null,
     slug: null,
     created_at: null,
+    last_modified_at: null,
     expires_at: null,
     owner_instance_id: null,
   };

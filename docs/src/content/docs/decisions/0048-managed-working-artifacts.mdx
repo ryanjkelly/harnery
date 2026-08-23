@@ -45,11 +45,15 @@ collision-safe directory name and writes `.harnery-artifact.json` atomically.
 The schema records the artifact ID, purpose, creation time, optional agent
 owner, and an explicit UTC expiration.
 
-The default retention is three days. A host can set
+The default retention is three inactive days. Inventory derives the latest
+workspace change from filesystem timestamps and moves the effective expiration
+forward by the configured window. This keeps active working files without a
+watcher or a write wrapper, including files produced by tools that know nothing
+about Harnery. A host can set
 `artifacts.default_retention_days` in `.harnery/config.jsonc` or use
-`HARNERY_ARTIFACT_RETENTION_DAYS`. `renew` sets a new expiration and requires a
-reason. `release` removes live-owner protection without shortening the
-retention window.
+`HARNERY_ARTIFACT_RETENTION_DAYS`. `renew` starts a new rolling window and
+requires a reason. `release` removes live-owner protection without shortening
+the retention window.
 
 Inventory classifies every direct child. Cleanup deletes only
 `managed-expired`: a directory with a valid v1 manifest whose retention has
@@ -70,3 +74,10 @@ plus the `harnery/core/artifacts` API for embedding hosts. The old temp-folder
 convention is not a compatibility format. Hosts may migrate or remove their
 old trees separately, but Harnery never guesses that unmanaged content is safe
 to delete.
+
+The effective expiration now follows activity instead of creation time alone.
+`list`, `show`, and `clean` scan the tree without following symlinks. They use
+the later of the manifest's retention anchor and the newest filesystem change,
+then add the active retention window. A timestamp more than five minutes in the
+future is treated as clock-skewed metadata and cannot preserve a workspace
+indefinitely.

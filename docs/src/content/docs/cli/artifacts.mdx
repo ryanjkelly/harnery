@@ -47,8 +47,12 @@ harn artifacts clean
 harn artifacts clean --yes
 ```
 
-New workspaces expire after three days by default. Set a project default in
-`.harnery/config.jsonc`:
+New workspaces expire after three inactive days by default. Creating, editing,
+renaming, or deleting anything in the workspace restarts that window. Harnery
+derives activity from filesystem timestamps when it inventories or cleans the
+workspace, so agents do not need to run a separate touch command.
+
+Set a project default in `.harnery/config.jsonc`:
 
 ```json
 {
@@ -59,7 +63,9 @@ New workspaces expire after three days by default. Set a project default in
 ```
 
 `HARNERY_ARTIFACT_RETENTION_DAYS` overrides the config value for one process.
-`create --days` overrides both.
+`create --days` overrides both. `renew --days` starts a new rolling window of
+the requested length. The `expires_at` field returned by `list` and `show` is
+the effective deadline after accounting for the latest change.
 
 ## Cleanup classes
 

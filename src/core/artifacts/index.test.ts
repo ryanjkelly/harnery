@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../tests/helpers/event-v3-runtime.ts";
@@ -117,6 +125,46 @@ describe("managed artifacts", () => {
       renewed_at: now.toISOString(),
       reason: "keep through soak",
     });
+  });
+
+  test("resets expiration from the newest artifact change", () => {
+    const repo = root();
+    const created = createArtifact(repo, {
+      slug: "rolling",
+      purpose: "Active working files",
+      retentionDays: 3,
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      id: "artifact_rolling1",
+    });
+    const payload = join(created.path, "payload.txt");
+    writeFileSync(payload, "updated");
+    const changedAt = new Date("2026-07-25T09:30:00.000Z");
+    utimesSync(payload, changedAt, changedAt);
+
+    const entry = inventoryArtifacts(repo, { now })[0];
+    expect(entry?.classification).toBe("managed-current");
+    expect(entry?.last_modified_at).toBe(changedAt.toISOString());
+    expect(entry?.expires_at).toBe("2026-07-28T09:30:00.000Z");
+  });
+
+  test("expires after one full retention window without another change", () => {
+    const repo = root();
+    const created = createArtifact(repo, {
+      slug: "rolling-expired",
+      purpose: "Finished working files",
+      retentionDays: 3,
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      id: "artifact_rolling2",
+    });
+    const changedAt = new Date("2026-07-22T08:00:00.000Z");
+    writeFileSync(join(created.path, "payload.txt"), "done");
+    utimesSync(join(created.path, "payload.txt"), changedAt, changedAt);
+
+    const entry = inventoryArtifacts(repo, {
+      now: new Date("2026-07-25T08:00:00.001Z"),
+    })[0];
+    expect(entry?.classification).toBe("managed-expired");
+    expect(entry?.expires_at).toBe("2026-07-25T08:00:00.000Z");
   });
 
   test("clean previews by default and deletes only with yes", () => {
