@@ -128,6 +128,65 @@ describe("projectScene", () => {
     });
   });
 
+  test("prefers observed tuning over the model-id parse and renders CC/Codex effort", () => {
+    // CC: observed effort + speed from the attestation; no model-id tokens.
+    const claude = projectScene({
+      snapshot: snapshot([hb({ platform: "claude-code" })]),
+      events: [
+        ev({
+          event_type: "session.started",
+          runtime_harness: "claude-code",
+          runtime_model: "claude-fable-5",
+          runtime_model_provider: "anthropic",
+          runtime_effort: "high",
+          runtime_speed: "standard",
+        }),
+      ],
+      now: NOW,
+    }).panels[0];
+    expect(claude?.runtime).toMatchObject({
+      value: { model: "claude-fable-5", effort: "high", speed: "standard" },
+      provenance: "event",
+    });
+
+    // A mid-session attestation change (slider move) wins over the start.
+    const moved = projectScene({
+      snapshot: snapshot([hb({ platform: "claude-code" })]),
+      events: [
+        ev({
+          event_type: "session.started",
+          runtime_harness: "claude-code",
+          runtime_model: "claude-fable-5",
+          runtime_effort: "high",
+        }),
+        ev({
+          event_type: "session.attestation_changed",
+          runtime_harness: "claude-code",
+          runtime_model: "claude-fable-5",
+          runtime_effort: "xhigh",
+        }),
+      ],
+      now: NOW,
+    }).panels[0];
+    expect(moved?.runtime?.value.effort).toBe("xhigh");
+
+    // Cursor with observed tuning: observed wins over the -low token; the
+    // model-id parse remains the fallback when no observation exists.
+    const cursor = projectScene({
+      snapshot: snapshot([hb({ platform: "cursor" })]),
+      events: [
+        ev({
+          event_type: "session.started",
+          runtime_harness: "cursor",
+          runtime_model: "cursor-grok-4.6-low",
+          runtime_effort: "high",
+        }),
+      ],
+      now: NOW,
+    }).panels[0];
+    expect(cursor?.runtime?.value.effort).toBe("high");
+  });
+
   test("determinism: same inputs produce the same scene", () => {
     const inputs = {
       snapshot: snapshot([hb({})]),

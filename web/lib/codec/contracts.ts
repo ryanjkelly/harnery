@@ -338,6 +338,8 @@ export interface CodecSourceEvidence {
   runtime_harness_version?: string;
   runtime_model?: string;
   runtime_model_provider?: string;
+  runtime_effort?: string;
+  runtime_speed?: string;
   /** Durable display name from identity.assumed. */
   identity_name?: string;
   /** Message recipient from coord.message_observed; body never crosses. */

@@ -308,6 +308,10 @@ function liftRuntimeAttestation(
     base.runtime_model = attestation.model.value.id;
     base.runtime_model_provider = attestation.model.value.provider;
   }
+  if (attestation.tuning.state === "observed") {
+    if (attestation.tuning.value.effort) base.runtime_effort = attestation.tuning.value.effort;
+    if (attestation.tuning.value.speed) base.runtime_speed = attestation.tuning.value.speed;
+  }
 }
 
 function adapterFromSourceEvent(

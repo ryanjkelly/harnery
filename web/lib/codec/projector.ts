@@ -186,10 +186,10 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
       case "session.resumed":
         slot.lastSessionStarted = ev;
         slot.lastTurnOrSessionStarted = ev;
-        if (ev.runtime_harness || ev.runtime_model) slot.lastRuntime = ev;
+        if (ev.runtime_harness || ev.runtime_model || ev.runtime_effort) slot.lastRuntime = ev;
         break;
       case "session.attestation_changed":
-        if (ev.runtime_harness || ev.runtime_model) slot.lastRuntime = ev;
+        if (ev.runtime_harness || ev.runtime_model || ev.runtime_effort) slot.lastRuntime = ev;
         break;
       case "agent.delegated":
       case "agent.started":
@@ -308,8 +308,10 @@ const RUNTIME_EFFORT_TOKENS = new Set([
   "ultra",
 ]);
 
-/** Cursor makes tuning part of its canonical model id. Other adapters do not,
- * so absent effort/speed must remain null instead of being guessed. */
+/** Cursor makes tuning part of its canonical model id. Other adapters carry
+ * observed tuning on their runtime attestation instead; this derivation is
+ * the fallback for Cursor evidence that predates observed tuning. Absent
+ * values remain null instead of being guessed. */
 function tuningFromModel(
   harness: string | null,
   model: string | null,
@@ -335,7 +337,12 @@ function runtimeInfo(
   const observed = ev?.lastRuntime;
   const harness = cleanRuntimeToken(observed?.runtime_harness ?? hb?.platform);
   const model = cleanRuntimeToken(observed?.runtime_model ?? hb?.model);
-  const tuning = tuningFromModel(harness, model);
+  // Observed tuning (attested by the runtime) outranks the model-id parse.
+  const derived = tuningFromModel(harness, model);
+  const tuning = {
+    effort: cleanRuntimeToken(observed?.runtime_effort) ?? derived.effort,
+    speed: cleanRuntimeToken(observed?.runtime_speed) ?? derived.speed,
+  };
   const value: CodecRuntimeValue = {
     harness,
     ...(observed?.runtime_harness_version

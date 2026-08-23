@@ -83,6 +83,13 @@ describe("Codec V3 ledger tail", () => {
           },
           model: { state: "unsupported", capability: "model_identity" },
           tuning: { state: "unsupported", capability: "effort_selection" },
+          telemetry: {
+            context_usage: { state: "unsupported", capability: "context_usage" },
+            wait_spans: { state: "unsupported", capability: "wait_spans" },
+            wait_completeness: { state: "unsupported", capability: "wait_completeness" },
+            response_latency: { state: "unsupported", capability: "response_latency" },
+            inference_timing: { state: "unsupported", capability: "inference_timing" },
+          },
           capability_profile: `cap_${"b".repeat(64)}`,
           declared_by_event_id: eventId,
         },

@@ -643,6 +643,13 @@ function startedPayload() {
         attestation: "native",
         confidence: "exact",
       },
+      telemetry: {
+        context_usage: { state: "unsupported", capability: "context_usage" },
+        wait_spans: { state: "unsupported", capability: "wait_spans" },
+        wait_completeness: { state: "unsupported", capability: "wait_completeness" },
+        response_latency: { state: "unsupported", capability: "response_latency" },
+        inference_timing: { state: "unsupported", capability: "inference_timing" },
+      },
       capability_profile: `cap_${"c".repeat(64)}`,
       declared_by_event_id: "evt_00000000-0000-7000-8000-000000000000",
     },
