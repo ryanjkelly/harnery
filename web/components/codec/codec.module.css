@@ -671,9 +671,9 @@
 
 .panelGrid {
   display: grid;
-  width: min(100%, 96rem);
+  width: 100%;
   margin-inline: auto;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 27rem), 1fr));
   justify-content: center;
   gap: 1rem;
   align-items: stretch;
@@ -681,6 +681,12 @@
 
 .panelGrid[data-panel-density="featured"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* Keep the common wide-desktop roster balanced instead of allowing auto-fit
+ * to produce a sparse 6 + 2 final row. */
+.panelGrid:is([data-panel-count="7"], [data-panel-count="8"]) {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .panelGrid[data-panel-count="1"] {
@@ -696,6 +702,13 @@
   width: calc((100% - 1rem) / 2);
   grid-column: 1 / -1;
   justify-self: center;
+}
+
+@media (min-width: 3000px) {
+  /* Fullscreen ultrawide displays have room to return to a single dense row. */
+  .panelGrid:is([data-panel-count="7"], [data-panel-count="8"]) {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 27rem), 1fr));
+  }
 }
 
 .cardStage {
