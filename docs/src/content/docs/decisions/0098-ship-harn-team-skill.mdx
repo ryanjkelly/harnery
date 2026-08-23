@@ -1,0 +1,70 @@
+---
+title: "ADR 0098: ship harn-team, the team-orchestration skill"
+description: The run/work/governor surfaces had CLI help and a one-paragraph block mention but no agent-facing procedure, so hosts hand-authored their own. harn-team ships the tier choice, the governor artifacts, and the drive loop as a fourth generic skill.
+sidebar:
+  order: 98
+---
+
+**Date:** 2026-08-22
+**Status:** Accepted
+
+## Context
+
+ADR 0008 established the two-lifetime split for agent-facing guidance: an
+always-on orientation block in the consumer's `AGENTS.md`, and on-demand
+procedure in generic `harn-*` skills. Three skills shipped under it
+(`harn-decide`, `harn-council`, `harn-end`). The team-dispatch surfaces
+(`run`, `work`, `governor`) got only the orientation half: one block paragraph
+saying the three tiers exist, plus per-command `--help`.
+
+That gap has measurable cost. Driving a governed goal correctly requires
+knowledge that lives in no loadable procedure: which tier fits an objective,
+how to author the four governor artifacts (team, mission, replanning,
+workflow templates), and the operational rules that prevent stranded work
+(never retry a governed item through `work retry`, reopen rather than accept a
+blocked item met out of band, read the spin signals before spending capped
+replans, treat a frozen mission as immutable). Production use in an embedding
+host showed agents relearning each rule the expensive way, and the host
+compensated by hand-authoring its own team skill on top of the engine — the
+exact outcome ADR 0008 was written to prevent. A host-side copy also decays:
+it froze command surfaces that later changed, and no other consumer could see
+it.
+
+## Alternatives considered
+
+- **Leave it to `--help` and the docs site.** Rejected: `--help` documents
+  flags, not judgment (which tier, how to phrase acceptance criteria so
+  refusal is representable). The workflow-authoring guide covers script traps
+  but not team construction or the drive loop.
+- **Expand the block's team paragraph.** Rejected: the block has a hard
+  80-line budget because every agent pays for it every turn. Team
+  orchestration needs a full procedure, which is exactly the on-demand
+  lifetime skills exist for.
+- **A separate package or template repo.** Rejected: the three existing
+  skills already prove the delivery vehicle; a fourth entry in the same
+  registry costs nothing new.
+
+## Decision
+
+Ship `harn-team` as a fourth entry in the skill registry, same lifecycle as
+the other three: rendered through `binName`, installed by `init` for every
+supported adapter, hash-versioned and machine-owned, removable by `deinit`,
+suppressible via `skills.exclude`. The `BlockSkills` flag set gains `team`,
+and the block's team paragraph gains a one-line pointer to the skill, with a
+`governor --help` fallback when the skill is excluded.
+
+The skill owns: the refuse-to-duplicate check (never build a second team over
+an existing goal), the tier table, the sizing check (a single agent often
+beats a team on a task that does not decompose), the four governor artifacts
+with the acceptance-criteria and role-boundary rules, the drive loop off
+`projection.next_action`, and the stranded-work rules. Workflow-script traps
+stay in the workflow-authoring guide; the skill links it rather than
+restating it.
+
+## Result
+
+Skill count language across `init`/`deinit`/config docs moved from three to
+four. The block gained two lines (team pointer) and stayed within its 80-line
+budget. A consumer now gets team-orchestration procedure from the package
+itself, so a host that formerly maintained its own copy can delete it and
+track upstream.

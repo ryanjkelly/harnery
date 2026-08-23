@@ -89,14 +89,14 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=d2822e95 -->
+<!-- harnery:begin instructions v=c00ef8eb -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
 You share this checkout with other agents; the surfaces below keep you oriented
 and out of each other's way, and let you dispatch a team of your own when a job
 is bigger than one session. Run `harn <command> --help` for any command's full
-surface. Procedures for the deeper flows live in the `harn-decide` and `harn-council` and `harn-end` skills.
+surface. Procedures for the deeper flows live in the `harn-decide` and `harn-council` and `harn-end` and `harn-team` skills.
 
 **Identity + peers.** You are one of several agents in this repo.
 `harn agents whoami` is you; `harn agents status` shows your session plus the
@@ -125,6 +125,7 @@ first when one pass will do, the second when the objective must outlive the
 attempt, and the third when a human would otherwise have to babysit the loop. A
 run that needs authorization parks durably instead of failing, so check
 `harn approval list` when one appears to be waiting rather than stuck.
+The `harn-team` skill owns the tier choice, the governor artifacts, and the drive loop.
 
 **Durable role handoff.** When you are replacing a prior session in the same
 named role, run `harn agents identity assume <name>` before declaring your task.
@@ -133,9 +134,10 @@ live process still holds the name; never hand-edit Harnery's history, heartbeat,
 or derived identity cache.
 
 **Declare intent on shell commands.** Every command you run is captured to the
-coordination ledger. Lead a shell command with a `# intent: <why>` comment (or set
-the tool's description) so the recorded event carries a reason instead of
-`(no intent)`.
+coordination ledger (`.harnery/events.ndjson`). Lead a shell command with a
+`# intent: <why>` comment (or set the tool's description) so the recorded event
+carries a reason instead of `(no intent)`; the [tool-intent
+guide](https://harnery.com/guides/tool-intent/) owns the details.
 
 **Journal.** `harn journal add <category> "<text>"` (category = note, plan, decision, blocker, question, done, or handoff)
 leaves breadcrumbs that survive context compaction;

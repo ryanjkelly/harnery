@@ -34,6 +34,8 @@ export interface BlockSkills {
   council: boolean;
   /** the `harn-end` skill file is present */
   end: boolean;
+  /** the `harn-team` skill file is present */
+  team: boolean;
 }
 
 /**
@@ -50,7 +52,7 @@ export interface BlockSkills {
  */
 export function renderInstructionsBlock(
   binName: string,
-  skills: BlockSkills = { decide: true, council: true, end: true },
+  skills: BlockSkills = { decide: true, council: true, end: true, team: true },
 ): string {
   const b = binName;
 
@@ -58,6 +60,7 @@ export function renderInstructionsBlock(
     skills.decide && "`harn-decide`",
     skills.council && "`harn-council`",
     skills.end && "`harn-end`",
+    skills.team && "`harn-team`",
   ].filter(Boolean) as string[];
   const deeper =
     named.length > 0
@@ -72,6 +75,9 @@ export function renderInstructionsBlock(
   const endPointer = skills.end
     ? "When the whole session is genuinely finished, use the `harn-end` skill as the final workflow."
     : `When the whole session is genuinely finished, run \`${b} agents status --end-turn --end-session\` as the final tool action.`;
+  const teamPointer = skills.team
+    ? "The `harn-team` skill owns the tier choice, the governor artifacts, and the drive loop."
+    : `See \`${b} governor --help\` for the tier choice and the drive loop.`;
   // Render the journal categories from the canonical enum so this prose can
   // never drift from what `journal add` actually accepts (the "note, plan…" list
   // silently lagged the tool by two categories before this).
@@ -115,6 +121,7 @@ first when one pass will do, the second when the objective must outlive the
 attempt, and the third when a human would otherwise have to babysit the loop. A
 run that needs authorization parks durably instead of failing, so check
 \`${b} approval list\` when one appears to be waiting rather than stuck.
+${teamPointer}
 
 **Durable role handoff.** When you are replacing a prior session in the same
 named role, run \`${b} agents identity assume <name>\` before declaring your task.
@@ -123,9 +130,10 @@ live process still holds the name; never hand-edit Harnery's history, heartbeat,
 or derived identity cache.
 
 **Declare intent on shell commands.** Every command you run is captured to the
-coordination ledger. Lead a shell command with a \`# intent: <why>\` comment (or set
-the tool's description) so the recorded event carries a reason instead of
-\`(no intent)\`.
+coordination ledger (\`.harnery/events.ndjson\`). Lead a shell command with a
+\`# intent: <why>\` comment (or set the tool's description) so the recorded event
+carries a reason instead of \`(no intent)\`; the [tool-intent
+guide](https://harnery.com/guides/tool-intent/) owns the details.
 
 **Journal.** \`${b} journal add <category> "<text>"\` (category = ${journalCats})
 leaves breadcrumbs that survive context compaction;
@@ -370,6 +378,131 @@ explicitly identifies it. Use the web control or \`${b} agents end --instance-id
 durably queues the end for its current turn.`;
 }
 
+function teamBody(b: string): string {
+  return `Harnery gives you three ways to put more than one agent on a job. They differ
+by how long the objective outlives a single execution, and picking the wrong one
+is the usual reason a team spins. This skill owns that choice, the files a
+governed team needs, and the drive loop.
+
+## Step 0: do not build a second team
+
+Run this before anything else, every time:
+
+\`\`\`bash
+${b} governor list
+\`\`\`
+
+If a goal already covers the objective, **you are done building** — drive the
+existing one (Step 3). A second team pointed at the same tree fights the first:
+both hold the same files and their frozen missions contradict each other. It is
+the most expensive mistake available here, and it looks like progress while you
+make it. Listings are tolerant: an unreadable record prints a warning row with
+its id, which is evidence the goal *exists* — inspect it before creating a
+replacement. Treat stale or suffixed experiment goals as shared runtime state;
+archiving them is an operator call, not yours.
+
+## Step 1: pick the tier
+
+Match the tier to how long the objective must survive, not to how big it feels.
+
+| Surface | Use when | Dies when |
+|---|---|---|
+| \`${b} run <script>\` | One bounded pass: deterministic JS stages fan out to headless subagents. | The pass ends. Nothing remembers it. |
+| \`${b} work create <title> <workflow>\` | The objective must outlive the attempt: retries, failures, review rounds. | You accept or cancel it. |
+| \`${b} governor create\` | A graph of interdependent work with distinct roles, where a human would otherwise babysit the loop. | You accept the root or it exhausts its bounds. |
+
+When unsure, start with \`${b} run\`: it is the only tier you can throw away for
+free, and iterating a script there before freezing it is how you avoid
+invalidating a durable work item later. And check the sizing first: a single
+agent often matches a team on a task that does not truly decompose — reliability
+is multiplicative across steps, and the metric that decides is cost per
+completed task, not agent count.
+
+## Step 2: build the governor team
+
+Four artifacts, kept in a managed workspace
+(\`${b} artifacts create <slug> --purpose "<why>"\`), then frozen:
+
+**team.json** maps specialist id to profile: \`instructions\` (the role's whole
+charter) plus optional \`adapter\`, \`effort\`, \`maxAttempts\`. Two role rules
+carry most of the value: **split producing evidence from judging it** (a
+verifier that runs gates, a separate reviewer that accepts or refuses — no agent
+grades its own homework), and **add a standing scope-auditor** that reports at
+each milestone whether the finish line moved, since no one else is positioned to
+notice a rising bar. Write each role's hard boundaries explicitly, in the
+negative: name every act that is somebody else's. Write every brief as a
+four-part contract — objective, output (the named artifact that proves it),
+tools, boundaries — and pass references, not pasted content. \`timeoutMs\` and
+\`maxTurns\` are workflow-script options, never specialist-profile keys; the
+create command rejects unsupported keys with the offending key and the allowed
+set.
+
+**mission.json** carries \`objective\`, \`acceptance\` (criteria), and
+\`max_milestones\`. Write acceptance so **refusing is a representable outcome**
+("X exists, or the blocker is stated with its citation") — a criterion an agent
+cannot satisfy by correctly refusing gets reissued forever. Every criterion
+names the artifact that satisfies it (a path, a passing command, a review
+record); a criterion satisfiable by prose will eventually be satisfied exactly
+that way.
+
+**replanning.json** freezes the planner policy: \`planner_specialist\`,
+\`auto_apply\`, \`max_replans\`, \`max_work_items_per_plan\`,
+\`max_total_work_items\`, a \`templates\` catalog, and \`review\` with
+\`reviewer_specialists\` and \`max_revision_rounds\`. Keep \`auto_apply: false\`
+and proof auto-acceptance off for anything that can touch public state.
+
+**Workflow templates** are the plain-JS scripts the planner may choose from;
+route product decisions to a decision-brief template, never an implement one.
+Authoring traps (frozen script hashes, the five-minute \`timeoutMs\` default,
+schema caps, child sandboxes) live in the
+[workflow-authoring guide](https://harnery.com/guides/workflow-authoring/).
+
+\`\`\`bash
+${b} governor create --id <goal-id> --title "<title>" \\
+  --team <ws>/team.json --mission <ws>/mission.json \\
+  --replanning <ws>/replanning.json --max-parallel-work 2 --json
+\`\`\`
+
+## Step 3: drive it
+
+\`${b} governor show <goal-id> --json\` — the \`projection\` object is the whole
+dashboard: read \`state\`, \`reason\`, and \`next_action\`, then do exactly that
+action. Useful fields: \`ready_work\` / \`retryable_work\` / \`attention_work\`,
+\`decision_blocked_work\` (parked on a docket entry, not broken),
+\`replans_used\` / \`replans_remaining\`, and the milestone counters.
+
+\`\`\`bash
+${b} governor tick <goal-id>   # at most one scheduling cycle
+${b} governor run <goal-id>    # cycles until success, attention, or budget
+${b} approval list             # a run needing authorization parks, not fails
+\`\`\`
+
+Rules that prevent stranded work:
+
+- **Never drive a governed item with \`${b} work retry\` or \`${b} work run\`.**
+  Only the governor supplies the frozen specialist map; a bare retry starts a
+  run with no team, dies at the first specialist stage, and still burns the
+  attempt. \`${b} work retry\` is for standalone work only.
+- **A blocked item cannot be accepted.** When its objective was met out of band,
+  the door back is \`${b} work reopen\` plus a fresh governor cycle, not accept.
+- **Read the spin signals before retrying.** Zero milestones with climbing
+  \`replans_used\` and repeated reviewer rejections means the mission prose or
+  acceptance criteria are wrong, not the agents. Replans are capped; diagnose
+  first.
+- **A frozen mission cannot be edited** — deliberately. Pass corrections as
+  retry context on individual items, or create a new goal and cancel the old
+  one. Do not keep re-planning against prose you know is stale.
+- **"ended without terminal evidence"** means the child died before writing its
+  proof, not that the work failed. Check whether the outcome landed before
+  redoing it.
+
+## Reporting back
+
+Tell the operator which tier you chose and why, the goal id, the roles, and the
+single next action. If you declined to build a team because one already existed,
+say that first; it is the most useful sentence in the reply.`;
+}
+
 export const SKILLS: SkillTemplate[] = [
   {
     id: "harn-decide",
@@ -405,6 +538,18 @@ export const SKILLS: SkillTemplate[] = [
           "Safely finalize the current Harnery agent session with an authoritative V3 session-ended event. Use when the operator says /harn-end, asks to end or close the current session, or when all work is complete and the session should stop counting as live.",
         binName,
         body: endBody(binName),
+      }),
+  },
+  {
+    id: "harn-team",
+    relPath: "harn-team/SKILL.md",
+    render: (binName) =>
+      buildOwnedSkill({
+        name: "harn-team",
+        description:
+          "Stand up and drive a multi-agent team on an objective: pick between a bounded run, durable work, and a governed role team; build the governor artifacts; drive off projection.next_action. Use when asked to put a team of agents on a job, orchestrate agents, or check on a goal already running. Refuses to build a second team when one already covers the objective.",
+        binName,
+        body: teamBody(binName),
       }),
   },
 ];

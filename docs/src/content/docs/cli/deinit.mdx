@@ -18,7 +18,7 @@ The inverse of [`harn init`](/cli/init/) (the same pairing as `git submodule dei
 By default it reverses everything `init` wrote outside the CLI, surgically:
 
 1. **Removes Harnery's hook entries** from the chosen adapter's settings file. A hook counts as Harnery's when its command contains `agent-hook `, so any hook *you* added stays put. If pulling Harnery's entries leaves the settings file with nothing but what `init` itself wrote (no hooks, at most a `version` key), the file is deleted rather than left as an empty shell.
-2. **Strips the agent-facing guidance** ([ADR 0008](/decisions/0008-agent-facing-skills/)): the `AGENTS.md` instructions block (and the `CLAUDE.md` import shim) are spliced out; a file left empty once its region is gone is deleted, one with your own content around the region is preserved. The `harn-decide`, `harn-council`, and `harn-end` skill files are deleted from the selected adapter's skill root, but only if they still carry Harnery's ownership marker. A skill you hand-edited (marker gone) is left in place with a warning, never silently clobbered.
+2. **Strips the agent-facing guidance** ([ADR 0008](/decisions/0008-agent-facing-skills/)): the `AGENTS.md` instructions block (and the `CLAUDE.md` import shim) are spliced out; a file left empty once its region is gone is deleted, one with your own content around the region is preserved. The `harn-decide`, `harn-council`, `harn-end`, and `harn-team` skill files are deleted from the selected adapter's skill root, but only if they still carry Harnery's ownership marker. A skill you hand-edited (marker gone) is left in place with a warning, never silently clobbered.
 3. **Removes the git-hook managed regions** ([ADR 0068](/decisions/0068-managed-git-hook-lifecycle/)): the `# harnery:begin git-hook-<event>` regions are spliced out of `pre-commit`, `post-commit`, and `post-checkout`. A hook file Harnery created whole is deleted; one carrying your own checks keeps every host line.
 
 ```bash
@@ -34,6 +34,7 @@ harn deinit
   + deleted skill harn-decide
   + deleted skill harn-council
   + deleted skill harn-end
+  + deleted skill harn-team
   · left .harnery/ coord root in place (pass --purge-state to delete it)
 Done. harnery hooks are unwired; restart your adapter session to drop them.
 ```

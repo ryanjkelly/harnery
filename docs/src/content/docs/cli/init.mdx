@@ -15,7 +15,7 @@ One command to make a project harnery-ready. It does the setup steps that are ot
 2. **Wires the agent-hook entries** into the chosen adapter's settings file (see the adapter-specific counts below).
 3. **Injects the agent-facing guidance** so a fresh consumer's agent actually knows the coord surfaces exist (design: [ADR 0008](/decisions/0008-agent-facing-skills/)):
    - A machine-owned **instructions block** spliced into `AGENTS.md` (a hash-versioned `<!-- harnery:begin instructions -->` region; everything outside the markers is untouched). Every command in it renders in *your* bin name.
-   - Three generic **skills** installed for every supported adapter: `harn-decide`, `harn-council`, and `harn-end`. Claude Code receives them in `.claude/skills/`; Cursor and Codex share the vendor-neutral `.agents/skills/` root. Suppress one with `skills.exclude` in `.harnery/config.jsonc` when you maintain a richer version. The block is **exclusion-aware**: it only points at skills it actually wrote and uses the corresponding CLI command when one is excluded.
+   - Four generic **skills** installed for every supported adapter: `harn-decide`, `harn-council`, `harn-end`, and `harn-team`. Claude Code receives them in `.claude/skills/`; Cursor and Codex share the vendor-neutral `.agents/skills/` root. Suppress one with `skills.exclude` in `.harnery/config.jsonc` when you maintain a richer version. The block is **exclusion-aware**: it only points at skills it actually wrote and uses the corresponding CLI command when one is excluded.
    - A `CLAUDE.md` `@AGENTS.md` import shim when `CLAUDE.md` is absent (Claude Code reads `CLAUDE.md`, not `AGENTS.md`). A `CLAUDE.md` that already imports `AGENTS.md`, or already carries the block, is left alone.
    - Your **own coordination policy**, if you name a file in `instructions.hostAddendumFile`. See below.
 4. **Installs the git-hook managed regions.** The coordination content of `pre-commit`, `post-commit`, and `post-checkout` is machine-owned on the same lifecycle as the instructions block: a hash-versioned `# harnery:begin git-hook-<event>` region that invokes `agent-coord git-hook <event>`. All actual behavior (the commit conflict verdict, claim pruning after commits and checkouts) lives in the package, so upgrading harnery upgrades your hooks with no file edits. `init` honors `core.hooksPath`; a hook file you already own keeps every host line and gets the region inserted after the shebang, a missing hook file is created whole (and `deinit` deletes only those). Never hand-copy coordination logic into a hook file: a copy sits outside the upgrade path and decays until it blocks commits it should allow.
@@ -27,6 +27,7 @@ One command to make a project harnery-ready. It does the setup steps that are ot
 | `harn-decide` | Search decision precedent, file a decision without blocking, or resolve one with evidence |
 | `harn-council` | Create, route, and contribute to guarded multi-agent council rounds |
 | `harn-end` | Finish a completed session with an authoritative V3 terminal event |
+| `harn-team` | Choose between a bounded run, durable work, and a governed role team; build the governor artifacts and drive the goal |
 
 All Harnery-owned skill names carry the `harn-` prefix, even when an embedding
 CLI uses another binary name. `init` does not create unprefixed aliases.

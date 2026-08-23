@@ -99,6 +99,7 @@ function blockSkills(projectRoot: string, adapter: string): BlockSkills {
     decide: supported && !exclude.has("harn-decide"),
     council: supported && !exclude.has("harn-council"),
     end: supported && !exclude.has("harn-end"),
+    team: supported && !exclude.has("harn-team"),
   };
 }
 
