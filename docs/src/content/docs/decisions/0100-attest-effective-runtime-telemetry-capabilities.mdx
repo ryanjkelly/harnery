@@ -1,0 +1,80 @@
+---
+title: "0100: Attest effective runtime telemetry capabilities per session"
+description: "ADR: keep static adapter capability profiles for contract gating and attest each session's effective telemetry support separately."
+---
+
+**Status:** accepted (2026-08-22) · **Scope:** product tier (`core/hooks`, `core/events/v3`, `harn events`)
+
+## Context
+
+An adapter capability profile is a static, digest-bound promise. It is suitable
+for event-contract approval and producer gating, but it cannot describe whether
+one runtime session is local or remote, whether a bounded source is readable,
+or whether a runtime version supplies a model-authoritative context limit.
+
+The first bounded runtime telemetry source demonstrated the distinction. A
+local adapter can produce an exact context measurement for an attributable turn
+while another session of the same adapter remains unsupported. Other adapters
+may expose used tokens without an authoritative limit, or deliver canonical
+turn boundaries without a stable context source.
+
+Reporting only the static profile hides this difference. Making the profile
+digest dynamic would instead couple genesis approval to transient filesystem
+state and create a new profile whenever source availability changed.
+
+## Alternatives
+
+**Make the adapter profile digest depend on runtime evidence.** Rejected because
+genesis must approve profiles before late transcript or terminal evidence is
+available. Runtime version, execution mode, and temporary read failures would
+also move a contract digest that should remain stable.
+
+**Infer effective support from whichever measurement events happened to
+arrive.** Rejected because absence is ambiguous. A missing event can mean an
+unsupported channel, an unreadable source, a flush race, or a delivery defect.
+
+**Require identical measurements from every adapter.** Rejected because parity
+is a proof standard, not a demand that unrelated runtimes expose the same
+private fields.
+
+**Generalize every late-source retry immediately.** Rejected until a second
+adapter demonstrates a real late-delivery ordering. A source-neutral interface
+does not justify speculative producer state.
+
+## Decision
+
+Keep `AdapterCapabilityProfileV3` as the static, digest-bound contract used by
+genesis and event gating. Add effective telemetry capability evidence to
+`RuntimeAttestationV3` instead.
+
+The telemetry attestation covers context usage, wait spans, wait completeness,
+response latency, and provider inference timing. Each channel uses the standard
+V3 observation states. An observed capability names its support class, a safe
+source token, and whether the resulting measurement can be exact, a lower
+bound, or unknown. Unsupported and expected-but-missing states remain explicit.
+
+The capability resolver consumes the same privacy-safe evidence returned by the
+runtime reader and the same execution-mode facts used by the producer. It does
+not inspect transcript bodies independently. Source tokens never contain paths,
+native identifiers, prompts, responses, reasoning, commands, or tool results.
+
+The initial runtime attestation may be incomplete. When a later hook proves a
+materially different capability, the producer emits one deduplicated
+`session.attestation_changed` event carrying the refreshed attestation. Earlier
+events remain unchanged.
+
+Exact context requires three facts from an attributable runtime source: used
+tokens, the effective model's authoritative limit, and turn ownership. A model
+limit table or configured default is not runtime attestation. Derived response
+latency never becomes provider inference, and observed wait spans never prove
+complete wait delivery without an independent aggregate.
+
+Cross-adapter reports compare both the measurement and its effective evidence
+class. They do not rank a channel across incompatible classes or convert an
+unsupported channel into zero.
+
+## Result
+
+Implementation and balanced rollout evidence are pending. The contract will
+land after the in-flight runtime-tuning attestation schema change so both fields
+advance through one coherent generated-contract boundary.
