@@ -1806,21 +1806,31 @@ function Portrait({ panel }: { panel: CodecPanelScene }) {
   );
 }
 
-/** Diegetic capacity gauge: three segments from the context band. Absent
- * telemetry renders nothing at all — a permanently neutral battery erodes
- * trust in the cues that do carry evidence. */
+/** Permanent context-reserve instrument. Exact measurements paint the dial;
+ * missing telemetry keeps the instrument in place but marks it unavailable. */
 function ContextGauge({ panel }: { panel: CodecPanelScene }) {
   const band = panel.context_band.value;
-  if (band === "unknown") return null;
-  const lit = band === "ample" ? 3 : band === "reduced" ? 2 : 1;
-  const label = `Context capacity ${band}`;
   const usage = panel.context_usage?.value;
+  const remaining = usage ? Math.max(0, Math.min(100, usage.remaining_percent)) : undefined;
+  const remainingLabel = remaining === undefined ? "—" : `${Math.round(remaining)}%`;
+  const label =
+    remaining === undefined
+      ? "Context remaining unavailable"
+      : `Context remaining ${remaining.toFixed(1)} percent, ${band} capacity`;
+  const gaugeStyle = {
+    "--codec-context-remaining": `${remaining ?? 0}%`,
+  } as CSSProperties;
+
   return (
     <Tooltip
       side="left"
+      triggerClassName={styles.contextGaugeTooltipTrigger}
       content={
         <div className="space-y-1">
-          <p className="font-semibold">Context capacity · {band}</p>
+          <p className="font-semibold">
+            Context reserve ·{" "}
+            {remaining === undefined ? "awaiting telemetry" : `${remaining.toFixed(1)}% remaining`}
+          </p>
           {usage ? (
             <>
               <p>
@@ -1847,23 +1857,23 @@ function ContextGauge({ panel }: { panel: CodecPanelScene }) {
         </div>
       }
     >
-      <div
+      <span
         data-codec-context-gauge
-        className="flex flex-none flex-col items-center gap-0.5"
+        data-context-band={band}
+        className={styles.contextGauge}
+        style={gaugeStyle}
         aria-label={label}
         role="img"
+        tabIndex={0}
       >
-        {[3, 2, 1].map((segment) => (
-          <span
-            key={segment}
-            className={cn(
-              "h-1.5 w-5 rounded-sm",
-              segment <= lit ? (band === "low" ? "bg-amber-500" : "bg-emerald-500") : "bg-muted",
-            )}
-          />
-        ))}
+        <span className={styles.contextGaugeDial} aria-hidden>
+          <span className={styles.contextGaugeValue}>{remainingLabel}</span>
+        </span>
+        <span className={styles.contextGaugeCaption} aria-hidden>
+          left
+        </span>
         <span className="sr-only">{label}</span>
-      </div>
+      </span>
     </Tooltip>
   );
 }
