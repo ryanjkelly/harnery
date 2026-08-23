@@ -1,0 +1,54 @@
+---
+title: "0105: Run semantic passes only for actionable work"
+description: "ADR: skip semantic service passes when pending generations are still inside their call cooldown."
+---
+
+**Status:** accepted (2026-08-23) · **Scope:** semantic service
+
+## Context
+
+ADR 0102 starts semantic reading with the dashboard. In the first live run, the
+service completed 1,378 sweeps and 613 passes while making 60 model calls. Many
+passes were useful incremental projections, but the daemon also started a pass
+on every sweep whenever its manifest had pending work. A pending generation can
+remain ineligible for 30 seconds after its latest model call, so those passes
+could not call a model or settle the pending item.
+
+The scheduler already owns the debounce, per-generation cooldown, and rolling
+hourly cap. The daemon should use those rules before starting a pass instead of
+discovering the same ineligibility deeper in the reader.
+
+## Alternatives
+
+**Keep running every pending sweep.** Rejected because it creates repeated
+manifest reads, projection work, and status writes without advancing the read
+model.
+
+**Increase the global wake or debounce interval.** Rejected because it would
+delay newly actionable ledger evidence and treat all work as if it shared one
+cooldown.
+
+**Lower the hourly model-call cap.** Rejected for this change because the cap
+limits spend, not orchestration churn. Token accounting should provide evidence
+before Harnery changes the budget.
+
+## Decision
+
+The semantic scheduler exposes a pending-pass predicate. A pending-triggered
+pass is due only when an item has completed its debounce and either:
+
+- at least one matured generation is outside its per-generation call cooldown;
+- or the rolling hourly cap has no capacity, in which case one pass records
+  deferred receipts and removes the matured items from the pending queue.
+
+The daemon still runs for matured raw-ledger changes and eligible deferred work.
+The 60-call rolling ceiling, model routes, privacy filter, expression contract,
+evidence bounds, and deterministic Codec precedence do not change.
+
+## Result
+
+Focused scheduler tests cover held generations, an eligible peer beside a held
+generation, pending debounce, and the deferred-receipt pass at the hourly cap.
+Daemon coverage confirms held-only pending work can sweep without starting a
+semantic pass. The existing semantic suites continue to pass with usage
+accounting enabled.

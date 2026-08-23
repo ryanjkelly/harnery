@@ -92,6 +92,37 @@ export function semanticGenerationCallEligible(
   return newest === undefined || nowMs - newest >= Math.max(0, minimumIntervalMs);
 }
 
+export function semanticPendingPassDue(input: {
+  pending: readonly SemanticPendingItem[];
+  callHistory: readonly SemanticCallReceipt[];
+  nowMs: number;
+  debounceMs: number;
+  callsPerHour?: number;
+  minimumGenerationCallIntervalMs?: number;
+}): boolean {
+  const matured = input.pending.filter((item) => {
+    const pendingSince = Date.parse(item.pending_since);
+    return (
+      !Number.isFinite(pendingSince) || input.nowMs - pendingSince >= Math.max(0, input.debounceMs)
+    );
+  });
+  if (matured.length === 0) return false;
+
+  const cap = semanticRateCap(input.callHistory, input.nowMs, input.callsPerHour);
+  // One pass is still required at the cap so runSemanticOnce can publish
+  // deferred receipts and remove the matured items from the pending queue.
+  if (cap.available === 0) return true;
+
+  return matured.some((item) =>
+    semanticGenerationCallEligible(
+      input.callHistory,
+      item.generation_id,
+      input.nowMs,
+      input.minimumGenerationCallIntervalMs,
+    ),
+  );
+}
+
 export function semanticDocumentEligible(
   document: SemanticAgentReadModelV2 | undefined,
   evidence: SemanticEvidenceV1,

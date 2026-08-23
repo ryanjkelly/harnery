@@ -25,6 +25,7 @@ import {
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
 import type { SemanticHarness } from "./contract.ts";
 import { runSemanticOnce, type SemanticOnceReport } from "./once.ts";
+import { semanticPendingPassDue } from "./scheduler.ts";
 import {
   readSemanticServiceStatus,
   SEMANTIC_SERVICE_STATUS_SCHEMA_VERSION,
@@ -289,14 +290,22 @@ export async function runSemanticServiceDaemon(
         if (read.events.length > 0 || !before?.cursor) {
           dirtySince ??= sweepAt.getTime();
         }
-        const hasPending = (before?.pending.length ?? 0) > 0;
+        const hasPendingPassDue = before
+          ? semanticPendingPassDue({
+              pending: before.pending,
+              callHistory: before.call_history,
+              nowMs: sweepAt.getTime(),
+              debounceMs,
+              ...(input.callsPerHour !== undefined ? { callsPerHour: input.callsPerHour } : {}),
+            })
+          : false;
         const hasEligibleDeferred = listSemanticAgentDocuments(coordRoot).some(
           (document) =>
             document.reader_outcome === "deferred" &&
             Date.parse(document.receipt.eligible_after) <= sweepAt.getTime(),
         );
         if (
-          hasPending ||
+          hasPendingPassDue ||
           hasEligibleDeferred ||
           (dirtySince !== undefined && sweepAt.getTime() - dirtySince >= debounceMs)
         ) {

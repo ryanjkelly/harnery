@@ -2,8 +2,16 @@ import { describe, expect, test } from "bun:test";
 import {
   selectSemanticPending,
   semanticGenerationCallEligible,
+  semanticPendingPassDue,
   semanticRateCap,
 } from "./scheduler.ts";
+
+const pending = (generationId: string, pendingSince = "2026-08-22T20:00:00.000Z") => ({
+  generation_id: generationId,
+  evidence_digest: `sha256:${"a".repeat(64)}` as const,
+  band: 2 as const,
+  pending_since: pendingSince,
+});
 
 describe("semantic fair scheduler", () => {
   test("serves first-band items in a stable round robin", () => {
@@ -61,6 +69,56 @@ describe("semantic fair scheduler", () => {
     ).toBe(true);
     expect(
       semanticGenerationCallEligible(history, "gen_a", Date.parse("2026-08-22T20:00:30.000Z")),
+    ).toBe(true);
+  });
+
+  test("does not start a pass while every pending generation is still held", () => {
+    const nowMs = Date.parse("2026-08-22T20:00:10.000Z");
+    expect(
+      semanticPendingPassDue({
+        pending: [pending("gen_a")],
+        callHistory: [{ generation_id: "gen_a", started_at: "2026-08-22T20:00:00.000Z" }],
+        nowMs,
+        debounceMs: 5_000,
+      }),
+    ).toBe(false);
+  });
+
+  test("starts when any matured generation is eligible without delaying it behind a hot peer", () => {
+    const nowMs = Date.parse("2026-08-22T20:00:10.000Z");
+    expect(
+      semanticPendingPassDue({
+        pending: [pending("gen_a"), pending("gen_b")],
+        callHistory: [{ generation_id: "gen_a", started_at: "2026-08-22T20:00:00.000Z" }],
+        nowMs,
+        debounceMs: 5_000,
+      }),
+    ).toBe(true);
+  });
+
+  test("waits for debounce before running otherwise eligible pending work", () => {
+    expect(
+      semanticPendingPassDue({
+        pending: [pending("gen_a", "2026-08-22T20:00:08.000Z")],
+        callHistory: [],
+        nowMs: Date.parse("2026-08-22T20:00:10.000Z"),
+        debounceMs: 5_000,
+      }),
+    ).toBe(false);
+  });
+
+  test("runs one matured pass at the hourly cap so deferred receipts can be published", () => {
+    const callHistory = Array.from({ length: 60 }, (_, index) => ({
+      generation_id: `gen_${index}`,
+      started_at: "2026-08-22T20:00:00.000Z",
+    }));
+    expect(
+      semanticPendingPassDue({
+        pending: [pending("gen_waiting")],
+        callHistory,
+        nowMs: Date.parse("2026-08-22T20:30:00.000Z"),
+        debounceMs: 5_000,
+      }),
     ).toBe(true);
   });
 });
