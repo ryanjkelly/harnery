@@ -1,13 +1,14 @@
 /**
  * Locks the pure URL-building in the file-viewer client. `rawUrl` feeds
  * <img>/<audio>/<video>/<iframe> src and the download/open-raw header actions;
- * `renderUrl` opens HTML on the isolated files origin; `viewUrl` opens the
+ * `sandboxedRenderUrl` opens inert HTML on the current dashboard origin,
+ * `renderUrl` opens HTML on the isolated files origin, and `viewUrl` opens the
  * dashboard Source|Preview chrome.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { FILES_ORIGIN_HOST, filesOriginUrl, isFilesOriginHost } from "../files-origin.ts";
-import { isHtmlPreviewPath, rawUrl, renderUrl, viewUrl } from "./client.ts";
+import { isHtmlPreviewPath, rawUrl, renderUrl, sandboxedRenderUrl, viewUrl } from "./client.ts";
 
 describe("rawUrl", () => {
   test("encodes the path so slashes/spaces/specials survive as one param value", () => {
@@ -55,6 +56,14 @@ describe("files origin helpers", () => {
       "http://harnery-files.localhost:9000/docs/a%20plan.html",
     );
     expect(renderUrl("docs/x.html")).toBe("http://harnery-files.localhost:9000/docs/x.html");
+  });
+});
+
+describe("sandboxedRenderUrl", () => {
+  test("uses the current origin API route so remote tunnels keep working", () => {
+    expect(sandboxedRenderUrl("docs/a plan.html")).toBe(
+      "/api/file?path=docs%2Fa%20plan.html&render=1",
+    );
   });
 });
 

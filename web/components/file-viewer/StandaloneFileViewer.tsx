@@ -6,9 +6,15 @@
  * tab with Source | Preview while `/api/file` stays non-navigable text/plain.
  */
 
-import { Check, Copy, Download, ExternalLink, FileText } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Eye, FileText } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { type FetchResult, fetchMeta, rawUrl } from "@/lib/file-viewer/client";
+import {
+  type FetchResult,
+  fetchMeta,
+  isHtmlPreviewPath,
+  rawUrl,
+  sandboxedRenderUrl,
+} from "@/lib/file-viewer/client";
 import type { FileMeta } from "@/lib/file-viewer/types";
 import { RendererRegistry } from "./RendererRegistry";
 import {
@@ -59,6 +65,15 @@ export function StandaloneFileViewer({
           </span>
         )}
         <div className="ml-auto flex items-center gap-1">
+          {isHtmlPreviewPath(path) && (
+            <IconLink
+              href={sandboxedRenderUrl(path)}
+              target="_blank"
+              title="Open rendered page in new tab"
+            >
+              <Eye className="size-4" />
+            </IconLink>
+          )}
           <IconLink href={rawUrl(path)} target="_blank" title="Open raw in new tab">
             <ExternalLink className="size-4" />
           </IconLink>

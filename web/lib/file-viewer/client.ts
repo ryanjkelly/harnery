@@ -84,6 +84,13 @@ export function rawUrl(path: string, opts: { download?: string } = {}): string {
   return url;
 }
 
+/** Browser-rendered HTML on the current dashboard origin. CSP `sandbox`
+ * keeps scripts disabled and gives the document an opaque origin, while the
+ * same-origin path keeps this action usable through remote dashboard tunnels. */
+export function sandboxedRenderUrl(path: string): string {
+  return `/api/file?${qs(path)}&render=1`;
+}
+
 /**
  * Open on the isolated files origin (`harnery-files.localhost`) so HTML/JS run
  * in a real browser document without sharing the dashboard cookie jar.
