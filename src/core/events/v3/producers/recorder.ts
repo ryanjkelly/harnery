@@ -26,7 +26,7 @@ import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import type { RuntimeAttestationV3Base } from "../base-contract.ts";
 import { buildEventV3 } from "../builder.ts";
-import { fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
+import { canonicalJsonV3, fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
 import {
   type AdapterSignalV3,
   adapterCapabilityProfileDigestV3,
@@ -48,7 +48,10 @@ import {
   spanIdV3,
 } from "../ids.ts";
 import { readLedgerV3 } from "../reader.ts";
-import type { RuntimeTelemetryCapabilitiesV3 } from "../runtime-telemetry-capabilities.ts";
+import {
+  effectiveRuntimeTelemetryCapabilitiesV3,
+  type RuntimeTelemetryCapabilitiesV3,
+} from "../runtime-telemetry-capabilities.ts";
 import {
   closeSpanStateV3,
   type OpenSpanStateV3,
@@ -205,6 +208,10 @@ export interface HookProducerStateV3 {
   /** Telemetry evidence carried forward verbatim: a tuning change does not
    * alter what telemetry the runtime proved it can deliver. */
   last_attested_telemetry?: RuntimeTelemetryCapabilitiesV3;
+  /** Full observations preserve missing and unsupported states when a
+   * different attestation channel changes. */
+  last_attested_model_observation?: RuntimeAttestationV3Base["model"];
+  last_attested_tuning_observation?: RuntimeAttestationV3Base["tuning"];
 }
 
 export interface RecordHookSignalV3Input {
@@ -1695,6 +1702,47 @@ function commitTurnContextObservation(
     },
   }) as EventV3;
   commitEventLocked(input, state, path, event);
+  maybeAttestContextCapabilityChange(input, state, path, rootId, measurement, contextProvenance);
+}
+
+function maybeAttestContextCapabilityChange(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  measurement: TelemetryObservationV3<ContextMeasurementV3>,
+  provenance?: ContextTelemetryProvenanceV3,
+): void {
+  const context =
+    measurement.state === "observed"
+      ? {
+          state: "observed" as const,
+          source: provenance?.source_event ?? `${input.adapter}.turn_context`,
+          attestation: provenance?.attestation ?? measurement.attestation,
+          confidence: provenance?.confidence ?? measurement.confidence,
+        }
+      : measurement.state === "expected_but_missing"
+        ? { state: "partial" as const, reason: measurement.reason }
+        : { state: "unsupported" as const };
+  const telemetry = effectiveRuntimeTelemetryCapabilitiesV3({
+    adapter: input.adapter,
+    ...(state.cursor_mode ? { cursor_mode: state.cursor_mode } : {}),
+    context,
+    canonical_turn_boundaries: true,
+  });
+  if (!state.last_attested_telemetry) return;
+  if (canonicalJsonV3(telemetry) === canonicalJsonV3(state.last_attested_telemetry)) return;
+  if (!state.last_attested_model_observation || !state.last_attested_tuning_observation) return;
+
+  commitRuntimeAttestationChange(input, state, path, rootId, {
+    model: state.last_attested_model_observation,
+    tuning: state.last_attested_tuning_observation,
+    telemetry,
+    reason: "runtime_telemetry_changed",
+    source_event: provenance?.source_event ?? `${input.adapter}.turn_context`,
+    attestation: provenance?.attestation ?? "derived",
+    confidence: provenance?.confidence ?? (measurement.state === "observed" ? "exact" : "high"),
+  });
 }
 
 function turnContextTarget(turnTerminal: EventV3): TurnContextTargetV3 | undefined {
@@ -1914,14 +1962,8 @@ function runtimeContextObservation(
 
 /** Seed the change-detection baseline from a committed session.started. */
 function seedAttestedTuning(state: HookProducerStateV3, event: { payload: unknown }): void {
-  const attestation = (
-    event.payload as {
-      runtime_attestation?: {
-        tuning?: { state?: string; value?: { effort?: string; speed?: string } };
-        model?: { state?: string; value?: { provider?: string; id?: string } };
-      };
-    }
-  ).runtime_attestation;
+  const attestation = (event.payload as { runtime_attestation?: RuntimeAttestationV3Base })
+    .runtime_attestation;
   if (!attestation) return;
   const tuning = attestation.tuning;
   state.last_attested_tuning =
@@ -1932,12 +1974,12 @@ function seedAttestedTuning(state: HookProducerStateV3, event: { payload: unknow
         }
       : {};
   const model = attestation.model;
-  if (model?.state === "observed" && model.value?.provider && model.value.id) {
+  if (model.state === "observed") {
     state.last_attested_model = { provider: model.value.provider, id: model.value.id };
   }
-  const telemetry = (event.payload as { runtime_attestation?: { telemetry?: unknown } })
-    .runtime_attestation?.telemetry;
-  if (telemetry) state.last_attested_telemetry = telemetry as RuntimeTelemetryCapabilitiesV3;
+  state.last_attested_model_observation = model;
+  state.last_attested_tuning_observation = tuning;
+  state.last_attested_telemetry = attestation.telemetry as RuntimeTelemetryCapabilitiesV3;
 }
 
 /**
@@ -2016,9 +2058,6 @@ function maybeAttestTuningChange(
     }
   }
 
-  const priorAttestationId = state.attestation_id;
-  const nextAttestationId = attestationIdV3();
-  const eventId = eventIdV3();
   const model: RuntimeAttestationV3Base["model"] = candidate.model
     ? {
         state: "observed",
@@ -2034,6 +2073,49 @@ function maybeAttestTuningChange(
           confidence: "high",
         }
       : { state: "expected_but_missing", capability: "model_identity", reason: "not_reported" };
+  const tuning: RuntimeAttestationV3Base["tuning"] =
+    candidate.effort || candidate.speed
+      ? {
+          state: "observed",
+          value: {
+            ...(candidate.effort ? { effort: candidate.effort } : {}),
+            ...(candidate.speed ? { speed: candidate.speed } : {}),
+          },
+          attestation: attestationSource,
+          confidence: "exact",
+        }
+      : { state: "unsupported", capability: "effort_selection" };
+  commitRuntimeAttestationChange(input, state, path, rootId, {
+    model,
+    tuning,
+    telemetry: state.last_attested_telemetry,
+    reason: "runtime_tuning_changed",
+    source_event: sourceEvent,
+    attestation: attestationSource,
+    confidence: attestationSource === "native" ? "exact" : "high",
+  });
+}
+
+interface RuntimeAttestationChangeV3 {
+  model: RuntimeAttestationV3Base["model"];
+  tuning: RuntimeAttestationV3Base["tuning"];
+  telemetry: RuntimeTelemetryCapabilitiesV3;
+  reason: string;
+  source_event: string;
+  attestation: "native" | "derived";
+  confidence: "exact" | "high";
+}
+
+function commitRuntimeAttestationChange(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  change: RuntimeAttestationChangeV3,
+): void {
+  const priorAttestationId = state.attestation_id;
+  const nextAttestationId = attestationIdV3();
+  const eventId = eventIdV3();
   const runtimeAttestation: RuntimeAttestationV3Base = {
     attestation_id: nextAttestationId,
     generation_id: state.generation_id,
@@ -2055,20 +2137,9 @@ function maybeAttestTuningChange(
       attestation: "native",
       confidence: "exact",
     },
-    model,
-    tuning:
-      candidate.effort || candidate.speed
-        ? {
-            state: "observed",
-            value: {
-              ...(candidate.effort ? { effort: candidate.effort } : {}),
-              ...(candidate.speed ? { speed: candidate.speed } : {}),
-            },
-            attestation: attestationSource,
-            confidence: "exact",
-          }
-        : { state: "unsupported", capability: "effort_selection" },
-    telemetry: state.last_attested_telemetry,
+    model: change.model,
+    tuning: change.tuning,
+    telemetry: change.telemetry,
     capability_profile: state.capability_profile,
     declared_by_event_id: eventId,
   };
@@ -2095,9 +2166,9 @@ function maybeAttestTuningChange(
     attestation_id: nextAttestationId,
     links: { caused_by: state.last_event_id ? [state.last_event_id] : [] },
     provenance: {
-      source_event: safeRole(sourceEvent),
-      attestation: attestationSource,
-      confidence: attestationSource === "native" ? "exact" : "high",
+      source_event: safeRole(change.source_event),
+      attestation: change.attestation,
+      confidence: change.confidence,
       attribution: {
         method: "native_payload",
         state: "verified",
@@ -2110,7 +2181,7 @@ function maybeAttestTuningChange(
     payload: {
       prior_attestation_id: priorAttestationId,
       runtime_attestation: runtimeAttestation,
-      reason: "runtime_tuning_changed",
+      reason: change.reason,
     },
   }) as EventV3;
   // Mutate BEFORE the commit: commitEventLocked publishes the state file, so
@@ -2118,16 +2189,12 @@ function maybeAttestTuningChange(
   // A crash between publishes replays the pending event against a state that
   // already carries the new attestation id, which is the id the event declares.
   state.attestation_id = nextAttestationId;
-  state.last_attested_tuning = {
-    ...(candidate.effort ? { effort: candidate.effort } : {}),
-    ...(candidate.speed ? { speed: candidate.speed } : {}),
-  };
-  if (candidate.model) {
-    state.last_attested_model = {
-      provider: modelProviderFor(input.adapter),
-      id: safeRole(candidate.model),
-    };
-  }
+  state.last_attested_model_observation = change.model;
+  state.last_attested_tuning_observation = change.tuning;
+  state.last_attested_telemetry = change.telemetry;
+  state.last_attested_model =
+    change.model.state === "observed" ? { ...change.model.value } : undefined;
+  state.last_attested_tuning = change.tuning.state === "observed" ? { ...change.tuning.value } : {};
   commitEventLocked(input, state, path, event);
 }
 
@@ -3254,8 +3321,10 @@ function readProducerState(path: string): HookProducerStateV3 {
     "generation_id",
     "instance_id",
     "last_attested_model",
+    "last_attested_model_observation",
     "last_attested_telemetry",
     "last_attested_tuning",
+    "last_attested_tuning_observation",
     "last_event_id",
     "last_monotonic_ns",
     "last_observed_at",

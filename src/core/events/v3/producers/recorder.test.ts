@@ -1248,12 +1248,91 @@ describe("event ledger V3 persistent hook recorder", () => {
       attestation: "derived",
       confidence: "high",
     });
+    const telemetryChange = events.find(
+      (event) =>
+        event.event_type === "session.attestation_changed" &&
+        event.payload.reason === "runtime_telemetry_changed",
+    );
+    expect(
+      telemetryChange?.event_type === "session.attestation_changed" &&
+        telemetryChange.payload.runtime_attestation.telemetry.context_usage,
+    ).toEqual({
+      state: "expected_but_missing",
+      capability: "context_usage",
+      reason: "claude_context_limit_tokens_not_reported",
+    });
+    expect(
+      telemetryChange?.event_type === "session.attestation_changed" &&
+        telemetryChange.payload.runtime_attestation.tuning,
+    ).toEqual({
+      state: "expected_but_missing",
+      capability: "effort_selection",
+      reason: "not_reported",
+    });
     expect(
       readHookProducerStateV3(root, "claude-code", nativeSession)?.current_native_turn_id,
     ).toBe(undefined);
+    appendFileSync(
+      transcript,
+      `${[
+        {
+          timestamp: "2026-08-21T20:25:13.000Z",
+          type: "user",
+          uuid: "user-turn-two",
+          parentUuid: "assistant-turn",
+          promptId: "claude-runtime-context-prompt-two",
+          sessionId: nativeSession,
+          message: { role: "user", content: "PRIVATE_SECOND_PROMPT" },
+        },
+        {
+          timestamp: "2026-08-21T20:25:14.000Z",
+          type: "assistant",
+          uuid: "assistant-turn-two",
+          parentUuid: "user-turn-two",
+          sessionId: nativeSession,
+          message: {
+            model: "claude-opus-fixture",
+            content: "PRIVATE_SECOND_RESPONSE",
+            usage: { input_tokens: 70 },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({
+          session_id: nativeSession,
+          turn_id: "claude-runtime-context-prompt-two",
+          prompt: "PRIVATE_SECOND_PROMPT",
+        }),
+        "claude-code",
+      ),
+    );
+    recordHookSignalV3({
+      ...baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, transcript_path: transcript }),
+        "claude-code",
+      ),
+      adapterVersion: "2.1.233",
+    });
+    expect(
+      readLedgerV3(root).events.filter(
+        ({ event }) =>
+          event.event_type === "session.attestation_changed" &&
+          event.payload.reason === "runtime_telemetry_changed",
+      ),
+    ).toHaveLength(1);
     const durable = readFileSync(eventV3Paths(root).active, "utf8");
     expect(durable).not.toContain("PRIVATE_CONTEXT_PROMPT");
     expect(durable).not.toContain("PRIVATE_CONTEXT_RESPONSE");
+    expect(durable).not.toContain("PRIVATE_SECOND_PROMPT");
+    expect(durable).not.toContain("PRIVATE_SECOND_RESPONSE");
     expect(durable).not.toContain(nativePrompt);
     expect(durable).not.toContain(transcript);
   });
@@ -1351,6 +1430,25 @@ describe("event ledger V3 persistent hook recorder", () => {
       source_record_id: expect.stringMatching(/^hid_[a-f0-9]{64}$/),
     });
     expect(context?.time.observed_at).toBe(terminal?.time.observed_at);
+    const telemetryChange = events.find(
+      (event) =>
+        event.event_type === "session.attestation_changed" &&
+        event.payload.reason === "runtime_telemetry_changed",
+    );
+    expect(
+      telemetryChange?.event_type === "session.attestation_changed" &&
+        telemetryChange.payload.runtime_attestation.telemetry.context_usage,
+    ).toEqual({
+      state: "observed",
+      value: {
+        support: "derived",
+        source: "codex.rollout_token_count",
+        completeness: "exact",
+      },
+      attestation: "derived",
+      confidence: "exact",
+    });
+    expect(telemetryChange).toMatchObject({ links: { caused_by: [context?.event_id] } });
     const projection = projectLatencyV3(readLedgerV3(root)).turns[0];
     expect(projection?.context_percent).toBeCloseTo((120_000 / 258_400) * 100);
     expect(projection?.context_coverage.state).toBe("observed");
