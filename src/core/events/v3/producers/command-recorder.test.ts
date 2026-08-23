@@ -103,6 +103,62 @@ describe("event ledger V3 persistent session-tee recorder", () => {
     expect(JSON.stringify(listLiveDisplayV3(root))).not.toContain(secret);
   });
 
+  test("completes a command span that straddles a mid-generation re-attestation", () => {
+    const root = startedTurnRoot();
+    const start = recordCommandSignalV3({
+      ...commandInput(root, "command.started"),
+      observation: {
+        native_command_id: "cmd-native-1",
+        argv: ["toolkit", "status"],
+        intent: "check status",
+        executable: "toolkit",
+        intent_kind: "research",
+        sensitive_argument_count: 0,
+      },
+    });
+    expect(start.state).toBe("recorded");
+
+    // The hook re-attests within the same generation and turn (runtime
+    // tuning moved between command.started and command.completed).
+    recordHookSignalV3(
+      hookInput(
+        root,
+        "pre-tool-use",
+        parsed({
+          session_id: "native-session",
+          tool_use_id: "call-1",
+          tool_name: "Bash",
+          effort: "high",
+        }),
+      ),
+    );
+    const change = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .find((event) => event.event_type === "session.attestation_changed");
+    if (!change) throw new Error("expected a re-attestation within the generation");
+
+    // The straddling span keeps its identity and completes; it used to throw
+    // "V3 command producer state does not match the joined hook generation".
+    const completed = recordCommandSignalV3({
+      ...commandInput(root, "command.completed"),
+      observation: { native_command_id: "cmd-native-1", exit_code: 0, duration_ms: 5 },
+    });
+    expect(completed.state).toBe("recorded");
+
+    const commandEvents = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.producer.component === "session-tee");
+    expect(commandEvents.map((event) => event.event_type)).toEqual([
+      "command.started",
+      "command.completed",
+    ]);
+    expect(commandEvents.map((event) => event.producer.sequence)).toEqual([1, 2]);
+    const spans = commandEvents.map((event) => (event.links as { span_id: string }).span_id);
+    expect(new Set(spans).size).toBe(1);
+    expect(commandEvents[0]?.attestation_id).not.toBe(change.attestation_id);
+    expect(commandEvents[1]?.attestation_id).toBe(change.attestation_id);
+  });
+
   test("writes scrubbed command intent to the live-display overlay", () => {
     const root = startedTurnRoot();
     const start = recordCommandSignalV3({
