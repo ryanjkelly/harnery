@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.35.0
+
+### Minor Changes
+
+- dcaf4c8: Rearrange the agent name pool so gender alternates letter by letter within each 26-name pass, with five passes starting female at A and five starting male. Every pass is now 13 female and 13 male, every letter carries five names of each gender, and the pool is 130/130, so one fixed set of 13 female and 13 male portraits can dress a whole pass. Eleven names were substituted to make the split reachable, two of which removed near-duplicates (Kaleb duplicated Caleb, Ulrich duplicated Ulrik). Counter positions now map to different names than before; already-assigned names are unaffected because name history stores the resolved name.
+- 7a31784: Add an extended tier of ten optional Codec expressions (observing, wrapping-up, compacting, conducting, weighing, planning, verifying, strained, blocked, dormant) on top of the eleven required ones. Packs may ship extended art; a pack that lacks it renders the expression's required fallback parent, so art lands incrementally without invalidating any pack. Deterministic ladder rules derive eight of them from evidence already on the panel (lifecycle, typed waits, compaction boundaries, subagent counts, image artifacts, context band); planning and verifying arrive through the semantic phase mapping, which now gives them and wrapping-up their own faces. Weighing is typed and fallback-mapped but has no deterministic rule yet.
+- 56b76d1: Read attributable Codex context usage from bounded local telemetry. Latency
+  reports now include per-kind wait completeness and response timing while
+  unsupported inference and missing context stay unknown. Codex transcript
+  flush races reconcile from owner-only state on a later hook without delaying
+  turn completion or exposing native paths and identifiers in the ledger.
+- e3f31b1: `harn browse` trio mode now writes a standalone `<prefix>.html`: stylesheets are inlined, fonts and images are embedded as `data:` URIs, and every remaining reference is rewritten to an absolute URL on the captured origin. Root-relative asset paths previously resolved against whatever host served the saved file, so a snapshot opened anywhere but its own origin rendered as unstyled text with broken images. Scripts and preload hints are dropped, and the trio `.json` reports what was inlined under `htmlSnapshot`. Print mode and `--selector` captures still emit the raw serialization.
+- 2d8f75d: Reset managed artifact expiration whenever files in the workspace change.
+- d191265: Attest effective per-session telemetry support separately from static adapter capability profiles, and join Claude Code usage to native prompt ancestry without claiming a context limit the runtime does not report.
+- 5d1afac: Carry effective runtime telemetry capabilities into V3 latency reports and add a stable evidence key that prevents comparisons across unlike telemetry support.
+- f7f24be: Observe model effort and speed from native runtime signals. `readRuntimeTuning` reads the newest Codex `turn_context` row (effective per-turn reasoning effort, including overrides) and the newest Claude Code assistant transcript row (model, effort, and usage speed from the same row). `scanTranscriptRuntime` replaces `scanTranscriptModel`, returning the paired model + tuning values. The V3 runtime attestation gains a `tuning` observation populated at session start, refreshed via `session.attestation_changed` when the observed value moves, and rendered on the codec card.
+- 3941b33: Add Semantic Expression V2. Semantic readers may propose an optional,
+  evidence-cited expression cue for an otherwise neutral Codec portrait. The cue
+  uses a controlled vocabulary, model-synthesis basis, and medium or low
+  confidence. Event-backed expressions retain precedence, and the derived
+  read-model storage moves to `.harnery/semantic/v2/` without reading V1 caches.
+  Each structured reply is bound to the request's exact generation ID and
+  evidence digest before it can be persisted.
+- 99b04ee: Add the product-tier `harnery/core/semantic` contract, deterministic Event Ledger V3 evidence projection, exact harness-routed readers, typed receipts, bounded scheduling, atomic derived storage, the explicit-start `harn semantic` reader service and inspection CLI, and local-only semantic meaning with reader health in Codec.
+- 998834b: Ship harn-team, a fourth generic skill covering the run/work/governor tier choice, the governor artifacts, and the drive loop; the injected block points at it (with a governor --help fallback when excluded) and its intent paragraph now names the event-ledger path and links the tool-intent guide.
+
+### Patch Changes
+
+- 8d02beb: Adopt a mid-generation re-attestation into the joined V3 coordination and
+  command producer states instead of refusing forever. The producer state path
+  is derived from the generation alone, so after a `session.attestation_changed`
+  the stored attestation id could never be superseded and every later authority
+  transition (for example `agents set-task`) was refused for the rest of the
+  generation. The producer now adopts the hook's live attestation id in place,
+  preserving its sequence, clock, and observation dedupe, the same continuation
+  the hook producer itself performs.
+- cff2f31: Start the bounded semantic reader automatically with the Harnery dashboard for
+  an active V3 coordination root, recover after a V3 genesis rollover, and
+  preserve manual pause and deterministic fallback.
+- 454805f: Record exact Codex context usage when Stop hooks omit transcript paths by caching a verified rollout source in owner-only V3 producer state.
+- 45d6331: Normalize approved out-of-root claim paths so releases match across absolute
+  and dot-dot forms without exposing the external path in Event Ledger events.
+- 0c6d95b: Verify the pending session-name display on Codex: the PreToolUse latch and the Stop-time naming ritual now discover the Codex rollout transcript by session id when the hook payload omits `transcript_path`, so an exact display can be stamped as seen on that adapter instead of remaining pending for the session's whole life.
+- 1fe67f3: Export `discoverCodexSessionTranscript` from the runtime-telemetry adapter: locate a Codex rollout transcript by session id across the native and WSL-mounted sessions roots when a hook payload carries no `transcript_path`. Codex omits the path on every hook event except Stop, which left evidence-dependent verdicts such as the pending session-name display permanently unverifiable on that adapter.
+- c7b5643: Decision and presence observations now join the active V3 hook generation with the adapter's native session ID instead of its privacy-safe session fingerprint.
+- 03d05ea: Export the Event Ledger V3 active watch path used by the semantic service from the public V3 barrel.
+- bb41057: Rotate urgent semantic readings across every pending generation instead of alternating only the two oldest entries.
+- f5cf15a: Preserve the semantic rolling call window when ledger, model, or contract changes invalidate derived state.
+- 15caade: Owner resolution no longer lets an inherited foreign-adapter session-id
+  environment variable hijack a nested agent's identity: on a cross-adapter
+  conflict, the nearest token-verified pid-map anchor (claude-code/codex) now
+  outranks the session-env join, while same-adapter conflicts, Cursor's shared
+  shells, bridge-marked children, and unverified rows keep the existing env-first
+  order. `harn agents health` also surfaces stop-hook remediation-cap
+  exhaustions (count, latest, session samples) as an anomaly, so a session whose
+  end-of-turn evidence never lands is visible without grepping the debug ledger.
+- 5ec35aa: Bound Codex session-name recovery when assistant transcript evidence is unavailable. Routine `agents set-task` calls stay title-silent, pending prompt reminders emit once per minted name, and `agents suggest-name --json` creates the explicit retry boundary with the exact stored name.
+- b1e7378: Remove stale heartbeat cache rows for terminal V3 generations after preserving the failed lifecycle observation in the producer diagnostics spool.
+- 5b66829: Record privacy-safe per-harness semantic call latency and byte metrics in the bounded service log.
+- afdef32: Carry session-naming evidence (`suggested_session_name`, `session_name_seen_for`, `session_name_seen_at`) across a coordination generation reopen of the same native session. A resume or mid-flight onboarding names the same adapter tab, so rebuilding the cache without that evidence re-minted a fresh title and demanded its display again; a multi-day Codex session accumulated five pending names this way. The carry is dropped when the durable identity observably changed.
+- c902bee: Preserve bounded semantic call metrics by omitting deferred-only pass logs and throttling repeated sweep errors.
+- 0f122e5: Instruction template now names the live V3 ledger location (`.harnery/ledgers/v3/`) instead of the retired `.harnery/events.ndjson` path in the intent-declaration guidance.
+- 5fe991e: Keep an already-seen session title silent when the first task update materializes a restarted Event Ledger V3 generation.
+- 413e382: Stop-hook remediation backstops: the finish sound no longer replays on stop
+  continuations (`stop_hook_active`), so a blocked-stop loop cannot become a
+  repeating alarm; consecutive blocked stops in one cycle are capped (default 5),
+  after which the stop is allowed so a session whose ritual evidence can never
+  land terminates instead of bouncing until its budget dies; and remediation
+  messages now carry `--session-id` so evidence from processes that don't
+  descend from a pid-map-registered anchor lands under the correct owner.
+- eb7791d: Make a semantic service stop finish only the in-flight model call before exiting.
+- 0f1de1d: Reject path, URL, command, environment, and secret-shaped text in accepted semantic readings before local persistence.
+- 534e7fc: Wake the explicit-start semantic service when a rate-deferred document becomes eligible, even when no new ledger evidence arrives.
+
 ## 0.34.1
 
 ### Patch Changes
