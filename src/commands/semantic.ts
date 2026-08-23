@@ -64,7 +64,7 @@ export function registerSemanticCommand(
 
   service
     .command("status")
-    .description("Show singleton liveness, pass metrics, and pending work")
+    .description("Show reader liveness, rolling calls, token usage, routes, and pending work")
     .option("--root <path>", "Explicit coordination root")
     .action((options: { root?: string }) => {
       try {

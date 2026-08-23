@@ -4,6 +4,9 @@ export const SEMANTIC_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const SEMANTIC_READ_MODEL_SCHEMA_VERSION = 2 as const;
 export const SEMANTIC_EVIDENCE_CONTRACT_VERSION = 1 as const;
 export const SEMANTIC_PROMPT_CONTRACT_VERSION = 3 as const;
+export const SEMANTIC_USAGE_SCHEMA_VERSION = 1 as const;
+export const SEMANTIC_VISIBLE_USAGE_ESTIMATOR_ID = "visible-o200k-base" as const;
+export const SEMANTIC_VISIBLE_USAGE_ESTIMATOR_VERSION = 1 as const;
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -102,6 +105,58 @@ const ConfidenceSchema = Type.Union([
   Type.Literal("high"),
   Type.Literal("medium"),
   Type.Literal("low"),
+]);
+
+const NativeUsageTokenSchema = StrictObject({
+  value: Type.Integer({ minimum: 0 }),
+  provenance: Type.Literal("native"),
+});
+const EstimatedUsageTokenSchema = StrictObject({
+  value: Type.Integer({ minimum: 0 }),
+  provenance: Type.Literal("estimated"),
+});
+const NativeUsageTokensSchema = StrictObject({
+  input_tokens: Type.Optional(NativeUsageTokenSchema),
+  cached_input_tokens: Type.Optional(NativeUsageTokenSchema),
+  cache_creation_input_tokens: Type.Optional(NativeUsageTokenSchema),
+  output_tokens: Type.Optional(NativeUsageTokenSchema),
+  reasoning_tokens: Type.Optional(NativeUsageTokenSchema),
+  total_tokens: Type.Optional(NativeUsageTokenSchema),
+});
+const EstimatedUsageTokensSchema = StrictObject({
+  input_tokens: EstimatedUsageTokenSchema,
+  output_tokens: EstimatedUsageTokenSchema,
+  total_tokens: EstimatedUsageTokenSchema,
+});
+
+export const SemanticNativeUsageReceiptV1Schema = StrictObject({
+  schema_version: Type.Literal(SEMANTIC_USAGE_SCHEMA_VERSION),
+  source: Type.Literal("native"),
+  scope: Type.Literal("harness-call"),
+  tokens: NativeUsageTokensSchema,
+});
+
+export const SemanticEstimatedUsageReceiptV1Schema = StrictObject({
+  schema_version: Type.Literal(SEMANTIC_USAGE_SCHEMA_VERSION),
+  source: Type.Literal("estimated"),
+  scope: Type.Literal("visible-payload"),
+  estimator: StrictObject({
+    id: Type.Literal(SEMANTIC_VISIBLE_USAGE_ESTIMATOR_ID),
+    version: Type.Literal(SEMANTIC_VISIBLE_USAGE_ESTIMATOR_VERSION),
+  }),
+  tokens: EstimatedUsageTokensSchema,
+});
+
+export const SemanticUnreportedUsageReceiptV1Schema = StrictObject({
+  schema_version: Type.Literal(SEMANTIC_USAGE_SCHEMA_VERSION),
+  source: Type.Literal("unreported"),
+  scope: Type.Literal("unreported"),
+});
+
+export const SemanticUsageReceiptV1Schema = Type.Union([
+  SemanticNativeUsageReceiptV1Schema,
+  SemanticEstimatedUsageReceiptV1Schema,
+  SemanticUnreportedUsageReceiptV1Schema,
 ]);
 
 function SemanticFieldSchema<T extends TSchema>(
@@ -246,6 +301,7 @@ export const SemanticAcceptedReadModelV2Schema = StrictObject({
   ...ReadModelBase,
   reader_outcome: Type.Literal("accepted"),
   reader: ResolvedReaderSchema,
+  receipt: Type.Optional(StrictObject({ usage: SemanticUsageReceiptV1Schema })),
   meaning: SemanticMeaningV2Schema,
 });
 
@@ -260,6 +316,7 @@ export const SemanticUnavailableReadModelV2Schema = StrictObject({
       Type.Literal("model_unavailable"),
       Type.Literal("model_mismatch"),
     ]),
+    usage: Type.Optional(SemanticUsageReceiptV1Schema),
   }),
 });
 
@@ -267,7 +324,10 @@ export const SemanticInvalidReadModelV2Schema = StrictObject({
   ...ReadModelBase,
   reader_outcome: Type.Literal("invalid"),
   reader: ResolvedReaderSchema,
-  receipt: StrictObject({ reason_code: Type.Literal("invalid_output") }),
+  receipt: StrictObject({
+    reason_code: Type.Literal("invalid_output"),
+    usage: Type.Optional(SemanticUsageReceiptV1Schema),
+  }),
 });
 
 export const SemanticDeferredReadModelV2Schema = StrictObject({
@@ -294,5 +354,14 @@ export type SemanticField<T> = {
 };
 export type SemanticMeaningV2 = Static<typeof SemanticMeaningV2Schema>;
 export type SemanticModelReplyV2 = Static<typeof SemanticModelReplyV2Schema>;
+export type SemanticUsageToken =
+  | Static<typeof NativeUsageTokenSchema>
+  | Static<typeof EstimatedUsageTokenSchema>;
+export type SemanticNativeUsageReceiptV1 = Static<typeof SemanticNativeUsageReceiptV1Schema>;
+export type SemanticEstimatedUsageReceiptV1 = Static<typeof SemanticEstimatedUsageReceiptV1Schema>;
+export type SemanticUnreportedUsageReceiptV1 = Static<
+  typeof SemanticUnreportedUsageReceiptV1Schema
+>;
+export type SemanticUsageReceiptV1 = Static<typeof SemanticUsageReceiptV1Schema>;
 export type SemanticAcceptedReadModelV2 = Static<typeof SemanticAcceptedReadModelV2Schema>;
 export type SemanticAgentReadModelV2 = Static<typeof SemanticAgentReadModelV2Schema>;

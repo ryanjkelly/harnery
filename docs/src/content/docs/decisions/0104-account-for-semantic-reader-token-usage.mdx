@@ -1,0 +1,96 @@
+---
+title: "0104: Account for semantic reader token usage"
+description: "ADR: retain bounded, provenance-labelled token receipts for Semantic Expression V2 model calls."
+---
+
+**Status:** accepted (2026-08-23) · **Scope:** product tier (`core/semantic`, `harn semantic`, Codec)
+
+## Context
+
+Semantic Expression V2 already records which harness requested a read, the
+configured and resolved model identity, call duration, and visible input and
+output byte counts. The rolling 60-call ceiling limits request frequency, but
+byte counts do not explain model usage. Operators could not tell whether a
+harness reported exact tokens, whether Harnery had estimated them, or which
+harness and model accounted for the total.
+
+The three harnesses expose different terminal formats. Claude Code reports
+input, output, cache-read, and cache-creation tokens in its final JSON result.
+Codex reports input, cached input, cache-write input, output, and reasoning
+output tokens in the `turn.completed` JSONL event while writing the structured
+final response to a separate output file. Cursor reports camel-case input,
+output, cache-read, and cache-write fields in its terminal result event. Codex
+does not attest the executed model in that event stream, so its reader identity
+must remain `requested-only`.
+
+Claude Code also emits `total_cost_usd`, but its own documentation defines that
+value as a client-side estimate. None of the three formats provides an
+authoritative billed cost for this reader.
+
+## Alternatives
+
+**Store usage in Event Ledger V3.** Rejected because token telemetry does not
+participate in coordination authority. The semantic store is local, derived,
+and disposable; the canonical ledger must remain independent of reader cost and
+availability.
+
+**Store raw harness envelopes.** Rejected because they contain the model reply
+and can contain the prompt or other harness metadata. Harnery retains only a
+typed numeric receipt, model identity, outcome, timestamps, duration, and byte
+counts.
+
+**Convert every response to one exact-looking total.** Rejected because the
+harness fields have different coverage. A computed total could hide cache or
+reasoning behavior, and an estimate of the visible payload excludes hidden
+system instructions and provider billing details.
+
+**Add another tokenizer dependency.** Rejected because Harnery already ships
+`gpt-tokenizer` for the portable `harn tokens` command. The same offline
+`o200k_base` implementation can provide a deterministic fallback without
+network access or harness-specific packages.
+
+## Decision
+
+`SemanticUsageReceiptV1` has three explicit sources: `native`, `estimated`, and
+`unreported`. Every token field carries its own `native` or `estimated`
+provenance. Native receipts retain only fields present in the harness result;
+Harnery does not invent a missing total. Estimated receipts use estimator
+`visible-o200k-base` version 1 and always declare `scope: "visible-payload"`.
+Unreported receipts contain no token fields.
+
+The visible-payload estimator counts the exact semantic prompt passed to the
+harness and the final visible response with `o200k_base`. It does not claim to
+measure hidden harness system prompts, provider tokenization, cache behavior,
+reasoning tokens, or billable usage. Harnery estimates only after a successful
+response with no native receipt. A failed invocation without a terminal usage
+event remains unreported.
+
+Each charged call enters `manifest.json` before invocation with an unreported
+receipt. Completion replaces that receipt with the native or estimated result
+and adds the reader outcome. A crash therefore consumes rolling capacity and
+leaves an honest unreported record. The existing one-hour pruning keeps call
+and usage history bounded. The same history survives a daemon restart and is
+carried across V3 genesis or semantic configuration resets. Old receipts with
+no usage fields remain unreported.
+
+The daemon status file also accumulates a bounded aggregate for its current
+process. `harn semantic service status` returns that process aggregate, the
+active rolling-hour aggregate, call use against the 60-call ceiling, reader
+routes, pending work, and the latest error. Native and estimated token maps are
+separate at every aggregate level, with an explicit unreported-call count.
+
+Codec reads the same status through its existing server-only semantic reader.
+The header badge opens a read-only details panel with call use, all three routes,
+process and rolling totals, and per-route breakdowns. Expanded Semantic read
+details show the call receipt with the same reported, estimated visible payload,
+or unreported label. Codec still strips semantic state from relay payloads and
+cannot reach process control or write modules.
+
+## Result
+
+Fixture tests cover the native Claude Code, Codex, and Cursor formats without
+spending model calls. Other tests cover deterministic estimation, unreported
+fallback, field provenance, harness/model aggregation, restart and genesis
+retention, legacy calls, raw-output non-retention, Codec labels, and the Codec
+dependency boundary. The 60-call rolling ceiling remains a request limit, not a
+token limit.

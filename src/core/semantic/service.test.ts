@@ -16,6 +16,7 @@ import {
   writeSemanticAgentDocument,
   writeSemanticManifest,
 } from "./storage.ts";
+import { emptySemanticUsageAggregate, nativeSemanticUsage } from "./usage.ts";
 
 const roots: string[] = [];
 
@@ -185,6 +186,11 @@ describe("semantic service", () => {
               duration_ms: 1250,
               input_bytes: 4096,
               output_bytes: 512,
+              usage: nativeSemanticUsage({
+                input_tokens: 3200,
+                cached_input_tokens: 2048,
+                output_tokens: 256,
+              }),
             },
           ],
           completed_at: "2026-08-22T20:00:01.000Z",
@@ -199,6 +205,15 @@ describe("semantic service", () => {
       pass_count: 1,
       model_calls: 1,
       cache_hits: 0,
+      process_usage: {
+        call_count: 1,
+        native_tokens: {
+          input_tokens: 3200,
+          cached_input_tokens: 2048,
+          output_tokens: 256,
+        },
+        unreported_calls: 0,
+      },
     });
     expect(readSemanticServiceStatus(root)).toMatchObject({
       running: false,
@@ -210,7 +225,73 @@ describe("semantic service", () => {
     expect(log).toContain(
       '"codex":{"evidence_count":1,"model_calls":1,"cache_hits":0,"accepted":1,"unavailable":0,"invalid":0,"deferred":0,"duration_ms":[1250],"input_bytes":[4096],"output_bytes":[512]}',
     );
+    expect(log).toContain(
+      '"native_tokens":{"input_tokens":3200,"cached_input_tokens":2048,"output_tokens":256}',
+    );
     expect(log).not.toContain("gen_01922e33");
+  });
+
+  test("keeps rolling usage across a service restart and leaves old calls unreported", () => {
+    const root = fixture();
+    const startedAt = new Date(Date.now() - 1_000).toISOString();
+    writeSemanticManifest(root, {
+      schema_version: 2,
+      ledger_genesis_id: "gex_fixture",
+      configuration_digest: `sha256:${"a".repeat(64)}`,
+      evidence_contract_version: 1,
+      prompt_contract_version: 3,
+      adapter_resolutions: {},
+      pending: [],
+      call_history: [
+        {
+          generation_id: "gen_01922e33-7abc-7def-8abc-0123456789ab",
+          started_at: startedAt,
+          source_harness: "codex",
+          configured_model: "gpt-5.6-luna",
+          resolved_model_id: "gpt-5.6-luna",
+          model_attestation: "requested-only",
+          outcome: "accepted",
+          usage: nativeSemanticUsage({ input_tokens: 100, output_tokens: 20 }),
+        },
+        {
+          generation_id: "gen_01922e33-7abd-7def-8abc-0123456789ab",
+          started_at: startedAt,
+        },
+      ],
+      updated_at: startedAt,
+    });
+    const writeStatus = (nonce: string, modelCalls: number) =>
+      writeFileSync(
+        semanticPaths(root).service,
+        `${JSON.stringify({
+          schema_version: 1,
+          pid: process.pid,
+          host: hostname(),
+          nonce,
+          state: "stopped",
+          started_at: startedAt,
+          heartbeat_at: startedAt,
+          sweep_count: 1,
+          pass_count: 1,
+          model_calls: modelCalls,
+          cache_hits: 0,
+          process_usage: emptySemanticUsageAggregate(),
+        })}\n`,
+      );
+
+    writeStatus("before-restart", 2);
+    const before = readSemanticServiceStatus(root);
+    writeStatus("after-restart", 0);
+    const after = readSemanticServiceStatus(root);
+
+    expect(before.rolling_calls).toMatchObject({ used: 2, limit: 60, available: 58 });
+    expect(before.rolling_usage).toMatchObject({
+      call_count: 2,
+      native_tokens: { input_tokens: 100, output_tokens: 20 },
+      unreported_calls: 1,
+    });
+    expect(after.rolling_usage).toEqual(before.rolling_usage);
+    expect(after.process_usage).toMatchObject({ call_count: 0, unreported_calls: 0 });
   });
 
   test("recovers from a saved cursor when the active V3 genesis changes", async () => {

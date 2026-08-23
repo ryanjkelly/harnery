@@ -51,10 +51,15 @@ import {
   type CodecRecentAction,
   type CodecRemoteMachine,
   type CodecScene,
+  type CodecSemanticServiceStatus,
 } from "@/lib/codec/contracts";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
 import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
 import { codecSemantic } from "@/lib/codec/semantic-contract";
+import {
+  formatSemanticUsageAggregate,
+  formatSemanticUsageReceipt,
+} from "@/lib/codec/semantic-usage";
 import { summarizeCodecTeam } from "@/lib/codec/team-summary";
 import { useLiveSignal } from "@/lib/useLiveSignal";
 import { CodecRuntimeStrip } from "./CodecRuntimeStrip";
@@ -442,23 +447,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
             <Badge variant="outline" title="Agent presence summary">
               {current.length} live · {stale.length} stale · {ended.length} ended
             </Badge>
-            {scene.semantic_service && (
-              <Badge
-                data-codec-semantic-service
-                data-state={scene.semantic_service.state}
-                variant={scene.semantic_service.running ? "outline" : "secondary"}
-                title={
-                  scene.semantic_service.running
-                    ? `Semantic reader running · ${scene.semantic_service.model_calls} model calls · ${scene.semantic_service.pending_count} pending`
-                    : "Semantic reader stopped. Start explicitly with: harn semantic service start"
-                }
-              >
-                semantic {scene.semantic_service.running ? "on" : "off"}
-                {scene.semantic_service.last_error_code
-                  ? ` · ${humanizeCueToken(scene.semantic_service.last_error_code)}`
-                  : ""}
-              </Badge>
-            )}
+            {scene.semantic_service && <SemanticServiceUsage status={scene.semantic_service} />}
           </div>
           <SceneControls
             remoteAvailable={scene.remote_machines.length > 0}
@@ -1466,10 +1455,80 @@ function SemanticRead({ panel }: { panel: CodecPanelScene }) {
           {semantic.reader.model_attestation && (
             <span>{humanizeCueToken(semantic.reader.model_attestation)}</span>
           )}
+          {(semantic.usage ||
+            semantic.reader_outcome === "accepted" ||
+            semantic.reader_outcome === "invalid") && (
+            <span>{formatSemanticUsageReceipt(semantic.usage)}</span>
+          )}
           {semantic.state === "current" && (
             <span>expires {formatSemanticTime(semantic.expires_at)}</span>
           )}
         </p>
+      </div>
+    </details>
+  );
+}
+
+function SemanticServiceUsage({ status }: { status: CodecSemanticServiceStatus }) {
+  const rollingLines = formatSemanticUsageAggregate("rolling hour", status.rolling_usage);
+  const processLines = formatSemanticUsageAggregate("this reader process", status.process_usage);
+  return (
+    <details
+      data-codec-semantic-usage
+      data-state={status.state}
+      className={styles.semanticServiceDetails}
+    >
+      <summary className={styles.semanticServiceSummary}>
+        <Badge
+          data-codec-semantic-service
+          data-state={status.state}
+          variant={status.running ? "outline" : "secondary"}
+          title="Open semantic reader usage details"
+        >
+          semantic {status.running ? "on" : "off"} · {status.rolling_calls.used}/
+          {status.rolling_calls.limit} calls
+          {status.last_error_code ? ` · ${humanizeCueToken(status.last_error_code)}` : ""}
+        </Badge>
+      </summary>
+      <div className={styles.semanticServicePanel}>
+        <p>
+          Reader {status.running ? "running" : "stopped"} · {status.pending_count} pending
+          {status.last_error_code
+            ? ` · latest error ${humanizeCueToken(status.last_error_code)}`
+            : ""}
+        </p>
+        <div className={styles.semanticServiceRoutes}>
+          {status.routes.map((route) => (
+            <p key={route.harness}>
+              <span>{route.harness}</span>
+              {" → "}
+              {route.resolved_model_id ?? route.invocation_model_id}
+              {route.model_attestation
+                ? ` · ${humanizeCueToken(route.model_attestation)}`
+                : " · not yet attested"}
+            </p>
+          ))}
+        </div>
+        <div className={styles.semanticServiceTotals}>
+          {[...rollingLines, ...processLines].map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </div>
+        {status.rolling_usage.breakdowns.length > 0 && (
+          <div className={styles.semanticServiceBreakdowns}>
+            {status.rolling_usage.breakdowns.map((row) => {
+              const label = `${row.harness ?? "unattributed"} · ${row.resolved_model_id ?? row.configured_model ?? "unresolved model"}`;
+              const lines = formatSemanticUsageAggregate(label, { ...row, breakdowns: [] });
+              return (
+                <div key={label}>
+                  {lines.map((line) => (
+                    <p key={line}>{line}</p>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </details>
   );

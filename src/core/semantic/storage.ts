@@ -19,6 +19,7 @@ import {
   type SemanticAgentReadModelV2,
   type SemanticConfiguredModel,
   type SemanticHarness,
+  type SemanticUsageReceiptV1,
 } from "./contract.ts";
 import { validateSemanticReadModel } from "./validate.ts";
 
@@ -51,6 +52,15 @@ export interface SemanticPendingItem {
 export interface SemanticCallReceipt {
   generation_id: string;
   started_at: string;
+  source_harness?: SemanticHarness;
+  configured_model?: SemanticConfiguredModel;
+  resolved_model_id?: string;
+  model_attestation?: "verified" | "requested-only";
+  outcome?: "accepted" | "invalid" | "unavailable";
+  duration_ms?: number;
+  input_bytes?: number;
+  output_bytes?: number;
+  usage?: SemanticUsageReceiptV1;
 }
 
 export interface SemanticManifestV2 {

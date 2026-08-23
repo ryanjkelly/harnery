@@ -38,6 +38,11 @@ import {
   semanticPaths,
   writeSemanticManifest,
 } from "./storage.ts";
+import {
+  aggregateSemanticUsage,
+  emptySemanticUsageAggregate,
+  mergeSemanticUsageAggregates,
+} from "./usage.ts";
 
 export {
   readSemanticServiceStatus,
@@ -243,6 +248,7 @@ export async function runSemanticServiceDaemon(
     pass_count: 0,
     model_calls: 0,
     cache_hits: 0,
+    process_usage: emptySemanticUsageAggregate(),
   };
   let stopRequested = false;
   let dirtySince: number | undefined;
@@ -303,6 +309,10 @@ export async function runSemanticServiceDaemon(
           status.pass_count += 1;
           status.model_calls += report.model_calls;
           status.cache_hits += report.cache_hits;
+          status.process_usage = mergeSemanticUsageAggregates(
+            status.process_usage ?? emptySemanticUsageAggregate(),
+            aggregateSemanticUsage(report.outcomes),
+          );
           status.last_pass_at = report.completed_at;
           status.last_error_code = undefined;
           lastLoggedErrorCode = undefined;
@@ -324,6 +334,7 @@ export async function runSemanticServiceDaemon(
             invalid: report.outcomes.filter((outcome) => outcome.action === "invalid").length,
             deferred: report.outcomes.filter((outcome) => outcome.action === "deferred").length,
             harness_metrics: semanticHarnessMetrics(report),
+            usage: aggregateSemanticUsage(report.outcomes),
           };
           if (report.model_calls > 0 || report.cache_hits > 0 || logEntry.unavailable > 0) {
             appendSemanticServiceLog(coordRoot, logEntry);
@@ -363,6 +374,7 @@ export async function runSemanticServiceDaemon(
       sweeps: status.sweep_count,
       passes: status.pass_count,
       model_calls: status.model_calls,
+      usage: status.process_usage,
     });
     release();
   }

@@ -112,6 +112,17 @@ function accepted(observedThrough = "2026-08-22T19:59:00.000Z"): SemanticAccepte
       model_attestation: "requested-only",
       prompt_contract_version: 3,
     },
+    receipt: {
+      usage: {
+        schema_version: 1,
+        source: "native",
+        scope: "harness-call",
+        tokens: {
+          input_tokens: { value: 1200, provenance: "native" },
+          output_tokens: { value: 48, provenance: "native" },
+        },
+      },
+    },
     meaning: {
       headline: {
         value: "Building the semantic reader",
@@ -193,6 +204,10 @@ describe("Codec semantic read model", () => {
       summary: { basis: "model-synthesis" },
       expression_cue: { value: "weighing", basis: "model-synthesis" },
       next_step: { basis: "prediction", confidence: "low" },
+      usage: {
+        source: "native",
+        tokens: { input_tokens: { value: 1200 }, output_tokens: { value: 48 } },
+      },
     });
     expect(codecEvidenceReceiptRows(projected.panels[0]!)).toContainEqual(
       expect.objectContaining({

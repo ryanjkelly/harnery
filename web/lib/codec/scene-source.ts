@@ -132,6 +132,28 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
       state: status.record?.state ?? "not-started",
       pending_count: status.pending_count,
       model_calls: status.record?.model_calls ?? 0,
+      rolling_calls: status.rolling_calls ?? {
+        used: 0,
+        limit: 60,
+        available: 60,
+      },
+      routes: status.routes ?? [],
+      rolling_usage: status.rolling_usage ?? {
+        call_count: 0,
+        outcomes: { accepted: 0, invalid: 0, unavailable: 0, deferred: 0 },
+        native_tokens: {},
+        estimated_tokens: {},
+        unreported_calls: 0,
+        breakdowns: [],
+      },
+      process_usage: status.process_usage ?? {
+        call_count: 0,
+        outcomes: { accepted: 0, invalid: 0, unavailable: 0, deferred: 0 },
+        native_tokens: {},
+        estimated_tokens: {},
+        unreported_calls: 0,
+        breakdowns: [],
+      },
       ...(status.newest_successful_pass
         ? { newest_successful_pass: status.newest_successful_pass }
         : {}),

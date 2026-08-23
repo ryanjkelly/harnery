@@ -1,12 +1,10 @@
 export {
   createSemanticAdapters,
   discoverSemanticReaders,
-  SEMANTIC_READER_ROUTES,
   type SemanticAdapter,
   type SemanticAdapterFailure,
   type SemanticAdapterResult,
   type SemanticAdapterSuccess,
-  type SemanticReaderRoute,
 } from "./adapters.ts";
 export {
   SEMANTIC_CONFIGURED_MODELS,
@@ -19,6 +17,9 @@ export {
   SEMANTIC_PROMPT_CONTRACT_VERSION,
   SEMANTIC_READ_MODEL_SCHEMA_VERSION,
   SEMANTIC_TAGS,
+  SEMANTIC_USAGE_SCHEMA_VERSION,
+  SEMANTIC_VISIBLE_USAGE_ESTIMATOR_ID,
+  SEMANTIC_VISIBLE_USAGE_ESTIMATOR_VERSION,
   type SemanticAcceptedReadModelV2,
   SemanticAcceptedReadModelV2Schema,
   type SemanticAgentReadModelV2,
@@ -27,6 +28,8 @@ export {
   type SemanticConfidence,
   type SemanticConfiguredModel,
   SemanticDeferredReadModelV2Schema,
+  type SemanticEstimatedUsageReceiptV1,
+  SemanticEstimatedUsageReceiptV1Schema,
   type SemanticEvidenceKind,
   type SemanticEvidenceObservationV1,
   SemanticEvidenceObservationV1Schema,
@@ -40,9 +43,16 @@ export {
   SemanticMeaningV2Schema,
   type SemanticModelReplyV2,
   SemanticModelReplyV2Schema,
+  type SemanticNativeUsageReceiptV1,
+  SemanticNativeUsageReceiptV1Schema,
   type SemanticPhase,
   type SemanticTag,
   SemanticUnavailableReadModelV2Schema,
+  type SemanticUnreportedUsageReceiptV1,
+  SemanticUnreportedUsageReceiptV1Schema,
+  type SemanticUsageReceiptV1,
+  SemanticUsageReceiptV1Schema,
+  type SemanticUsageToken,
 } from "./contract.ts";
 export {
   buildSemanticEvidenceV1,
@@ -62,6 +72,7 @@ export {
   SEMANTIC_MAX_REQUEST_BYTES,
   type SemanticPromptEnvelope,
 } from "./prompt.ts";
+export { SEMANTIC_READER_ROUTES, type SemanticReaderRoute } from "./routes.ts";
 export {
   activeSemanticCallHistory,
   enqueueSemanticPending,
@@ -115,6 +126,21 @@ export {
   writeSemanticCache,
   writeSemanticManifest,
 } from "./storage.ts";
+export {
+  aggregateSemanticUsage,
+  emptySemanticUsageAggregate,
+  estimateVisibleSemanticUsage,
+  mergeSemanticUsageAggregates,
+  nativeSemanticUsage,
+  SEMANTIC_USAGE_TOKEN_FIELDS,
+  type SemanticUsageAggregate,
+  type SemanticUsageBreakdown,
+  type SemanticUsageEvent,
+  type SemanticUsageOutcome,
+  type SemanticUsageTokenField,
+  type SemanticUsageTokenTotals,
+  unreportedSemanticUsage,
+} from "./usage.ts";
 export {
   isSemanticPrivacySafe,
   type SemanticValidationFailure,

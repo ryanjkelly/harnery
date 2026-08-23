@@ -40,7 +40,7 @@ verified.
 harn semantic once                         # run one bounded pass
 harn semantic once --calls-per-hour 12     # use a lower local ceiling
 harn semantic service start                # explicitly start or resume the reader
-harn semantic service status               # inspect liveness and bounded metrics
+harn semantic service status               # inspect liveness, rolling calls, and usage
 harn semantic service stop                 # finish the current call, then stop
 harn semantic doctor                       # check readers without a model call
 harn semantic inspect <instance-or-generation>
@@ -54,6 +54,42 @@ the resulting agent document.
 The hard ceiling is 60 calls per coordination root in any rolling hour. A lower
 `--calls-per-hour` value is allowed. Requests beyond the active ceiling receive a
 `deferred` document with an `eligible_after` time.
+
+`service status` reports rolling calls as `used`, `limit`, and `available`; the
+limit is still a call ceiling. The same response contains token usage for the
+current reader process and active rolling hour. It keeps native and estimated
+token maps separate, counts unreported calls, and groups calls and outcomes by
+source harness, configured model, resolved model, and model attestation. It also
+lists the three fixed harness routes, pending work, and the latest reader error.
+
+## Usage receipts
+
+Every completed model call stores a typed usage receipt with its local call
+history and, when a semantic document came from that call, with the document.
+The receipt source is one of:
+
+| Source | Meaning |
+| --- | --- |
+| `native` | The local harness reported these token fields. Missing fields stay missing. |
+| `estimated` | Harnery counted the visible semantic prompt and response with `visible-o200k-base` version 1. |
+| `unreported` | The call has no usable native receipt and no complete visible response to estimate. |
+
+Claude Code currently reports input, output, cache-read, and cache-creation
+tokens. Codex reports input, cached input, cache-write input, output, and
+reasoning-output tokens from `turn.completed`. Cursor reports input, output,
+cache-read, and cache-write tokens in its terminal result. These fields are
+native harness telemetry; Harnery does not assume that every harness defines or
+reports a comparable `total_tokens` value.
+
+The estimate is intentionally narrow. It covers only the prompt string Harnery
+passes to the harness and the visible final response. It does not include hidden
+harness instructions, provider-specific tokenization, cache behavior, reasoning
+tokens, or billable usage. Old calls without prompt and response measurements
+remain `unreported`; Harnery does not backfill them.
+
+No current reader supplies authoritative billed cost. Claude Code's
+`total_cost_usd` is a client-side estimate, so Harnery does not store it as
+native cost.
 
 `doctor` reports which harness binaries are available, the configured model for
 each one, and the current semantic manifest. It makes no model request.
@@ -74,7 +110,8 @@ Embedding hosts can call `ensureSemanticServiceRunning` from
 `harnery/core/semantic` before they launch the dashboard. The operation is
 idempotent and applies the same active-V3 and durable-pause checks as the Harnery
 CLI. If V3 changes genesis, the service resets its obsolete cursor, rebuilds the
-derived semantic state, and preserves the rolling call history.
+derived semantic state, and preserves the bounded rolling call and usage
+history.
 
 `service start` still starts or resumes the reader before web startup. A stale
 process lease is recovered by the next automatic or explicit start. A durable
@@ -91,8 +128,9 @@ Codec reads validated agent documents on the server and presents them as a
 separate semantic channel. It can fill an otherwise inferred focus bubble and a
 neutral expression, but it never replaces event-backed activity, lifecycle,
 operation, attention, relationship, or freshness state. Expanded panel detail
-labels model synthesis and prediction, shows the reader and attestation, and
-removes expired meaning while retaining a typed stale or unavailable receipt.
+labels model synthesis and prediction, shows the reader, attestation, and usage
+provenance, and removes expired meaning while retaining a typed stale or
+unavailable receipt.
 
 Version 2 adds an optional `expression_cue`. The reader may choose `focused`,
 `curious`, `deliberating`, `investigating`, `building`, `coordinating`,
@@ -106,10 +144,13 @@ The structured-response schema binds each reply to the request's exact
 generation ID and evidence digest. A structurally valid reply for a different
 request is rejected before persistence.
 
-The scene header reports whether the semantic service is running. Starting the
-dashboard authorizes recurring model calls under the same 60-call rolling
-ceiling as an explicit start. Codec remains read-only. Semantic documents and
-service health are local-only; presence relay payloads strip both.
+The scene header reports whether the semantic service is running and how many
+rolling calls are in use. Opening its details panel shows routes, pending work,
+the latest error, native and estimated token totals, unreported calls, and
+per-harness/model breakdowns. Starting the dashboard authorizes recurring model
+calls under the same 60-call rolling ceiling as an explicit start. Codec remains
+read-only. Semantic documents and service health are local-only; presence relay
+payloads strip both.
 
 ## Storage boundary
 
@@ -119,12 +160,19 @@ All state is disposable and rebuildable:
 .harnery/semantic/v2/
 ├── manifest.json
 ├── agents/<generation_id>.json
-└── cache/<cache_key>.json
+├── cache/<cache_key>.json
+├── service.json
+└── service.log
 ```
 
 The cache key includes the evidence digest, source harness, configured and
 resolved model IDs, evidence contract version, and prompt contract version.
 Changing any of those inputs prevents stale reuse.
+
+`manifest.json` keeps only the active rolling-hour call history. Each new call
+record contains numeric usage metadata but never the raw prompt or model reply.
+`service.json` keeps the current process aggregate, and the bounded service log
+records per-pass usage totals. None of these files enters Event Ledger V3.
 
 Version 1 documents and cache entries are rebuildable derived state. The V2
 reader does not migrate or consume them.

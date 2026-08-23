@@ -65,6 +65,18 @@ describe("semantic command", () => {
     const root = fixture();
     const { data, error } = await run(["semantic", "service", "status", "--root", root]);
     expect(error).toBeUndefined();
-    expect(data).toEqual({ running: false, stale: false, pending_count: 0 });
+    expect(data).toMatchObject({
+      running: false,
+      stale: false,
+      pending_count: 0,
+      rolling_calls: { used: 0, limit: 60, available: 60 },
+      rolling_usage: { call_count: 0, unreported_calls: 0 },
+      process_usage: { call_count: 0, unreported_calls: 0 },
+      routes: [
+        { harness: "claude-code", configured_model: "haiku-4.5" },
+        { harness: "codex", configured_model: "gpt-5.6-luna" },
+        { harness: "cursor", configured_model: "composer-2.5" },
+      ],
+    });
   });
 });

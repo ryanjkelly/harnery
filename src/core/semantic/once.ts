@@ -7,8 +7,10 @@ import {
   SEMANTIC_EVIDENCE_CONTRACT_VERSION,
   SEMANTIC_PROMPT_CONTRACT_VERSION,
   type SemanticAgentReadModelV2,
+  type SemanticConfiguredModel,
   type SemanticEvidenceV1,
   type SemanticHarness,
+  type SemanticUsageReceiptV1,
 } from "./contract.ts";
 import { buildSemanticEvidenceV1 } from "./evidence.ts";
 import { buildSemanticPrompt, extractSemanticJson } from "./prompt.ts";
@@ -35,16 +37,21 @@ import {
   writeSemanticCache,
   writeSemanticManifest,
 } from "./storage.ts";
+import { unreportedSemanticUsage } from "./usage.ts";
 import { validateSemanticModelReply } from "./validate.ts";
 
 export interface SemanticOnceOutcome {
   generation_id: string;
   source_harness: SemanticHarness;
+  configured_model?: SemanticConfiguredModel;
+  resolved_model_id?: string;
+  model_attestation?: "verified" | "requested-only";
   action: "unchanged" | "cached" | "accepted" | "unavailable" | "invalid" | "deferred";
   model_call: boolean;
   duration_ms?: number;
   input_bytes?: number;
   output_bytes?: number;
+  usage?: SemanticUsageReceiptV1;
 }
 
 export interface SemanticOnceReport {
@@ -148,6 +155,13 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       outcomes.push({
         generation_id: item.generation_id,
         source_harness: item.source_harness,
+        configured_model: resolution.configured_model,
+        ...(resolution.resolved_model_id
+          ? { resolved_model_id: resolution.resolved_model_id }
+          : {}),
+        ...(resolution.model_attestation
+          ? { model_attestation: resolution.model_attestation }
+          : {}),
         action: "unavailable",
         model_call: false,
       });
@@ -188,6 +202,13 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       outcomes.push({
         generation_id: item.generation_id,
         source_harness: item.source_harness,
+        configured_model: resolution.configured_model,
+        ...(resolution.resolved_model_id
+          ? { resolved_model_id: resolution.resolved_model_id }
+          : {}),
+        ...(resolution.model_attestation
+          ? { model_attestation: resolution.model_attestation }
+          : {}),
         action: "deferred",
         model_call: false,
       });
@@ -206,7 +227,20 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       continue;
     }
     const prompt = buildSemanticPrompt(item);
-    current.call_history.push({ generation_id: item.generation_id, started_at: nowIso });
+    const callReceipt: SemanticCallReceipt = {
+      generation_id: item.generation_id,
+      started_at: nowIso,
+      source_harness: item.source_harness,
+      configured_model: resolution.configured_model,
+      resolved_model_id: resolution.resolved_model_id,
+      model_attestation: resolution.model_attestation,
+      input_bytes: prompt.bytes,
+      usage: unreportedSemanticUsage(),
+    };
+    current.call_history.push(callReceipt);
+    // Persist the charged call before invocation. A crash leaves an honest
+    // unreported receipt and cannot silently return capacity to the hour.
+    writeSemanticManifest(input.coordRoot, current);
     calls += 1;
     const result = await adapters[item.source_harness].invoke(
       prompt.prompt,
@@ -214,6 +248,12 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       prompt.response_schema,
     );
     const outcome = materializeAdapterResult(item, resolution, result, nowIso);
+    callReceipt.outcome = outcome.document.reader_outcome as "accepted" | "invalid" | "unavailable";
+    callReceipt.duration_ms = result.duration_ms;
+    callReceipt.usage = result.usage;
+    if (result.resolved_model_id) callReceipt.resolved_model_id = result.resolved_model_id;
+    if (result.model_attestation) callReceipt.model_attestation = result.model_attestation;
+    if (result.ok) callReceipt.output_bytes = result.output_bytes;
     writeSemanticAgentDocument(input.coordRoot, outcome.document);
     if (outcome.document.reader_outcome === "accepted") {
       writeSemanticCache(input.coordRoot, cacheKey, outcome.document);
@@ -222,11 +262,15 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     outcomes.push({
       generation_id: item.generation_id,
       source_harness: item.source_harness,
+      configured_model: resolution.configured_model,
+      ...(result.resolved_model_id ? { resolved_model_id: result.resolved_model_id } : {}),
+      ...(result.model_attestation ? { model_attestation: result.model_attestation } : {}),
       action: outcome.document.reader_outcome,
       model_call: true,
       duration_ms: result.duration_ms,
       input_bytes: prompt.bytes,
       ...(result.ok ? { output_bytes: result.output_bytes } : {}),
+      usage: result.usage,
     });
     if (pending.band === 1) current.last_first_band_generation_id = pending.generation_id;
     removePending(current, pending.generation_id);
@@ -287,6 +331,7 @@ function materializeAdapterResult(
           model_attestation: result.model_attestation,
         },
         generatedAt,
+        result.usage,
       ),
     };
   }
@@ -303,7 +348,7 @@ function materializeAdapterResult(
           model_attestation: result.model_attestation,
           prompt_contract_version: SEMANTIC_PROMPT_CONTRACT_VERSION,
         },
-        receipt: { reason_code: "invalid_output" },
+        receipt: { reason_code: "invalid_output", usage: result.usage },
       },
     };
   }
@@ -318,6 +363,7 @@ function materializeAdapterResult(
         model_attestation: result.model_attestation,
         prompt_contract_version: SEMANTIC_PROMPT_CONTRACT_VERSION,
       },
+      receipt: { usage: result.usage },
       meaning: verdict.value.meaning,
     },
   };
@@ -327,6 +373,7 @@ function unavailableDocument(
   evidence: SemanticEvidenceV1,
   resolution: SemanticReaderResolution,
   generatedAt: string,
+  usage?: SemanticUsageReceiptV1,
 ): SemanticAgentReadModelV2 {
   return {
     ...documentBase(evidence, generatedAt),
@@ -342,7 +389,10 @@ function unavailableDocument(
         : {}),
       prompt_contract_version: SEMANTIC_PROMPT_CONTRACT_VERSION,
     },
-    receipt: { reason_code: resolution.reason_code ?? "model_unavailable" },
+    receipt: {
+      reason_code: resolution.reason_code ?? "model_unavailable",
+      ...(usage ? { usage } : {}),
+    },
   } as SemanticAgentReadModelV2;
 }
 

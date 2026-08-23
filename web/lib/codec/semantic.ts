@@ -102,6 +102,7 @@ function presentSemantic(
       : CODEC_SEMANTIC_LIVE_WINDOW_MS;
   const expiresAt = new Date(Date.parse(document.source.observed_through_ts) + ttl).toISOString();
   const stale = now.getTime() > Date.parse(expiresAt);
+  const usage = semanticDocumentUsage(document);
   const common = {
     state: stale ? ("stale" as const) : semanticState(document.reader_outcome),
     reader_outcome: document.reader_outcome,
@@ -120,6 +121,7 @@ function presentSemantic(
     observed_through_ts: document.source.observed_through_ts,
     generated_at: document.generated_at,
     expires_at: expiresAt,
+    ...(usage ? { usage } : {}),
   };
   if (stale) return common;
   if (document.reader_outcome !== "accepted") {
@@ -150,6 +152,13 @@ function presentSemantic(
     ...(meaning.next_step ? { next_step: presentField(meaning.next_step, document) } : {}),
     ...(meaning.tags ? { tags: presentField(meaning.tags, document) } : {}),
   };
+}
+
+function semanticDocumentUsage(document: SemanticAgentReadModelV2) {
+  if (!("receipt" in document) || !document.receipt || !("usage" in document.receipt)) {
+    return undefined;
+  }
+  return document.receipt.usage;
 }
 
 function presentField<T>(

@@ -1,0 +1,23 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "ignored when structured_output is present",
+  "structured_output": { "schema_version": 2, "fixture": true },
+  "usage": {
+    "input_tokens": 41,
+    "cache_creation_input_tokens": 1200,
+    "cache_read_input_tokens": 3400,
+    "output_tokens": 87
+  },
+  "total_cost_usd": 0.0123,
+  "model_usage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 41,
+      "cacheCreationInputTokens": 1200,
+      "cacheReadInputTokens": 3400,
+      "outputTokens": 87,
+      "costUSD": 0.0123
+    }
+  }
+}

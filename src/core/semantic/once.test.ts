@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SemanticAdapter } from "./adapters.ts";
@@ -16,6 +16,7 @@ import {
   semanticPaths,
   writeSemanticManifest,
 } from "./storage.ts";
+import { estimateVisibleSemanticUsage } from "./usage.ts";
 
 const EVENT_ONE = "evt_01922e33-7abc-7def-8abc-0123456789ab";
 const EVENT_TWO = "evt_01922e33-7abd-7def-8abc-0123456789ab";
@@ -129,6 +130,7 @@ function fakeAdapters(
             model_attestation: "requested-only",
             duration_ms: 5,
             output_bytes: Buffer.byteLength(text),
+            usage: estimateVisibleSemanticUsage("fixture prompt", text),
           };
         },
       };
@@ -158,6 +160,7 @@ describe("semantic once", () => {
       expect(first.outcomes[0]?.action).toBe("accepted");
       expect(inspectSemanticDocument(root, GENERATION)).toMatchObject({
         reader_outcome: "accepted",
+        receipt: { usage: { source: "estimated", scope: "visible-payload" } },
         meaning: { headline: { value: "Verifying semantic reading" } },
       });
 
@@ -269,7 +272,13 @@ describe("semantic once", () => {
       expect(calls.count).toBe(1);
       expect(readSemanticManifest(root)).toMatchObject({
         ledger_genesis_id: "gex_next",
-        call_history: [{ generation_id: GENERATION, started_at: NOW }],
+        call_history: [
+          {
+            generation_id: GENERATION,
+            started_at: NOW,
+            usage: { source: "estimated", scope: "visible-payload" },
+          },
+        ],
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -294,6 +303,9 @@ describe("semantic once", () => {
         receipt: { reason_code: "invalid_output" },
       });
       expect(JSON.stringify(stored)).not.toContain("private raw output");
+      expect(readFileSync(semanticPaths(root).manifest, "utf8")).not.toContain(
+        "private raw output",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

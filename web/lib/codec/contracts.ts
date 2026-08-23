@@ -14,7 +14,11 @@
  */
 
 import type { EventTypeV3 } from "../../../src/core/events/v3/contract";
-import type { SemanticExpressionCue } from "../../../src/core/semantic/contract";
+import type {
+  SemanticExpressionCue,
+  SemanticUsageReceiptV1,
+} from "../../../src/core/semantic/contract";
+import type { SemanticUsageAggregate } from "../../../src/core/semantic/usage";
 
 export type Confidence = "high" | "medium" | "low";
 export type Provenance = "event" | "projection" | "inferred" | "unknown";
@@ -139,6 +143,7 @@ export interface CodecSemanticChannel {
   observed_through_ts: string;
   generated_at: string;
   expires_at: string;
+  usage?: SemanticUsageReceiptV1;
   headline?: CodecSemanticPresented<string>;
   summary?: CodecSemanticPresented<string>;
   phase?: CodecSemanticPresented<CodecSemanticPhase>;
@@ -160,6 +165,23 @@ export interface CodecSemanticServiceStatus {
   state: "starting" | "running" | "stopping" | "stopped" | "not-started";
   pending_count: number;
   model_calls: number;
+  rolling_calls: {
+    used: number;
+    limit: number;
+    available: number;
+    eligible_after?: string;
+  };
+  routes: Array<{
+    harness: string;
+    configured_model: string;
+    invocation_model_id: string;
+    resolved_model_id?: string;
+    model_attestation?: "verified" | "requested-only";
+    available?: boolean;
+    reason_code?: string;
+  }>;
+  rolling_usage: SemanticUsageAggregate;
+  process_usage: SemanticUsageAggregate;
   newest_successful_pass?: string;
   last_error_code?: "ledger_unavailable" | "semantic_pass_failed";
 }

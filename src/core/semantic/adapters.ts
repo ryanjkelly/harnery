@@ -6,22 +6,21 @@ import { promisify } from "node:util";
 import type { TSchema } from "@sinclair/typebox";
 import { whichBin } from "../../lib/headless/index.ts";
 import {
-  type SemanticConfiguredModel,
   type SemanticHarness,
   SemanticModelReplyV2Schema,
+  type SemanticUsageReceiptV1,
 } from "./contract.ts";
+import { SEMANTIC_READER_ROUTES, type SemanticReaderRoute } from "./routes.ts";
 import type { SemanticReaderResolution } from "./storage.ts";
+import {
+  estimateVisibleSemanticUsage,
+  nativeSemanticUsage,
+  unreportedSemanticUsage,
+} from "./usage.ts";
 
 const execFileAsync = promisify(execFile);
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const DEFAULT_TIMEOUT_MS = 90_000;
-
-export interface SemanticReaderRoute {
-  harness: SemanticHarness;
-  binary: string;
-  configured_model: SemanticConfiguredModel;
-  invocation_model_id: string;
-}
 
 export interface SemanticAdapterSuccess {
   ok: true;
@@ -30,6 +29,7 @@ export interface SemanticAdapterSuccess {
   model_attestation: "verified" | "requested-only";
   duration_ms: number;
   output_bytes: number;
+  usage: SemanticUsageReceiptV1;
 }
 
 export interface SemanticAdapterFailure {
@@ -42,6 +42,7 @@ export interface SemanticAdapterFailure {
   resolved_model_id?: string;
   model_attestation?: "verified" | "requested-only";
   duration_ms: number;
+  usage: SemanticUsageReceiptV1;
 }
 
 export type SemanticAdapterResult = SemanticAdapterSuccess | SemanticAdapterFailure;
@@ -56,26 +57,7 @@ export interface SemanticAdapter {
   ): Promise<SemanticAdapterResult>;
 }
 
-export const SEMANTIC_READER_ROUTES: Record<SemanticHarness, SemanticReaderRoute> = {
-  "claude-code": {
-    harness: "claude-code",
-    binary: "claude",
-    configured_model: "haiku-4.5",
-    invocation_model_id: "claude-haiku-4-5-20251001",
-  },
-  codex: {
-    harness: "codex",
-    binary: "codex",
-    configured_model: "gpt-5.6-luna",
-    invocation_model_id: "gpt-5.6-luna",
-  },
-  cursor: {
-    harness: "cursor",
-    binary: "cursor-agent",
-    configured_model: "composer-2.5",
-    invocation_model_id: "composer-2.5",
-  },
-};
+export { SEMANTIC_READER_ROUTES, type SemanticReaderRoute } from "./routes.ts";
 
 export function createSemanticAdapters(): Record<SemanticHarness, SemanticAdapter> {
   return {
@@ -119,7 +101,12 @@ function createAdapter(route: SemanticReaderRoute): SemanticAdapter {
       responseSchema = SemanticModelReplyV2Schema,
     ) {
       if (!whichBin(route.binary)) {
-        return { ok: false, reason_code: "harness_unavailable", duration_ms: 0 };
+        return {
+          ok: false,
+          reason_code: "harness_unavailable",
+          duration_ms: 0,
+          usage: unreportedSemanticUsage(),
+        };
       }
       return await invokeRoute(route, prompt, timeoutMs, responseSchema);
     },
@@ -144,16 +131,22 @@ async function invokeRoute(
     });
     pending.child.stdin?.end();
     const { stdout } = await pending;
-    const raw = invocation.outputFile ? readFileSync(invocation.outputFile, "utf8") : stdout;
-    const parsed = parseHarnessOutput(route.harness, raw);
+    const outputFileText = invocation.outputFile
+      ? readFileSync(invocation.outputFile, "utf8")
+      : undefined;
+    const parsed = parseSemanticHarnessOutput(route.harness, stdout, outputFileText);
     if (!parsed.text.trim()) throw new Error("empty semantic response");
-    if (parsed.executedModelId && parsed.executedModelId !== route.invocation_model_id) {
+    if (
+      parsed.executedModelId &&
+      !modelIdsMatch(parsed.executedModelId, route.invocation_model_id)
+    ) {
       return {
         ok: false,
         reason_code: "model_mismatch",
         resolved_model_id: parsed.executedModelId,
         model_attestation: "verified",
         duration_ms: Date.now() - started,
+        usage: parsed.usage ?? unreportedSemanticUsage(),
       };
     }
     return {
@@ -163,6 +156,7 @@ async function invokeRoute(
       model_attestation: parsed.executedModelId ? "verified" : "requested-only",
       duration_ms: Date.now() - started,
       output_bytes: Buffer.byteLength(parsed.text),
+      usage: parsed.usage ?? estimateVisibleSemanticUsage(prompt, parsed.text),
     };
   } catch (error) {
     return {
@@ -171,6 +165,7 @@ async function invokeRoute(
       resolved_model_id: route.invocation_model_id,
       model_attestation: "requested-only",
       duration_ms: Date.now() - started,
+      usage: unreportedSemanticUsage(),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -222,6 +217,7 @@ function buildInvocation(
         "--ephemeral",
         "--ignore-user-config",
         "--ignore-rules",
+        "--json",
         "--output-last-message",
         outputFile,
         "--cd",
@@ -235,7 +231,7 @@ function buildInvocation(
       "-p",
       prompt,
       "--output-format",
-      "json",
+      "stream-json",
       "--mode",
       "ask",
       "--sandbox",
@@ -247,26 +243,189 @@ function buildInvocation(
   };
 }
 
-function parseHarnessOutput(
+export interface ParsedSemanticHarnessOutput {
+  text: string;
+  executedModelId?: string;
+  usage?: SemanticUsageReceiptV1;
+}
+
+export function parseSemanticHarnessOutput(
   harness: SemanticHarness,
-  raw: string,
-): { text: string; executedModelId?: string } {
-  if (harness === "codex") return { text: raw };
+  stdout: string,
+  outputFileText?: string,
+): ParsedSemanticHarnessOutput {
+  if (harness === "codex") return parseCodexOutput(stdout, outputFileText);
+  if (harness === "cursor") return parseCursorOutput(stdout);
   try {
-    const envelope = JSON.parse(raw) as {
+    const envelope = JSON.parse(stdout) as {
       is_error?: boolean;
       result?: unknown;
+      structured_output?: unknown;
       model?: unknown;
+      usage?: unknown;
+      modelUsage?: unknown;
+      model_usage?: unknown;
     };
     if (envelope.is_error) throw new Error("harness returned an error envelope");
+    const structured = envelope.structured_output;
+    const modelUsage = objectValue(envelope.modelUsage) ?? objectValue(envelope.model_usage);
+    const modelUsageEntries = modelUsage ? Object.entries(modelUsage) : [];
+    const executedModelId =
+      typeof envelope.model === "string"
+        ? envelope.model
+        : modelUsageEntries.length === 1
+          ? modelUsageEntries[0]![0]
+          : undefined;
+    const usage = parseClaudeUsage(envelope.usage) ?? aggregateClaudeModelUsage(modelUsageEntries);
     return {
-      text: typeof envelope.result === "string" ? envelope.result : "",
-      ...(typeof envelope.model === "string" ? { executedModelId: envelope.model } : {}),
+      text:
+        structured !== undefined
+          ? JSON.stringify(structured)
+          : typeof envelope.result === "string"
+            ? envelope.result
+            : "",
+      ...(executedModelId ? { executedModelId } : {}),
+      ...(usage ? { usage } : {}),
     };
   } catch (error) {
-    if (error instanceof SyntaxError) return { text: raw };
+    if (error instanceof SyntaxError) return { text: stdout };
     throw error;
   }
+}
+
+function parseCodexOutput(stdout: string, outputFileText?: string): ParsedSemanticHarnessOutput {
+  const events = parseJsonLines(stdout);
+  const completed = [...events]
+    .reverse()
+    .find((event) => event.type === "turn.completed" && objectValue(event.usage));
+  const usage = completed ? parseCodexUsage(completed.usage) : undefined;
+  const streamedText = [...events]
+    .reverse()
+    .map((event) => objectValue(event.item))
+    .find((item) => item?.type === "agent_message" && typeof item.text === "string")?.text;
+  return {
+    text: outputFileText ?? (typeof streamedText === "string" ? streamedText : ""),
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function parseCursorOutput(stdout: string): ParsedSemanticHarnessOutput {
+  const events = parseJsonLines(stdout);
+  const init = events.find(
+    (event) =>
+      event.type === "system" && event.subtype === "init" && typeof event.model === "string",
+  );
+  const terminal = [...events]
+    .reverse()
+    .find((event) => event.type === "result" && typeof event.result === "string");
+  if (!terminal) {
+    try {
+      const envelope = JSON.parse(stdout) as Record<string, unknown>;
+      if (envelope.is_error) throw new Error("harness returned an error envelope");
+      return {
+        text: typeof envelope.result === "string" ? envelope.result : "",
+        ...(typeof envelope.model === "string" ? { executedModelId: envelope.model } : {}),
+        ...(parseCursorUsage(envelope.usage) ? { usage: parseCursorUsage(envelope.usage) } : {}),
+      };
+    } catch (error) {
+      if (error instanceof SyntaxError) return { text: stdout };
+      throw error;
+    }
+  }
+  if (terminal.is_error) throw new Error("harness returned an error envelope");
+  const usage = parseCursorUsage(terminal.usage);
+  return {
+    text: terminal.result as string,
+    ...(typeof init?.model === "string" ? { executedModelId: init.model } : {}),
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function parseClaudeUsage(value: unknown): SemanticUsageReceiptV1 | undefined {
+  const usage = objectValue(value);
+  if (!usage) return undefined;
+  return nativeSemanticUsage({
+    input_tokens: usage.input_tokens,
+    cached_input_tokens: usage.cache_read_input_tokens,
+    cache_creation_input_tokens: usage.cache_creation_input_tokens,
+    output_tokens: usage.output_tokens,
+    reasoning_tokens: usage.reasoning_tokens ?? usage.reasoning_output_tokens,
+    total_tokens: usage.total_tokens,
+  });
+}
+
+function aggregateClaudeModelUsage(
+  entries: [string, unknown][],
+): SemanticUsageReceiptV1 | undefined {
+  const values: Record<string, number> = {};
+  for (const [, raw] of entries) {
+    const usage = objectValue(raw);
+    if (!usage) continue;
+    addNumber(values, "input_tokens", usage.inputTokens);
+    addNumber(values, "cached_input_tokens", usage.cacheReadInputTokens);
+    addNumber(values, "cache_creation_input_tokens", usage.cacheCreationInputTokens);
+    addNumber(values, "output_tokens", usage.outputTokens);
+  }
+  return nativeSemanticUsage(values);
+}
+
+function parseCodexUsage(value: unknown): SemanticUsageReceiptV1 | undefined {
+  const usage = objectValue(value);
+  if (!usage) return undefined;
+  return nativeSemanticUsage({
+    input_tokens: usage.input_tokens,
+    cached_input_tokens: usage.cached_input_tokens,
+    cache_creation_input_tokens: usage.cache_write_input_tokens,
+    output_tokens: usage.output_tokens,
+    reasoning_tokens: usage.reasoning_output_tokens,
+    total_tokens: usage.total_tokens,
+  });
+}
+
+function parseCursorUsage(value: unknown): SemanticUsageReceiptV1 | undefined {
+  const usage = objectValue(value);
+  if (!usage) return undefined;
+  return nativeSemanticUsage({
+    input_tokens: usage.inputTokens ?? usage.input_tokens,
+    cached_input_tokens:
+      usage.cacheReadTokens ?? usage.cachedInputTokens ?? usage.cached_input_tokens,
+    cache_creation_input_tokens:
+      usage.cacheWriteTokens ?? usage.cacheCreationInputTokens ?? usage.cache_write_input_tokens,
+    output_tokens: usage.outputTokens ?? usage.output_tokens,
+    reasoning_tokens: usage.reasoningTokens ?? usage.reasoning_output_tokens,
+    total_tokens: usage.totalTokens ?? usage.total_tokens,
+  });
+}
+
+function parseJsonLines(raw: string): Record<string, unknown>[] {
+  return raw
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .flatMap((line) => {
+      try {
+        const value = JSON.parse(line) as unknown;
+        return objectValue(value) ? [value as Record<string, unknown>] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function addNumber(target: Record<string, number>, field: string, value: unknown): void {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    target[field] = (target[field] ?? 0) + value;
+  }
+}
+
+function modelIdsMatch(attested: string, requested: string): boolean {
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return normalize(attested) === normalize(requested);
 }
 
 function semanticChildEnv(): NodeJS.ProcessEnv {

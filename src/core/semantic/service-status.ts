@@ -2,7 +2,19 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 
-import { readSemanticManifest, semanticPaths } from "./storage.ts";
+import type { SemanticHarness } from "./contract.ts";
+import { SEMANTIC_READER_ROUTES } from "./routes.ts";
+import {
+  activeSemanticCallHistory,
+  SEMANTIC_HARD_CALLS_PER_HOUR,
+  semanticRateCap,
+} from "./scheduler.ts";
+import { readSemanticManifest, type SemanticReaderResolution, semanticPaths } from "./storage.ts";
+import {
+  aggregateSemanticUsage,
+  emptySemanticUsageAggregate,
+  type SemanticUsageAggregate,
+} from "./usage.ts";
 
 export const SEMANTIC_SERVICE_STATUS_SCHEMA_VERSION = 1 as const;
 const FOREIGN_STATUS_STALE_MS = 2 * 60_000;
@@ -24,6 +36,7 @@ export interface SemanticServiceStatusRecord {
   pass_count: number;
   model_calls: number;
   cache_hits: number;
+  process_usage?: SemanticUsageAggregate;
   last_sweep_at?: string;
   last_pass_at?: string;
   last_error_code?: SemanticServiceErrorCode;
@@ -36,6 +49,23 @@ export interface SemanticServiceStatus {
   record?: SemanticServiceStatusRecord;
   newest_successful_pass?: string;
   pending_count: number;
+  rolling_calls?: {
+    used: number;
+    limit: number;
+    available: number;
+    eligible_after?: string;
+  };
+  routes?: Array<{
+    harness: keyof typeof SEMANTIC_READER_ROUTES;
+    configured_model: string;
+    invocation_model_id: string;
+    resolved_model_id?: string;
+    model_attestation?: "verified" | "requested-only";
+    available?: boolean;
+    reason_code?: string;
+  }>;
+  rolling_usage?: SemanticUsageAggregate;
+  process_usage?: SemanticUsageAggregate;
 }
 
 /** Read-only service health. This module cannot spawn, signal, or write. */
@@ -43,12 +73,45 @@ export function readSemanticServiceStatus(coordRootRaw: string): SemanticService
   const coordRoot = resolve(coordRootRaw);
   const record = readStatusRecord(coordRoot);
   const manifest = safeManifest(coordRoot);
+  const now = Date.now();
+  const history = activeSemanticCallHistory(manifest?.call_history ?? [], now);
+  const limit = Math.min(
+    SEMANTIC_HARD_CALLS_PER_HOUR,
+    Math.max(1, Math.floor(record?.calls_per_hour ?? SEMANTIC_HARD_CALLS_PER_HOUR)),
+  );
+  const cap = semanticRateCap(history, now, limit);
+  const rollingUsage = aggregateSemanticUsage(
+    history.map((call) => ({
+      source_harness: call.source_harness,
+      configured_model: call.configured_model,
+      resolved_model_id: call.resolved_model_id,
+      model_attestation: call.model_attestation,
+      action: call.outcome,
+      model_call: true,
+      usage: call.usage,
+    })),
+  );
+  const processUsage = record?.process_usage ?? legacyProcessUsage(record?.model_calls ?? 0);
+  const shared = {
+    ...(manifest?.newest_successful_pass
+      ? { newest_successful_pass: manifest.newest_successful_pass }
+      : {}),
+    pending_count: manifest?.pending.length ?? 0,
+    rolling_calls: {
+      used: history.length,
+      limit,
+      available: cap.available,
+      ...(cap.eligible_after ? { eligible_after: cap.eligible_after } : {}),
+    },
+    routes: semanticStatusRoutes(manifest?.adapter_resolutions),
+    rolling_usage: rollingUsage,
+    process_usage: processUsage,
+  };
   if (!record) {
     return {
       running: false,
       stale: false,
-      newest_successful_pass: manifest?.newest_successful_pass,
-      pending_count: manifest?.pending.length ?? 0,
+      ...shared,
     };
   }
   const running = statusOwnerIsLive(record);
@@ -56,9 +119,39 @@ export function readSemanticServiceStatus(coordRootRaw: string): SemanticService
     running,
     stale: !running && record.state !== "stopped",
     record,
-    newest_successful_pass: manifest?.newest_successful_pass,
-    pending_count: manifest?.pending.length ?? 0,
+    ...shared,
   };
+}
+
+function semanticStatusRoutes(
+  resolutions: Partial<Record<SemanticHarness, SemanticReaderResolution>> | undefined,
+): NonNullable<SemanticServiceStatus["routes"]> {
+  return (Object.keys(SEMANTIC_READER_ROUTES) as Array<keyof typeof SEMANTIC_READER_ROUTES>).map(
+    (harness) => {
+      const route = SEMANTIC_READER_ROUTES[harness];
+      const resolution = resolutions?.[harness];
+      return {
+        harness,
+        configured_model: route.configured_model,
+        invocation_model_id: route.invocation_model_id,
+        ...(resolution?.resolved_model_id
+          ? { resolved_model_id: resolution.resolved_model_id }
+          : {}),
+        ...(resolution?.model_attestation
+          ? { model_attestation: resolution.model_attestation }
+          : {}),
+        ...(resolution ? { available: resolution.available } : {}),
+        ...(resolution?.reason_code ? { reason_code: resolution.reason_code } : {}),
+      };
+    },
+  );
+}
+
+function legacyProcessUsage(modelCalls: number): SemanticUsageAggregate {
+  const aggregate = emptySemanticUsageAggregate();
+  aggregate.call_count = modelCalls;
+  aggregate.unreported_calls = modelCalls;
+  return aggregate;
 }
 
 function safeManifest(coordRoot: string) {

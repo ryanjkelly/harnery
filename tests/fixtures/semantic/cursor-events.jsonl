@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","model":"Composer 2.5","session_id":"fixture-session"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"partial"}]},"session_id":"fixture-session"}
+{"type":"result","subtype":"success","duration_ms":1234,"duration_api_ms":1200,"is_error":false,"result":"{\"schema_version\":2,\"fixture\":true}","session_id":"fixture-session","usage":{"inputTokens":73,"outputTokens":29,"cacheReadTokens":2048,"cacheWriteTokens":1024}}
