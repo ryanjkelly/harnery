@@ -57,8 +57,11 @@ reuse. It does not repeat the recursive roots scan while that path remains
 valid. If a supplied or cached path is missing, stale, ambiguous, unreadable,
 or belongs to another session, the reader keeps the existing explicit missing
 state. Turn terminal matching, the 30-second freshness limit, bounded tail
-reads, late-flush reconciliation, and measurement deduplication remain
-unchanged.
+reads, late-flush reconciliation, and measurement deduplication remain in
+force. Codex can flush its terminal marker just after the Stop hook starts, so
+the first read now gets a bounded 250 ms grace period on the same cached path.
+The durable retry queue remains the fallback when that grace period is not
+enough.
 
 The public `context.observed` event contains only `used_tokens`,
 `limit_tokens`, `remaining_tokens`, `measured_at`, the method, and an opaque
@@ -81,4 +84,3 @@ hook process without another roots scan, and that an ambiguous duplicate does
 not redirect the session. Existing stale, mismatched, missing, Claude partial,
 Cursor unsupported, deduplication, Codec projection, and privacy cases remain
 passing.
-

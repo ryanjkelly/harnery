@@ -97,6 +97,8 @@ const CLOSED_TURN_MEMORY_CAP = 16;
 const SPAN_SOFT_WATERMARK = 128;
 const PENDING_RUNTIME_CONTEXT_CAP = 4;
 const RUNTIME_CONTEXT_RETRY_LIMIT = 2;
+/** Codex can flush the terminal row just after Stop; keep this grace bounded and off other hooks. */
+const STOP_RUNTIME_CONTEXT_RETRY_DELAYS_MS = [75, 175] as const;
 /** Finalization is off the interactive hook path; briefly cover Codex's delayed transcript flush. */
 const APPROVED_END_RUNTIME_CONTEXT_RETRY_DELAYS_MS = [0, 250, 250] as const;
 /**
@@ -1927,17 +1929,27 @@ function turnTelemetryForTerminal(
   const native = extractTurnTelemetryV3(input.adapter, input.payload.raw, observedAt);
   if (native.context.state === "observed" || input.adapter === "cursor") return native;
 
-  const runtime = readRuntimeContextTelemetry(
-    {
-      adapter: input.adapter,
-      session_id: input.payload.session_id ?? input.payload.conversation_id,
-      turn_id: input.payload.turn_id ?? state.current_native_turn_id,
-      transcript_path: runtimeTranscriptPath(input, state),
-      mode: "turn",
-    },
-    input.runtimeTelemetryOptions,
-  );
+  const request = {
+    adapter: input.adapter,
+    session_id: input.payload.session_id ?? input.payload.conversation_id,
+    turn_id: input.payload.turn_id ?? state.current_native_turn_id,
+    transcript_path: runtimeTranscriptPath(input, state),
+    mode: "turn" as const,
+  };
+  let runtime = readRuntimeContextTelemetry(request, input.runtimeTelemetryOptions);
   if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
+  if (
+    input.adapter === "codex" &&
+    runtime.state === "partial" &&
+    retryableRuntimeContextReason(runtime.reason)
+  ) {
+    for (const delayMs of STOP_RUNTIME_CONTEXT_RETRY_DELAYS_MS) {
+      sleepSync(delayMs);
+      runtime = readRuntimeContextTelemetry(request, input.runtimeTelemetryOptions);
+      if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
+      if (runtime.state !== "partial" || !retryableRuntimeContextReason(runtime.reason)) break;
+    }
+  }
   if (runtime.state === "unsupported") return native;
   return {
     ...native,
