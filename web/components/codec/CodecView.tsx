@@ -550,7 +550,7 @@ function MobileCodecDeck({
             <dd>{summary.relationships.length}</dd>
           </div>
           <div>
-            <dt>Active</dt>
+            <dt>Active deps</dt>
             <dd>{summary.dependencies.active}</dd>
           </div>
           <div>
