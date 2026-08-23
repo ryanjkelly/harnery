@@ -1989,6 +1989,7 @@
                 "harness",
                 "model",
                 "tuning",
+                "telemetry",
                 "capability_profile",
                 "declared_by_event_id"
               ],
@@ -2650,6 +2651,984 @@
                       }
                     }
                   ]
+                },
+                "telemetry": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "context_usage",
+                    "wait_spans",
+                    "wait_completeness",
+                    "response_latency",
+                    "inference_timing"
+                  ],
+                  "properties": {
+                    "context_usage": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "wait_spans": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "wait_completeness": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "response_latency": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "inference_timing": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
                 },
                 "capability_profile": {
                   "pattern": "^cap_[a-f0-9]{64}$",
@@ -3225,6 +4204,7 @@
                 "harness",
                 "model",
                 "tuning",
+                "telemetry",
                 "capability_profile",
                 "declared_by_event_id"
               ],
@@ -3886,6 +4866,984 @@
                       }
                     }
                   ]
+                },
+                "telemetry": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "context_usage",
+                    "wait_spans",
+                    "wait_completeness",
+                    "response_latency",
+                    "inference_timing"
+                  ],
+                  "properties": {
+                    "context_usage": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "wait_spans": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "wait_completeness": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "response_latency": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "inference_timing": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "value",
+                            "attestation",
+                            "confidence"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "observed",
+                              "type": "string"
+                            },
+                            "value": {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "support",
+                                "source",
+                                "completeness"
+                              ],
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    {
+                                      "const": "native",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "derived",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "conditional",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                                  "type": "string"
+                                },
+                                "completeness": {
+                                  "anyOf": [
+                                    {
+                                      "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "lower_bound",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "unknown",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "attestation": {
+                              "anyOf": [
+                                {
+                                  "const": "native",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "derived",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "inferred",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "confidence": {
+                              "anyOf": [
+                                {
+                                  "const": "exact",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "high",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "medium",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "low",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unsupported",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "capability",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "expected_but_missing",
+                              "type": "string"
+                            },
+                            "capability": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "redacted",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "unknown",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "const": "not_applicable",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
                 },
                 "capability_profile": {
                   "pattern": "^cap_[a-f0-9]{64}$",

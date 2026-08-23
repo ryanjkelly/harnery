@@ -44,6 +44,7 @@ export {
   adapterWaitCoverageMatrixV3,
   adapterWaitKindSupportV3,
   type CapabilitySupportV3,
+  type CursorExecutionModeV3,
   type WaitKindCapabilityV3,
 } from "./capabilities.ts";
 export {
@@ -286,6 +287,16 @@ export {
   validateEventV3RecoveryIntent,
   validateEventV3RecoveryReceipt,
 } from "./recovery-record.ts";
+export {
+  effectiveRuntimeTelemetryCapabilitiesV3,
+  type RuntimeContextCapabilityEvidenceV3,
+  type RuntimeTelemetryCapabilitiesV3,
+  type RuntimeTelemetryCapabilityEvidenceV3,
+  type RuntimeTelemetryCapabilityObservationV3,
+  type RuntimeTelemetryCapabilityValueV3,
+  type RuntimeTelemetryChannelV3,
+  type RuntimeTelemetryCompletenessV3,
+} from "./runtime-telemetry-capabilities.ts";
 export {
   type CloseSpanV3Input,
   captureSpanClockV3,

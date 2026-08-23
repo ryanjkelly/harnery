@@ -100,6 +100,24 @@ export function ObservationV3BaseSchema<T extends TSchema>(value: T) {
   ]);
 }
 
+const RuntimeTelemetryCapabilityValueV3BaseSchema = StrictObject({
+  support: Type.Union([
+    Type.Literal("native"),
+    Type.Literal("derived"),
+    Type.Literal("conditional"),
+  ]),
+  source: SafeToken,
+  completeness: Type.Union([
+    Type.Literal("exact"),
+    Type.Literal("lower_bound"),
+    Type.Literal("unknown"),
+  ]),
+});
+
+const RuntimeTelemetryCapabilityObservationV3BaseSchema = ObservationV3BaseSchema(
+  RuntimeTelemetryCapabilityValueV3BaseSchema,
+);
+
 export const RuntimeAttestationV3BaseSchema = StrictObject({
   attestation_id: AttestationId,
   generation_id: GenerationId,
@@ -121,6 +139,16 @@ export const RuntimeAttestationV3BaseSchema = StrictObject({
       speed: Type.Optional(SafeToken),
     }),
   ),
+  /** Effective telemetry support proven for this runtime session. This is
+   * intentionally separate from the static capability profile digest: a
+   * missing or late local source changes evidence, not the gated profile. */
+  telemetry: StrictObject({
+    context_usage: RuntimeTelemetryCapabilityObservationV3BaseSchema,
+    wait_spans: RuntimeTelemetryCapabilityObservationV3BaseSchema,
+    wait_completeness: RuntimeTelemetryCapabilityObservationV3BaseSchema,
+    response_latency: RuntimeTelemetryCapabilityObservationV3BaseSchema,
+    inference_timing: RuntimeTelemetryCapabilityObservationV3BaseSchema,
+  }),
   capability_profile: Type.String({ pattern: "^cap_[a-f0-9]{64}$" }),
   declared_by_event_id: EventId,
 });

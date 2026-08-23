@@ -91,6 +91,58 @@ describe("event ledger V3 hook producer", () => {
     });
   });
 
+  test("attests effective telemetry separately from the static capability profile", () => {
+    const started = normalizeHookEventV3(
+      "session-start",
+      parsed({ session_id: "native-session", model: "claude-fable-5" }),
+      producerContext(),
+    );
+    if (started?.event_type !== "session.started") throw new Error("session start missing");
+
+    expect(started.payload.runtime_attestation.telemetry).toEqual({
+      context_usage: {
+        state: "expected_but_missing",
+        capability: "context_usage",
+        reason: "context_source_not_ready",
+      },
+      wait_spans: {
+        state: "observed",
+        value: {
+          support: "native",
+          source: "claude-code.permission_hooks",
+          completeness: "lower_bound",
+        },
+        attestation: "native",
+        confidence: "exact",
+      },
+      wait_completeness: { state: "unsupported", capability: "wait_turn_completeness" },
+      response_latency: {
+        state: "observed",
+        value: {
+          support: "derived",
+          source: "canonical.event_clocks",
+          completeness: "exact",
+        },
+        attestation: "derived",
+        confidence: "exact",
+      },
+      inference_timing: { state: "unsupported", capability: "provider_inference_timing" },
+    });
+
+    const cursorCloud = normalizeHookEventV3(
+      "session-start",
+      parsed({ session_id: "cursor-session" }),
+      { ...producerContext(), adapter: "cursor", cursor_mode: "cloud" },
+    );
+    if (cursorCloud?.event_type !== "session.started") {
+      throw new Error("Cursor session start missing");
+    }
+    expect(cursorCloud.payload.runtime_attestation.telemetry).toMatchObject({
+      context_usage: { state: "unsupported", capability: "context_usage" },
+      wait_spans: { state: "unsupported", capability: "wait_span_delivery" },
+    });
+  });
+
   test("requires and emits a self-contained tool terminal", () => {
     const spanId = spanIdV3();
     const span = terminalSpan(spanId);

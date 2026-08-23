@@ -150,6 +150,7 @@ function generationFixture(adapter: "claude-code" | "codex" | undefined, ended =
         harness: adapterObservation,
         model: { state: "unknown", reason: "not_reported" },
         tuning: { state: "unknown" as const, reason: "not_reported" },
+        telemetry: unknownTelemetry(),
         capability_profile: `cap_${"a".repeat(64)}` as const,
         declared_by_event_id: startId,
       },
@@ -236,6 +237,17 @@ function generationFixture(adapter: "claude-code" | "codex" | undefined, ended =
     );
   }
   return { generationId, events };
+}
+
+function unknownTelemetry() {
+  const missing = { state: "unknown" as const, reason: "not_reported" };
+  return {
+    context_usage: missing,
+    wait_spans: missing,
+    wait_completeness: missing,
+    response_latency: missing,
+    inference_timing: missing,
+  };
 }
 
 function completeRead(events: readonly { event_id: string }[]): ReadLedgerV3Result {

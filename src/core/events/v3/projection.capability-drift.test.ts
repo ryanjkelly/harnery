@@ -55,6 +55,7 @@ describe("capability drift after terminal", () => {
           harness: adapterObservation,
           model: { state: "unknown", reason: "not_reported" },
           tuning: { state: "unknown" as const, reason: "not_reported" },
+          telemetry: unknownTelemetry(),
           capability_profile: `cap_${"a".repeat(64)}` as const,
           declared_by_event_id: startId,
         },
@@ -110,3 +111,14 @@ describe("capability drift after terminal", () => {
     expect(projection.health["capability:context_usage"]?.event_id).toBe(drift.event_id);
   });
 });
+
+function unknownTelemetry() {
+  const missing = { state: "unknown" as const, reason: "not_reported" };
+  return {
+    context_usage: missing,
+    wait_spans: missing,
+    wait_completeness: missing,
+    response_latency: missing,
+    inference_timing: missing,
+  };
+}

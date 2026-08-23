@@ -3,8 +3,16 @@ import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import { buildEventV3Base } from "../base-builder.ts";
 import type { EventV3Base, RuntimeAttestationV3Base } from "../base-contract.ts";
 import { type FingerprintContextV3, fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
-import { adapterSignalSupportV3, adapterTurnWaitCountSupportV3 } from "../capabilities.ts";
+import {
+  adapterSignalSupportV3,
+  adapterTurnWaitCountSupportV3,
+  type CursorExecutionModeV3,
+} from "../capabilities.ts";
 import { eventIdV3 } from "../ids.ts";
+import {
+  effectiveRuntimeTelemetryCapabilitiesV3,
+  type RuntimeTelemetryCapabilitiesV3,
+} from "../runtime-telemetry-capabilities.ts";
 import { exactToolInputFingerprintV3, extractTargetsV3 } from "../targets.ts";
 
 export type HookSignalV3Base =
@@ -41,6 +49,7 @@ export interface HookProducerContextV3Base {
   platform: "linux" | "windows" | "macos" | "unknown";
   bridge?: "codex-wsl";
   capability_profile: `cap_${string}`;
+  cursor_mode?: CursorExecutionModeV3;
   fingerprintContext: FingerprintContextV3;
   turn_native_id?: string;
   turn_id?: `tid_${string}`;
@@ -64,6 +73,9 @@ export interface HookProducerContextV3Base {
   /** Tuning read from a local runtime transcript by the recorder; hook-base
    * itself performs no I/O. */
   runtime_tuning?: RuntimeTuningContextV3;
+  /** Effective telemetry evidence resolved by the recorder. When absent, the
+   * session-start attestation records only what hook delivery can prove. */
+  runtime_telemetry?: RuntimeTelemetryCapabilitiesV3;
 }
 
 export interface TurnRitualEvidenceV3 {
@@ -180,6 +192,7 @@ export function normalizeHookEventV3Base(
             }
           : { state: "expected_but_missing", capability: "model_identity", reason: "not_reported" },
         tuning: tuningObservation(context, payload),
+        telemetry: context.runtime_telemetry ?? initialTelemetryCapabilities(context),
         capability_profile: context.capability_profile,
         declared_by_event_id: eventId,
       };
@@ -538,6 +551,21 @@ const MODEL_ID_EFFORT_TOKENS = new Set([
 ]);
 
 export type RuntimeTuningObservationV3 = RuntimeAttestationV3Base["tuning"];
+
+function initialTelemetryCapabilities(
+  context: HookProducerContextV3Base,
+): RuntimeTelemetryCapabilitiesV3 {
+  return effectiveRuntimeTelemetryCapabilitiesV3({
+    adapter: context.adapter,
+    ...(context.cursor_mode ? { cursor_mode: context.cursor_mode } : {}),
+    context:
+      context.adapter === "cursor"
+        ? { state: "unsupported" }
+        : { state: "partial", reason: "context_source_not_ready" },
+    canonical_turn_boundaries:
+      adapterSignalSupportV3(context.adapter, "turn_completion") !== "unsupported",
+  });
+}
 
 /** Recorder-supplied tuning read from a local runtime transcript. */
 export interface RuntimeTuningContextV3 {
