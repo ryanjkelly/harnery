@@ -17,7 +17,11 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
-import { type ReadLedgerV3SinceResult, readLedgerV3Since } from "../events/v3/index.ts";
+import {
+  type ReadLedgerV3SinceResult,
+  readEventV3ControlState,
+  readLedgerV3Since,
+} from "../events/v3/index.ts";
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
 import type { SemanticHarness } from "./contract.ts";
 import { runSemanticOnce, type SemanticOnceReport } from "./once.ts";
@@ -77,6 +81,26 @@ export interface RunSemanticServiceDaemonInput {
   waitForWake?: (milliseconds: number) => Promise<void>;
 }
 
+export type EnsureSemanticServiceState =
+  | "running"
+  | "started"
+  | "paused"
+  | "inactive"
+  | "unavailable";
+
+export interface EnsureSemanticServiceResult {
+  state: EnsureSemanticServiceState;
+  status?: SemanticServiceStatus;
+  error?: string;
+}
+
+export interface EnsureSemanticServiceDependencies {
+  readStatus: (coordRoot: string) => SemanticServiceStatus;
+  start: (coordRoot: string) => Promise<SemanticServiceStatus>;
+  isPaused: (coordRoot: string) => boolean;
+  isActive: (coordRoot: string) => boolean;
+}
+
 export async function spawnSemanticService(
   coordRootRaw: string,
   options: { callsPerHour?: number } = {},
@@ -126,15 +150,49 @@ export async function spawnSemanticService(
   throw new Error(`semantic service failed to start; inspect ${paths.log}`);
 }
 
+/**
+ * Start semantic reading when V3 is active, unless an operator paused it.
+ *
+ * Dashboard hosts call this before launching their web process. A failed
+ * semantic launch is reported as data instead of throwing so the read-only
+ * dashboard remains available.
+ */
+export async function ensureSemanticServiceRunning(
+  coordRootRaw: string,
+  overrides: Partial<EnsureSemanticServiceDependencies> = {},
+): Promise<EnsureSemanticServiceResult> {
+  const coordRoot = resolve(coordRootRaw);
+  const dependencies: EnsureSemanticServiceDependencies = {
+    readStatus: readSemanticServiceStatus,
+    start: spawnSemanticService,
+    isPaused: (root) => existsSync(semanticPaths(root).stop),
+    isActive: (root) => readEventV3ControlState(root).state === "active",
+    ...overrides,
+  };
+  const status = dependencies.readStatus(coordRoot);
+  if (status.running) return { state: "running", status };
+  if (dependencies.isPaused(coordRoot)) return { state: "paused", status };
+  if (!dependencies.isActive(coordRoot)) return { state: "inactive", status };
+  try {
+    return { state: "started", status: await dependencies.start(coordRoot) };
+  } catch (error) {
+    return {
+      state: "unavailable",
+      status: dependencies.readStatus(coordRoot),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export function requestSemanticServiceStop(coordRootRaw: string): SemanticServiceStatus {
   const coordRoot = resolve(coordRootRaw);
   const status = readSemanticServiceStatus(coordRoot);
-  if (!status.running || !status.record) return status;
+  mkdirSync(semanticPaths(coordRoot).root, { recursive: true, mode: 0o700 });
   writePrivateJsonAtomic(semanticPaths(coordRoot).stop, {
     requested_at: new Date().toISOString(),
     requested_by_pid: process.pid,
   });
-  if (status.record.host === hostname()) {
+  if (status.running && status.record?.host === hostname()) {
     try {
       process.kill(status.record.pid, "SIGTERM");
     } catch {
@@ -217,9 +275,12 @@ export async function runSemanticServiceDaemon(
       status.sweep_count += 1;
       try {
         const before = safeManifest(coordRoot);
-        const read = readSince(coordRoot, before?.cursor, { authority: "active" });
+        let read = readSince(coordRoot, before?.cursor, { authority: "active" });
+        if (read.reset_required) {
+          read = readSince(coordRoot, undefined, { authority: "active" });
+        }
         requireCompleteLedger(read);
-        if (read.reset_required || read.events.length > 0 || !before?.cursor) {
+        if (read.events.length > 0 || !before?.cursor) {
           dirtySince ??= sweepAt.getTime();
         }
         const hasPending = (before?.pending.length ?? 0) > 0;
@@ -303,7 +364,6 @@ export async function runSemanticServiceDaemon(
       passes: status.pass_count,
       model_calls: status.model_calls,
     });
-    rmSync(paths.stop, { force: true });
     release();
   }
   return status;
