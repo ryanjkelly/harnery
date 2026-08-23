@@ -45,6 +45,7 @@ export const SEMANTIC_SERVICE_DEFAULT_HEARTBEAT_MS = 5_000;
 const FOREIGN_STATUS_STALE_MS = 2 * 60_000;
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LOG_BYTES = 512 * 1024;
+const REPEATED_ERROR_LOG_INTERVAL_MS = 60_000;
 
 interface SemanticServiceLease {
   pid: number;
@@ -182,6 +183,8 @@ export async function runSemanticServiceDaemon(
   };
   let stopRequested = false;
   let dirtySince: number | undefined;
+  let lastLoggedErrorCode: string | undefined;
+  let lastLoggedErrorAt = Number.NEGATIVE_INFINITY;
   const writeStatus = (): void => {
     status.heartbeat_at = now().toISOString();
     writePrivateJsonAtomic(paths.service, status);
@@ -230,13 +233,14 @@ export async function runSemanticServiceDaemon(
           status.cache_hits += report.cache_hits;
           status.last_pass_at = report.completed_at;
           status.last_error_code = undefined;
+          lastLoggedErrorCode = undefined;
           const after = safeManifest(coordRoot);
           if (after && read.cursor) {
             after.cursor = read.cursor;
             writeSemanticManifest(coordRoot, after);
           }
           dirtySince = undefined;
-          appendSemanticServiceLog(coordRoot, {
+          const logEntry = {
             event: "pass",
             evidence_count: report.evidence_count,
             evidence_by_harness: report.evidence_by_harness,
@@ -248,14 +252,24 @@ export async function runSemanticServiceDaemon(
             invalid: report.outcomes.filter((outcome) => outcome.action === "invalid").length,
             deferred: report.outcomes.filter((outcome) => outcome.action === "deferred").length,
             harness_metrics: semanticHarnessMetrics(report),
-          });
+          };
+          if (report.model_calls > 0 || report.cache_hits > 0 || logEntry.unavailable > 0) {
+            appendSemanticServiceLog(coordRoot, logEntry);
+          }
         }
       } catch (error) {
         status.last_error_code = serviceErrorCode(error);
-        appendSemanticServiceLog(coordRoot, {
-          event: "sweep_error",
-          reason_code: status.last_error_code,
-        });
+        if (
+          status.last_error_code !== lastLoggedErrorCode ||
+          sweepAt.getTime() - lastLoggedErrorAt >= REPEATED_ERROR_LOG_INTERVAL_MS
+        ) {
+          appendSemanticServiceLog(coordRoot, {
+            event: "sweep_error",
+            reason_code: status.last_error_code,
+          });
+          lastLoggedErrorCode = status.last_error_code;
+          lastLoggedErrorAt = sweepAt.getTime();
+        }
       }
       status.last_sweep_at = now().toISOString();
       writeStatus();

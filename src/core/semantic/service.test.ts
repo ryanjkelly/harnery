@@ -117,4 +117,74 @@ describe("semantic service", () => {
     );
     expect(log).not.toContain("gen_01922e33");
   });
+
+  test("omits deferred-only pass logs and throttles repeated sweep errors", async () => {
+    const deferredRoot = fixture();
+    const cursor = {
+      genesis_id: "gex_fixture",
+      segment_ordinal: 1,
+      byte_offset: 128,
+      event_id: "evt_01922e33-7abc-7def-8abc-0123456789ab",
+    };
+    const readSince = (() => ({
+      events: [{}],
+      diagnostics: [],
+      complete: true,
+      genesis_id: "gex_fixture",
+      active_schema_digest: "fixture",
+      advances: [],
+      bytes: 128,
+      cursor,
+      reset_required: false,
+    })) as unknown as typeof readLedgerV3Since;
+    await runSemanticServiceDaemon({
+      coordRoot: deferredRoot,
+      debounceMs: 0,
+      wakeIntervalMs: 1,
+      heartbeatIntervalMs: 60_000,
+      maxSweeps: 1,
+      readSince,
+      async runOnce() {
+        return {
+          schema_version: 1,
+          ledger_genesis_id: "gex_fixture",
+          evidence_count: 1,
+          evidence_by_harness: { "claude-code": 0, codex: 1, cursor: 0 },
+          model_calls: 0,
+          cache_hits: 0,
+          outcomes: [
+            {
+              generation_id: "gen_01922e33-7abc-7def-8abc-0123456789ab",
+              source_harness: "codex",
+              action: "deferred",
+              model_call: false,
+            },
+          ],
+          completed_at: "2026-08-22T20:00:01.000Z",
+        };
+      },
+    });
+    expect(readFileSync(semanticPaths(deferredRoot).log, "utf8")).not.toContain('"event":"pass"');
+
+    const errorRoot = fixture();
+    let clock = Date.parse("2026-08-22T20:00:00.000Z");
+    await runSemanticServiceDaemon({
+      coordRoot: errorRoot,
+      wakeIntervalMs: 1,
+      heartbeatIntervalMs: 60_000,
+      maxSweeps: 3,
+      now: () => {
+        clock += 1_000;
+        return new Date(clock);
+      },
+      readSince: (() => {
+        throw new Error("event ledger unavailable");
+      }) as unknown as typeof readLedgerV3Since,
+      waitForWake: async () => {},
+    });
+    const errors = readFileSync(semanticPaths(errorRoot).log, "utf8").match(
+      /"event":"sweep_error"/g,
+    );
+    expect(errors).toHaveLength(1);
+  });
 });
