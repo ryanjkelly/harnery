@@ -1820,6 +1820,7 @@ function ContextGauge({ panel }: { panel: CodecPanelScene }) {
   const gaugeStyle = {
     "--codec-context-remaining": `${remaining ?? 0}%`,
   } as CSSProperties;
+  const visualBand = remaining === undefined ? "unknown" : band;
 
   return (
     <Tooltip
@@ -1859,7 +1860,7 @@ function ContextGauge({ panel }: { panel: CodecPanelScene }) {
     >
       <span
         data-codec-context-gauge
-        data-context-band={band}
+        data-context-band={visualBand}
         className={styles.contextGauge}
         style={gaugeStyle}
         aria-label={label}
