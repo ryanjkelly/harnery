@@ -160,6 +160,7 @@ export {
   type LatencyProjectionV3,
   projectLatencyV3,
   type ResponseLatencyV3,
+  runtimeTelemetryEvidenceKeyV3,
   type ToolLatencyV3,
   type TurnLatencyV3,
   type WaitKindCompletenessV3,

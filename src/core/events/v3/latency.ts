@@ -1,7 +1,9 @@
+import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { ADAPTER_WAIT_KINDS_V3, type AdapterWaitKindV3 } from "./capabilities.ts";
 import type { ReadLedgerV3Result } from "./reader.ts";
+import type { RuntimeTelemetryCapabilitiesV3 } from "./runtime-telemetry-capabilities.ts";
 
-export const EVENT_V3_LATENCY_PROJECTION_VERSION = "event-v3-latency-v2" as const;
+export const EVENT_V3_LATENCY_PROJECTION_VERSION = "event-v3-latency-v3" as const;
 
 export type LatencyMetricV3 =
   | { state: "observed"; value_ms: number }
@@ -72,6 +74,9 @@ export interface TurnLatencyV3 {
   over_attributed_ms: number;
   context_percent: number | null;
   context_coverage: ContextCoverageV3;
+  telemetry_capabilities: RuntimeTelemetryCapabilitiesV3 | null;
+  /** Equal keys are required before a report compares telemetry-backed values. */
+  telemetry_evidence_key: `sha256:${string}` | null;
   wait_coverage_by_kind: Record<AdapterWaitKindV3, WaitKindCoverageV3>;
   span_counts: { tool: number; command: number; wait: number };
   tool_breakdown: ToolLatencyV3[];
@@ -120,6 +125,7 @@ export function projectLatencyV3(read: ReadLedgerV3Result): LatencyProjectionV3 
   const events = read.events.map(({ event }) => event as unknown as EventShape);
   const diagnostics: LatencyProjectionDiagnosticV3[] = [];
   const terminalByTurn = new Map<string, EventShape>();
+  const telemetryByGeneration = latestTelemetryByGeneration(events);
 
   for (const event of events) {
     if (event.event_type !== "turn.completed") continue;
@@ -132,7 +138,12 @@ export function projectLatencyV3(read: ReadLedgerV3Result): LatencyProjectionV3 
   const turns = [...terminalByTurn.values()].map((terminal) => {
     const key = turnKey(terminal);
     const turnEvents = events.filter((event) => turnKey(event) === key);
-    return projectTurn(terminal, turnEvents, diagnostics);
+    return projectTurn(
+      terminal,
+      turnEvents,
+      diagnostics,
+      telemetryByGeneration.get(terminal.scope.generation_id ?? "") ?? null,
+    );
   });
   turns.sort(
     (left, right) =>
@@ -146,6 +157,7 @@ function projectTurn(
   terminal: EventShape,
   events: EventShape[],
   diagnostics: LatencyProjectionDiagnosticV3[],
+  telemetryCapabilities: RuntimeTelemetryCapabilitiesV3 | null,
 ): TurnLatencyV3 {
   const span = record(terminal.payload.span);
   const wall = metricFromObservation(span.duration_ms, "turn_duration_unknown");
@@ -258,6 +270,10 @@ function projectTurn(
     over_attributed_ms: overAttributed,
     context_percent: context.percent,
     context_coverage: context.coverage,
+    telemetry_capabilities: telemetryCapabilities,
+    telemetry_evidence_key: telemetryCapabilities
+      ? runtimeTelemetryEvidenceKeyV3(telemetryCapabilities)
+      : null,
     wait_coverage_by_kind: projectWaitCoverageByKind(
       waitStartEvents,
       waitEvents,
@@ -273,6 +289,32 @@ function projectTurn(
     },
     tool_breakdown: toolBreakdown,
   };
+}
+
+/** Reports may compare a telemetry-backed channel only inside one evidence key. */
+export function runtimeTelemetryEvidenceKeyV3(
+  telemetry: RuntimeTelemetryCapabilitiesV3,
+): `sha256:${string}` {
+  return sha256V3(canonicalJsonV3(telemetry));
+}
+
+function latestTelemetryByGeneration(
+  events: EventShape[],
+): Map<string, RuntimeTelemetryCapabilitiesV3> {
+  const result = new Map<string, RuntimeTelemetryCapabilitiesV3>();
+  for (const event of events) {
+    if (
+      event.event_type !== "session.started" &&
+      event.event_type !== "session.attestation_changed"
+    ) {
+      continue;
+    }
+    const attestation = record(event.payload.runtime_attestation);
+    const telemetry = record(attestation.telemetry);
+    if (Object.keys(telemetry).length === 0) continue;
+    result.set(event.scope.generation_id ?? "", telemetry as RuntimeTelemetryCapabilitiesV3);
+  }
+  return result;
 }
 
 function projectResponseLatency(

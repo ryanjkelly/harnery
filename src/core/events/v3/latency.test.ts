@@ -5,8 +5,9 @@ import {
   fixtureObject,
 } from "../../../../tests/helpers/event-v3.ts";
 import type { EventV3 } from "./contract.ts";
-import { projectLatencyV3 } from "./latency.ts";
+import { projectLatencyV3, runtimeTelemetryEvidenceKeyV3 } from "./latency.ts";
 import type { ReadLedgerV3Result } from "./reader.ts";
+import type { RuntimeTelemetryCapabilitiesV3 } from "./runtime-telemetry-capabilities.ts";
 
 describe("event ledger V3 latency projection", () => {
   test("unions overlapping tools, dedupes nested commands, and separates waits", () => {
@@ -522,6 +523,55 @@ describe("event ledger V3 latency projection", () => {
         reasons: ["wait_kind_completeness_unattested"],
       },
     });
+  });
+
+  test("carries the latest effective telemetry attestation into each generation", () => {
+    const started = eventV3Fixture("session.started", 1);
+    const changed = eventV3Fixture("session.attestation_changed", 2);
+    const turn = terminal("turn.completed", 3, "2026-08-18T14:00:00.000Z", 500);
+    const generationId = fixtureObject(turn.scope).generation_id;
+    fixtureObject(started.scope).generation_id = generationId;
+    fixtureObject(changed.scope).generation_id = generationId;
+
+    const startedTelemetry = fixtureObject(
+      fixtureObject(started.payload).runtime_attestation,
+    ).telemetry;
+    const changedTelemetry = fixtureObject(
+      fixtureObject(changed.payload).runtime_attestation,
+    ).telemetry;
+    fixtureObject(fixtureObject(changedTelemetry).context_usage).completeness = "partial";
+    fixtureObject(fixtureObject(changedTelemetry).context_usage).missing_reason =
+      "claude_context_limit_tokens_not_reported";
+
+    const projected = projectLatencyV3(readOf(started, changed, turn)).turns[0]!;
+    expect(projected.telemetry_capabilities).toEqual(
+      changedTelemetry as unknown as RuntimeTelemetryCapabilitiesV3,
+    );
+    expect(projected.telemetry_capabilities).not.toEqual(startedTelemetry);
+    expect(projected.telemetry_evidence_key).toBe(
+      runtimeTelemetryEvidenceKeyV3(changedTelemetry as unknown as RuntimeTelemetryCapabilitiesV3),
+    );
+  });
+
+  test("changes the comparison key when effective telemetry evidence differs", () => {
+    const started = eventV3Fixture("session.started", 1);
+    const telemetry = fixtureObject(fixtureObject(started.payload).runtime_attestation).telemetry;
+    const partial = structuredClone(telemetry);
+    fixtureObject(fixtureObject(partial).context_usage).completeness = "partial";
+    fixtureObject(fixtureObject(partial).context_usage).missing_reason =
+      "claude_context_limit_tokens_not_reported";
+
+    const key = runtimeTelemetryEvidenceKeyV3(
+      telemetry as unknown as RuntimeTelemetryCapabilitiesV3,
+    );
+    expect(
+      runtimeTelemetryEvidenceKeyV3(
+        structuredClone(telemetry) as unknown as RuntimeTelemetryCapabilitiesV3,
+      ),
+    ).toBe(key);
+    expect(
+      runtimeTelemetryEvidenceKeyV3(partial as unknown as RuntimeTelemetryCapabilitiesV3),
+    ).not.toBe(key);
   });
 
   test("refuses to project an incomplete ledger read", () => {
