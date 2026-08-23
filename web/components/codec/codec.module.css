@@ -721,6 +721,8 @@
 .codecPanel {
   --codec-accent: 34 211 238;
   --codec-accent-2: 59 130 246;
+  container-name: codec-card;
+  container-type: inline-size;
   position: relative;
   z-index: 2;
   display: grid;
@@ -1602,6 +1604,293 @@
 
 .actionTrailLive .actionIcon {
   border-color: rgb(var(--codec-accent) / 0.52);
+}
+
+/* Sparse desktop grids deliberately let cards consume the available stage.
+ * Scale their information density from the card itself, not the viewport, so
+ * a roomy two-card layout reads like a command display while 4-up grids and
+ * the separate mobile composition retain their compact proportions. */
+@container codec-card (min-width: 46rem) {
+  .portraitColumn {
+    padding: clamp(0.8rem, 1.15cqi, 1.1rem) 0 clamp(0.8rem, 1.15cqi, 1.1rem)
+      clamp(0.8rem, 1.15cqi, 1.1rem);
+  }
+
+  .panelBody {
+    padding: clamp(1.05rem, 1.65cqi, 1.55rem);
+  }
+
+  .panelName {
+    font-size: clamp(1.2rem, 2cqi, 1.75rem);
+  }
+
+  .panelBody [data-codec-task] {
+    font-size: clamp(0.8rem, 1.16cqi, 1rem);
+    line-height: 1.4;
+  }
+
+  .cardUtilities {
+    gap: clamp(0.55rem, 0.8cqi, 0.75rem);
+  }
+
+  .artifactFolderButton {
+    width: clamp(1.9rem, 2.65cqi, 2.4rem);
+    height: clamp(1.9rem, 2.65cqi, 2.4rem);
+    border-radius: clamp(0.45rem, 0.65cqi, 0.62rem);
+  }
+
+  .artifactFolderButton svg {
+    width: clamp(1rem, 1.35cqi, 1.25rem);
+    height: clamp(1rem, 1.35cqi, 1.25rem);
+  }
+
+  .runtimeStrip {
+    gap: clamp(0.3rem, 0.48cqi, 0.46rem);
+    margin-top: clamp(0.62rem, 0.9cqi, 0.84rem);
+  }
+
+  .runtimeField {
+    gap: clamp(0.08rem, 0.14cqi, 0.13rem);
+    padding: clamp(0.34rem, 0.55cqi, 0.5rem) clamp(0.36rem, 0.62cqi, 0.56rem);
+    border-radius: clamp(0.4rem, 0.58cqi, 0.55rem);
+  }
+
+  .runtimeLabel {
+    font-size: clamp(0.5rem, 0.68cqi, 0.63rem);
+  }
+
+  .runtimeValue {
+    font-size: clamp(0.58rem, 0.78cqi, 0.72rem);
+  }
+
+  .panelBody [data-codec-focus] {
+    margin-top: clamp(0.55rem, 0.8cqi, 0.75rem);
+    border-radius: clamp(1rem, 1.7cqi, 1.5rem);
+    padding: clamp(0.28rem, 0.48cqi, 0.44rem) clamp(0.7rem, 1.05cqi, 0.95rem);
+    font-size: clamp(0.8rem, 1.08cqi, 0.95rem);
+    line-height: 1.5;
+  }
+
+  .operationCue {
+    min-height: clamp(3.45rem, 5.2cqi, 4.6rem);
+    column-gap: clamp(0.6rem, 0.9cqi, 0.82rem);
+    margin-top: clamp(0.55rem, 0.8cqi, 0.75rem);
+    padding: clamp(0.5rem, 0.75cqi, 0.68rem) clamp(0.7rem, 1.05cqi, 0.95rem);
+    border-radius: clamp(0.45rem, 0.62cqi, 0.58rem);
+    font-size: clamp(0.8rem, 1.12cqi, 1rem);
+  }
+
+  .operationIcon {
+    width: clamp(0.95rem, 1.35cqi, 1.2rem);
+    height: clamp(0.95rem, 1.35cqi, 1.2rem);
+  }
+
+  .operationState {
+    font-size: clamp(0.69rem, 0.9cqi, 0.82rem);
+  }
+
+  .semanticRead {
+    margin-top: clamp(0.55rem, 0.8cqi, 0.75rem);
+    border-radius: clamp(0.45rem, 0.62cqi, 0.58rem);
+  }
+
+  .semanticSummaryLine {
+    gap: clamp(0.45rem, 0.7cqi, 0.64rem);
+    padding: clamp(0.46rem, 0.68cqi, 0.62rem) clamp(0.65rem, 0.95cqi, 0.88rem);
+  }
+
+  .semanticEyebrow {
+    font-size: clamp(0.65rem, 0.86cqi, 0.78rem);
+  }
+
+  .semanticPhase,
+  .semanticState {
+    padding: clamp(0.08rem, 0.14cqi, 0.13rem) clamp(0.34rem, 0.5cqi, 0.46rem);
+    font-size: clamp(0.54rem, 0.72cqi, 0.65rem);
+  }
+
+  .semanticBody {
+    gap: clamp(0.42rem, 0.62cqi, 0.58rem);
+    padding: clamp(0.42rem, 0.62cqi, 0.58rem) clamp(0.68rem, 1cqi, 0.92rem)
+      clamp(0.68rem, 1cqi, 0.92rem);
+  }
+
+  .semanticCopy,
+  .semanticDetail,
+  .semanticPrediction {
+    font-size: clamp(0.72rem, 0.96cqi, 0.88rem);
+  }
+
+  .semanticDetail span,
+  .semanticPrediction span,
+  .semanticTags,
+  .semanticReceipt {
+    font-size: clamp(0.57rem, 0.74cqi, 0.68rem);
+  }
+
+  .intentHistory {
+    margin-top: clamp(0.7rem, 0.95cqi, 0.88rem);
+    border-radius: clamp(0.55rem, 0.72cqi, 0.68rem);
+    padding: clamp(0.48rem, 0.68cqi, 0.64rem) clamp(0.58rem, 0.82cqi, 0.76rem);
+  }
+
+  .intentHistory ol {
+    gap: clamp(0.18rem, 0.28cqi, 0.26rem);
+  }
+
+  .intentLine,
+  .intentEmpty {
+    font-size: clamp(0.63rem, 0.84cqi, 0.76rem);
+    line-height: 1.42;
+  }
+
+  .statusRail {
+    gap: clamp(0.5rem, 0.7cqi, 0.65rem);
+    margin-top: clamp(0.9rem, 1.2cqi, 1.1rem);
+  }
+
+  .statusRail [data-slot="badge"] {
+    gap: clamp(0.25rem, 0.38cqi, 0.35rem);
+    padding: clamp(0.17rem, 0.26cqi, 0.24rem) clamp(0.42rem, 0.62cqi, 0.56rem);
+    font-size: clamp(0.68rem, 0.9cqi, 0.82rem);
+  }
+
+  .statusRail [data-slot="badge"] svg {
+    width: clamp(0.7rem, 0.92cqi, 0.84rem);
+    height: clamp(0.7rem, 0.92cqi, 0.84rem);
+  }
+
+  .actionTrail {
+    gap: clamp(0.5rem, 0.72cqi, 0.66rem);
+    margin-top: clamp(0.78rem, 1.05cqi, 0.96rem);
+  }
+
+  .actionIcon {
+    width: clamp(1.95rem, 2.75cqi, 2.5rem);
+    height: clamp(1.95rem, 2.75cqi, 2.5rem);
+    border-radius: clamp(0.48rem, 0.65cqi, 0.6rem);
+  }
+
+  .actionIcon svg {
+    width: clamp(0.95rem, 1.3cqi, 1.2rem);
+    height: clamp(0.95rem, 1.3cqi, 1.2rem);
+  }
+
+  .portraitReadout {
+    left: clamp(1rem, 1.5cqi, 1.4rem);
+    right: clamp(0.25rem, 0.5cqi, 0.45rem);
+    bottom: clamp(1rem, 1.45cqi, 1.35rem);
+    gap: clamp(0.2rem, 0.32cqi, 0.3rem) clamp(0.55rem, 0.8cqi, 0.72rem);
+    padding: clamp(0.45rem, 0.65cqi, 0.6rem) clamp(0.58rem, 0.84cqi, 0.78rem)
+      clamp(0.5rem, 0.72cqi, 0.68rem) clamp(0.72rem, 1cqi, 0.92rem);
+    font-size: clamp(0.55rem, 0.73cqi, 0.67rem);
+  }
+
+  .portraitReadoutHeader {
+    gap: clamp(0.32rem, 0.45cqi, 0.42rem);
+    padding-bottom: clamp(0.27rem, 0.4cqi, 0.37rem);
+  }
+
+  .portraitReadoutBeacon {
+    width: clamp(0.38rem, 0.52cqi, 0.48rem);
+    height: clamp(0.38rem, 0.52cqi, 0.48rem);
+  }
+
+  .portraitReadoutKicker,
+  .portraitReadoutPresence {
+    font-size: clamp(0.45rem, 0.59cqi, 0.54rem);
+  }
+
+  .portraitReadoutExpression {
+    font-size: clamp(0.7rem, 0.94cqi, 0.86rem);
+  }
+
+  .portraitReadoutActivityLabel {
+    font-size: clamp(0.42rem, 0.54cqi, 0.5rem);
+  }
+
+  .portraitReadoutActivityValue {
+    font-size: clamp(0.52rem, 0.68cqi, 0.62rem);
+  }
+
+  .portraitReadoutMeter {
+    height: clamp(0.8rem, 1.08cqi, 1rem);
+    gap: clamp(0.12rem, 0.17cqi, 0.16rem);
+  }
+
+  .portraitReadoutMeter i {
+    width: clamp(0.16rem, 0.23cqi, 0.21rem);
+  }
+}
+
+@container codec-card (min-width: 58rem) {
+  .panelBody {
+    padding: 1.55rem;
+  }
+
+  .panelName {
+    font-size: 1.75rem;
+  }
+
+  .panelBody [data-codec-task] {
+    font-size: 1rem;
+  }
+
+  .runtimeField {
+    padding: 0.5rem 0.56rem;
+  }
+
+  .runtimeLabel {
+    font-size: 0.63rem;
+  }
+
+  .runtimeValue {
+    font-size: 0.72rem;
+  }
+
+  .panelBody [data-codec-focus] {
+    font-size: 0.95rem;
+  }
+
+  .operationCue {
+    min-height: 4.6rem;
+    font-size: 1rem;
+  }
+
+  .operationState {
+    font-size: 0.82rem;
+  }
+
+  .intentLine,
+  .intentEmpty {
+    font-size: 0.76rem;
+  }
+
+  .statusRail [data-slot="badge"] {
+    font-size: 0.82rem;
+  }
+
+  .actionIcon {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+
+  .portraitReadoutKicker,
+  .portraitReadoutPresence {
+    font-size: 0.54rem;
+  }
+
+  .portraitReadoutExpression {
+    font-size: 0.86rem;
+  }
+
+  .portraitReadoutActivityLabel {
+    font-size: 0.5rem;
+  }
+
+  .portraitReadoutActivityValue {
+    font-size: 0.62rem;
+  }
 }
 
 .flexibleBadge {
