@@ -1,0 +1,79 @@
+---
+title: "0099: Batch tool events at hook boundaries"
+description: "ADR: keep every tool event durable in the V3 ready WAL immediately, but publish tool batches to the active ledger at the next non-tool hook boundary."
+---
+
+**Status:** accepted (2026-08-22) · **Scope:** product tier (`core/hooks`, `core/events/v3`)
+
+## Context
+
+Every V3 hook signal first enters a crash-recoverable intake spool and each
+canonical event then enters the durable ready write-ahead log (WAL). The writer
+previously continued through the global append lease, active-ledger append,
+commit receipt, and ready-row cleanup during every tool request and terminal
+hook. Tool-heavy turns therefore paid the global lease cost once per hook even
+though the next hook could publish the same causal event batch.
+
+The ledger's recorded harness duration cannot evaluate this cost: the hook
+snapshots that field before V3 recording begins. A matched experiment must time
+the complete hook processes instead. It must also alternate baseline and
+treatment order because process startup, filesystem caches, and concurrent host
+load can move during a long run.
+
+## Alternatives
+
+**Keep immediate active-ledger publication for every tool hook.** Rejected
+because the ready WAL already provides per-event crash durability. Reacquiring
+the global append lease for each adjacent tool boundary adds work without
+strengthening that guarantee.
+
+**Delay intake or ready-WAL durability.** Rejected because a hook process can
+exit or be killed before another boundary arrives. A delivered signal must be
+recoverable before the adapter continues.
+
+**Run a background flusher.** Rejected because hook processes are short-lived,
+and a daemon would add lifecycle, ownership, and shutdown failure modes. The
+existing non-tool hooks and reconciler already provide deterministic drain
+boundaries.
+
+**Batch active-ledger writes and receipt cleanup inside one drain.** Deferred.
+That could remove more per-row filesystem calls, but it changes the committed
+prefix and crash-recovery contract inside the drain itself. It needs a separate
+fault-injection experiment and is not required for this improvement.
+
+## Decision
+
+Tool request, success, and failure hooks publish their canonical events to the
+durable ready WAL, then return without acquiring the global active-ledger append
+lease. Cursor's shell-hook aliases follow the same rule. The next non-tool hook,
+including Stop, session end, session start, or user-prompt submit, drains every
+causally ready row under the existing lease and receipt protocol. Reconciliation
+continues to recover a final ready row when no later hook arrives.
+
+Canonical active-ledger readers therefore observe tool evidence at a hook
+boundary instead of after each individual tool hook. The best-effort live intent
+overlay remains immediate for operator display, but it is not authority. The
+ready WAL is the durable authority until the batch reaches the active ledger.
+
+`HARNERY_EXPERIMENT_DEFER_V3_DRAIN=0` forces the immediate baseline and `1`
+forces deferral for matched internal tests. With no override, only tool
+lifecycle hooks defer.
+
+The acceptance gate measures at least 20 counterbalanced pairs through the real
+`agent-hook` executable. It requires a paired median complete-process reduction
+of at least 5%, a faster treatment in at least 75% of pairs, no greater than 5%
+p90 or fixture-wall regression, and identical quality evidence.
+
+## Result
+
+Twenty counterbalanced pairs drove 1,120 hook subprocesses. Median paired
+complete hook-process time improved 9.23%, treatment was faster in 17 of 20
+pairs, p90 improved 11.46%, and total fixture wall improved 9.04%. All 40 runs
+produced the same 30-event inventory: 12 tool requests, 12 matching terminals,
+one completed turn, zero ledger diagnostics, and zero ready rows after the
+boundary drain.
+
+Focused regression tests prove that deferred tool events are absent from the
+active ledger while present in the ready WAL, then appear in causal order when
+a non-tool hook drains the batch. Existing writer tests retain coverage for
+causal ordering, cycles, and later recovery from ready rows.

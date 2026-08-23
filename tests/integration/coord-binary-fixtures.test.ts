@@ -1,12 +1,21 @@
 /** End-to-end binary smoke tests for the universal V3 hook path. */
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
+import { eventV3Paths } from "../../src/core/events/v3/writer.ts";
 
 const HARNERY_DIR = resolve(import.meta.dir, "../..");
 const AGENT_HOOK = join(HARNERY_DIR, "bin", "agent-hook");
@@ -42,6 +51,17 @@ describe("agent-hook universal V3 binary path", () => {
       tool_response: "PRIVATE_TOOL_OUTPUT",
     });
 
+    const beforeBoundary = readLedgerV3(root).events.map(({ event }) => event.event_type);
+    expect(beforeBoundary).not.toContain("tool.requested");
+    expect(beforeBoundary).not.toContain("tool.completed");
+    expect(
+      readdirSync(eventV3Paths(root).spool).filter((name) => name.endsWith(".ready")),
+    ).toHaveLength(2);
+
+    run(root, "session-end", "claude-code", {
+      session_id: session,
+      reason: "fixture complete",
+    });
     const eventTypes = readLedgerV3(root).events.map(({ event }) => event.event_type);
     expect(eventTypes).toContain("session.started");
     expect(eventTypes).toContain("turn.started");

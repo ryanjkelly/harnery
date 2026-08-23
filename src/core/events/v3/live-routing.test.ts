@@ -1,26 +1,27 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "./capabilities.ts";
+import type { EventV3 } from "./contract.ts";
 import {
   buildCandidateGenesisManifestV3,
   type CandidateProfileV3,
   EVENT_V3_GENESIS_MANIFEST,
 } from "./control.ts";
+import { readCoordinationViewV3 } from "./coordination-view.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "./fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import {
   hookSignalV3,
   liveEventV3BuildId,
+  liveHookSignalDefersDrainV3,
   liveInstanceIdV3,
   recordLiveDelegatedChildSessionV3,
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "./live-routing.ts";
-import { readCoordinationViewV3 } from "./coordination-view.ts";
-import type { EventV3 } from "./contract.ts";
 import { readLedgerV3 } from "./reader.ts";
 import { eventV3Paths } from "./writer.ts";
 
@@ -34,6 +35,19 @@ describe("live V3 ledger routing", () => {
   test("maps Cursor shell fallbacks onto canonical tool signals", () => {
     expect(hookSignalV3("before-shell-execution")).toBe("pre-tool-use");
     expect(hookSignalV3("after-shell-execution")).toBe("post-tool-use");
+  });
+
+  test("defers only tool lifecycle hooks to the next ledger boundary", () => {
+    expect(liveHookSignalDefersDrainV3("pre-tool-use")).toBeTrue();
+    expect(liveHookSignalDefersDrainV3("post-tool-use")).toBeTrue();
+    expect(liveHookSignalDefersDrainV3("post-tool-use-failure")).toBeTrue();
+    expect(liveHookSignalDefersDrainV3("before-shell-execution")).toBeTrue();
+    expect(liveHookSignalDefersDrainV3("after-shell-execution")).toBeTrue();
+    expect(liveHookSignalDefersDrainV3("user-prompt-submit")).toBeFalse();
+    expect(liveHookSignalDefersDrainV3("stop")).toBeFalse();
+    expect(liveHookSignalDefersDrainV3("session-end")).toBeFalse();
+    expect(liveHookSignalDefersDrainV3("stop", "1")).toBeTrue();
+    expect(liveHookSignalDefersDrainV3("pre-tool-use", "0")).toBeFalse();
   });
 
   test("blocks an uninitialized root", () => {
@@ -77,6 +91,87 @@ describe("live V3 ledger routing", () => {
         .every(({ event }) => event.time.monotonic_ns === undefined),
     ).toBeTrue();
     expect(liveInstanceIdV3("agent-Helene")).toBe("inst_agent-Helene");
+  });
+
+  test("keeps deferred tool events durable until a non-tool hook publishes the batch", () => {
+    const root = candidateRoot("codex");
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    const sessionId = "batched-tool-session";
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "session-start",
+        payload: { session_id: sessionId, raw: {} },
+        adapter: "codex",
+        instanceId: sessionId,
+      }).state,
+    ).toBe("recorded");
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "user-prompt-submit",
+        payload: { session_id: sessionId, prompt: "read fixture", raw: {} },
+        adapter: "codex",
+        instanceId: sessionId,
+      }).state,
+    ).toBe("recorded");
+
+    const toolPayload = {
+      session_id: sessionId,
+      tool_name: "Read",
+      tool_use_id: "batched-read",
+      tool_input: { file_path: "fixture.txt" },
+      raw: {},
+    };
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "pre-tool-use",
+        payload: toolPayload,
+        adapter: "codex",
+        instanceId: sessionId,
+        defer_drain: true,
+      }).state,
+    ).toBe("recorded");
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "post-tool-use",
+        payload: { ...toolPayload, tool_response: "fixture line" },
+        adapter: "codex",
+        instanceId: sessionId,
+        defer_drain: true,
+      }).state,
+    ).toBe("recorded");
+
+    expect(
+      readLedgerV3(root).events.some(({ event }) => event.event_type.startsWith("tool.")),
+    ).toBeFalse();
+    expect(
+      readdirSync(eventV3Paths(root).spool).filter((name) => name.endsWith(".ready")),
+    ).toHaveLength(2);
+
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "stop",
+        payload: { session_id: sessionId, raw: {} },
+        adapter: "codex",
+        instanceId: sessionId,
+      }).state,
+    ).toBe("recorded");
+    const eventTypes = readLedgerV3(root).events.map(({ event }) => event.event_type);
+    expect(eventTypes.filter((eventType) => eventType === "tool.requested")).toHaveLength(1);
+    expect(eventTypes.filter((eventType) => eventType === "tool.completed")).toHaveLength(1);
+    expect(
+      readdirSync(eventV3Paths(root).spool).filter((name) => name.endsWith(".ready")),
+    ).toHaveLength(0);
   });
 
   test("refuses an unsupported Cursor signal", () => {
@@ -188,9 +283,8 @@ describe("live V3 ledger routing", () => {
     );
     expect(starts).toHaveLength(2);
     expect(childStart?.links).toMatchObject({
-      parent_generation_id: (
-        nativeStart.event.links as { parent_generation_id?: `gen_${string}` }
-      ).parent_generation_id,
+      parent_generation_id: (nativeStart.event.links as { parent_generation_id?: `gen_${string}` })
+        .parent_generation_id,
       delegation_id: nativeStart.event.payload.delegation_id,
     });
     expect(childTool?.scope).toMatchObject({

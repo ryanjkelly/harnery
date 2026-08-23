@@ -2,4 +2,4 @@
 "harnery": patch
 ---
 
-Add an opt-in deferred V3 WAL drain path for matched harness experiments while keeping production writers on immediate draining by default.
+Batch tool lifecycle events in the durable V3 ready WAL and publish them to the active ledger at the next non-tool hook boundary. An internal override keeps immediate and deferred modes available for matched performance tests.

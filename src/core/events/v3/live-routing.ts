@@ -85,6 +85,20 @@ export function hookSignalV3(eventName: string): HookSignalV3 | undefined {
   }
 }
 
+/**
+ * Tool lifecycle hooks may stop after publishing their event to the durable
+ * ready WAL. The next non-tool hook drains the causal batch into the active
+ * ledger, avoiding one global append-lease cycle for every tool boundary.
+ */
+export function liveHookSignalDefersDrainV3(eventName: string, override?: string): boolean {
+  if (override === "1") return true;
+  if (override === "0") return false;
+  const signal = hookSignalV3(eventName);
+  return (
+    signal === "pre-tool-use" || signal === "post-tool-use" || signal === "post-tool-use-failure"
+  );
+}
+
 export function recordLiveHookSignalV3(input: {
   coordRoot: string;
   route: Extract<LiveEventLedgerRouteV3, { state: "v3" }>;
@@ -163,9 +177,8 @@ export function recordLiveDelegatedChildSessionV3(input: {
 }): RecordHookSignalV3Result | { state: "ignored" } {
   const nativeChild = input.payload.subagent_id ?? input.payload.agent_id;
   if (!nativeChild) return { state: "ignored" };
-  const parentGeneration = (
-    input.parentEvent.links as { parent_generation_id?: `gen_${string}` }
-  ).parent_generation_id;
+  const parentGeneration = (input.parentEvent.links as { parent_generation_id?: `gen_${string}` })
+    .parent_generation_id;
   if (!parentGeneration) return { state: "ignored" };
   const nativeParent = input.payload.session_id ?? input.payload.conversation_id;
   const childPayload: ParsedPayload = {
@@ -179,9 +192,7 @@ export function recordLiveDelegatedChildSessionV3(input: {
       session_id: nativeChild,
       agent_id: nativeChild,
       ...(nativeParent ? { parent_session_id: nativeParent } : {}),
-      ...(input.payload.raw.agent_type
-        ? { agent_type: input.payload.raw.agent_type }
-        : {}),
+      ...(input.payload.raw.agent_type ? { agent_type: input.payload.raw.agent_type } : {}),
     },
   };
   const started = recordHookSignalV3({

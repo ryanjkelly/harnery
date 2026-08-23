@@ -58,6 +58,7 @@ import {
 } from "../context/index.ts";
 import { tryWriteLiveDisplayV3 } from "../events/v3/live-feed.ts";
 import {
+  liveHookSignalDefersDrainV3,
   recordLiveDelegatedChildSessionV3,
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
@@ -716,6 +717,10 @@ async function main(): Promise<number> {
     }
   }
 
+  const deferV3Drain = liveHookSignalDefersDrainV3(
+    eventName,
+    coordEnv("EXPERIMENT_DEFER_V3_DRAIN"),
+  );
   const v3Result = recordLiveHookSignalV3({
     coordRoot,
     route: ledgerRoute,
@@ -738,7 +743,7 @@ async function main(): Promise<number> {
     monotonic_ns: hookClock.monotonic_ns,
     ...(stopRemediation ? { stop_remediation: true } : {}),
     ...(turnRitual ? { turn_ritual: turnRitual } : {}),
-    ...(coordEnv("EXPERIMENT_DEFER_V3_DRAIN") === "1" ? { defer_drain: true } : {}),
+    ...(deferV3Drain ? { defer_drain: true } : {}),
   });
   const v3EventId =
     v3Result && "event" in v3Result
