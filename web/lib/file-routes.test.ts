@@ -22,6 +22,7 @@ import { GET as metaGET } from "../app/api/file/meta/route.ts";
 import { GET as rawGET, HEAD as rawHEAD } from "../app/api/file/route.ts";
 import { GET as textGET } from "../app/api/file/text/route.ts";
 import { GET as imageGET } from "../app/api/image/[hash]/route.ts";
+import { GET as renderTreeGET } from "../app/files/render/[...path]/route.ts";
 import { __resetCoordRootCache } from "./coord-reader.ts";
 import { parseRange } from "./file-routes.ts";
 import { __resetFilesCaches, TEXT_ENDPOINT_MAX_BYTES, TEXT_ENDPOINT_MAX_LINES } from "./files.ts";
@@ -53,7 +54,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // biome-ignore lint/performance/noDelete: restoring env to truly-unset, not "" (a test-only teardown)
   if (envBefore === undefined) delete process.env.HARNERY_COORD_ROOT;
   else process.env.HARNERY_COORD_ROOT = envBefore;
   __resetCoordRootCache();
@@ -77,6 +77,14 @@ function req(
   const headers = { ...extra.headers };
   if (extra.host) headers.host = extra.host;
   return new Request(u, { headers });
+}
+
+function renderTreeReq(relPath: string): [Request, { params: Promise<{ path: string[] }> }] {
+  const segments = relPath.split("/");
+  return [
+    new Request(`http://localhost/files/render/${segments.map(encodeURIComponent).join("/")}`),
+    { params: Promise.resolve({ path: segments }) },
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -169,14 +177,13 @@ describe("GET /api/file", () => {
     expect(cd).not.toContain("/");
   });
 
-  test("?render=1 serves .html as text/html under CSP sandbox", async () => {
+  test("?render=1 redirects HTML to the path-shaped sandboxed tree", () => {
     w("docs/page.html", "<!doctype html><title>Hi</title><h1>Hi</h1>");
     const res = rawGET(req("docs/page.html", { render: true }));
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(res.headers.get("content-security-policy")).toBe("sandbox");
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/files/render/docs/page.html");
+    expect(res.headers.get("cache-control")).toBe("no-store");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(await res.text()).toContain("<h1>Hi</h1>");
   });
 
   test("?render=1 without the flag leaves html as text/plain", () => {
@@ -278,6 +285,38 @@ describe("GET /api/file", () => {
     const r2 = rawGET(req("docs/v.md", { headers: { range: "bytes=0-5" } }));
     expect(await r1.text()).toBe("versio");
     expect(await r2.text()).toBe("VERSIO");
+  });
+});
+
+describe("GET /files/render/[...path]", () => {
+  test("serves a sandboxed path-shaped HTML tree with safe asset MIME", async () => {
+    w(
+      "docs/page.html",
+      '<!doctype html><link rel="stylesheet" href="page/site.css"><img src="page/pixel.webp"><script src="page/app.js"></script>',
+    );
+    w("docs/page/site.css", "body { background: #fff; }");
+    w("docs/page/pixel.webp", Buffer.from("webp-bytes"));
+    w("docs/page/app.js", "window.__unsafe = true;");
+
+    const html = await renderTreeGET(...renderTreeReq("docs/page.html"));
+    expect(html.status).toBe(200);
+    expect(html.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(html.headers.get("content-security-policy")).toBe("sandbox");
+    expect(html.headers.get("access-control-allow-origin")).toBe("*");
+
+    const css = await renderTreeGET(...renderTreeReq("docs/page/site.css"));
+    expect(css.status).toBe(200);
+    expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
+
+    const image = await renderTreeGET(...renderTreeReq("docs/page/pixel.webp"));
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/webp");
+    expect(await image.text()).toBe("webp-bytes");
+
+    const script = await renderTreeGET(...renderTreeReq("docs/page/app.js"));
+    expect(script.status).toBe(200);
+    expect(script.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(script.headers.get("x-content-type-options")).toBe("nosniff");
   });
 });
 

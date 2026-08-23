@@ -238,7 +238,20 @@ export function navigableMimeFor(category: FileCategory, ext: string): string {
   if (e === "css") return "text/css; charset=utf-8";
   if (e === "js" || e === "mjs" || e === "cjs") return "text/javascript; charset=utf-8";
   if (e === "wasm") return "application/wasm";
+  if (e === "woff") return "font/woff";
+  if (e === "woff2") return "font/woff2";
+  if (e === "ttf") return "font/ttf";
+  if (e === "otf") return "font/otf";
   return mimeFor(category, e);
+}
+
+/** Browser-correct MIME for the path-shaped sandboxed render tree. JavaScript
+ * deliberately stays text/plain + nosniff: the route lives on the dashboard
+ * origin, so it must never become an arbitrary same-origin script endpoint. */
+export function sandboxedTreeMimeFor(category: FileCategory, ext: string): string {
+  const e = ext.toLowerCase();
+  if (e === "js" || e === "mjs" || e === "cjs") return "text/plain; charset=utf-8";
+  return navigableMimeFor(category, e);
 }
 
 // ---------------------------------------------------------------------------

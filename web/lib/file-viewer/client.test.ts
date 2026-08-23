@@ -60,10 +60,9 @@ describe("files origin helpers", () => {
 });
 
 describe("sandboxedRenderUrl", () => {
-  test("uses the current origin API route so remote tunnels keep working", () => {
-    expect(sandboxedRenderUrl("docs/a plan.html")).toBe(
-      "/api/file?path=docs%2Fa%20plan.html&render=1",
-    );
+  test("uses a path-shaped current-origin route so relative assets and tunnels work", () => {
+    expect(sandboxedRenderUrl("docs/a plan.html")).toBe("/files/render/docs/a%20plan.html");
+    expect(sandboxedRenderUrl("/docs/a#b?.html")).toBe("/files/render/docs/a%23b%3F.html");
   });
 });
 

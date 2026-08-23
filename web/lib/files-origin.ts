@@ -19,17 +19,28 @@ export function isFilesOriginHost(hostHeader: string | null | undefined): boolea
   return host === FILES_ORIGIN_HOST;
 }
 
+function encodedRepoPath(relPath: string): string {
+  return relPath
+    .replace(/^\/+/, "")
+    .split("/")
+    .filter(Boolean)
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+}
+
+/** Current-origin path for an inert full-tab HTML document and its relative
+ * assets. The path shape is load-bearing: browser URL resolution keeps every
+ * relative request beside the source document. */
+export function sandboxedRenderPath(relPath: string): string {
+  return `/files/render/${encodedRepoPath(relPath)}`;
+}
+
 /**
  * Absolute URL for a repo-relative path on the files origin. Path segments are
  * encoded so relative asset URLs inside HTML resolve on the same host.
  */
 export function filesOriginUrl(relPath: string): string {
-  const clean = relPath.replace(/^\/+/, "");
-  const encoded = clean
-    .split("/")
-    .filter(Boolean)
-    .map((seg) => encodeURIComponent(seg))
-    .join("/");
+  const encoded = encodedRepoPath(relPath);
   if (typeof window !== "undefined") {
     const port = window.location.port;
     const portPart = port ? `:${port}` : "";

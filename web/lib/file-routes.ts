@@ -2,8 +2,9 @@
  * Route logic for the universal-file-viewer API surface:
  *
  *   GET /api/file?path=<rel>           raw bytes (Range/206, ETag/304, ?download=)
- *   GET /api/file?path=<rel>&render=1  HTML only on the dashboard origin: text/html +
- *                                      CSP sandbox (no scripts; unique opaque origin)
+ *   GET /api/file?path=<rel>&render=1  Redirect to the path-shaped sandboxed tree
+ *   GET /files/render/<rel>            Path-shaped sandboxed tree: rendered HTML plus
+ *                                      relative images/CSS/fonts/media under one base URL
  *   Host harnery-files.localhost/…     same /api/file handler via middleware rewrite:
  *                                      navigable MIME, no CSP sandbox (scripts OK;
  *                                      isolated from localhost cookies)
@@ -25,12 +26,13 @@ import {
   type ResolvedFile,
   type ResolveReject,
   resolveFile,
+  sandboxedTreeMimeFor,
   scanChunk,
   TEXT_ENDPOINT_MAX_BYTES,
   TEXT_ENDPOINT_MAX_LINES,
   TEXT_INLINE_CAP_BYTES,
 } from "./files";
-import { FILES_ORIGIN_HEADER, isFilesOriginHost } from "./files-origin";
+import { FILES_ORIGIN_HEADER, isFilesOriginHost, sandboxedRenderPath } from "./files-origin";
 
 /** Cap the archive bytes read into memory for listing (zip-bomb / OOM guard). */
 const ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
@@ -72,7 +74,7 @@ function etagFor(f: ResolvedFile): string {
 
 function baseHeaders(
   f: ResolvedFile,
-  opts: { filesOrigin?: boolean } = {},
+  opts: { filesOrigin?: boolean; renderTree?: boolean } = {},
 ): Record<string, string> {
   const headers: Record<string, string> = {
     "content-type": f.mime,
@@ -87,6 +89,15 @@ function baseHeaders(
     const ext = f.relPath.includes(".") ? (f.relPath.split(".").pop() ?? "") : "";
     headers["content-type"] = navigableMimeFor(f.category, ext);
     return headers;
+  }
+  if (opts.renderTree) {
+    // A path-shaped URL lets relative assets resolve beside the HTML file.
+    // Correct MIME keeps styles/fonts/media usable; JavaScript stays
+    // text/plain through sandboxedTreeMimeFor so this dashboard-origin route
+    // can never become a same-origin script source.
+    const ext = f.relPath.includes(".") ? (f.relPath.split(".").pop() ?? "") : "";
+    headers["content-type"] = sandboxedTreeMimeFor(f.category, ext);
+    headers["access-control-allow-origin"] = "*";
   }
   // CSP sandbox: a directly-navigated response gets a unique origin with
   // scripts disabled, the svg/html escape hatch ("never become
@@ -181,15 +192,20 @@ export function parseRange(header: string | null, size: number): RangeParse {
 // GET /api/file: raw bytes
 // ---------------------------------------------------------------------------
 
-export function serveRawFile(req: Request, opts: { headOnly?: boolean } = {}): Response {
+export function serveRawFile(
+  req: Request,
+  opts: { headOnly?: boolean; pathOverride?: string; renderTree?: boolean } = {},
+): Response {
   const url = new URL(req.url);
   // Files-origin middleware sets x-harnery-files-path (Host-gated). Query
   // ?path= remains the dashboard / embed path. Never accept the header on a
   // non-files Host — that would let a client smuggle a path past the URL.
   const filesOrigin = isFilesOriginHost(req.headers.get("host"));
-  const pathParam = filesOrigin
-    ? (req.headers.get(FILES_ORIGIN_HEADER) ?? url.searchParams.get("path"))
-    : url.searchParams.get("path");
+  const pathParam =
+    opts.pathOverride ??
+    (filesOrigin
+      ? (req.headers.get(FILES_ORIGIN_HEADER) ?? url.searchParams.get("path"))
+      : url.searchParams.get("path"));
   if (!pathParam) return missingPathResponse();
   const r = resolveFile(pathParam);
   if (!r.ok) return fileErrorResponse(r);
@@ -213,14 +229,16 @@ function serveRawResolved(
   req: Request,
   url: URL,
   r: ResolvedFile,
-  opts: { headOnly?: boolean },
+  opts: { headOnly?: boolean; renderTree?: boolean },
 ): Response {
   // Host is authoritative: never trust a ?filesOrigin= query (that would let
   // dashboard-origin callers opt into navigable HTML/JS and XSS themselves).
   const filesOrigin = isFilesOriginHost(req.headers.get("host"));
-  const headers = baseHeaders(r, { filesOrigin });
+  const headers = baseHeaders(r, { filesOrigin, renderTree: opts.renderTree });
   const download = url.searchParams.get("download");
-  const wantRender = !filesOrigin && url.searchParams.get("render") === "1";
+  const wantRender =
+    !filesOrigin &&
+    (opts.renderTree ? isRenderableHtmlPath(r.relPath) : url.searchParams.get("render") === "1");
 
   // Opt-in browser document for self-contained HTML on the dashboard origin.
   // Default stays text/plain so a bare /api/file link can never become a
@@ -239,6 +257,17 @@ function serveRawResolved(
           headers: { "x-content-type-options": NOSNIFF, "cache-control": "no-store" },
         },
       );
+    }
+    if (!opts.renderTree) {
+      closeSync(r.fd);
+      return new Response(null, {
+        status: 307,
+        headers: {
+          "cache-control": "no-store",
+          location: sandboxedRenderPath(r.relPath),
+          "x-content-type-options": NOSNIFF,
+        },
+      });
     }
     headers["content-type"] = "text/html; charset=utf-8";
   }
