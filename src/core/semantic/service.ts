@@ -28,7 +28,12 @@ import {
   type SemanticServiceStatus,
   type SemanticServiceStatusRecord,
 } from "./service-status.ts";
-import { readSemanticManifest, semanticPaths, writeSemanticManifest } from "./storage.ts";
+import {
+  listSemanticAgentDocuments,
+  readSemanticManifest,
+  semanticPaths,
+  writeSemanticManifest,
+} from "./storage.ts";
 
 export {
   readSemanticServiceStatus,
@@ -218,8 +223,14 @@ export async function runSemanticServiceDaemon(
           dirtySince ??= sweepAt.getTime();
         }
         const hasPending = (before?.pending.length ?? 0) > 0;
+        const hasEligibleDeferred = listSemanticAgentDocuments(coordRoot).some(
+          (document) =>
+            document.reader_outcome === "deferred" &&
+            Date.parse(document.receipt.eligible_after) <= sweepAt.getTime(),
+        );
         if (
           hasPending ||
+          hasEligibleDeferred ||
           (dirtySince !== undefined && sweepAt.getTime() - dirtySince >= debounceMs)
         ) {
           const report = await runOnce({
