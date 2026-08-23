@@ -18,7 +18,9 @@ import { basename, join, resolve } from "node:path";
 import type { Adapter } from "../../../adapter.ts";
 import { extractBashCommand, type ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import {
+  discoverCodexSessionTranscript,
   type RuntimeContextTelemetry,
+  type RuntimeTelemetryOptions,
   readRuntimeContextTelemetry,
   readRuntimeTuning,
 } from "../../../hooks/adapter/runtime-telemetry.ts";
@@ -199,6 +201,8 @@ export interface HookProducerStateV3 {
   turn_ordinal: number;
   pending?: PendingEventV3;
   pending_runtime_contexts?: PendingRuntimeContextV3[];
+  /** Verified adapter-native transcript path retained only in owner-only state. */
+  runtime_transcript_path?: string;
   /** Tuning carried by the current attestation; {} means attested-none.
    * Absent on pre-upgrade state files, which seed silently on first sight. */
   last_attested_tuning?: { effort?: string; speed?: string };
@@ -246,6 +250,8 @@ export interface RecordHookSignalV3Input {
     delegation_id: `del_${string}`;
     caused_by_event_id: `evt_${string}`;
   };
+  /** Optional roots and read budgets for runtime telemetry adapters. */
+  runtimeTelemetryOptions?: RuntimeTelemetryOptions;
   writerOptions?: WriteEventV3Options;
 }
 
@@ -1787,7 +1793,9 @@ function queuePendingRuntimeContext(
     ...target,
     native_session_id: nativeSessionId,
     native_turn_id: nativeTurnId,
-    ...(input.payload.transcript_path ? { transcript_path: input.payload.transcript_path } : {}),
+    ...((input.payload.transcript_path ?? state.runtime_transcript_path)
+      ? { transcript_path: input.payload.transcript_path ?? state.runtime_transcript_path }
+      : {}),
     ...(input.adapterVersion ? { runtime_version: input.adapterVersion } : {}),
     attempts: 0,
   };
@@ -1809,13 +1817,16 @@ function reconcilePendingRuntimeContexts(
 ): void {
   if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) return;
   for (const pending of [...state.pending_runtime_contexts]) {
-    const runtime = readRuntimeContextTelemetry({
-      adapter: "codex",
-      session_id: pending.native_session_id,
-      turn_id: pending.native_turn_id,
-      transcript_path: pending.transcript_path,
-      mode: "turn",
-    });
+    const runtime = readRuntimeContextTelemetry(
+      {
+        adapter: "codex",
+        session_id: pending.native_session_id,
+        turn_id: pending.native_turn_id,
+        transcript_path: pending.transcript_path,
+        mode: "turn",
+      },
+      input.runtimeTelemetryOptions,
+    );
     if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
     const queue = state.pending_runtime_contexts;
     if (!queue) break;
@@ -1916,13 +1927,16 @@ function turnTelemetryForTerminal(
   const native = extractTurnTelemetryV3(input.adapter, input.payload.raw, observedAt);
   if (native.context.state === "observed" || input.adapter === "cursor") return native;
 
-  const runtime = readRuntimeContextTelemetry({
-    adapter: input.adapter,
-    session_id: input.payload.session_id ?? input.payload.conversation_id,
-    turn_id: input.payload.turn_id ?? state.current_native_turn_id,
-    transcript_path: input.payload.transcript_path,
-    mode: "turn",
-  });
+  const runtime = readRuntimeContextTelemetry(
+    {
+      adapter: input.adapter,
+      session_id: input.payload.session_id ?? input.payload.conversation_id,
+      turn_id: input.payload.turn_id ?? state.current_native_turn_id,
+      transcript_path: runtimeTranscriptPath(input, state),
+      mode: "turn",
+    },
+    input.runtimeTelemetryOptions,
+  );
   if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
   if (runtime.state === "unsupported") return native;
   return {
@@ -1937,6 +1951,50 @@ function turnTelemetryForTerminal(
       confidence: runtime.state === "observed" ? "exact" : "high",
     },
   };
+}
+
+/**
+ * Resolve Codex's rollout once, retain it in owner-only producer state, and
+ * verify the cached path against the native session before every reuse. Public
+ * events receive only numeric telemetry and an opaque source witness.
+ */
+function runtimeTranscriptPath(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+): string | undefined {
+  if (input.adapter !== "codex") return input.payload.transcript_path;
+  const nativeSessionId = input.payload.session_id ?? input.payload.conversation_id;
+  if (!nativeSessionId) return input.payload.transcript_path;
+
+  const supplied = input.payload.transcript_path;
+  if (supplied) {
+    const verified = discoverCodexSessionTranscript(
+      nativeSessionId,
+      supplied,
+      input.runtimeTelemetryOptions,
+    );
+    if (verified) state.runtime_transcript_path = verified;
+    // Preserve a supplied mismatch so the typed reader reports it honestly.
+    return verified ?? supplied;
+  }
+
+  if (state.runtime_transcript_path) {
+    const verified = discoverCodexSessionTranscript(
+      nativeSessionId,
+      state.runtime_transcript_path,
+      input.runtimeTelemetryOptions,
+    );
+    if (verified) return verified;
+    state.runtime_transcript_path = undefined;
+  }
+
+  const discovered = discoverCodexSessionTranscript(
+    nativeSessionId,
+    undefined,
+    input.runtimeTelemetryOptions,
+  );
+  if (discovered) state.runtime_transcript_path = discovered;
+  return discovered;
 }
 
 function runtimeContextObservation(
@@ -2027,11 +2085,14 @@ function maybeAttestTuningChange(
         state.tuning_probe_turn_id !== state.current_turn_id))
   ) {
     if (input.signal === "post-tool-use") state.tuning_probe_turn_id = state.current_turn_id;
-    const runtime = readRuntimeTuning({
-      adapter: "codex",
-      session_id: input.payload.session_id ?? input.payload.conversation_id,
-      transcript_path: input.payload.transcript_path,
-    });
+    const runtime = readRuntimeTuning(
+      {
+        adapter: "codex",
+        session_id: input.payload.session_id ?? input.payload.conversation_id,
+        transcript_path: runtimeTranscriptPath(input, state),
+      },
+      input.runtimeTelemetryOptions,
+    );
     if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
     if (runtime.state !== "observed") return;
     candidate = {
@@ -3345,6 +3406,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "next_sequence",
     "pending",
     "pending_runtime_contexts",
+    "runtime_transcript_path",
     "privacy_epoch_id",
     "session_id",
     "session_span",
@@ -3450,6 +3512,11 @@ function readProducerState(path: string): HookProducerStateV3 {
         state.pending_runtime_contexts.length === 0 ||
         state.pending_runtime_contexts.length > PENDING_RUNTIME_CONTEXT_CAP ||
         state.pending_runtime_contexts.some((pending) => !validPendingRuntimeContext(pending)))) ||
+    (state.runtime_transcript_path !== undefined &&
+      (typeof state.runtime_transcript_path !== "string" ||
+        state.runtime_transcript_path.length === 0 ||
+        state.runtime_transcript_path.length > 4096 ||
+        state.runtime_transcript_path.includes("\0"))) ||
     (state.pending?.source_id !== undefined &&
       !/^hid_[a-f0-9]{64}$/.test(state.pending.source_id)) ||
     (state.pending && !validateEventV3(state.pending.event).ok)

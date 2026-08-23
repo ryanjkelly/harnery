@@ -79,6 +79,7 @@ describe("projectScene", () => {
     // the heartbeat's compatibility default.
     expect(panel.lifecycle.value).toBe("unknown");
     expect(panel.context_band).toMatchObject({ value: "unknown", provenance: "unknown" });
+    expect(panel.context_usage).toBeUndefined();
     expect(panel.runtime).toMatchObject({
       value: { harness: null, model: null, effort: null, speed: null },
       provenance: "unknown",

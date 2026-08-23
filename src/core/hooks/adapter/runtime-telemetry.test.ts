@@ -207,6 +207,42 @@ describe("runtime context telemetry", () => {
     ).toMatchObject({ state: "partial", reason: "codex_transcript_ambiguous" });
   });
 
+  test("turn mode discovers and caches a Codex rollout when Stop omits transcript_path", () => {
+    const linuxRoot = join(root, "linux", ".codex", "sessions");
+    const windowsRoot = join(root, "mnt", "c", "Users", "maya", ".codex", "sessions");
+    writeCodex(
+      [taskStarted(1), tokenCount(2, 120_000, 258_400), taskComplete(3)],
+      "linux",
+      linuxRoot,
+    );
+    const request = {
+      adapter: "codex" as const,
+      session_id: SESSION,
+      turn_id: TURN,
+      mode: "turn" as const,
+    };
+    const options = { codexRoots: [linuxRoot, windowsRoot] };
+
+    expect(readRuntimeContextTelemetry(request, options)).toMatchObject({
+      state: "observed",
+      used_tokens: 120_000,
+      limit_tokens: 258_400,
+    });
+
+    // A later duplicate would make a fresh discovery ambiguous. The verified
+    // session cache keeps the reader on the original rollout instead.
+    writeCodex(
+      [taskStarted(1), tokenCount(2, 200_000, 258_400), taskComplete(3)],
+      "windows",
+      windowsRoot,
+    );
+    expect(readRuntimeContextTelemetry(request, options)).toMatchObject({
+      state: "observed",
+      used_tokens: 120_000,
+      limit_tokens: 258_400,
+    });
+  });
+
   test("discoverCodexSessionTranscript finds the rollout for a payload with no transcript_path", () => {
     const linuxRoot = join(root, "linux", ".codex", "sessions");
     const transcript = writeCodex(

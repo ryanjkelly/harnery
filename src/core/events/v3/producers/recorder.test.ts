@@ -22,6 +22,7 @@ import {
   requestSessionEndExplicitV3,
 } from "../../../agents/session-finalizer-v3.ts";
 import { type ParsedPayload, parsePayload } from "../../../hooks/adapter/parse.ts";
+import { clearRuntimeTelemetryCachesForTest } from "../../../hooks/adapter/runtime-telemetry.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
@@ -1463,6 +1464,122 @@ describe("event ledger V3 persistent hook recorder", () => {
     ]) {
       expect(durable).not.toContain(sentinel);
     }
+  });
+
+  test("discovers and retains a session-safe Codex rollout when Stop omits transcript_path", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "01a030b0-0000-7000-8000-000000000001";
+    const firstTurn = "codex-context-turn-one";
+    const secondTurn = "codex-context-turn-two";
+    const linuxRoot = join(root, "linux", ".codex", "sessions");
+    const windowsRoot = join(root, "mnt", "c", "Users", "maya", ".codex", "sessions");
+    const rolloutDirectory = join(linuxRoot, "2026", "08", "23");
+    mkdirSync(rolloutDirectory, { recursive: true });
+    const transcript = join(rolloutDirectory, `rollout-fixture-${nativeSession}.jsonl`);
+    const rowsForTurn = (turn: string, minute: string, used: number) => [
+      {
+        timestamp: `2026-08-23T20:${minute}:00.000Z`,
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: turn },
+      },
+      {
+        timestamp: `2026-08-23T20:${minute}:14.100Z`,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { input_tokens: used },
+            model_context_window: 258_400,
+          },
+        },
+      },
+      {
+        timestamp: `2026-08-23T20:${minute}:15.200Z`,
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: turn },
+      },
+    ];
+    writeFileSync(
+      transcript,
+      `${rowsForTurn(firstTurn, "24", 120_000)
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    const runtimeTelemetryOptions = { codexRoots: [linuxRoot, windowsRoot] };
+
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: firstTurn }),
+        "codex",
+      ),
+    );
+    recordHookSignalV3({
+      ...baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: firstTurn }),
+        "codex",
+      ),
+      runtimeTelemetryOptions,
+    });
+
+    expect(readHookProducerStateV3(root, "codex", nativeSession)?.runtime_transcript_path).toBe(
+      transcript,
+    );
+
+    // Simulate the next short-lived hook process, then add a duplicate that
+    // would make a new recursive discovery ambiguous. Owner-only producer
+    // state must keep the second turn on the already verified rollout.
+    clearRuntimeTelemetryCachesForTest();
+    const duplicateDirectory = join(windowsRoot, "2026", "08", "23");
+    mkdirSync(duplicateDirectory, { recursive: true });
+    const duplicate = join(duplicateDirectory, `rollout-duplicate-${nativeSession}.jsonl`);
+    writeFileSync(duplicate, `${JSON.stringify(rowsForTurn(firstTurn, "24", 200_000)[0])}\n`);
+    appendFileSync(
+      transcript,
+      `${rowsForTurn(secondTurn, "25", 130_000)
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: secondTurn }),
+        "codex",
+      ),
+    );
+    recordHookSignalV3({
+      ...baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: secondTurn }),
+        "codex",
+      ),
+      runtimeTelemetryOptions,
+    });
+
+    const contexts = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "context.observed");
+    expect(contexts).toHaveLength(2);
+    expect(
+      contexts.map((event) =>
+        event.event_type === "context.observed" ? event.payload.measurement : undefined,
+      ),
+    ).toMatchObject([
+      { state: "observed", value: { used_tokens: 120_000, limit_tokens: 258_400 } },
+      { state: "observed", value: { used_tokens: 130_000, limit_tokens: 258_400 } },
+    ]);
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(durable).not.toContain(transcript);
+    expect(durable).not.toContain(duplicate);
+    clearRuntimeTelemetryCachesForTest();
   });
 
   test("reconciles a late Codex terminal on the next hook or session end", () => {

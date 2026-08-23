@@ -125,15 +125,15 @@ export function readRuntimeContextTelemetry(
 
 /**
  * Locate a Codex rollout transcript for a session when the hook payload
- * carries no transcript_path. Codex omits the path on every hook event except
- * Stop, which leaves evidence-dependent verdicts (the pending session-name
- * display) permanently unverifiable on that adapter. Discovery reuses the
- * telemetry scanner's roots (native ~/.codex plus WSL-mounted Windows homes)
- * and its process cache, and returns undefined on zero or ambiguous matches.
+ * carries no transcript_path. Codex omits the path on its hook events, which
+ * leaves transcript-backed evidence unavailable unless Harnery resolves the
+ * rollout itself. Discovery reuses the telemetry scanner's roots (native
+ * ~/.codex plus WSL-mounted Windows homes) and its process cache, and returns
+ * undefined on zero or ambiguous matches.
  *
- * Reserve this for evaluations that stop running once their evidence lands
- * (the pending-name latch closes after one successful verification), not for
- * per-tool hot paths that never converge — the scan walks every sessions root.
+ * Callers on repeated hook paths must retain the verified result in their
+ * owner-only session state. The process cache bounds repeated reads inside one
+ * process, but hook processes are intentionally short-lived.
  */
 export function discoverCodexSessionTranscript(
   sessionId: string | undefined,
@@ -685,13 +685,6 @@ function resolveCodexTranscript(
   if (verifiedSupplied.length === 1) return cacheTranscript(sessionId, verifiedSupplied[0]!);
   if (verifiedSupplied.length > 1) return { state: "ambiguous" };
   if (supplied.length > 0) return { state: "mismatch" };
-
-  // Turn hooks are latency-sensitive and current Codex Stop payloads provide
-  // transcript_path. Discovery is reserved for status and explicit fixtures;
-  // a missing path must not trigger a recursive home scan in the hot path.
-  if (request.mode === "turn" && options.codexRoots === undefined) {
-    return { state: "missing" };
-  }
 
   const matches = codexRoots(options)
     .flatMap((root) => findTranscriptMatches(root, sessionId))

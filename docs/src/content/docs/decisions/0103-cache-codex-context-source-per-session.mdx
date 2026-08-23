@@ -1,0 +1,84 @@
+---
+title: "0103: Cache the Codex context source per session"
+description: "ADR: discover a missing Codex rollout once, retain the verified path in owner-only producer state, and keep canonical context telemetry in Event Ledger V3."
+---
+
+**Status:** accepted (2026-08-23) · **Scope:** product tier (`core/hooks`, `core/events/v3`, Codec)
+
+## Context
+
+[ADR 0095](./0095-native-turn-telemetry-enrichment) made Event Ledger V3 the
+canonical destination for privacy-safe turn context measurements. Its Codex
+reader requires a native session ID, native turn ID, and a matching rollout.
+The reader then joins the last `token_count` before that turn's
+`task_complete`, checks freshness, and emits exact used and limit values.
+
+Codex hook payloads do not currently include `transcript_path`. The status
+reader could still report exact usage because it performs bounded rollout
+discovery, while the turn reader deliberately refused discovery. That split
+left canonical V3 observations unavailable even when Harnery could identify
+the source safely.
+
+Claude Code exposes used-token fields in assistant transcript rows, but its
+[documented hook fields](https://code.claude.com/docs/en/hooks#common-input-fields)
+do not report the active context limit. A model-name lookup is not enough:
+aliases, model switches, providers, and runtime configuration can change the
+effective window without changing the transcript usage row.
+
+The observed Cursor local and cloud hook fixtures likewise carry no complete
+used-and-limit pair. The local terminal fixture contains conversation,
+generation, status, and tool fields only.
+
+## Alternatives
+
+**Read transcripts from Codec.** Rejected because it would create a second
+telemetry authority, expand the dashboard's privacy boundary, and bypass V3
+provenance, turn matching, and deduplication.
+
+**Recursively discover the Codex rollout on every hook.** Rejected because
+hooks are short-lived processes and an in-memory cache cannot bound work across
+them. A per-tool scan would add avoidable filesystem work to the hottest path.
+
+**Infer Claude Code or Cursor limits from the model name.** Rejected because a
+catalog value is not proof of the effective runtime window. Estimates remain
+useful in other products, but an exact remaining-context gauge must not present
+one as an observed measurement.
+
+## Decision
+
+Allow the typed Codex turn reader to reuse the existing bounded transcript
+discovery when a hook omits `transcript_path`. The V3 hook recorder resolves the
+rollout through `discoverCodexSessionTranscript`, verifies that the filename
+belongs to the native session, and stores only that verified path in the
+session's owner-only producer state.
+
+Every later hook re-verifies the cached path against the native session before
+reuse. It does not repeat the recursive roots scan while that path remains
+valid. If a supplied or cached path is missing, stale, ambiguous, unreadable,
+or belongs to another session, the reader keeps the existing explicit missing
+state. Turn terminal matching, the 30-second freshness limit, bounded tail
+reads, late-flush reconciliation, and measurement deduplication remain
+unchanged.
+
+The public `context.observed` event contains only `used_tokens`,
+`limit_tokens`, `remaining_tokens`, `measured_at`, the method, and an opaque
+source-record fingerprint. The path and native IDs remain in owner-only state
+and never enter the public event stream. Harnery attests the join as
+`derived/exact`: Codex supplies both numbers, while Harnery binds them to the
+completed turn.
+
+Claude Code remains `expected_but_missing` with
+`claude_context_limit_tokens_not_reported` when its transcript has usage but no
+runtime-authoritative limit. Cursor remains `unsupported` until its hook or
+runtime surface supplies both values. Codec continues to read V3 only and
+keeps the neutral reserve instrument when the observation is incomplete.
+
+## Result
+
+Focused tests prove that a Codex Stop payload without `transcript_path` can
+produce an exact context observation, that a verified source survives a new
+hook process without another roots scan, and that an ambiguous duplicate does
+not redirect the session. Existing stale, mismatched, missing, Claude partial,
+Cursor unsupported, deduplication, Codec projection, and privacy cases remain
+passing.
+
