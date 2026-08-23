@@ -1178,6 +1178,86 @@ describe("event ledger V3 persistent hook recorder", () => {
     }
   });
 
+  test("retains Claude prompt identity until Stop can attribute transcript usage", () => {
+    const root = candidateRoot("claude-code");
+    const nativeSession = "claude-runtime-context-session";
+    const nativePrompt = "claude-runtime-context-prompt";
+    const transcript = join(root, "claude-runtime-context.jsonl");
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          timestamp: "2026-08-21T20:24:13.000Z",
+          type: "user",
+          uuid: "user-turn",
+          promptId: nativePrompt,
+          sessionId: nativeSession,
+          message: { role: "user", content: "PRIVATE_CONTEXT_PROMPT" },
+        },
+        {
+          timestamp: "2026-08-21T20:24:14.000Z",
+          type: "assistant",
+          uuid: "assistant-turn",
+          parentUuid: "user-turn",
+          sessionId: nativeSession,
+          message: {
+            model: "claude-opus-fixture",
+            content: "PRIVATE_CONTEXT_RESPONSE",
+            usage: {
+              input_tokens: 10,
+              cache_creation_input_tokens: 20,
+              cache_read_input_tokens: 30,
+            },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "claude-code"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativePrompt, prompt: "PRIVATE_PROMPT" }),
+        "claude-code",
+      ),
+    );
+    recordHookSignalV3({
+      ...baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, transcript_path: transcript }),
+        "claude-code",
+      ),
+      adapterVersion: "2.1.233",
+    });
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const context = events.find((event) => event.event_type === "context.observed");
+    expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
+      state: "expected_but_missing",
+      capability: "context_usage",
+      reason: "claude_context_limit_tokens_not_reported",
+    });
+    expect(context?.provenance).toMatchObject({
+      source_event: "claude-code.runtime_context.2.1.233",
+      attestation: "derived",
+      confidence: "high",
+    });
+    expect(
+      readHookProducerStateV3(root, "claude-code", nativeSession)?.current_native_turn_id,
+    ).toBe(undefined);
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(durable).not.toContain("PRIVATE_CONTEXT_PROMPT");
+    expect(durable).not.toContain("PRIVATE_CONTEXT_RESPONSE");
+    expect(durable).not.toContain(nativePrompt);
+    expect(durable).not.toContain(transcript);
+  });
+
   test("enriches a completed Codex turn from an attributable bounded rollout sample", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-runtime-context-session";

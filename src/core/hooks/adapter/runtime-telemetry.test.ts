@@ -260,18 +260,33 @@ describe("runtime context telemetry", () => {
     const transcript = join(root, "claude.jsonl");
     writeFileSync(
       transcript,
-      `${JSON.stringify({
-        timestamp: TOKEN_TIME,
-        type: "assistant",
-        message: {
-          model: "claude-opus-fixture",
-          usage: {
-            input_tokens: 10,
-            cache_creation_input_tokens: 20,
-            cache_read_input_tokens: 30,
+      `${[
+        {
+          timestamp: "2026-08-21T20:24:13.000Z",
+          type: "user",
+          uuid: "user-turn",
+          promptId: TURN,
+          sessionId: SESSION,
+          message: { role: "user", content: "PRIVATE_PROMPT_SENTINEL" },
+        },
+        {
+          timestamp: TOKEN_TIME,
+          type: "assistant",
+          uuid: "assistant-turn",
+          parentUuid: "user-turn",
+          sessionId: SESSION,
+          message: {
+            model: "claude-opus-fixture",
+            usage: {
+              input_tokens: 10,
+              cache_creation_input_tokens: 20,
+              cache_read_input_tokens: 30,
+            },
           },
         },
-      })}\n`,
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
     );
     expect(
       readRuntimeContextTelemetry({
@@ -287,6 +302,76 @@ describe("runtime context telemetry", () => {
       used_tokens: 60,
     });
     expect(readRuntimeContextUsage("claude-code", SESSION)).toBeNull();
+  });
+
+  test("joins Claude usage to the requested prompt instead of the newest assistant row", () => {
+    const transcript = join(root, "claude-cross-turn.jsonl");
+    const rows = [
+      {
+        type: "user",
+        uuid: "user-one",
+        promptId: TURN,
+        sessionId: SESSION,
+        message: { role: "user", content: "PRIVATE_FIRST_PROMPT" },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-one",
+        parentUuid: "user-one",
+        sessionId: SESSION,
+        timestamp: TOKEN_TIME,
+        message: { model: "claude-opus-fixture", usage: { input_tokens: 60 } },
+      },
+      {
+        type: "user",
+        uuid: "user-two",
+        parentUuid: "assistant-one",
+        promptId: "newer-prompt",
+        sessionId: SESSION,
+        message: { role: "user", content: "PRIVATE_SECOND_PROMPT" },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-two",
+        parentUuid: "user-two",
+        sessionId: SESSION,
+        timestamp: COMPLETE_TIME,
+        message: { model: "claude-opus-fixture", usage: { input_tokens: 600 } },
+      },
+    ];
+    writeFileSync(transcript, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "claude-code",
+        session_id: SESSION,
+        turn_id: TURN,
+        transcript_path: transcript,
+        mode: "turn",
+      }),
+    ).toMatchObject({
+      state: "partial",
+      reason: "claude_context_limit_tokens_not_reported",
+      used_tokens: 60,
+    });
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "claude-code",
+        session_id: SESSION,
+        turn_id: "missing-prompt",
+        transcript_path: transcript,
+        mode: "turn",
+      }),
+    ).toMatchObject({ state: "partial", reason: "claude_transcript_turn_not_found" });
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "claude-code",
+        session_id: "different-session",
+        turn_id: TURN,
+        transcript_path: transcript,
+        mode: "turn",
+      }),
+    ).toMatchObject({ state: "partial", reason: "claude_transcript_session_mismatch" });
   });
 
   function writeCodex(

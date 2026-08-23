@@ -176,6 +176,8 @@ export interface HookProducerStateV3 {
   clock_id: `clk_${string}`;
   next_sequence: number;
   current_turn_id?: `tid_${string}`;
+  /** Native turn identity retained owner-only for transcript attribution. */
+  current_native_turn_id?: string;
   tool_call_count: number;
   tool_call_count_turn_id?: `tid_${string}`;
   last_event_id?: `evt_${string}`;
@@ -804,6 +806,7 @@ function processHookSignalLocked(
         boot_id: state.boot_id,
         clock: eventClock,
       });
+      state.current_native_turn_id = input.payload.turn_id;
     }
 
     let sourceId = sourceIdForSignal(input, rootFingerprintContext);
@@ -1865,7 +1868,7 @@ function turnTelemetryForTerminal(
   const runtime = readRuntimeContextTelemetry({
     adapter: input.adapter,
     session_id: input.payload.session_id ?? input.payload.conversation_id,
-    turn_id: input.payload.turn_id,
+    turn_id: input.payload.turn_id ?? state.current_native_turn_id,
     transcript_path: input.payload.transcript_path,
     mode: "turn",
   });
@@ -2941,6 +2944,7 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
       }
     }
     state.current_turn_id = undefined;
+    state.current_native_turn_id = undefined;
     state.current_turn_span = undefined;
     state.tool_call_count = 0;
     state.tool_call_count_turn_id = undefined;
@@ -3241,6 +3245,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "closed_spans",
     "closed_turn_ids",
     "current_turn_id",
+    "current_native_turn_id",
     "current_turn_span",
     "cursor_mode",
     "delegations",
@@ -3348,6 +3353,10 @@ function readProducerState(path: string): HookProducerStateV3 {
     !Number.isSafeInteger(state.turn_ordinal) ||
     state.turn_ordinal < 0 ||
     (state.current_turn_id !== undefined && !/^tid_[a-f0-9]{64}$/.test(state.current_turn_id)) ||
+    (state.current_native_turn_id !== undefined &&
+      (typeof state.current_native_turn_id !== "string" ||
+        state.current_native_turn_id.length === 0 ||
+        state.current_native_turn_id.length > 512)) ||
     (state.last_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.last_event_id)) ||
     (state.last_monotonic_ns !== undefined && !/^\d+$/.test(state.last_monotonic_ns)) ||
     (state.last_observed_at !== undefined &&

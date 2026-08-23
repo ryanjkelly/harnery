@@ -50,6 +50,8 @@ export type RuntimeContextMissingReason =
   | "context_limit_tokens_not_reported"
   | "context_limit_tokens_invalid"
   | "claude_context_limit_tokens_not_reported"
+  | "claude_transcript_session_mismatch"
+  | "claude_transcript_turn_not_found"
   | "claude_transcript_unreadable";
 
 export type RuntimeContextUnsupportedReason =
@@ -82,6 +84,10 @@ interface ParsedRuntimeRow {
   timestamp?: string;
   ordinal?: number;
   type?: string;
+  uuid?: string;
+  parent_uuid?: string;
+  prompt_id?: string;
+  session_id?: string;
   /** CC stamps the effective effort level at the row's top level. */
   effort?: string;
   payload?: Record<string, unknown>;
@@ -462,8 +468,21 @@ function readClaudeContext(
   const tail = readTail(readablePath, options.maxTailBytes ?? DEFAULT_TAIL_BYTES);
   if (!tail) return partial("claude_transcript_unreadable", 0, startedAt);
   const rows = parseRuntimeRows(tail.text);
-  for (let index = rows.length - 1; index >= 0; index--) {
-    const row = rows[index]!;
+  const sessionRows = rows.filter(
+    (row) => row.session_id === undefined || row.session_id === request.session_id,
+  );
+  if (rows.some((row) => row.session_id !== undefined) && sessionRows.length === 0) {
+    return partial("claude_transcript_session_mismatch", tail.bytes, startedAt);
+  }
+  const candidateRows =
+    request.mode === "turn"
+      ? claudeAssistantRowsForTurn(sessionRows, request.turn_id!)
+      : sessionRows.filter((row) => row.type === "assistant");
+  if (request.mode === "turn" && candidateRows.length === 0) {
+    return partial("claude_transcript_turn_not_found", tail.bytes, startedAt);
+  }
+  for (let index = candidateRows.length - 1; index >= 0; index--) {
+    const row = candidateRows[index]!;
     if (row.type !== "assistant") continue;
     const message = row.payload;
     const usage = objectValue(message?.usage);
@@ -482,6 +501,25 @@ function readClaudeContext(
     });
   }
   return partial("context_used_tokens_not_reported", tail.bytes, startedAt);
+}
+
+/** Join assistant rows to the native CC prompt id through the transcript's
+ * parent UUID chain. No UUID or prompt value crosses the reader boundary. */
+function claudeAssistantRowsForTurn(rows: ParsedRuntimeRow[], turnId: string): ParsedRuntimeRow[] {
+  const byUuid = new Map(rows.filter((row) => row.uuid).map((row) => [row.uuid!, row] as const));
+  return rows.filter((row) => {
+    if (row.type !== "assistant") return false;
+    let parentUuid = row.parent_uuid;
+    const seen = new Set<string>();
+    for (let depth = 0; parentUuid && depth < 64 && !seen.has(parentUuid); depth += 1) {
+      seen.add(parentUuid);
+      const parent = byUuid.get(parentUuid);
+      if (!parent) return false;
+      if (parent.type === "user" && parent.prompt_id) return parent.prompt_id === turnId;
+      parentUuid = parent.parent_uuid;
+    }
+    return false;
+  });
 }
 
 function newestCodexToken(rows: ParsedRuntimeRow[]): CodexTokenSample | undefined {
@@ -544,6 +582,10 @@ function parseRuntimeRows(text: string): ParsedRuntimeRow[] {
         timestamp: timestamp(row.timestamp),
         ordinal: safeInteger(row.ordinal),
         type: typeof row.type === "string" ? row.type : undefined,
+        uuid: stringValue(row.uuid),
+        parent_uuid: stringValue(row.parentUuid),
+        prompt_id: stringValue(row.promptId) ?? stringValue(row.prompt_id),
+        session_id: stringValue(row.sessionId) ?? stringValue(row.session_id),
         ...(typeof row.effort === "string" && row.effort.length > 0 ? { effort: row.effort } : {}),
         payload: objectValue(row.payload) ?? objectValue(row.message) ?? undefined,
       });
@@ -552,6 +594,10 @@ function parseRuntimeRows(text: string): ParsedRuntimeRow[] {
     }
   }
   return rows;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 /** Head window for the Codex tuning fallback: session_meta plus the first
