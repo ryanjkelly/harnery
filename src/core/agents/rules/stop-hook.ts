@@ -147,7 +147,9 @@ export function evaluateStopHookV3Events(
 
   const ackPresent = req.adapter === "cursor" ? requiredStatusChecked : latestBox === true;
   const ackBlock =
-    req.adapter === "cursor" ? () => rule13Block(coordRoot) : () => rule23Block(coordRoot);
+    req.adapter === "cursor"
+      ? () => rule13Block(coordRoot, req.session_id)
+      : () => rule23Block(coordRoot, req.session_id);
 
   // Pure prose turns keep the human-visible acknowledgement but do not require
   // task or final-status mutations. This preserves the pre-V3 policy exactly.
@@ -161,9 +163,9 @@ export function evaluateStopHookV3Events(
     };
   }
 
-  if (!requiredStatusChecked) return rule13Block(coordRoot);
+  if (!requiredStatusChecked) return rule13Block(coordRoot, req.session_id);
   if (!ackPresent) return ackBlock();
-  if (!taskSet) return rule33Block(coordRoot);
+  if (!taskSet) return rule33Block(coordRoot, req.session_id);
 
   // Claude Code can prove session-name presentation from assistant-only text.
   // Cursor cannot expose that text and Codex returned observe-only above.
@@ -271,7 +273,18 @@ function evidenceUnavailable(reason: string): VerdictResult {
   };
 }
 
-function rule13Block(coordRoot?: string): VerdictResult {
+/**
+ * Remediation commands carry `--session-id` when the session id is known: the
+ * remediating tool call may not descend from a pid-map-registered anchor
+ * (headless children, Cursor shells), and a ppid-walk that resolves to a
+ * DIFFERENT owner records evidence this verdict will never see — the block
+ * then repeats forever while the agent complies every time.
+ */
+function sessionIdSuffix(sessionId?: string): string {
+  return sessionId ? ` --session-id ${sessionId}` : "";
+}
+
+function rule13Block(coordRoot?: string, sessionId?: string): VerdictResult {
   const missingEvidence = agentsRequireGitFinalization(coordRoot)
     ? "no end_turn_checked coord.status_observed event found in this turn"
     : "no coord.status_observed event found in this turn";
@@ -279,16 +292,16 @@ function rule13Block(coordRoot?: string): VerdictResult {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_1_3",
-    reason: `End-of-turn rule (1/3): ${missingEvidence}; run \`${endOfTurnStatusCommand(coordRoot)}\` as your last tool call.`,
+    reason: `End-of-turn rule (1/3): ${missingEvidence}; run \`${endOfTurnStatusCommand(coordRoot)}${sessionIdSuffix(sessionId)}\` as your last tool call.`,
   };
 }
 
-function rule23Block(coordRoot?: string): VerdictResult {
+function rule23Block(coordRoot?: string, sessionId?: string): VerdictResult {
   return {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_2_3",
-    reason: `End-of-turn rule (2/3): turn.completed did not observe the agent-status box in your reply text. Paste the \`${endOfTurnStatusCommand(coordRoot)}\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
+    reason: `End-of-turn rule (2/3): turn.completed did not observe the agent-status box in your reply text. Paste the \`${endOfTurnStatusCommand(coordRoot)}${sessionIdSuffix(sessionId)}\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
   };
 }
 
@@ -335,11 +348,11 @@ function sessionNameBlock(coordRoot: string, instanceId: string): VerdictResult 
   };
 }
 
-function rule33Block(coordRoot?: string): VerdictResult {
+function rule33Block(coordRoot?: string, sessionId?: string): VerdictResult {
   return {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_3_3",
-    reason: `End-of-turn rule (3/3): no coord.task_changed event found in this turn; run \`${resolveBinName(coordRoot)} agents set-task "<short focus>"\` to declare what you're working on. Pass an empty string if the turn was purely conversational.`,
+    reason: `End-of-turn rule (3/3): no coord.task_changed event found in this turn; run \`${resolveBinName(coordRoot)} agents set-task${sessionIdSuffix(sessionId)} "<short focus>"\` to declare what you're working on. Pass an empty string if the turn was purely conversational.`,
   };
 }

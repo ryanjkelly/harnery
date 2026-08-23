@@ -610,13 +610,24 @@ async function main(): Promise<number> {
       const repoRoot = findCoordRoot(process.cwd());
       if (repoRoot) {
         let sid = "";
+        let stopContinuation = false;
         try {
-          const j = JSON.parse(raw) as { session_id?: string; conversation_id?: string };
+          const j = JSON.parse(raw) as {
+            session_id?: string;
+            conversation_id?: string;
+            stop_hook_active?: boolean;
+          };
           sid = j.session_id ?? j.conversation_id ?? "";
+          // A stop with stop_hook_active is a remediation continuation of a
+          // turn that already chimed; replaying the sound on every bounce
+          // turns a blocked-stop loop into a repeating alarm.
+          stopContinuation = eventName === "stop" && j.stop_hook_active === true;
         } catch {
           // non-JSON payload: play unkeyed (rate-limit just won't dedup)
         }
-        playSound(repoRoot, s.sound, sid, s.maxPlays);
+        if (!stopContinuation) {
+          playSound(repoRoot, s.sound, sid, s.maxPlays);
+        }
       }
     }
   }
@@ -1062,12 +1073,29 @@ async function main(): Promise<number> {
       workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
     });
     if (!verdict.allow) {
-      // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr
-      // as a turn block; Cursor ignores exit codes and re-prompts only via a
-      // `followup_message` it auto-submits. Codex returned observe-only above.
-      // emitStopBlock writes the right shape and returns the exit code to use.
-      const { emitStopBlock } = await import("./adapter/output.ts");
-      return emitStopBlock(adapter, verdict, coordRoot);
+      // Backstop for sessions whose evidence can never land (e.g. a headless
+      // child whose status command resolves to a different owner): after
+      // `cap` consecutive blocked stops in one cycle, allow the stop instead
+      // of bouncing the model forever. Cycle boundaries come from the
+      // adapter's continuation flag, so adapters without one are unaffected.
+      const { remediationCapExceeded } = await import("./remediation-cap.ts");
+      if (remediationCapExceeded(sessionId, payload?.stop_hook_active === true)) {
+        appendDebug(coordRoot, {
+          ...debugBase,
+          skipped: "stop-remediation-cap-exhausted",
+          blocked_rule: verdict.rule,
+        });
+      } else {
+        // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr
+        // as a turn block; Cursor ignores exit codes and re-prompts only via a
+        // `followup_message` it auto-submits. Codex returned observe-only above.
+        // emitStopBlock writes the right shape and returns the exit code to use.
+        const { emitStopBlock } = await import("./adapter/output.ts");
+        return emitStopBlock(adapter, verdict, coordRoot);
+      }
+    } else {
+      const { clearRemediationCount } = await import("./remediation-cap.ts");
+      clearRemediationCount(sessionId);
     }
 
     // An explicit end requested from inside this turn cannot be authoritative
