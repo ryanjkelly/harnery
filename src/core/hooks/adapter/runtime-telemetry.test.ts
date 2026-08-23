@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -372,6 +372,123 @@ describe("runtime context telemetry", () => {
         mode: "turn",
       }),
     ).toMatchObject({ state: "partial", reason: "claude_transcript_session_mismatch" });
+  });
+
+  test("follows a compacted Claude parent chain without crossing prompt ownership", () => {
+    const transcript = join(root, "claude-compacted-chain.jsonl");
+    const rows = [
+      {
+        type: "user",
+        uuid: "prompt-row",
+        promptId: TURN,
+        sessionId: SESSION,
+        message: { role: "user", content: "PRIVATE_PROMPT" },
+      },
+      {
+        type: "summary",
+        uuid: "compaction-row",
+        parentUuid: "prompt-row",
+        sessionId: SESSION,
+        message: { summary: "PRIVATE_COMPACTION_BODY" },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-row",
+        parentUuid: "compaction-row",
+        sessionId: SESSION,
+        timestamp: TOKEN_TIME,
+        message: { model: "claude-opus-after-compact", usage: { input_tokens: 73 } },
+      },
+    ];
+    writeFileSync(transcript, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "claude-code",
+        session_id: SESSION,
+        turn_id: TURN,
+        transcript_path: transcript,
+        mode: "turn",
+      }),
+    ).toMatchObject({
+      state: "partial",
+      reason: "claude_context_limit_tokens_not_reported",
+      used_tokens: 73,
+    });
+  });
+
+  test("fails closed when a bounded Claude tail truncates the prompt ancestor", () => {
+    const transcript = join(root, "claude-truncated-tail.jsonl");
+    const user = {
+      type: "user",
+      uuid: "prompt-row",
+      promptId: TURN,
+      sessionId: SESSION,
+      message: { role: "user", content: "PRIVATE_PROMPT" },
+    };
+    const assistant = {
+      type: "assistant",
+      uuid: "assistant-row",
+      parentUuid: "prompt-row",
+      sessionId: SESSION,
+      timestamp: TOKEN_TIME,
+      message: { model: "claude-opus-fixture", usage: { input_tokens: 91 } },
+    };
+    const assistantLine = `${JSON.stringify(assistant)}\n`;
+    writeFileSync(transcript, `${JSON.stringify(user)}\n${assistantLine}`);
+
+    expect(
+      readRuntimeContextTelemetry(
+        {
+          adapter: "claude-code",
+          session_id: SESSION,
+          turn_id: TURN,
+          transcript_path: transcript,
+          mode: "turn",
+        },
+        { maxTailBytes: Buffer.byteLength(assistantLine) },
+      ),
+    ).toMatchObject({ state: "partial", reason: "claude_transcript_turn_not_found" });
+  });
+
+  test("moves from a named Claude flush miss to attributable usage after append", () => {
+    const transcript = join(root, "claude-flush-order.jsonl");
+    const user = {
+      type: "user",
+      uuid: "prompt-row",
+      promptId: TURN,
+      sessionId: SESSION,
+      message: { role: "user", content: "PRIVATE_PROMPT" },
+    };
+    writeFileSync(transcript, `${JSON.stringify(user)}\n`);
+    const request = {
+      adapter: "claude-code" as const,
+      session_id: SESSION,
+      turn_id: TURN,
+      transcript_path: transcript,
+      mode: "turn" as const,
+    };
+
+    expect(readRuntimeContextTelemetry(request)).toMatchObject({
+      state: "partial",
+      reason: "claude_transcript_turn_not_found",
+    });
+    appendFileSync(
+      transcript,
+      `${JSON.stringify({
+        type: "assistant",
+        uuid: "assistant-row",
+        parentUuid: "prompt-row",
+        sessionId: SESSION,
+        timestamp: TOKEN_TIME,
+        message: { model: "claude-opus-fixture", usage: { input_tokens: 109 } },
+      })}\n`,
+    );
+    expect(readRuntimeContextTelemetry(request)).toMatchObject({
+      state: "partial",
+      reason: "claude_context_limit_tokens_not_reported",
+      used_tokens: 109,
+    });
   });
 
   function writeCodex(
