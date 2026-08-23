@@ -1,8 +1,8 @@
 import { Value } from "@sinclair/typebox/value";
 import {
   SEMANTIC_TAGS,
-  SemanticAgentReadModelV1Schema,
   type SemanticAgentReadModelV1,
+  SemanticAgentReadModelV1Schema,
   type SemanticEvidenceKind,
   type SemanticEvidenceV1,
   type SemanticField,
@@ -21,9 +21,7 @@ export interface SemanticValidationFailure {
   issues: string[];
 }
 
-export type SemanticValidationResult<T> =
-  | SemanticValidationSuccess<T>
-  | SemanticValidationFailure;
+export type SemanticValidationResult<T> = SemanticValidationSuccess<T> | SemanticValidationFailure;
 
 const PRIVATE_TEXT_PATTERNS: Array<[RegExp, string]> = [
   [
@@ -44,19 +42,15 @@ const FORBIDDEN_CLAIM_PATTERNS: Array<[RegExp, string]> = [
   [/\b(?:excellent|great|poor|bad)\s+(?:quality|work)\b/i, "quality"],
 ];
 
-const RESULT_KINDS = new Set<SemanticEvidenceKind>([
-  "progress",
-  "artifact",
-  "action",
-  "terminal",
-]);
+const RESULT_KINDS = new Set<SemanticEvidenceKind>(["progress", "artifact", "action", "terminal"]);
 const ATTENTION_KINDS = new Set<SemanticEvidenceKind>([
   "wait",
   "lifecycle",
   "error",
   "claim-conflict",
 ]);
-const COMPLETION_LANGUAGE = /\b(?:complete|completed|done|finished|shipped|passed|succeeded|deployed|published)\b/i;
+const COMPLETION_LANGUAGE =
+  /\b(?:complete|completed|done|finished|shipped|passed|succeeded|deployed|published)\b/i;
 
 export function semanticPrivacyIssue(value: string): string | undefined {
   for (const [pattern, issue] of PRIVATE_TEXT_PATTERNS) {
@@ -124,13 +118,18 @@ export function validateSemanticModelReply(
       issues.push(`${name}:must_be_model_synthesis`);
     }
     if (typeof field.value === "string") {
+      const privacyIssue = semanticPrivacyIssue(field.value);
+      if (privacyIssue) issues.push(`${name}:privacy_${privacyIssue}`);
       for (const [pattern, issue] of FORBIDDEN_CLAIM_PATTERNS) {
         if (pattern.test(field.value)) issues.push(`${name}:${issue}`);
       }
       if (/\bblocked\b/i.test(field.value) && name !== "attention") {
         issues.push(`${name}:unsupported_blocker_language`);
       }
-      if (COMPLETION_LANGUAGE.test(field.value) && !citationsSupport(field, kindById, RESULT_KINDS)) {
+      if (
+        COMPLETION_LANGUAGE.test(field.value) &&
+        !citationsSupport(field, kindById, RESULT_KINDS)
+      ) {
         issues.push(`${name}:unsupported_completion_language`);
       }
     }
@@ -180,11 +179,9 @@ export function validateSemanticReadModel(
   return issues.length ? { ok: false, issues } : { ok: true, value };
 }
 
-function meaningFields(
-  meaning: SemanticMeaningV1,
-): Array<[string, SemanticField<unknown>]> {
-  return (Object.entries(meaning) as Array<[string, SemanticField<unknown>]>).filter(
-    ([, value]) => Boolean(value && typeof value === "object" && Array.isArray(value.evidence_event_ids)),
+function meaningFields(meaning: SemanticMeaningV1): Array<[string, SemanticField<unknown>]> {
+  return (Object.entries(meaning) as Array<[string, SemanticField<unknown>]>).filter(([, value]) =>
+    Boolean(value && typeof value === "object" && Array.isArray(value.evidence_event_ids)),
   );
 }
 

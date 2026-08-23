@@ -173,6 +173,19 @@ describe("semantic read-model contract", () => {
     });
   });
 
+  test("rejects private sentinels in model meaning before local persistence", () => {
+    const source = evidence();
+    const invalid = reply();
+    invalid.meaning.summary.value = "Inspect /private/model-output before continuing.";
+    invalid.meaning.next_step!.value = "Open https://private.example.test/review.";
+    const result = validateSemanticModelReply(invalid, source);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toContain("summary:privacy_path");
+      expect(result.issues).toContain("next_step:privacy_url");
+    }
+  });
+
   test("permits absent or empty tags without fabricated citations", () => {
     const source = evidence();
     const withoutTags = reply();
@@ -192,9 +205,7 @@ describe("semantic read-model contract", () => {
   test("rejects unknown citations and unsupported completion or attention claims", () => {
     const source = evidence();
     const invalid = reply();
-    invalid.meaning.summary.evidence_event_ids = [
-      "evt_01922e33-7abe-7def-8abc-0123456789ab",
-    ];
+    invalid.meaning.summary.evidence_event_ids = ["evt_01922e33-7abe-7def-8abc-0123456789ab"];
     invalid.meaning.summary.value = "Work is 80% complete.";
     invalid.meaning.attention = {
       value: "The agent is blocked.",
