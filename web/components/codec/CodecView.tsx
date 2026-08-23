@@ -101,6 +101,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   const [showTeamPanel, setShowTeamPanel] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenAvailable, setFullscreenAvailable] = useState(false);
+  const [mobileLayout, setMobileLayout] = useState(false);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const replayHydrated = useRef(false);
   // The server-rendered scene counts as a snapshot: its cues never animate.
@@ -111,6 +112,14 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
     setClockNow(Date.now());
     const timer = setInterval(() => setClockNow(Date.now()), 1_000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 720px)");
+    const syncLayout = () => setMobileLayout(query.matches);
+    syncLayout();
+    query.addEventListener("change", syncLayout);
+    return () => query.removeEventListener("change", syncLayout);
   }, []);
 
   useEffect(() => {
@@ -356,6 +365,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
       data-remote-panel={remotePanelOpen ? "open" : "closed"}
       data-team-panel={teamPanelOpen ? "open" : "closed"}
       data-fullscreen={fullscreen ? "true" : "false"}
+      data-codec-layout={mobileLayout ? "mobile" : "desktop"}
       className={cn(styles.codecArena, AMBIENCE_CLASS[scene.team_ambience.value])}
     >
       <p aria-live="polite" className="sr-only">
@@ -464,35 +474,225 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
         </div>
       </div>
 
-      {remotePanelOpen && <RemoteFleet machines={scene.remote_machines} />}
-
-      {teamPanelOpen && <TeamPulse scene={scene} />}
-
       {panels.length === 0 ? (
         <p className={styles.emptyScene}>No active agents. Panels appear when a session starts.</p>
+      ) : mobileLayout ? (
+        <MobileCodecDeck
+          scene={scene}
+          panels={panels}
+          parentNameFor={parentNameFor}
+          glowing={glowing}
+        />
       ) : (
-        <div ref={gridRef} data-codec-card-stage className={styles.cardStage}>
-          <RelationshipLines scene={scene} gridRef={gridRef} />
-          <div
-            data-codec-grid
-            data-panel-count={panels.length}
-            data-panel-density={panels.length <= 4 ? "featured" : "dense"}
-            className={styles.panelGrid}
-          >
-            {panels.map((panel) => (
-              <CodecPanel
-                key={panel.instance_id}
-                panel={panel}
-                parentName={parentNameFor(panel)}
-                glowing={Boolean(glowing[panel.instance_id])}
-              />
-            ))}
+        <>
+          {remotePanelOpen && <RemoteFleet machines={scene.remote_machines} />}
+          {teamPanelOpen && <TeamPulse scene={scene} />}
+          <div ref={gridRef} data-codec-card-stage className={styles.cardStage}>
+            <RelationshipLines scene={scene} gridRef={gridRef} />
+            <div
+              data-codec-grid
+              data-panel-count={panels.length}
+              data-panel-density={panels.length <= 4 ? "featured" : "dense"}
+              className={styles.panelGrid}
+            >
+              {panels.map((panel) => (
+                <CodecPanel
+                  key={panel.instance_id}
+                  panel={panel}
+                  parentName={parentNameFor(panel)}
+                  glowing={Boolean(glowing[panel.instance_id])}
+                />
+              ))}
+            </div>
           </div>
-        </div>
+          <ActivityLedger panels={panels} />
+        </>
       )}
-
-      {panels.length > 0 && <ActivityLedger panels={panels} />}
     </div>
+  );
+}
+
+function MobileCodecDeck({
+  scene,
+  panels,
+  parentNameFor,
+  glowing,
+}: {
+  scene: CodecScene;
+  panels: CodecPanelScene[];
+  parentNameFor: (panel: CodecPanelScene) => string | undefined;
+  glowing: Record<string, boolean>;
+}) {
+  const summary = summarizeCodecTeam(scene);
+  const working = panels.filter((panel) => panel.activity.value === "working").length;
+  const needsInput = panels.filter((panel) => panel.activity.value === "needs-input").length;
+
+  const focusAgent = (panel: CodecPanelScene) => {
+    document
+      .getElementById(`mobile-agent-${panel.instance_id}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  };
+
+  return (
+    <section data-codec-mobile-view className={styles.mobileDeck} aria-label="Mobile Codec view">
+      <div data-codec-mobile-overview className={styles.mobileOverview}>
+        <div className={styles.mobileOverviewLead}>
+          <p className={styles.mobileEyebrow}>Pocket command deck</p>
+          <h2>{panels.length} agents in view</h2>
+          <p>
+            {working} working · {needsInput} need input · {summary.machines.length} machine
+            {summary.machines.length === 1 ? "" : "s"}
+          </p>
+        </div>
+        <dl className={styles.mobileMetrics}>
+          <div>
+            <dt>Links</dt>
+            <dd>{summary.relationships.length}</dd>
+          </div>
+          <div>
+            <dt>Active</dt>
+            <dd>{summary.dependencies.active}</dd>
+          </div>
+          <div>
+            <dt>Waiting</dt>
+            <dd>{summary.dependencies.waiting}</dd>
+          </div>
+          <div>
+            <dt>Blocked</dt>
+            <dd>{summary.dependencies.blocked}</dd>
+          </div>
+        </dl>
+      </div>
+
+      <nav
+        data-codec-mobile-agent-rail
+        className={styles.mobileAgentRail}
+        aria-label="Jump to agent card"
+      >
+        {panels.map((panel) => (
+          <button
+            key={panel.instance_id}
+            type="button"
+            data-activity={panel.activity.value}
+            onClick={() => focusAgent(panel)}
+            aria-label={`Show ${panel.identity.display_name}`}
+          >
+            <span className={styles.mobileAgentBeacon} aria-hidden />
+            <AgentChip name={panel.identity.display_name} prefix="" />
+          </button>
+        ))}
+      </nav>
+
+      <div className={styles.mobileDeckLabel}>
+        <span>Swipe agents</span>
+        <span>{panels.length} cards</span>
+      </div>
+      <div data-codec-mobile-card-track className={styles.mobileCardTrack}>
+        {panels.map((panel, index) => (
+          <MobileCodecPanel
+            key={panel.instance_id}
+            panel={panel}
+            parentName={parentNameFor(panel)}
+            glowing={Boolean(glowing[panel.instance_id])}
+            position={index + 1}
+            total={panels.length}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MobileCodecPanel({
+  panel,
+  parentName,
+  glowing,
+  position,
+  total,
+}: {
+  panel: CodecPanelScene;
+  parentName?: string;
+  glowing: boolean;
+  position: number;
+  total: number;
+}) {
+  const offline = panel.presence.value === "offline";
+  const unknownPresence = panel.presence.value === "unknown";
+
+  return (
+    <article
+      id={`mobile-agent-${panel.instance_id}`}
+      aria-label={`Agent ${panel.identity.display_name}, card ${position} of ${total}`}
+      data-instance={panel.instance_id}
+      data-codec-mobile-card
+      data-activity={panel.activity.value}
+      data-attention={panel.attention.value}
+      className={cn(
+        styles.mobileCodecCard,
+        panelPalette(panel.identity.display_name),
+        ATTENTION_RING[panel.attention.value],
+        glowing ? styles.pingArrive : styles.pingArriveFade,
+        offline && styles.panelOffline,
+        unknownPresence && styles.panelStale,
+      )}
+    >
+      <header className={styles.mobileCardHeader}>
+        <div>
+          <p className={styles.mobileCardOrdinal}>
+            Agent {String(position).padStart(2, "0")} / {String(total).padStart(2, "0")}
+          </p>
+          <AgentChip
+            name={panel.identity.display_name}
+            prefix=""
+            className={styles.mobileCardName}
+          />
+        </div>
+        <div className={styles.cardUtilities}>
+          {panel.has_artifact_workspace && (
+            <a
+              data-codec-artifacts-link
+              href={`/browse?agent=${encodeURIComponent(panel.instance_id)}`}
+              target="_blank"
+              rel="noreferrer"
+              className={styles.artifactFolderButton}
+              aria-label={`Browse ${panel.identity.display_name}'s artifacts in a new tab`}
+            >
+              <FolderOpen aria-hidden />
+            </a>
+          )}
+          <ContextGauge panel={panel} />
+        </div>
+      </header>
+
+      <div className={styles.mobileCardHero}>
+        <div className={styles.mobilePortraitColumn}>
+          <PortraitSurface panel={panel} />
+        </div>
+        <div className={styles.mobileCardSnapshot}>
+          <p className={styles.mobileTaskLabel}>Current assignment</p>
+          <p className={styles.mobileTask}>
+            {panel.identity.task?.value ?? "No task has been declared"}
+          </p>
+          <CodecRuntimeStrip panel={panel} />
+          <FocusBubble panel={panel} />
+          <OperationCue panel={panel} />
+        </div>
+      </div>
+
+      <div className={styles.mobileCardDetails}>
+        <IntentHistory intents={panel.intent_history ?? []} />
+        <PanelStatusRail panel={panel} parentName={parentName} />
+        <SemanticRead panel={panel} />
+        <ActionTrail
+          actions={panel.recent_actions}
+          active={
+            panel.presence.value === "online" &&
+            panel.activity.value === "working" &&
+            panel.telemetry?.value !== "degraded"
+          }
+        />
+      </div>
+    </article>
   );
 }
 
@@ -923,54 +1123,7 @@ function CodecPanel({
       )}
     >
       <div className={styles.portraitColumn}>
-        <Tooltip
-          side="right"
-          triggerClassName={styles.portraitTooltipTrigger}
-          content={
-            <div className="space-y-1">
-              <p className="font-semibold">{panel.identity.display_name}&apos;s live portrait</p>
-              <p>
-                Expression {humanizeCueToken(panel.expression.value)} · activity{" "}
-                {humanizeCueToken(panel.activity.value)} · presence {panel.presence.value}
-              </p>
-              <p className="text-muted-foreground">
-                Character pack {panel.character.pack_id} · expression and activity are
-                evidence-backed when provenance allows.
-              </p>
-            </div>
-          }
-        >
-          <div data-codec-portrait-surface className={styles.portraitTooltipSurface}>
-            <Portrait panel={panel} />
-            <div
-              data-codec-portrait-readout
-              data-presence={panel.presence.value}
-              className={styles.portraitReadout}
-            >
-              <div className={styles.portraitReadoutHeader}>
-                <span className={styles.portraitReadoutBeacon} aria-hidden />
-                <span className={styles.portraitReadoutKicker}>Live state</span>
-                <span className={styles.portraitReadoutPresence}>
-                  {humanizeCueToken(panel.presence.value)}
-                </span>
-              </div>
-              <strong className={styles.portraitReadoutExpression}>
-                {humanizeCueToken(panel.expression.value)}
-              </strong>
-              <div className={styles.portraitReadoutActivity}>
-                <span className={styles.portraitReadoutActivityLabel}>Activity</span>
-                <strong className={styles.portraitReadoutActivityValue}>
-                  {humanizeCueToken(panel.activity.value)}
-                </strong>
-              </div>
-              <span className={styles.portraitReadoutMeter} aria-hidden>
-                <i />
-                <i />
-                <i />
-              </span>
-            </div>
-          </div>
-        </Tooltip>
+        <PortraitSurface panel={panel} />
       </div>
 
       <div className={styles.panelBody}>
@@ -1036,124 +1189,7 @@ function CodecPanel({
         <SemanticRead panel={panel} />
         <IntentHistory intents={panel.intent_history ?? []} />
 
-        <div className={styles.statusRail}>
-          <Badge
-            variant={panel.activity.value === "needs-input" ? "default" : "outline"}
-            title={`Activity: ${panel.activity.value} (${panel.activity.provenance})`}
-          >
-            {panel.activity.value === "working" && <span className="live-dot" aria-hidden />}
-            {panel.activity.value}
-          </Badge>
-          {panel.lifecycle.value !== "unknown" && (
-            <Badge
-              variant={panel.lifecycle.value === "done" ? "secondary" : "outline"}
-              title={`Lifecycle: ${panel.lifecycle.value} (${panel.lifecycle.provenance})`}
-            >
-              {panel.lifecycle.value}
-            </Badge>
-          )}
-          {panel.ledger_state?.value === "recovery-required" && (
-            <Badge
-              variant="destructive"
-              title="Ledger state: recovery-required (open spans after the turn closed)"
-            >
-              recovering
-            </Badge>
-          )}
-          {panel.ledger_state?.value === "ending" && (
-            <Badge variant="secondary" title="Ledger state: ending (finalization pending)">
-              ending
-            </Badge>
-          )}
-          {offline && (
-            <Badge variant="secondary" title="Presence: offline (event-backed)">
-              offline
-            </Badge>
-          )}
-          {unknownPresence && (
-            <Badge variant="outline" title="Presence unknown: no fresh V3 observation">
-              presence unknown
-            </Badge>
-          )}
-          {panel.progress_rhythm.value !== "unknown" && (
-            <Badge
-              variant="outline"
-              title={`Progress rhythm: ${panel.progress_rhythm.value} (${panel.progress_rhythm.provenance}, ${panel.progress_rhythm.confidence} confidence)`}
-              className={cn(
-                panel.progress_rhythm.provenance === "inferred" &&
-                  "border-dashed border-muted-foreground/60 text-foreground/80",
-              )}
-            >
-              {panel.progress_rhythm.value}
-              {panel.progress_rhythm.provenance === "inferred" && (
-                <span className="ml-1 opacity-90">· inferred</span>
-              )}
-            </Badge>
-          )}
-          {panel.expression.value !== "neutral" &&
-            !(
-              panel.ledger_state?.value === "recovery-required" &&
-              panel.expression.value === "recovering"
-            ) && (
-              <Badge
-                variant="outline"
-                title={`Expression: ${panel.expression.value} (${panel.expression.provenance}, ${panel.expression.confidence} confidence)`}
-                className={cn(
-                  panel.expression.provenance === "inferred" &&
-                    "border-dashed text-muted-foreground",
-                )}
-              >
-                {panel.expression.value}
-                {panel.expression.provenance === "inferred" && (
-                  <span className="ml-1 opacity-90">· inferred</span>
-                )}
-              </Badge>
-            )}
-          {panel.attention.value !== "none" && (
-            <Badge
-              variant={panel.attention.value === "error" ? "destructive" : "secondary"}
-              title={`Attention: ${panel.attention.value} (expires ${panel.attention.expires_at ?? "soon"})`}
-            >
-              {panel.attention.value}
-            </Badge>
-          )}
-          {panel.artifact_cue && <ArtifactCue cue={panel.artifact_cue} />}
-          {panel.friction && (
-            <Badge
-              variant="secondary"
-              className="border-amber-400/50 text-amber-700 dark:text-amber-300"
-              title={`Friction: ${panel.friction.value} (${panel.friction.provenance}, ${panel.friction.confidence} confidence)`}
-            >
-              <TriangleAlert className="mr-1 size-3" aria-hidden />
-              {humanizeCueToken(panel.friction.value)}
-            </Badge>
-          )}
-          {panel.telemetry?.value === "degraded" && (
-            <Badge
-              variant="outline"
-              className={cn(
-                "border-dashed border-muted-foreground/60 text-foreground/80",
-                styles.flexibleBadge,
-              )}
-              title={`Observer telemetry is degraded${panel.telemetry_reason ? `: ${humanizeCueToken(panel.telemetry_reason.value)}` : ""}; order-sensitive animation is suppressed`}
-            >
-              observer degraded
-            </Badge>
-          )}
-          {parentName && (
-            <Badge variant="outline" title={`Delegated by ${parentName} (event-backed parentage)`}>
-              ↳ {parentName}
-            </Badge>
-          )}
-          {panel.machine && (
-            <Badge
-              variant="secondary"
-              title={`Running on ${panel.machine} (via the presence relay)`}
-            >
-              @ {panel.machine}
-            </Badge>
-          )}
-        </div>
+        <PanelStatusRail panel={panel} parentName={parentName} />
 
         {panel.remote_source && (
           <Tooltip
@@ -1188,6 +1224,181 @@ function CodecPanel({
         />
       </div>
     </section>
+  );
+}
+
+function PortraitSurface({ panel }: { panel: CodecPanelScene }) {
+  return (
+    <Tooltip
+      side="right"
+      triggerClassName={styles.portraitTooltipTrigger}
+      content={
+        <div className="space-y-1">
+          <p className="font-semibold">{panel.identity.display_name}&apos;s live portrait</p>
+          <p>
+            Expression {humanizeCueToken(panel.expression.value)} · activity{" "}
+            {humanizeCueToken(panel.activity.value)} · presence {panel.presence.value}
+          </p>
+          <p className="text-muted-foreground">
+            Character pack {panel.character.pack_id} · expression and activity are evidence-backed
+            when provenance allows.
+          </p>
+        </div>
+      }
+    >
+      <div data-codec-portrait-surface className={styles.portraitTooltipSurface}>
+        <Portrait panel={panel} />
+        <div
+          data-codec-portrait-readout
+          data-presence={panel.presence.value}
+          className={styles.portraitReadout}
+        >
+          <div className={styles.portraitReadoutHeader}>
+            <span className={styles.portraitReadoutBeacon} aria-hidden />
+            <span className={styles.portraitReadoutKicker}>Live state</span>
+            <span className={styles.portraitReadoutPresence}>
+              {humanizeCueToken(panel.presence.value)}
+            </span>
+          </div>
+          <strong className={styles.portraitReadoutExpression}>
+            {humanizeCueToken(panel.expression.value)}
+          </strong>
+          <div className={styles.portraitReadoutActivity}>
+            <span className={styles.portraitReadoutActivityLabel}>Activity</span>
+            <strong className={styles.portraitReadoutActivityValue}>
+              {humanizeCueToken(panel.activity.value)}
+            </strong>
+          </div>
+          <span className={styles.portraitReadoutMeter} aria-hidden>
+            <i />
+            <i />
+            <i />
+          </span>
+        </div>
+      </div>
+    </Tooltip>
+  );
+}
+
+function PanelStatusRail({ panel, parentName }: { panel: CodecPanelScene; parentName?: string }) {
+  const offline = panel.presence.value === "offline";
+  const unknownPresence = panel.presence.value === "unknown";
+
+  return (
+    <div className={styles.statusRail}>
+      <Badge
+        variant={panel.activity.value === "needs-input" ? "default" : "outline"}
+        title={`Activity: ${panel.activity.value} (${panel.activity.provenance})`}
+      >
+        {panel.activity.value === "working" && <span className="live-dot" aria-hidden />}
+        {panel.activity.value}
+      </Badge>
+      {panel.lifecycle.value !== "unknown" && (
+        <Badge
+          variant={panel.lifecycle.value === "done" ? "secondary" : "outline"}
+          title={`Lifecycle: ${panel.lifecycle.value} (${panel.lifecycle.provenance})`}
+        >
+          {panel.lifecycle.value}
+        </Badge>
+      )}
+      {panel.ledger_state?.value === "recovery-required" && (
+        <Badge
+          variant="destructive"
+          title="Ledger state: recovery-required (open spans after the turn closed)"
+        >
+          recovering
+        </Badge>
+      )}
+      {panel.ledger_state?.value === "ending" && (
+        <Badge variant="secondary" title="Ledger state: ending (finalization pending)">
+          ending
+        </Badge>
+      )}
+      {offline && (
+        <Badge variant="secondary" title="Presence: offline (event-backed)">
+          offline
+        </Badge>
+      )}
+      {unknownPresence && (
+        <Badge variant="outline" title="Presence unknown: no fresh V3 observation">
+          presence unknown
+        </Badge>
+      )}
+      {panel.progress_rhythm.value !== "unknown" && (
+        <Badge
+          variant="outline"
+          title={`Progress rhythm: ${panel.progress_rhythm.value} (${panel.progress_rhythm.provenance}, ${panel.progress_rhythm.confidence} confidence)`}
+          className={cn(
+            panel.progress_rhythm.provenance === "inferred" &&
+              "border-dashed border-muted-foreground/60 text-foreground/80",
+          )}
+        >
+          {panel.progress_rhythm.value}
+          {panel.progress_rhythm.provenance === "inferred" && (
+            <span className="ml-1 opacity-90">· inferred</span>
+          )}
+        </Badge>
+      )}
+      {panel.expression.value !== "neutral" &&
+        !(
+          panel.ledger_state?.value === "recovery-required" &&
+          panel.expression.value === "recovering"
+        ) && (
+          <Badge
+            variant="outline"
+            title={`Expression: ${panel.expression.value} (${panel.expression.provenance}, ${panel.expression.confidence} confidence)`}
+            className={cn(
+              panel.expression.provenance === "inferred" && "border-dashed text-muted-foreground",
+            )}
+          >
+            {panel.expression.value}
+            {panel.expression.provenance === "inferred" && (
+              <span className="ml-1 opacity-90">· inferred</span>
+            )}
+          </Badge>
+        )}
+      {panel.attention.value !== "none" && (
+        <Badge
+          variant={panel.attention.value === "error" ? "destructive" : "secondary"}
+          title={`Attention: ${panel.attention.value} (expires ${panel.attention.expires_at ?? "soon"})`}
+        >
+          {panel.attention.value}
+        </Badge>
+      )}
+      {panel.artifact_cue && <ArtifactCue cue={panel.artifact_cue} />}
+      {panel.friction && (
+        <Badge
+          variant="secondary"
+          className="border-amber-400/50 text-amber-700 dark:text-amber-300"
+          title={`Friction: ${panel.friction.value} (${panel.friction.provenance}, ${panel.friction.confidence} confidence)`}
+        >
+          <TriangleAlert className="mr-1 size-3" aria-hidden />
+          {humanizeCueToken(panel.friction.value)}
+        </Badge>
+      )}
+      {panel.telemetry?.value === "degraded" && (
+        <Badge
+          variant="outline"
+          className={cn(
+            "border-dashed border-muted-foreground/60 text-foreground/80",
+            styles.flexibleBadge,
+          )}
+          title={`Observer telemetry is degraded${panel.telemetry_reason ? `: ${humanizeCueToken(panel.telemetry_reason.value)}` : ""}; order-sensitive animation is suppressed`}
+        >
+          observer degraded
+        </Badge>
+      )}
+      {parentName && (
+        <Badge variant="outline" title={`Delegated by ${parentName} (event-backed parentage)`}>
+          ↳ {parentName}
+        </Badge>
+      )}
+      {panel.machine && (
+        <Badge variant="secondary" title={`Running on ${panel.machine} (via the presence relay)`}>
+          @ {panel.machine}
+        </Badge>
+      )}
+    </div>
   );
 }
 
