@@ -85,5 +85,32 @@ three production adapters all returned an accepted `planning` cue at medium
 confidence. The probe also found two gaps before dogfood: field basis rules had
 to be expressed in the response schema, and replies had to be bound to the
 request's exact generation ID and evidence digest. Both constraints now apply
-before persistence. The service remains explicit-start while the measured
-expression cohort runs.
+before persistence. The service stayed explicit-start during the measured
+expression cohort.
+
+### Cohort and activation result
+
+A fixed 30-state cohort replayed the same bounded V3 evidence through all three
+production adapters. The 90 first-read outcomes were 78 accepted, 7 invalid,
+and 5 unavailable. Accepted readers proposed 41 expression cues. Thirty-two
+repeated the expression already supplied by semantic phase, three were masked
+by deterministic evidence, and six changed one core expression to another.
+No cue added an extended expression beyond the phase fallback.
+
+Cue transitions affected 28.6% to 40.0% of comparable consecutive readings.
+Median adapter latency ranged from 15.20 to 34.89 seconds, and p95 ranged from
+19.02 to 45.94 seconds. Raw model replies were not retained; the evidence
+packet kept only validated meaning, typed failures, measurements, and reply
+digests.
+
+The service therefore remains explicit-start. Harnery does not start it with
+Codec, normal startup, or a checked-in opt-in. Broader activation requires a
+later cohort with nonzero incremental extended cues, less churn, and an
+operator A/B that shows better task comprehension.
+
+Semantic phase still creates useful extended-expression demand when the cue
+abstains. `verifying` appeared 12 times and `wrapping-up` 4 times in the cohort's
+upper-bound semantic expression mix. They are the first and second semantic
+art priorities after the required portrait tier. `planning` and `weighing`
+remain on their declared base fallbacks until later evidence supports a wider
+commission.
