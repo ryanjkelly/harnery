@@ -87,7 +87,7 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=c00ef8eb -->
+<!-- harnery:begin instructions v=0010d9bf -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
@@ -132,7 +132,7 @@ live process still holds the name; never hand-edit Harnery's history, heartbeat,
 or derived identity cache.
 
 **Declare intent on shell commands.** Every command you run is captured to the
-coordination ledger (`.harnery/events.ndjson`). Lead a shell command with a
+coordination ledger (`.harnery/ledgers/v3/`). Lead a shell command with a
 `# intent: <why>` comment (or set the tool's description) so the recorded event
 carries a reason instead of `(no intent)`; the [tool-intent
 guide](https://harnery.com/guides/tool-intent/) owns the details.

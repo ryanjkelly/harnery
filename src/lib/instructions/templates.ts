@@ -130,7 +130,7 @@ live process still holds the name; never hand-edit Harnery's history, heartbeat,
 or derived identity cache.
 
 **Declare intent on shell commands.** Every command you run is captured to the
-coordination ledger (\`.harnery/events.ndjson\`). Lead a shell command with a
+coordination ledger (\`.harnery/ledgers/v3/\`). Lead a shell command with a
 \`# intent: <why>\` comment (or set the tool's description) so the recorded event
 carries a reason instead of \`(no intent)\`; the [tool-intent
 guide](https://harnery.com/guides/tool-intent/) owns the details.
