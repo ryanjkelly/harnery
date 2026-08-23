@@ -1044,7 +1044,7 @@ function TeamPulse({ scene }: { scene: CodecScene }) {
             <dd>{summary.delegated}</dd>
           </div>
           <div data-tone="active">
-            <dt>Active</dt>
+            <dt>Active deps</dt>
             <dd>{summary.dependencies.active}</dd>
           </div>
           <div data-tone="waiting">
