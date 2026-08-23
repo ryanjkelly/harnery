@@ -37,6 +37,16 @@ export interface ExpressiveInputs {
   actions: readonly ExpressiveAction[];
   /** Currently open subagents (starts minus stops, floored at 0). */
   openSubagents: number;
+  /** Declared coordination lifecycle, when evidence carries one. */
+  lifecycleState?: { value: "active" | "blocked" | "done"; ts: string; event_id: string };
+  /** Context band from the panel's context gauge channel. */
+  contextBand?: "ample" | "reduced" | "low" | "unknown";
+  /** Newest compaction evidence, if any. */
+  lastCompaction?: { phase: "started" | "completed"; ts: string; event_id: string };
+  /** Currently open typed wait (started without a matching end). */
+  openWait?: { kind?: string; wake_at?: string; ts: string; event_id: string };
+  /** Newest observed image artifact (screenshots, browser captures). */
+  lastImageObserved?: { ts: string; event_id: string };
 }
 
 export interface ExpressiveChannels {
@@ -65,6 +75,15 @@ const INPUT_ATTENTION_MS = 60_000;
 /** Repeated research/diagnostic actions in one turn that read as a sustained
  * investigation rather than a glance. */
 const INVESTIGATING_THRESHOLD = 3;
+/* Extended-tier windows. */
+const COMPACTING_STARTED_MS = 120_000;
+const COMPACTING_COMPLETED_MS = 30_000;
+const OBSERVING_MS = 30_000;
+const DORMANT_MIN_MS = 60_000;
+/** Open subagents at which coordination reads as conducting a fleet. */
+const CONDUCTING_THRESHOLD = 3;
+/** Wait kinds that already surface as needs-input waiting, not dormancy. */
+const INPUT_WAIT_KINDS = new Set(["permission", "needs_input", "decision", "approval"]);
 
 function ms(ts: string | undefined): number {
   if (!ts) return Number.NaN;
@@ -189,6 +208,27 @@ export function deriveExpressiveChannels(
     // waiting: authoritative needs-input holds until forward progress.
     if (inputs.activity === "needs-input") return from("waiting", "projection", "high", now);
 
+    // blocked: the agent declared its objective cannot proceed. Sticky by
+    // design — it clears when lifecycle returns to active, not on a timer.
+    if (inputs.lifecycleState?.value === "blocked") {
+      return from("blocked", "event", "high", inputs.lifecycleState.ts, [
+        inputs.lifecycleState.event_id,
+      ]);
+    }
+
+    // dormant: an open typed wait (timer, scheduled wake) that is not an
+    // input demand and has lasted long enough to read as sleep.
+    if (inputs.openWait && !INPUT_WAIT_KINDS.has(inputs.openWait.kind ?? "")) {
+      const started = ms(inputs.openWait.ts);
+      const wake = ms(inputs.openWait.wake_at);
+      if (
+        (Number.isFinite(started) && nowMs - started >= DORMANT_MIN_MS) ||
+        (Number.isFinite(wake) && wake - nowMs >= DORMANT_MIN_MS)
+      ) {
+        return from("dormant", "event", "high", inputs.openWait.ts, [inputs.openWait.event_id]);
+      }
+    }
+
     // alert: companion to a fresh failure, not a severity claim.
     if (attention.value === "error" && lastError) {
       return from("alert", "event", "high", lastError.ts, [lastError.event_id]);
@@ -206,11 +246,27 @@ export function deriveExpressiveChannels(
       }
     }
 
+    // compacting: context is being reorganized; brief, dramatic, real.
+    if (inputs.lastCompaction) {
+      const cTs = ms(inputs.lastCompaction.ts);
+      const window =
+        inputs.lastCompaction.phase === "started" ? COMPACTING_STARTED_MS : COMPACTING_COMPLETED_MS;
+      if (Number.isFinite(cTs) && nowMs - cTs <= window) {
+        return from("compacting", "event", "high", inputs.lastCompaction.ts, [
+          inputs.lastCompaction.event_id,
+        ]);
+      }
+    }
+
     // celebrating: brief flourish on a successful build/test, never proof.
     if (completionAction) {
       return from("celebrating", "event", "low", completionAction.ts, [completionAction.event_id]);
     }
 
+    // conducting: a fleet of subagents, not a single delegate.
+    if (inputs.openSubagents >= CONDUCTING_THRESHOLD) {
+      return from("conducting", "projection", "high", now);
+    }
     // coordinating: only while coordination evidence is current.
     if (inputs.openSubagents > 0) return from("coordinating", "projection", "high", now);
     if (
@@ -219,6 +275,17 @@ export function deriveExpressiveChannels(
       age(lastTs) <= COORDINATING_MS
     ) {
       return from("coordinating", "event", "high", last.ts, [last.event_id]);
+    }
+
+    // observing: a fresh image artifact (screenshot, browser capture) reads
+    // as looking at something rather than reading about it.
+    if (inputs.lastImageObserved) {
+      const oTs = ms(inputs.lastImageObserved.ts);
+      if (Number.isFinite(oTs) && nowMs - oTs <= OBSERVING_MS) {
+        return from("observing", "event", "high", inputs.lastImageObserved.ts, [
+          inputs.lastImageObserved.event_id,
+        ]);
+      }
     }
 
     // investigating: sustained research/diagnostic inside one turn.
@@ -268,6 +335,11 @@ export function deriveExpressiveChannels(
       return from("deliberating", "inferred", "low", last.ts, [last.event_id]);
     }
 
+    // strained: the context gauge is in its low band while work continues.
+    if (inputs.contextBand === "low" && inOpenTurn) {
+      return from("strained", "projection", "medium", now);
+    }
+
     // focused: open turn with recent activity.
     if (
       inOpenTurn &&
@@ -275,6 +347,14 @@ export function deriveExpressiveChannels(
         inputs.activity === "working")
     ) {
       return from("focused", "projection", "high", inputs.lastTurnStarted?.ts ?? now);
+    }
+
+    // wrapping-up: the agent declared its objective done and nothing newer
+    // outranks it above; the resting face is a bow, not a blank.
+    if (inputs.lifecycleState?.value === "done") {
+      return from("wrapping-up", "event", "medium", inputs.lifecycleState.ts, [
+        inputs.lifecycleState.event_id,
+      ]);
     }
 
     return from("neutral", "projection", "high", now);

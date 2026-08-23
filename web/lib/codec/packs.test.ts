@@ -5,6 +5,8 @@ import path from "node:path";
 
 import {
   allocateCharacters,
+  EXPRESSION_FALLBACK,
+  EXTENDED_EXPRESSIONS,
   listPacks,
   REQUIRED_EXPRESSIONS,
   resolvePackAsset,
@@ -194,5 +196,50 @@ describe("resolvePackAsset", () => {
     expect(resolvePackAsset("../etc", "neutral", root)).toBeNull();
     expect(resolvePackAsset("aurora", "..%2f..", root)).toBeNull();
     expect(resolvePackAsset("missing", "neutral", root)).toBeNull();
+  });
+});
+
+describe("extended-tier expressions in packs", () => {
+  test("declared extended art validates and resolves directly", () => {
+    const dir = makePack("aurora");
+    writeFileSync(path.join(dir, "observing.webp"), "img");
+    const manifest = JSON.parse(readFileSync(path.join(dir, "pack.json"), "utf8"));
+    manifest.expressions.observing = "observing.webp";
+    writeFileSync(path.join(dir, "pack.json"), JSON.stringify(manifest));
+    const result = validatePackDir(dir);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.pack.expressions.observing).toBe("observing.webp");
+    const asset = resolvePackAsset("aurora", "observing", root);
+    expect(asset?.filePath.endsWith("observing.webp")).toBe(true);
+  });
+
+  test("a pack without extended art still validates, and the expression falls back to its parent", () => {
+    makePack("aurora");
+    const result = validatePackDir(path.join(root, "codec", "packs", "aurora"));
+    expect(result.ok).toBe(true);
+    const observing = resolvePackAsset("aurora", "observing", root);
+    expect(observing?.filePath.endsWith("investigating.webp")).toBe(true);
+    const dormant = resolvePackAsset("aurora", "dormant", root);
+    expect(dormant?.filePath.endsWith("waiting.webp")).toBe(true);
+    const wrappingUp = resolvePackAsset("aurora", "wrapping-up", root);
+    expect(wrappingUp?.filePath.endsWith("celebrating.webp")).toBe(true);
+  });
+
+  test("extended art declared but missing on disk fails validation loudly", () => {
+    const dir = makePack("aurora");
+    const manifest = JSON.parse(readFileSync(path.join(dir, "pack.json"), "utf8"));
+    manifest.expressions.compacting = "compacting.webp"; // never written
+    writeFileSync(path.join(dir, "pack.json"), JSON.stringify(manifest));
+    const result = validatePackDir(dir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.problems.join(" ")).toContain("compacting");
+  });
+
+  test("every extended expression has a required fallback parent", () => {
+    for (const expr of EXTENDED_EXPRESSIONS) {
+      const parent = EXPRESSION_FALLBACK[expr];
+      if (!parent) throw new Error(`no fallback parent for extended expression ${expr}`);
+      expect(REQUIRED_EXPRESSIONS).toContain(parent);
+    }
   });
 });

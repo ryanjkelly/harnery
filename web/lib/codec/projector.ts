@@ -93,6 +93,12 @@ interface InstanceEvidence {
   /** Successful terminal/progress evidence for bounded cadence inference. */
   successfulProgress: Array<{ ts: string; event_id: string }>;
   openSubagents: number;
+  /** Newest compaction boundary, for the compacting expression. */
+  lastCompaction?: { phase: "started" | "completed"; ts: string; event_id: string };
+  /** Open typed wait (started without a matching end), for dormancy. */
+  openWait?: { kind?: string; wake_at?: string; ts: string; event_id: string };
+  /** Newest observed image artifact, for the observing expression. */
+  lastImageObserved?: { ts: string; event_id: string };
 }
 
 /** Enough history for turn-scoped expressive rules without unbounded growth. */
@@ -219,9 +225,32 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         if (ev.task_state) slot.lastLifecycleChanged = ev;
         break;
       case "context.observed":
+        if (ev.used_percent !== undefined) slot.lastContext = ev;
+        break;
       case "context.compaction_started":
       case "context.compaction_completed":
         if (ev.used_percent !== undefined) slot.lastContext = ev;
+        slot.lastCompaction = {
+          phase: ev.event_type === "context.compaction_started" ? "started" : "completed",
+          ts: ev.ts,
+          event_id: ev.event_id,
+        };
+        break;
+      case "wait.started":
+        slot.openWait = {
+          ...(ev.wait_kind ? { kind: ev.wait_kind } : {}),
+          ...(ev.wake_at ? { wake_at: ev.wake_at } : {}),
+          ts: ev.ts,
+          event_id: ev.event_id,
+        };
+        break;
+      case "wait.ended":
+        slot.openWait = undefined;
+        break;
+      case "artifact.observed":
+        if (ev.artifact_kind === "image") {
+          slot.lastImageObserved = { ts: ev.ts, event_id: ev.event_id };
+        }
         break;
       case "coord.identity_attested":
         if (ev.identity_name) slot.identityName = ev.identity_name;
@@ -678,9 +707,24 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const task = taskLabel(hb, ev);
     const usage = contextUsage(ev);
     const panelActivity = activity(hb);
+    const panelContextBand = contextBand(hb.instance_id, ev, hb.last_heartbeat);
+    const panelLifecycle = lifecycle(hb, ev);
     const channels = deriveExpressiveChannels(
       {
         activity: panelActivity.value,
+        ...(ev?.lastLifecycleChanged?.task_state
+          ? {
+              lifecycleState: {
+                value: ev.lastLifecycleChanged.task_state,
+                ts: ev.lastLifecycleChanged.ts,
+                event_id: ev.lastLifecycleChanged.event_id,
+              },
+            }
+          : {}),
+        contextBand: panelContextBand.value,
+        ...(ev?.lastCompaction ? { lastCompaction: ev.lastCompaction } : {}),
+        ...(ev?.openWait ? { openWait: ev.openWait } : {}),
+        ...(ev?.lastImageObserved ? { lastImageObserved: ev.lastImageObserved } : {}),
         ...(ev?.lastTurnStarted
           ? {
               lastTurnStarted: { ts: ev.lastTurnStarted.ts, event_id: ev.lastTurnStarted.event_id },
@@ -707,10 +751,10 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       },
       presence: presence(hb, isActive, ev, now),
       activity: panelActivity,
-      lifecycle: lifecycle(hb, ev),
+      lifecycle: panelLifecycle,
       expression: channels.expression,
       attention: channels.attention,
-      context_band: contextBand(hb.instance_id, ev, hb.last_heartbeat),
+      context_band: panelContextBand,
       runtime: runtimeInfo(hb, ev, hb.last_heartbeat),
       ...(usage ? { context_usage: usage } : {}),
       progress_rhythm: progressRhythm(ev, nowMs, hb.last_heartbeat),
@@ -752,6 +796,8 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
           ev.activityEvidence.event_id,
         ])
       : present("unknown", "unknown", "low", ev.lastEventTs ?? now);
+    const fallbackTs = ev.lastEventTs ?? now;
+    const evContextBand = contextBand(instanceId, ev, fallbackTs);
     const channels = deriveExpressiveChannels(
       {
         activity: evActivity.value,
@@ -773,6 +819,19 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
           : {}),
         actions: ev.actionsFull,
         openSubagents: ev.openSubagents,
+        ...(ev.lastLifecycleChanged?.task_state
+          ? {
+              lifecycleState: {
+                value: ev.lastLifecycleChanged.task_state,
+                ts: ev.lastLifecycleChanged.ts,
+                event_id: ev.lastLifecycleChanged.event_id,
+              },
+            }
+          : {}),
+        contextBand: evContextBand.value,
+        ...(ev.lastCompaction ? { lastCompaction: ev.lastCompaction } : {}),
+        ...(ev.openWait ? { openWait: ev.openWait } : {}),
+        ...(ev.lastImageObserved ? { lastImageObserved: ev.lastImageObserved } : {}),
       },
       now,
     );
@@ -786,7 +845,6 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
             [ev.lastTaskChanged.event_id],
           )
         : undefined;
-    const fallbackTs = ev.lastEventTs ?? now;
     const usage = contextUsage(ev);
     const evidencePanel: CodecPanelScene = {
       instance_id: instanceId,
@@ -806,7 +864,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
         : present("unknown", "unknown", "low", fallbackTs),
       expression: channels.expression,
       attention: channels.attention,
-      context_band: contextBand(instanceId, ev, fallbackTs),
+      context_band: evContextBand,
       runtime: runtimeInfo(undefined, ev, fallbackTs),
       ...(usage ? { context_usage: usage } : {}),
       progress_rhythm: progressRhythm(ev, nowMs, fallbackTs),

@@ -179,13 +179,13 @@ function expressionForPhase(phase: SemanticPhase | undefined): CodecExpression |
   return {
     orienting: "curious",
     researching: "investigating",
-    planning: "deliberating",
+    planning: "planning",
     implementing: "building",
-    verifying: "focused",
+    verifying: "verifying",
     coordinating: "coordinating",
     waiting: "waiting",
     recovering: "recovering",
-    "wrapping-up": "celebrating",
+    "wrapping-up": "wrapping-up",
     unknown: "neutral",
   }[phase] as CodecExpression;
 }

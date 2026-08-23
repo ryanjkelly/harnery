@@ -196,3 +196,115 @@ describe("deriveExpressiveChannels", () => {
     expect(c.attention.value).toBe("none");
   });
 });
+
+describe("extended-tier expressions", () => {
+  test("blocked lifecycle outranks everything except needs-input waiting", () => {
+    const blocked = deriveExpressiveChannels(
+      inputs({
+        lifecycleState: { value: "blocked", ts: at(30), event_id: "lc-1" },
+        actions: [action({ category: "edit", ts: at(5) })],
+      }),
+      NOW,
+    );
+    expect(blocked.expression.value).toBe("blocked");
+    const waiting = deriveExpressiveChannels(
+      inputs({
+        activity: "needs-input",
+        lifecycleState: { value: "blocked", ts: at(30), event_id: "lc-1" },
+      }),
+      NOW,
+    );
+    expect(waiting.expression.value).toBe("waiting");
+  });
+
+  test("dormant on a long open timer wait, but never on input-like waits", () => {
+    const dormant = deriveExpressiveChannels(
+      inputs({ openWait: { kind: "timer", ts: at(90), event_id: "w-1" }, actions: [] }),
+      NOW,
+    );
+    expect(dormant.expression.value).toBe("dormant");
+    const farWake = deriveExpressiveChannels(
+      inputs({
+        openWait: {
+          kind: "timer",
+          ts: at(5),
+          wake_at: new Date(Date.parse(NOW) + 600_000).toISOString(),
+          event_id: "w-2",
+        },
+      }),
+      NOW,
+    );
+    expect(farWake.expression.value).toBe("dormant");
+    const inputWait = deriveExpressiveChannels(
+      inputs({ openWait: { kind: "permission", ts: at(90), event_id: "w-3" } }),
+      NOW,
+    );
+    expect(inputWait.expression.value).not.toBe("dormant");
+  });
+
+  test("compacting fires on a fresh compaction boundary and decays", () => {
+    const started = deriveExpressiveChannels(
+      inputs({ lastCompaction: { phase: "started", ts: at(60), event_id: "cp-1" } }),
+      NOW,
+    );
+    expect(started.expression.value).toBe("compacting");
+    const stale = deriveExpressiveChannels(
+      inputs({ lastCompaction: { phase: "completed", ts: at(60), event_id: "cp-2" } }),
+      NOW,
+    );
+    expect(stale.expression.value).not.toBe("compacting");
+  });
+
+  test("conducting at three open subagents, coordinating below", () => {
+    expect(deriveExpressiveChannels(inputs({ openSubagents: 3 }), NOW).expression.value).toBe(
+      "conducting",
+    );
+    expect(deriveExpressiveChannels(inputs({ openSubagents: 2 }), NOW).expression.value).toBe(
+      "coordinating",
+    );
+  });
+
+  test("observing on a fresh image artifact, investigating without one", () => {
+    const research = [action({ ts: at(20) }), action({ ts: at(15) }), action({ ts: at(10) })];
+    const observing = deriveExpressiveChannels(
+      inputs({ actions: research, lastImageObserved: { ts: at(8), event_id: "img-1" } }),
+      NOW,
+    );
+    expect(observing.expression.value).toBe("observing");
+    const noImage = deriveExpressiveChannels(inputs({ actions: research }), NOW);
+    expect(noImage.expression.value).toBe("investigating");
+  });
+
+  test("strained on a low context band inside an open turn", () => {
+    const strained = deriveExpressiveChannels(
+      inputs({ contextBand: "low", actions: [action({ ts: at(200) })] }),
+      NOW,
+    );
+    expect(strained.expression.value).toBe("strained");
+    const ample = deriveExpressiveChannels(
+      inputs({ contextBand: "ample", actions: [action({ ts: at(200) })] }),
+      NOW,
+    );
+    expect(ample.expression.value).not.toBe("strained");
+  });
+
+  test("wrapping-up replaces neutral when lifecycle is done, without masking work", () => {
+    const done = deriveExpressiveChannels(
+      inputs({
+        activity: "idle",
+        lastTurnStarted: undefined,
+        lifecycleState: { value: "done", ts: at(120), event_id: "lc-2" },
+      }),
+      NOW,
+    );
+    expect(done.expression.value).toBe("wrapping-up");
+    const stillWorking = deriveExpressiveChannels(
+      inputs({
+        lifecycleState: { value: "done", ts: at(120), event_id: "lc-2" },
+        actions: [action({ category: "edit", ts: at(5) })],
+      }),
+      NOW,
+    );
+    expect(stillWorking.expression.value).toBe("building");
+  });
+});

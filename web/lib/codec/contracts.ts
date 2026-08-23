@@ -44,6 +44,7 @@ export type CodecProgressRhythm =
   | "unknown";
 
 export type CodecExpression =
+  // Base library: every pack must ship all eleven (REQUIRED_EXPRESSIONS).
   | "neutral"
   | "focused"
   | "curious"
@@ -54,7 +55,20 @@ export type CodecExpression =
   | "waiting"
   | "recovering"
   | "celebrating"
-  | "alert";
+  | "alert"
+  // Extended tier: optional per pack. A pack that lacks the file renders the
+  // base expression named in EXPRESSION_FALLBACK (packs.ts) instead, so
+  // extended art can land incrementally without invalidating any pack.
+  | "observing"
+  | "wrapping-up"
+  | "compacting"
+  | "conducting"
+  | "weighing"
+  | "planning"
+  | "verifying"
+  | "strained"
+  | "blocked"
+  | "dormant";
 
 export type CodecAttention = "none" | "input" | "friction" | "error" | "completion";
 

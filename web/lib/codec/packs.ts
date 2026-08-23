@@ -36,6 +36,38 @@ export const REQUIRED_EXPRESSIONS: readonly CodecExpression[] = [
   "alert",
 ];
 
+/**
+ * Extended tier: expressions a pack MAY ship. Optional by design — a pack
+ * missing one renders its EXPRESSION_FALLBACK parent, so extended art lands
+ * incrementally (52 images per expression) without invalidating any pack.
+ */
+export const EXTENDED_EXPRESSIONS: readonly CodecExpression[] = [
+  "observing",
+  "wrapping-up",
+  "compacting",
+  "conducting",
+  "weighing",
+  "planning",
+  "verifying",
+  "strained",
+  "blocked",
+  "dormant",
+];
+
+/** Extended expression → the required base expression that stands in for it. */
+export const EXPRESSION_FALLBACK: Readonly<Partial<Record<CodecExpression, CodecExpression>>> = {
+  observing: "investigating",
+  "wrapping-up": "celebrating",
+  compacting: "recovering",
+  conducting: "coordinating",
+  weighing: "deliberating",
+  planning: "deliberating",
+  verifying: "focused",
+  strained: "focused",
+  blocked: "waiting",
+  dormant: "waiting",
+};
+
 export interface CodecPack {
   pack_id: string;
   pack_version: string;
@@ -113,6 +145,19 @@ export function validatePackDir(
     const file = expressions[expr];
     if (typeof file !== "string" || !FILE_RE.test(file) || file.includes("..")) {
       problems.push(`expression ${expr}: missing or invalid filename`);
+      continue;
+    }
+    if (!fs.existsSync(path.join(dir, file))) {
+      problems.push(`expression ${expr}: file ${file} not on disk`);
+      continue;
+    }
+    validated[expr] = file;
+  }
+  for (const expr of EXTENDED_EXPRESSIONS) {
+    const file = expressions[expr];
+    if (file === undefined) continue; // extended entries are optional
+    if (typeof file !== "string" || !FILE_RE.test(file) || file.includes("..")) {
+      problems.push(`expression ${expr}: declared but invalid filename`);
       continue;
     }
     if (!fs.existsSync(path.join(dir, file))) {
@@ -315,7 +360,11 @@ export function resolvePackAsset(
   const dir = path.join(packsDir(root), packId);
   const result = validatePackDir(dir);
   if (!result.ok) return null;
-  const file = result.pack.expressions[expression] ?? result.pack.expressions.neutral;
+  const fallback = EXPRESSION_FALLBACK[expression as CodecExpression];
+  const file =
+    result.pack.expressions[expression] ??
+    (fallback ? result.pack.expressions[fallback] : undefined) ??
+    result.pack.expressions.neutral;
   if (!file) return null;
   const filePath = path.join(dir, file);
   const ext = path.extname(file).toLowerCase();

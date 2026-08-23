@@ -63,6 +63,16 @@ const EXPRESSIONS: ReadonlySet<string> = new Set([
   "recovering",
   "celebrating",
   "alert",
+  "observing",
+  "wrapping-up",
+  "compacting",
+  "conducting",
+  "weighing",
+  "planning",
+  "verifying",
+  "strained",
+  "blocked",
+  "dormant",
 ]);
 
 const MAX_BUBBLE_WORDS = 4;
