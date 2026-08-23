@@ -49,13 +49,29 @@ function targets(repo?: string): Target[] {
   return selected;
 }
 
-async function changedFiles(target: Target, explicit: string[]): Promise<string[]> {
-  if (explicit.length > 0) return explicit;
-  const result = await sh("git diff --cached --name-only --diff-filter=ACMR -- '*.md'", {
-    cwd: target.path,
-  });
-  if (result.exitCode !== 0) throw new Error(result.stderr || "git diff failed");
+async function gitMarkdownPaths(target: Target, command: string): Promise<string[]> {
+  const result = await sh(command, { cwd: target.path });
+  if (result.exitCode !== 0) throw new Error(result.stderr || `${command} failed`);
   return result.stdout.split("\n").filter(Boolean);
+}
+
+async function changedFiles(
+  target: Target,
+  explicit: string[],
+  check: boolean,
+): Promise<string[]> {
+  if (explicit.length > 0) return explicit;
+  const staged = await gitMarkdownPaths(
+    target,
+    "git diff --cached --name-only --diff-filter=ACMR -- '*.md'",
+  );
+  if (check) return staged;
+
+  const [unstaged, untracked] = await Promise.all([
+    gitMarkdownPaths(target, "git diff --name-only --diff-filter=ACMR -- '*.md'"),
+    gitMarkdownPaths(target, "git ls-files --others --exclude-standard -- '*.md'"),
+  ]);
+  return [...new Set([...staged, ...unstaged, ...untracked])];
 }
 
 async function headContent(target: Target, path: string): Promise<string | null> {
@@ -110,7 +126,7 @@ export async function runDocsMetadataSync(
   const now = opts.now ?? new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const rows: DocsMetadataSyncRow[] = [];
   for (const target of targets(opts.repo)) {
-    for (const path of await changedFiles(target, opts.files ?? [])) {
+    for (const path of await changedFiles(target, opts.files ?? [], opts.check ?? false)) {
       const full = join(target.path, path);
       if (!existsSync(full)) continue;
       const currentText = readFileSync(full, "utf8");

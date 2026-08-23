@@ -39,6 +39,22 @@ function repo(): { root: string; file: string } {
 }
 
 describe("runDocsMetadataSync", () => {
+  test("repairs an unstaged worktree edit before git add", async () => {
+    const { root, file } = repo();
+    writeFileSync(file, readFileSync(file, "utf8").replace("Original.", "Changed."));
+
+    const stagedOnly = await runDocsMetadataSync({ check: true, now: NOW });
+    expect(stagedOnly).toEqual([]);
+
+    const applied = await runDocsMetadataSync({ now: NOW });
+    expect(applied[0]).toEqual(expect.objectContaining({ status: "updated" }));
+    expect(parseFrontmatter(readFileSync(file, "utf8")).data.updated_at).toBe(NOW);
+
+    spawnSync("git", ["add", "plan.md"], { cwd: root });
+    const clean = await runDocsMetadataSync({ check: true, now: "2026-08-20T12:00:00Z" });
+    expect(clean[0]).toEqual(expect.objectContaining({ status: "unchanged", fields: [] }));
+  });
+
   test("detects and repairs semantic timestamp drift", async () => {
     const { root, file } = repo();
     writeFileSync(file, readFileSync(file, "utf8").replace("Original.", "Changed."));
