@@ -26,6 +26,7 @@ import {
   readSemanticAgentDocument,
   readSemanticCache,
   readSemanticManifest,
+  type SemanticCallReceipt,
   type SemanticManifestV1,
   type SemanticReaderResolution,
   semanticCacheKey,
@@ -78,6 +79,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
   const resolutions = resolveReaders(adapters, now);
   const configurationDigest = semanticConfigurationDigest(resolutions);
   let manifest = safeManifest(input.coordRoot);
+  let preservedCallHistory: SemanticCallReceipt[] = [];
   if (
     manifest &&
     (manifest.ledger_genesis_id !== ledgerGenesisId ||
@@ -85,6 +87,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       manifest.evidence_contract_version !== SEMANTIC_EVIDENCE_CONTRACT_VERSION ||
       manifest.prompt_contract_version !== SEMANTIC_PROMPT_CONTRACT_VERSION)
   ) {
+    preservedCallHistory = activeSemanticCallHistory(manifest.call_history, nowDate.getTime());
     invalidateSemanticDerivedState(input.coordRoot);
     manifest = undefined;
   }
@@ -98,7 +101,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       prompt_contract_version: SEMANTIC_PROMPT_CONTRACT_VERSION,
       adapter_resolutions: resolutions,
       pending: [],
-      call_history: [],
+      call_history: preservedCallHistory,
       updated_at: nowIso,
     } satisfies SemanticManifestV1);
   current.adapter_resolutions = resolutions;

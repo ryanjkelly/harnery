@@ -234,6 +234,41 @@ describe("semantic once", () => {
     }
   });
 
+  test("preserves the rolling rate cap across a ledger epoch reset", async () => {
+    const root = fixtureRoot();
+    const firstEvidence = evidence("a");
+    const nextEvidence: SemanticEvidenceV1 = {
+      ...evidence("b"),
+      source: { ...evidence("b").source, ledger_genesis_id: "gex_next" },
+    };
+    const calls = { count: 0 };
+    try {
+      await runSemanticOnce({
+        coordRoot: root,
+        evidence: [firstEvidence],
+        adapters: fakeAdapters(firstEvidence, calls),
+        now: () => new Date(NOW),
+        callsPerHour: 1,
+      });
+      const report = await runSemanticOnce({
+        coordRoot: root,
+        evidence: [nextEvidence],
+        adapters: fakeAdapters(nextEvidence, calls),
+        now: () => new Date(Date.parse(NOW) + 60_000),
+        callsPerHour: 1,
+      });
+
+      expect(report.outcomes[0]?.action).toBe("deferred");
+      expect(calls.count).toBe(1);
+      expect(readSemanticManifest(root)).toMatchObject({
+        ledger_genesis_id: "gex_next",
+        call_history: [{ generation_id: GENERATION, started_at: NOW }],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("stores invalid output without retaining the raw reply", async () => {
     const root = fixtureRoot();
     const source = evidence();
