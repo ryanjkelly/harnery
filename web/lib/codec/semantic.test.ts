@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type {
-  SemanticAcceptedReadModelV1,
-  SemanticAgentReadModelV1,
+  SemanticAcceptedReadModelV2,
+  SemanticAgentReadModelV2,
 } from "../../../src/core/semantic/contract";
 import { writeSemanticAgentDocument } from "../../../src/core/semantic/storage";
 import {
@@ -14,6 +14,7 @@ import {
   type CodecScene,
   type CodecSourceEvidence,
 } from "./contracts";
+import { codecEvidenceReceiptRows } from "./evidence-receipt";
 import { applySemanticReadModel, codecSemantic } from "./semantic";
 
 const NOW = "2026-08-22T20:00:00.000Z";
@@ -91,10 +92,10 @@ function source(generationId = GENERATION): CodecSourceEvidence[] {
   ];
 }
 
-function accepted(observedThrough = "2026-08-22T19:59:00.000Z"): SemanticAcceptedReadModelV1 {
+function accepted(observedThrough = "2026-08-22T19:59:00.000Z"): SemanticAcceptedReadModelV2 {
   const cited = [EVENT];
   return {
-    schema_version: 1,
+    schema_version: 2,
     instance_id: "inst_fixture",
     generation_id: GENERATION,
     reader_outcome: "accepted",
@@ -109,7 +110,7 @@ function accepted(observedThrough = "2026-08-22T19:59:00.000Z"): SemanticAccepte
       configured_model: "gpt-5.6-luna",
       resolved_model_id: "gpt-5.6-luna",
       model_attestation: "requested-only",
-      prompt_contract_version: 1,
+      prompt_contract_version: 2,
     },
     meaning: {
       headline: {
@@ -130,6 +131,12 @@ function accepted(observedThrough = "2026-08-22T19:59:00.000Z"): SemanticAccepte
         confidence: "high",
         evidence_event_ids: cited,
       },
+      expression_cue: {
+        value: "weighing",
+        basis: "model-synthesis",
+        confidence: "medium",
+        evidence_event_ids: cited,
+      },
       next_step: {
         value: "Verify the merged scene.",
         basis: "prediction",
@@ -141,9 +148,9 @@ function accepted(observedThrough = "2026-08-22T19:59:00.000Z"): SemanticAccepte
   };
 }
 
-function unavailable(): SemanticAgentReadModelV1 {
+function unavailable(): SemanticAgentReadModelV2 {
   return {
-    schema_version: 1,
+    schema_version: 2,
     instance_id: "inst_fixture",
     generation_id: GENERATION,
     reader_outcome: "unavailable",
@@ -156,7 +163,7 @@ function unavailable(): SemanticAgentReadModelV1 {
     reader: {
       harness: "codex",
       configured_model: "gpt-5.6-luna",
-      prompt_contract_version: 1,
+      prompt_contract_version: 2,
     },
     receipt: { reason_code: "authentication_unavailable" },
     generated_at: "2026-08-22T19:59:05.000Z",
@@ -174,13 +181,38 @@ describe("Codec semantic read model", () => {
       provenance: "inferred",
       confidence: "high",
     });
-    expect(projected.panels[0]?.expression.value).toBe("building");
+    expect(projected.panels[0]?.expression).toMatchObject({
+      value: "weighing",
+      provenance: "inferred",
+      confidence: "medium",
+      evidence_event_ids: [EVENT],
+    });
     expect(codecSemantic(projected.panels[0]!)).toMatchObject({
       state: "current",
       reader: { configured_model: "gpt-5.6-luna", model_attestation: "requested-only" },
       summary: { basis: "model-synthesis" },
+      expression_cue: { value: "weighing", basis: "model-synthesis" },
       next_step: { basis: "prediction", confidence: "low" },
     });
+    expect(codecEvidenceReceiptRows(projected.panels[0]!)).toContainEqual(
+      expect.objectContaining({
+        channel: "expression cue",
+        value: "weighing",
+        provenance: "inferred",
+        confidence: "medium",
+        evidence_event_ids: [EVENT],
+      }),
+    );
+  });
+
+  test("falls back to semantic phase when the reader abstains from an expression cue", () => {
+    const root = fixtureRoot();
+    const document = accepted();
+    delete (document.meaning as { expression_cue?: unknown }).expression_cue;
+    writeSemanticAgentDocument(root, document);
+    const projected = scene(panel());
+    expect(applySemanticReadModel(projected, source(), root, new Date(NOW))).toBe(1);
+    expect(projected.panels[0]?.expression.value).toBe("building");
   });
 
   test("never overwrites an event-backed focus bubble or expression", () => {
@@ -213,6 +245,7 @@ describe("Codec semantic read model", () => {
     const projected = scene(panel());
     expect(applySemanticReadModel(projected, source(), root, new Date(NOW))).toBe(1);
     expect(projected.panels[0]?.focus_bubble).toBeUndefined();
+    expect(projected.panels[0]?.expression.value).toBe("neutral");
     expect(codecSemantic(projected.panels[0]!)).toMatchObject({ state: "stale" });
     expect(codecSemantic(projected.panels[0]!)?.headline).toBeUndefined();
   });

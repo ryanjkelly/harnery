@@ -7,7 +7,7 @@ import { whichBin } from "../../lib/headless/index.ts";
 import {
   type SemanticConfiguredModel,
   type SemanticHarness,
-  SemanticModelReplyV1Schema,
+  SemanticModelReplyV2Schema,
 } from "./contract.ts";
 import type { SemanticReaderResolution } from "./storage.ts";
 
@@ -180,7 +180,7 @@ function buildInvocation(
         "--output-format",
         "json",
         "--json-schema",
-        JSON.stringify(SemanticModelReplyV1Schema),
+        JSON.stringify(SemanticModelReplyV2Schema),
         "--model",
         route.invocation_model_id,
         "--effort",

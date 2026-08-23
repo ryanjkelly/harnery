@@ -2,6 +2,7 @@ import type { CodecPanelScene, CodecSemanticChannel } from "./contracts";
 
 export type {
   CodecSemanticChannel,
+  CodecSemanticExpressionCue,
   CodecSemanticPhase,
   CodecSemanticPresented,
   CodecSemanticReaderOutcome,

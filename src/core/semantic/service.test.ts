@@ -8,11 +8,7 @@ import {
   readSemanticServiceStatus,
   runSemanticServiceDaemon,
 } from "./service.ts";
-import {
-  semanticPaths,
-  writeSemanticAgentDocument,
-  writeSemanticManifest,
-} from "./storage.ts";
+import { semanticPaths, writeSemanticAgentDocument, writeSemanticManifest } from "./storage.ts";
 
 const roots: string[] = [];
 
@@ -132,7 +128,7 @@ describe("semantic service", () => {
       event_id: "evt_01922e33-7abc-7def-8abc-0123456789ab",
     };
     writeSemanticAgentDocument(root, {
-      schema_version: 1,
+      schema_version: 2,
       instance_id: "inst_01922e33-7abc-7def-8abc-0123456789ab",
       generation_id: generationId,
       source: {
@@ -148,7 +144,7 @@ describe("semantic service", () => {
         configured_model: "gpt-5.6-luna",
         resolved_model_id: "gpt-5.6-luna",
         model_attestation: "requested-only",
-        prompt_contract_version: 1,
+        prompt_contract_version: 2,
       },
       receipt: {
         reason_code: "rate_cap",
@@ -156,12 +152,12 @@ describe("semantic service", () => {
       },
     });
     writeSemanticManifest(root, {
-      schema_version: 1,
+      schema_version: 2,
       ledger_genesis_id: "gex_fixture",
       cursor,
       configuration_digest: `sha256:${"b".repeat(64)}`,
       evidence_contract_version: 1,
-      prompt_contract_version: 1,
+      prompt_contract_version: 2,
       adapter_resolutions: {},
       pending: [],
       call_history: [],

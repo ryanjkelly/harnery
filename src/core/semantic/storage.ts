@@ -16,13 +16,13 @@ import type { LedgerCursorV3 } from "../events/v3/reader.ts";
 import {
   SEMANTIC_EVIDENCE_CONTRACT_VERSION,
   SEMANTIC_PROMPT_CONTRACT_VERSION,
-  type SemanticAgentReadModelV1,
+  type SemanticAgentReadModelV2,
   type SemanticConfiguredModel,
   type SemanticHarness,
 } from "./contract.ts";
 import { validateSemanticReadModel } from "./validate.ts";
 
-export const SEMANTIC_MANIFEST_SCHEMA_VERSION = 1 as const;
+export const SEMANTIC_MANIFEST_SCHEMA_VERSION = 2 as const;
 const MAX_JSON_BYTES = 512 * 1024;
 const MAX_CACHE_FILES = 500;
 const MAX_CACHE_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -53,7 +53,7 @@ export interface SemanticCallReceipt {
   started_at: string;
 }
 
-export interface SemanticManifestV1 {
+export interface SemanticManifestV2 {
   schema_version: typeof SEMANTIC_MANIFEST_SCHEMA_VERSION;
   ledger_genesis_id: string;
   cursor?: LedgerCursorV3;
@@ -78,7 +78,7 @@ export interface SemanticCacheIdentity {
 }
 
 export function semanticPaths(coordRootRaw: string) {
-  const root = join(resolve(coordRootRaw), ".harnery", "semantic", "v1");
+  const root = join(resolve(coordRootRaw), ".harnery", "semantic", "v2");
   return {
     root,
     manifest: join(root, "manifest.json"),
@@ -121,10 +121,10 @@ export function semanticCacheKey(identity: SemanticCacheIdentity): `sha256:${str
   return sha256V3(canonicalJsonV3(identity));
 }
 
-export function readSemanticManifest(coordRootRaw: string): SemanticManifestV1 | undefined {
+export function readSemanticManifest(coordRootRaw: string): SemanticManifestV2 | undefined {
   const path = semanticPaths(coordRootRaw).manifest;
   if (!existsSync(path)) return undefined;
-  const value = readBoundedJson<SemanticManifestV1>(path, "semantic manifest");
+  const value = readBoundedJson<SemanticManifestV2>(path, "semantic manifest");
   if (
     value.schema_version !== SEMANTIC_MANIFEST_SCHEMA_VERSION ||
     value.evidence_contract_version !== SEMANTIC_EVIDENCE_CONTRACT_VERSION ||
@@ -137,14 +137,14 @@ export function readSemanticManifest(coordRootRaw: string): SemanticManifestV1 |
   return value;
 }
 
-export function writeSemanticManifest(coordRootRaw: string, manifest: SemanticManifestV1): void {
+export function writeSemanticManifest(coordRootRaw: string, manifest: SemanticManifestV2): void {
   writePrivateJsonAtomic(semanticPaths(coordRootRaw).manifest, manifest);
 }
 
 export function readSemanticAgentDocument(
   coordRootRaw: string,
   generationId: string,
-): SemanticAgentReadModelV1 | undefined {
+): SemanticAgentReadModelV2 | undefined {
   requireGenerationId(generationId);
   const path = join(semanticPaths(coordRootRaw).agents, `${generationId}.json`);
   if (!existsSync(path)) return undefined;
@@ -155,7 +155,7 @@ export function readSemanticAgentDocument(
   return verdict.value;
 }
 
-export function listSemanticAgentDocuments(coordRootRaw: string): SemanticAgentReadModelV1[] {
+export function listSemanticAgentDocuments(coordRootRaw: string): SemanticAgentReadModelV2[] {
   const dir = semanticPaths(coordRootRaw).agents;
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
@@ -175,7 +175,7 @@ export function listSemanticAgentDocuments(coordRootRaw: string): SemanticAgentR
 export function inspectSemanticDocument(
   coordRootRaw: string,
   instanceOrGeneration: string,
-): SemanticAgentReadModelV1 | undefined {
+): SemanticAgentReadModelV2 | undefined {
   if (instanceOrGeneration.startsWith("gen_")) {
     return readSemanticAgentDocument(coordRootRaw, instanceOrGeneration);
   }
@@ -186,7 +186,7 @@ export function inspectSemanticDocument(
 
 export function writeSemanticAgentDocument(
   coordRootRaw: string,
-  document: SemanticAgentReadModelV1,
+  document: SemanticAgentReadModelV2,
 ): void {
   const verdict = validateSemanticReadModel(document);
   if (!verdict.ok)
@@ -200,7 +200,7 @@ export function writeSemanticAgentDocument(
 export function readSemanticCache(
   coordRootRaw: string,
   cacheKey: string,
-): SemanticAgentReadModelV1 | undefined {
+): SemanticAgentReadModelV2 | undefined {
   requireDigest(cacheKey);
   const path = join(semanticPaths(coordRootRaw).cache, `${cacheKey.slice("sha256:".length)}.json`);
   if (!existsSync(path)) return undefined;
@@ -212,7 +212,7 @@ export function readSemanticCache(
 export function writeSemanticCache(
   coordRootRaw: string,
   cacheKey: string,
-  document: SemanticAgentReadModelV1,
+  document: SemanticAgentReadModelV2,
 ): void {
   requireDigest(cacheKey);
   if (document.reader_outcome !== "accepted") {

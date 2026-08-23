@@ -1,4 +1,4 @@
-import type { SemanticAgentReadModelV1, SemanticEvidenceV1 } from "./contract.ts";
+import type { SemanticAgentReadModelV2, SemanticEvidenceV1 } from "./contract.ts";
 import type { SemanticCallReceipt, SemanticPendingItem } from "./storage.ts";
 
 export const SEMANTIC_HARD_CALLS_PER_HOUR = 60;
@@ -93,7 +93,7 @@ export function semanticGenerationCallEligible(
 }
 
 export function semanticDocumentEligible(
-  document: SemanticAgentReadModelV1 | undefined,
+  document: SemanticAgentReadModelV2 | undefined,
   evidence: SemanticEvidenceV1,
   nowMs: number,
 ): boolean {

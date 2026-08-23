@@ -7,7 +7,7 @@ import type {
   SemanticConfiguredModel,
   SemanticEvidenceV1,
   SemanticHarness,
-  SemanticModelReplyV1,
+  SemanticModelReplyV2,
 } from "./contract.ts";
 import { runSemanticOnce } from "./once.ts";
 import {
@@ -51,9 +51,9 @@ function evidence(digestChar = "a"): SemanticEvidenceV1 {
   };
 }
 
-function reply(source: SemanticEvidenceV1): SemanticModelReplyV1 {
+function reply(source: SemanticEvidenceV1): SemanticModelReplyV2 {
   return {
-    schema_version: 1,
+    schema_version: 2,
     generation_id: source.generation_id,
     evidence_digest: source.evidence_digest,
     meaning: {
@@ -73,6 +73,12 @@ function reply(source: SemanticEvidenceV1): SemanticModelReplyV1 {
         value: "verifying",
         basis: "model-synthesis",
         confidence: "high",
+        evidence_event_ids: [EVENT_TWO],
+      },
+      expression_cue: {
+        value: "verifying",
+        basis: "model-synthesis",
+        confidence: "medium",
         evidence_event_ids: [EVENT_TWO],
       },
     },
@@ -141,6 +147,7 @@ describe("semantic once", () => {
     const source = evidence();
     const calls = { count: 0 };
     try {
+      expect(semanticPaths(root).root.endsWith("/.harnery/semantic/v2")).toBe(true);
       const first = await runSemanticOnce({
         coordRoot: root,
         evidence: [source],

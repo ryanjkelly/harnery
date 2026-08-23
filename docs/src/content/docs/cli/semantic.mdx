@@ -11,7 +11,7 @@ harn semantic <subcommand> [options]
 
 `harn semantic` turns the bounded facts in an active Event Ledger V3 generation
 into a broader read model for operator-facing surfaces. The generated meaning is
-derived state. It lives separately under `.harnery/semantic/v1/` and never writes
+derived state. It lives separately under `.harnery/semantic/v2/` and never writes
 back to the canonical ledger.
 
 Every claim carries the event IDs that support it. Invalid output, an unavailable
@@ -82,6 +82,14 @@ operation, attention, relationship, or freshness state. Expanded panel detail
 labels model synthesis and prediction, shows the reader and attestation, and
 removes expired meaning while retaining a typed stale or unavailable receipt.
 
+Version 2 adds an optional `expression_cue`. The reader may choose `focused`,
+`curious`, `deliberating`, `investigating`, `building`, `coordinating`,
+`planning`, `verifying`, `weighing`, or `wrapping-up`. It may also abstain. A cue
+must cite supplied events, use model-synthesis basis, and carry medium or low
+confidence. Deterministic expressions such as waits, blockers, errors,
+recovery, compaction, observation, context pressure, and open-subagent state
+always take precedence.
+
 The scene header reports whether the semantic service is running. Opening Codec
 never starts the service and never authorizes model spend. Semantic documents and
 service health are local-only; presence relay payloads strip both.
@@ -91,7 +99,7 @@ service health are local-only; presence relay payloads strip both.
 All state is disposable and rebuildable:
 
 ```text
-.harnery/semantic/v1/
+.harnery/semantic/v2/
 ├── manifest.json
 ├── agents/<generation_id>.json
 └── cache/<cache_key>.json
@@ -100,3 +108,6 @@ All state is disposable and rebuildable:
 The cache key includes the evidence digest, source harness, configured and
 resolved model IDs, evidence contract version, and prompt contract version.
 Changing any of those inputs prevents stale reuse.
+
+Version 1 documents and cache entries are rebuildable derived state. The V2
+reader does not migrate or consume them.

@@ -1,14 +1,14 @@
 import { Value } from "@sinclair/typebox/value";
 import {
   SEMANTIC_TAGS,
-  type SemanticAgentReadModelV1,
-  SemanticAgentReadModelV1Schema,
+  type SemanticAgentReadModelV2,
+  SemanticAgentReadModelV2Schema,
   type SemanticEvidenceKind,
   type SemanticEvidenceV1,
   type SemanticField,
-  type SemanticMeaningV1,
-  type SemanticModelReplyV1,
-  SemanticModelReplyV1Schema,
+  type SemanticMeaningV2,
+  type SemanticModelReplyV2,
+  SemanticModelReplyV2Schema,
 } from "./contract.ts";
 
 export interface SemanticValidationSuccess<T> {
@@ -85,16 +85,16 @@ export function validateSemanticEvidencePrivacy(
 export function validateSemanticModelReply(
   input: unknown,
   evidence: SemanticEvidenceV1,
-): SemanticValidationResult<SemanticModelReplyV1> {
-  if (!Value.Check(SemanticModelReplyV1Schema, input)) {
+): SemanticValidationResult<SemanticModelReplyV2> {
+  if (!Value.Check(SemanticModelReplyV2Schema, input)) {
     return {
       ok: false,
-      issues: [...Value.Errors(SemanticModelReplyV1Schema, input)]
+      issues: [...Value.Errors(SemanticModelReplyV2Schema, input)]
         .slice(0, 12)
         .map((error) => `schema:${error.path || "/"}:${error.message}`),
     };
   }
-  const reply = input as SemanticModelReplyV1;
+  const reply = input as SemanticModelReplyV2;
   const issues: string[] = [];
   if (reply.generation_id !== evidence.generation_id) issues.push("generation_mismatch");
   if (reply.evidence_digest !== evidence.evidence_digest) issues.push("evidence_digest_mismatch");
@@ -116,6 +116,9 @@ export function validateSemanticModelReply(
       }
     } else if (field.basis !== "model-synthesis") {
       issues.push(`${name}:must_be_model_synthesis`);
+    }
+    if (name === "expression_cue" && field.confidence === "high") {
+      issues.push("expression_cue:confidence_must_be_medium_or_low");
     }
     if (typeof field.value === "string") {
       const privacyIssue = semanticPrivacyIssue(field.value);
@@ -158,16 +161,16 @@ export function validateSemanticModelReply(
 export function validateSemanticReadModel(
   input: unknown,
   expected?: Pick<SemanticEvidenceV1, "instance_id" | "generation_id" | "evidence_digest">,
-): SemanticValidationResult<SemanticAgentReadModelV1> {
-  if (!Value.Check(SemanticAgentReadModelV1Schema, input)) {
+): SemanticValidationResult<SemanticAgentReadModelV2> {
+  if (!Value.Check(SemanticAgentReadModelV2Schema, input)) {
     return {
       ok: false,
-      issues: [...Value.Errors(SemanticAgentReadModelV1Schema, input)]
+      issues: [...Value.Errors(SemanticAgentReadModelV2Schema, input)]
         .slice(0, 12)
         .map((error) => `schema:${error.path || "/"}:${error.message}`),
     };
   }
-  const value = input as SemanticAgentReadModelV1;
+  const value = input as SemanticAgentReadModelV2;
   const issues: string[] = [];
   if (expected) {
     if (value.instance_id !== expected.instance_id) issues.push("instance_mismatch");
@@ -179,7 +182,7 @@ export function validateSemanticReadModel(
   return issues.length ? { ok: false, issues } : { ok: true, value };
 }
 
-function meaningFields(meaning: SemanticMeaningV1): Array<[string, SemanticField<unknown>]> {
+function meaningFields(meaning: SemanticMeaningV2): Array<[string, SemanticField<unknown>]> {
   return (Object.entries(meaning) as Array<[string, SemanticField<unknown>]>).filter(([, value]) =>
     Boolean(value && typeof value === "object" && Array.isArray(value.evidence_event_ids)),
   );

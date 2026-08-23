@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Value } from "@sinclair/typebox/value";
 import {
-  SemanticAgentReadModelV1Schema,
+  SemanticAgentReadModelV2Schema,
   type SemanticEvidenceV1,
   SemanticEvidenceV1Schema,
-  type SemanticModelReplyV1,
+  type SemanticModelReplyV2,
 } from "./contract.ts";
 import {
   isSemanticPrivacySafe,
@@ -46,9 +46,9 @@ function evidence(): SemanticEvidenceV1 {
   };
 }
 
-function reply(): SemanticModelReplyV1 {
+function reply(): SemanticModelReplyV2 {
   return {
-    schema_version: 1,
+    schema_version: 2,
     generation_id: GENERATION,
     evidence_digest: DIGEST,
     meaning: {
@@ -68,6 +68,12 @@ function reply(): SemanticModelReplyV1 {
         value: "verifying",
         basis: "model-synthesis",
         confidence: "high",
+        evidence_event_ids: [EVENT_TWO],
+      },
+      expression_cue: {
+        value: "verifying",
+        basis: "model-synthesis",
+        confidence: "medium",
         evidence_event_ids: [EVENT_TWO],
       },
       recent_result: {
@@ -99,9 +105,28 @@ describe("semantic read-model contract", () => {
     expect(validateSemanticModelReply(reply(), source)).toEqual({ ok: true, value: reply() });
   });
 
+  test("rejects unsupported or overconfident expression cues", () => {
+    const source = evidence();
+    const overconfident = reply();
+    overconfident.meaning.expression_cue!.confidence = "high";
+    const confidence = validateSemanticModelReply(overconfident, source);
+    expect(confidence.ok).toBe(false);
+    if (!confidence.ok) {
+      expect(confidence.issues).toContain("expression_cue:confidence_must_be_medium_or_low");
+    }
+
+    const authoritative = reply() as unknown as {
+      meaning: { expression_cue: { value: string } };
+    };
+    authoritative.meaning.expression_cue.value = "blocked";
+    const cue = validateSemanticModelReply(authoritative, source);
+    expect(cue.ok).toBe(false);
+    if (!cue.ok) expect(cue.issues.some((issue) => issue.startsWith("schema:"))).toBe(true);
+  });
+
   test("allows unavailable readers to omit unresolved model attestation", () => {
     const document = {
-      schema_version: 1,
+      schema_version: 2,
       instance_id: "inst_fixture",
       generation_id: GENERATION,
       reader_outcome: "unavailable",
@@ -114,17 +139,20 @@ describe("semantic read-model contract", () => {
       reader: {
         harness: "claude-code",
         configured_model: "haiku-4.5",
-        prompt_contract_version: 1,
+        prompt_contract_version: 2,
       },
       receipt: { reason_code: "authentication_unavailable" },
       generated_at: "2026-08-22T20:00:01.000Z",
     };
-    expect(Value.Check(SemanticAgentReadModelV1Schema, document)).toBe(true);
+    expect(Value.Check(SemanticAgentReadModelV2Schema, document)).toBe(true);
+    expect(Value.Check(SemanticAgentReadModelV2Schema, { ...document, schema_version: 1 })).toBe(
+      false,
+    );
   });
 
   test("requires resolved reader identity for accepted output", () => {
     const document = {
-      schema_version: 1,
+      schema_version: 2,
       instance_id: "inst_fixture",
       generation_id: GENERATION,
       reader_outcome: "accepted",
@@ -137,12 +165,12 @@ describe("semantic read-model contract", () => {
       reader: {
         harness: "codex",
         configured_model: "gpt-5.6-luna",
-        prompt_contract_version: 1,
+        prompt_contract_version: 2,
       },
       meaning: reply().meaning,
       generated_at: "2026-08-22T20:00:01.000Z",
     };
-    expect(Value.Check(SemanticAgentReadModelV1Schema, document)).toBe(false);
+    expect(Value.Check(SemanticAgentReadModelV2Schema, document)).toBe(false);
   });
 
   test("rejects private path, command, environment, URL, and secret sentinels", () => {

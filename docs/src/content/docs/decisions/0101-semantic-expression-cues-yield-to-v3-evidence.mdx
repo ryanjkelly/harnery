@@ -1,0 +1,83 @@
+---
+title: "0101: Let semantic expression cues yield to V3 evidence"
+description: "ADR: add a controlled semantic expression cue for neutral Codec portraits while deterministic Event Ledger V3 projections keep precedence."
+---
+
+**Status:** accepted (2026-08-22) · **Scope:** product tier (`core/semantic`, Codec)
+
+## Context
+
+Codec can derive operational expressions from Event Ledger V3 facts. A fresh
+error produces `alert`, an open input wait produces `waiting`, and a blocked
+lifecycle produces `blocked`. These states are authoritative enough for a
+deterministic precedence ladder.
+
+The semantic read model from ADR 0097 can distinguish work postures that do not
+have a single authoritative event. Its phase field already maps planning,
+verification, and wrapping up onto portrait expressions, but phase should not
+become an art vocabulary. For example, `weighing` can describe a choice inside
+the planning phase without changing the phase itself.
+
+Harnery also supports optional expression files with a required base fallback.
+This lets a new cue render safely before every portrait pack has matching art.
+
+## Alternatives
+
+**Expand the phase vocabulary for every pose.** Rejected because work stage and
+visual posture answer different questions. It would make the semantic phase
+contract depend on Codec's current artwork.
+
+**Let the model choose any Codec expression.** Rejected because several
+expressions represent facts already proven by V3, including blocked lifecycle,
+typed waits, errors, recovery, compaction, image observation, context pressure,
+and open subagents. Model synthesis must not compete with those projections.
+
+**Send raw prompts, transcripts, commands, and tool output to improve the
+choice.** Rejected because a controlled expression enum does not need private
+prose. The extra input would widen secret and prompt-injection exposure without
+proving better classification.
+
+**Keep mapping phase directly to expressions.** Rejected as the complete
+solution because it cannot represent a posture such as `weighing`. It remains
+a fallback when the model abstains from the dedicated cue.
+
+## Decision
+
+The semantic read-model and prompt contracts move to version 2.
+`SemanticMeaningV2` adds an optional `expression_cue` field whose value is one
+of these controlled presentation states:
+
+`focused`, `curious`, `deliberating`, `investigating`, `building`,
+`coordinating`, `planning`, `verifying`, `weighing`, or `wrapping-up`.
+
+The field must use `basis=model-synthesis`, confidence `medium` or `low`, and at
+least one supplied evidence event ID. Omission means abstention. The enum does
+not include `neutral` or any expression that asserts an authoritative wait,
+blocker, error, recovery, compaction, observation, context, or subagent state.
+
+Codec uses the cue only when the semantic document is accepted and current and
+the deterministic expression is still `neutral`. The cue takes precedence over
+the old phase-to-expression fallback. It carries inferred provenance, the
+model's confidence, citations, and the same expiry as the semantic document.
+
+The privacy boundary from ADR 0097 remains. The evidence builder refuses raw
+prompts, transcripts, command and tool bodies, paths, URLs, environment
+assignments, and secret-shaped text. Model-produced prose passes the same
+outbound validation before persistence. The expression cue itself is a closed
+enum, so it cannot carry private text.
+
+Harnery cuts rebuildable state over to `.harnery/semantic/v2/`. It does not read
+or migrate V1 agent documents and caches. The service remains explicit-start.
+
+## Result
+
+The V2 contract, prompt, validator, cache identity, storage path, Codec merge,
+and evidence receipt shipped together. Contract tests reject unknown cues,
+high confidence, missing citations, and authoritative expressions. Codec tests
+prove that `weighing` fills a neutral panel, phase remains the fallback when the
+reader abstains, event-backed expressions retain precedence, and a stale cue
+cannot change the portrait.
+
+The focused semantic suite passes 27 tests, and the full Codec library suite
+passes 128 tests. TypeScript typecheck passes. The service remains
+explicit-start while live harness proof and the measured expression cohort run.

@@ -7,7 +7,7 @@
 
 import { coordRoot } from "@/lib/coord-reader";
 import type {
-  SemanticAgentReadModelV1,
+  SemanticAgentReadModelV2,
   SemanticField,
   SemanticPhase,
 } from "../../../src/core/semantic/contract";
@@ -31,7 +31,7 @@ export const CODEC_SEMANTIC_LIVE_WINDOW_MS = 5 * 60_000;
 export const CODEC_SEMANTIC_TERMINAL_WINDOW_MS = 30 * 60_000;
 
 /** Read validated derived documents. Missing or malformed storage means off. */
-export function readCodecSemanticDocuments(root = coordRoot()): SemanticAgentReadModelV1[] {
+export function readCodecSemanticDocuments(root = coordRoot()): SemanticAgentReadModelV2[] {
   try {
     return listSemanticAgentDocuments(root);
   } catch {
@@ -73,14 +73,15 @@ export function applySemanticReadModel(
         expires_at: semantic.expires_at,
       };
     }
-    const expression = expressionForPhase(semantic.phase?.value);
+    const expression = semantic.expression_cue?.value ?? expressionForPhase(semantic.phase?.value);
+    const expressionSource = semantic.expression_cue ?? semantic.phase;
     if (expression && expression !== "neutral" && panel.expression.value === "neutral") {
       panel.expression = {
         value: expression,
         provenance: "inferred",
-        confidence: semantic.phase?.confidence ?? "low",
-        observed_at: semantic.phase?.observed_at ?? document.generated_at,
-        evidence_event_ids: semantic.phase?.evidence_event_ids,
+        confidence: expressionSource?.confidence ?? "low",
+        observed_at: expressionSource?.observed_at ?? document.generated_at,
+        evidence_event_ids: expressionSource?.evidence_event_ids,
         expires_at: semantic.expires_at,
       };
     }
@@ -91,7 +92,7 @@ export function applySemanticReadModel(
 export { codecSemantic } from "./semantic-contract";
 
 function presentSemantic(
-  document: SemanticAgentReadModelV1,
+  document: SemanticAgentReadModelV2,
   panel: CodecPanelScene,
   now: Date,
 ): CodecSemanticChannel {
@@ -138,6 +139,9 @@ function presentSemantic(
     headline: presentField(meaning.headline, document),
     summary: presentField(meaning.summary, document),
     phase: presentField(meaning.phase, document),
+    ...(meaning.expression_cue
+      ? { expression_cue: presentField(meaning.expression_cue, document) }
+      : {}),
     ...(meaning.purpose ? { purpose: presentField(meaning.purpose, document) } : {}),
     ...(meaning.recent_result
       ? { recent_result: presentField(meaning.recent_result, document) }
@@ -150,7 +154,7 @@ function presentSemantic(
 
 function presentField<T>(
   field: SemanticField<T>,
-  document: SemanticAgentReadModelV1,
+  document: SemanticAgentReadModelV2,
 ): CodecSemanticPresented<T> {
   return {
     value: field.value,
@@ -162,7 +166,7 @@ function presentField<T>(
   };
 }
 
-function semanticState(outcome: SemanticAgentReadModelV1["reader_outcome"]): CodecSemanticState {
+function semanticState(outcome: SemanticAgentReadModelV2["reader_outcome"]): CodecSemanticState {
   return outcome === "accepted" ? "current" : outcome;
 }
 

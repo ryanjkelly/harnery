@@ -86,6 +86,7 @@ function addSemanticRows(rows: CodecEvidenceReceiptRow[], semantic: CodecSemanti
   addSemantic(rows, "headline", semantic.headline);
   addSemantic(rows, "summary", semantic.summary);
   addSemantic(rows, "phase", semantic.phase);
+  addSemantic(rows, "expression cue", semantic.expression_cue);
   addSemantic(rows, "purpose", semantic.purpose);
   addSemantic(rows, "recent result", semantic.recent_result);
   addSemantic(rows, "semantic attention", semantic.attention);

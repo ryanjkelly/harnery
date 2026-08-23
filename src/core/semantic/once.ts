@@ -6,7 +6,7 @@ import {
 import {
   SEMANTIC_EVIDENCE_CONTRACT_VERSION,
   SEMANTIC_PROMPT_CONTRACT_VERSION,
-  type SemanticAgentReadModelV1,
+  type SemanticAgentReadModelV2,
   type SemanticEvidenceV1,
   type SemanticHarness,
 } from "./contract.ts";
@@ -27,7 +27,7 @@ import {
   readSemanticCache,
   readSemanticManifest,
   type SemanticCallReceipt,
-  type SemanticManifestV1,
+  type SemanticManifestV2,
   type SemanticReaderResolution,
   semanticCacheKey,
   semanticConfigurationDigest,
@@ -91,10 +91,10 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     invalidateSemanticDerivedState(input.coordRoot);
     manifest = undefined;
   }
-  const current: SemanticManifestV1 =
+  const current: SemanticManifestV2 =
     manifest ??
     ({
-      schema_version: 1,
+      schema_version: 2,
       ledger_genesis_id: ledgerGenesisId ?? "gex_unavailable",
       configuration_digest: configurationDigest,
       evidence_contract_version: SEMANTIC_EVIDENCE_CONTRACT_VERSION,
@@ -103,7 +103,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       pending: [],
       call_history: preservedCallHistory,
       updated_at: nowIso,
-    } satisfies SemanticManifestV1);
+    } satisfies SemanticManifestV2);
   current.adapter_resolutions = resolutions;
   current.call_history = activeSemanticCallHistory(current.call_history, nowDate.getTime());
 
@@ -270,7 +270,7 @@ function materializeAdapterResult(
   resolution: SemanticReaderResolution,
   result: SemanticAdapterResult,
   generatedAt: string,
-): { document: SemanticAgentReadModelV1 } {
+): { document: SemanticAgentReadModelV2 } {
   if (!result.ok) {
     return {
       document: unavailableDocument(
@@ -323,7 +323,7 @@ function unavailableDocument(
   evidence: SemanticEvidenceV1,
   resolution: SemanticReaderResolution,
   generatedAt: string,
-): SemanticAgentReadModelV1 {
+): SemanticAgentReadModelV2 {
   return {
     ...documentBase(evidence, generatedAt),
     reader_outcome: "unavailable",
@@ -339,7 +339,7 @@ function unavailableDocument(
       prompt_contract_version: SEMANTIC_PROMPT_CONTRACT_VERSION,
     },
     receipt: { reason_code: resolution.reason_code ?? "model_unavailable" },
-  } as SemanticAgentReadModelV1;
+  } as SemanticAgentReadModelV2;
 }
 
 function deferredDocument(
@@ -347,7 +347,7 @@ function deferredDocument(
   resolution: SemanticReaderResolution,
   eligibleAfter: string,
   generatedAt: string,
-): SemanticAgentReadModelV1 {
+): SemanticAgentReadModelV2 {
   return {
     ...documentBase(evidence, generatedAt),
     reader_outcome: "deferred",
@@ -363,12 +363,12 @@ function deferredDocument(
       prompt_contract_version: SEMANTIC_PROMPT_CONTRACT_VERSION,
     },
     receipt: { reason_code: "rate_cap", eligible_after: eligibleAfter },
-  } as SemanticAgentReadModelV1;
+  } as SemanticAgentReadModelV2;
 }
 
 function documentBase(evidence: SemanticEvidenceV1, generatedAt: string) {
   return {
-    schema_version: 1 as const,
+    schema_version: 2 as const,
     instance_id: evidence.instance_id,
     generation_id: evidence.generation_id,
     source: {
@@ -381,7 +381,7 @@ function documentBase(evidence: SemanticEvidenceV1, generatedAt: string) {
   };
 }
 
-function safeManifest(coordRoot: string): SemanticManifestV1 | undefined {
+function safeManifest(coordRoot: string): SemanticManifestV2 | undefined {
   try {
     return readSemanticManifest(coordRoot);
   } catch {
@@ -393,7 +393,7 @@ function safeManifest(coordRoot: string): SemanticManifestV1 | undefined {
 function safeAgentDocument(
   coordRoot: string,
   generationId: string,
-): SemanticAgentReadModelV1 | undefined {
+): SemanticAgentReadModelV2 | undefined {
   try {
     return readSemanticAgentDocument(coordRoot, generationId);
   } catch {
@@ -401,6 +401,6 @@ function safeAgentDocument(
   }
 }
 
-function removePending(manifest: SemanticManifestV1, generationId: string): void {
+function removePending(manifest: SemanticManifestV2, generationId: string): void {
   manifest.pending = manifest.pending.filter((item) => item.generation_id !== generationId);
 }

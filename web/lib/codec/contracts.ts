@@ -14,6 +14,7 @@
  */
 
 import type { EventTypeV3 } from "../../../src/core/events/v3/contract";
+import type { SemanticExpressionCue } from "../../../src/core/semantic/contract";
 
 export type Confidence = "high" | "medium" | "low";
 export type Provenance = "event" | "projection" | "inferred" | "unknown";
@@ -106,6 +107,7 @@ export type CodecSemanticPhase =
   | "recovering"
   | "wrapping-up"
   | "unknown";
+export type CodecSemanticExpressionCue = SemanticExpressionCue;
 export type CodecSemanticTag =
   | "research"
   | "planning"
@@ -140,6 +142,7 @@ export interface CodecSemanticChannel {
   headline?: CodecSemanticPresented<string>;
   summary?: CodecSemanticPresented<string>;
   phase?: CodecSemanticPresented<CodecSemanticPhase>;
+  expression_cue?: CodecSemanticPresented<CodecSemanticExpressionCue>;
   purpose?: CodecSemanticPresented<string>;
   recent_result?: CodecSemanticPresented<string>;
   attention?: CodecSemanticPresented<string>;
