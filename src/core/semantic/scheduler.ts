@@ -43,8 +43,11 @@ export function selectSemanticPending(
       left.generation_id.localeCompare(right.generation_id),
   );
   const firstBand = sorted.filter((item) => item.band === 1);
-  if (firstBand.length > 1 && firstBand[0]?.generation_id === lastFirstBandGenerationId) {
-    return firstBand.find((item) => item.generation_id !== lastFirstBandGenerationId);
+  if (firstBand.length > 0) {
+    const lastIndex = firstBand.findIndex(
+      (item) => item.generation_id === lastFirstBandGenerationId,
+    );
+    return firstBand[lastIndex >= 0 ? (lastIndex + 1) % firstBand.length : 0];
   }
   return sorted[0];
 }
