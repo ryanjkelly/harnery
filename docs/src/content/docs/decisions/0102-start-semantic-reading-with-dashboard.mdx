@@ -1,0 +1,70 @@
+---
+title: "0102: Start semantic reading with the dashboard"
+description: "ADR: automatically run the bounded semantic reader when the Harnery dashboard starts for an active V3 coordination root."
+---
+
+**Status:** accepted (2026-08-23) · **Scope:** Codec, semantic service
+
+## Context
+
+ADRs 0097 and 0101 kept semantic reading behind an explicit service start while
+the adapters, privacy filter, and expression contract were measured. That made
+model spend deliberate, but it also meant Codec usually had no semantic channel.
+The read model cannot improve from normal use if operators must remember a
+separate startup command.
+
+The operator chose continuous use after reviewing the cohort result. The
+privacy filter, deterministic precedence, typed failures, and 60-call rolling
+ceiling already bound the risk. Automatic startup changes when the reader runs;
+it does not give the model more evidence or authority.
+
+## Alternatives
+
+**Keep explicit startup.** Rejected because the reader stays absent from the
+surface it was built to support. The command remains useful for diagnostics and
+for resuming a paused service.
+
+**Start the reader with every Harnery command.** Rejected because ordinary
+coordination commands should not create a background process or spend model
+calls. Semantic reading is a Codec capability.
+
+**Start from Codec scene assembly.** Rejected after implementation. Codec's
+dependency boundary forbids process launchers so the projection stays read-only
+by construction. The first live attempt also showed that Next.js rewrites
+`import.meta.url` in its server bundle, which made the detached launcher look
+for `bin/harn` beside a build chunk instead of the installed package.
+
+## Decision
+
+Harnery exposes one `ensureSemanticServiceRunning` operation for dashboard
+hosts. `harn web up`, `harn web start`, and embedding supervisors call it before
+launching Next.js for an active Event Ledger V3 root. The existing filesystem
+lease keeps startup idempotent across processes. Inactive V3 roots do not start
+a reader.
+
+A failed semantic spawn logs a warning but does not block the dashboard. Codec
+still renders its deterministic scene, and restarting the dashboard retries the
+reader. The web app does not import a process launcher or mutate coordination
+state.
+
+`harn semantic service stop` remains a deliberate pause. Dashboard startup
+respects the durable stop marker, and `harn semantic service start` clears it
+when the operator wants to resume.
+
+The evidence sanitizer, closed expression enum, citation validation, raw-output
+retention policy, model routing, deterministic expression precedence, and
+rolling call ceiling do not change.
+
+When Event Ledger V3 rolls to a new genesis, the daemon discards its obsolete
+incremental cursor, rereads the active ledger, and lets the existing semantic
+invalidation path rebuild derived state for the new genesis. The rolling call
+history survives this reset, so a ledger rollover cannot bypass the spend cap.
+
+## Result
+
+Focused tests cover active, already-running, paused, inactive, and failed-start
+states and V3 genesis rollover recovery. The full Codec boundary test confirms
+that scene assembly still cannot reach a process launcher. A live smoke test
+starts an embedding-host-managed Harnery dashboard with a stopped reader and
+confirms the service reaches `running`, clears the rollover error, and completes
+passes without an explicit semantic command.

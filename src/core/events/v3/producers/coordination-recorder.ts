@@ -159,6 +159,16 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
     if (state && !matchesHookState(state, hook, input, epochId)) {
       throw new Error("V3 coordination producer state does not match the joined hook generation");
     }
+    if (state && state.attestation_id !== hook.attestation_id) {
+      // A mid-generation re-attestation (session.attestation_changed) moves
+      // the hook's attestation id without opening a new generation. The
+      // producer keeps its one continuous sequence, clock, and observation
+      // dedupe for the generation and stamps later events with the live
+      // attestation — the same in-place adoption the hook producer performs.
+      // Refusing here would wedge the producer forever, since its state path
+      // is derived from the generation alone and can never be superseded.
+      state.attestation_id = hook.attestation_id;
+    }
     if (state?.pending) {
       if (state.pending.source_id !== sourceId) {
         // A writer that died mid-commit leaves `pending` owned by an
@@ -350,7 +360,8 @@ function matchesHookState<S extends CoordinationAuthoritySignalV3>(
     state.actor_instance_id === input.actor_instance_id &&
     state.session_id === hook.session_id &&
     state.generation_id === hook.generation_id &&
-    state.attestation_id === hook.attestation_id &&
+    // attestation_id is deliberately absent: a re-attestation within the
+    // generation is a continuation, adopted by the caller, not a mismatch.
     state.privacy_epoch_id === epochId &&
     state.producer_id === input.producer_id &&
     state.build_id === input.build_id &&

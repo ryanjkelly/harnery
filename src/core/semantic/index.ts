@@ -76,6 +76,10 @@ export {
 } from "./scheduler.ts";
 export {
   acquireSemanticServiceLease,
+  type EnsureSemanticServiceDependencies,
+  type EnsureSemanticServiceResult,
+  type EnsureSemanticServiceState,
+  ensureSemanticServiceRunning,
   type RunSemanticServiceDaemonInput,
   readSemanticServiceStatus,
   requestSemanticServiceStop,

@@ -167,8 +167,8 @@ describe("event ledger V3 persistent coordination recorder", () => {
     });
 
     expect(result.state).toBe("recorded");
-    const task = readLedgerV3(root).events
-      .map(({ event }) => event)
+    const task = readLedgerV3(root)
+      .events.map(({ event }) => event)
       .find((event) => event.event_type === "coord.task_changed");
     expect(task?.scope).toMatchObject({
       instance_id: childInstance,
@@ -284,6 +284,100 @@ describe("event ledger V3 persistent coordination recorder", () => {
       ({ event }) => event.producer.component === "agent-coord",
     );
     expect(events).toHaveLength(2);
+  });
+
+  test("continues across a mid-generation re-attestation instead of refusing forever", () => {
+    const root = startedRoot();
+    let state = sha256V3("task-empty");
+    const firstInput = {
+      coordRoot: root,
+      mode: "candidate" as const,
+      signal: "task-changed" as const,
+      observation: {
+        native_observation_id: "pre-change-task",
+        state: "set" as const,
+        task: "Task before the re-attestation",
+      },
+      adapter: "claude-code" as const,
+      native_actor_session_id: "native-session",
+      actor_instance_id: "inst_operator" as const,
+      subject_instance_id: "inst_worker" as const,
+      producer_id: "prd_coord" as const,
+      build_id: "build_fixture" as const,
+      platform: "linux" as const,
+      expected_prior_state_digest: sha256V3("task-empty"),
+      desired_state_digest: sha256V3("task-set"),
+      reconciler: {
+        readStateDigest: () => state,
+        apply: () => {
+          state = sha256V3("task-set");
+        },
+      },
+    };
+    expect(recordCoordinationAuthorityV3(firstInput).state).toBe("recorded");
+
+    // The hook re-attests within the same generation (runtime tuning moved).
+    recordHookSignalV3({
+      coordRoot: root,
+      mode: "candidate",
+      signal: "user-prompt-submit",
+      payload: parsed({ session_id: "native-session", turn_id: "t1" }),
+      adapter: "claude-code",
+      instance_id: "inst_operator",
+      producer_id: "prd_hook",
+      build_id: "build_fixture",
+      platform: "linux",
+    });
+    recordHookSignalV3({
+      coordRoot: root,
+      mode: "candidate",
+      signal: "pre-tool-use",
+      payload: parsed({
+        session_id: "native-session",
+        tool_use_id: "call-1",
+        tool_name: "Bash",
+        effort: "high",
+      }),
+      adapter: "claude-code",
+      instance_id: "inst_operator",
+      producer_id: "prd_hook",
+      build_id: "build_fixture",
+      platform: "linux",
+    });
+    const change = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .find((event) => event.event_type === "session.attestation_changed");
+    if (!change) throw new Error("expected a re-attestation within the generation");
+
+    // The joined producer adopts the refreshed attestation and keeps its one
+    // continuous sequence; this second transition used to refuse forever.
+    const second = recordCoordinationAuthorityV3({
+      ...firstInput,
+      observation: {
+        native_observation_id: "post-change-task",
+        state: "set" as const,
+        task: "Task after the re-attestation",
+      },
+      expected_prior_state_digest: sha256V3("task-set"),
+      desired_state_digest: sha256V3("task-set-again"),
+      reconciler: {
+        readStateDigest: () => state,
+        apply: () => {
+          state = sha256V3("task-set-again");
+        },
+      },
+    });
+    expect(second.state).toBe("recorded");
+
+    // Adopted, not forked: the pre-change observation still deduplicates.
+    expect(recordCoordinationAuthorityV3(firstInput).state).toBe("already_recorded");
+
+    const events = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.producer.component === "agent-coord");
+    expect(events.map((event) => event.producer.sequence)).toEqual([1, 2]);
+    expect(events[0]?.attestation_id).not.toBe(change.attestation_id);
+    expect(events[1]?.attestation_id).toBe(change.attestation_id);
   });
 });
 

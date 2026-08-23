@@ -3,7 +3,8 @@ title: "0101: Let semantic expression cues yield to V3 evidence"
 description: "ADR: add a controlled semantic expression cue for neutral Codec portraits while deterministic Event Ledger V3 projections keep precedence."
 ---
 
-**Status:** accepted (2026-08-22) · **Scope:** product tier (`core/semantic`, Codec)
+**Status:** accepted (2026-08-22); activation policy superseded by ADR 0102  
+**Scope:** product tier (`core/semantic`, Codec)
 
 ## Context
 
@@ -107,6 +108,10 @@ The service therefore remains explicit-start. Harnery does not start it with
 Codec, normal startup, or a checked-in opt-in. Broader activation requires a
 later cohort with nonzero incremental extended cues, less churn, and an
 operator A/B that shows better task comprehension.
+
+ADR 0102 supersedes this explicit-start policy after the operator chose to run
+the reader continuously and improve it from live evidence. The cue precedence,
+privacy filter, validation, and failure fallbacks in this ADR do not change.
 
 Semantic phase still creates useful extended-expression demand when the cue
 abstains. `verifying` appeared 12 times and `wrapping-up` 4 times in the cohort's

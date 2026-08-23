@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
+import { ensureSemanticServiceRunning } from "../core/semantic/service.ts";
 import { lazyFetchWebRoot, webRunner } from "./web-fetch.ts";
 
 /**
@@ -67,6 +68,17 @@ export function nodeOptionsWithHeapCap(mb: number): string | undefined {
   if (mb <= 0) return inherited || undefined;
   if (/--max-old-space-size[=\s]/.test(inherited)) return inherited;
   return `${inherited} --max-old-space-size=${mb}`.trim();
+}
+
+async function startSemanticServiceWithWeb(coordRoot: string, emit: EmitContext): Promise<void> {
+  const result = await ensureSemanticServiceRunning(coordRoot);
+  if (result.state === "started") emit.log("semantic reader · started automatically", "info");
+  if (result.state === "running") emit.log("semantic reader · already running", "info");
+  if (result.state === "paused") emit.log("semantic reader · paused by operator", "info");
+  if (result.state === "inactive") emit.log("semantic reader · waiting for active V3", "info");
+  if (result.state === "unavailable") {
+    emit.log(`semantic reader · unavailable (${result.error ?? "startup failed"})`, "warn");
+  }
 }
 
 /**
@@ -193,6 +205,8 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
 
       if (!(await requireAvailablePort(emit, port))) return;
 
+      await startSemanticServiceWithWeb(coordRoot, emit);
+
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       emit.log(`harn web · http://localhost:${port} (${mode})`, "info");
       emit.log(`files origin · http://harnery-files.localhost:${port}`, "info");
@@ -281,6 +295,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         return;
       }
       if (!(await requireAvailablePort(emit, port))) return;
+      await startSemanticServiceWithWeb(coordRoot, emit);
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       emit.log(`harn web · http://localhost:${port} (start)`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");

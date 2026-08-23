@@ -43,11 +43,11 @@ export function registerSemanticCommand(
 
   const service = semantic
     .command("service")
-    .description("Run semantic reading as an explicit-start singleton service");
+    .description("Run semantic reading as a singleton service");
 
   service
     .command("start")
-    .description("Start the detached per-root semantic reader service")
+    .description("Start or resume the detached per-root semantic reader service")
     .option("--root <path>", "Explicit coordination root")
     .option("--calls-per-hour <count>", "Configured call ceiling below the hard limit", integer)
     .action(async (options: { root?: string; callsPerHour?: number }) => {

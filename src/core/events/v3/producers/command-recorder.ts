@@ -141,6 +141,14 @@ export function recordCommandSignalV3(
     if (state && !matchesHookState(state, hook, input, epochId)) {
       throw new Error("V3 command producer state does not match the joined hook generation");
     }
+    if (state && state.attestation_id !== hook.attestation_id) {
+      // A mid-generation re-attestation (session.attestation_changed) moves
+      // the hook's attestation id without opening a new generation or turn. A
+      // command span that straddles the change keeps its span, sequence, and
+      // dedupe state; later events ride the live attestation, the same
+      // in-place adoption the hook producer performs.
+      state.attestation_id = hook.attestation_id;
+    }
     let recovered = false;
     if (state?.pending) {
       const pending = state.pending;
@@ -445,7 +453,8 @@ function matchesHookState(
     state.session_id === hook.session_id &&
     state.generation_id === hook.generation_id &&
     state.turn_id === hook.current_turn_id &&
-    state.attestation_id === hook.attestation_id &&
+    // attestation_id is deliberately absent: a re-attestation within the
+    // generation is a continuation, adopted by the caller, not a mismatch.
     state.privacy_epoch_id === epochId
   );
 }

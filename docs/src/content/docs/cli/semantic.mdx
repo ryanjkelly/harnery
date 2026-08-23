@@ -39,7 +39,7 @@ verified.
 ```bash
 harn semantic once                         # run one bounded pass
 harn semantic once --calls-per-hour 12     # use a lower local ceiling
-harn semantic service start                # opt in to recurring model calls
+harn semantic service start                # explicitly start or resume the reader
 harn semantic service status               # inspect liveness and bounded metrics
 harn semantic service stop                 # finish the current call, then stop
 harn semantic doctor                       # check readers without a model call
@@ -63,11 +63,23 @@ semantic document. Consumers decide whether a document is fresh by comparing its
 source cursor to the current V3 projection. Freshness is not stored as a second
 authority in the document.
 
-`service start` is an explicit authorization for recurring model calls. It
-starts one detached service per coordination root. The service watches the
-canonical active-ledger path, debounces changes for five seconds, consumes an
-incremental ledger cursor, and keeps at least 30 seconds between calls for one
-generation. A stale process lease is recovered by the next explicit start.
+`harn web up` and `harn web start` automatically start one detached semantic
+service for an active V3 coordination root. If startup fails, the dashboard
+still starts and Codec keeps its deterministic scene. Restarting the dashboard
+tries again. The service watches the canonical active-ledger path, debounces
+changes for five seconds, consumes an incremental ledger cursor, and keeps at
+least 30 seconds between calls for one generation.
+
+Embedding hosts can call `ensureSemanticServiceRunning` from
+`harnery/core/semantic` before they launch the dashboard. The operation is
+idempotent and applies the same active-V3 and durable-pause checks as the Harnery
+CLI. If V3 changes genesis, the service resets its obsolete cursor, rebuilds the
+derived semantic state, and preserves the rolling call history.
+
+`service start` still starts or resumes the reader before web startup. A stale
+process lease is recovered by the next automatic or explicit start. A durable
+stop marker keeps dashboard startup from restarting the reader until an
+explicit start clears it.
 
 Stopping is graceful. An in-flight model request may finish, but no next request
 starts. The deterministic ledger, coordination commands, and Codec remain usable
@@ -94,8 +106,9 @@ The structured-response schema binds each reply to the request's exact
 generation ID and evidence digest. A structurally valid reply for a different
 request is rejected before persistence.
 
-The scene header reports whether the semantic service is running. Opening Codec
-never starts the service and never authorizes model spend. Semantic documents and
+The scene header reports whether the semantic service is running. Starting the
+dashboard authorizes recurring model calls under the same 60-call rolling
+ceiling as an explicit start. Codec remains read-only. Semantic documents and
 service health are local-only; presence relay payloads strip both.
 
 ## Storage boundary
