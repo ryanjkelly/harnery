@@ -82,3 +82,23 @@ attention claims, stale model replies, path and command sentinels, unsafe
 reducer labels, percent estimates, and missing accepted-reader attestation.
 Empty or absent tags need no fabricated citation.
 
+The Slice 5 dogfood reviewed 30 unique changed-evidence readings from each
+source harness. Every accepted field cited a known active or archived V3 event.
+Haiku improved comprehension over deterministic Codec in 2 of 30 readings,
+matched it once, and returned no meaning 27 times. GPT-5.6 Luna improved 18,
+matched 8, and returned no meaning 4 times. Composer 2.5 improved 6, matched
+17, and returned no meaning 7 times.
+
+The live run also found and fixed six failures: outbound private-text leakage,
+an extra call after stop, urgent-queue starvation with three generations,
+metric-log rotation from empty sweeps, rate-window reset across invalidation,
+and failure to wake a deferred document when `eligible_after` arrived without
+new ledger evidence. Focused regressions cover all six.
+
+Semantic reading therefore remains explicit-start. Harnery does not add a
+checked-in opt-in and does not start the service with Codec. Deterministic
+Codec remained complete throughout invalid, unavailable, deferred, and stopped
+states, while the readers added 10 to 65 seconds of latency and exhausted the
+60-call rolling cap during dogfood. A broader activation policy requires a new
+review with better Haiku contract adherence, measured operator comprehension,
+and per-call token or cash observability.
