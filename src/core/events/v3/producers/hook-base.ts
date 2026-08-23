@@ -61,6 +61,9 @@ export interface HookProducerContextV3Base {
   agent_role?: string;
   stop_remediation?: boolean;
   turn_ritual?: TurnRitualEvidenceV3;
+  /** Tuning read from a local runtime transcript by the recorder; hook-base
+   * itself performs no I/O. */
+  runtime_tuning?: RuntimeTuningContextV3;
 }
 
 export interface TurnRitualEvidenceV3 {
@@ -176,6 +179,7 @@ export function normalizeHookEventV3Base(
               confidence: "exact",
             }
           : { state: "expected_but_missing", capability: "model_identity", reason: "not_reported" },
+        tuning: tuningObservation(context, payload),
         capability_profile: context.capability_profile,
         declared_by_event_id: eventId,
       };
@@ -518,6 +522,88 @@ function plainRecord(value: unknown): Record<string, unknown> | undefined {
   return prototype === Object.prototype || prototype === null
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+/** Cursor encodes tuning in its parameterized model ids (…-high-fast). Other
+ * adapters do not, so absent tuning stays honest instead of being guessed. */
+const MODEL_ID_EFFORT_TOKENS = new Set([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]);
+
+export type RuntimeTuningObservationV3 = RuntimeAttestationV3Base["tuning"];
+
+/** Recorder-supplied tuning read from a local runtime transcript. */
+export interface RuntimeTuningContextV3 {
+  effort?: string;
+  speed?: string;
+  attestation: "native" | "derived";
+}
+
+/**
+ * Attest the runtime's tuning identity for one generation.
+ *
+ * Precedence: a recorder-read transcript observation, then the native payload
+ * field (CC stamps `effort.level` on tool hooks and Stop, never on
+ * SessionStart), then Cursor's model-id tokens. A payload/transcript source
+ * that was READ but carried no effort is proof the model has no dial —
+ * `unsupported` with capability `effort_selection` — while nothing-read-yet
+ * stays `expected_but_missing` so a later attestation can still land.
+ */
+function tuningObservation(
+  context: HookProducerContextV3Base,
+  payload: ParsedPayload,
+): RuntimeTuningObservationV3 {
+  const read = context.runtime_tuning;
+  if (read) {
+    if (read.effort || read.speed) {
+      return {
+        state: "observed",
+        value: {
+          ...(read.effort ? { effort: safeToken(read.effort, "unknown-effort") } : {}),
+          ...(read.speed ? { speed: safeToken(read.speed, "unknown-speed") } : {}),
+        },
+        attestation: read.attestation,
+        confidence: "exact",
+      };
+    }
+    return { state: "unsupported", capability: "effort_selection" };
+  }
+  if (payload.effort) {
+    return {
+      state: "observed",
+      value: { effort: safeToken(payload.effort, "unknown-effort") },
+      attestation: "native",
+      confidence: "exact",
+    };
+  }
+  if (context.adapter === "cursor" && payload.model) {
+    const tokens = payload.model.toLowerCase().split("-");
+    let effort: string | undefined;
+    for (let index = tokens.length - 1; index >= 0; index -= 1) {
+      const token = tokens[index];
+      if (token && MODEL_ID_EFFORT_TOKENS.has(token)) {
+        effort = token;
+        break;
+      }
+    }
+    const speed = tokens.includes("fast") ? "fast" : undefined;
+    if (effort || speed) {
+      return {
+        state: "observed",
+        value: { ...(effort ? { effort } : {}), ...(speed ? { speed } : {}) },
+        attestation: "derived",
+        confidence: "high",
+      };
+    }
+  }
+  return { state: "expected_but_missing", capability: "effort_selection", reason: "not_reported" };
 }
 
 function observedIdentity(id: string, version: string | undefined) {

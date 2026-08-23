@@ -149,3 +149,31 @@ describe("installed adapter events", () => {
     }
   });
 });
+
+describe("parsePayload effort", () => {
+  test("plucks CC's effort.level object", () => {
+    const payload = parsePayload(
+      JSON.stringify({ session_id: "s", effort: { level: "xhigh" } }),
+      "claude-code",
+    );
+    expect(payload?.effort).toBe("xhigh");
+  });
+
+  test("tolerates a flattened effort string", () => {
+    const payload = parsePayload(JSON.stringify({ session_id: "s", effort: "low" }), "claude-code");
+    expect(payload?.effort).toBe("low");
+  });
+
+  test("leaves effort undefined when absent or malformed", () => {
+    expect(
+      parsePayload(JSON.stringify({ session_id: "s" }), "claude-code")?.effort,
+    ).toBeUndefined();
+    expect(
+      parsePayload(JSON.stringify({ session_id: "s", effort: { level: 3 } }), "claude-code")
+        ?.effort,
+    ).toBeUndefined();
+    expect(
+      parsePayload(JSON.stringify({ session_id: "s", effort: [] }), "claude-code")?.effort,
+    ).toBeUndefined();
+  });
+});

@@ -110,6 +110,17 @@ export const RuntimeAttestationV3BaseSchema = StrictObject({
     StrictObject({ id: SafeToken, version: Type.Optional(SafeToken) }),
   ),
   model: ObservationV3BaseSchema(StrictObject({ provider: SafeToken, id: SafeToken })),
+  /** Runtime tuning identity: the effort dial (and speed tier where the
+   * runtime reports one). `observed` with a missing `effort` never occurs —
+   * a runtime that proved the model has no dial attests `unsupported` with
+   * capability `effort_selection` instead. Values pass through verbatim
+   * (`low`…`max`, `standard`/`fast`); display labels are a renderer concern. */
+  tuning: ObservationV3BaseSchema(
+    StrictObject({
+      effort: Type.Optional(SafeToken),
+      speed: Type.Optional(SafeToken),
+    }),
+  ),
   capability_profile: Type.String({ pattern: "^cap_[a-f0-9]{64}$" }),
   declared_by_event_id: EventId,
 });

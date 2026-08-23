@@ -25,6 +25,9 @@ export interface ParsedPayload {
   cwd?: string;
   pid?: number;
   model?: string;
+  /** CC stamps the effective effort level ({level}) on tool hooks and Stop;
+   * absent on SessionStart/UserPromptSubmit and on models with no dial. */
+  effort?: string;
   source?: string; // SessionStart: "startup" | "resume" | …
   prompt?: string; // UserPromptSubmit / beforeSubmitPrompt
   agent_message?: string; // Cursor PreToolUse: user-visible assistant text before the tool
@@ -92,6 +95,7 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     cwd: pickStr(json, "cwd"),
     pid: pickNum(json, "pid"),
     model: pickStr(json, "model"),
+    effort: pickEffortLevel(json),
     source: pickStr(json, "source"),
     prompt: pickStr(json, "prompt"),
     agent_message: pickStr(json, "agent_message"),
@@ -106,6 +110,18 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     cursor_mode: cursorMode(json, adapter, rawSessionId, rawConversationId),
     raw: normalizedRaw,
   };
+}
+
+/** CC sends `effort` as an object ({"level":"high"}); tolerate a bare string
+ * in case an adapter flattens it. */
+function pickEffortLevel(json: Record<string, unknown>): string | undefined {
+  const effort = json.effort;
+  if (typeof effort === "string" && effort.length > 0) return effort;
+  if (typeof effort === "object" && effort !== null && !Array.isArray(effort)) {
+    const level = (effort as Record<string, unknown>).level;
+    if (typeof level === "string" && level.length > 0) return level;
+  }
+  return undefined;
 }
 
 /**

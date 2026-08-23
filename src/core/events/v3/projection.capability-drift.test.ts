@@ -54,6 +54,7 @@ describe("capability drift after terminal", () => {
           adapter: adapterObservation,
           harness: adapterObservation,
           model: { state: "unknown", reason: "not_reported" },
+          tuning: { state: "unknown" as const, reason: "not_reported" },
           capability_profile: `cap_${"a".repeat(64)}` as const,
           declared_by_event_id: startId,
         },

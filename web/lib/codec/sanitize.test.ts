@@ -637,6 +637,12 @@ function startedPayload() {
         attestation: "native",
         confidence: "exact",
       },
+      tuning: {
+        state: "observed",
+        value: { effort: "high", speed: "standard" },
+        attestation: "native",
+        confidence: "exact",
+      },
       capability_profile: `cap_${"c".repeat(64)}`,
       declared_by_event_id: "evt_00000000-0000-7000-8000-000000000000",
     },

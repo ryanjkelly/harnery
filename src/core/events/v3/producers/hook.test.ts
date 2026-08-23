@@ -20,6 +20,77 @@ describe("event ledger V3 hook producer", () => {
     expect(JSON.stringify(event)).not.toContain("native-session-secret");
   });
 
+  test("attests runtime tuning across payload, derived, read, and missing sources", () => {
+    const started = (payload: ParsedPayload, extra: Partial<HookProducerContextV3> = {}) => {
+      const event = normalizeHookEventV3("session-start", payload, {
+        ...producerContext(),
+        ...extra,
+      });
+      return (
+        event?.payload as {
+          runtime_attestation: { tuning: Record<string, unknown> };
+        }
+      ).runtime_attestation.tuning;
+    };
+
+    // Native payload field (CC tool hooks / Stop).
+    expect(started(parsed({ session_id: "s", model: "claude-fable-5", effort: "high" }))).toEqual({
+      state: "observed",
+      value: { effort: "high" },
+      attestation: "native",
+      confidence: "exact",
+    });
+
+    // Nothing reported yet (CC SessionStart): stays expected, not unsupported.
+    expect(started(parsed({ session_id: "s", source: "startup" }))).toEqual({
+      state: "expected_but_missing",
+      capability: "effort_selection",
+      reason: "not_reported",
+    });
+
+    // Cursor parameterized model id: derived effort + speed.
+    expect(
+      started(parsed({ session_id: "s", model: "cursor-grok-4.6-high-fast" }), {
+        adapter: "cursor",
+      }),
+    ).toEqual({
+      state: "observed",
+      value: { effort: "high", speed: "fast" },
+      attestation: "derived",
+      confidence: "high",
+    });
+
+    // Recorder-read transcript observation (Codex turn_context) outranks everything.
+    expect(
+      started(parsed({ session_id: "s", effort: "low" }), {
+        adapter: "codex",
+        runtime_tuning: { effort: "xhigh", attestation: "native" },
+      }),
+    ).toEqual({
+      state: "observed",
+      value: { effort: "xhigh" },
+      attestation: "native",
+      confidence: "exact",
+    });
+
+    // A read that proved the model has no dial attests unsupported.
+    expect(
+      started(parsed({ session_id: "s" }), { runtime_tuning: { attestation: "native" } }),
+    ).toEqual({ state: "unsupported", capability: "effort_selection" });
+
+    // CC speed rides the read alongside effort.
+    expect(
+      started(parsed({ session_id: "s" }), {
+        runtime_tuning: { effort: "high", speed: "standard", attestation: "native" },
+      }),
+    ).toEqual({
+      state: "observed",
+      value: { effort: "high", speed: "standard" },
+      attestation: "native",
+      confidence: "exact",
+    });
+  });
+
   test("requires and emits a self-contained tool terminal", () => {
     const spanId = spanIdV3();
     const span = terminalSpan(spanId);

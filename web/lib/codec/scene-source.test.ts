@@ -82,6 +82,7 @@ describe("Codec V3 ledger tail", () => {
             confidence: "exact",
           },
           model: { state: "unsupported", capability: "model_identity" },
+          tuning: { state: "unsupported", capability: "effort_selection" },
           capability_profile: `cap_${"b".repeat(64)}`,
           declared_by_event_id: eventId,
         },
