@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { stripJsonComments } from "../core/config.ts";
 import { initializeEventLedgerV3, sha256V3 } from "../core/events/v3/index.ts";
 import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
@@ -20,6 +21,98 @@ const CLAUDE_HOOK = `"\${CLAUDE_PROJECT_DIR:-.}"/${HOOK}`;
 const CLAUDE = ADAPTER_SPECS["claude-code"];
 const CURSOR = ADAPTER_SPECS.cursor;
 const CODEX = ADAPTER_SPECS.codex;
+
+async function runInit(root: string, args: string[]): Promise<{ text: string; exitCode: number }> {
+  const lines: string[] = [];
+  let exitCode = 0;
+  const emit = {
+    text: (value: string) => lines.push(value),
+    setExitCode: (value: number) => {
+      exitCode = value;
+    },
+  } as unknown as EmitContext;
+  await createHarneryProgram({ emit }).parseAsync(["init", "--project-root", root, ...args], {
+    from: "user",
+  });
+  return { text: lines.join("\n"), exitCode };
+}
+
+describe("init --instructions-only", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  const fixture = () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-init-instructions-"));
+    roots.push(root);
+    return root;
+  };
+
+  test("writes the instruction bundle without creating or changing runtime wiring", async () => {
+    const root = fixture();
+    const settingsPath = join(root, ".codex", "hooks.json");
+    const ledgerPath = join(root, ".harnery", "ledgers", "v3", "active.ndjson");
+    mkdirSync(join(root, ".codex"), { recursive: true });
+    mkdirSync(join(root, ".harnery", "ledgers", "v3"), { recursive: true });
+    writeFileSync(settingsPath, "host-owned, intentionally not JSON\n");
+    writeFileSync(ledgerPath, "existing-ledger\n");
+
+    const result = await runInit(root, ["--adapter", "codex", "--instructions-only"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.text).toContain("event ledger state were left unchanged");
+    expect(readFileSync(settingsPath, "utf8")).toBe("host-owned, intentionally not JSON\n");
+    expect(readFileSync(ledgerPath, "utf8")).toBe("existing-ledger\n");
+    expect(existsSync(join(root, ".harnery", "config.jsonc"))).toBe(false);
+    expect(existsSync(join(root, ".git", "hooks", "pre-commit"))).toBe(false);
+    expect(readFileSync(join(root, "AGENTS.md"), "utf8")).toContain("harnery:begin instructions");
+    expect(existsSync(join(root, ".agents", "skills", "harn-team", "SKILL.md"))).toBe(true);
+  });
+
+  test("check ignores absent runtime wiring and reports only instruction drift", async () => {
+    const root = fixture();
+    await runInit(root, ["--adapter", "codex", "--instructions-only"]);
+
+    const fresh = await runInit(root, ["--adapter", "codex", "--instructions-only", "--check"]);
+    expect(fresh.exitCode).toBe(0);
+    expect(fresh.text).toContain("instructions + skills are current");
+    expect(fresh.text).not.toContain("event ledger V3");
+    expect(fresh.text).not.toContain("hooks.json");
+
+    const agentsPath = join(root, "AGENTS.md");
+    writeFileSync(
+      agentsPath,
+      readFileSync(agentsPath, "utf8").replace(
+        /instructions v=[0-9a-f]+/,
+        "instructions v=00000000",
+      ),
+    );
+    const stale = await runInit(root, ["--adapter", "codex", "--instructions-only", "--check"]);
+    expect(stale.exitCode).toBe(2);
+    expect(stale.text).toContain("AGENTS.md block: stale");
+    expect(stale.text).not.toContain("event ledger V3");
+    expect(stale.text).not.toContain("hooks.json");
+  });
+
+  test("dry-run previews the bundle without writing any file", async () => {
+    const root = fixture();
+    const result = await runInit(root, [
+      "--adapter",
+      "claude-code",
+      "--instructions-only",
+      "--dry-run",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.text).toContain("no changes written");
+    expect(existsSync(join(root, "AGENTS.md"))).toBe(false);
+    expect(existsSync(join(root, "CLAUDE.md"))).toBe(false);
+    expect(existsSync(join(root, ".claude"))).toBe(false);
+    expect(existsSync(join(root, ".harnery"))).toBe(false);
+  });
+});
 
 describe("wireHooks: Claude Code", () => {
   test("wires every event into an empty settings object", () => {

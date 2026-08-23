@@ -61,6 +61,7 @@ interface InitOpts {
   adapter: string;
   dryRun?: boolean;
   check?: boolean;
+  instructionsOnly?: boolean;
   projectRoot?: string;
 }
 
@@ -75,7 +76,11 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
     )
     .option("--adapter <id>", "claude-code | cursor | codex", "claude-code")
     .option("--dry-run", "Show what would change without writing")
-    .option("--check", "Report instructions/skills drift without writing; exit 0/2/1")
+    .option("--check", "Report managed-surface drift without writing; exit 0/2/1")
+    .option(
+      "--instructions-only",
+      "Refresh only AGENTS.md regions and Harnery-owned skills; leave runtime wiring untouched",
+    )
     .option("--project-root <path>", "Project root (default: git toplevel, else cwd)")
     .action((opts: InitOpts) => {
       const adapter = opts.adapter as AdapterId;
@@ -93,6 +98,44 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       // init inside any checkout). Without this, re-running init from a host
       // CLI re-stamps the host's name into committed agent-facing surfaces.
       const bin = pinnedBinName(projectRoot) ?? (binName?.trim() ? binName : DEFAULT_BIN_NAME);
+
+      // ── --instructions-only: committed guidance, never runtime wiring ────
+      // Some hosts consume Harnery's managed instruction bundle without
+      // enabling local adapter hooks or an event ledger. Keep this branch
+      // before every coord-root, config, ledger, adapter-settings, and Git-hook
+      // operation so its no-runtime-writes contract is structural.
+      if (opts.instructionsOnly === true) {
+        if (opts.check === true) {
+          const { status, issues } = checkInstructions(projectRoot, { binName: bin, adapter });
+          const head =
+            status === "fresh"
+              ? `${bin} init --instructions-only --check: instructions + skills are current`
+              : status === "drift"
+                ? `${bin} init --instructions-only --check: drift found (re-run \`init --instructions-only\` to refresh)`
+                : `${bin} init --instructions-only --check: error`;
+          const lines = issues.length
+            ? `\n${issues.map((issue) => `  ✗ ${issue}`).join("\n")}`
+            : "";
+          emit.text(`${head}${lines}`);
+          emit.setExitCode(status === "fresh" ? 0 : status === "drift" ? 2 : 1);
+          return;
+        }
+
+        const dryRun = opts.dryRun === true;
+        let applied: ApplyResult;
+        try {
+          applied = applyInstructions(projectRoot, { binName: bin, adapter, dryRun });
+        } catch (err) {
+          if (!(err instanceof HostAddendumError)) throw err;
+          emit.text(`${bin} init --instructions-only: ${err.message}`);
+          emit.setExitCode(1);
+          return;
+        }
+        emit.text(
+          renderInstructionsOnly(projectRoot, bin, dryRun, applied.actions, applied.warnings),
+        );
+        return;
+      }
 
       // ── --check: read-only drift report on every init-managed surface ─────
       if (opts.check === true) {
@@ -697,6 +740,25 @@ function render(
     ? "\nRe-run without --dry-run to apply."
     : "\nDone. Start a session and check `harn agents whoami`.";
   return `${head}\n  root: ${projectRoot}\n${actions.map((a) => `  ${a}`).join("\n")}${warnBlock}${tail}`;
+}
+
+function renderInstructionsOnly(
+  projectRoot: string,
+  binName: string,
+  dryRun: boolean,
+  actions: string[],
+  warnings: string[] = [],
+): string {
+  const head = dryRun
+    ? `${binName} init --instructions-only (dry run): no changes written`
+    : `${binName} init --instructions-only`;
+  const warnBlock = warnings.length
+    ? `\n${warnings.map((warning) => `  ! ${warning}`).join("\n")}`
+    : "";
+  const tail = dryRun
+    ? "\nRe-run without --dry-run to apply."
+    : "\nDone. Adapter hooks, managed Git hooks, configuration, and event ledger state were left unchanged.";
+  return `${head}\n  root: ${projectRoot}\n${actions.map((action) => `  ${action}`).join("\n")}${warnBlock}${tail}`;
 }
 
 function gitTopLevel(): string | null {

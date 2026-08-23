@@ -1,0 +1,59 @@
+---
+title: "ADR 0106: refresh instructions without runtime wiring"
+description: Let init refresh Harnery-owned instructions and skills without changing hooks, configuration, or Event Ledger V3.
+sidebar:
+  order: 106
+---
+
+**Date:** 2026-08-23
+**Status:** Accepted
+
+## Context
+
+The instruction bundle and the local coordination runtime have different
+lifecycles. A project may need the current managed regions in `AGENTS.md` and
+the current `harn-*` skills while deliberately leaving adapter hooks and Event
+Ledger V3 disabled. The original `harn init` contract always managed both.
+
+That coupling made a guidance refresh unsafe for instruction-only consumers.
+Re-running `init` could create `.harnery/`, stamp configuration defaults,
+initialize a ledger epoch, rewrite adapter settings, and install managed Git
+hooks even when the caller wanted only committed agent guidance.
+
+## Alternatives considered
+
+- **Tell consumers to copy the rendered files.** Rejected because copied
+  regions and skills lose Harnery's ownership markers, exclusion handling,
+  host-addendum lifecycle, and drift checks.
+- **Add a separate instructions refresh command.** Rejected because `init`
+  already owns apply, check, dry-run, and deinit lifecycle for the same bundle.
+  A second command would duplicate that contract.
+- **Add skip flags for every runtime surface.** Rejected because a growing set
+  of negative flags is easy to combine incorrectly. The caller has one clear
+  intent, so one positive mode should express it.
+
+## Decision
+
+Add `harn init --instructions-only`. The selected `--adapter` still determines
+where skills are installed: `.claude/skills/` for Claude Code and
+`.agents/skills/` for Cursor or Codex.
+
+The mode calls only the existing instruction-bundle operations:
+
+- normal mode applies the managed `AGENTS.md` regions, skills, and the Claude
+  import shim when applicable;
+- `--dry-run` previews those changes without writing;
+- `--check` evaluates only instruction and skill drift and keeps the existing
+  `0` fresh, `2` drift, `1` error exit contract.
+
+The branch executes before all coordination-root, configuration, ledger,
+adapter-settings, and managed Git-hook operations. This ordering makes the
+no-runtime-writes guarantee structural rather than dependent on each runtime
+operation remembering to inspect the flag.
+
+## Result
+
+An instruction-only consumer can refresh Harnery-owned guidance after an
+upgrade without enabling local runtime integration. Full `harn init` behavior
+is unchanged. Tests cover invalid adapter settings, a pre-existing ledger,
+missing runtime wiring during `--check`, and a write-free dry run.

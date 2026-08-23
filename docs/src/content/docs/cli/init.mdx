@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```
-harn init [--adapter claude-code|cursor|codex] [--dry-run] [--check] [--project-root <path>]
+harn init [--adapter claude-code|cursor|codex] [--instructions-only] [--dry-run] [--check] [--project-root <path>]
 ```
 
 One command to make a project harnery-ready. It does the setup steps that are otherwise easy to miss, and that fail **silently** when missed:
@@ -57,6 +57,33 @@ When you run `init` through a host CLI that composes Harnery under its own bin n
 harn init            # wire the current project for Claude Code
 harn init --dry-run  # preview every change without writing
 ```
+
+## Refresh instructions without runtime wiring
+
+Use `--instructions-only` when a project consumes Harnery's managed agent
+guidance but must not enable local coordination runtime wiring:
+
+```bash
+harn init --adapter codex --instructions-only
+```
+
+This mode refreshes only the managed regions in `AGENTS.md`, the `harn-*`
+skills for the selected adapter, and the Claude import shim when applicable. It
+does not create `.harnery/`, stamp configuration defaults, initialize or
+refresh Event Ledger V3, read or write adapter settings, or install managed Git
+hooks. The adapter flag still selects the skills directory.
+
+Both modifiers keep the same scope:
+
+```bash
+harn init --adapter codex --instructions-only --dry-run
+harn init --adapter codex --instructions-only --check
+```
+
+The scoped check reports only instruction and skill drift. Its exit contract
+remains `0` for fresh, `2` for drift, and `1` for an unreadable or invalid
+instruction source. Use the ordinary `harn init --check` when runtime wiring
+must be current too. See [ADR 0106](/decisions/0106-refresh-instructions-without-runtime-wiring/).
 
 ## Idempotent + non-destructive
 
