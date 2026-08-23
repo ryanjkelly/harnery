@@ -382,9 +382,36 @@ export function resolveOwnerWithSource(): {
   // Every supported adapter exports its native session id into subprocesses.
   // Match it against the live V3 producer state, never a disposable cache.
   if (shouldPreferSessionEnv()) {
-    const bySession = resolveOwnerBySessionEnv(root);
+    const bySession = resolveOwnerBySessionEnvDetailed(root);
     if (bySession) {
-      return { owner: bySession, source: "session_env" };
+      // Env vars cross process boundaries that session identity does not: a
+      // nested different-adapter child inherits its spawner's exported id (a
+      // Codex session's CODEX_THREAD_ID survives into a `claude -p` child's
+      // shells untouched), and that stale statement joins the spawner's live
+      // producer. The nearest token-verified pid-map anchor names the session
+      // whose tool environment this process actually runs in, so on a
+      // CROSS-adapter conflict the anchor wins — the anchoring adapter never
+      // stamps another adapter's variable, so a foreign-adapter id here is
+      // inherited context, while the anchor row is re-healed on every tool
+      // call. A SAME-adapter conflict keeps the env: the adapter stamps its
+      // own variable fresh per tool call, and the row may lag one heal (e.g.
+      // a session id change inside one process). Only per-session-process
+      // adapters may anchor (claude-code, codex) — Cursor sessions share one
+      // terminal process, so a verified Cursor row can belong to a sibling
+      // session. Unverified rows keep losing to the env too: without a start
+      // token the row is the guess the env ordering was introduced to beat.
+      // Never for bridge-marked children: a connector crosses a process-tree
+      // boundary, so an anchor in THIS tree is someone else's by definition.
+      const anchor = bridge ? null : nearestVerifiedSessionAnchor(root);
+      if (
+        anchor &&
+        anchor.owner !== bySession.owner &&
+        !bySession.adapters.includes(anchor.platform) &&
+        (anchor.platform === "claude-code" || anchor.platform === "codex")
+      ) {
+        return { owner: anchor.owner, source: "pidmap" };
+      }
+      return { owner: bySession.owner, source: "session_env" };
     }
   }
 
@@ -409,6 +436,42 @@ export function resolveOwnerWithSource(): {
   }
 
   return { owner: null, source: "none" };
+}
+
+/**
+ * The nearest pid-map anchor on our own ppid chain whose start token PROVES the
+ * row still describes the process holding that pid, or null when the nearest
+ * row is unverified, recycled, or absent.
+ *
+ * Nearest matters: in a nested-agent tree (session A spawns a headless session
+ * B whose shell runs this code), both A's and B's adapter processes are
+ * ancestors, and only the innermost one owns this process's tool environment.
+ * Exported for unit testing with an injectable root.
+ */
+export function nearestVerifiedSessionAnchor(
+  root: string,
+): { owner: string; platform: string } | null {
+  const pidmapDir = resolve(root, ".harnery", "pid-map");
+  if (!existsSync(pidmapDir)) return null;
+  let pid: number | null = process.pid;
+  for (let hop = 0; hop < 20; hop++) {
+    if (pid === null) break;
+    const row = readPidmapRow(pidmapDir, pid);
+    if (row) {
+      const owner = parsePidmapRowOwner(row);
+      if (owner && !pidWasRecycled(pid, row)) {
+        // A recycled row is about a dead process's tenure of this pid — walk
+        // past it like the owner walk does. A live row without a provable
+        // token match is the nearest anchor but not a VERIFIED one: stop and
+        // report none, so the session env keeps outranking guesses.
+        const token = parsePidmapRowStartToken(row);
+        if (!token || !pidStartToken(pid)) return null;
+        return { owner, platform: parsePidmapRowPlatform(row) };
+      }
+    }
+    pid = readPpid(pid);
+  }
+  return null;
 }
 
 /**
@@ -525,17 +588,37 @@ function shouldPreferSessionEnv(): boolean {
  * Exported for unit testing with an injectable root.
  */
 export function resolveOwnerBySessionEnv(root: string): string | null {
+  return resolveOwnerBySessionEnvDetailed(root)?.owner ?? null;
+}
+
+/**
+ * `resolveOwnerBySessionEnv` plus WHICH adapter's producer state the session id
+ * joined. The caller uses the adapter to tell a same-adapter conflict (the env
+ * var is stamped fresh per tool call and outranks a possibly-lagging pid-map
+ * row) from a cross-adapter one (the var is inherited context from an outer
+ * session and the verified row wins).
+ */
+export function resolveOwnerBySessionEnvDetailed(
+  root: string,
+): { owner: string; adapters: string[] } | null {
   const sessionIds = sessionIdsFromEnv();
   if (sessionIds.length === 0) return null;
   const adapters = adapterCandidatesFromEnv();
-  const matches = new Set<string>();
+  const matches = new Map<string, Set<string>>();
   for (const sessionId of sessionIds) {
     for (const adapter of adapters) {
       const state = readHookProducerStateV3(root, adapter, sessionId);
-      if (state && !state.terminal) matches.add(nativeOwnerForV3Instance(root, state.instance_id));
+      if (state && !state.terminal) {
+        const owner = nativeOwnerForV3Instance(root, state.instance_id);
+        const set = matches.get(owner) ?? new Set<string>();
+        set.add(adapter);
+        matches.set(owner, set);
+      }
     }
   }
-  return matches.size === 1 ? [...matches][0]! : null;
+  if (matches.size !== 1) return null;
+  const [owner, adapterSet] = [...matches.entries()][0]!;
+  return { owner, adapters: [...adapterSet] };
 }
 
 /**

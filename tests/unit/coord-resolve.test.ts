@@ -404,6 +404,66 @@ describe("resolveOwnerBySessionEnv (adapter session id → live V3 producer)", (
     });
   });
 
+  test("an inherited foreign-adapter session id cannot outrank a verified own-adapter anchor", () => {
+    // The nested-agent leak: a Codex session spawns a headless Claude child,
+    // whose shells inherit the spawner's CODEX_THREAD_ID untouched while
+    // carrying a token-verified claude-code pid-map anchor of their own. The
+    // env id joins the spawner's live producer, but the anchor names the
+    // session this process actually belongs to — the anchor must win, or the
+    // child's coordination evidence lands under the spawner forever.
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    seedV3Session(root, "agent-spawner", { sessionId: "thread-spawner", adapter: "codex" });
+    writePidmapRow(root, process.pid, "agent-inner-child", "claude-code");
+
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    process.env.CODEX_THREAD_ID = "thread-spawner";
+
+    expect(resolveOwnerWithSource()).toEqual({
+      owner: "agent-inner-child",
+      source: "pidmap",
+    });
+  });
+
+  test("a same-adapter conflict keeps the session env over the anchor row", () => {
+    // Same process, two claude-code claims: the row may lag one heal behind a
+    // session-id change, while the adapter stamps its own variable fresh per
+    // tool call. The env is the statement of fact here.
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    seedV3Session(root, "agent-current", {
+      sessionId: "sess-current",
+      adapter: "claude-code",
+    });
+    writePidmapRow(root, process.pid, "agent-lagging-row", "claude-code");
+
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-current";
+
+    expect(resolveOwnerWithSource()).toEqual({
+      owner: "agent-current",
+      source: "session_env",
+    });
+  });
+
+  test("an unverified (legacy) anchor row cannot outrank the session env", () => {
+    // Rows written before start tokens existed are the guesses the env
+    // ordering was introduced to beat; the cross-adapter exception requires a
+    // token-verified anchor.
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    seedV3Session(root, "agent-spawner", { sessionId: "thread-spawner", adapter: "codex" });
+    writeFileSync(
+      path.join(root, ".harnery", "pid-map", String(process.pid)),
+      "agent-legacy-row\tclaude-code",
+    );
+
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    process.env.CODEX_THREAD_ID = "thread-spawner";
+
+    expect(resolveOwnerWithSource()).toEqual({
+      owner: "agent-spawner",
+      source: "session_env",
+    });
+  });
+
   test("Cursor session env wins over a shared cursor pid-map row", () => {
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
     seedV3Session(root, "agent-current", { sessionId: "sess-current", adapter: "cursor" });

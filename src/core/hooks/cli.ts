@@ -1084,6 +1084,7 @@ async function main(): Promise<number> {
           ...debugBase,
           skipped: "stop-remediation-cap-exhausted",
           blocked_rule: verdict.rule,
+          session_id: sessionId,
         });
       } else {
         // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr

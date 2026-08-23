@@ -3003,6 +3003,15 @@ interface HealthReport {
   // V3 event-ledger producer health: open tool spans, pending finalization
   // requests, intake/diagnostics spool depth, span-count pressure.
   event_ledger: EventLedgerHealthV3;
+  // Stop-hook remediation cap exhaustions in the window: sessions whose
+  // end-of-turn evidence never landed, so the hook stopped bouncing them and
+  // let the turn end unenforced. Each one is a session that could not comply —
+  // the signal that used to be visible only as a repeating notification sound.
+  stop_remediation: {
+    total: number;
+    latest_at: string | null;
+    sessions: string[];
+  };
   anomalies: string[];
 }
 
@@ -3206,6 +3215,50 @@ export function collectEventLedgerHealthV3(root: string, nowMs = Date.now()): Ev
     },
     span_pressure: spanPressure,
     collection_errors: collectionErrors,
+  };
+}
+
+/**
+ * Tally stop-hook remediation-cap exhaustions in the window from
+ * `.harnery/debug/agent-hook.ndjson` (rows with
+ * `skipped: "stop-remediation-cap-exhausted"`). Each one is a session whose
+ * end-of-turn evidence never landed, so the Stop hook gave up bouncing it and
+ * let the turn end unenforced — a compliance gap an operator should see
+ * without grepping the debug ledger.
+ */
+export function readStopRemediationExhaustions(
+  root: string,
+  cutoffMs: number,
+): { total: number; latestAt: string | null; sessions: string[] } {
+  const p = resolve(root, ".harnery", "debug", "agent-hook.ndjson");
+  if (!existsSync(p)) return { total: 0, latestAt: null, sessions: [] };
+  let raw: string;
+  try {
+    raw = readFileSync(p, "utf8");
+  } catch {
+    return { total: 0, latestAt: null, sessions: [] };
+  }
+  let total = 0;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  const sessions = new Set<string>();
+  for (const line of raw.split("\n")) {
+    if (!line.includes("stop-remediation-cap-exhausted")) continue;
+    try {
+      const e = JSON.parse(line) as { ts?: string; skipped?: string; session_id?: string };
+      if (e.skipped !== "stop-remediation-cap-exhausted") continue;
+      const tsMs = e.ts ? Date.parse(e.ts) : Number.NaN;
+      if (!Number.isFinite(tsMs) || tsMs < cutoffMs) continue;
+      total++;
+      latestMs = Math.max(latestMs, tsMs);
+      if (e.session_id && sessions.size < 5) sessions.add(e.session_id);
+    } catch {
+      /* skip malformed */
+    }
+  }
+  return {
+    total,
+    latestAt: Number.isFinite(latestMs) ? new Date(latestMs).toISOString() : null,
+    sessions: [...sessions],
   };
 }
 
@@ -3769,6 +3822,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   }
 
   const hookErrors = readHookErrors(root, cutoffMs, nowMs);
+  const stopRemediation = readStopRemediationExhaustions(root, cutoffMs);
   const stream = readStreamStats(root);
   const eventLedger = collectEventLedgerHealthV3(root);
 
@@ -3888,6 +3942,15 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       `${zombieCount} zombie heartbeat(s) in active/ (${zombieSamples.join(", ")}); broken files the sweep isn't reaping`,
     );
   }
+  if (stopRemediation.total > 0) {
+    const who =
+      stopRemediation.sessions.length > 0
+        ? ` (sessions: ${stopRemediation.sessions.map((s) => s.slice(0, 8)).join(", ")})`
+        : "";
+    anomalies.push(
+      `stop-hook remediation cap exhausted ${stopRemediation.total}x in ${opts.since}${who}; these sessions ended turns without the end-of-turn ritual — check why their evidence never lands`,
+    );
+  }
   if (eventLedger.state === "live") {
     // Open spans whose generation has no open turn: the turn ended without its
     // tool spans closing, so an explicit end can only queue, never finalize.
@@ -3956,6 +4019,11 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     stream,
     zombies: { count: zombieCount, samples: zombieSamples },
     event_ledger: eventLedger,
+    stop_remediation: {
+      total: stopRemediation.total,
+      latest_at: stopRemediation.latestAt,
+      sessions: stopRemediation.sessions,
+    },
     anomalies,
   };
 
