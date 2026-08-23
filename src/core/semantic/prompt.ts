@@ -1,10 +1,11 @@
+import type { TSchema } from "@sinclair/typebox";
 import {
   SEMANTIC_EXPRESSION_CUES,
   SEMANTIC_PHASES,
   SEMANTIC_PROMPT_CONTRACT_VERSION,
   SEMANTIC_TAGS,
   type SemanticEvidenceV1,
-  SemanticModelReplyV2Schema,
+  semanticModelReplyV2SchemaFor,
 } from "./contract.ts";
 import { validateSemanticEvidencePrivacy } from "./validate.ts";
 
@@ -12,6 +13,7 @@ export const SEMANTIC_MAX_REQUEST_BYTES = 48 * 1024;
 
 export interface SemanticPromptEnvelope {
   prompt: string;
+  response_schema: TSchema;
   bytes: number;
   token_upper_bound: number;
 }
@@ -21,6 +23,7 @@ export function buildSemanticPrompt(evidence: SemanticEvidenceV1): SemanticPromp
   if (!privacy.ok) {
     throw new Error(`semantic evidence failed privacy validation: ${privacy.issues.join(",")}`);
   }
+  const responseSchema = semanticModelReplyV2SchemaFor(evidence);
   const prompt = [
     `Semantic reader contract version ${SEMANTIC_PROMPT_CONTRACT_VERSION}.`,
     "Read exactly one bounded evidence object and return exactly one JSON object.",
@@ -40,7 +43,7 @@ export function buildSemanticPrompt(evidence: SemanticEvidenceV1): SemanticPromp
     `Allowed expression cues: ${SEMANTIC_EXPRESSION_CUES.join(", ")}.`,
     `Allowed tags: ${SEMANTIC_TAGS.join(", ")}. Omit tags when none apply.`,
     "The response must match this JSON Schema:",
-    JSON.stringify(SemanticModelReplyV2Schema),
+    JSON.stringify(responseSchema),
     "Evidence JSON begins after this line:",
     JSON.stringify(evidence),
   ].join("\n");
@@ -48,7 +51,12 @@ export function buildSemanticPrompt(evidence: SemanticEvidenceV1): SemanticPromp
   if (bytes > SEMANTIC_MAX_REQUEST_BYTES) {
     throw new Error(`semantic request exceeds ${SEMANTIC_MAX_REQUEST_BYTES} bytes`);
   }
-  return { prompt, bytes, token_upper_bound: Math.ceil(bytes / 2) };
+  return {
+    prompt,
+    response_schema: responseSchema,
+    bytes,
+    token_upper_bound: Math.ceil(bytes / 2),
+  };
 }
 
 export function extractSemanticJson(text: string): unknown {

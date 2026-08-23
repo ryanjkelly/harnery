@@ -110,7 +110,7 @@ function accepted(observedThrough = "2026-08-22T19:59:00.000Z"): SemanticAccepte
       configured_model: "gpt-5.6-luna",
       resolved_model_id: "gpt-5.6-luna",
       model_attestation: "requested-only",
-      prompt_contract_version: 2,
+      prompt_contract_version: 3,
     },
     meaning: {
       headline: {
@@ -163,7 +163,7 @@ function unavailable(): SemanticAgentReadModelV2 {
     reader: {
       harness: "codex",
       configured_model: "gpt-5.6-luna",
-      prompt_contract_version: 2,
+      prompt_contract_version: 3,
     },
     receipt: { reason_code: "authentication_unavailable" },
     generated_at: "2026-08-22T19:59:05.000Z",

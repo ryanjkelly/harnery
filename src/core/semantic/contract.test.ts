@@ -5,6 +5,7 @@ import {
   type SemanticEvidenceV1,
   SemanticEvidenceV1Schema,
   type SemanticModelReplyV2,
+  semanticModelReplyV2SchemaFor,
 } from "./contract.ts";
 import {
   isSemanticPrivacySafe,
@@ -102,6 +103,13 @@ describe("semantic read-model contract", () => {
   test("accepts one evidence-cited model reply", () => {
     const source = evidence();
     expect(Value.Check(SemanticEvidenceV1Schema, source)).toBe(true);
+    expect(Value.Check(semanticModelReplyV2SchemaFor(source), reply())).toBe(true);
+    expect(
+      Value.Check(semanticModelReplyV2SchemaFor(source), {
+        ...reply(),
+        generation_id: "gen_01922e33-7abe-7def-8abc-0123456789ab",
+      }),
+    ).toBe(false);
     expect(validateSemanticModelReply(reply(), source)).toEqual({ ok: true, value: reply() });
   });
 
@@ -112,7 +120,7 @@ describe("semantic read-model contract", () => {
     const confidence = validateSemanticModelReply(overconfident, source);
     expect(confidence.ok).toBe(false);
     if (!confidence.ok) {
-      expect(confidence.issues).toContain("expression_cue:confidence_must_be_medium_or_low");
+      expect(confidence.issues.some((issue) => issue.startsWith("schema:"))).toBe(true);
     }
 
     const authoritative = reply() as unknown as {
@@ -139,7 +147,7 @@ describe("semantic read-model contract", () => {
       reader: {
         harness: "claude-code",
         configured_model: "haiku-4.5",
-        prompt_contract_version: 2,
+        prompt_contract_version: 3,
       },
       receipt: { reason_code: "authentication_unavailable" },
       generated_at: "2026-08-22T20:00:01.000Z",
@@ -165,7 +173,7 @@ describe("semantic read-model contract", () => {
       reader: {
         harness: "codex",
         configured_model: "gpt-5.6-luna",
-        prompt_contract_version: 2,
+        prompt_contract_version: 3,
       },
       meaning: reply().meaning,
       generated_at: "2026-08-22T20:00:01.000Z",

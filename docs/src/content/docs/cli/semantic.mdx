@@ -90,6 +90,10 @@ confidence. Deterministic expressions such as waits, blockers, errors,
 recovery, compaction, observation, context pressure, and open-subagent state
 always take precedence.
 
+The structured-response schema binds each reply to the request's exact
+generation ID and evidence digest. A structurally valid reply for a different
+request is rejected before persistence.
+
 The scene header reports whether the semantic service is running. Opening Codec
 never starts the service and never authorizes model spend. Semantic documents and
 service health are local-only; presence relay payloads strip both.

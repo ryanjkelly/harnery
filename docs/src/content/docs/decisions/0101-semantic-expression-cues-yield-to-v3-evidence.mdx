@@ -43,7 +43,8 @@ a fallback when the model abstains from the dedicated cue.
 
 ## Decision
 
-The semantic read-model and prompt contracts move to version 2.
+The semantic read-model schema moves to version 2, and the request-bound prompt
+contract moves to version 3.
 `SemanticMeaningV2` adds an optional `expression_cue` field whose value is one
 of these controlled presentation states:
 
@@ -79,5 +80,10 @@ reader abstains, event-backed expressions retain precedence, and a stale cue
 cannot change the portrait.
 
 The focused semantic suite passes 27 tests, and the full Codec library suite
-passes 128 tests. TypeScript typecheck passes. The service remains
-explicit-start while live harness proof and the measured expression cohort run.
+passes 128 tests. TypeScript typecheck passes. Controlled requests through the
+three production adapters all returned an accepted `planning` cue at medium
+confidence. The probe also found two gaps before dogfood: field basis rules had
+to be expressed in the response schema, and replies had to be bound to the
+request's exact generation ID and evidence digest. Both constraints now apply
+before persistence. The service remains explicit-start while the measured
+expression cohort runs.

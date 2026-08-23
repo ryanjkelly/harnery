@@ -3,7 +3,7 @@ import { type Static, type TProperties, type TSchema, Type } from "@sinclair/typ
 export const SEMANTIC_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const SEMANTIC_READ_MODEL_SCHEMA_VERSION = 2 as const;
 export const SEMANTIC_EVIDENCE_CONTRACT_VERSION = 1 as const;
-export const SEMANTIC_PROMPT_CONTRACT_VERSION = 2 as const;
+export const SEMANTIC_PROMPT_CONTRACT_VERSION = 3 as const;
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -98,12 +98,6 @@ const ExpressionCueSchema = Type.Union(
 );
 const TagSchema = Type.Union(SEMANTIC_TAGS.map((value) => Type.Literal(value)));
 const EvidenceKindSchema = Type.Union(SEMANTIC_EVIDENCE_KINDS.map((value) => Type.Literal(value)));
-const BasisSchema = Type.Union([
-  Type.Literal("direct-fact"),
-  Type.Literal("deterministic-projection"),
-  Type.Literal("model-synthesis"),
-  Type.Literal("prediction"),
-]);
 const ConfidenceSchema = Type.Union([
   Type.Literal("high"),
   Type.Literal("medium"),
@@ -112,12 +106,21 @@ const ConfidenceSchema = Type.Union([
 
 function SemanticFieldSchema<T extends TSchema>(
   value: T,
-  options: { allowEmptyCitations?: boolean } = {},
+  options: {
+    allowEmptyCitations?: boolean;
+    kind?: "synthesis" | "prediction" | "expression";
+  } = {},
 ) {
+  const kind = options.kind ?? "synthesis";
   return StrictObject({
     value,
-    basis: BasisSchema,
-    confidence: ConfidenceSchema,
+    basis: Type.Literal(kind === "prediction" ? "prediction" : "model-synthesis"),
+    confidence:
+      kind === "prediction"
+        ? Type.Literal("low")
+        : kind === "expression"
+          ? Type.Union([Type.Literal("medium"), Type.Literal("low")])
+          : ConfidenceSchema,
     evidence_event_ids: Type.Array(EventId, {
       minItems: options.allowEmptyCitations ? 0 : 1,
       maxItems: 16,
@@ -177,11 +180,15 @@ export const SemanticMeaningV2Schema = StrictObject({
   headline: SemanticFieldSchema(Type.String({ minLength: 1, maxLength: 60 })),
   summary: SemanticFieldSchema(Type.String({ minLength: 1, maxLength: 240 })),
   phase: SemanticFieldSchema(PhaseSchema),
-  expression_cue: Type.Optional(SemanticFieldSchema(ExpressionCueSchema)),
+  expression_cue: Type.Optional(SemanticFieldSchema(ExpressionCueSchema, { kind: "expression" })),
   purpose: Type.Optional(SemanticFieldSchema(Type.String({ minLength: 1, maxLength: 180 }))),
   recent_result: Type.Optional(SemanticFieldSchema(Type.String({ minLength: 1, maxLength: 180 }))),
   attention: Type.Optional(SemanticFieldSchema(Type.String({ minLength: 1, maxLength: 180 }))),
-  next_step: Type.Optional(SemanticFieldSchema(Type.String({ minLength: 1, maxLength: 180 }))),
+  next_step: Type.Optional(
+    SemanticFieldSchema(Type.String({ minLength: 1, maxLength: 180 }), {
+      kind: "prediction",
+    }),
+  ),
   tags: Type.Optional(
     SemanticFieldSchema(Type.Array(TagSchema, { maxItems: 8, uniqueItems: true }), {
       allowEmptyCitations: true,
@@ -195,6 +202,19 @@ export const SemanticModelReplyV2Schema = StrictObject({
   evidence_digest: Sha256,
   meaning: SemanticMeaningV2Schema,
 });
+
+/** Native structured-output schema bound to one evidence request. */
+export function semanticModelReplyV2SchemaFor(expected: {
+  generation_id: string;
+  evidence_digest: string;
+}) {
+  return StrictObject({
+    schema_version: Type.Literal(SEMANTIC_READ_MODEL_SCHEMA_VERSION),
+    generation_id: Type.Literal(expected.generation_id),
+    evidence_digest: Type.Literal(expected.evidence_digest),
+    meaning: SemanticMeaningV2Schema,
+  });
+}
 
 const ReaderCommon = {
   harness: HarnessSchema,

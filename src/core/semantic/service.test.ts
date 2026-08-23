@@ -144,7 +144,7 @@ describe("semantic service", () => {
         configured_model: "gpt-5.6-luna",
         resolved_model_id: "gpt-5.6-luna",
         model_attestation: "requested-only",
-        prompt_contract_version: 2,
+        prompt_contract_version: 3,
       },
       receipt: {
         reason_code: "rate_cap",
@@ -157,7 +157,7 @@ describe("semantic service", () => {
       cursor,
       configuration_digest: `sha256:${"b".repeat(64)}`,
       evidence_contract_version: 1,
-      prompt_contract_version: 2,
+      prompt_contract_version: 3,
       adapter_resolutions: {},
       pending: [],
       call_history: [],

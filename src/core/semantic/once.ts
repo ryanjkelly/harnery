@@ -208,7 +208,11 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     const prompt = buildSemanticPrompt(item);
     current.call_history.push({ generation_id: item.generation_id, started_at: nowIso });
     calls += 1;
-    const result = await adapters[item.source_harness].invoke(prompt.prompt);
+    const result = await adapters[item.source_harness].invoke(
+      prompt.prompt,
+      undefined,
+      prompt.response_schema,
+    );
     const outcome = materializeAdapterResult(item, resolution, result, nowIso);
     writeSemanticAgentDocument(input.coordRoot, outcome.document);
     if (outcome.document.reader_outcome === "accepted") {

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { TSchema } from "@sinclair/typebox";
 import { whichBin } from "../../lib/headless/index.ts";
 import {
   type SemanticConfiguredModel,
@@ -48,7 +49,11 @@ export type SemanticAdapterResult = SemanticAdapterSuccess | SemanticAdapterFail
 export interface SemanticAdapter {
   readonly route: SemanticReaderRoute;
   discover(now?: () => Date): SemanticReaderResolution;
-  invoke(prompt: string, timeoutMs?: number): Promise<SemanticAdapterResult>;
+  invoke(
+    prompt: string,
+    timeoutMs?: number,
+    responseSchema?: TSchema,
+  ): Promise<SemanticAdapterResult>;
 }
 
 export const SEMANTIC_READER_ROUTES: Record<SemanticHarness, SemanticReaderRoute> = {
@@ -108,11 +113,15 @@ function createAdapter(route: SemanticReaderRoute): SemanticAdapter {
         discovered_at: now().toISOString(),
       };
     },
-    async invoke(prompt, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    async invoke(
+      prompt,
+      timeoutMs = DEFAULT_TIMEOUT_MS,
+      responseSchema = SemanticModelReplyV2Schema,
+    ) {
       if (!whichBin(route.binary)) {
         return { ok: false, reason_code: "harness_unavailable", duration_ms: 0 };
       }
-      return await invokeRoute(route, prompt, timeoutMs);
+      return await invokeRoute(route, prompt, timeoutMs, responseSchema);
     },
   };
 }
@@ -121,11 +130,12 @@ async function invokeRoute(
   route: SemanticReaderRoute,
   prompt: string,
   timeoutMs: number,
+  responseSchema: TSchema,
 ): Promise<SemanticAdapterResult> {
   const dir = mkdtempSync(join(tmpdir(), "harnery-semantic-"));
   const started = Date.now();
   try {
-    const invocation = buildInvocation(route, prompt, dir);
+    const invocation = buildInvocation(route, prompt, dir, responseSchema);
     const pending = execFileAsync(route.binary, invocation.args, {
       cwd: dir,
       env: semanticChildEnv(),
@@ -171,6 +181,7 @@ function buildInvocation(
   route: SemanticReaderRoute,
   prompt: string,
   dir: string,
+  responseSchema: TSchema,
 ): { args: string[]; outputFile?: string } {
   if (route.harness === "claude-code") {
     return {
@@ -180,7 +191,7 @@ function buildInvocation(
         "--output-format",
         "json",
         "--json-schema",
-        JSON.stringify(SemanticModelReplyV2Schema),
+        JSON.stringify(responseSchema),
         "--model",
         route.invocation_model_id,
         "--effort",
