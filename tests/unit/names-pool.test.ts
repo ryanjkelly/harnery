@@ -59,6 +59,75 @@ describe("COORD_NAMES layout invariants", () => {
   });
 });
 
+/**
+ * The 130 names labeled female. Pinned here so a reorder or substitution that
+ * breaks the alternating-gender layout fails loudly instead of silently
+ * unbalancing the pool. Labels are presentation-only; nothing reads them at
+ * runtime.
+ */
+const FEMALE_NAMES = new Set<string>([
+  "Adelaide", "Amelia", "Anita", "Anna", "Astrid", "Beatrice", "Bertha", "Bianca", "Bonnie",
+  "Brenda", "Calliope", "Carmen", "Cassidy", "Celeste", "Cora", "Dahlia", "Dalia", "Daphne",
+  "Delia", "Dolores", "Edith", "Edna", "Erika", "Esme", "Estelle", "Felicity", "Fern", "Fiona",
+  "Florence", "Francine", "Gemma", "Genevieve", "Gloria", "Greer", "Greta", "Harriet", "Hazel",
+  "Helene", "Hester", "Holly", "Imelda", "Imogen", "Ines", "Irene", "Iris", "Jenna", "Josephine",
+  "Jovi", "Joyce", "Juno", "Kaia", "Karen", "Kestrel", "Kira", "Klara", "Lainey", "Lila",
+  "Linda", "Lucia", "Lyric", "Margot", "Mavis", "Maxine", "Maya", "Mindy", "Nadine", "Naomi",
+  "Nila", "Noor", "Nora", "Oakley", "Odette", "Olga", "Olive", "Ophelia", "Patty", "Paulette",
+  "Pearl", "Petra", "Phoebe", "Quenby", "Querida", "Quetzal", "Quinn", "Quito", "Rebekah",
+  "Renee", "Rosa", "Rosalind", "Rylie", "Sage", "Sara", "Scout", "Sienna", "Stella", "Talia",
+  "Tammy", "Tatum", "Tessa", "Theresa", "Uma", "Una", "Undine", "Unity", "Ursula", "Valerie",
+  "Vera", "Vesper", "Violet", "Vivian", "Whitney", "Willow", "Winifred", "Wren", "Wynne",
+  "Xanthe", "Xena", "Ximena", "Xiomara", "Xuxa", "Yael", "Yara", "Yolanda", "Yvette", "Yvonne",
+  "Zara", "Zelda", "Zinnia", "Zoe", "Zora"
+]);
+
+describe("COORD_NAMES gender layout", () => {
+  const genderAt = (i: number) => (FEMALE_NAMES.has(COORD_NAMES[i]!) ? "female" : "male");
+
+  test("every name carries a gender label", () => {
+    const male = COORD_NAMES.filter((n) => !FEMALE_NAMES.has(n));
+    expect(FEMALE_NAMES.size).toBe(130);
+    expect(male.length).toBe(130);
+  });
+
+  test("gender alternates letter by letter within every pass", () => {
+    for (let i = 0; i < COORD_NAMES.length; i++) {
+      if (i % 26 === 25) continue; // pass boundary: parity flips, so skip the seam
+      expect(genderAt(i)).not.toBe(genderAt(i + 1));
+    }
+  });
+
+  test("every pass is 13 female and 13 male", () => {
+    for (let p = 0; p < 10; p++) {
+      let female = 0;
+      for (let i = p * 26; i < (p + 1) * 26; i++) if (genderAt(i) === "female") female++;
+      expect(female).toBe(13);
+    }
+  });
+
+  test("passes 1,3,5,7,9 start female at A and 2,4,6,8,10 start male", () => {
+    for (let p = 0; p < 10; p++) {
+      expect(genderAt(p * 26)).toBe(p % 2 === 0 ? "female" : "male");
+    }
+  });
+
+  test("each letter has exactly 5 female and 5 male names", () => {
+    for (let l = 0; l < 26; l++) {
+      const letter = String.fromCharCode(65 + l);
+      const names = COORD_NAMES.filter((n) => n[0] === letter);
+      expect(names.filter((n) => FEMALE_NAMES.has(n)).length).toBe(5);
+    }
+  });
+
+  test("gender is derivable from index alone", () => {
+    for (let i = 0; i < COORD_NAMES.length; i++) {
+      const expected = (i % 26) % 2 === Math.floor(i / 26) % 2 ? "female" : "male";
+      expect(genderAt(i)).toBe(expected);
+    }
+  });
+});
+
 describe("assignName / resolveName", () => {
   let root: string;
 
