@@ -1,5 +1,234 @@
 # Changelog
 
+## 0.34.1
+
+### Patch Changes
+
+- 4e5e850: Let a latched session recover by repeating `agents set-task`. While the current session name is still pending, the command now returns the unchanged name with `session_name_retry: true`, and PostToolUse creates a fresh ordered display boundary for the next exact block.
+
+## 0.34.0
+
+### Minor Changes
+
+- 34b4c31: Keep wait latency unknown until a completed turn attests wait-channel completeness.
+- 34b4c31: Use mnemonic port 4276 as the Harnery dashboard default, honor environment and project-config overrides, and report occupied ports before starting Next.
+- 34b4c31: Add an idempotent command that quarantines an invalid V3 authority and starts a clean epoch.
+- 34b4c31: Emit bounded delegation, input-wait, progress, and context evidence for Codec, and extend encrypted presence with a privacy-safe remote activity digest.
+- 34b4c31: Concurrent critique tiles and provider provenance: `runCritique` now dispatches tiles through a bounded worker pool (provider-tunable via the new optional `concurrency` property on `CritiqueProvider`, default 4) while keeping findings in tile order, and a provider may expose `meta()`, read once after the run and attached to the result as `provider_meta` so hosts can surface route, fallback, and usage provenance in the JSON envelope.
+- 34b4c31: Install `harn-decide`, `harn-council`, and the new `harn-end` skill for Claude
+  Code, Cursor, and Codex during `harn init`. Cursor and Codex use the shared
+  `.agents/skills/` root; Claude Code uses `.claude/skills/`. Drift checks and
+  deinit now cover the selected adapter's installed skills, and no unprefixed
+  aliases are created.
+- 34b4c31: Bring the installed Claude Code, Cursor, and Codex hook sets up to their current
+  native lifecycle contracts. `harn init` now repairs stale, duplicated,
+  misplaced, and retired Harnery handlers without removing unrelated commands
+  from mixed hook groups. `harn init --check` verifies hooks, skills, instructions,
+  managed Git hooks, and the V3 runtime profile. V3 now admits Codex session-end
+  events and verified Cursor pre-compaction events, and init refreshes an
+  incompatible immutable epoch while preserving its archived ledger.
+
+  Workflow children no longer receive operator-only SessionStart remediation
+  context, live adapter attestations allow the bounded setup rituals required by
+  host repositories, and every package build starts from a clean V3-only `dist/`
+  tree so deleted ledger generations cannot leak into a tarball.
+
+- 34b4c31: `agents health` now reports the V2 event ledger's producer health in a new
+  `event_ledger` section (JSON) and an `event ledger` row plus anomalies (text).
+  The counters are read-only and cover: open tool spans per live generation,
+  flagging generations whose turn has closed while spans stayed open (the orphan
+  signature that blocks a clean session end); pending finalization requests with
+  trigger, age, and allowed-open-span count; intake-spool depth with per-group
+  counts; diagnostics-spool counts by category with a last-24h split; and
+  span-count pressure against the producer-state reader's span cap. When no V2
+  ledger route is live the section degrades to `{ state: "unavailable" }`, and a
+  sub-surface that fails to read lands in `collection_errors` instead of
+  aborting the report.
+- 34b4c31: Pending explicit-end requests can no longer wedge forever. A request whose
+  allowed span never closes is cancelled (never terminalized) after a 24-hour
+  grace period — cancellation is safe because re-requesting is cheap — and a
+  repeated explicit end now reports its exact blocker (open span ids, turn
+  state, pending age) alongside the existing request instead of a bare
+  already-requested result. The finalization reconciler also drains the hook
+  intake spool at the start of every pass, acting as the terminal drainer for
+  signals whose appender lost the state lease and exited.
+- 34b4c31: New toolkit export `harnery/lib/headless`: run a one-shot prompt (optionally with images) through a locally installed AI coding harness CLI — Claude Code (`claude -p`), Codex (`codex exec`), or Cursor (`cursor-agent -p`) — and get the reply back as text. Promoted from host CLIs that had each grown their own copy for vision-critique providers.
+
+  The API is `runHeadless(request, options?)` (walk the backend chain), `runHeadlessOn(name, request)` (exactly one backend), `availableHeadlessBackends()`, and `whichBin()`. Baked-in lessons from production use: every call runs from a neutral temp cwd so the nested session loads no repo instructions or hooks; the child's stdin is closed immediately (an open pipe deadlocks codex); an empty reply throws so gating callers fail closed; and the chain falls back **per call** — a backend that is installed but errors (rate limit, timeout, transient exec failure) hands the same request to the next backend instead of failing the call. `HARNERY_HEADLESS_BACKEND` forces one backend; `HARNERY_HEADLESS_MODEL` overrides the model.
+
+- 34b4c31: Report explicit V3 context coverage states at completed-turn boundaries. Current
+  Claude Code, Codex, and Cursor native hooks now declare context usage unsupported
+  unless a terminal payload supplies both used and limit tokens, and latency
+  projections preserve partial and missing reasons without storing content.
+- 34b4c31: Hook signals now survive producer-state lease contention. Each signal is
+  appended to a durable per-session intake spool before any producer state is
+  read or validated; whichever process holds the session's state lease drains
+  the spool in append order and rescans until an empty pass, and the
+  finalization reconciler drains groups whose final appender never acquired the
+  lease. `recordHookSignalV2` gains a `spooled` result state and a bounded lease
+  retry, `unpairable_tool` results now carry a machine-readable reason, and
+  signals that cannot become ledger events (unpairable posts, missing session
+  start, unreadable or gate-mismatched intake records, rejected command emits)
+  are preserved in an owner-only diagnostics spool with raw content fields
+  reduced to byte counts and digests instead of being silently discarded.
+- 34b4c31: Route native subagent tool hooks through their session owner's V2 generation,
+  classify commands without an open turn as unjoinable rather than rejected, and
+  make `agents health` separate current failures from historical diagnostics.
+  Active-agent health now follows V2 ledger generations instead of disposable
+  legacy heartbeat caches after cutover.
+- 34b4c31: Replace every event-recording, coordination-authority, workflow, CLI, web, and
+  downstream runtime path with the canonical V2 ledger. Harnery now initializes a
+  V2 epoch automatically, validates one generated TypeBox and JSON Schema
+  contract, uses deterministic canonicalization and keyed fingerprints, records
+  explicit spans and causal links, and fails closed when V2 authority is missing
+  or invalid.
+
+  This is a breaking removal of the legacy event contract, its readers, writers,
+  rotators, projectors, cutover commands, rollback paths, generated mirrors, and
+  compatibility tests. Historical log files are left untouched, but no shipped
+  runtime opens or appends to them.
+
+- 34b4c31: Diff-aware QA planning: `harn browse --qa-plan` classifies the rendered page against a persisted baseline and emits a machine-readable review manifest (change class, scope selectors, required contexts, provider-call ceiling) before any vision spend. Text/data-only edits plan zero model calls; a local component change scopes review to its stable anchor (`#id` / `data-qa-scope`); stylesheet changes, unprovable boundaries, and missing baselines widen — never narrow. `--qa-snapshot` persists a render (signature, DOM, full-page screenshot) as the baseline atomically; `--qa-target`, `--qa-theme`, `--qa-state`, `--qa-scope`, and `--qa-states` control keying and explicit inputs. New `harnery/lib/browser` exports: `classifySignatures`, `buildQaManifest`, `saveQaSnapshot`, `loadQaSnapshot`, `resolveQaBaseline`, and the `QaSignature`/`QaManifest` type family; the browser client gains `qaSignature()` (structural fingerprints plus applied-stylesheet digests, including fetched external sheets). Critique verdicts persist with `--qa-snapshot`, and `--qa-reuse` replays them for tiles whose document rect pixel-matches the baseline screenshot at or below a strict band-diff threshold (default 0.001) — regions with baseline findings always re-review, so reuse can produce false re-reviews but never false passes. Providers can declare `tileBudgetPx` to cap band height at the routed model's vision input budget.
+- 34b4c31: Add a report-only run-quality subsystem with exact pre-clamp tool-input hashes,
+  bounded rotation-aware evidence reads, crash-recoverable coordination, durable
+  per-instance snapshots, typed health transitions, validated
+  `coord.run_quality` configuration, and optional advisory output in
+  `harn agents status`. The package default remains off, and the subsystem never
+  changes execution verdicts.
+- 34b4c31: Event ledger V2 gains the ADR 0078 recovery contract: `tool.requested`,
+  `tool.completed`, and `command.completed` accept an optional `recovery` block
+  (`reason` + `requested_event_id`) marking machinery-minted recovery events,
+  with validator-enforced rules (derived attestation, unknown outcome,
+  per-event-type reason binding). The schema digest advances, and
+  `harn ledger-v2 advance-epoch` performs the resulting ledger epoch advance in
+  one idempotent, crash-resumable pass: quiesce the ready spool, carry undrained
+  intake rows, archive the prior epoch read-only under its genesis ID, then
+  install and activate the new candidate anchored to the archived ledger file.
+- 34b4c31: ADR 0078 recovery mechanics land across the hook recorder, command recorder,
+  and session finalizer. The recorder pairs an unmatched post with a derived
+  `tool.requested` instead of discarding the result, suppresses late signals for
+  closed spans via a two-turn closed-span memory, stamps spans with native
+  payload turn ids (Claude Code's `prompt_id` now counts), sweeps the ending
+  turn's spans with derived terminals at every stop boundary and lost-stop
+  turn start, relieves span-cap pressure from already-ended turns at the 128
+  watermark, and onboards a mid-flight session (fresh epoch, lost session-start
+  hook) with a derived `session.started` while still refusing resurrection after
+  authoritative termination. Explicit-end salvage terminalizes exactly the
+  approved open-span set and completes the end; salvage precedes the 24-hour
+  expiry, and only native new work cancels a pending explicit end. A session-end
+  command closer gives every abandoned command span a derived
+  `command.completed`. Producer state upgrades in place from format 1 to 2.
+- 34b4c31: Make derived recovery terminals and pending session finalization visible in
+  agent traces. Expose tool pairing, command pairing, and recovery as distinct
+  run-quality corpus categories so recovered or incompletely paired sessions
+  remain audit-visible without entering healthy corpus quotas.
+- 34b4c31: Add one crash-safe V2 session finalizer for native callbacks, explicit end,
+  verified archive, idle timeout, parent/run and delegated-agent cascades, stale
+  sweeps, supersession, and host disappearance. New `agents end`, `reconcile`,
+  archive-observation, and host-observation commands provide manual and supervised
+  recovery paths without deleting heartbeat projections or inventing native
+  telemetry. Explicit end requests made from inside a live adapter turn are now
+  durably deferred until that exact turn and its existing tool spans close; new
+  work cancels the request. `agents status --end-turn --end-session` provides one
+  safe final command for the `harn-end` workflow.
+- 34b4c31: `agents set-task` now registers a fresh session's identity from the
+  adapter/connector-stamped session-id environment channel when the
+  heartbeat-validated resolver finds nothing. A brand-new (bridge) session has
+  no heartbeat until its first set-task, so the validated resolver returns null
+  there by design and the session's first ritual command previously errored and
+  hard-exited without a command terminal. The env id carries the same trust as
+  an explicit `--session-id` argument. Adds `sessionIdentityFromEnv()` to the
+  agents core surface.
+- 34b4c31: Add the inactive span-native V3 event contract, generated schema, capability profiles, validation, and additive schema-advance checks.
+- 34b4c31: Content-aware critique tiling: band seams now snap into content gaps instead of cutting at fixed offsets. The browser client extracts visual atoms (text line boxes, replaced elements, small bordered boxes), and each seam lands at the cheapest cut within a bounded window above its target — clean seams carry a 16px margin instead of the full 120px overlap, while unavoidable cuts keep the overlap and the rubric's artifact mitigation. Selector-mode tiles taller than the band budget are banded internally instead of shipping as one over-tall tile the provider would downscale. New `harnery/lib/browser` exports: `snappedBandRects`, `bandOversizedRect`, `cutCost`, `VisualAtom`, `SnapSeam`, `SnapOptions`; `tilesFromFullPage` accepts an optional `atoms` input and falls back to fixed bands without it.
+- 34b4c31: Make `agents status` source its peer and stale counts from live V2 generations
+  after cutover instead of counting disposable legacy heartbeat-cache files.
+- 34b4c31: Delete the complete Event Ledger V1 and V2 implementation and make V3 own its contract branches, hook normalization, IDs, capability profiles, fingerprints, schema generation, fixtures, and tests.
+- 34b4c31: Restore Claude Code and Cursor Stop enforcement from privacy-safe V3 ritual observations, including monotonic Cursor remediation windows and repeatable empty task declarations.
+
+### Patch Changes
+
+- 34b4c31: Surface an explicit note when adapter-probe sample replay finds no fixtures, so an empty replay is distinguishable from a passing one in JSON and TTY output.
+- 34b4c31: agents ping now emits a canonical `state.ping` event carrying the complete delivery record (sender via the envelope, `peer_instance_id`/`peer_name` in data, bounded `body_summary`). Previously a ping was only a journal append plus generic command capture, so no read-only observer could see that a directed message happened without joining journal files. Additive event type per the schema's forward-compatibility rules; consumers that don't know it ignore it.
+- 34b4c31: browse checks: three false-positive fixes learned from one QA session. The runt gate skips a lone token hosted by a padded, boxed inline element (a code chip, pill, or badge is a UI control, not a prose word — it cannot be rebalanced by rewording, tag rows legitimately wrap to a single chip, and its shifted glyph box buckets as a phantom line beside normal text). The crowd gate excludes code-family tags (CODE, KBD, SAMP, VAR, OUTPUT) from panel classification — a flex/grid tag row blockifies their computed display, which defeated the inline-display exclusion and made bordered chips read as crowded cards. The critique rubric now tells the vision model that content cropped by a tile's own top/bottom slice boundary is a tiling artifact, not a defect — boundary crops were surfacing as spurious findings up to high severity, and their noise camouflaged real clipping reports.
+- 34b4c31: Keep repeated Cursor prompt signals inside one canonical V3 turn boundary.
+- 34b4c31: Keep recovered command and session terminals ordered across finalizer processes.
+- 34b4c31: Preserve each turn's slowest observed hook duration beside its bounded hook name so latency reviews can distinguish one slow invocation from broad harness overhead.
+- 34b4c31: Clarify the run-quality rollout gate by separating evaluator-detectable stall
+  recall from the reported detection rate for independently reviewed silent
+  stalls that the two-precursor corroboration rule intentionally cannot detect.
+- 34b4c31: Stop treating `health.capability_drift` as a generation-scoped event after
+  `session.ended`. That signal is emitted on purpose once the generation is
+  terminal (`generation_ended: true`); folding it through `event_after_terminal`
+  fail-closed the whole ledger and blocked every agent from editing.
+- 34b4c31: Commit causally related V3 ready rows in parent-before-child order across concurrent producers.
+- 34b4c31: A claim re-acquire by its current holder is idempotent and refreshes the
+  holding; only a different subject's acquire is an authority-blocking conflict.
+- 34b4c31: browse checks: the clip gate now excludes two intentional-hiding idioms instead of failing on them. Visually-hidden (sr-only) content is a ~1px absolutely-positioned box whose clipping IS the accessibility pattern — its box is not zero-area and the legacy `clip: rect(0,0,0,0)` it relies on is not an overflow style, so nothing recognized it and every accessible page failed the gate. Single-line ellipsis truncation (`text-overflow: ellipsis` + nowrap + hidden overflow) is deliberate design owned by the dedicated truncation check. Both now land in the result's `excluded` list with audit reasons (`visually-hidden`, `ellipsis-truncation`) rather than in `issues`.
+- 34b4c31: Codex archive reads now lazy-load `bun:sqlite` so Node importers (the dashboard) can load the module and fail closed instead of crashing at import. The Bun CLI path still opens the database the same way.
+- 34b4c31: List live-display rows across generations and write the owner-only overlay from command and hook producers so local Codec can merge scrubbed intent without storing it in the ledger.
+- 34b4c31: Report native-hook inference timing as unsupported for current Claude Code and Codex runtimes instead of promising a field their Stop schemas do not expose.
+- 34b4c31: agent-hook now no-ops a `--adapter claude-code` invocation whose payload is
+  Cursor's dispatch envelope (top-level `cursor_version` field). On hosts wired
+  for both adapters, Cursor executes the Claude Code project hooks too, piping
+  them the same payload as its own hooks; recording that stray dispatch minted a
+  twin generation per session start, could supersede the real generation, and
+  flooded missing_session_start diagnostics. Detection reads the payload rather
+  than the environment: Cursor's hook processes do not carry CURSOR_AGENT, and a
+  genuine Claude Code session nested under a Cursor agent shell must not be
+  skipped. The skip fires before notification sounds, pid-map writes, and V2
+  recording, and leaves a `cursor-payload-claude-adapter` breadcrumb in the hook
+  debug log.
+- 34b4c31: Keep Cursor tool counts unknown when no tool hook attests the turn instead of recording an exact zero.
+- 34b4c31: Classify Cursor tool coverage by local or cloud execution mode so private-worker turns no longer promise an unavailable exact aggregate.
+- 34b4c31: Say why the coordination dashboard is empty. A blocked ledger route or an unsafe authority view produced the same blank agent list as an idle repo, so a web build older than the ledger looked identical to nobody working. The empty state now carries the reason and names the restart that fixes the common cause.
+- 34b4c31: Strengthen diff-aware page QA before manifest enforcement. QA signatures now fingerprint opaque SVG and canvas content, so pixel-bearing edits cannot be mistaken for text-only changes. Scoped manifests fail closed when a selector matches nothing, record interaction outcome assertions, and accept an explicit component boundary for stylesheet-only changes. Reuse also rejects failed or partially covered baselines.
+- 34b4c31: Scan first-level in-tree packages for `docs/audits` and `docs/issues` indexes, not only the host root and git submodules. Packages that live in the monorepo without a `.git` dir (so they are not submodules) were skipped, and their README tables went stale.
+- 34b4c31: Limit session-name changes to the initial task declaration and the terminal done transition. Active and blocked lifecycle changes no longer re-mint or display titles; done now prepends exactly `[DONE] ` to the original session name.
+- 34b4c31: Require a newly suggested session name to appear as the next copyable assistant block before later tools can run. PostToolUse now injects the exact block, PreToolUse verifies it across Claude Code, Codex, and Cursor, and prompt reminders continue until the current name is actually observed. The gate always permits single `agents set-task` and `agents status` remediation commands, so it cannot deadlock its own turn-closing workflow.
+- 34b4c31: Make connector-marked owner attribution require a heartbeat-validated session identity. Codex commands crossing the Windows-to-WSL bridge now fail unattributed instead of falling through to a foreign PID or singleton owner, hook and CLI resolvers share session-before-PID precedence, and command events record their owner-resolution source and bridge marker.
+- 34b4c31: End-turn Git finalization now fails when the coordination repository is behind
+  its fetched upstream, when a submodule checkout is behind its parent gitlink,
+  or when a checkout has diverged from that gitlink. A checkout ahead of its
+  gitlink remains treated as another session's in-flight work rather than a
+  global blocker.
+- 34b4c31: Direct work retries now inherit the previous attempt's recorded specialist profiles when the caller does not supply a replacement map.
+- 34b4c31: Durable governor and work listings now skip unreadable records and report a warning for each one while direct record loads stay strict. Governor creation also rejects specialist profile keys that the frozen governor schema does not support.
+- 34b4c31: Two coordination-attribution fixes. Owner resolution via adapter session-id env vars no longer lets a subagent or workflow-child heartbeat outrank the session's own heartbeat when both carry the same session id (in-process subagents inherit the adapter env, and the busiest child could capture the session's journal/decision/artifact writes). And a pre-tool-use guard deny now emits `claim.release` for its targets: the write never happened, but the already-emitted `tool.pre_use` event would otherwise resurrect the path as a held claim on the next heartbeat rebuild and block the end-turn finalization check until a manual release; `readSessionWriteClaims` subtracts these `guard_denied_*` releases while keeping every other release reason in finalization scope.
+- 34b4c31: Cache complete V3 ledger reads by storage identity and validate only newly
+  appended active-ledger frames, while retaining full fallback checks for
+  rewrites, replacements, catalog changes, and corrupt frames.
+- 34b4c31: The AGENTS.md orientation block now teaches the `agents lifecycle` command: declaring `blocked`, `done`, and `active`, the Git finalization gate on `done`, and that ordinary `set-task` calls never change lifecycle. Consumers pick the paragraph up on their next `init` re-splice.
+- 34b4c31: Mark a regressing wall clock on V3 producer events instead of writing an unmarked regression that fails the canonical reader and darkens every live agent.
+- 34b4c31: Keep end-turn Git finalization paths repo-relative on macOS when the working
+  tree crosses the system's `/var` to `/private/var` filesystem alias.
+- 34b4c31: Add an opt-in deferred V3 WAL drain path for matched harness experiments while keeping production writers on immediate draining by default.
+- 34b4c31: Fix Codex session-name verification after later commentary or a turn boundary. PreToolUse now preserves the first exact post-mint display as evidence. An unavailable transcript remains explicitly unverified and does not block the tool.
+- 34b4c31: Make `browse --check-clip` catch in-flow elements that escape the horizontal bounds of their nearest block parent when CSS overflow remains visible, and report the nearest boundary responsible for an overrun.
+- 34b4c31: Keep adapter hooks portable when Harnery is installed outside the consumer repository. `harn init` now writes the installed `agent-hook` executable from `PATH` instead of a developer-machine-relative path, while embedded checkouts continue to use their repository-relative launcher.
+- 34b4c31: Allow `harn agents heal --kind heartbeat` to accept `--adapter`, so external restart tooling can recreate a missing Codex or Cursor heartbeat without mislabeling it as Claude Code.
+- 34b4c31: Retry no-clobber lease acquisition when the observed owner releases during contention.
+- 34b4c31: The V2 coordination recorder now completes a stale pending transaction left by a crashed writer instead of refusing every subsequent mutation. Hook observations are one-shot, so a pending entry whose owner died between the durable apply and the bookkeeping clear could never be retried by its own source, wedging the authority permanently. When the idempotent outbox can still settle the stale transaction (receipt present, or the ready record reconciles cleanly), the recorder finishes the bookkeeping and processes the new observation; a pending mutation that cannot be settled is still refused rather than guessed at.
+- 34b4c31: Expose same-boot recovery intervals as tool-time upper bounds while keeping swept V3 durations unknown.
+- 34b4c31: Keep Windows-hosted Codex identity attached after a WSL process-tree refresh. Payload-free hook and pre-commit guard calls now join the forwarded thread ID to one live V3 generation, reject missing or ended generations without falling back to old PID maps, and remain isolated when several Codex tasks share a checkout.
+- 34b4c31: Status observations now use the native owner ID when a new V3 projection has no cache. Previously, they tried to join the hook generation with the canonical session fingerprint and emitted `hook_generation_not_joinable`.
+- 34b4c31: Distinguish a prior V3 schema digest from malformed genesis fields so hosts can rotate the epoch through init instead of treating an upgrade as authority corruption.
+- 34b4c31: Harden release boundaries identified by CodeQL: heartbeat cache paths now require canonical direct-child instance IDs, QA anchor selectors use complete CSS escaping, snapshot keys avoid backtracking regexes, and instruction splicing trims whitespace without repetition-sensitive patterns.
+- 34b4c31: Keep the session-name display latch's remediation exemption working when the command carries a trailing stream redirect. `agents status --end-turn 2>&1` previously failed the shell-control-syntax check on the `&`, which disabled the one exemption that can close a latched turn: the latch blocked every tool call, and the end-of-turn rule required the very command the latch was blocking, so the session could satisfy neither. Redirects to `/dev/null` or another descriptor are now stripped before the check, while pipes, chaining, substitution, and redirects to a named file stay rejected.
+- 34b4c31: Stop repeating the same suggested session-name block after unrelated tools while adapter transcript evidence is still catching up. Harnery now injects the display instruction only for the result that minted the initial name or the terminal `[DONE]` name.
+- 34b4c31: Make simultaneous first-time lease acquisitions tolerate another contender creating the lease directory.
+- 34b4c31: fix: the stop-hook naming rule now honors the session-name sighting stamp on the live coordination row. A remediation stop cannot record a fresh turn.completed (the turn's first stop closed the turn span), so when that first terminal lost the transcript flush race and recorded present: false, the rule blocked every retry forever. The stamp written on first sighting is durable evidence the name was shown; the rule consults it before blocking.
+- 34b4c31: When a later generation for the same instance is superseded, the safety
+  projection retargets current generation to the surviving live sibling so
+  whoami and set-task still see the live session.
+- 34b4c31: Treat successful NotebookEdit and StrReplace tool outcomes as run-quality progress alongside the existing write-tool set.
+- 34b4c31: Route hooks without repeated native session identity through their single live instance authority.
+- 34b4c31: Add the `harnery-doc/v2` markdown metadata validator and `docs metadata validate` audit command. The audit reports valid, invalid, legacy, and missing files and provides a strict cutover mode for hosts migrating their documentation corpus.
+- 34b4c31: Restore first-task session naming after the V2 ledger cutover. Task prose and
+  the suggested title live only in the generation-bound disposable coordination
+  cache; the durable V2 ledger continues to retain only privacy-safe task state
+  and fingerprints.
+
 ## 0.33.0
 
 ### Minor Changes
