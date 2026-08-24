@@ -751,6 +751,23 @@
   justify-self: center;
 }
 
+/* Six tracks preserve equal card widths across a centered 3 + 2 arrangement. */
+.panelGrid[data-panel-count="5"] {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.panelGrid[data-panel-count="5"] > * {
+  grid-column: span 2;
+}
+
+.panelGrid[data-panel-count="5"] > :nth-child(4) {
+  grid-column: 2 / span 2;
+}
+
+.panelGrid[data-panel-count="5"] > :nth-child(5) {
+  grid-column: 4 / span 2;
+}
+
 @media (min-width: 3000px) {
   /* Fullscreen ultrawide displays have room to return to a single dense row. */
   .panelGrid:is([data-panel-count="7"], [data-panel-count="8"]) {
@@ -775,7 +792,7 @@
   display: grid;
   min-width: 0;
   min-height: 17.5rem;
-  grid-template-columns: minmax(7.5rem, 34%) minmax(0, 1fr);
+  grid-template-columns: minmax(8.5rem, 37%) minmax(0, 1fr);
   grid-template-areas: "portrait body";
   grid-template-rows: 1fr;
   overflow: hidden;
@@ -2800,9 +2817,22 @@
 
   .panelGrid,
   .panelGrid[data-panel-density="featured"],
-  .panelGrid[data-panel-count="3"] {
+  .panelGrid[data-panel-count="3"],
+  .panelGrid[data-panel-count="5"] {
     width: 100%;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .panelGrid[data-panel-count="5"] > *,
+  .panelGrid[data-panel-count="5"] > :nth-child(4),
+  .panelGrid[data-panel-count="5"] > :nth-child(5) {
+    grid-column: auto;
+  }
+
+  .panelGrid[data-panel-count="5"] > :last-child {
+    width: calc((100% - 1rem) / 2);
+    grid-column: 1 / -1;
+    justify-self: center;
   }
 
   .panelGrid[data-panel-count="1"] {
