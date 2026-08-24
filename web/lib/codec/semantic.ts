@@ -45,6 +45,7 @@ export function applySemanticReadModel(
   sourceEvents: readonly CodecSourceEvidence[],
   root = coordRoot(),
   now = new Date(scene.generated_at),
+  canonicalInstanceByPanel: ReadonlyMap<string, string> = new Map(),
 ): number {
   const documents = readCodecSemanticDocuments(root);
   if (documents.length === 0) return 0;
@@ -54,10 +55,11 @@ export function applySemanticReadModel(
 
   for (const panel of scene.panels) {
     if (panel.machine) continue;
-    const generationId = generationByInstance.get(panel.instance_id);
+    const semanticInstanceId = canonicalInstanceByPanel.get(panel.instance_id) ?? panel.instance_id;
+    const generationId = generationByInstance.get(semanticInstanceId);
     if (!generationId) continue;
     const document = byGeneration.get(generationId);
-    if (!document || document.instance_id !== panel.instance_id) continue;
+    if (!document || document.instance_id !== semanticInstanceId) continue;
     const semantic = presentSemantic(document, panel, now);
     setCodecSemantic(panel, semantic);
     merged += 1;

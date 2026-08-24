@@ -120,7 +120,19 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
   // Optional semantic meaning is a separate validated presentation channel.
   // It may fill only low-information fields and never weakens the scene.
   try {
-    applySemanticReadModel(scene, events, coordRoot(), now ? new Date(now) : new Date());
+    const canonicalInstanceByPanel = new Map(
+      [...snapshot.active, ...snapshot.stale, ...snapshot.terminal].map((row) => [
+        row.instance_id,
+        row.v3_instance_id ?? row.instance_id,
+      ]),
+    );
+    applySemanticReadModel(
+      scene,
+      events,
+      coordRoot(),
+      now ? new Date(now) : new Date(),
+      canonicalInstanceByPanel,
+    );
   } catch {
     // deterministic scene stands
   }

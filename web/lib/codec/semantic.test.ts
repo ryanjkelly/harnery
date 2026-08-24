@@ -220,6 +220,26 @@ describe("Codec semantic read model", () => {
     );
   });
 
+  test("joins a native panel id to its canonical semantic instance", () => {
+    const root = fixtureRoot();
+    writeSemanticAgentDocument(root, accepted());
+    const projected = scene(panel({ instance_id: "native_fixture" }));
+
+    expect(
+      applySemanticReadModel(
+        projected,
+        source(),
+        root,
+        new Date(NOW),
+        new Map([["native_fixture", "inst_fixture"]]),
+      ),
+    ).toBe(1);
+    expect(codecSemantic(projected.panels[0]!)).toMatchObject({
+      state: "current",
+      headline: { value: "Building the semantic reader" },
+    });
+  });
+
   test("falls back to semantic phase when the reader abstains from an expression cue", () => {
     const root = fixtureRoot();
     const document = accepted();
