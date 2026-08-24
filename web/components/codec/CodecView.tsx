@@ -54,6 +54,7 @@ import {
   type CodecScene,
   type CodecSemanticServiceStatus,
 } from "@/lib/codec/contracts";
+import { codecFeedHealth } from "@/lib/codec/feed-health";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
 import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
 import { codecSemantic } from "@/lib/codec/semantic-contract";
@@ -103,6 +104,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   const [glowing, setGlowing] = useState<Record<string, boolean>>({});
   const [announcement, setAnnouncement] = useState("");
   const [lastSignalAt, setLastSignalAt] = useState(initialScene.generated_at);
+  const [feedFault, setFeedFault] = useState(false);
   const [clockNow, setClockNow] = useState<number | null>(null);
   const [replayIndex, setReplayIndex] = useState(0);
   const [replayPlaying, setReplayPlaying] = useState(true);
@@ -271,6 +273,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
       }
       setScene(next);
       setLastSignalAt(new Date().toISOString());
+      setFeedFault(false);
     },
     [animatePing],
   );
@@ -296,7 +299,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
       });
   }, [ingestScene]);
 
-  const status = useLiveSignal({
+  useLiveSignal({
     streamUrl: "/api/codec-stream",
     events: {
       snapshot: (ev) => {
@@ -308,7 +311,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
         if (next) ingestScene(next, true);
       },
       heartbeat: () => setLastSignalAt(new Date().toISOString()),
-      stale: () => setLastSignalAt(new Date().toISOString()),
+      stale: () => setFeedFault(true),
     },
     onFallbackChange: refetch,
     fetchOnFallbackStart: false, // the page server-renders a complete scene
@@ -340,7 +343,6 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
     return () => clearInterval(timer);
   }, [mode, replayPhases.length, replayPlaying]);
 
-  const degraded = mode === "live" && (status === "reconnecting" || status === "polling");
   const current = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "online"));
   const stale = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "unknown"));
   const ended = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "offline"));
@@ -378,22 +380,10 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
     };
   }, [balancedColumnCount, mobileLayout, panels.length]);
 
-  const transportLabel =
-    mode === "replay"
-      ? "offline replay"
-      : status === "live"
-        ? "SSE live"
-        : status === "polling"
-          ? "polling"
-          : status === "reconnecting"
-            ? "reconnecting"
-            : "connecting";
-  const signalAge =
-    mode === "replay"
-      ? (activeReplayPhase?.label ?? "synthetic phase")
-      : clockNow === null
-        ? "waiting for signal"
-        : `${formatElapsed(Math.max(0, clockNow - Date.parse(lastSignalAt)))} ago`;
+  const feedHealth =
+    mode === "live" && clockNow !== null
+      ? codecFeedHealth(lastSignalAt, clockNow, feedFault)
+      : { silenceMs: 0, stale: false };
   const parentNameFor = (panel: CodecPanelScene) =>
     panel.parent_instance_id
       ? scene.panels.find((p) => p.instance_id === panel.parent_instance_id?.value)?.identity
@@ -409,6 +399,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
       data-team-panel={teamPanelOpen ? "open" : "closed"}
       data-fullscreen={fullscreen ? "true" : "false"}
       data-codec-layout={mobileLayout ? "mobile" : "desktop"}
+      data-codec-feed-state={mode === "replay" ? "replay" : feedHealth.stale ? "stale" : "current"}
       className={cn(styles.codecArena, AMBIENCE_CLASS[scene.team_ambience.value])}
     >
       <p aria-live="polite" className="sr-only">
@@ -493,19 +484,23 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
             )}
           </header>
           <div className={styles.sceneRail}>
-            <Badge
-              data-codec-feed-status
-              variant={degraded ? "secondary" : "outline"}
-              className={styles.feedBadge}
-              title={
-                mode === "replay"
-                  ? `Synthetic phase: ${signalAge}; no live transport`
-                  : `Transport: ${transportLabel}; last signal ${signalAge}`
-              }
-            >
-              {mode === "replay" ? "demo" : "feed"} {transportLabel} · {signalAge}
-            </Badge>
-            {degraded && <span>showing the last known scene</span>}
+            {feedHealth.stale && (
+              <Badge
+                data-codec-feed-stale
+                role="alert"
+                variant="outline"
+                className={styles.feedStaleAlert}
+                title={
+                  feedFault
+                    ? "The feed reported an update failure. Showing the last known scene."
+                    : `No feed update for ${formatElapsed(feedHealth.silenceMs)}. Showing the last known scene.`
+                }
+              >
+                <TriangleAlert aria-hidden />
+                feed stale ·{" "}
+                {feedFault ? "update failed" : `${formatElapsed(feedHealth.silenceMs)} no update`}
+              </Badge>
+            )}
             <Badge variant="outline" title={`Team ambience: ${scene.team_ambience.value}`}>
               ambience {scene.team_ambience.value}
             </Badge>

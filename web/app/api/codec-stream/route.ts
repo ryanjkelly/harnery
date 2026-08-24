@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const runtime = "nodejs";
 
-const HEARTBEAT_INTERVAL_MS = 25_000;
+const HEARTBEAT_INTERVAL_MS = 5_000;
 /** Minimum spacing between scene emissions; bursts coalesce into one. */
 const SCENE_COALESCE_MS = 1_000;
 /** Heartbeat-driven changes (activity, presence age) have no file watcher on

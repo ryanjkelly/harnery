@@ -364,10 +364,16 @@
   color: rgb(249 168 212);
 }
 
-.feedBadge {
-  border-color: rgb(34 211 238 / 0.38);
-  color: rgb(165 243 252);
-  background: rgb(8 145 178 / 0.09);
+.feedStaleAlert {
+  border-color: rgb(245 158 11 / 0.58);
+  color: rgb(253 224 71);
+  background: rgb(120 53 15 / 0.26);
+  box-shadow: 0 0 14px rgb(245 158 11 / 0.12);
+}
+
+.feedStaleAlert svg {
+  width: 0.72rem;
+  height: 0.72rem;
 }
 
 .remoteFleet {
@@ -2736,6 +2742,7 @@
     display: flex;
     align-items: stretch;
     flex-direction: column;
+    padding-block: 0.25rem;
   }
 
   .sceneControls {
