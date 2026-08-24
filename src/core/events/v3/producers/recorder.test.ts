@@ -42,6 +42,7 @@ import { eventV3Paths } from "../writer.ts";
 import {
   drainHookIntakeSpoolV3,
   readHookProducerStateV3,
+  reconcilePendingRuntimeContextV3,
   recordApprovedSessionEndV3,
   recordHookSignalV3,
 } from "./recorder.ts";
@@ -1815,6 +1816,100 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(contexts).toHaveLength(1);
     expect(
       contexts[0]?.event_type === "context.observed" && contexts[0].payload.measurement,
+    ).toMatchObject({
+      state: "observed",
+      value: { used_tokens: 120_000, limit_tokens: 258_400 },
+      attestation: "derived",
+      confidence: "exact",
+    });
+    expect(
+      readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+    ).toBeUndefined();
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(durable).not.toContain(transcript);
+    expect(durable).not.toContain(nativeSession);
+    expect(durable).not.toContain(nativeTurn);
+  });
+
+  test("reconciles a Codex terminal written only after Stop returns", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-post-stop-context-flush";
+    const nativeTurn = "codex-post-stop-context-turn";
+    const transcript = join(root, `rollout-fixture-${nativeSession}.jsonl`);
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        timestamp: "2026-08-21T20:24:00.000Z",
+        ordinal: 1,
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: nativeTurn },
+      })}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+        "codex",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+        "codex",
+      ),
+    );
+    expect(
+      readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+    ).toHaveLength(1);
+
+    appendFileSync(
+      transcript,
+      `${[
+        {
+          timestamp: "2026-08-21T20:24:14.100Z",
+          ordinal: 2,
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              last_token_usage: { input_tokens: 120_000 },
+              model_context_window: 258_400,
+            },
+          },
+        },
+        {
+          timestamp: "2026-08-21T20:24:15.200Z",
+          ordinal: 3,
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: nativeTurn },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+
+    expect(
+      reconcilePendingRuntimeContextV3({
+        coordRoot: root,
+        mode: "candidate",
+        nativeSessionId: nativeSession,
+        producer_id: "prd_fixture",
+        build_id: "build_fixture",
+        platform: "linux",
+      }),
+    ).toEqual({ state: "settled" });
+    const contexts = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "context.observed");
+    expect(contexts).toHaveLength(2);
+    expect(
+      contexts.at(-1)?.event_type === "context.observed" && contexts.at(-1)?.payload.measurement,
     ).toMatchObject({
       state: "observed",
       value: { used_tokens: 120_000, limit_tokens: 258_400 },

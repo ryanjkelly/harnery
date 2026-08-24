@@ -2930,6 +2930,89 @@ export function readHookProducerStateV3(
   return existsSync(path) ? readProducerState(path) : undefined;
 }
 
+export interface ReconcilePendingRuntimeContextV3Input {
+  coordRoot: string;
+  mode: EventV3WriteMode;
+  nativeSessionId: string;
+  producer_id: `prd_${string}`;
+  build_id: `build_${string}`;
+  platform: "linux" | "windows" | "macos" | "unknown";
+  finalAttempt?: boolean;
+  runtimeTelemetryOptions?: RuntimeTelemetryOptions;
+  writerOptions?: WriteEventV3Options;
+}
+
+export type ReconcilePendingRuntimeContextV3Result =
+  | { state: "gate_closed" }
+  | { state: "missing" }
+  | { state: "busy" }
+  | { state: "not_pending" }
+  | { state: "pending" }
+  | { state: "settled" };
+
+/**
+ * Retry one Codex session's owner-only context join without replaying its Stop
+ * signal. Codex appends `task_complete` only after the synchronous Stop hook
+ * exits, so this is invoked by a bounded detached worker after that exit.
+ */
+export function reconcilePendingRuntimeContextV3(
+  input: ReconcilePendingRuntimeContextV3Input,
+): ReconcilePendingRuntimeContextV3Result {
+  const control = readEventV3ControlState(input.coordRoot);
+  if (control.state !== input.mode) return { state: "gate_closed" };
+  if (control.state !== "candidate" && control.state !== "active") {
+    return { state: "gate_closed" };
+  }
+  const rootId = control.genesis.event.scope.root_id as `root_${string}`;
+  const rootContext = fingerprintContextV3(
+    input.coordRoot,
+    rootId,
+    undefined,
+    control.genesis.profile.privacy_key_epoch,
+  );
+  const sessionHash = normalizeNativeIdV3(rootContext, "codex.session", input.nativeSessionId);
+  const path = producerStatePath(input.coordRoot, "codex", sessionHash);
+  if (!existsSync(path)) return { state: "missing" };
+  const lease = acquireStateLeaseWithRetry(input.coordRoot, path, STATE_LEASE_RETRY_ATTEMPTS);
+  if (!lease) return { state: "busy" };
+  try {
+    const state = readProducerState(path);
+    if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) {
+      return { state: "not_pending" };
+    }
+    const context = fingerprintContextV3(
+      input.coordRoot,
+      rootId,
+      state.generation_id,
+      state.privacy_epoch_id,
+    );
+    reconcilePendingRuntimeContexts(
+      {
+        coordRoot: input.coordRoot,
+        mode: input.mode,
+        signal: "stop",
+        payload: { raw: {}, session_id: input.nativeSessionId },
+        adapter: "codex",
+        instance_id: state.instance_id,
+        producer_id: input.producer_id,
+        build_id: input.build_id,
+        platform: input.platform,
+        observed_at: new Date().toISOString(),
+        runtimeTelemetryOptions: input.runtimeTelemetryOptions,
+        writerOptions: input.writerOptions,
+      },
+      state,
+      path,
+      rootId,
+      context,
+      { deferRetryLimit: true, finalAttempt: input.finalAttempt },
+    );
+    return state.pending_runtime_contexts?.length ? { state: "pending" } : { state: "settled" };
+  } finally {
+    lease.release();
+  }
+}
+
 /** Resolve one terminal producer only when native session and instance identity agree. */
 export function readTerminalHookProducerStateV3(
   coordRoot: string,
