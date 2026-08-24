@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import styles from "@/components/codec/codecRoster.module.css";
 import {
+  EXTENDED_EXPRESSIONS,
   listPacks,
   REQUIRED_EXPRESSIONS,
   readPackRegistry,
@@ -10,6 +11,8 @@ import {
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+
+const ROSTER_EXPRESSIONS = [...REQUIRED_EXPRESSIONS, ...EXTENDED_EXPRESSIONS];
 
 export default function CodecRosterPage() {
   const packs = listPacks();
@@ -31,7 +34,7 @@ export default function CodecRosterPage() {
         </div>
         <div className={styles.headerStats}>
           <span>{packs.length} complete packs</span>
-          <span>{REQUIRED_EXPRESSIONS.length} expressions each</span>
+          <span>{ROSTER_EXPRESSIONS.length} expressions each</span>
           <span>{summary.active_bindings.length} active bindings</span>
           <Link href="/codec" prefetch={false}>
             Return to live Codec
@@ -152,7 +155,7 @@ export default function CodecRosterPage() {
                 </header>
 
                 <div className={styles.expressionGrid}>
-                  {REQUIRED_EXPRESSIONS.map((expression) => (
+                  {ROSTER_EXPRESSIONS.map((expression) => (
                     <figure
                       data-codec-expression={expression}
                       className={styles.expression}
