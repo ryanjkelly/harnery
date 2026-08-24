@@ -57,6 +57,7 @@ import {
 import { codecFeedHealth } from "@/lib/codec/feed-health";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
 import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
+import { codecSemanticBriefLines } from "@/lib/codec/semantic-brief";
 import { codecSemantic } from "@/lib/codec/semantic-contract";
 import {
   formatSemanticUsageAggregate,
@@ -1432,6 +1433,7 @@ function SemanticRead({ panel }: { panel: CodecPanelScene }) {
   const semantic = codecSemantic(panel);
   if (!semantic) return null;
 
+  const briefLines = codecSemanticBriefLines(semantic);
   const readerLabel = semantic.reader.resolved_model_id ?? semantic.reader.configured_model;
   const stateLabel = semantic.state === "current" ? "current" : humanizeCueToken(semantic.state);
   const receiptReason = semantic.receipt?.reason_code
@@ -1445,34 +1447,68 @@ function SemanticRead({ panel }: { panel: CodecPanelScene }) {
       className={cn(styles.semanticRead, semantic.state !== "current" && styles.semanticReadMuted)}
     >
       <summary className={styles.semanticSummaryLine}>
-        <span className={styles.semanticEyebrow}>Semantic read</span>
-        {semantic.phase?.value && semantic.phase.value !== "unknown" && (
-          <span className={styles.semanticPhase}>{humanizeCueToken(semantic.phase.value)}</span>
-        )}
-        <span className={styles.semanticState}>{stateLabel}</span>
+        <span className={styles.semanticBriefHeader}>
+          <span className={styles.semanticEyebrow}>Semantic brief</span>
+          {semantic.phase?.value && semantic.phase.value !== "unknown" && (
+            <span className={styles.semanticPhase}>{humanizeCueToken(semantic.phase.value)}</span>
+          )}
+          <span className={styles.semanticState}>{stateLabel}</span>
+        </span>
+        <span className={styles.semanticBriefLines}>
+          {briefLines.map((line) => (
+            <span
+              key={line.kind}
+              data-codec-semantic-brief-line={line.kind}
+              data-missing={line.missing ? "true" : undefined}
+              className={styles.semanticBriefLine}
+            >
+              <span className={styles.semanticBriefLabel}>{line.label}</span>
+              <Tooltip
+                side="bottom"
+                align="start"
+                triggerClassName={styles.semanticBriefTooltipTrigger}
+                className="max-w-sm"
+                content={
+                  <div className="space-y-1">
+                    <p className="font-semibold">
+                      {line.label} · {line.text}
+                    </p>
+                    {line.field ? (
+                      <p className="text-muted-foreground">
+                        {humanizeCueToken(line.field.basis)} · {line.field.confidence} confidence ·
+                        observed {formatReceiptTime(line.field.observed_at)} ·{" "}
+                        {line.field.evidence_event_ids?.length ?? 0} cited evidence events
+                      </p>
+                    ) : (
+                      <p className="text-muted-foreground">
+                        No current model-generated value was recorded for this line.
+                      </p>
+                    )}
+                  </div>
+                }
+              >
+                <span className={styles.semanticBriefText}>{line.text}</span>
+              </Tooltip>
+            </span>
+          ))}
+        </span>
       </summary>
       <div className={styles.semanticBody}>
         {semantic.state === "current" ? (
           <>
-            {semantic.summary && <p className={styles.semanticCopy}>{semantic.summary.value}</p>}
+            {semantic.headline && semantic.summary && (
+              <p className={styles.semanticDetail}>
+                <span>Summary</span> {semantic.summary.value}
+              </p>
+            )}
             {semantic.purpose && (
               <p className={styles.semanticDetail}>
                 <span>Purpose</span> {semantic.purpose.value}
               </p>
             )}
-            {semantic.recent_result && (
-              <p className={styles.semanticDetail}>
-                <span>Recent result</span> {semantic.recent_result.value}
-              </p>
-            )}
             {semantic.attention && (
               <p className={styles.semanticDetail}>
                 <span>Attention</span> {semantic.attention.value}
-              </p>
-            )}
-            {semantic.next_step && (
-              <p data-codec-semantic-prediction className={styles.semanticPrediction}>
-                <span>Predicted next</span> {semantic.next_step.value}
               </p>
             )}
             {semantic.tags && semantic.tags.value.length > 0 && (

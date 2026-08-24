@@ -1413,13 +1413,9 @@
 }
 
 .semanticSummaryLine {
-  display: flex;
   min-width: 0;
   cursor: pointer;
   list-style: none;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.45rem;
   padding: 0.42rem 0.6rem;
 }
 
@@ -1427,7 +1423,15 @@
   display: none;
 }
 
-.semanticSummaryLine::before {
+.semanticBriefHeader {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.semanticBriefHeader::before {
   content: "+";
   flex: none;
   color: rgb(var(--codec-accent));
@@ -1435,8 +1439,68 @@
   font-weight: 800;
 }
 
-.semanticRead[open] .semanticSummaryLine::before {
+.semanticRead[open] .semanticBriefHeader::before {
   content: "−";
+}
+
+.semanticBriefLines {
+  display: grid;
+  min-width: 0;
+  gap: 0.18rem;
+  margin: 0.38rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.semanticBriefLine {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 3.8rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.42rem;
+  border-top: 1px solid rgb(var(--codec-accent) / 0.1);
+  padding-top: 0.18rem;
+}
+
+.semanticBriefLine[data-missing="true"] {
+  opacity: 0.48;
+}
+
+.semanticBriefLabel {
+  color: rgb(var(--codec-accent));
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.5rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.semanticBriefLine[data-codec-semantic-brief-line="prediction"] .semanticBriefLabel {
+  border-left: 2px dashed rgb(var(--codec-accent) / 0.58);
+  padding-left: 0.3rem;
+}
+
+.semanticBriefTooltipTrigger {
+  display: block;
+  min-width: 0;
+  width: 100%;
+}
+
+.semanticBriefText {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(228 228 231 / 0.9);
+  font-size: 0.66rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 1rem), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 1rem), transparent 100%);
+}
+
+.semanticBriefLine[data-codec-semantic-brief-line="prediction"] .semanticBriefText {
+  color: rgb(212 212 216 / 0.82);
+  font-style: italic;
 }
 
 .semanticEyebrow,
@@ -1731,8 +1795,30 @@
   }
 
   .semanticSummaryLine {
-    gap: clamp(0.45rem, 0.7cqi, 0.64rem);
     padding: clamp(0.46rem, 0.68cqi, 0.62rem) clamp(0.65rem, 0.95cqi, 0.88rem);
+  }
+
+  .semanticBriefHeader {
+    gap: clamp(0.45rem, 0.7cqi, 0.64rem);
+  }
+
+  .semanticBriefLines {
+    gap: clamp(0.18rem, 0.26cqi, 0.24rem);
+    margin-top: clamp(0.38rem, 0.54cqi, 0.5rem);
+  }
+
+  .semanticBriefLine {
+    grid-template-columns: clamp(3.8rem, 5.1cqi, 4.6rem) minmax(0, 1fr);
+    gap: clamp(0.42rem, 0.58cqi, 0.54rem);
+    padding-top: clamp(0.18rem, 0.25cqi, 0.23rem);
+  }
+
+  .semanticBriefLabel {
+    font-size: clamp(0.52rem, 0.68cqi, 0.62rem);
+  }
+
+  .semanticBriefText {
+    font-size: clamp(0.7rem, 0.92cqi, 0.84rem);
   }
 
   .semanticEyebrow {
