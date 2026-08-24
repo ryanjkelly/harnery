@@ -1,0 +1,87 @@
+---
+title: "ADR 0108: separate exact, inferred, and percentage-only context"
+description: Record useful adapter-native context evidence in V3 without presenting inferred limits or first-party percentages as exact token counts.
+sidebar:
+  order: 108
+---
+
+**Date:** 2026-08-23
+**Status:** Accepted
+
+## Context
+
+Event Ledger V3 originally admitted a context observation only when one source
+reported both used tokens and the context limit. That rule prevented false
+precision, but it also discarded two useful adapter-native signals.
+
+Claude Code transcripts report the effective model and exact input-token use.
+Anthropic's [model capability table](https://platform.claude.com/docs/en/about-claude/models/overview)
+publishes the context window for canonical model IDs. The join can establish a
+limit for a known model, but the limit still comes from model metadata rather
+than the transcript row. Claude Code also exposes exact context-window fields
+to a configured [status line](https://code.claude.com/docs/en/statusline), but
+Harnery cannot take over a user's status-line command merely to collect
+telemetry.
+
+Cursor stores `contextUsagePercent` with each local composer in its
+workspace-state database. That is a first-party percentage associated with the
+native session ID. The same record does not establish the active model's
+context limit. Cursor's [model documentation](https://docs.cursor.com/advanced/models)
+also explains that normal and Max modes can use different windows, so a fixed
+200,000-token denominator would be false precision.
+
+This decision supersedes the exact-only admission rule in ADR 0100 and ADR
+0103. Their requirements for bounded reads, session and turn matching,
+freshness, privacy, and deduplication still apply.
+
+## Alternatives considered
+
+- **Keep every non-exact signal missing.** Rejected because Codec would hide a
+  real first-party percentage and a defensible model-capability inference.
+- **Assume every Cursor session has a 200,000-token window.** Rejected because
+  Cursor modes and models can use different limits. A real percentage does not
+  justify synthetic token counts.
+- **Infer Claude limits from loose family names or product labels.** Rejected
+  because aliases can move between model versions. Only versioned canonical
+  model patterns in the capability table qualify.
+- **Install a Claude Code status-line collector automatically.** Deferred. It
+  can supply an exact native pair, but replacing or wrapping user configuration
+  is a separate product contract and needs its own lifecycle and failure model.
+- **Let Codec read transcripts and SQLite directly.** Rejected because it would
+  split telemetry authority and move private runtime paths into the UI layer.
+
+## Decision
+
+V3 context measurements admit two mutually exclusive value shapes:
+
+1. A token measurement carries `used_tokens`, `limit_tokens`, optional
+   `remaining_tokens`, `measured_at`, and `method`.
+2. A percentage measurement carries `used_percent`, optional
+   `remaining_percent`, `measured_at`, and `method`.
+
+Attestation and confidence describe how the value was established. Codex's
+turn-matched terminal token row remains `derived` and `exact`. Claude's exact
+used count joined to a published canonical-model limit is `inferred` with high
+confidence. Cursor's session-matched first-party percentage is `derived` with
+high confidence and `percentage_only` completeness. Unknown Claude aliases,
+stale or ambiguous Cursor records, and incomplete transcript rows remain named
+missing states.
+
+The Cursor reader scans only a bounded set of recently modified workspace
+databases and caches the verified database per session. It returns only the
+percentage, timestamp, bounded I/O counters, and an opaque witness. Claude and
+Codex readers retain their turn and session joins. No transcript contents,
+composer bodies, database paths, or native session IDs enter public events.
+
+Codec continues to consume only canonical V3 `context.observed` events. It
+renders remaining capacity from either value shape. Exact token counts appear
+only when a token measurement supplied them; percentage-only observations do
+not grow a synthetic denominator.
+
+## Result
+
+Codex cards can show exact used and limit counts after a pathless Stop. Known
+Claude models can show an explicitly inferred reserve while unknown models stay
+missing. Cursor cards can show their first-party remaining percentage without
+claiming exact tokens. The neutral gauge remains visible for unsupported,
+stale, ambiguous, or incomplete evidence.

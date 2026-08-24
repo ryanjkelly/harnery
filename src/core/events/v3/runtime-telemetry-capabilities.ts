@@ -12,7 +12,12 @@ export type RuntimeTelemetryChannelV3 =
   | "response_latency"
   | "inference_timing";
 
-export type RuntimeTelemetryCompletenessV3 = "exact" | "lower_bound" | "unknown";
+export type RuntimeTelemetryCompletenessV3 =
+  | "exact"
+  | "inferred"
+  | "percentage_only"
+  | "lower_bound"
+  | "unknown";
 
 export interface RuntimeTelemetryCapabilityValueV3 {
   support: Exclude<CapabilitySupportV3, "unsupported">;
@@ -24,8 +29,8 @@ export type RuntimeTelemetryCapabilityObservationV3 =
   | {
       state: "observed";
       value: RuntimeTelemetryCapabilityValueV3;
-      attestation: "native" | "derived";
-      confidence: "exact" | "high";
+      attestation: "native" | "derived" | "inferred";
+      confidence: "exact" | "high" | "medium" | "low";
     }
   | { state: "expected_but_missing"; capability: string; reason: string }
   | { state: "unsupported"; capability: string };
@@ -34,8 +39,9 @@ export type RuntimeContextCapabilityEvidenceV3 =
   | {
       state: "observed";
       source: string;
-      attestation: "native" | "derived";
-      confidence: "exact" | "high";
+      attestation: "native" | "derived" | "inferred";
+      confidence: "exact" | "high" | "medium" | "low";
+      completeness?: "exact" | "inferred" | "percentage_only";
     }
   | { state: "partial"; reason: string }
   | { state: "unsupported" };
@@ -84,7 +90,7 @@ function contextCapability(
     return observed(
       evidence.attestation === "native" ? "native" : "derived",
       evidence.source,
-      "exact",
+      evidence.completeness ?? (evidence.attestation === "inferred" ? "inferred" : "exact"),
       evidence.attestation,
       evidence.confidence,
     );
@@ -117,8 +123,8 @@ function observed(
   support: Exclude<CapabilitySupportV3, "unsupported">,
   source: string,
   completeness: RuntimeTelemetryCompletenessV3,
-  attestation: "native" | "derived",
-  confidence: "exact" | "high",
+  attestation: "native" | "derived" | "inferred",
+  confidence: "exact" | "high" | "medium" | "low",
 ): RuntimeTelemetryCapabilityObservationV3 {
   return {
     state: "observed",

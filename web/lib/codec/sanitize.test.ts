@@ -170,6 +170,33 @@ describe("sanitizeEvent", () => {
     expect(compacting?.used_percent).toBeUndefined();
   });
 
+  test("lifts a percentage-only context observation without token counts", () => {
+    const context = sanitizeEvent(
+      v3Event("context.observed", {
+        measurement: {
+          state: "observed",
+          value: {
+            used_percent: 41.25,
+            remaining_percent: 58.75,
+            measured_at: "2026-08-16T10:00:00.000Z",
+            method: "cursor_composer_context_percent",
+          },
+          attestation: "derived",
+          confidence: "high",
+        },
+      }),
+    );
+    expect(context).toMatchObject({
+      event_type: "context.observed",
+      used_percent: 41.25,
+      context_confidence: "reported",
+      context_observation_state: "observed",
+    });
+    expect(context?.context_used_tokens).toBeUndefined();
+    expect(context?.context_limit_tokens).toBeUndefined();
+    expect(context?.context_remaining_tokens).toBeUndefined();
+  });
+
   test("does not treat command intent_kind as operator-visible intent", () => {
     const command = sanitizeEvent(
       v3Event(

@@ -55,6 +55,7 @@ export function normalizeRunQualityEventV3(
     case "context.observed": {
       const measurement = event.payload.measurement;
       if (measurement.state !== "observed") return [];
+      if (!("used_tokens" in measurement.value)) return [];
       return [
         {
           ...base,

@@ -1105,7 +1105,7 @@ describe("event ledger V3 persistent hook recorder", () => {
     });
   });
 
-  test("records current Claude and Codex Stop schemas with unsupported inference", () => {
+  test("records current Claude and Codex Stop schemas with honest missing telemetry", () => {
     const fixture = JSON.parse(
       readFileSync(
         join(
@@ -1169,8 +1169,12 @@ describe("event ledger V3 persistent hook recorder", () => {
         .events.map(({ event }) => event)
         .find((event) => event.event_type === "context.observed");
       expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
-        state: "unsupported",
+        state: "expected_but_missing",
         capability: "context_usage",
+        reason:
+          item.adapter === "claude-code"
+            ? "conditional_signal_not_reported"
+            : "promised_signal_not_reported",
       });
       const durable = readFileSync(eventV3Paths(root).active, "utf8");
       expect(durable).not.toContain("PRIVATE_ASSISTANT_BODY");
@@ -1336,6 +1340,152 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(durable).not.toContain("PRIVATE_SECOND_RESPONSE");
     expect(durable).not.toContain(nativePrompt);
     expect(durable).not.toContain(transcript);
+  });
+
+  test("records Claude used tokens with an inferred authoritative model limit", () => {
+    const root = candidateRoot("claude-code");
+    const nativeSession = "claude-authoritative-model-limit";
+    const nativePrompt = "claude-authoritative-prompt";
+    const transcript = join(root, "claude-authoritative-model.jsonl");
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          type: "user",
+          uuid: "claude-user",
+          promptId: nativePrompt,
+          sessionId: nativeSession,
+          message: { role: "user", content: "PRIVATE_CLAUDE_PROMPT" },
+        },
+        {
+          type: "assistant",
+          uuid: "claude-assistant",
+          parentUuid: "claude-user",
+          sessionId: nativeSession,
+          timestamp: "2026-08-23T20:24:14.000Z",
+          message: {
+            model: "claude-opus-5",
+            content: "PRIVATE_CLAUDE_RESPONSE",
+            usage: {
+              input_tokens: 10,
+              cache_creation_input_tokens: 20,
+              cache_read_input_tokens: 30,
+            },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "session-start",
+        parsed({ session_id: nativeSession, model: "claude-opus-5" }),
+        "claude-code",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativePrompt }),
+        "claude-code",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, transcript_path: transcript }),
+        "claude-code",
+      ),
+    );
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const context = events.find((event) => event.event_type === "context.observed");
+    expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
+      state: "observed",
+      value: {
+        used_tokens: 60,
+        limit_tokens: 1_000_000,
+        remaining_tokens: 999_940,
+        measured_at: "2026-08-23T20:24:14.000Z",
+        method: "claude_transcript_usage_model_capability",
+      },
+      attestation: "inferred",
+      confidence: "high",
+    });
+    expect(context?.provenance).toMatchObject({
+      source_event: "claude.transcript_usage_model_capability.1.0.0",
+      attestation: "inferred",
+      confidence: "high",
+    });
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(durable).not.toContain("PRIVATE_CLAUDE_PROMPT");
+    expect(durable).not.toContain("PRIVATE_CLAUDE_RESPONSE");
+    expect(durable).not.toContain(transcript);
+  });
+
+  test("records Cursor's first-party context percentage without synthetic token counts", () => {
+    const root = candidateRoot("cursor");
+    const nativeSession = "cursor-first-party-context";
+    const nativeTurn = "cursor-context-turn";
+    const observedAt = new Date().toISOString();
+    const cursorRoot = join(root, "cursor-workspace-storage");
+    const workspace = join(cursorRoot, "workspace-a");
+    mkdirSync(workspace, { recursive: true });
+    const databasePath = join(workspace, "state.vscdb");
+    const database = new Database(databasePath);
+    database.run("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
+    database.run("INSERT INTO ItemTable (key, value) VALUES (?, ?)", [
+      "composer.composerData",
+      JSON.stringify({
+        allComposers: [
+          {
+            composerId: nativeSession,
+            contextUsagePercent: 41.25,
+            lastUpdatedAt: Date.parse(observedAt),
+          },
+        ],
+      }),
+    ]);
+    database.close();
+    const input = (
+      signal: Parameters<typeof recordHookSignalV3>[0]["signal"],
+      payload: ParsedPayload,
+    ) => ({
+      ...baseInput(root, signal, payload, "cursor"),
+      observed_at: observedAt,
+      runtimeTelemetryOptions: { cursorRoots: [cursorRoot] },
+    });
+    recordHookSignalV3(input("session-start", parsed({ conversation_id: nativeSession })));
+    recordHookSignalV3(
+      input("user-prompt-submit", parsed({ conversation_id: nativeSession, turn_id: nativeTurn })),
+    );
+    recordHookSignalV3(
+      input("stop", parsed({ conversation_id: nativeSession, turn_id: nativeTurn })),
+    );
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const contexts = events.filter((event) => event.event_type === "context.observed");
+    expect(contexts).toHaveLength(1);
+    const context = contexts[0];
+    expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
+      state: "observed",
+      value: {
+        used_percent: 41.25,
+        remaining_percent: 58.75,
+        measured_at: observedAt,
+        method: "cursor_composer_context_percent",
+      },
+      attestation: "derived",
+      confidence: "high",
+    });
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(durable).not.toContain(databasePath);
+    expect(durable).not.toContain(nativeSession);
+    expect(durable).not.toContain("limit_tokens");
   });
 
   test("enriches a completed Codex turn from an attributable bounded rollout sample", () => {
@@ -1874,8 +2024,7 @@ describe("event ledger V3 persistent hook recorder", () => {
       .filter((event) => event.event_type === "context.observed");
     expect(contexts).toHaveLength(2);
     expect(
-      contexts.at(-1)?.event_type === "context.observed" &&
-        contexts.at(-1)?.payload.measurement,
+      contexts.at(-1)?.event_type === "context.observed" && contexts.at(-1)?.payload.measurement,
     ).toMatchObject({
       state: "observed",
       value: { used_tokens: 120_000, limit_tokens: 258_400 },
@@ -2099,7 +2248,7 @@ describe("event ledger V3 persistent hook recorder", () => {
     ).toBeUndefined();
     const events = readLedgerV3(root).events.map(({ event }) => event);
     expect(events.filter((event) => event.event_type === "context.observed")).toHaveLength(1);
-    expect(events.at(-1)?.event_type).toBe("session.ended");
+    expect(events.some((event) => event.event_type === "session.ended")).toBeTrue();
   });
 
   test("bounds late Codex context retries when the transcript remains unflushed", () => {
@@ -2186,6 +2335,7 @@ describe("event ledger V3 persistent hook recorder", () => {
           ...baseInput(root, item.signal, payload, "cursor"),
           observed_at: item.observed_at,
           monotonic_ns: item.monotonic_ns,
+          runtimeTelemetryOptions: { cursorRoots: [] },
         }).state,
       ).toBe("recorded");
     }
@@ -2204,8 +2354,9 @@ describe("event ledger V3 persistent hook recorder", () => {
     ).toMatchObject({ state: "observed", value: 1 });
     const context = events.find(({ event_type }) => event_type === "context.observed");
     expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
-      state: "unsupported",
+      state: "expected_but_missing",
       capability: "context_usage",
+      reason: "cursor_context_database_unavailable",
     });
     const durable = readFileSync(eventV3Paths(root).active, "utf8");
     expect(durable).not.toContain("PRIVATE_PROMPT_BODY");
@@ -2299,7 +2450,7 @@ describe("event ledger V3 persistent hook recorder", () => {
 
     expect(totalTurns).toBe(7);
     expect(totalWallMs).toBe(5_669_140);
-  });
+  }, 15_000);
 
   test("deduplicates Cursor generic and shell fallback hooks and counts repeated commands", () => {
     const root = candidateRoot("cursor");

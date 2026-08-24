@@ -8,6 +8,7 @@ import { transcriptPathCandidates } from "../resolve/transcript.ts";
 
 const DEFAULT_TAIL_BYTES = 256 * 1024;
 const DEFAULT_MAX_SAMPLE_AGE_MS = 30_000;
+const DEFAULT_MAX_CURSOR_DATABASES = 8;
 const SESSION_CACHE_LIMIT = 128;
 
 export type RuntimeContextTelemetry =
@@ -16,9 +17,23 @@ export type RuntimeContextTelemetry =
       used_tokens: number;
       limit_tokens: number;
       measured_at: string;
-      method: "codex_transcript_token_count";
+      method: "codex_transcript_token_count" | "claude_transcript_usage_model_capability";
       source_event: string;
       source_witness: string;
+      attestation: "derived" | "inferred";
+      confidence: "exact" | "high" | "medium";
+      bytes_read: number;
+      io_duration_ms: number;
+    }
+  | {
+      state: "observed";
+      used_percent: number;
+      measured_at: string;
+      method: "cursor_composer_context_percent";
+      source_event: string;
+      source_witness: string;
+      attestation: "derived";
+      confidence: "high";
       runtime_version?: string;
       bytes_read: number;
       io_duration_ms: number;
@@ -52,7 +67,14 @@ export type RuntimeContextMissingReason =
   | "claude_context_limit_tokens_not_reported"
   | "claude_transcript_session_mismatch"
   | "claude_transcript_turn_not_found"
-  | "claude_transcript_unreadable";
+  | "claude_transcript_unreadable"
+  | "cursor_context_database_unavailable"
+  | "cursor_context_database_unreadable"
+  | "cursor_context_session_not_found"
+  | "cursor_context_sample_ambiguous"
+  | "cursor_context_sample_stale"
+  | "cursor_context_sample_time_not_reported"
+  | "cursor_context_usage_invalid";
 
 export type RuntimeContextUnsupportedReason =
   | "runtime_context_telemetry_unavailable"
@@ -65,12 +87,15 @@ export interface RuntimeContextRequest {
   session_id?: string;
   turn_id?: string;
   transcript_path?: string;
+  observed_at?: string;
   /** Status callers may request the newest session sample without claiming turn attribution. */
   mode: "turn" | "status";
 }
 
 export interface RuntimeTelemetryOptions {
   codexRoots?: string[];
+  cursorRoots?: string[];
+  maxCursorDatabases?: number;
   maxTailBytes?: number;
   maxSampleAgeMs?: number;
 }
@@ -101,6 +126,7 @@ interface CodexTokenSample {
 }
 
 const codexTranscriptCache = new Map<string, string>();
+const cursorDatabaseCache = new Map<string, string>();
 
 /**
  * Read privacy-safe context telemetry from a local runtime transcript.
@@ -115,11 +141,12 @@ export function readRuntimeContextTelemetry(
 ): RuntimeContextTelemetry {
   const startedAt = performance.now();
   if (!request.session_id) return unsupported("runtime_session_id_not_reported", startedAt);
-  if (request.mode === "turn" && !request.turn_id) {
+  if (request.mode === "turn" && !request.turn_id && request.adapter !== "cursor") {
     return unsupported("runtime_turn_id_not_reported", startedAt);
   }
   if (request.adapter === "codex") return readCodexContext(request, options, startedAt);
   if (request.adapter === "claude-code") return readClaudeContext(request, options, startedAt);
+  if (request.adapter === "cursor") return readCursorContext(request, options, startedAt);
   return unsupported("runtime_adapter_not_supported", startedAt);
 }
 
@@ -158,13 +185,14 @@ export function readRuntimeContextUsage(
     { adapter, session_id: sessionId, mode: "status" },
     options,
   );
-  return result.state === "observed"
+  return result.state === "observed" && "used_tokens" in result
     ? { used: result.used_tokens, window: result.limit_tokens }
     : null;
 }
 
 export function clearRuntimeTelemetryCachesForTest(): void {
   codexTranscriptCache.clear();
+  cursorDatabaseCache.clear();
 }
 
 export type RuntimeTuningMissingReason =
@@ -494,6 +522,8 @@ function codexObservation(
     method: "codex_transcript_token_count",
     source_event: "codex.rollout_token_count",
     source_witness: createHash("sha256").update(witness).digest("hex"),
+    attestation: "derived",
+    confidence: "exact",
     bytes_read: bytesRead,
     io_duration_ms: elapsed(startedAt),
   };
@@ -538,12 +568,267 @@ function readClaudeContext(
     if (used === undefined) {
       return partial("context_used_tokens_not_reported", tail.bytes, startedAt);
     }
+    const model = stringValue(message?.model);
+    const capability = model ? claudeModelContextCapability(model) : undefined;
+    if (capability && row.timestamp) {
+      const witness = [
+        request.session_id,
+        request.turn_id ?? "status",
+        row.timestamp,
+        used,
+        model,
+        capability.limit_tokens,
+        capability.authority,
+      ].join("\0");
+      return {
+        state: "observed",
+        used_tokens: used,
+        limit_tokens: capability.limit_tokens,
+        measured_at: row.timestamp,
+        method: "claude_transcript_usage_model_capability",
+        source_event: "claude.transcript_usage_model_capability",
+        source_witness: createHash("sha256").update(witness).digest("hex"),
+        attestation: "inferred",
+        confidence: "high",
+        bytes_read: tail.bytes,
+        io_duration_ms: elapsed(startedAt),
+      };
+    }
     return partial("claude_context_limit_tokens_not_reported", tail.bytes, startedAt, {
       used_tokens: used,
       measured_at: row.timestamp,
     });
   }
   return partial("context_used_tokens_not_reported", tail.bytes, startedAt);
+}
+
+interface ClaudeModelContextCapability {
+  limit_tokens: number;
+  authority: string;
+}
+
+/**
+ * Versioned exact-name families from Anthropic's published model capability
+ * table. Unknown aliases deliberately stay missing: matching a product label
+ * or guessing from a family name would turn an estimate into fake precision.
+ */
+function claudeModelContextCapability(model: string): ClaudeModelContextCapability | undefined {
+  const normalized = model.toLowerCase();
+  if (/^claude-(?:opus|sonnet|fable)-5(?:$|-\d{8}$)/.test(normalized)) {
+    return { limit_tokens: 1_000_000, authority: "anthropic_model_capabilities_2026_08" };
+  }
+  if (/^claude-haiku-4-5(?:$|-\d{8}$)/.test(normalized)) {
+    return { limit_tokens: 200_000, authority: "anthropic_model_capabilities_2026_08" };
+  }
+  return undefined;
+}
+
+interface CursorContextSample {
+  used_percent: number;
+  measured_at: string;
+  bytes_read: number;
+  database_path: string;
+}
+
+function readCursorContext(
+  request: RuntimeContextRequest,
+  options: RuntimeTelemetryOptions,
+  startedAt: number,
+): RuntimeContextTelemetry {
+  const cached = cursorDatabaseCache.get(request.session_id!);
+  if (cached && existsSync(cached)) {
+    const sample = readCursorDatabase(cached, request.session_id!);
+    if (sample.state === "found") {
+      return cursorObservation(request, sample.sample, options, startedAt);
+    }
+    cursorDatabaseCache.delete(request.session_id!);
+  }
+
+  const databases = cursorDatabasePaths(options);
+  if (databases.length === 0) {
+    return partial("cursor_context_database_unavailable", 0, startedAt);
+  }
+  const matches: CursorContextSample[] = [];
+  let bytesRead = 0;
+  let unreadable = 0;
+  for (const databasePath of databases) {
+    const result = readCursorDatabase(databasePath, request.session_id!);
+    bytesRead += result.state === "found" ? result.sample.bytes_read : result.bytes_read;
+    if (result.state === "unreadable") unreadable += 1;
+    if (result.state !== "found") continue;
+    matches.push(result.sample);
+  }
+  if (matches.length === 0) {
+    return partial(
+      unreadable === databases.length
+        ? "cursor_context_database_unreadable"
+        : "cursor_context_session_not_found",
+      bytesRead,
+      startedAt,
+    );
+  }
+  matches.sort((left, right) => Date.parse(right.measured_at) - Date.parse(left.measured_at));
+  const newest = matches[0]!;
+  const tied = matches.filter((sample) => sample.measured_at === newest.measured_at);
+  if (tied.some((sample) => sample.used_percent !== newest.used_percent)) {
+    return partial("cursor_context_sample_ambiguous", bytesRead, startedAt);
+  }
+  cacheCursorDatabase(request.session_id!, newest.database_path);
+  return cursorObservation(request, newest, options, startedAt);
+}
+
+function cursorObservation(
+  request: RuntimeContextRequest,
+  sample: CursorContextSample,
+  options: RuntimeTelemetryOptions,
+  startedAt: number,
+): RuntimeContextTelemetry {
+  if (
+    !Number.isFinite(sample.used_percent) ||
+    sample.used_percent < 0 ||
+    sample.used_percent > 100
+  ) {
+    return partial("cursor_context_usage_invalid", sample.bytes_read, startedAt);
+  }
+  const sampleMs = Date.parse(sample.measured_at);
+  if (!Number.isFinite(sampleMs)) {
+    return partial("cursor_context_sample_time_not_reported", sample.bytes_read, startedAt);
+  }
+  if (request.mode === "turn" && request.observed_at) {
+    const observedMs = Date.parse(request.observed_at);
+    const age = observedMs - sampleMs;
+    if (
+      !Number.isFinite(observedMs) ||
+      age < -5_000 ||
+      age > (options.maxSampleAgeMs ?? DEFAULT_MAX_SAMPLE_AGE_MS)
+    ) {
+      return partial("cursor_context_sample_stale", sample.bytes_read, startedAt);
+    }
+  }
+  const witness = [request.session_id, sample.measured_at, sample.used_percent].join("\0");
+  return {
+    state: "observed",
+    used_percent: sample.used_percent,
+    measured_at: sample.measured_at,
+    method: "cursor_composer_context_percent",
+    source_event: "cursor.composer_context_percent",
+    source_witness: createHash("sha256").update(witness).digest("hex"),
+    attestation: "derived",
+    confidence: "high",
+    bytes_read: sample.bytes_read,
+    io_duration_ms: elapsed(startedAt),
+  };
+}
+
+type CursorDatabaseResult =
+  | { state: "found"; sample: CursorContextSample }
+  | { state: "missing"; bytes_read: number }
+  | { state: "unreadable"; bytes_read: number };
+
+function readCursorDatabase(databasePath: string, sessionId: string): CursorDatabaseResult {
+  try {
+    // Bun is the primary hook runtime. Node fallback processes fail closed here
+    // instead of importing a Bun-only module at startup.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Database } = require("bun:sqlite") as {
+      Database: new (
+        path: string,
+        options: { readonly: boolean },
+      ) => {
+        query(sql: string): { get(): { value: string | Uint8Array } | null };
+        close(): void;
+      };
+    };
+    const database = new Database(databasePath, { readonly: true });
+    const row = database
+      .query("SELECT value FROM ItemTable WHERE key = 'composer.composerData'")
+      .get();
+    database.close();
+    if (!row?.value) return { state: "missing", bytes_read: 0 };
+    const text =
+      typeof row.value === "string" ? row.value : Buffer.from(row.value).toString("utf8");
+    const bytesRead = Buffer.byteLength(text);
+    const parsed = objectValue(JSON.parse(text));
+    const composers = Array.isArray(parsed?.allComposers) ? parsed.allComposers : [];
+    for (const candidate of composers) {
+      const composer = objectValue(candidate);
+      if (stringValue(composer?.composerId) !== sessionId) continue;
+      const usedPercent = numberValue(composer?.contextUsagePercent);
+      if (usedPercent === undefined) return { state: "missing", bytes_read: bytesRead };
+      const measuredAt = cursorMeasuredAt(composer?.lastUpdatedAt);
+      if (!measuredAt) return { state: "missing", bytes_read: bytesRead };
+      return {
+        state: "found",
+        sample: {
+          used_percent: usedPercent,
+          measured_at: measuredAt,
+          bytes_read: bytesRead,
+          database_path: databasePath,
+        },
+      };
+    }
+    return { state: "missing", bytes_read: bytesRead };
+  } catch {
+    return { state: "unreadable", bytes_read: 0 };
+  }
+}
+
+function cursorMeasuredAt(value: unknown): string | undefined {
+  if (typeof value === "string" && Number.isFinite(Date.parse(value))) {
+    return new Date(value).toISOString();
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  const milliseconds = value < 10_000_000_000 ? value * 1_000 : value;
+  const date = new Date(milliseconds);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function cursorDatabasePaths(options: RuntimeTelemetryOptions): string[] {
+  const roots = options.cursorRoots ?? defaultCursorRoots();
+  const limit = Math.max(1, Math.floor(options.maxCursorDatabases ?? DEFAULT_MAX_CURSOR_DATABASES));
+  const candidates: Array<{ path: string; modified_ms: number }> = [];
+  for (const root of roots) {
+    let names: string[];
+    try {
+      names = readdirSync(root).sort();
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const databasePath = join(root, name, "state.vscdb");
+      try {
+        candidates.push({ path: databasePath, modified_ms: statSync(databasePath).mtimeMs });
+      } catch {
+        // Removed or unreadable workspaces are not candidates.
+      }
+    }
+  }
+  return candidates
+    .sort((left, right) => right.modified_ms - left.modified_ms)
+    .slice(0, limit)
+    .map((candidate) => candidate.path);
+}
+
+function defaultCursorRoots(): string[] {
+  const roots = [resolve(homedir(), ".config", "Cursor", "User", "workspaceStorage")];
+  try {
+    if (existsSync("/mnt/c/Users")) {
+      for (const user of readdirSync("/mnt/c/Users")) {
+        roots.push(`/mnt/c/Users/${user}/AppData/Roaming/Cursor/User/workspaceStorage`);
+      }
+    }
+  } catch {
+    // Non-WSL hosts do not expose this mount.
+  }
+  return roots;
+}
+
+function cacheCursorDatabase(sessionId: string, databasePath: string): void {
+  cursorDatabaseCache.delete(sessionId);
+  cursorDatabaseCache.set(sessionId, databasePath);
+  while (cursorDatabaseCache.size > SESSION_CACHE_LIMIT) {
+    cursorDatabaseCache.delete(cursorDatabaseCache.keys().next().value!);
+  }
 }
 
 /** Join assistant rows to the native CC prompt id through the transcript's
@@ -641,6 +926,10 @@ function parseRuntimeRows(text: string): ParsedRuntimeRow[] {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function readTail(path: string, maxBytes: number): TailRead | undefined {

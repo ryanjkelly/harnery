@@ -1740,6 +1740,12 @@ function maybeAttestContextCapabilityChange(
           source: provenance?.source_event ?? `${input.adapter}.turn_context`,
           attestation: provenance?.attestation ?? measurement.attestation,
           confidence: provenance?.confidence ?? measurement.confidence,
+          completeness:
+            "used_percent" in measurement.value
+              ? ("percentage_only" as const)
+              : (provenance?.attestation ?? measurement.attestation) === "inferred"
+                ? ("inferred" as const)
+                : ("exact" as const),
         }
       : measurement.state === "expected_but_missing"
         ? { state: "partial" as const, reason: measurement.reason }
@@ -1936,13 +1942,20 @@ function turnTelemetryForTerminal(
   observedAt: string,
 ): TurnTelemetryV3 {
   const native = extractTurnTelemetryV3(input.adapter, input.payload.raw, observedAt);
-  if (native.context.state === "observed" || input.adapter === "cursor") return native;
+  if (native.context.state === "observed") return native;
+  if (input.adapter === "cursor" && state.cursor_mode === "cloud") {
+    return {
+      ...native,
+      context: { state: "unsupported", capability: "context_usage" },
+    };
+  }
 
   const request = {
     adapter: input.adapter,
     session_id: input.payload.session_id ?? input.payload.conversation_id,
     turn_id: input.payload.turn_id ?? state.current_native_turn_id,
     transcript_path: runtimeTranscriptPath(input, state),
+    observed_at: observedAt,
     mode: "turn" as const,
   };
   let runtime = readRuntimeContextTelemetry(request, input.runtimeTelemetryOptions);
@@ -1968,8 +1981,8 @@ function turnTelemetryForTerminal(
         runtime.state === "observed" ? runtime.source_event : `${input.adapter}.runtime_context`,
       ...(runtime.state === "observed" ? { source_witness: runtime.source_witness } : {}),
       ...(input.adapterVersion ? { runtime_version: input.adapterVersion } : {}),
-      attestation: "derived",
-      confidence: runtime.state === "observed" ? "exact" : "high",
+      attestation: runtime.state === "observed" ? runtime.attestation : "derived",
+      confidence: runtime.state === "observed" ? runtime.confidence : "high",
     },
   };
 }
@@ -2022,6 +2035,19 @@ function runtimeContextObservation(
   runtime: RuntimeContextTelemetry,
 ): TelemetryObservationV3<ContextMeasurementV3> {
   if (runtime.state === "observed") {
+    if ("used_percent" in runtime) {
+      return {
+        state: "observed",
+        value: {
+          used_percent: runtime.used_percent,
+          remaining_percent: Math.max(0, 100 - runtime.used_percent),
+          measured_at: runtime.measured_at,
+          method: runtime.method,
+        },
+        attestation: runtime.attestation,
+        confidence: runtime.confidence,
+      };
+    }
     return {
       state: "observed",
       value: {
@@ -2031,8 +2057,8 @@ function runtimeContextObservation(
         measured_at: runtime.measured_at,
         method: runtime.method,
       },
-      attestation: "derived",
-      confidence: "exact",
+      attestation: runtime.attestation,
+      confidence: runtime.confidence,
     };
   }
   return {
@@ -2197,8 +2223,8 @@ interface RuntimeAttestationChangeV3 {
   telemetry: RuntimeTelemetryCapabilitiesV3;
   reason: string;
   source_event: string;
-  attestation: "native" | "derived";
-  confidence: "exact" | "high";
+  attestation: "native" | "derived" | "inferred";
+  confidence: "exact" | "high" | "medium" | "low";
 }
 
 function commitRuntimeAttestationChange(

@@ -7,17 +7,32 @@ import {
 import type { TurnHarnessV3, TurnInferenceV3, TurnUsageV3 } from "./contract.ts";
 
 export type TelemetryObservationV3<T> =
-  | { state: "observed"; value: T; attestation: "native" | "derived"; confidence: "exact" | "high" }
+  | {
+      state: "observed";
+      value: T;
+      attestation: "native" | "derived" | "inferred";
+      confidence: "exact" | "high" | "medium" | "low";
+    }
   | { state: "unsupported"; capability: string }
   | { state: "expected_but_missing"; capability: string; reason: string };
 
-export interface ContextMeasurementV3 {
-  used_tokens: number;
-  limit_tokens: number;
-  remaining_tokens?: number;
+interface ContextMeasurementClockV3 {
   measured_at: string;
   method: string;
 }
+
+export type ContextMeasurementV3 = ContextMeasurementClockV3 &
+  (
+    | {
+        used_tokens: number;
+        limit_tokens: number;
+        remaining_tokens?: number;
+      }
+    | {
+        used_percent: number;
+        remaining_percent?: number;
+      }
+  );
 
 export interface TurnTelemetryV3 {
   usage: TelemetryObservationV3<TurnUsageV3>;
@@ -31,8 +46,8 @@ export interface ContextTelemetryProvenanceV3 {
   source_event: string;
   source_witness?: string;
   runtime_version?: string;
-  attestation: "native" | "derived";
-  confidence: "exact" | "high";
+  attestation: "native" | "derived" | "inferred";
+  confidence: "exact" | "high" | "medium" | "low";
 }
 
 export type TurnTelemetryCapabilitySupportV3 = Partial<

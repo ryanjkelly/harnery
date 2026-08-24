@@ -52,6 +52,44 @@ describe("effective runtime telemetry capabilities", () => {
     });
   });
 
+  test("distinguishes inferred Claude limits from Cursor percentage-only evidence", () => {
+    const inferred = effectiveRuntimeTelemetryCapabilitiesV3({
+      adapter: "claude-code",
+      context: {
+        state: "observed",
+        source: "claude.transcript_usage_model_capability",
+        attestation: "inferred",
+        confidence: "high",
+        completeness: "inferred",
+      },
+      canonical_turn_boundaries: true,
+    });
+    expect(inferred.context_usage).toMatchObject({
+      state: "observed",
+      value: { support: "derived", completeness: "inferred" },
+      attestation: "inferred",
+      confidence: "high",
+    });
+
+    const percentageOnly = effectiveRuntimeTelemetryCapabilitiesV3({
+      adapter: "cursor",
+      context: {
+        state: "observed",
+        source: "cursor.composer_context_percent",
+        attestation: "derived",
+        confidence: "high",
+        completeness: "percentage_only",
+      },
+      canonical_turn_boundaries: true,
+    });
+    expect(percentageOnly.context_usage).toMatchObject({
+      state: "observed",
+      value: { support: "derived", completeness: "percentage_only" },
+      attestation: "derived",
+      confidence: "high",
+    });
+  });
+
   test("keeps local and cloud Cursor support distinct", () => {
     const local = effectiveRuntimeTelemetryCapabilitiesV3({
       adapter: "cursor",

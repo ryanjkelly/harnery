@@ -394,7 +394,13 @@ function liftMeasurement(
   base: CodecSourceEvidence,
   measurement: {
     state: string;
-    value?: { used_tokens: number; limit_tokens: number; remaining_tokens?: number };
+    value?: {
+      used_tokens?: number;
+      limit_tokens?: number;
+      remaining_tokens?: number;
+      used_percent?: number;
+      remaining_percent?: number;
+    };
     attestation?: string;
     confidence?: string;
   },
@@ -409,10 +415,22 @@ function liftMeasurement(
   }
   base.context_observation_state = measurement.state;
   if (measurement.state !== "observed" || !measurement.value) return base;
+  const reportedPercent = measurement.value.used_percent;
+  if (reportedPercent !== undefined) {
+    if (!Number.isFinite(reportedPercent) || reportedPercent < 0 || reportedPercent > 100) {
+      return null;
+    }
+    base.used_percent = reportedPercent;
+    base.context_confidence = evidenceConfidence(
+      measurement.attestation ?? "",
+      measurement.confidence ?? "",
+    );
+    return base;
+  }
   const limit = measurement.value.limit_tokens;
-  if (!Number.isFinite(limit) || limit <= 0) return null;
+  if (limit === undefined || !Number.isFinite(limit) || limit <= 0) return null;
   const used = measurement.value.used_tokens;
-  if (!Number.isFinite(used) || used < 0) return null;
+  if (used === undefined || !Number.isFinite(used) || used < 0) return null;
   base.used_percent = Math.min(100, (used / limit) * 100);
   base.context_used_tokens = used;
   base.context_limit_tokens = limit;

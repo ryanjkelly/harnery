@@ -109,6 +109,8 @@ const RuntimeTelemetryCapabilityValueV3BaseSchema = StrictObject({
   source: SafeToken,
   completeness: Type.Union([
     Type.Literal("exact"),
+    Type.Literal("inferred"),
+    Type.Literal("percentage_only"),
     Type.Literal("lower_bound"),
     Type.Literal("unknown"),
   ]),
@@ -430,13 +432,21 @@ const AuthorityReferenceSchema = StrictObject({
   record_id: Type.Optional(SafeToken),
 });
 
-const MeasurementSchema = StrictObject({
-  used_tokens: Type.Integer({ minimum: 0 }),
-  limit_tokens: Type.Integer({ minimum: 1 }),
-  remaining_tokens: Type.Optional(Type.Integer({ minimum: 0 })),
-  measured_at: Timestamp,
-  method: SafeToken,
-});
+const MeasurementSchema = Type.Union([
+  StrictObject({
+    used_tokens: Type.Integer({ minimum: 0 }),
+    limit_tokens: Type.Integer({ minimum: 1 }),
+    remaining_tokens: Type.Optional(Type.Integer({ minimum: 0 })),
+    measured_at: Timestamp,
+    method: SafeToken,
+  }),
+  StrictObject({
+    used_percent: Type.Number({ minimum: 0, maximum: 100 }),
+    remaining_percent: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+    measured_at: Timestamp,
+    method: SafeToken,
+  }),
+]);
 
 const ArtifactReferenceSchema = StrictObject({
   artifact_id: Type.String({ pattern: "^art_[a-zA-Z0-9._-]{1,128}$" }),

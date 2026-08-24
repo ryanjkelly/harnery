@@ -364,6 +364,28 @@ describe("projectScene", () => {
     });
   });
 
+  test("projects percentage-only context usage without fabricating exact counts", () => {
+    const panel = projectScene({
+      snapshot: snapshot([hb({ platform: "cursor" })]),
+      events: [
+        ev({
+          event_type: "context.observed",
+          used_percent: 41.25,
+          context_confidence: "reported",
+        }),
+      ],
+      now: NOW,
+    }).panels[0];
+    expect(panel?.context_usage).toMatchObject({
+      value: { used_percent: 41.25, remaining_percent: 58.75 },
+      provenance: "event",
+      confidence: "high",
+    });
+    expect(panel?.context_usage?.value.used_tokens).toBeUndefined();
+    expect(panel?.context_usage?.value.limit_tokens).toBeUndefined();
+    expect(panel?.context_band.value).toBe("ample");
+  });
+
   test("progress rhythm follows evidence windows, never silence forecasts", () => {
     const rhythm = (events: CodecSourceEvidence[]) =>
       projectScene({ snapshot: snapshot([hb({})]), events, now: NOW }).panels[0]?.progress_rhythm

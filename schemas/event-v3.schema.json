@@ -2715,6 +2715,14 @@
                                       "type": "string"
                                     },
                                     {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
+                                      "type": "string"
+                                    },
+                                    {
                                       "const": "lower_bound",
                                       "type": "string"
                                     },
@@ -2905,6 +2913,14 @@
                                   "anyOf": [
                                     {
                                       "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
                                       "type": "string"
                                     },
                                     {
@@ -3101,6 +3117,14 @@
                                       "type": "string"
                                     },
                                     {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
+                                      "type": "string"
+                                    },
+                                    {
                                       "const": "lower_bound",
                                       "type": "string"
                                     },
@@ -3294,6 +3318,14 @@
                                       "type": "string"
                                     },
                                     {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
+                                      "type": "string"
+                                    },
+                                    {
                                       "const": "lower_bound",
                                       "type": "string"
                                     },
@@ -3484,6 +3516,14 @@
                                   "anyOf": [
                                     {
                                       "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
                                       "type": "string"
                                     },
                                     {
@@ -4930,6 +4970,14 @@
                                       "type": "string"
                                     },
                                     {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
+                                      "type": "string"
+                                    },
+                                    {
                                       "const": "lower_bound",
                                       "type": "string"
                                     },
@@ -5120,6 +5168,14 @@
                                   "anyOf": [
                                     {
                                       "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
                                       "type": "string"
                                     },
                                     {
@@ -5316,6 +5372,14 @@
                                       "type": "string"
                                     },
                                     {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
+                                      "type": "string"
+                                    },
+                                    {
                                       "const": "lower_bound",
                                       "type": "string"
                                     },
@@ -5509,6 +5573,14 @@
                                       "type": "string"
                                     },
                                     {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
+                                      "type": "string"
+                                    },
+                                    {
                                       "const": "lower_bound",
                                       "type": "string"
                                     },
@@ -5699,6 +5771,14 @@
                                   "anyOf": [
                                     {
                                       "const": "exact",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "inferred",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "percentage_only",
                                       "type": "string"
                                     },
                                     {
@@ -10203,36 +10283,69 @@
                       "type": "string"
                     },
                     "value": {
-                      "additionalProperties": false,
-                      "type": "object",
-                      "required": [
-                        "used_tokens",
-                        "limit_tokens",
-                        "measured_at",
-                        "method"
-                      ],
-                      "properties": {
-                        "used_tokens": {
-                          "minimum": 0,
-                          "type": "integer"
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "used_tokens",
+                            "limit_tokens",
+                            "measured_at",
+                            "method"
+                          ],
+                          "properties": {
+                            "used_tokens": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "limit_tokens": {
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "remaining_tokens": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "measured_at": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                              "type": "string"
+                            },
+                            "method": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
                         },
-                        "limit_tokens": {
-                          "minimum": 1,
-                          "type": "integer"
-                        },
-                        "remaining_tokens": {
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        "measured_at": {
-                          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
-                          "type": "string"
-                        },
-                        "method": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
-                          "type": "string"
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "used_percent",
+                            "measured_at",
+                            "method"
+                          ],
+                          "properties": {
+                            "used_percent": {
+                              "minimum": 0,
+                              "maximum": 100,
+                              "type": "number"
+                            },
+                            "remaining_percent": {
+                              "minimum": 0,
+                              "maximum": 100,
+                              "type": "number"
+                            },
+                            "measured_at": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                              "type": "string"
+                            },
+                            "method": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
                         }
-                      }
+                      ]
                     },
                     "attestation": {
                       "anyOf": [
@@ -10766,36 +10879,69 @@
                       "type": "string"
                     },
                     "value": {
-                      "additionalProperties": false,
-                      "type": "object",
-                      "required": [
-                        "used_tokens",
-                        "limit_tokens",
-                        "measured_at",
-                        "method"
-                      ],
-                      "properties": {
-                        "used_tokens": {
-                          "minimum": 0,
-                          "type": "integer"
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "used_tokens",
+                            "limit_tokens",
+                            "measured_at",
+                            "method"
+                          ],
+                          "properties": {
+                            "used_tokens": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "limit_tokens": {
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "remaining_tokens": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "measured_at": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                              "type": "string"
+                            },
+                            "method": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
                         },
-                        "limit_tokens": {
-                          "minimum": 1,
-                          "type": "integer"
-                        },
-                        "remaining_tokens": {
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        "measured_at": {
-                          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
-                          "type": "string"
-                        },
-                        "method": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
-                          "type": "string"
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "used_percent",
+                            "measured_at",
+                            "method"
+                          ],
+                          "properties": {
+                            "used_percent": {
+                              "minimum": 0,
+                              "maximum": 100,
+                              "type": "number"
+                            },
+                            "remaining_percent": {
+                              "minimum": 0,
+                              "maximum": 100,
+                              "type": "number"
+                            },
+                            "measured_at": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                              "type": "string"
+                            },
+                            "method": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
                         }
-                      }
+                      ]
                     },
                     "attestation": {
                       "anyOf": [
@@ -11366,36 +11512,69 @@
                       "type": "string"
                     },
                     "value": {
-                      "additionalProperties": false,
-                      "type": "object",
-                      "required": [
-                        "used_tokens",
-                        "limit_tokens",
-                        "measured_at",
-                        "method"
-                      ],
-                      "properties": {
-                        "used_tokens": {
-                          "minimum": 0,
-                          "type": "integer"
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "used_tokens",
+                            "limit_tokens",
+                            "measured_at",
+                            "method"
+                          ],
+                          "properties": {
+                            "used_tokens": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "limit_tokens": {
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "remaining_tokens": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "measured_at": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                              "type": "string"
+                            },
+                            "method": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
                         },
-                        "limit_tokens": {
-                          "minimum": 1,
-                          "type": "integer"
-                        },
-                        "remaining_tokens": {
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        "measured_at": {
-                          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
-                          "type": "string"
-                        },
-                        "method": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
-                          "type": "string"
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "used_percent",
+                            "measured_at",
+                            "method"
+                          ],
+                          "properties": {
+                            "used_percent": {
+                              "minimum": 0,
+                              "maximum": 100,
+                              "type": "number"
+                            },
+                            "remaining_percent": {
+                              "minimum": 0,
+                              "maximum": 100,
+                              "type": "number"
+                            },
+                            "measured_at": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                              "type": "string"
+                            },
+                            "method": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
                         }
-                      }
+                      ]
                     },
                     "attestation": {
                       "anyOf": [
@@ -11544,36 +11723,69 @@
                       "type": "string"
                     },
                     "value": {
-                      "additionalProperties": false,
-                      "type": "object",
-                      "required": [
-                        "used_tokens",
-                        "limit_tokens",
-                        "measured_at",
-                        "method"
-                      ],
-                      "properties": {
-                        "used_tokens": {
-                          "minimum": 0,
-                          "type": "integer"
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "used_tokens",
+                            "limit_tokens",
+                            "measured_at",
+                            "method"
+                          ],
+                          "properties": {
+                            "used_tokens": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "limit_tokens": {
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "remaining_tokens": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "measured_at": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                              "type": "string"
+                            },
+                            "method": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
                         },
-                        "limit_tokens": {
-                          "minimum": 1,
-                          "type": "integer"
-                        },
-                        "remaining_tokens": {
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        "measured_at": {
-                          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
-                          "type": "string"
-                        },
-                        "method": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
-                          "type": "string"
+                        {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "used_percent",
+                            "measured_at",
+                            "method"
+                          ],
+                          "properties": {
+                            "used_percent": {
+                              "minimum": 0,
+                              "maximum": 100,
+                              "type": "number"
+                            },
+                            "remaining_percent": {
+                              "minimum": 0,
+                              "maximum": 100,
+                              "type": "number"
+                            },
+                            "measured_at": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                              "type": "string"
+                            },
+                            "method": {
+                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                              "type": "string"
+                            }
+                          }
                         }
-                      }
+                      ]
                     },
                     "attestation": {
                       "anyOf": [

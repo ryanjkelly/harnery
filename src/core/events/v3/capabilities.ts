@@ -84,7 +84,7 @@ const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, Capabilit
     turn_id: "conditional",
     permission: "native",
     post_compaction: "native",
-    context_usage: "unsupported",
+    context_usage: "conditional",
   },
   codex: {
     ...SHARED_SIGNAL_SUPPORT,
@@ -92,7 +92,7 @@ const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, Capabilit
     turn_id: "native",
     permission: "native",
     post_compaction: "native",
-    context_usage: "unsupported",
+    context_usage: "derived",
   },
   cursor: {
     ...SHARED_SIGNAL_SUPPORT,
@@ -106,7 +106,7 @@ const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, Capabilit
     shell: "conditional",
     permission: "conditional",
     post_compaction: "unsupported",
-    context_usage: "unsupported",
+    context_usage: "conditional",
   },
 };
 

@@ -23,7 +23,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
@@ -92,7 +92,10 @@ import { readLedgerV3 } from "../core/events/v3/reader.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../core/events/v3/writer.ts";
 import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.ts";
 import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
-import { readRuntimeContextUsage } from "../core/hooks/adapter/runtime-telemetry.ts";
+import {
+  readRuntimeContextTelemetry,
+  readRuntimeContextUsage,
+} from "../core/hooks/adapter/runtime-telemetry.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { registerContextCommand } from "./context.ts";
 
@@ -2285,10 +2288,7 @@ function runStatus(opts: {
   if (!ctxUsage) {
     ctxStr = "unavailable";
   } else if (ctxUsage.percentOnly) {
-    // Cursor reports percent only; absolutes are estimates against a hard-coded
-    // window. Show the percent + window estimate, marked as estimated.
-    const pct = Math.round((ctxUsage.used / ctxUsage.window) * 100);
-    ctxStr = `~${pct}% (Cursor; ${fmtTokens(ctxUsage.window)} window est.)`;
+    ctxStr = `${Math.round(ctxUsage.usedPercent)}% (Cursor first-party)`;
   } else {
     ctxStr = `${fmtTokens(ctxUsage.used)} / ${fmtTokens(ctxUsage.window)} (${Math.round(
       (ctxUsage.used / ctxUsage.window) * 100,
@@ -2340,8 +2340,8 @@ function runStatus(opts: {
       })),
     })),
     pending_councils: pendingCouncils,
-    context_used: ctxUsage?.used ?? null,
-    context_window: ctxUsage?.window ?? null,
+    context_used: ctxUsage && "used" in ctxUsage ? ctxUsage.used : null,
+    context_window: ctxUsage && "window" in ctxUsage ? ctxUsage.window : null,
     timestamp_iso: new Date().toISOString(),
     timestamp_local: timeStr,
     ...(quality ? { quality } : {}),
@@ -2515,85 +2515,28 @@ function fmtTokens(n: number): string {
 function readContextUsage(
   sessionId: string,
   platform?: string | null,
-): { used: number; window: number; percentOnly?: boolean } | null {
+):
+  | { used: number; window: number; percentOnly?: false }
+  | { usedPercent: number; percentOnly: true }
+  | null {
   if (!sessionId) return null;
   // Dispatch by platform: Codex's JSONL shape is different from Claude Code's
   // (event_msg/response_item vs user/assistant), and Codex transcripts live
   // under ~/.codex/sessions/YYYY/MM/DD/ rather than ~/.claude/projects/.
-  // Cursor doesn't surface token counts in its transcript JSONL but DOES
-  // store `contextUsagePercent` per composer in workspaceStorage's state.vscdb;
-  // readCursorContextUsage reads that via bun:sqlite (percent-only).
+  // Cursor stores a first-party percentage in workspaceStorage. The shared
+  // runtime reader returns it without fabricating a token denominator.
   if (platform === "codex") return readRuntimeContextUsage("codex", sessionId);
-  if (platform === "cursor") return readCursorContextUsage(sessionId);
+  if (platform === "cursor") {
+    const telemetry = readRuntimeContextTelemetry({
+      adapter: "cursor",
+      session_id: sessionId,
+      mode: "status",
+    });
+    return telemetry.state === "observed" && "used_percent" in telemetry
+      ? { usedPercent: telemetry.used_percent, percentOnly: true }
+      : null;
+  }
   return readRuntimeContextUsage("claude-code", sessionId);
-}
-
-function readCursorContextUsage(
-  sessionId: string,
-): { used: number; window: number; percentOnly: true } | null {
-  // Cursor stores per-chat (composer) context usage as a percent in each
-  // workspace's state.vscdb at ItemTable.composer.composerData. The value
-  // is a JSON blob with .allComposers[].contextUsagePercent. We find the
-  // composer matching the agent's session_id (Cursor uses session_id == composerId
-  // for parent chats).
-  //
-  // Roots searched: ~/.config/Cursor/User/workspaceStorage (Linux native install)
-  // and /mnt/c/Users/*/AppData/Roaming/Cursor/User/workspaceStorage (WSL).
-  // We don't filter by workspace path; we scan every workspace's state.vscdb
-  // looking for a composerId match. Cheap enough at status time (~60K per file,
-  // <10ms typical). When a match is found, returns synthetic { used, window }
-  // pair where the percent is what's real; absolutes are derived as
-  // (window * percent / 100). Window hard-coded to a Cursor-typical 200K.
-  const roots: string[] = [];
-  const linuxRoot = resolve(homedir(), ".config", "Cursor", "User", "workspaceStorage");
-  if (existsSync(linuxRoot)) roots.push(linuxRoot);
-  try {
-    if (existsSync("/mnt/c/Users")) {
-      for (const u of readdirSync("/mnt/c/Users")) {
-        const p = `/mnt/c/Users/${u}/AppData/Roaming/Cursor/User/workspaceStorage`;
-        if (existsSync(p)) roots.push(p);
-      }
-    }
-  } catch {
-    // ignore
-  }
-  for (const root of roots) {
-    let workspaces: string[];
-    try {
-      workspaces = readdirSync(root);
-    } catch {
-      continue;
-    }
-    for (const ws of workspaces) {
-      const dbPath = `${root}/${ws}/state.vscdb`;
-      if (!existsSync(dbPath)) continue;
-      try {
-        // Lazy-import bun:sqlite so non-Bun runtimes (if any) don't choke at load.
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { Database } = require("bun:sqlite");
-        const db = new Database(dbPath, { readonly: true });
-        const row = db
-          .query("SELECT value FROM ItemTable WHERE key = 'composer.composerData'")
-          .get() as { value: string | Uint8Array } | null;
-        db.close();
-        if (!row?.value) continue;
-        const text =
-          typeof row.value === "string" ? row.value : Buffer.from(row.value).toString("utf8");
-        const parsed = JSON.parse(text);
-        const composers = Array.isArray(parsed?.allComposers) ? parsed.allComposers : [];
-        for (const c of composers) {
-          if (c?.composerId === sessionId && typeof c?.contextUsagePercent === "number") {
-            const window = 200000; // hard-coded Cursor-typical window; refine when Cursor exposes the actual ceiling
-            const used = Math.round((window * c.contextUsagePercent) / 100);
-            return { used, window, percentOnly: true };
-          }
-        }
-      } catch {
-        // ignore: DB locked, schema drift, etc. Move on to the next workspace.
-      }
-    }
-  }
-  return null;
 }
 
 function formatLocalTime(d: Date): string {

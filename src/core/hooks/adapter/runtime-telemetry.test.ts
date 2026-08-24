@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -340,6 +341,144 @@ describe("runtime context telemetry", () => {
     expect(readRuntimeContextUsage("claude-code", SESSION)).toBeNull();
   });
 
+  test("joins Claude used tokens to a published canonical-model context limit", () => {
+    const transcript = join(root, "claude-known-model.jsonl");
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          type: "user",
+          uuid: "user-turn",
+          promptId: TURN,
+          sessionId: SESSION,
+          message: { role: "user", content: "PRIVATE_PROMPT" },
+        },
+        {
+          type: "assistant",
+          uuid: "assistant-turn",
+          parentUuid: "user-turn",
+          sessionId: SESSION,
+          timestamp: TOKEN_TIME,
+          message: {
+            model: "claude-opus-5",
+            usage: {
+              input_tokens: 10,
+              cache_creation_input_tokens: 20,
+              cache_read_input_tokens: 30,
+            },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "claude-code",
+        session_id: SESSION,
+        turn_id: TURN,
+        transcript_path: transcript,
+        mode: "turn",
+      }),
+    ).toMatchObject({
+      state: "observed",
+      used_tokens: 60,
+      limit_tokens: 1_000_000,
+      measured_at: TOKEN_TIME,
+      method: "claude_transcript_usage_model_capability",
+      attestation: "inferred",
+      confidence: "high",
+    });
+  });
+
+  test("reads Cursor first-party composer percentage without inventing token counts", () => {
+    const cursorRoot = join(root, "Cursor", "User", "workspaceStorage");
+    writeCursorDatabase(cursorRoot, "workspace-a", [
+      { composerId: SESSION, contextUsagePercent: 63.5, lastUpdatedAt: Date.parse(TOKEN_TIME) },
+    ]);
+
+    const result = readRuntimeContextTelemetry(
+      {
+        adapter: "cursor",
+        session_id: SESSION,
+        observed_at: COMPLETE_TIME,
+        mode: "turn",
+      },
+      { cursorRoots: [cursorRoot] },
+    );
+    expect(result).toMatchObject({
+      state: "observed",
+      used_percent: 63.5,
+      measured_at: TOKEN_TIME,
+      method: "cursor_composer_context_percent",
+      attestation: "derived",
+      confidence: "high",
+    });
+    expect(JSON.stringify(result)).not.toContain("limit_tokens");
+  });
+
+  test("caches Cursor's session database and bounds discovery", () => {
+    const cursorRoot = join(root, "Cursor", "User", "workspaceStorage");
+    writeCursorDatabase(cursorRoot, "a-workspace", [
+      { composerId: SESSION, contextUsagePercent: 25, lastUpdatedAt: Date.parse(TOKEN_TIME) },
+    ]);
+    const request = { adapter: "cursor" as const, session_id: SESSION, mode: "status" as const };
+    const options = { cursorRoots: [cursorRoot], maxCursorDatabases: 1 };
+    expect(readRuntimeContextTelemetry(request, options)).toMatchObject({
+      state: "observed",
+      used_percent: 25,
+    });
+
+    writeCursorDatabase(cursorRoot, "0-earlier", [
+      { composerId: SESSION, contextUsagePercent: 90, lastUpdatedAt: Date.parse(TOKEN_TIME) },
+    ]);
+    expect(readRuntimeContextTelemetry(request, options)).toMatchObject({
+      state: "observed",
+      used_percent: 25,
+    });
+  });
+
+  test("keeps stale, missing, and ambiguous Cursor samples honest", () => {
+    const cursorRoot = join(root, "Cursor", "User", "workspaceStorage");
+    writeCursorDatabase(cursorRoot, "workspace-a", [
+      { composerId: SESSION, contextUsagePercent: 10, lastUpdatedAt: Date.parse(TOKEN_TIME) },
+    ]);
+    expect(
+      readRuntimeContextTelemetry(
+        {
+          adapter: "cursor",
+          session_id: SESSION,
+          observed_at: "2026-08-21T20:30:00.000Z",
+          mode: "turn",
+        },
+        { cursorRoots: [cursorRoot], maxSampleAgeMs: 5_000 },
+      ),
+    ).toMatchObject({ state: "partial", reason: "cursor_context_sample_stale" });
+
+    clearRuntimeTelemetryCachesForTest();
+    const missing = readRuntimeContextTelemetry(
+      { adapter: "cursor", session_id: "missing-session", mode: "status" },
+      { cursorRoots: [cursorRoot] },
+    );
+    expect(missing).toMatchObject({
+      state: "partial",
+      reason: "cursor_context_session_not_found",
+    });
+    expect("bytes_read" in missing ? missing.bytes_read : 0).toBeGreaterThan(0);
+
+    clearRuntimeTelemetryCachesForTest();
+    writeCursorDatabase(cursorRoot, "workspace-b", [
+      { composerId: SESSION, contextUsagePercent: 20, lastUpdatedAt: Date.parse(TOKEN_TIME) },
+    ]);
+    expect(
+      readRuntimeContextTelemetry(
+        { adapter: "cursor", session_id: SESSION, mode: "status" },
+        { cursorRoots: [cursorRoot] },
+      ),
+    ).toMatchObject({ state: "partial", reason: "cursor_context_sample_ambiguous" });
+  });
+
   test("joins Claude usage to the requested prompt instead of the newest assistant row", () => {
     const transcript = join(root, "claude-cross-turn.jsonl");
     const rows = [
@@ -537,6 +676,24 @@ describe("runtime context telemetry", () => {
     mkdirSync(directory, { recursive: true });
     const path = join(directory, `${label}-${session}.jsonl`);
     writeFileSync(path, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    return path;
+  }
+
+  function writeCursorDatabase(
+    cursorRoot: string,
+    workspace: string,
+    composers: Array<Record<string, unknown>>,
+  ): string {
+    const workspaceRoot = join(cursorRoot, workspace);
+    mkdirSync(workspaceRoot, { recursive: true });
+    const path = join(workspaceRoot, "state.vscdb");
+    const database = new Database(path);
+    database.run("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
+    database.run("INSERT INTO ItemTable (key, value) VALUES (?, ?)", [
+      "composer.composerData",
+      JSON.stringify({ allComposers: composers }),
+    ]);
+    database.close();
     return path;
   }
 });

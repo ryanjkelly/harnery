@@ -131,16 +131,22 @@ export function projectPresenceCodecDigests(
         break;
       case "context.observed": {
         const measurement = event.payload.measurement;
-        if (measurement.state === "observed" && measurement.value.limit_tokens > 0) {
+        if (measurement.state === "observed") {
+          const usedPercent =
+            "used_percent" in measurement.value
+              ? measurement.value.used_percent
+              : measurement.value.limit_tokens > 0
+                ? (measurement.value.used_tokens / measurement.value.limit_tokens) * 100
+                : undefined;
+          if (usedPercent === undefined) break;
           slot.context = {
-            used_percent: Math.min(
-              100,
-              Math.max(
-                0,
-                Math.round((measurement.value.used_tokens / measurement.value.limit_tokens) * 100),
-              ),
-            ),
-            confidence: measurement.confidence === "exact" ? "exact" : "reported",
+            used_percent: Math.min(100, Math.max(0, Math.round(usedPercent))),
+            confidence:
+              measurement.attestation === "inferred"
+                ? "estimated"
+                : measurement.confidence === "exact"
+                  ? "exact"
+                  : "reported",
             event_id: event.event_id,
             observed_at: event.time.observed_at,
           };
