@@ -1586,20 +1586,23 @@ function SemanticServiceUsage({ status }: { status: CodecSemanticServiceStatus }
           ))}
         </div>
         <div className={styles.semanticServiceTotals}>
-          {[...rollingLines, ...processLines].map((line) => (
-            <p key={line}>{line}</p>
+          {[
+            ...rollingLines.map((line) => ({ scope: "rolling", line })),
+            ...processLines.map((line) => ({ scope: "process", line })),
+          ].map(({ scope, line }) => (
+            <p key={`${scope}:${line}`}>{line}</p>
           ))}
         </div>
         {status.rolling_usage.breakdowns.length > 0 && (
           <div className={styles.semanticServiceBreakdowns}>
             {status.rolling_usage.breakdowns.map((row) => {
               const label = `${row.harness ?? "unattributed"} · ${row.resolved_model_id ?? row.configured_model ?? "unresolved model"}`;
-              const key = [
+              const key = JSON.stringify([
                 row.harness ?? "unattributed",
                 row.configured_model ?? "unattributed",
                 row.resolved_model_id ?? "unresolved",
                 row.model_attestation ?? "unattested",
-              ].join("\u0000");
+              ]);
               const lines = formatSemanticUsageAggregate(label, { ...row, breakdowns: [] });
               return (
                 <div key={key}>
