@@ -1,0 +1,65 @@
+---
+title: "0119: Cover the semantic roster before refreshing"
+description: "ADR: double the initial dogfood ceiling, slow priority refreshes, and guarantee rolling-hour coverage before repeat reads."
+---
+
+**Status:** accepted (2026-08-24) · **Scope:** semantic scheduler, Codec
+
+## Context
+
+The 60-call rolling-hour ceiling began as a dogfood safety limit in ADR 0097
+and remained when ADR 0102 made semantic reading automatic. A live six-agent
+window exhausted that allowance. The reader used 49 of 60 calls on two
+generations, with 31 calls on one and 18 on the other. Several cards received
+one call or stayed queued, so `SEMANTIC ON · 60/60 CALLS` could appear while a
+visible card still had no accepted semantic record.
+
+The same rolling window reported 51 accepted calls, eight invalid calls, and
+one call without a terminal receipt. It used 1,097,385 native input tokens,
+305,920 of them cached, plus 54,706 output tokens and 10,141 reasoning tokens.
+The fixed allowance was doing its job as a spend boundary, but the scheduler
+was allocating that boundary poorly. Priority evidence could refresh every 30
+seconds, and priority work always won over routine work.
+
+## Alternatives
+
+**Only raise the ceiling.** Rejected because the two hottest generations could
+consume the additional capacity while untouched cards remained uncovered. It
+would multiply usage without fixing starvation.
+
+**Keep 60 calls and only add fair coverage.** Rejected because six continuously
+active agents can legitimately need more than ten readings each per hour. The
+existing ceiling was selected before continuous use and before token receipts
+made the cost visible.
+
+**Use one interval for every generation.** Rejected because explicit attention,
+errors, waits, blockers, and terminal transitions still need a faster refresh
+than routine action churn.
+
+## Decision
+
+`SEMANTIC_HARD_CALLS_PER_HOUR` increases from 60 to 120. The priority-generation
+minimum interval increases from 30 seconds to two minutes; routine generations
+remain at five minutes.
+
+`selectSemanticPending` receives the active rolling call history. When pending
+work includes a generation with no call in that history, the scheduler selects
+from those uncovered generations before it refreshes a generation already read
+in the hour. Priority-band ordering and stable round robin still apply within
+the uncovered set. After all pending generations have rolling-hour coverage,
+the existing priority policy resumes.
+
+The ceiling remains root-wide and hard. `--calls-per-hour` may lower it but may
+not exceed it. Reader routes, evidence and prompt contracts, privacy filtering,
+citation validation, and deterministic Codec precedence do not change.
+
+This decision supersedes only the 60-call ceiling and 30-second priority cadence
+in ADRs 0097, 0102, and 0109. Their activation, validation, and classification
+decisions remain accepted.
+
+## Result
+
+Focused scheduler coverage proves that an uncovered routine generation wins
+before an already-read priority generation. Existing tests continue to bind
+priority round robin, routine pacing, the hard ceiling, and deferred receipts.
+The live service must restart before the new ceiling and cadence take effect.

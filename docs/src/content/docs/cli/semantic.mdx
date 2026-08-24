@@ -52,9 +52,14 @@ from active V3 generations, schedules the oldest eligible work, reuses an exact
 input cache, validates citations and privacy boundaries, and atomically publishes
 the resulting agent document.
 
-The hard ceiling is 60 calls per coordination root in any rolling hour. A lower
+The hard ceiling is 120 calls per coordination root in any rolling hour. A lower
 `--calls-per-hour` value is allowed. Requests beyond the active ceiling receive a
 `deferred` document with an `eligible_after` time.
+
+The scheduler covers generations that have received no call in the current
+rolling hour before it refreshes an already-read generation. This keeps a busy
+or terminal generation from consuming the allowance while another card has no
+semantic reading.
 
 `service status` reports rolling calls as `used`, `limit`, and `available`; the
 limit is still a call ceiling. The same response contains token usage for the
@@ -129,7 +134,7 @@ still starts and Codec keeps its deterministic scene. Restarting the dashboard
 tries again. The service watches the canonical active-ledger path, debounces
 changes for five seconds, and consumes an incremental ledger cursor. Routine
 generation reads stay at least five minutes apart. Explicit attention,
-non-active lifecycle, and terminal evidence use a 30-second minimum interval.
+non-active lifecycle, and terminal evidence use a two-minute minimum interval.
 
 Embedding hosts can call `ensureSemanticServiceRunning` from
 `harnery/core/semantic` before they launch the dashboard. The operation is
@@ -173,7 +178,7 @@ The scene header reports whether the semantic service is running and how many
 rolling calls are in use. Opening its details panel shows routes, pending work,
 the latest error, native and estimated token totals, unreported calls, and
 per-harness/model breakdowns. Starting the dashboard authorizes recurring model
-calls under the same 60-call rolling ceiling as an explicit start. Codec remains
+calls under the same 120-call rolling ceiling as an explicit start. Codec remains
 read-only. Semantic documents and service health are local-only; presence relay
 payloads strip both.
 

@@ -52,8 +52,23 @@ describe("semantic fair scheduler", () => {
     expect(selectSemanticPending(pending, "gen_missing")?.generation_id).toBe("gen_a");
   });
 
+  test("covers every pending generation before refreshing a hot generation", () => {
+    const queue = [
+      {
+        generation_id: "gen_hot",
+        evidence_digest: `sha256:${"a".repeat(64)}` as const,
+        band: 1 as const,
+        pending_since: "2026-08-22T20:00:00.000Z",
+      },
+      pending("gen_waiting", "2026-08-22T20:00:01.000Z"),
+    ];
+    const history = [{ generation_id: "gen_hot", started_at: "2026-08-22T20:00:30.000Z" }];
+
+    expect(selectSemanticPending(queue, "gen_hot", history)?.generation_id).toBe("gen_waiting");
+  });
+
   test("hard-caps any configured hourly limit and names the next eligible time", () => {
-    const history = Array.from({ length: 60 }, () => ({
+    const history = Array.from({ length: 120 }, () => ({
       generation_id: "gen_a",
       started_at: "2026-08-22T20:00:00.000Z",
     }));
@@ -63,25 +78,25 @@ describe("semantic fair scheduler", () => {
     });
   });
 
-  test("holds one hot generation for thirty seconds without delaying its peers", () => {
+  test("holds one hot generation for two minutes without delaying its peers", () => {
     const history = [{ generation_id: "gen_a", started_at: "2026-08-22T20:00:00.000Z" }];
     expect(
-      semanticGenerationCallEligible(history, "gen_a", Date.parse("2026-08-22T20:00:29.999Z")),
+      semanticGenerationCallEligible(history, "gen_a", Date.parse("2026-08-22T20:01:59.999Z")),
     ).toBe(false);
     expect(
       semanticGenerationCallEligible(history, "gen_b", Date.parse("2026-08-22T20:00:01.000Z")),
     ).toBe(true);
     expect(
-      semanticGenerationCallEligible(history, "gen_a", Date.parse("2026-08-22T20:00:30.000Z")),
+      semanticGenerationCallEligible(history, "gen_a", Date.parse("2026-08-22T20:02:00.000Z")),
     ).toBe(true);
   });
 
   test("paces routine readings at five minutes while urgent evidence keeps the short interval", () => {
     expect(SEMANTIC_MIN_AMBIENT_GENERATION_CALL_INTERVAL_MS).toBe(5 * 60_000);
-    expect(SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS).toBe(30_000);
+    expect(SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS).toBe(2 * 60_000);
     expect(semanticPendingCallIntervalMs(pending("gen_ambient"))).toBe(5 * 60_000);
     expect(semanticPendingCallIntervalMs({ ...pending("gen_priority"), band: 1 as const })).toBe(
-      30_000,
+      2 * 60_000,
     );
   });
 
@@ -135,7 +150,7 @@ describe("semantic fair scheduler", () => {
   });
 
   test("runs one matured pass at the hourly cap so deferred receipts can be published", () => {
-    const callHistory = Array.from({ length: 60 }, (_, index) => ({
+    const callHistory = Array.from({ length: 120 }, (_, index) => ({
       generation_id: `gen_${index}`,
       started_at: "2026-08-22T20:00:00.000Z",
     }));

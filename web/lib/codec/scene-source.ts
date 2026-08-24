@@ -23,6 +23,7 @@ import {
   listLiveDisplayV3,
 } from "../../../src/core/events/v3/live-feed";
 import { eventV3Paths, readLedgerV3 } from "../../../src/core/events/v3/reader";
+import { SEMANTIC_HARD_CALLS_PER_HOUR } from "../../../src/core/semantic/scheduler";
 import { readSemanticServiceStatus } from "../../../src/core/semantic/service-status";
 
 import { artifactOwnerInstanceIds } from "../artifact-browser";
@@ -133,8 +134,8 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
       model_calls: status.record?.model_calls ?? 0,
       rolling_calls: status.rolling_calls ?? {
         used: 0,
-        limit: 60,
-        available: 60,
+        limit: SEMANTIC_HARD_CALLS_PER_HOUR,
+        available: SEMANTIC_HARD_CALLS_PER_HOUR,
       },
       routes: status.routes ?? [],
       rolling_usage: status.rolling_usage ?? {

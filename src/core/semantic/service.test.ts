@@ -290,7 +290,7 @@ describe("semantic service", () => {
     writeStatus("after-restart", 0);
     const after = readSemanticServiceStatus(root);
 
-    expect(before.rolling_calls).toMatchObject({ used: 2, limit: 60, available: 58 });
+    expect(before.rolling_calls).toMatchObject({ used: 2, limit: 120, available: 118 });
     expect(before.rolling_usage).toMatchObject({
       call_count: 2,
       outcomes: { accepted: 1, invalid: 1 },

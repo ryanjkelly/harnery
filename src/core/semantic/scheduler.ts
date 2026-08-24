@@ -1,9 +1,9 @@
 import type { SemanticAgentReadModelV2, SemanticEvidenceV1 } from "./contract.ts";
 import type { SemanticCallReceipt, SemanticPendingItem } from "./storage.ts";
 
-export const SEMANTIC_HARD_CALLS_PER_HOUR = 60;
+export const SEMANTIC_HARD_CALLS_PER_HOUR = 120;
 export const SEMANTIC_INVALID_RETRY_COOLDOWN_MS = 5 * 60_000;
-export const SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS = 30_000;
+export const SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS = 2 * 60_000;
 export const SEMANTIC_MIN_AMBIENT_GENERATION_CALL_INTERVAL_MS = 5 * 60_000;
 export const SEMANTIC_MIN_GENERATION_CALL_INTERVAL_MS =
   SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS;
@@ -44,6 +44,7 @@ export function enqueueSemanticPending(
 export function selectSemanticPending(
   pending: readonly SemanticPendingItem[],
   lastFirstBandGenerationId?: string,
+  callHistory: readonly SemanticCallReceipt[] = [],
 ): SemanticPendingItem | undefined {
   const sorted = [...pending].sort(
     (left, right) =>
@@ -51,14 +52,17 @@ export function selectSemanticPending(
       left.pending_since.localeCompare(right.pending_since) ||
       left.generation_id.localeCompare(right.generation_id),
   );
-  const firstBand = sorted.filter((item) => item.band === 1);
+  const recentlyCalled = new Set(callHistory.map((call) => call.generation_id));
+  const uncovered = sorted.filter((item) => !recentlyCalled.has(item.generation_id));
+  const eligible = uncovered.length > 0 ? uncovered : sorted;
+  const firstBand = eligible.filter((item) => item.band === 1);
   if (firstBand.length > 0) {
     const lastIndex = firstBand.findIndex(
       (item) => item.generation_id === lastFirstBandGenerationId,
     );
     return firstBand[lastIndex >= 0 ? (lastIndex + 1) % firstBand.length : 0];
   }
-  return sorted[0];
+  return eligible[0];
 }
 
 export function activeSemanticCallHistory(
