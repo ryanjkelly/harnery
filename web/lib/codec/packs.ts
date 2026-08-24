@@ -58,10 +58,6 @@ export const ROSTER_EXPRESSIONS: readonly CodecExpression[] = [
   ...REQUIRED_EXPRESSIONS,
   ...EXTENDED_EXPRESSIONS,
 ];
-export const ROSTER_SPRITE_COLUMNS = REQUIRED_EXPRESSIONS.length;
-export const ROSTER_SPRITE_ROWS = Math.ceil(ROSTER_EXPRESSIONS.length / ROSTER_SPRITE_COLUMNS);
-export const ROSTER_SPRITE_TILE_WIDTH = 360;
-export const ROSTER_SPRITE_TILE_HEIGHT = 500;
 
 /** Extended expression → the required base expression that stands in for it. */
 export const EXPRESSION_FALLBACK: Readonly<Partial<Record<CodecExpression, CodecExpression>>> = {
@@ -409,34 +405,6 @@ export function resolvePackAsset(
           : null;
   if (!contentType) return null;
   return { filePath, contentType, packVersion: result.pack.pack_version };
-}
-
-export interface PackSpriteDescriptor {
-  cacheKey: string;
-  filePaths: string[];
-  packVersion: string;
-}
-
-/** Resolve the 21 roster portraits once so the browser can fetch one sprite per pack. */
-export function resolvePackSprite(
-  packId: string,
-  root = harneryDir(),
-): PackSpriteDescriptor | null {
-  if (!SLUG_RE.test(packId)) return null;
-  const dir = path.join(packsDir(root), packId);
-  const result = validatePackDir(dir);
-  if (!result.ok) return null;
-  const filePaths: string[] = [];
-  for (const expression of ROSTER_EXPRESSIONS) {
-    const file = resolveExpressionFile(result.pack, expression);
-    if (!file) return null;
-    filePaths.push(path.join(dir, file));
-  }
-  return {
-    cacheKey: dir,
-    filePaths,
-    packVersion: result.pack.pack_version,
-  };
 }
 
 function resolveExpressionFile(pack: CodecPack, expression: string): string | undefined {

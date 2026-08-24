@@ -1,13 +1,10 @@
 import Link from "next/link";
 
+import { CodecRosterExpressions } from "@/components/codec/CodecRosterExpressions";
 import styles from "@/components/codec/codecRoster.module.css";
 import {
   listPacks,
   ROSTER_EXPRESSIONS,
-  ROSTER_SPRITE_COLUMNS,
-  ROSTER_SPRITE_ROWS,
-  ROSTER_SPRITE_TILE_HEIGHT,
-  ROSTER_SPRITE_TILE_WIDTH,
   readPackRegistry,
   summarizePackRoster,
 } from "@/lib/codec/packs";
@@ -155,31 +152,12 @@ export default function CodecRosterPage() {
                   </dl>
                 </header>
 
-                <div className={styles.expressionGrid}>
-                  {ROSTER_EXPRESSIONS.map((expression, expressionIndex) => (
-                    <figure
-                      data-codec-expression={expression}
-                      className={styles.expression}
-                      key={expression}
-                    >
-                      {/* biome-ignore lint/performance/noImgElement: runtime packs are already optimized WebP assets */}
-                      <img
-                        className={styles.expressionSprite}
-                        src={`/api/codec-pack/${pack.pack_id}/sprite?v=${pack.pack_version}`}
-                        alt={`${pack.pack_id} character with ${expression} expression`}
-                        width={ROSTER_SPRITE_COLUMNS * ROSTER_SPRITE_TILE_WIDTH}
-                        height={ROSTER_SPRITE_ROWS * ROSTER_SPRITE_TILE_HEIGHT}
-                        loading={packIndex === 0 ? "eager" : "lazy"}
-                        fetchPriority={packIndex === 0 ? "high" : "low"}
-                        decoding="async"
-                        style={{
-                          transform: `translate3d(-${(expressionIndex % ROSTER_SPRITE_COLUMNS) * (100 / ROSTER_SPRITE_COLUMNS)}%, -${Math.floor(expressionIndex / ROSTER_SPRITE_COLUMNS) * (100 / ROSTER_SPRITE_ROWS)}%, 0)`,
-                        }}
-                      />
-                      <figcaption>{expression}</figcaption>
-                    </figure>
-                  ))}
-                </div>
+                <CodecRosterExpressions
+                  packId={pack.pack_id}
+                  packVersion={pack.pack_version}
+                  expressions={ROSTER_EXPRESSIONS}
+                  initiallyLoad={packIndex === 0}
+                />
               </article>
             );
           })}

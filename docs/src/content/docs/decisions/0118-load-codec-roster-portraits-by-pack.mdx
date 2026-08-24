@@ -1,0 +1,76 @@
+---
+title: "0118: Load Codec roster portraits by pack"
+description: "ADR: keep individual character portraits and assign their URLs only when a pack approaches the viewport."
+---
+
+**Status:** accepted (2026-08-24) · **Scope:** Codec roster, character pack assets, local dashboard transport
+
+## Context
+
+The Codec roster shows 21 expressions for every installed character pack. A
+48-pack roster therefore contains 1,008 portrait cells. The installed source
+files measured 35.4 MiB across 714 WebP files on 2026-08-24. Extended
+expressions that use a base-expression fallback still had distinct request
+URLs, so the browser could issue 1,008 requests even though some responses had
+the same bytes.
+
+The image route was not the slow part. One isolated pack served 21 individual
+portraits concurrently in 0.227 seconds on a cold pass and 0.116 seconds on a
+warm pass. The delay came from allowing hundreds of image URLs into the browser
+queue while scrolling through the roster.
+
+The dashboard runs Next directly at `http://localhost` through `next dev` or
+`next start`. The installed Next 16 server constructs `node:http` for the
+normal origin and `node:https` for its experimental HTTPS mode. The current
+origin therefore negotiates HTTP/1.1. Browser-facing HTTP/2 requires TLS, and
+HTTP/3 requires TLS plus QUIC.
+
+## Alternatives considered
+
+**Keep native `loading="lazy"` on every portrait.** Rejected because the browser
+decides how far ahead to fetch. A long or fast scroll can still add hundreds of
+requests to the same HTTP/1.1 connection pool.
+
+**Build one sprite for every pack.** Rejected. A sprite cuts the request count,
+but it replaces the pack's individual portrait assets with a second generated
+representation and complicates cropping and cache invalidation.
+
+**Virtualize the roster.** Rejected because native browser Find cannot inspect
+rows removed from the DOM. Harnery does not have a complete in-app Find
+replacement for this page.
+
+**Move the dashboard to HTTP/2 or HTTP/3.** Deferred as a separate transport
+feature. Next's integrated server has no HTTP/2 or HTTP/3 mode. A custom Next
+server would give up framework optimizations and take ownership of upgrades and
+development behavior. A reverse proxy such as Caddy can expose HTTP/2 and
+HTTP/3, but it needs a trusted local HTTPS certificate, another process, a
+different public origin, and UDP access for HTTP/3. That work affects links,
+the isolated files origin, Server-Sent Events, tunnels, and certificate setup.
+It does not remove the 35.4 MiB first-view payload.
+
+## Decision
+
+`CodecRosterExpressions` is a small client leaf inside the server-rendered
+roster. It renders every pack, expression figure, and caption immediately, so
+browser Find still sees the complete roster. The first pack includes its 21
+portrait URLs in the server response. Later packs render fixed-size placeholders
+until an `IntersectionObserver` sees the expression grid within a 600-pixel
+vertical margin.
+
+When a deferred pack enters that margin, the component assigns all 21
+individual versioned URLs and disconnects its observer. It does not unload a
+pack after it has appeared. Browsers without `IntersectionObserver` load the
+pack instead of leaving permanent placeholders.
+
+The existing image route keeps its bounded byte cache, request coalescing,
+`ETag`, `Last-Modified`, and one-year immutable browser cache. HTTP/1.1 remains
+the default local transport. A future opt-in HTTPS proxy may add HTTP/2 and
+HTTP/3, but it must preserve HMR, Server-Sent Events, both localhost origins,
+and the standard `harn web up` lifecycle before becoming a supported mode.
+
+## Result
+
+The initial server response now contains 21 portrait URLs instead of 1,008.
+All expression labels remain present before hydration. Nearby packs start
+loading before they enter the viewport, and the page keeps the original
+individual WebP files instead of generating sprites.

@@ -344,16 +344,19 @@
   background: rgb(9 11 17);
 }
 
-.expression img.expressionSprite {
-  position: absolute;
-  top: 0;
-  left: 0;
+.expression img {
   display: block;
-  width: 1100%;
-  max-width: none;
-  height: 200%;
-  object-fit: fill;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 28%;
   filter: saturate(1.12) contrast(1.03);
+}
+
+.expressionPlaceholder {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgb(34 211 238 / 0.035), transparent 45%), rgb(9 11 17);
 }
 
 .expression figcaption {
