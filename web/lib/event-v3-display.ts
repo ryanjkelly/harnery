@@ -273,10 +273,15 @@ function observedValue<T>(observation: { state: string; value?: T }): T | undefi
 
 function measurementSummary(observation: {
   state: string;
-  value?: { used_tokens: number; limit_tokens: number };
+  value?:
+    | { used_tokens: number; limit_tokens: number }
+    | { used_percent: number; remaining_percent?: number };
 }): string {
   const value = observedValue(observation);
-  return value ? `${value.used_tokens}/${value.limit_tokens} tokens` : observation.state;
+  if (!value) return observation.state;
+  return "used_percent" in value
+    ? `${value.used_percent.toFixed(1)}% used`
+    : `${value.used_tokens}/${value.limit_tokens} tokens`;
 }
 
 function formatDuration(ms: number): string {
