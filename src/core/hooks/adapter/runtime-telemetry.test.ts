@@ -342,54 +342,60 @@ describe("runtime context telemetry", () => {
   });
 
   test("joins Claude used tokens to a published canonical-model context limit", () => {
-    const transcript = join(root, "claude-known-model.jsonl");
-    writeFileSync(
-      transcript,
-      `${[
-        {
-          type: "user",
-          uuid: "user-turn",
-          promptId: TURN,
-          sessionId: SESSION,
-          message: { role: "user", content: "PRIVATE_PROMPT" },
-        },
-        {
-          type: "assistant",
-          uuid: "assistant-turn",
-          parentUuid: "user-turn",
-          sessionId: SESSION,
-          timestamp: TOKEN_TIME,
-          message: {
-            model: "claude-opus-5",
-            usage: {
-              input_tokens: 10,
-              cache_creation_input_tokens: 20,
-              cache_read_input_tokens: 30,
+    for (const [index, model] of [
+      "claude-opus-5",
+      "claude-opus-4-8",
+      "claude-sonnet-4-6",
+    ].entries()) {
+      const transcript = join(root, `claude-known-model-${index}.jsonl`);
+      writeFileSync(
+        transcript,
+        `${[
+          {
+            type: "user",
+            uuid: "user-turn",
+            promptId: TURN,
+            sessionId: SESSION,
+            message: { role: "user", content: "PRIVATE_PROMPT" },
+          },
+          {
+            type: "assistant",
+            uuid: "assistant-turn",
+            parentUuid: "user-turn",
+            sessionId: SESSION,
+            timestamp: TOKEN_TIME,
+            message: {
+              model,
+              usage: {
+                input_tokens: 10,
+                cache_creation_input_tokens: 20,
+                cache_read_input_tokens: 30,
+              },
             },
           },
-        },
-      ]
-        .map((row) => JSON.stringify(row))
-        .join("\n")}\n`,
-    );
+        ]
+          .map((row) => JSON.stringify(row))
+          .join("\n")}\n`,
+      );
 
-    expect(
-      readRuntimeContextTelemetry({
-        adapter: "claude-code",
-        session_id: SESSION,
-        turn_id: TURN,
-        transcript_path: transcript,
-        mode: "turn",
-      }),
-    ).toMatchObject({
-      state: "observed",
-      used_tokens: 60,
-      limit_tokens: 1_000_000,
-      measured_at: TOKEN_TIME,
-      method: "claude_transcript_usage_model_capability",
-      attestation: "inferred",
-      confidence: "high",
-    });
+      expect(
+        readRuntimeContextTelemetry({
+          adapter: "claude-code",
+          session_id: SESSION,
+          turn_id: TURN,
+          transcript_path: transcript,
+          mode: "turn",
+        }),
+      ).toMatchObject({
+        state: "observed",
+        used_tokens: 60,
+        limit_tokens: 1_000_000,
+        measured_at: TOKEN_TIME,
+        method: "claude_transcript_usage_model_capability",
+        attestation: "inferred",
+        confidence: "high",
+      });
+    }
   });
 
   test("reads Cursor first-party composer percentage without inventing token counts", () => {

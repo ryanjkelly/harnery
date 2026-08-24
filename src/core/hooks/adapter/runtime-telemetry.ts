@@ -614,10 +614,19 @@ interface ClaudeModelContextCapability {
  */
 function claudeModelContextCapability(model: string): ClaudeModelContextCapability | undefined {
   const normalized = model.toLowerCase();
-  if (/^claude-(?:opus|sonnet|fable)-5(?:$|-\d{8}$)/.test(normalized)) {
+  const oneMillionTokenModels = new Set([
+    "claude-fable-5",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+  ]);
+  if (oneMillionTokenModels.has(normalized)) {
     return { limit_tokens: 1_000_000, authority: "anthropic_model_capabilities_2026_08" };
   }
-  if (/^claude-haiku-4-5(?:$|-\d{8}$)/.test(normalized)) {
+  if (normalized === "claude-haiku-4-5" || normalized === "claude-haiku-4-5-20251001") {
     return { limit_tokens: 200_000, authority: "anthropic_model_capabilities_2026_08" };
   }
   return undefined;
