@@ -15,6 +15,8 @@ const ALLOWED = new Set([
   "src/core/events/v3/authority-outbox.ts",
   "src/core/events/v3/reader.ts",
   "src/core/events/v3/writer.ts",
+  // Public instruction prose names the ledger location; it does not traverse it.
+  "src/lib/instructions/templates.ts",
   "web/lib/coord-reader.ts",
   "web/lib/codec/scene-source.ts",
 ]);
