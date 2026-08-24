@@ -1594,9 +1594,15 @@ function SemanticServiceUsage({ status }: { status: CodecSemanticServiceStatus }
           <div className={styles.semanticServiceBreakdowns}>
             {status.rolling_usage.breakdowns.map((row) => {
               const label = `${row.harness ?? "unattributed"} · ${row.resolved_model_id ?? row.configured_model ?? "unresolved model"}`;
+              const key = [
+                row.harness ?? "unattributed",
+                row.configured_model ?? "unattributed",
+                row.resolved_model_id ?? "unresolved",
+                row.model_attestation ?? "unattested",
+              ].join("\u0000");
               const lines = formatSemanticUsageAggregate(label, { ...row, breakdowns: [] });
               return (
-                <div key={label}>
+                <div key={key}>
                   {lines.map((line) => (
                     <p key={line}>{line}</p>
                   ))}
