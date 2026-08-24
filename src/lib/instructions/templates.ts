@@ -147,6 +147,11 @@ returned path, then run \`${b} artifacts release <id>\` when active work is done
 Do not create a repo-root temp directory; \`${b} artifacts clean\` previews
 expired cleanup and requires \`--yes\` to delete anything.
 
+**Local file links.** When the operator should open a local repo file, mint the
+URL with \`${b} files url <repo-relative-path>\` instead of guessing it. HTML opens
+as a real page with working scripts and relative assets; other files open in the
+dashboard viewer. Use localhost links only when the operator shares this machine.
+
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. \`${b} decision file "<question>"\`
 records it and lets you proceed on a stated default; \`${b} decision search "<terms>"\`

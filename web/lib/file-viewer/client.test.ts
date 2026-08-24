@@ -57,6 +57,11 @@ describe("files origin helpers", () => {
     );
     expect(renderUrl("docs/x.html")).toBe("http://harnery-files.localhost:9000/docs/x.html");
   });
+
+  test("filesOriginUrl uses the mnemonic web port when the env is absent", () => {
+    delete process.env.HARNERY_WEB_PORT;
+    expect(filesOriginUrl("docs/x.html")).toBe("http://harnery-files.localhost:4276/docs/x.html");
+  });
 });
 
 describe("sandboxedRenderUrl", () => {

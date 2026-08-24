@@ -7,7 +7,14 @@
  * `*.localhost` resolves to loopback (RFC 6761); no hosts-file edit.
  */
 
-export const FILES_ORIGIN_HOST = "harnery-files.localhost";
+import {
+  DEFAULT_WEB_PORT,
+  encodedRepoPath,
+  FILES_ORIGIN_HOST,
+  localFilesOriginUrl,
+} from "../../src/lib/local-file-url";
+
+export { FILES_ORIGIN_HOST } from "../../src/lib/local-file-url";
 
 /** Middleware → `/api/file` path carrier (rewritten search params are unreliable). */
 export const FILES_ORIGIN_HEADER = "x-harnery-files-path";
@@ -17,15 +24,6 @@ export function isFilesOriginHost(hostHeader: string | null | undefined): boolea
   if (!hostHeader) return false;
   const host = hostHeader.split(":")[0]?.toLowerCase() ?? "";
   return host === FILES_ORIGIN_HOST;
-}
-
-function encodedRepoPath(relPath: string): string {
-  return relPath
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter(Boolean)
-    .map((seg) => encodeURIComponent(seg))
-    .join("/");
 }
 
 /** Current-origin path for an inert full-tab HTML document and its relative
@@ -40,12 +38,10 @@ export function sandboxedRenderPath(relPath: string): string {
  * encoded so relative asset URLs inside HTML resolve on the same host.
  */
 export function filesOriginUrl(relPath: string): string {
-  const encoded = encodedRepoPath(relPath);
   if (typeof window !== "undefined") {
     const port = window.location.port;
-    const portPart = port ? `:${port}` : "";
-    return `${window.location.protocol}//${FILES_ORIGIN_HOST}${portPart}/${encoded}`;
+    return localFilesOriginUrl(relPath, port, window.location.protocol);
   }
-  const port = process.env.HARNERY_WEB_PORT || "9000";
-  return `http://${FILES_ORIGIN_HOST}:${port}/${encoded}`;
+  const port = process.env.HARNERY_WEB_PORT || DEFAULT_WEB_PORT;
+  return localFilesOriginUrl(relPath, port);
 }

@@ -22,16 +22,16 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { coordEnv } from "../lib/env.ts";
+import { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 import { findCoordRoot } from "./hooks/resolve/coord-root.ts";
+
+export { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 
 /** The standalone CLI's bin name: the resolution floor when nothing else is set. */
 export const DEFAULT_BIN_NAME = "harn";
 
 /** Heartbeat-freshness default (seconds): the sweep window when nothing overrides it. */
 export const DEFAULT_FRESHNESS_SECS = 600;
-
-/** Mnemonic dashboard port: 4276 spells HARN on a phone keypad. */
-export const DEFAULT_WEB_PORT = 4276;
 
 /** Keep a fresh host reminder bounded to one short prompt-context line. */
 export const MAX_HOST_PROMPT_REMINDER_CHARS = 500;

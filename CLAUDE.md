@@ -99,7 +99,7 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=0010d9bf -->
+<!-- harnery:begin instructions v=e8a81d93 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
@@ -160,6 +160,11 @@ with `harn artifacts create <slug> --purpose "<why>"`. Write files under the
 returned path, then run `harn artifacts release <id>` when active work is done.
 Do not create a repo-root temp directory; `harn artifacts clean` previews
 expired cleanup and requires `--yes` to delete anything.
+
+**Local file links.** When the operator should open a local repo file, mint the
+URL with `harn files url <repo-relative-path>` instead of guessing it. HTML opens
+as a real page with working scripts and relative assets; other files open in the
+dashboard viewer. Use localhost links only when the operator shares this machine.
 
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. `harn decision file "<question>"`

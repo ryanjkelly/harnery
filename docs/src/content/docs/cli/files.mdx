@@ -1,0 +1,37 @@
+---
+title: harn files
+description: Mint local browser links for repo files.
+sidebar:
+  order: 12
+---
+
+```
+harn files url <path> [--port 4276] [--coord-root <dir>] [--raw | --viewer]
+```
+
+Mint the browser URL for an existing file under the dashboard's coord root:
+
+```bash
+harn files url harnery-dev/docs/codec-cards.html
+# http://harnery-files.localhost:4276/harnery-dev/docs/codec-cards.html
+
+harn files url docs/notes.md
+# http://localhost:4276/files?path=docs%2Fnotes.md
+```
+
+The command sends `.html` and `.htm` files to the isolated files origin. The
+browser runs those files as pages, so their scripts and relative assets work.
+Other extensions go to the dashboard file viewer. Use `--raw` or `--viewer` to
+override that choice.
+
+`url` accepts a repo-relative path or an absolute path inside the coord root.
+It resolves symlinks, refuses directories and files outside the root, and
+prints one URL to stdout. It does not start the dashboard or bypass the file
+server's deny rules. The [dashboard](/cli/web/) must already be running.
+
+Port resolution matches `harn web up`: `--port`, then `HARNERY_WEB_PORT`, then
+`.harnery/config.jsonc` `web.port`, then `4276`. Pass `--coord-root` when the
+file belongs to a different project.
+
+Use localhost links only when the operator can reach the same machine. A host
+project may have a publish or sharing workflow for remote operators.

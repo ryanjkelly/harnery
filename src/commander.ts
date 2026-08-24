@@ -42,6 +42,7 @@ import { registerEnvCommand } from "./commands/env.ts";
 import { registerEventsCommand } from "./commands/events.ts";
 import { registerFetchCommand } from "./commands/fetch.ts";
 import { registerFileHistoryCommand } from "./commands/file-history.ts";
+import { registerFilesCommand } from "./commands/files.ts";
 import { registerGovernorCommand } from "./commands/governor.ts";
 import { registerGrepCommand } from "./commands/grep.ts";
 import { registerInitCommand } from "./commands/init.ts";
@@ -283,6 +284,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerPolicyCommand(program, emit);
   registerCookiesCommand(program, emit);
   registerFetchCommand(program, emit, opts.context);
+  registerFilesCommand(program, emit, opts.context);
   registerReadCommand(program, emit);
   registerBrowseCommand(program, emit, opts.context);
   registerBrowseSessionCommand(program, emit);

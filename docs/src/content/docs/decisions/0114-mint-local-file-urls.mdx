@@ -1,0 +1,59 @@
+---
+title: "ADR 0114: mint local file URLs through harn files"
+description: Give agents one port-aware command for operator-facing local file links.
+sidebar:
+  order: 114
+---
+
+**Date:** 2026-08-24
+**Status:** Accepted
+
+## Context
+
+[ADR 0047](./0047-isolated-files-origin) added an isolated host for standalone
+HTML. The server already supports the useful URL:
+`http://harnery-files.localhost:<port>/<repo-path>`. Agents still had to assemble
+that URL themselves. They often used the dashboard's `/files?path=...` overlay
+instead, which wraps HTML in viewer chrome and is the wrong link when the
+operator wants to use the document as a page.
+
+The port is configurable through a flag, `HARNERY_WEB_PORT`, or project config.
+Any instruction that shows a fixed port can drift from the running dashboard.
+
+## Alternatives considered
+
+- Keep URL construction in agent instructions. Rejected because instructions
+  cannot resolve the live port or reliably encode path segments.
+- Add `harn web url`. Rejected because embedding hosts can replace Harnery's
+  `web` command. A portable subcommand would disappear in those hosts.
+- Send every file to the isolated files origin. Rejected because Markdown, code,
+  PDFs, and media have better renderers in the dashboard viewer.
+- Require the caller to choose a mode every time. Rejected because the common
+  split is stable: HTML is a page, while other files use the viewer.
+
+## Decision
+
+Add `harn files url <path>`. It accepts a repo-relative path or an absolute path
+inside the coord root, resolves the canonical file, and refuses missing files,
+directories, and paths outside that root.
+
+The default mode is extension-aware:
+
+- `.html` and `.htm` print
+  `http://harnery-files.localhost:<port>/<encoded-repo-path>`.
+- Other extensions print
+  `http://localhost:<port>/files?path=<encoded-repo-path>`.
+
+`--raw` and `--viewer` override the default. `--port` and `--coord-root` match
+the dashboard's web settings. The command prints only the URL to stdout, which
+keeps it suitable for chat replies and shell composition.
+
+The managed agent instruction block tells agents to call the command whenever
+they hand an operator a local file link. It also says that localhost links are
+only useful when the operator shares the machine.
+
+## Result
+
+The CLI, documentation, and agent instructions now share one URL contract. The
+web client's server-side fallback also uses the canonical default port `4276`
+instead of the retired `9000` value.

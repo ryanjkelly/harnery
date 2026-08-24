@@ -11,6 +11,7 @@ describe("renderInstructionsBlock", () => {
     expect(block).toContain("acme agents identity assume <name>");
     expect(block).toContain("acme decision file");
     expect(block).toContain("acme council create");
+    expect(block).toContain("acme files url <repo-relative-path>");
     // no un-substituted `harn <verb>` command leaked through
     expect(block).not.toMatch(/\bharn (agents|decision|council|journal|web) /);
   });
@@ -69,6 +70,14 @@ describe("renderInstructionsBlock", () => {
     for (const cat of JOURNAL_CATEGORIES) {
       expect(block).toContain(cat);
     }
+  });
+
+  test("teaches agents to mint local file links instead of assembling URLs", () => {
+    const block = renderInstructionsBlock("acme");
+    expect(block).toContain("acme files url <repo-relative-path>");
+    expect(block).toMatch(/HTML opens\s+as a real page/);
+    expect(block).toContain("other files open in the");
+    expect(block).toContain("Use localhost links only when the operator shares this machine");
   });
 
   test("region name is stable", () => {
