@@ -272,7 +272,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
           });
         }
         const { ensureLiveCoordinationHeartbeat } = await import(
-          "./state/live-coordination-view.ts"
+          "./state/live-coordination-writer.ts"
         );
         hb = ensureLiveCoordinationHeartbeat(
           root,

@@ -3,14 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
-import { ensureLiveCoordinationHeartbeat } from "../core/agents/state/live-coordination-view.ts";
+import { ensureLiveCoordinationHeartbeat } from "../core/agents/state/live-coordination-writer.ts";
 import { canonicalJsonV3, sha256V3 } from "../core/events/v3/canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../core/events/v3/capabilities.ts";
 import {
   buildCandidateGenesisManifestV3,
   EVENT_V3_GENESIS_MANIFEST,
-  repairEventV3ControlPair,
 } from "../core/events/v3/control.ts";
+import { repairEventV3ControlPair } from "../core/events/v3/control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../core/events/v3/fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
 import { liveInstanceIdV3 } from "../core/events/v3/live-routing.ts";

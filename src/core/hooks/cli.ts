@@ -41,10 +41,8 @@ import {
   toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
 import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
-import {
-  ensureLiveCoordinationHeartbeat,
-  readLiveCoordinationRow,
-} from "../agents/state/live-coordination-view.ts";
+import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
+import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
 import {

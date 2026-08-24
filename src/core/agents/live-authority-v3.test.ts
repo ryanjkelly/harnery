@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import type { Adapter } from "../adapter.ts";
-import { buildEventV3 } from "../events/v3/builder.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
+import { buildEventV3 } from "../events/v3/builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../events/v3/capabilities.ts";
 import {
@@ -12,19 +12,19 @@ import {
   type CandidateProfileV3,
   candidateProfileDigestV3,
   EVENT_V3_GENESIS_MANIFEST,
-  repairEventV3ControlPair,
 } from "../events/v3/control.ts";
+import { repairEventV3ControlPair } from "../events/v3/control-writer.ts";
 import { readCoordinationViewV3 } from "../events/v3/coordination-view.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../events/v3/fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../events/v3/generated.ts";
-import { recordHookSignalV3 } from "../events/v3/producers/recorder.ts";
-import { reduceSafetyProjectionV3 } from "../events/v3/projection.ts";
-import { readLedgerV3 } from "../events/v3/reader.ts";
-import type { ParsedPayload } from "../hooks/adapter/parse.ts";
 import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
+import { recordHookSignalV3 } from "../events/v3/producers/recorder.ts";
+import { reduceSafetyProjectionV3 } from "../events/v3/projection.ts";
+import { readLedgerV3 } from "../events/v3/reader.ts";
+import type { ParsedPayload } from "../hooks/adapter/parse.ts";
 import {
   recordLiveClaimChangeV3,
   recordLiveLifecycleChangeV3,
@@ -39,10 +39,8 @@ import { recordLiveCoordinationObservationV3 } from "./live-observation-v3.ts";
 import { renderPromptContext } from "./render/prompt-context.ts";
 import { renderSessionContext } from "./render/session-context.ts";
 import { readHeartbeat } from "./state/heartbeat-writer.ts";
-import {
-  ensureLiveCoordinationHeartbeat,
-  readLiveCoordinationRows,
-} from "./state/live-coordination-view.ts";
+import { readLiveCoordinationRows } from "./state/live-coordination-view.ts";
+import { ensureLiveCoordinationHeartbeat } from "./state/live-coordination-writer.ts";
 
 const roots: string[] = [];
 

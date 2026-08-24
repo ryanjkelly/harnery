@@ -92,10 +92,10 @@ export {
   type EventV3WriteMode,
   eventV3WriteGateOpen,
   readEventV3ControlState,
-  repairEventV3ControlPair,
   validateActivationManifestV3,
   validateCandidateGenesisManifestV3,
 } from "./control.ts";
+export { repairEventV3ControlPair } from "./control-writer.ts";
 export {
   type CoordinationGenerationViewV3,
   type CoordinationViewV3,
@@ -180,10 +180,13 @@ export {
 } from "./live-feed.ts";
 export type { LiveCoordinationObservationV3 } from "./live-observation.ts";
 export {
+  type LiveEventLedgerRouteV3,
+  observeLiveEventLedgerRouteV3,
+} from "./live-route-observer.ts";
+export {
   hookSignalV3,
   LIVE_COMMAND_V3_PRODUCER_ID,
   LIVE_HOOK_V3_PRODUCER_ID,
-  type LiveEventLedgerRouteV3,
   liveEventV3BuildId,
   liveInstanceIdV3,
   livePlatformV3,

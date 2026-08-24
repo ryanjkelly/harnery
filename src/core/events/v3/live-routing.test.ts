@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
@@ -13,6 +21,7 @@ import {
 import { readCoordinationViewV3 } from "./coordination-view.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "./fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
+import { observeLiveEventLedgerRouteV3 } from "./live-route-observer.ts";
 import {
   hookSignalV3,
   liveEventV3BuildId,
@@ -91,6 +100,25 @@ describe("live V3 ledger routing", () => {
         .every(({ event }) => event.time.monotonic_ns === undefined),
     ).toBeTrue();
     expect(liveInstanceIdV3("agent-Helene")).toBe("inst_agent-Helene");
+  });
+
+  test("passive observation fails closed without repairing a control pair", () => {
+    const root = candidateRoot("claude-code");
+    const activePath = eventV3Paths(root).active;
+
+    expect(existsSync(activePath)).toBeFalse();
+    expect(observeLiveEventLedgerRouteV3(root)).toEqual({
+      state: "blocked",
+      reason: "repairable:genesis_event_missing",
+    });
+    expect(existsSync(activePath)).toBeFalse();
+
+    expect(resolveLiveEventLedgerRouteV3(root)).toEqual({
+      state: "v3",
+      mode: "candidate",
+      build_id: "build_fixture",
+    });
+    expect(existsSync(activePath)).toBeTrue();
   });
 
   test("keeps deferred tool events durable until a non-tool hook publishes the batch", () => {

@@ -22,8 +22,7 @@ import {
   type LiveDisplayRowV3,
   listLiveDisplayV3,
 } from "../../../src/core/events/v3/live-feed";
-import { readLedgerV3 } from "../../../src/core/events/v3/reader";
-import { eventV3Paths } from "../../../src/core/events/v3/writer";
+import { eventV3Paths, readLedgerV3 } from "../../../src/core/events/v3/reader";
 import { readSemanticServiceStatus } from "../../../src/core/semantic/service-status";
 
 import { artifactOwnerInstanceIds } from "../artifact-browser";

@@ -12,8 +12,8 @@ import {
   type CandidateProfileV3,
   candidateProfileDigestV3,
   EVENT_V3_GENESIS_MANIFEST,
-  repairEventV3ControlPair,
 } from "../control.ts";
+import { repairEventV3ControlPair } from "../control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
 import { readLedgerV3 } from "../reader.ts";

@@ -7,8 +7,8 @@ import { adapterCapabilityProfileDigestV3 } from "../core/events/v3/capabilities
 import {
   buildCandidateGenesisManifestV3,
   EVENT_V3_GENESIS_MANIFEST,
-  repairEventV3ControlPair,
 } from "../core/events/v3/control.ts";
+import { repairEventV3ControlPair } from "../core/events/v3/control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../core/events/v3/fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
 import { writeProducerDiagnosticV3 } from "../core/events/v3/producers/intake.ts";

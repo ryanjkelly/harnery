@@ -18,7 +18,7 @@
 
 import type { AgentsSnapshot, Heartbeat } from "@/lib/coord-reader";
 
-import { nativeInstanceIdV3 } from "../../../src/core/events/v3/live-routing";
+import { nativeInstanceIdV3 } from "../../../src/core/events/v3/live-route-observer";
 import { projectActivityChannels, unknownActivityChannels } from "./activity";
 import {
   CODEC_SCHEMA_VERSION,

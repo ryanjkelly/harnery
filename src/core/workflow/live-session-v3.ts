@@ -6,10 +6,8 @@ import {
   type Heartbeat,
   setIdentityCache,
 } from "../agents/state/heartbeat-writer.ts";
-import {
-  ensureLiveCoordinationHeartbeat,
-  readLiveCoordinationRow,
-} from "../agents/state/live-coordination-view.ts";
+import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
+import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { ensureEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import {
   recordLiveHookSignalV3,

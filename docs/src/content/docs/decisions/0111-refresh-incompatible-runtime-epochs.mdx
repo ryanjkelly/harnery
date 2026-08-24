@@ -40,12 +40,18 @@ epoch.
 
 ## Decision
 
-The live routing boundary may replace an epoch only when incompatibility is
-provable from the current runtime: the genesis schema digest is incompatible,
-or an active epoch does not contain the current adapter capability profiles.
-Candidate epochs remain usable when at least one current adapter profile is
-approved. Every other invalid, missing, or ambiguous state continues to fail
-closed.
+The mutating command and producer routing boundary may replace an epoch only
+when incompatibility is provable from the current runtime: the genesis schema
+digest is incompatible, or an active epoch does not contain the current
+adapter capability profiles. Candidate epochs remain usable when at least one
+current adapter profile is approved. Every other invalid, missing, or
+ambiguous state continues to fail closed.
+
+Passive consumers use a separate observation route. Dashboard, Codec, and
+other read-model imports may inspect compatible control state, but they never
+repair a control pair, replace an epoch, launch a process, or write a cache.
+When the state needs repair or replacement, passive reads fail closed until a
+command or producer crosses the mutating boundary.
 
 Initialization and automatic replacement share one no-clobber lease. A waiter
 rechecks control state after it obtains the lease, so concurrent hooks cannot
@@ -78,3 +84,8 @@ the control packet remains the authority for approved producer builds.
 Regression coverage holds the bootstrap lease during a refresh attempt, checks
 the schema handoff, verifies state carry and event deduplication, and confirms
 that private task and lifecycle prose never appears in the new ledger.
+The Codec dependency guard also walks the complete import graph and rejects
+bootstrap, mutating route, control-writer, ledger-writer, cache-writer, and
+process-launcher dependencies. A focused routing test proves that passive
+observation leaves a repairable control pair untouched while the producer
+route still repairs it on demand.

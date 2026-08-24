@@ -36,10 +36,10 @@ import {
   setTask,
 } from "./state/heartbeat-writer.ts";
 import {
-  ensureLiveCoordinationHeartbeat,
   liveCoordinationAdapterV3,
   readLiveCoordinationRow,
 } from "./state/live-coordination-view.ts";
+import { ensureLiveCoordinationHeartbeat } from "./state/live-coordination-writer.ts";
 import { recordNameAssumption } from "./state/names.ts";
 
 export const LIVE_COORDINATION_V3_PRODUCER_ID = "prd_agent-coord" as const;

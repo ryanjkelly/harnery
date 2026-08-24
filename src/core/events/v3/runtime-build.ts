@@ -1,22 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-/** Stable producer build id bound into one V3 epoch. */
-export function liveEventV3BuildId(harneryBuild: string): `build_${string}` {
-  const exact = harneryBuild.normalize("NFC");
-  if (/^[a-zA-Z0-9._-]{1,120}$/.test(exact)) return `build_${exact}`;
-  return `build_${createHash("sha256").update(exact).digest("hex")}`;
-}
-
-/** Platform recorded by runtime-owned V3 producers. */
-export function livePlatformV3(): "linux" | "windows" | "macos" | "unknown" {
-  if (process.platform === "linux") return "linux";
-  if (process.platform === "win32") return "windows";
-  if (process.platform === "darwin") return "macos";
-  return "unknown";
-}
+export { liveEventV3BuildId, livePlatformV3 } from "./runtime-identity.ts";
 
 /**
  * Identify the code running this producer.

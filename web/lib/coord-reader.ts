@@ -26,11 +26,10 @@ import { type LiveDisplayRowV3, listLiveDisplayV3 } from "../../src/core/events/
 import {
   liveInstanceIdV3,
   nativeInstanceIdV3,
-  resolveLiveEventLedgerRouteV3,
-} from "../../src/core/events/v3/live-routing";
-import { listHookProducerStateRecordsV3 } from "../../src/core/events/v3/producers/recorder";
-import { readLedgerV3 } from "../../src/core/events/v3/reader";
-import { eventV3Paths } from "../../src/core/events/v3/writer";
+  observeLiveEventLedgerRouteV3,
+} from "../../src/core/events/v3/live-route-observer";
+import { listHookProducerStateSummariesV3 } from "../../src/core/events/v3/producers/producer-state-observer";
+import { eventV3Paths, readLedgerV3 } from "../../src/core/events/v3/reader";
 import {
   buildContributionMatrix,
   type ContributionMatrix,
@@ -218,7 +217,7 @@ function readCacheDiagnostics(): { invalid: InvalidHeartbeat[]; dir: string } {
  * the list is already empty.
  */
 function probeLedgerReadState(root: string): LedgerReadState {
-  const route = resolveLiveEventLedgerRouteV3(root);
+  const route = observeLiveEventLedgerRouteV3(root);
   if (route.state === "blocked") {
     return { ok: false, reason: `ledger route blocked: ${route.reason}` };
   }
@@ -384,11 +383,11 @@ function readAgentLedgerRecordsV3(): Map<string, AgentLedgerRecordV3> {
         .map((request) => request.generation_id),
     );
     const openSpans = new Map<string, { count: number; turn_open: boolean }>();
-    for (const { state } of listHookProducerStateRecordsV3(root)) {
-      if (state.spans.length === 0) continue;
+    for (const state of listHookProducerStateSummariesV3(root)) {
+      if (state.open_span_count === 0) continue;
       openSpans.set(state.generation_id, {
-        count: state.spans.length,
-        turn_open: Boolean(state.current_turn_id),
+        count: state.open_span_count,
+        turn_open: state.turn_open,
       });
     }
     const records = new Map<string, AgentLedgerRecordV3>();

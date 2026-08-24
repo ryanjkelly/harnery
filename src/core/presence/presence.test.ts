@@ -8,7 +8,7 @@ import {
   recordLiveLifecycleChangeV3,
   recordLiveTaskChangeV3,
 } from "../agents/live-authority-v3.ts";
-import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-view.ts";
+import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
 import {

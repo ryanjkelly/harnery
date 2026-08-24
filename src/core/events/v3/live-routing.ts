@@ -1,15 +1,15 @@
-import { createHash } from "node:crypto";
 import type { Adapter } from "../../adapter.ts";
 import type { ParsedPayload } from "../../hooks/adapter/parse.ts";
 import { refreshIncompatibleEventLedgerV3 } from "./bootstrap.ts";
-import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
-import { ADAPTER_CAPABILITY_PROFILES_V3 } from "./capabilities.ts";
 import type { EventV3 } from "./contract.ts";
+import { readEventV3ControlState } from "./control.ts";
+import { repairEventV3ControlPair } from "./control-writer.ts";
 import {
-  type EventV3WriteMode,
-  readEventV3ControlState,
-  repairEventV3ControlPair,
-} from "./control.ts";
+  type LiveEventLedgerRouteV3,
+  liveEventLedgerRouteFromControlV3,
+  liveInstanceIdV3,
+  runtimeCapabilityProfileCurrentV3,
+} from "./live-route-observer.ts";
 import type { HookSignalV3 } from "./producers/hook.ts";
 import type { TurnRitualEvidenceV3 } from "./producers/hook-base.ts";
 import {
@@ -18,20 +18,21 @@ import {
   reconcilePendingRuntimeContextV3,
   recordHookSignalV3,
 } from "./producers/recorder.ts";
-import { liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
+import { livePlatformV3 } from "./runtime-identity.ts";
 
-export { liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
+export {
+  type LiveEventLedgerRouteV3,
+  liveInstanceIdV3,
+  nativeInstanceIdV3,
+} from "./live-route-observer.ts";
+export { liveEventV3BuildId, livePlatformV3 } from "./runtime-identity.ts";
 
 export const LIVE_HOOK_V3_PRODUCER_ID = "prd_agent-hook" as const;
 export const LIVE_COMMAND_V3_PRODUCER_ID = "prd_session-tee" as const;
 
-export type LiveEventLedgerRouteV3 =
-  | { state: "v3"; mode: EventV3WriteMode; build_id: `build_${string}` }
-  | { state: "blocked"; reason: string };
-
 /**
  * Resolve the V3-only ledger route. A root without an initialized V3 control
- * packet is blocked; no producer or consumer may fall back to an older ledger.
+ * packet is blocked; no mutating producer may fall back to an older ledger.
  * Manifest-first crashes are repaired from the immutable packet and every
  * other invalid state closes the writer gate.
  */
@@ -42,7 +43,7 @@ export function resolveLiveEventLedgerRouteV3(coordRoot: string): LiveEventLedge
   if (
     (control.state === "invalid" && control.reason === "genesis_schema_digest_incompatible") ||
     ((control.state === "candidate" || control.state === "active") &&
-      !runtimeCapabilityProfileCurrent(control))
+      !runtimeCapabilityProfileCurrentV3(control))
   ) {
     try {
       control = refreshIncompatibleEventLedgerV3(coordRoot).control;
@@ -53,43 +54,7 @@ export function resolveLiveEventLedgerRouteV3(coordRoot: string): LiveEventLedge
       };
     }
   }
-  if (control.state !== "candidate" && control.state !== "active") {
-    return { state: "blocked", reason: `${control.state}:${control.reason}` };
-  }
-  const buildId = liveEventV3BuildId(control.genesis.profile.harnery_commit);
-  if (!control.genesis.profile.producer_build_ids.includes(buildId)) {
-    return { state: "blocked", reason: "live_producer_build_not_approved" };
-  }
-  return { state: "v3", mode: control.state, build_id: buildId };
-}
-
-function runtimeCapabilityProfileCurrent(
-  control: Extract<ReturnType<typeof readEventV3ControlState>, { state: "candidate" | "active" }>,
-): boolean {
-  const expected = Object.values(ADAPTER_CAPABILITY_PROFILES_V3).map((profile) =>
-    sha256V3(canonicalJsonV3(profile)),
-  );
-  const approved = control.genesis.profile.adapter_capability_profile_digests;
-  const expectedDigests = new Set<string>(expected);
-  return control.state === "candidate"
-    ? approved.some((digest) => expectedDigests.has(digest))
-    : expected.every((digest) => approved.includes(digest));
-}
-
-export function liveInstanceIdV3(instanceId: string): `inst_${string}` {
-  if (/^inst_[a-zA-Z0-9._-]{1,128}$/.test(instanceId)) return instanceId as `inst_${string}`;
-  if (/^[a-zA-Z0-9._-]{1,128}$/.test(instanceId)) return `inst_${instanceId}`;
-  return `inst_${createHash("sha256").update(instanceId.normalize("NFC")).digest("hex")}`;
-}
-
-/**
- * The adapter-native id a canonical `inst_*` id carries, for display and for
- * joins against native-keyed records. Only the direct prefix form round-trips:
- * a hashed id has no recoverable native form and is returned unchanged, so
- * never treat this as a guaranteed inverse of `liveInstanceIdV3`.
- */
-export function nativeInstanceIdV3(instanceId: string): string {
-  return instanceId.startsWith("inst_") ? instanceId.slice("inst_".length) : instanceId;
+  return liveEventLedgerRouteFromControlV3(control);
 }
 
 export function hookSignalV3(eventName: string): HookSignalV3 | undefined {

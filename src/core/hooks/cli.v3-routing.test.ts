@@ -16,8 +16,8 @@ import { adapterCapabilityProfileDigestV3 } from "../events/v3/capabilities.ts";
 import {
   buildCandidateGenesisManifestV3,
   EVENT_V3_GENESIS_MANIFEST,
-  repairEventV3ControlPair,
 } from "../events/v3/control.ts";
+import { repairEventV3ControlPair } from "../events/v3/control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../events/v3/fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../events/v3/generated.ts";
 import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";

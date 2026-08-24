@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ensureLiveCoordinationHeartbeat } from "../../core/agents/state/live-coordination-view.ts";
+import { ensureLiveCoordinationHeartbeat } from "../../core/agents/state/live-coordination-writer.ts";
 import { resolveName } from "../../core/agents/state/names.ts";
 import { initializeEventLedgerV3 } from "../../core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../core/events/v3/canonical.ts";

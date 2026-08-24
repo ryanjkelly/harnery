@@ -7,7 +7,6 @@ import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { activationIdV3, eventIdV3, genesisIdV3 } from "./ids.ts";
 import { type ReadLedgerV3Result, readLedgerV3 } from "./reader.ts";
 import { validateEventV3 } from "./validate.ts";
-import { writeEventV3 } from "./writer.ts";
 
 export const EVENT_V3_GENESIS_MANIFEST = ".harnery/ledgers/v3/genesis.json" as const;
 export const EVENT_V3_ACTIVATION_MANIFEST = ".harnery/ledgers/v3/activation.json" as const;
@@ -282,20 +281,6 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
 export function eventV3WriteGateOpen(coordRoot: string, mode: EventV3WriteMode): boolean {
   const control = readEventV3ControlState(coordRoot);
   return mode === "candidate" ? control.state === "candidate" : control.state === "active";
-}
-
-/** Repair only a manifest-first crash by appending the exact pre-minted event. */
-export function repairEventV3ControlPair(coordRoot: string): EventV3ControlState {
-  const control = readEventV3ControlState(coordRoot);
-  if (control.state !== "repairable") return control;
-  const event =
-    control.reason === "genesis_event_missing" ? control.genesis.event : control.activation?.event;
-  if (!event) return { state: "invalid", reason: "repair_event_unavailable" };
-  const result = writeEventV3(coordRoot, event);
-  if (result.state !== "committed") {
-    return { state: "invalid", reason: "control_event_repair_not_committed" };
-  }
-  return readEventV3ControlState(coordRoot);
 }
 
 export function candidateProfileDigestV3(profile: CandidateProfileV3): `sha256:${string}` {

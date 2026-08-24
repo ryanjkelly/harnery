@@ -25,8 +25,8 @@ import {
   EVENT_V3_GENESIS_MANIFEST,
   type EventV3ControlState,
   readEventV3ControlState,
-  repairEventV3ControlPair,
 } from "./control.ts";
+import { repairEventV3ControlPair } from "./control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "./fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { currentHarneryRuntimeBuild, liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";

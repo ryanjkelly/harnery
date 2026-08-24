@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { coordHelperOpts } from "../../src/commands/agents.ts";
-import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
+import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-writer.ts";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import {

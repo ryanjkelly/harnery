@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ApprovedSessionEndReasonV3 } from "../events/v3/producers/recorder.ts";
-import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../events/v3/writer.ts";
+import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../events/v3/reader.ts";
 
 export const SESSION_FINALIZATION_REQUEST_FORMAT_V3 =
   "harnery-v3-session-finalization-request" as const;

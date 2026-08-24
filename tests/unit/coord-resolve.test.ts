@@ -15,7 +15,7 @@ import {
   resolveSingleActiveOwner,
   sessionIdentityFromEnv,
 } from "../../src/core/agents/coord-client.ts";
-import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
+import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-writer.ts";
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import { processStartToken } from "../../src/core/agents/state/proc-start.ts";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
