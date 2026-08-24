@@ -1172,6 +1172,9 @@ function processHookSignalLocked(
       span.open_event_id = event.event_id as `evt_${string}`;
       stampSpanTurn(span, event, eventInput, state);
     }
+    // A turn terminal clears current_native_turn_id when it commits. Retain the
+    // native identity long enough to seed a delayed context retry afterward.
+    const nativeTurnIdForContext = input.payload.turn_id ?? state.current_native_turn_id;
     const durability = commitEventLocked(input, state, path, event, sourceId);
     if (event.event_type === "tool.requested" && sourceId) {
       const explicitWait = explicitNativeWait(input);
@@ -1187,7 +1190,13 @@ function processHookSignalLocked(
     }
     if (turnTelemetry) {
       const contextTarget = turnContextTarget(event);
-      queuePendingRuntimeContext(input, state, contextTarget, turnTelemetry.context);
+      queuePendingRuntimeContext(
+        input,
+        state,
+        contextTarget,
+        turnTelemetry.context,
+        nativeTurnIdForContext,
+      );
       commitTurnContextObservation(
         input,
         state,
@@ -1779,6 +1788,7 @@ function queuePendingRuntimeContext(
   state: HookProducerStateV3,
   target: TurnContextTargetV3 | undefined,
   measurement: TelemetryObservationV3<ContextMeasurementV3>,
+  nativeTurnId: string | undefined,
 ): void {
   if (
     input.adapter !== "codex" ||
@@ -1789,7 +1799,6 @@ function queuePendingRuntimeContext(
     return;
   }
   const nativeSessionId = input.payload.session_id ?? input.payload.conversation_id;
-  const nativeTurnId = input.payload.turn_id;
   if (!nativeSessionId || !nativeTurnId) return;
   const pending: PendingRuntimeContextV3 = {
     ...target,
