@@ -299,10 +299,12 @@ function writeRegistry(root: string, registry: PackRegistry): void {
 }
 
 /**
- * Assign one unique pack per live instance, releasing bindings whose
+ * Assign one unique pack per visible instance, releasing bindings whose
  * instances are gone so their packs return to the pool. Historical bindings
  * are never rewritten — a release only stamps `released_at`. When the roster
- * runs short the fallback pack covers the shortage without being bound.
+ * runs short, overflow instances reuse a deterministic pack without creating
+ * a binding. That keeps a character portrait on every card while preserving
+ * unique, durable identities whenever roster capacity allows.
  */
 export function allocateCharacters(
   instanceIds: readonly string[],
@@ -356,7 +358,13 @@ export function allocateCharacters(
     const pack =
       upgradedPackIndex >= 0 ? freePacks.splice(upgradedPackIndex, 1)[0] : freePacks.shift();
     if (!pack) {
-      out.set(instanceId, { ...FALLBACK_PACK });
+      const overflowPack = packs[stablePackIndex(instanceId, packs.length)];
+      out.set(
+        instanceId,
+        overflowPack
+          ? { pack_id: overflowPack.pack_id, pack_version: overflowPack.pack_version }
+          : { ...FALLBACK_PACK },
+      );
       continue;
     }
     registry.bindings.push({
@@ -379,6 +387,16 @@ export function allocateCharacters(
     }
   }
   return out;
+}
+
+function stablePackIndex(instanceId: string, packCount: number): number {
+  if (packCount === 0) return 0;
+  let hash = 2_166_136_261;
+  for (let index = 0; index < instanceId.length; index += 1) {
+    hash ^= instanceId.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0) % packCount;
 }
 
 /** Resolve one expression image for the asset route. Null = not servable. */

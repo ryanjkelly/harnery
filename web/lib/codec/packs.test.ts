@@ -83,7 +83,7 @@ describe("validatePackDir / listPacks", () => {
 });
 
 describe("allocateCharacters", () => {
-  test("unique assignment, stability, fallback on shortage, release and reuse", () => {
+  test("unique assignment, stability, deterministic overflow, release and reuse", () => {
     makePack("aurora");
     makePack("basalt");
 
@@ -92,10 +92,14 @@ describe("allocateCharacters", () => {
     const assigned = [first.get("i-1")?.pack_id, first.get("i-2")?.pack_id];
     expect(new Set(assigned).size).toBe(2);
 
-    // A third live instance exceeds the roster: fallback, never a shared pack.
+    // A third visible instance exceeds the roster: it still gets a stable
+    // portrait, even though preserving uniqueness is impossible at capacity.
     const shortage = allocateCharacters(["i-1", "i-2", "i-3"], NOW, root);
     expect(shortage.get("i-1")?.pack_id).toBe(first.get("i-1")?.pack_id); // stable
-    expect(shortage.get("i-3")?.pack_id).toBe("fallback-neutral");
+    expect(shortage.get("i-3")?.pack_id).not.toBe("fallback-neutral");
+    expect(allocateCharacters(["i-1", "i-2", "i-3"], NOW, root).get("i-3")).toEqual(
+      shortage.get("i-3"),
+    );
 
     // i-1 ends; its pack returns to the pool and i-3 picks it up next build,
     // while the historical binding for i-1 is retained, not rewritten.

@@ -201,18 +201,16 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
     // Missing or unreadable artifacts simply omit the Browse affordance.
   }
   // Character assignment is presentation metadata layered on after the pure
-  // projection; a registry failure leaves the fallback pack in place. Remote
-  // panels are excluded — pack assets are machine-local, and binding a local
-  // pack to a remote session would burn roster slots on portraits that can
-  // never render. Offline and unknown panels keep the fallback letter pack
-  // so the six-character roster stays on live sessions.
+  // projection; a registry failure leaves the fallback pack in place. Every
+  // visible panel receives a local presentation pack, including remote,
+  // offline, and unknown-presence sessions. Pack assets are served by this
+  // dashboard, so the source machine does not need to own the selected pack.
   try {
-    const localLive = scene.panels.filter((p) => !p.machine && p.presence.value === "online");
     const characters = allocateCharacters(
-      localLive.map((p) => p.instance_id),
+      scene.panels.map((p) => p.instance_id),
       scene.generated_at,
     );
-    for (const panel of localLive) {
+    for (const panel of scene.panels) {
       const assigned = characters.get(panel.instance_id);
       if (assigned) panel.character = assigned;
     }
