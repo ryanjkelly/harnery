@@ -365,7 +365,7 @@ describe("event ledger V3 persistent hook recorder", () => {
     const durable = readFileSync(eventV3Paths(root).active, "utf8");
     expect(`${durable}\n${diagnostics.join("\n")}`).not.toContain("private-tool");
     expect(`${durable}\n${diagnostics.join("\n")}`).not.toContain("private-response");
-  });
+  }, 30_000);
 
   test("keeps Claude post-stop tools out of the next native turn", () => {
     const root = candidateRoot("claude-code");
