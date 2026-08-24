@@ -717,10 +717,14 @@
 }
 
 .panelGrid {
+  --codec-grid-repeat: auto-fit;
+  --codec-grid-track-min: min(100%, 27rem);
+  --codec-card-span: 1;
+  --codec-balanced-row-start: auto;
   display: grid;
   width: 100%;
   margin-inline: auto;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 27rem), 1fr));
+  grid-template-columns: repeat(var(--codec-grid-repeat), minmax(var(--codec-grid-track-min), 1fr));
   justify-content: center;
   gap: 1rem;
   align-items: stretch;
@@ -730,49 +734,24 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-/* Keep the common wide-desktop roster balanced instead of allowing auto-fit
- * to produce a sparse 6 + 2 final row. */
-.panelGrid:is([data-panel-count="7"], [data-panel-count="8"]) {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
 .panelGrid[data-panel-count="1"] {
   width: min(100%, 44rem);
   grid-template-columns: minmax(0, 1fr);
 }
 
-.panelGrid[data-panel-count="3"] {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.panelGrid[data-balanced-rows="true"] {
+  --codec-grid-repeat: var(--codec-balanced-track-count);
+  --codec-grid-track-min: 0px;
+  --codec-card-span: 2;
+  --codec-balanced-row-start: 2;
 }
 
-.panelGrid[data-panel-count="3"] > :last-child {
-  width: calc((100% - 1rem) / 2);
-  grid-column: 1 / -1;
-  justify-self: center;
+.panelGrid > * {
+  grid-column: span var(--codec-card-span);
 }
 
-/* Six tracks preserve equal card widths across a centered 3 + 2 arrangement. */
-.panelGrid[data-panel-count="5"] {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-}
-
-.panelGrid[data-panel-count="5"] > * {
-  grid-column: span 2;
-}
-
-.panelGrid[data-panel-count="5"] > :nth-child(4) {
-  grid-column: 2 / span 2;
-}
-
-.panelGrid[data-panel-count="5"] > :nth-child(5) {
-  grid-column: 4 / span 2;
-}
-
-@media (min-width: 3000px) {
-  /* Fullscreen ultrawide displays have room to return to a single dense row. */
-  .panelGrid:is([data-panel-count="7"], [data-panel-count="8"]) {
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 27rem), 1fr));
-  }
+.panelGrid > [data-balanced-row-start="true"] {
+  grid-column: var(--codec-balanced-row-start) / span var(--codec-card-span);
 }
 
 .cardStage {
@@ -2823,13 +2802,12 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .panelGrid[data-panel-count="5"] > *,
-  .panelGrid[data-panel-count="5"] > :nth-child(4),
-  .panelGrid[data-panel-count="5"] > :nth-child(5) {
+  .panelGrid > *,
+  .panelGrid > [data-balanced-row-start="true"] {
     grid-column: auto;
   }
 
-  .panelGrid[data-panel-count="5"] > :last-child {
+  .panelGrid:is([data-panel-count="3"], [data-panel-count="5"]) > :last-child {
     width: calc((100% - 1rem) / 2);
     grid-column: 1 / -1;
     justify-self: center;
@@ -2838,10 +2816,6 @@
   .panelGrid[data-panel-count="1"] {
     width: min(100%, 44rem);
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .panelGrid[data-panel-count="3"] > :last-child {
-    width: calc((100% - 1rem) / 2);
   }
 
   .activityLedger {

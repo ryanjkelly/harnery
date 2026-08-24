@@ -87,6 +87,9 @@ const AMBIENCE_CLASS: Record<string, string | undefined> = {
 
 const REMOTE_PANEL_STORAGE_KEY = "harnery.codec.remote-panel";
 const TEAM_PANEL_STORAGE_KEY = "harnery.codec.team-panel";
+const BALANCED_ROW_MIN_VIEWPORT_HEIGHT_REM = 64;
+const BALANCED_ROW_CARD_TARGET_WIDTH_REM = 27;
+const BALANCED_ROW_GRID_GAP_REM = 1;
 
 interface CodecViewProps {
   initialScene: CodecScene;
@@ -107,6 +110,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenAvailable, setFullscreenAvailable] = useState(false);
   const [mobileLayout, setMobileLayout] = useState(false);
+  const [balancedRows, setBalancedRows] = useState(false);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const replayHydrated = useRef(false);
   // The server-rendered scene counts as a snapshot: its cues never animate.
@@ -340,6 +344,39 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   const stale = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "unknown"));
   const ended = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "offline"));
   const panels = [...current, ...stale, ...ended];
+  const balancedColumnCount = Math.ceil(panels.length / 2);
+
+  useEffect(() => {
+    const stage = gridRef.current;
+    if (!stage || mobileLayout || panels.length < 3) {
+      setBalancedRows(false);
+      return;
+    }
+
+    const syncBalancedRows = () => {
+      const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+      const rem = Number.isFinite(rootFontSize) ? rootFontSize : 16;
+      const requiredWidth =
+        balancedColumnCount * BALANCED_ROW_CARD_TARGET_WIDTH_REM * rem +
+        Math.max(0, balancedColumnCount - 1) * BALANCED_ROW_GRID_GAP_REM * rem;
+      const hasRoom =
+        window.innerWidth >= 1_200 &&
+        window.innerHeight >= BALANCED_ROW_MIN_VIEWPORT_HEIGHT_REM * rem &&
+        stage.clientWidth >= requiredWidth;
+      setBalancedRows((currentValue) => (currentValue === hasRoom ? currentValue : hasRoom));
+    };
+
+    syncBalancedRows();
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(syncBalancedRows);
+    observer?.observe(stage);
+    window.addEventListener("resize", syncBalancedRows);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", syncBalancedRows);
+    };
+  }, [balancedColumnCount, mobileLayout, panels.length]);
+
   const transportLabel =
     mode === "replay"
       ? "offline replay"
@@ -482,14 +519,26 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
               data-codec-grid
               data-panel-count={panels.length}
               data-panel-density={panels.length <= 4 ? "featured" : "dense"}
+              data-balanced-rows={balancedRows ? "true" : "false"}
+              data-balanced-columns={panels.length >= 3 ? balancedColumnCount : undefined}
               className={styles.panelGrid}
+              style={
+                panels.length >= 3
+                  ? ({
+                      "--codec-balanced-track-count": balancedColumnCount * 2,
+                    } as CSSProperties)
+                  : undefined
+              }
             >
-              {panels.map((panel) => (
+              {panels.map((panel, index) => (
                 <CodecPanel
                   key={panel.instance_id}
                   panel={panel}
                   parentName={parentNameFor(panel)}
                   glowing={Boolean(glowing[panel.instance_id])}
+                  balancedRowStart={
+                    balancedRows && panels.length % 2 === 1 && index === balancedColumnCount
+                  }
                 />
               ))}
             </div>
@@ -1082,10 +1131,12 @@ function CodecPanel({
   panel,
   parentName,
   glowing,
+  balancedRowStart,
 }: {
   panel: CodecPanelScene;
   parentName?: string;
   glowing: boolean;
+  balancedRowStart: boolean;
 }) {
   const offline = panel.presence.value === "offline";
   const unknownPresence = panel.presence.value === "unknown";
@@ -1095,6 +1146,7 @@ function CodecPanel({
       aria-label={`Agent ${panel.identity.display_name}`}
       data-instance={panel.instance_id}
       data-codec-card
+      data-balanced-row-start={balancedRowStart ? "true" : undefined}
       data-activity={panel.activity.value}
       data-attention={panel.attention.value}
       data-expression={panel.expression.value}
