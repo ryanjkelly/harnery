@@ -224,88 +224,6 @@
   gap: 1.5rem;
 }
 
-.styleBoard {
-  position: relative;
-  z-index: 1;
-  max-width: 100rem;
-  margin: 0 auto 1.5rem;
-  overflow: hidden;
-  border: 1px solid rgb(244 114 182 / 0.24);
-  border-radius: 1.15rem;
-  background:
-    linear-gradient(112deg, rgb(190 24 93 / 0.13), transparent 38%),
-    linear-gradient(250deg, rgb(6 182 212 / 0.11), transparent 44%), rgb(13 15 22 / 0.94);
-  box-shadow: 0 20px 60px rgb(0 0 0 / 0.24);
-}
-
-.styleBoard > header {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 2rem;
-  padding: 0.9rem 1rem;
-  border-bottom: 1px solid rgb(255 255 255 / 0.09);
-}
-
-.styleBoard > header .kicker {
-  margin-bottom: 0.18rem;
-  color: rgb(249 168 212);
-}
-
-.styleBoard h2 {
-  font-size: 1.15rem;
-  font-weight: 780;
-  letter-spacing: -0.035em;
-}
-
-.styleBoard > header > p {
-  max-width: 36rem;
-  text-align: right;
-  font-size: 0.66rem;
-  line-height: 1.45;
-  color: rgb(161 161 170);
-}
-
-.studyGrid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.7rem;
-  padding: 0.75rem;
-}
-
-.studyGrid figure {
-  position: relative;
-  overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 0.12);
-  border-radius: 0.85rem;
-  background: rgb(9 11 17);
-}
-
-.studyGrid img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
-}
-
-.studyGrid figcaption {
-  position: absolute;
-  right: 0.5rem;
-  bottom: 0.5rem;
-  left: 0.5rem;
-  border: 1px solid rgb(255 255 255 / 0.15);
-  border-radius: 0.45rem;
-  padding: 0.36rem 0.48rem;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 0.54rem;
-  font-weight: 800;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: white;
-  background: rgb(4 5 10 / 0.86);
-  backdrop-filter: blur(7px);
-}
-
 .pack {
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 0.12);
@@ -484,20 +402,6 @@
     grid-template-columns: 1fr;
   }
 
-  .styleBoard > header {
-    align-items: start;
-    flex-direction: column;
-    gap: 0.6rem;
-  }
-
-  .styleBoard > header > p {
-    text-align: left;
-  }
-
-  .studyGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .expressionGrid {
     grid-template-columns: repeat(11, 7.5rem);
   }
@@ -520,9 +424,5 @@
   .expressionGrid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     overflow-x: visible;
-  }
-
-  .studyGrid {
-    grid-template-columns: 1fr;
   }
 }
