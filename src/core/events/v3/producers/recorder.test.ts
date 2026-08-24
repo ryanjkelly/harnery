@@ -1925,6 +1925,158 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(durable).not.toContain(nativeTurn);
   });
 
+  test("records fresh Codex context during an open turn with bounded cadence and deduplication", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "01a030b0-9de1-70f2-bda0-933d26e3c2c0";
+    const nativeTurn = "active-context-turn";
+    const transcript = join(root, `rollout-${nativeSession}.jsonl`);
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          timestamp: "2026-08-21T20:24:00.000Z",
+          ordinal: 1,
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: nativeTurn },
+        },
+        {
+          timestamp: "2026-08-21T20:24:14.100Z",
+          ordinal: 2,
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              last_token_usage: { input_tokens: 120_000 },
+              model_context_window: 258_400,
+            },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+        "codex",
+      ),
+    );
+    const requestTool = (
+      toolId: string,
+      observedAt: string,
+      activeContextProbeIntervalMs?: number,
+    ) => {
+      const payload = parsed({
+        session_id: nativeSession,
+        turn_id: nativeTurn,
+        transcript_path: transcript,
+        tool_use_id: toolId,
+        tool_name: "Bash",
+      });
+      expect(
+        recordHookSignalV3({
+          ...baseInput(root, "pre-tool-use", payload, "codex"),
+          observed_at: observedAt,
+        }).state,
+      ).toBe("recorded");
+      return recordHookSignalV3({
+        ...baseInput(root, "post-tool-use", payload, "codex"),
+        observed_at: observedAt,
+        ...(activeContextProbeIntervalMs !== undefined
+          ? { runtimeTelemetryOptions: { activeContextProbeIntervalMs } }
+          : {}),
+      });
+    };
+
+    expect(requestTool("tool-one", "2026-08-21T20:24:15.200Z").state).toBe("recorded");
+    let contexts = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "context.observed");
+    expect(contexts).toHaveLength(1);
+    expect(
+      contexts[0]?.event_type === "context.observed" && contexts[0].payload.measurement,
+    ).toEqual({
+      state: "observed",
+      value: {
+        used_tokens: 120_000,
+        limit_tokens: 258_400,
+        remaining_tokens: 138_400,
+        measured_at: "2026-08-21T20:24:14.100Z",
+        method: "codex_transcript_token_count",
+      },
+      attestation: "derived",
+      confidence: "exact",
+    });
+
+    appendFileSync(
+      transcript,
+      `${JSON.stringify({
+        timestamp: "2026-08-21T20:24:16.000Z",
+        ordinal: 3,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { input_tokens: 140_000 },
+            model_context_window: 258_400,
+          },
+        },
+      })}\n`,
+    );
+    expect(requestTool("tool-two", "2026-08-21T20:24:17.000Z").state).toBe("recorded");
+    contexts = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "context.observed");
+    expect(contexts).toHaveLength(1);
+
+    expect(requestTool("tool-three", "2026-08-21T20:24:18.000Z", 0).state).toBe("recorded");
+    expect(requestTool("tool-four", "2026-08-21T20:24:19.000Z", 0).state).toBe("recorded");
+    contexts = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "context.observed");
+    expect(contexts).toHaveLength(2);
+    expect(
+      contexts.at(-1)?.event_type === "context.observed" && contexts.at(-1)?.payload.measurement,
+    ).toMatchObject({
+      state: "observed",
+      value: { used_tokens: 140_000, limit_tokens: 258_400, remaining_tokens: 118_400 },
+    });
+    appendFileSync(
+      transcript,
+      `${JSON.stringify({
+        timestamp: "2026-08-21T20:24:20.000Z",
+        ordinal: 4,
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: nativeTurn },
+      })}\n`,
+    );
+    expect(
+      recordHookSignalV3({
+        ...baseInput(
+          root,
+          "stop",
+          parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+          "codex",
+        ),
+        observed_at: "2026-08-21T20:24:20.100Z",
+      }).state,
+    ).toBe("recorded");
+    expect(
+      readLedgerV3(root)
+        .events.map(({ event }) => event)
+        .filter((event) => event.event_type === "context.observed"),
+    ).toHaveLength(2);
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(durable).not.toContain(transcript);
+    expect(durable).not.toContain(nativeSession);
+    expect(durable).not.toContain(nativeTurn);
+  });
+
   test("reconciles a late Codex terminal on the next hook or session end", () => {
     for (const retrySignal of ["user-prompt-submit", "session-end"] as const) {
       const root = candidateRoot("codex");

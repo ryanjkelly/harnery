@@ -7,6 +7,12 @@ import type { Adapter } from "../../adapter.ts";
 import { transcriptPathCandidates } from "../resolve/transcript.ts";
 
 const DEFAULT_TAIL_BYTES = 256 * 1024;
+/**
+ * An active turn can accumulate enough tool traffic to push its task_started
+ * row beyond the ordinary status tail. Keep turn attribution bounded while
+ * giving long-running interactive turns a larger matching window.
+ */
+const ACTIVE_TURN_TAIL_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_SAMPLE_AGE_MS = 30_000;
 const DEFAULT_MAX_CURSOR_DATABASES = 8;
 const SESSION_CACHE_LIMIT = 128;
@@ -86,10 +92,15 @@ export interface RuntimeContextRequest {
   adapter: Adapter;
   session_id?: string;
   turn_id?: string;
+  /** Canonical producer turn boundary used when task_started has left the bounded tail. */
+  turn_started_at?: string;
   transcript_path?: string;
   observed_at?: string;
-  /** Status callers may request the newest session sample without claiming turn attribution. */
-  mode: "turn" | "status";
+  /**
+   * Status reads the newest session sample without turn attribution. Active
+   * turn reads require a matching task_started boundary but not task_complete.
+   */
+  mode: "turn" | "active_turn" | "status";
 }
 
 export interface RuntimeTelemetryOptions {
@@ -98,6 +109,8 @@ export interface RuntimeTelemetryOptions {
   maxCursorDatabases?: number;
   maxTailBytes?: number;
   maxSampleAgeMs?: number;
+  /** Recorder-only cadence override used by deterministic tests. */
+  activeContextProbeIntervalMs?: number;
 }
 
 interface TailRead {
@@ -141,8 +154,11 @@ export function readRuntimeContextTelemetry(
 ): RuntimeContextTelemetry {
   const startedAt = performance.now();
   if (!request.session_id) return unsupported("runtime_session_id_not_reported", startedAt);
-  if (request.mode === "turn" && !request.turn_id && request.adapter !== "cursor") {
+  if (request.mode !== "status" && !request.turn_id && request.adapter !== "cursor") {
     return unsupported("runtime_turn_id_not_reported", startedAt);
+  }
+  if (request.mode === "active_turn" && request.adapter !== "codex") {
+    return unsupported("runtime_adapter_not_supported", startedAt);
   }
   if (request.adapter === "codex") return readCodexContext(request, options, startedAt);
   if (request.adapter === "claude-code") return readClaudeContext(request, options, startedAt);
@@ -450,11 +466,25 @@ function readCodexContext(
     return partial("codex_transcript_session_mismatch", 0, startedAt);
   }
 
-  const tail = readTail(resolved.path, options.maxTailBytes ?? DEFAULT_TAIL_BYTES);
+  const tail = readTail(
+    resolved.path,
+    options.maxTailBytes ??
+      (request.mode === "active_turn" ? ACTIVE_TURN_TAIL_BYTES : DEFAULT_TAIL_BYTES),
+  );
   if (!tail) return partial("codex_transcript_unreadable", 0, startedAt);
   const rows = parseRuntimeRows(tail.text);
   if (request.mode === "status") {
     const token = newestCodexToken(rows);
+    return codexObservation(request, token, undefined, tail.bytes, options, startedAt);
+  }
+
+  if (request.mode === "active_turn") {
+    const active = tokenWithinActiveTurn(rows, request.turn_id!);
+    const token =
+      active.state === "found" ? active.token : tokenAtOrAfter(rows, request.turn_started_at);
+    if (active.state === "turn_missing" && !token) {
+      return partial("codex_transcript_turn_not_found", tail.bytes, startedAt);
+    }
     return codexObservation(request, token, undefined, tail.bytes, options, startedAt);
   }
 
@@ -503,6 +533,16 @@ function codexObservation(
   if (terminal?.timestamp) {
     const age = Date.parse(terminal.timestamp) - Date.parse(token.measured_at);
     if (age < 0 || age > (options.maxSampleAgeMs ?? DEFAULT_MAX_SAMPLE_AGE_MS)) {
+      return partial("codex_transcript_sample_stale", bytesRead, startedAt, token);
+    }
+  }
+  if (request.mode === "active_turn" && request.observed_at) {
+    const age = Date.parse(request.observed_at) - Date.parse(token.measured_at);
+    if (
+      !Number.isFinite(age) ||
+      age < -5_000 ||
+      age > (options.maxSampleAgeMs ?? DEFAULT_MAX_SAMPLE_AGE_MS)
+    ) {
       return partial("codex_transcript_sample_stale", bytesRead, startedAt, token);
     }
   }
@@ -865,6 +905,48 @@ function newestCodexToken(rows: ParsedRuntimeRow[]): CodexTokenSample | undefine
     if (token) return token;
   }
   return undefined;
+}
+
+function tokenWithinActiveTurn(
+  rows: ParsedRuntimeRow[],
+  turnId: string,
+): { state: "found"; token?: CodexTokenSample } | { state: "turn_missing" } {
+  let startIndex = -1;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if (
+      row.type === "event_msg" &&
+      row.payload?.type === "task_started" &&
+      row.payload.turn_id === turnId
+    ) {
+      startIndex = index;
+      break;
+    }
+  }
+  if (startIndex < 0) return { state: "turn_missing" };
+
+  let token: CodexTokenSample | undefined;
+  for (let index = startIndex + 1; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    if (
+      row.type === "event_msg" &&
+      (row.payload?.type === "task_started" || row.payload?.type === "task_complete")
+    ) {
+      break;
+    }
+    token = codexToken(row) ?? token;
+  }
+  return { state: "found", token };
+}
+
+function tokenAtOrAfter(
+  rows: ParsedRuntimeRow[],
+  turnStartedAt: string | undefined,
+): CodexTokenSample | undefined {
+  if (!turnStartedAt || !Number.isFinite(Date.parse(turnStartedAt))) return undefined;
+  const token = newestCodexToken(rows);
+  if (!token?.measured_at) return undefined;
+  return Date.parse(token.measured_at) >= Date.parse(turnStartedAt) ? token : undefined;
 }
 
 function tokenBeforeTerminal(

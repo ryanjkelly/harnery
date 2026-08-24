@@ -1,0 +1,58 @@
+---
+title: "ADR 0112: sample Codex context during active turns"
+description: Admit fresh, turn-matched Codex context samples at bounded tool boundaries.
+sidebar:
+  order: 112
+---
+
+**Date:** 2026-08-23
+**Status:** Accepted
+
+## Context
+
+ADR 0110 records exact Codex context after a turn completes. That fixes the
+Stop-time flush race, but it leaves a long-running turn without a gauge until
+the turn ends. The same rollout already contains current `token_count` rows
+during the turn, and the status reader can find them through the cached,
+session-verified transcript path.
+
+A plain status read is not enough for V3. The newest token row may belong to
+the previous turn, and running transcript discovery on every hook would add
+unbounded repeated work to the interactive path.
+
+## Alternatives considered
+
+- **Read the rollout from Codec.** Rejected because V3 remains the telemetry
+  authority and the UI must not gain access to private runtime files.
+- **Use the newest session token row on every hook.** Rejected because it can
+  cross a turn boundary and repeats the same bounded I/O too often.
+- **Run a detached sampler for the lifetime of every turn.** Rejected because
+  it adds process lifecycle and shutdown races when native tool boundaries
+  already provide useful sampling points.
+- **Wait for Stop.** Rejected because an active card can remain unknown for most
+  of a long turn even when exact runtime evidence is available.
+
+## Decision
+
+The Codex V3 hook producer samples context after a native `tool.completed`
+event while a turn is open. `readRuntimeContextTelemetry` adds an
+`active_turn` mode that reuses session-safe transcript discovery but accepts a
+token row only after the matching native `task_started` marker. When a long
+turn pushes that marker out of the 4 MiB tail, the reader accepts the newest
+row only when its timestamp is at or after the canonical turn-open boundary
+already held by the producer. It rejects missing, older, and samples more than
+30 seconds stale.
+
+Owner-only producer state records the last probe time and source witness. A
+turn pays for at most one probe every 15 seconds. A repeated witness does not
+emit another `context.observed` event, including when Stop later finds the same
+terminal-adjacent sample. A new sample uses the open canonical turn id, links
+to the tool completion that admitted it, and keeps only token counts, timestamps,
+method, and an opaque witness in the public ledger.
+
+## Result
+
+Active Codex turns can update Codec before Stop without adding a UI fallback.
+Focused tests cover current-turn selection, stale and cross-turn rejection,
+cadence, witness deduplication, exact used and limit values, and the public
+privacy boundary.

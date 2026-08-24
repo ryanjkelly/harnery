@@ -97,6 +97,8 @@ const CLOSED_TURN_MEMORY_CAP = 16;
 const SPAN_SOFT_WATERMARK = 128;
 const PENDING_RUNTIME_CONTEXT_CAP = 4;
 const RUNTIME_CONTEXT_RETRY_LIMIT = 2;
+/** Active Codex turns pay for at most one bounded rollout read per interval. */
+const ACTIVE_RUNTIME_CONTEXT_PROBE_INTERVAL_MS = 15_000;
 /** Codex can flush the terminal row just after Stop; keep this grace bounded and off other hooks. */
 const STOP_RUNTIME_CONTEXT_RETRY_DELAYS_MS = [75, 175] as const;
 /** Finalization is off the interactive hook path; briefly cover Codex's delayed transcript flush. */
@@ -161,6 +163,12 @@ interface PendingRuntimeContextV3 extends TurnContextTargetV3 {
   attempts: number;
 }
 
+interface ActiveRuntimeContextProbeV3 {
+  turn_id: `tid_${string}`;
+  attempted_at: string;
+  boundary?: "tool_completed";
+}
+
 interface DelegationStateV3 extends OpenSpanStateV3 {
   source_id: `hid_${string}`;
   delegation_id: `del_${string}`;
@@ -203,6 +211,10 @@ export interface HookProducerStateV3 {
   turn_ordinal: number;
   pending?: PendingEventV3;
   pending_runtime_contexts?: PendingRuntimeContextV3[];
+  /** Last bounded active-turn probe; owner-only and used only for cadence. */
+  active_runtime_context_probe?: ActiveRuntimeContextProbeV3;
+  /** Last emitted runtime source witness; owner-only measurement deduplication. */
+  last_context_source_witness?: string;
   /** Verified adapter-native transcript path retained only in owner-only state. */
   runtime_transcript_path?: string;
   /** Tuning carried by the current attestation; {} means attested-none.
@@ -1188,6 +1200,16 @@ function processHookSignalLocked(
     if (progressKind) {
       commitProgressObservation(input, state, path, rootId, event, progressKind);
     }
+    if (event.event_type === "tool.completed" && input.signal === "post-tool-use") {
+      maybeCommitActiveRuntimeContextObservation(
+        input,
+        state,
+        path,
+        rootId,
+        fingerprintContext,
+        event,
+      );
+    }
     if (turnTelemetry) {
       const contextTarget = turnContextTarget(event);
       queuePendingRuntimeContext(
@@ -1663,6 +1685,53 @@ function commitTurnContextObservation(
   observedAt?: string,
 ): void {
   if (!target) return;
+  commitContextObservation(
+    input,
+    state,
+    path,
+    rootId,
+    fingerprintContext,
+    {
+      caused_by_event_id: target.terminal_event_id,
+      observed_at: observedAt ?? target.terminal_observed_at,
+      turn_id: target.turn_id,
+      ...(target.run_id ? { run_id: target.run_id } : {}),
+      ...(target.workflow_id ? { workflow_id: target.workflow_id } : {}),
+      ...(target.workflow_agent_id ? { workflow_agent_id: target.workflow_agent_id } : {}),
+    },
+    measurement,
+    contextProvenance,
+  );
+}
+
+function commitContextObservation(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+  target: {
+    caused_by_event_id: `evt_${string}`;
+    observed_at: string;
+    turn_id: `tid_${string}`;
+    run_id?: `run_${string}`;
+    workflow_id?: `wf_${string}`;
+    workflow_agent_id?: string;
+  },
+  measurement: TelemetryObservationV3<ContextMeasurementV3>,
+  contextProvenance?: ContextTelemetryProvenanceV3,
+): void {
+  if (
+    measurement.state === "observed" &&
+    contextProvenance?.source_witness &&
+    state.last_context_source_witness === contextProvenance.source_witness
+  ) {
+    publishProducerState(path, state);
+    return;
+  }
+  if (measurement.state === "observed" && contextProvenance?.source_witness) {
+    state.last_context_source_witness = contextProvenance.source_witness;
+  }
   const event = buildEventV3("context.observed", {
     producer: {
       producer_id: input.producer_id,
@@ -1684,7 +1753,7 @@ function commitTurnContextObservation(
       ...(target.workflow_agent_id ? { workflow_agent_id: target.workflow_agent_id } : {}),
     },
     attestation_id: state.attestation_id,
-    links: { caused_by: [target.terminal_event_id] },
+    links: { caused_by: [target.caused_by_event_id] },
     provenance: {
       source_event: safeRole(
         [
@@ -1711,10 +1780,10 @@ function commitTurnContextObservation(
         subject_instance_id: state.instance_id,
       },
     },
-    // The source sample may precede native task completion. The event itself
-    // is committed after turn.completed, while measurement.measured_at keeps
-    // the sample clock without creating a causal wall-clock regression.
-    observed_at: observedAt ?? target.terminal_observed_at,
+    // The source sample may precede the hook boundary that admits it.
+    // measurement.measured_at preserves the sample clock without creating a
+    // causal wall-clock regression in the producer event chain.
+    observed_at: target.observed_at,
     monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
     clock_id: state.clock_id,
     payload: {
@@ -1723,6 +1792,111 @@ function commitTurnContextObservation(
   }) as EventV3;
   commitEventLocked(input, state, path, event);
   maybeAttestContextCapabilityChange(input, state, path, rootId, measurement, contextProvenance);
+}
+
+/**
+ * Admit an exact, turn-matched Codex status sample while the turn is open.
+ * Tool completions are safe sampling boundaries: Codex has already appended
+ * the token_count row emitted with the tool request. Persistent
+ * owner-only cadence state prevents short-lived hook processes from scanning
+ * on every request, and the source witness prevents duplicate public events.
+ */
+function maybeCommitActiveRuntimeContextObservation(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+  sourceEvent: EventV3,
+): void {
+  if (
+    input.adapter !== "codex" ||
+    input.signal !== "post-tool-use" ||
+    state.terminal ||
+    !state.current_turn_id
+  ) {
+    return;
+  }
+  const nativeSessionId = input.payload.session_id ?? input.payload.conversation_id;
+  const nativeTurnId = input.payload.turn_id ?? state.current_native_turn_id;
+  if (!nativeSessionId || !nativeTurnId) return;
+
+  const now = Date.now();
+  const configuredInterval = input.runtimeTelemetryOptions?.activeContextProbeIntervalMs;
+  const intervalMs =
+    configuredInterval !== undefined && Number.isFinite(configuredInterval)
+      ? Math.max(0, Math.floor(configuredInterval))
+      : ACTIVE_RUNTIME_CONTEXT_PROBE_INTERVAL_MS;
+  const prior = state.active_runtime_context_probe;
+  const priorAttempt = prior ? Date.parse(prior.attempted_at) : Number.NaN;
+  if (
+    prior?.turn_id === state.current_turn_id &&
+    prior.boundary === "tool_completed" &&
+    Number.isFinite(priorAttempt) &&
+    now - priorAttempt >= 0 &&
+    now - priorAttempt < intervalMs
+  ) {
+    return;
+  }
+  state.active_runtime_context_probe = {
+    turn_id: state.current_turn_id,
+    attempted_at: new Date(now).toISOString(),
+    boundary: "tool_completed",
+  };
+
+  const transcriptPath = runtimeTranscriptPath(input, state);
+  if (!transcriptPath) {
+    publishProducerState(path, state);
+    return;
+  }
+  const runtime = readRuntimeContextTelemetry(
+    {
+      adapter: "codex",
+      session_id: nativeSessionId,
+      turn_id: nativeTurnId,
+      ...(state.current_turn_span?.opened_at
+        ? { turn_started_at: state.current_turn_span.opened_at }
+        : {}),
+      transcript_path: transcriptPath,
+      observed_at: sourceEvent.time.observed_at,
+      mode: "active_turn",
+    },
+    input.runtimeTelemetryOptions,
+  );
+  if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
+  if (runtime.state !== "observed" || !("used_tokens" in runtime)) {
+    publishProducerState(path, state);
+    return;
+  }
+
+  const scope = sourceEvent.scope as {
+    run_id?: `run_${string}`;
+    workflow_id?: `wf_${string}`;
+    workflow_agent_id?: string;
+  };
+  commitContextObservation(
+    input,
+    state,
+    path,
+    rootId,
+    fingerprintContext,
+    {
+      caused_by_event_id: sourceEvent.event_id as `evt_${string}`,
+      observed_at: sourceEvent.time.observed_at,
+      turn_id: state.current_turn_id,
+      ...(scope.run_id ? { run_id: scope.run_id } : {}),
+      ...(scope.workflow_id ? { workflow_id: scope.workflow_id } : {}),
+      ...(scope.workflow_agent_id ? { workflow_agent_id: scope.workflow_agent_id } : {}),
+    },
+    runtimeContextObservation(runtime),
+    {
+      source_event: runtime.source_event,
+      source_witness: runtime.source_witness,
+      ...(input.adapterVersion ? { runtime_version: input.adapterVersion } : {}),
+      attestation: runtime.attestation,
+      confidence: runtime.confidence,
+    },
+  );
 }
 
 function maybeAttestContextCapabilityChange(
@@ -3508,6 +3682,7 @@ function readProducerState(path: string): HookProducerStateV3 {
   }
   if (state.adapter === "cursor") state.cursor_mode ??= "unknown";
   const allowedKeys = new Set([
+    "active_runtime_context_probe",
     "adapter",
     "attestation_id",
     "boot_id",
@@ -3529,6 +3704,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "last_attested_telemetry",
     "last_attested_tuning",
     "last_attested_tuning_observation",
+    "last_context_source_witness",
     "tuning_probe_turn_id",
     "last_event_id",
     "last_monotonic_ns",
@@ -3642,6 +3818,10 @@ function readProducerState(path: string): HookProducerStateV3 {
         state.pending_runtime_contexts.length === 0 ||
         state.pending_runtime_contexts.length > PENDING_RUNTIME_CONTEXT_CAP ||
         state.pending_runtime_contexts.some((pending) => !validPendingRuntimeContext(pending)))) ||
+    (state.active_runtime_context_probe !== undefined &&
+      !validActiveRuntimeContextProbe(state.active_runtime_context_probe)) ||
+    (state.last_context_source_witness !== undefined &&
+      !/^[a-f0-9]{64}$/.test(state.last_context_source_witness)) ||
     (state.runtime_transcript_path !== undefined &&
       (typeof state.runtime_transcript_path !== "string" ||
         state.runtime_transcript_path.length === 0 ||
@@ -3756,6 +3936,18 @@ function validPendingRuntimeContext(value: unknown): value is PendingRuntimeCont
     Number.isSafeInteger(pending.attempts) &&
     pending.attempts >= 0 &&
     pending.attempts < RUNTIME_CONTEXT_RETRY_LIMIT
+  );
+}
+
+function validActiveRuntimeContextProbe(value: unknown): value is ActiveRuntimeContextProbeV3 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const probe = value as ActiveRuntimeContextProbeV3;
+  return (
+    typeof probe.turn_id === "string" &&
+    /^tid_[a-f0-9]{64}$/.test(probe.turn_id) &&
+    typeof probe.attempted_at === "string" &&
+    Number.isFinite(Date.parse(probe.attempted_at)) &&
+    (probe.boundary === undefined || probe.boundary === "tool_completed")
   );
 }
 

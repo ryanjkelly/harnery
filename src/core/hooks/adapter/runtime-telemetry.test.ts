@@ -134,6 +134,130 @@ describe("runtime context telemetry", () => {
     ).toMatchObject({ state: "partial", reason: "codex_transcript_turn_not_found" });
   });
 
+  test("joins a fresh active Codex sample only after the matching turn boundary", () => {
+    const priorTurn = "prior-turn";
+    const transcript = writeCodex([
+      taskStarted(1, priorTurn),
+      tokenCount(2, 20, 1_000, "2026-08-21T20:23:50.000Z"),
+      taskComplete(3, priorTurn),
+      taskStarted(4),
+      tokenCount(5, 120, 1_000),
+    ]);
+
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "codex",
+        session_id: SESSION,
+        turn_id: TURN,
+        transcript_path: transcript,
+        observed_at: COMPLETE_TIME,
+        mode: "active_turn",
+      }),
+    ).toMatchObject({
+      state: "observed",
+      used_tokens: 120,
+      limit_tokens: 1_000,
+      measured_at: TOKEN_TIME,
+    });
+  });
+
+  test("uses the canonical turn-open clock when task_started leaves the bounded tail", () => {
+    const transcript = writeCodex([
+      taskStarted(1),
+      {
+        timestamp: "2026-08-21T20:24:10.000Z",
+        ordinal: 2,
+        type: "response_item",
+        payload: { type: "message", content: "x".repeat(512 * 1024) },
+      },
+      tokenCount(3, 120, 1_000),
+    ]);
+    const request = {
+      adapter: "codex" as const,
+      session_id: SESSION,
+      turn_id: TURN,
+      turn_started_at: "2026-08-21T20:24:00.000Z",
+      transcript_path: transcript,
+      observed_at: COMPLETE_TIME,
+      mode: "active_turn" as const,
+    };
+
+    expect(readRuntimeContextTelemetry(request, { maxTailBytes: 64 * 1024 })).toMatchObject({
+      state: "observed",
+      used_tokens: 120,
+      limit_tokens: 1_000,
+    });
+
+    clearRuntimeTelemetryCachesForTest();
+    const oldToken = writeCodex(
+      [
+        taskStarted(1),
+        {
+          timestamp: "2026-08-21T20:24:10.000Z",
+          ordinal: 2,
+          type: "response_item",
+          payload: { type: "message", content: "x".repeat(512 * 1024) },
+        },
+        tokenCount(3, 20, 1_000, "2026-08-21T20:23:59.000Z"),
+      ],
+      "old-active-token",
+    );
+    expect(
+      readRuntimeContextTelemetry(
+        { ...request, transcript_path: oldToken },
+        { maxTailBytes: 64 * 1024 },
+      ),
+    ).toMatchObject({ state: "partial", reason: "codex_transcript_turn_not_found" });
+  });
+
+  test("keeps stale, missing, and cross-turn active Codex samples partial", () => {
+    const transcript = writeCodex([
+      taskStarted(1, "prior-turn"),
+      tokenCount(2, 20, 1_000),
+      taskComplete(3, "prior-turn"),
+      taskStarted(4),
+    ]);
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "codex",
+        session_id: SESSION,
+        turn_id: TURN,
+        transcript_path: transcript,
+        observed_at: COMPLETE_TIME,
+        mode: "active_turn",
+      }),
+    ).toMatchObject({ state: "partial", reason: "codex_transcript_token_count_missing" });
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "codex",
+        session_id: SESSION,
+        turn_id: "different-turn",
+        transcript_path: transcript,
+        observed_at: COMPLETE_TIME,
+        mode: "active_turn",
+      }),
+    ).toMatchObject({ state: "partial", reason: "codex_transcript_turn_not_found" });
+
+    clearRuntimeTelemetryCachesForTest();
+    const stale = writeCodex(
+      [taskStarted(1), tokenCount(2, 100, 1_000, "2026-08-21T20:20:00.000Z")],
+      "active-stale",
+    );
+    expect(
+      readRuntimeContextTelemetry(
+        {
+          adapter: "codex",
+          session_id: SESSION,
+          turn_id: TURN,
+          transcript_path: stale,
+          observed_at: COMPLETE_TIME,
+          mode: "active_turn",
+        },
+        { maxSampleAgeMs: 5_000 },
+      ),
+    ).toMatchObject({ state: "partial", reason: "codex_transcript_sample_stale" });
+  });
+
   test("rejects a stale or cross-turn latest token sample", () => {
     const stale = writeCodex([
       taskStarted(1),
