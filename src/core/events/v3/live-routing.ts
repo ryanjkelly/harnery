@@ -9,7 +9,12 @@ import {
 } from "./control.ts";
 import type { HookSignalV3 } from "./producers/hook.ts";
 import type { TurnRitualEvidenceV3 } from "./producers/hook-base.ts";
-import { type RecordHookSignalV3Result, recordHookSignalV3 } from "./producers/recorder.ts";
+import {
+  type ReconcilePendingRuntimeContextV3Result,
+  type RecordHookSignalV3Result,
+  reconcilePendingRuntimeContextV3,
+  recordHookSignalV3,
+} from "./producers/recorder.ts";
 
 export const LIVE_HOOK_V3_PRODUCER_ID = "prd_agent-hook" as const;
 export const LIVE_COMMAND_V3_PRODUCER_ID = "prd_session-tee" as const;
@@ -155,6 +160,23 @@ export function recordLiveHookSignalV3(input: {
     stop_remediation: input.stop_remediation,
     turn_ritual: input.turn_ritual,
     ...(input.defer_drain ? { writerOptions: { deferDrain: true } } : {}),
+  });
+}
+
+export function reconcileLivePendingRuntimeContextV3(input: {
+  coordRoot: string;
+  route: Extract<LiveEventLedgerRouteV3, { state: "v3" }>;
+  nativeSessionId: string;
+  finalAttempt?: boolean;
+}): ReconcilePendingRuntimeContextV3Result {
+  return reconcilePendingRuntimeContextV3({
+    coordRoot: input.coordRoot,
+    mode: input.route.mode,
+    nativeSessionId: input.nativeSessionId,
+    producer_id: LIVE_HOOK_V3_PRODUCER_ID,
+    build_id: input.route.build_id,
+    platform: livePlatformV3(),
+    finalAttempt: input.finalAttempt,
   });
 }
 

@@ -1,0 +1,54 @@
+---
+title: "ADR 0110: reconcile Codex context after Stop"
+description: Read Codex's terminal token row after the synchronous Stop hook releases the harness.
+sidebar:
+  order: 110
+---
+
+**Date:** 2026-08-23
+**Status:** Accepted
+
+## Context
+
+Codex does not include `transcript_path` in hook payloads. Harnery can still
+discover and cache the matching rollout, but the completed turn's
+`task_complete` marker and terminal `token_count` row are not present while the
+synchronous Stop hook is running. Codex appends them only after that hook
+returns.
+
+Waiting longer inside Stop cannot close this race. The harness is waiting for
+the hook, while the hook is waiting for data the harness writes afterward.
+This left an honest `codex_transcript_turn_not_found` observation in V3 even
+though the same rollout later contained exact context usage.
+
+## Alternatives considered
+
+- **Increase the synchronous retry window.** Rejected because no delay can
+  resolve the ordering dependency.
+- **Use the newest token row without the completed-turn marker.** Rejected
+  because it can attribute a sample to the wrong turn or session.
+- **Let Codec or a host status command read the rollout independently.** Rejected
+  because V3 is the canonical telemetry authority.
+- **Wait for another user hook to reconcile the pending sample.** Rejected
+  because an idle completed session may not produce another hook.
+
+## Decision
+
+After a Codex Stop hook returns its synchronous work, `agent-hook` starts one
+detached, bounded reconciliation worker for that native session. The worker
+reuses the cached, session-verified rollout path and the existing pending
+turn join. It makes two short attempts, preserves freshness and turn matching,
+uses the existing producer lease, and relies on measurement deduplication.
+
+The worker receives only the native session identifier. Public events continue
+to contain opaque witnesses and canonical measurements, never rollout paths or
+transcript contents. Missing, stale, ambiguous, or mismatched data remains an
+explicit missing state.
+
+## Result
+
+A completed Codex turn can first record the honest missing observation and then
+upgrade it to an exact `context.observed` event as soon as the terminal row is
+available. The card does not have to wait for another user action. Tests model
+the real ordering by appending `token_count` and `task_complete` only after
+Stop returns.

@@ -17,7 +17,7 @@
  * adapter flow.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
@@ -59,6 +59,7 @@ import {
 import { tryWriteLiveDisplayV3 } from "../events/v3/live-feed.ts";
 import {
   liveHookSignalDefersDrainV3,
+  reconcileLivePendingRuntimeContextV3,
   recordLiveDelegatedChildSessionV3,
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
@@ -132,6 +133,11 @@ function parseArgv(argv: string[]): Argv {
     }
   }
   return out;
+}
+
+function extraArg(extra: string[], name: string): string | undefined {
+  const index = extra.indexOf(name);
+  return index >= 0 ? extra[index + 1] : undefined;
 }
 
 async function readStdin(): Promise<string> {
@@ -640,6 +646,9 @@ async function main(): Promise<number> {
 
   const coordRoot = findCoordRoot(process.cwd());
   if (!coordRoot) return 0;
+  if (eventName === "runtime-context-retry") {
+    return runRuntimeContextRetryWorker(coordRoot, adapter, extra);
+  }
   const ledgerRoute = resolveLiveEventLedgerRouteV3(coordRoot);
 
   // Always log a breadcrumb, useful when an event_type maps to null or owner
@@ -1137,6 +1146,7 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "stop-explicit-session-finalization" });
     }
+    if (adapter === "codex") scheduleCodexRuntimeContextRetry(coordRoot, sessionId);
   }
 
   // Phase 7: PreToolUse: heartbeat + pid-map self-heal on every tool call.
@@ -1249,6 +1259,48 @@ async function main(): Promise<number> {
     }
   }
 
+  return 0;
+}
+
+function scheduleCodexRuntimeContextRetry(coordRoot: string, nativeSessionId: string): void {
+  const modulePath = process.argv[1];
+  if (!modulePath) return;
+  try {
+    const child = spawn(
+      process.execPath,
+      [modulePath, "runtime-context-retry", "--adapter", "codex", "--session-id", nativeSessionId],
+      {
+        cwd: coordRoot,
+        detached: true,
+        stdio: "ignore",
+        env: childEnv(coordRoot),
+      },
+    );
+    child.unref();
+  } catch (err) {
+    logError(coordRoot, err, { phase: "runtime-context-retry-spawn" });
+  }
+}
+
+async function runRuntimeContextRetryWorker(
+  coordRoot: string,
+  adapter: Adapter | null,
+  extra: string[],
+): Promise<number> {
+  const nativeSessionId = extraArg(extra, "--session-id");
+  if (adapter !== "codex" || !nativeSessionId) return 0;
+  for (const [index, delayMs] of [400, 1_000].entries()) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    const route = resolveLiveEventLedgerRouteV3(coordRoot);
+    if (route.state !== "v3") return 0;
+    const result = reconcileLivePendingRuntimeContextV3({
+      coordRoot,
+      route,
+      nativeSessionId,
+      finalAttempt: index === 1,
+    });
+    if (result.state !== "pending" && result.state !== "busy") return 0;
+  }
   return 0;
 }
 
