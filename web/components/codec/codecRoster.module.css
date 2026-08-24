@@ -337,18 +337,22 @@
 .expression {
   position: relative;
   min-width: 0;
+  aspect-ratio: 0.72;
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 0.12);
   border-radius: 0.8rem;
   background: rgb(9 11 17);
 }
 
-.expression img {
+.expression img.expressionSprite {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
-  width: 100%;
-  aspect-ratio: 0.72;
-  object-fit: cover;
-  object-position: 50% 28%;
+  width: 1100%;
+  max-width: none;
+  height: 200%;
+  object-fit: fill;
   filter: saturate(1.12) contrast(1.03);
 }
 

@@ -2,17 +2,18 @@ import Link from "next/link";
 
 import styles from "@/components/codec/codecRoster.module.css";
 import {
-  EXTENDED_EXPRESSIONS,
   listPacks,
-  REQUIRED_EXPRESSIONS,
+  ROSTER_EXPRESSIONS,
+  ROSTER_SPRITE_COLUMNS,
+  ROSTER_SPRITE_ROWS,
+  ROSTER_SPRITE_TILE_HEIGHT,
+  ROSTER_SPRITE_TILE_WIDTH,
   readPackRegistry,
   summarizePackRoster,
 } from "@/lib/codec/packs";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const ROSTER_EXPRESSIONS = [...REQUIRED_EXPRESSIONS, ...EXTENDED_EXPRESSIONS];
 
 export default function CodecRosterPage() {
   const packs = listPacks();
@@ -155,7 +156,7 @@ export default function CodecRosterPage() {
                 </header>
 
                 <div className={styles.expressionGrid}>
-                  {ROSTER_EXPRESSIONS.map((expression) => (
+                  {ROSTER_EXPRESSIONS.map((expression, expressionIndex) => (
                     <figure
                       data-codec-expression={expression}
                       className={styles.expression}
@@ -163,13 +164,17 @@ export default function CodecRosterPage() {
                     >
                       {/* biome-ignore lint/performance/noImgElement: runtime packs are already optimized WebP assets */}
                       <img
-                        src={`/api/codec-pack/${pack.pack_id}/${expression}?v=${pack.pack_version}`}
+                        className={styles.expressionSprite}
+                        src={`/api/codec-pack/${pack.pack_id}/sprite?v=${pack.pack_version}`}
                         alt={`${pack.pack_id} character with ${expression} expression`}
-                        width={512}
-                        height={512}
+                        width={ROSTER_SPRITE_COLUMNS * ROSTER_SPRITE_TILE_WIDTH}
+                        height={ROSTER_SPRITE_ROWS * ROSTER_SPRITE_TILE_HEIGHT}
                         loading={packIndex === 0 ? "eager" : "lazy"}
                         fetchPriority={packIndex === 0 ? "high" : "low"}
                         decoding="async"
+                        style={{
+                          transform: `translate3d(-${(expressionIndex % ROSTER_SPRITE_COLUMNS) * (100 / ROSTER_SPRITE_COLUMNS)}%, -${Math.floor(expressionIndex / ROSTER_SPRITE_COLUMNS) * (100 / ROSTER_SPRITE_ROWS)}%, 0)`,
+                        }}
                       />
                       <figcaption>{expression}</figcaption>
                     </figure>

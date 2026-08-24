@@ -32,6 +32,7 @@ const ENTRYPOINTS = [
   "app/api/codec-stream/route.ts",
   "app/api/codec-evidence/route.ts",
   "app/api/codec-pack/[pack]/[expression]/route.ts",
+  "app/api/codec-pack/[pack]/sprite/route.ts",
   "app/codec/page.tsx",
   "components/codec/CodecView.tsx",
 ];

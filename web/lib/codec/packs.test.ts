@@ -9,7 +9,9 @@ import {
   EXTENDED_EXPRESSIONS,
   listPacks,
   REQUIRED_EXPRESSIONS,
+  ROSTER_EXPRESSIONS,
   resolvePackAsset,
+  resolvePackSprite,
   summarizePackRoster,
   validatePackDir,
 } from "./packs";
@@ -196,6 +198,18 @@ describe("resolvePackAsset", () => {
     expect(resolvePackAsset("../etc", "neutral", root)).toBeNull();
     expect(resolvePackAsset("aurora", "..%2f..", root)).toBeNull();
     expect(resolvePackAsset("missing", "neutral", root)).toBeNull();
+  });
+});
+
+describe("resolvePackSprite", () => {
+  test("resolves all 21 roster cells from one validated pack", () => {
+    makePack("aurora");
+    const sprite = resolvePackSprite("aurora", root);
+    expect(sprite?.filePaths).toHaveLength(ROSTER_EXPRESSIONS.length);
+    expect(sprite?.filePaths[0].endsWith(`${path.sep}neutral.webp`)).toBe(true);
+    expect(sprite?.filePaths.at(-1)?.endsWith(`${path.sep}waiting.webp`)).toBe(true);
+    expect(resolvePackSprite("../etc", root)).toBeNull();
+    expect(resolvePackSprite("missing", root)).toBeNull();
   });
 });
 
