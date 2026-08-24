@@ -1,0 +1,58 @@
+---
+title: "0113: Store bounded Codec comprehension receipts"
+description: "ADR: run blinded portrait comparisons from controlled semantic tokens and retain only bounded operator choices."
+---
+
+**Status:** accepted (2026-08-23) · **Scope:** Codec evaluation route, private runtime cohort, local result receipts
+
+## Context
+
+The semantic read model can produce valid, evidence-cited phases and expression
+cues. Contract validity does not show whether a person understands the portrait
+more quickly or accurately. A model plausibility review cannot substitute for
+that measurement.
+
+The study needs stable inputs because live Codec cards can change while an
+operator is answering. It must also keep task text, event content, model prose,
+paths, commands, and environment data out of its receipts.
+
+## Alternatives
+
+**Alternate the main Codec page between semantic and fallback expressions.**
+Live evidence changes at the same time, so the operator could not separate the
+portrait effect from a task, activity, or attention transition.
+
+**Store screenshots, semantic summaries, or free-text operator answers.** Those
+fields can contain private work context. The evaluation needs controlled
+expression tokens and choices, not another content archive.
+
+**Treat model agreement or validator acceptance as comprehension.** Both
+measure machine behavior. The missing evidence is whether the operator can
+distinguish the expression.
+
+## Decision
+
+Codec provides a dedicated `/codec/evaluate` route. It reads one frozen cohort
+from `.harnery/semantic/evaluations/codec-comprehension-cohort.json`. The cohort
+contains only a study ID, controlled expression tokens, pack IDs and versions,
+the hidden A/B side, and an accepted-reading count. Raw semantic fields and
+Event Ledger identifiers fail validation.
+
+Each trial compares an expression selected by an accepted semantic reading with
+its existing fallback on the same character. The page shows the target state,
+position-balanced A and B portraits, an equally-clear option, and a confidence
+choice. Opaque image routes keep expression names out of the visible asset URLs.
+
+When the operator finishes, the server writes a receipt under
+`.harnery/semantic/evaluations/results/`. The receipt contains only trial IDs,
+A/B/equal choices, confidence, bounded response timing, and aggregate counts.
+It never enters Event Ledger V3 and never changes a semantic document or Codec
+scene.
+
+## Result
+
+The evaluation can be prepared from already accepted readings and installed
+portrait packs without another model call. A missing or malformed cohort shows
+an unavailable state rather than inventing trials. The result endpoint writes
+an atomic, private receipt only after it receives one bounded answer for every
+frozen trial.
