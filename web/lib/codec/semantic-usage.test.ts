@@ -39,11 +39,26 @@ describe("Codec semantic usage labels", () => {
       formatSemanticUsageAggregate("rolling hour", {
         call_count: 2,
         outcomes: { accepted: 2, invalid: 0, unavailable: 0, deferred: 0 },
+        invalid_reasons: {},
         native_tokens: {},
         estimated_tokens: {},
         unreported_calls: 2,
         breakdowns: [],
       }),
     ).toEqual(["rolling hour: 2 calls", "unreported: 2 calls"]);
+  });
+
+  test("renders safe invalid reason counts without model output", () => {
+    expect(
+      formatSemanticUsageAggregate("rolling hour", {
+        call_count: 3,
+        outcomes: { accepted: 1, invalid: 2, unavailable: 0, deferred: 0 },
+        invalid_reasons: { citation: 1, unsupported_claim: 1 },
+        native_tokens: {},
+        estimated_tokens: {},
+        unreported_calls: 3,
+        breakdowns: [],
+      }),
+    ).toContain("invalid reasons: citation 1 · unsupported claim 1");
   });
 });

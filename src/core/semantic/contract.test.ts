@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Value } from "@sinclair/typebox/value";
 import {
+  SEMANTIC_PROMPT_CONTRACT_VERSION,
   SemanticAgentReadModelV2Schema,
   type SemanticEvidenceV1,
   SemanticEvidenceV1Schema,
@@ -8,6 +9,7 @@ import {
   semanticModelReplyV2SchemaFor,
 } from "./contract.ts";
 import {
+  classifySemanticValidationIssues,
   isSemanticPrivacySafe,
   validateSemanticEvidencePrivacy,
   validateSemanticModelReply,
@@ -110,6 +112,18 @@ describe("semantic read-model contract", () => {
         generation_id: "gen_01922e33-7abe-7def-8abc-0123456789ab",
       }),
     ).toBe(false);
+    expect(
+      Value.Check(semanticModelReplyV2SchemaFor(source), {
+        ...reply(),
+        meaning: {
+          ...reply().meaning,
+          phase: {
+            ...reply().meaning.phase,
+            evidence_event_ids: ["evt_01922e33-7abe-7def-8abc-0123456789ab"],
+          },
+        },
+      }),
+    ).toBe(false);
     expect(validateSemanticModelReply(reply(), source)).toEqual({ ok: true, value: reply() });
   });
 
@@ -147,7 +161,7 @@ describe("semantic read-model contract", () => {
       reader: {
         harness: "claude-code",
         configured_model: "haiku-4.5",
-        prompt_contract_version: 3,
+        prompt_contract_version: SEMANTIC_PROMPT_CONTRACT_VERSION,
       },
       receipt: { reason_code: "authentication_unavailable" },
       generated_at: "2026-08-22T20:00:01.000Z",
@@ -173,7 +187,7 @@ describe("semantic read-model contract", () => {
       reader: {
         harness: "codex",
         configured_model: "gpt-5.6-luna",
-        prompt_contract_version: 3,
+        prompt_contract_version: SEMANTIC_PROMPT_CONTRACT_VERSION,
       },
       meaning: reply().meaning,
       generated_at: "2026-08-22T20:00:01.000Z",
@@ -255,6 +269,10 @@ describe("semantic read-model contract", () => {
       expect(result.issues).toContain("summary:unknown_citation");
       expect(result.issues).toContain("summary:percent_complete");
       expect(result.issues).toContain("attention:unsupported_evidence_kind");
+      expect(classifySemanticValidationIssues(result.issues)).toEqual([
+        "citation",
+        "unsupported_claim",
+      ]);
     }
   });
 

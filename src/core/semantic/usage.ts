@@ -5,6 +5,7 @@ import {
   SEMANTIC_VISIBLE_USAGE_ESTIMATOR_VERSION,
   type SemanticConfiguredModel,
   type SemanticHarness,
+  type SemanticInvalidReasonCode,
   type SemanticUsageReceiptV1,
   type SemanticUsageToken,
 } from "./contract.ts";
@@ -30,6 +31,7 @@ export interface SemanticUsageEvent {
   action?: string;
   model_call: boolean;
   usage?: SemanticUsageReceiptV1;
+  invalid_reason_codes?: SemanticInvalidReasonCode[];
 }
 
 export interface SemanticUsageBreakdown {
@@ -39,6 +41,7 @@ export interface SemanticUsageBreakdown {
   model_attestation?: "verified" | "requested-only";
   call_count: number;
   outcomes: Record<SemanticUsageOutcome, number>;
+  invalid_reasons: Partial<Record<SemanticInvalidReasonCode, number>>;
   native_tokens: SemanticUsageTokenTotals;
   estimated_tokens: SemanticUsageTokenTotals;
   unreported_calls: number;
@@ -47,6 +50,7 @@ export interface SemanticUsageBreakdown {
 export interface SemanticUsageAggregate {
   call_count: number;
   outcomes: Record<SemanticUsageOutcome, number>;
+  invalid_reasons: Partial<Record<SemanticInvalidReasonCode, number>>;
   native_tokens: SemanticUsageTokenTotals;
   estimated_tokens: SemanticUsageTokenTotals;
   unreported_calls: number;
@@ -108,6 +112,7 @@ export function aggregateSemanticUsage(
   for (const event of events) {
     const outcome = semanticUsageOutcome(event.action);
     if (outcome) aggregate.outcomes[outcome] += 1;
+    addInvalidReasons(aggregate.invalid_reasons, event.invalid_reason_codes);
     if (event.model_call) {
       aggregate.call_count += 1;
       addReceipt(aggregate, event.usage);
@@ -126,11 +131,13 @@ export function aggregateSemanticUsage(
       ...(event.model_attestation ? { model_attestation: event.model_attestation } : {}),
       call_count: 0,
       outcomes: emptyOutcomes(),
+      invalid_reasons: {},
       native_tokens: {},
       estimated_tokens: {},
       unreported_calls: 0,
     };
     if (outcome) row.outcomes[outcome] += 1;
+    addInvalidReasons(row.invalid_reasons, event.invalid_reason_codes);
     if (event.model_call) {
       row.call_count += 1;
       addReceipt(row, event.usage);
@@ -155,6 +162,8 @@ export function mergeSemanticUsageAggregates(
   for (const outcome of Object.keys(merged.outcomes) as SemanticUsageOutcome[]) {
     merged.outcomes[outcome] = left.outcomes[outcome] + right.outcomes[outcome];
   }
+  addInvalidReasons(merged.invalid_reasons, left.invalid_reasons);
+  addInvalidReasons(merged.invalid_reasons, right.invalid_reasons);
   addTotals(merged.native_tokens, left.native_tokens);
   addTotals(merged.native_tokens, right.native_tokens);
   addTotals(merged.estimated_tokens, left.estimated_tokens);
@@ -174,6 +183,7 @@ export function mergeSemanticUsageAggregates(
     }
     prior.call_count += row.call_count;
     prior.unreported_calls += row.unreported_calls;
+    addInvalidReasons(prior.invalid_reasons, row.invalid_reasons);
     for (const outcome of Object.keys(prior.outcomes) as SemanticUsageOutcome[]) {
       prior.outcomes[outcome] += row.outcomes[outcome];
     }
@@ -188,11 +198,36 @@ export function emptySemanticUsageAggregate(): SemanticUsageAggregate {
   return {
     call_count: 0,
     outcomes: emptyOutcomes(),
+    invalid_reasons: {},
     native_tokens: {},
     estimated_tokens: {},
     unreported_calls: 0,
     breakdowns: [],
   };
+}
+
+function addInvalidReasons(
+  target: Partial<Record<SemanticInvalidReasonCode, number>>,
+  source:
+    | readonly SemanticInvalidReasonCode[]
+    | Partial<Record<SemanticInvalidReasonCode, number>>
+    | undefined,
+): void {
+  if (!source) return;
+  if (Array.isArray(source)) {
+    for (const code of source as readonly SemanticInvalidReasonCode[]) {
+      target[code] = (target[code] ?? 0) + 1;
+    }
+    return;
+  }
+  for (const [code, count] of Object.entries(
+    source as Partial<Record<SemanticInvalidReasonCode, number>>,
+  )) {
+    if (typeof count === "number" && count > 0) {
+      const key = code as SemanticInvalidReasonCode;
+      target[key] = (target[key] ?? 0) + count;
+    }
+  }
 }
 
 function addReceipt(

@@ -33,7 +33,7 @@ describe("semantic service efficiency", () => {
       cursor,
       configuration_digest: `sha256:${"b".repeat(64)}`,
       evidence_contract_version: 1,
-      prompt_contract_version: 3,
+      prompt_contract_version: 4,
       adapter_resolutions: {},
       pending: [
         {

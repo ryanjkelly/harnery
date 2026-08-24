@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  SEMANTIC_MIN_AMBIENT_GENERATION_CALL_INTERVAL_MS,
+  SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS,
   selectSemanticPending,
   semanticGenerationCallEligible,
+  semanticPendingCallIntervalMs,
   semanticPendingPassDue,
+  semanticPriorityBand,
   semanticRateCap,
 } from "./scheduler.ts";
 
@@ -72,8 +76,31 @@ describe("semantic fair scheduler", () => {
     ).toBe(true);
   });
 
+  test("paces routine readings at five minutes while urgent evidence keeps the short interval", () => {
+    expect(SEMANTIC_MIN_AMBIENT_GENERATION_CALL_INTERVAL_MS).toBe(5 * 60_000);
+    expect(SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS).toBe(30_000);
+    expect(semanticPendingCallIntervalMs(pending("gen_ambient"))).toBe(5 * 60_000);
+    expect(semanticPendingCallIntervalMs({ ...pending("gen_priority"), band: 1 as const })).toBe(
+      30_000,
+    );
+  });
+
+  test("does not keep a resumed active lifecycle in the priority band", () => {
+    const evidence = {
+      lifecycle: { state: "active", event_id: "evt_fixture" },
+      recent: [],
+    } as unknown as Parameters<typeof semanticPriorityBand>[0];
+    expect(semanticPriorityBand(evidence)).toBe(2);
+    expect(
+      semanticPriorityBand({
+        ...evidence,
+        lifecycle: { ...evidence.lifecycle!, state: "blocked" },
+      }),
+    ).toBe(1);
+  });
+
   test("does not start a pass while every pending generation is still held", () => {
-    const nowMs = Date.parse("2026-08-22T20:00:10.000Z");
+    const nowMs = Date.parse("2026-08-22T20:04:59.999Z");
     expect(
       semanticPendingPassDue({
         pending: [pending("gen_a")],
@@ -85,7 +112,7 @@ describe("semantic fair scheduler", () => {
   });
 
   test("starts when any matured generation is eligible without delaying it behind a hot peer", () => {
-    const nowMs = Date.parse("2026-08-22T20:00:10.000Z");
+    const nowMs = Date.parse("2026-08-22T20:05:00.000Z");
     expect(
       semanticPendingPassDue({
         pending: [pending("gen_a"), pending("gen_b")],

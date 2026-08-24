@@ -1,0 +1,80 @@
+---
+title: "0109: Pace and classify semantic reading"
+description: "ADR: pace routine semantic reads at five minutes and expose bounded invalid-output categories without retaining model replies."
+---
+
+**Status:** accepted (2026-08-23) · **Scope:** semantic scheduler, response contract, status, Codec
+
+## Context
+
+Automatic semantic reading filled its 60-call rolling ceiling during the first
+live production window. The window recorded 44 accepted readings, 15 invalid
+readings, one call without a reported outcome, 877,493 input tokens, and 55,370
+output tokens. Routine generations could be read every 30 seconds when their
+recent action list changed. One generation was read 14 times in about 15
+minutes.
+
+The stored invalid receipt named only `invalid_output`. That protected raw model
+text, but it did not show whether the failure came from structure, request
+identity, citations, privacy, or an unsupported claim. A six-request diagnostic
+kept raw replies in memory only and returned five accepted readings. The one
+invalid reading cited a well-formed event ID that was not present in its
+evidence.
+
+## Alternatives
+
+**Lower the global hourly ceiling.** Rejected because one busy generation could
+still consume a disproportionate share of a smaller budget. The scheduler needs
+to pace each generation before the root-wide ceiling becomes the only control.
+
+**Apply a five-minute interval to every reading.** Rejected because explicit
+waits, blockers, errors, and terminal transitions should reach Codec sooner than
+routine action churn.
+
+**Persist detailed validator messages or raw replies.** Rejected because raw
+replies can contain private text. Detailed schema messages are also an unstable
+status contract. Operators need stable categories, not model output.
+
+**Repair invalid replies automatically.** Rejected because a second model call
+would increase usage and a local rewrite could turn rejected synthesis into an
+uncited claim. Invalid output remains a typed failure.
+
+## Decision
+
+Prompt contract version 4 binds every response citation to the exact
+`evidence_event_ids` supplied in that request. The prompt also tells the reader
+to copy those IDs rather than reconstructing them. The existing validator stays
+in place as the persistence boundary.
+
+Invalid documents and call receipts store one or more controlled categories:
+`schema`, `identity`, `citation`, `basis`, `confidence`, `privacy`,
+`unsupported_claim`, or `unknown`. Usage aggregates count those categories for
+the rolling hour, the reader process, and each harness/model breakdown. Codec
+shows the counts in its existing semantic usage panel. Harnery never stores the
+rejected model reply.
+
+The scheduler keeps a 30-second minimum interval for priority evidence and uses
+a five-minute minimum for routine evidence. Priority means an explicit
+attention signal, a non-active lifecycle change, or terminal evidence. A
+resumed `active` lifecycle is routine after its first evidence digest because
+the lifecycle field remains present in later envelopes.
+
+The five-minute invalid retry cooldown, 60-call rolling ceiling, fixed model
+routes, privacy filter, evidence bounds, and deterministic Codec precedence do
+not change.
+
+## Result
+
+Applying the new intervals to the live rolling history would have retained 32
+of 54 calls and avoided 22, a 40.7% reduction. This is a counterfactual using
+the generations' audit-time priority bands, not a replay of every historical
+envelope.
+
+Focused tests bind citations to the supplied ID set, classify invalid receipts,
+aggregate reason counts, distinguish priority and routine intervals, and keep a
+resumed active lifecycle out of the priority band. The semantic and Codec
+semantic suites pass with the new prompt contract.
+
+The live daemon restarted on prompt contract 4 while retaining all 47 calls
+still inside its rolling hour. Its first contract-4 pass produced three accepted
+readings and one call without reported usage. No rejected model text was stored.

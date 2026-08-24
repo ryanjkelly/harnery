@@ -1,11 +1,13 @@
 import { Value } from "@sinclair/typebox/value";
 import {
+  SEMANTIC_INVALID_REASON_CODES,
   SEMANTIC_TAGS,
   type SemanticAgentReadModelV2,
   SemanticAgentReadModelV2Schema,
   type SemanticEvidenceKind,
   type SemanticEvidenceV1,
   type SemanticField,
+  type SemanticInvalidReasonCode,
   type SemanticMeaningV2,
   type SemanticModelReplyV2,
   SemanticModelReplyV2Schema,
@@ -156,6 +158,35 @@ export function validateSemanticModelReply(
     }
   }
   return issues.length ? { ok: false, issues: [...new Set(issues)] } : { ok: true, value: reply };
+}
+
+/** Reduce detailed validator messages to bounded, privacy-safe status categories. */
+export function classifySemanticValidationIssues(
+  issues: readonly string[],
+): SemanticInvalidReasonCode[] {
+  const found = new Set<SemanticInvalidReasonCode>();
+  for (const issue of issues) {
+    if (issue.startsWith("schema:")) found.add("schema");
+    else if (issue === "generation_mismatch" || issue === "evidence_digest_mismatch") {
+      found.add("identity");
+    } else if (issue.includes("citation") || issue === "empty_tags_must_not_cite") {
+      found.add("citation");
+    } else if (issue.includes("must_be_model_synthesis") || issue.includes("prediction")) {
+      found.add("basis");
+    } else if (issue.includes("confidence")) found.add("confidence");
+    else if (issue.includes(":privacy_")) found.add("privacy");
+    else if (
+      issue.includes("unsupported_") ||
+      issue.endsWith(":percent_complete") ||
+      issue.endsWith(":time_remaining") ||
+      issue.endsWith(":emotion") ||
+      issue.endsWith(":quality")
+    ) {
+      found.add("unsupported_claim");
+    } else found.add("unknown");
+  }
+  if (found.size === 0) found.add("unknown");
+  return SEMANTIC_INVALID_REASON_CODES.filter((code) => found.has(code));
 }
 
 export function validateSemanticReadModel(

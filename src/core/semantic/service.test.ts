@@ -239,7 +239,7 @@ describe("semantic service", () => {
       ledger_genesis_id: "gex_fixture",
       configuration_digest: `sha256:${"a".repeat(64)}`,
       evidence_contract_version: 1,
-      prompt_contract_version: 3,
+      prompt_contract_version: 4,
       adapter_resolutions: {},
       pending: [],
       call_history: [
@@ -256,6 +256,12 @@ describe("semantic service", () => {
         {
           generation_id: "gen_01922e33-7abd-7def-8abc-0123456789ab",
           started_at: startedAt,
+          source_harness: "codex",
+          configured_model: "gpt-5.6-luna",
+          resolved_model_id: "gpt-5.6-luna",
+          model_attestation: "requested-only",
+          outcome: "invalid",
+          invalid_reason_codes: ["citation"],
         },
       ],
       updated_at: startedAt,
@@ -287,6 +293,8 @@ describe("semantic service", () => {
     expect(before.rolling_calls).toMatchObject({ used: 2, limit: 60, available: 58 });
     expect(before.rolling_usage).toMatchObject({
       call_count: 2,
+      outcomes: { accepted: 1, invalid: 1 },
+      invalid_reasons: { citation: 1 },
       native_tokens: { input_tokens: 100, output_tokens: 20 },
       unreported_calls: 1,
     });
@@ -314,7 +322,7 @@ describe("semantic service", () => {
       cursor: oldCursor,
       configuration_digest: `sha256:${"b".repeat(64)}`,
       evidence_contract_version: 1,
-      prompt_contract_version: 3,
+      prompt_contract_version: 4,
       adapter_resolutions: {},
       pending: [],
       call_history: [],
@@ -404,7 +412,7 @@ describe("semantic service", () => {
         configured_model: "gpt-5.6-luna",
         resolved_model_id: "gpt-5.6-luna",
         model_attestation: "requested-only",
-        prompt_contract_version: 3,
+        prompt_contract_version: 4,
       },
       receipt: {
         reason_code: "rate_cap",
@@ -417,7 +425,7 @@ describe("semantic service", () => {
       cursor,
       configuration_digest: `sha256:${"b".repeat(64)}`,
       evidence_contract_version: 1,
-      prompt_contract_version: 3,
+      prompt_contract_version: 4,
       adapter_resolutions: {},
       pending: [],
       call_history: [],

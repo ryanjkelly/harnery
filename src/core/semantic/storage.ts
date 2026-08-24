@@ -13,13 +13,14 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
 import type { LedgerCursorV3 } from "../events/v3/reader.ts";
-import {
+import type {
   SEMANTIC_EVIDENCE_CONTRACT_VERSION,
   SEMANTIC_PROMPT_CONTRACT_VERSION,
-  type SemanticAgentReadModelV2,
-  type SemanticConfiguredModel,
-  type SemanticHarness,
-  type SemanticUsageReceiptV1,
+  SemanticAgentReadModelV2,
+  SemanticConfiguredModel,
+  SemanticHarness,
+  SemanticInvalidReasonCode,
+  SemanticUsageReceiptV1,
 } from "./contract.ts";
 import { validateSemanticReadModel } from "./validate.ts";
 
@@ -57,6 +58,7 @@ export interface SemanticCallReceipt {
   resolved_model_id?: string;
   model_attestation?: "verified" | "requested-only";
   outcome?: "accepted" | "invalid" | "unavailable";
+  invalid_reason_codes?: SemanticInvalidReasonCode[];
   duration_ms?: number;
   input_bytes?: number;
   output_bytes?: number;
@@ -137,8 +139,10 @@ export function readSemanticManifest(coordRootRaw: string): SemanticManifestV2 |
   const value = readBoundedJson<SemanticManifestV2>(path, "semantic manifest");
   if (
     value.schema_version !== SEMANTIC_MANIFEST_SCHEMA_VERSION ||
-    value.evidence_contract_version !== SEMANTIC_EVIDENCE_CONTRACT_VERSION ||
-    value.prompt_contract_version !== SEMANTIC_PROMPT_CONTRACT_VERSION ||
+    !Number.isSafeInteger(value.evidence_contract_version) ||
+    value.evidence_contract_version < 1 ||
+    !Number.isSafeInteger(value.prompt_contract_version) ||
+    value.prompt_contract_version < 1 ||
     !Array.isArray(value.pending) ||
     !Array.isArray(value.call_history)
   ) {

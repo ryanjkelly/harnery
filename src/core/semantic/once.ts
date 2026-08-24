@@ -10,6 +10,7 @@ import {
   type SemanticConfiguredModel,
   type SemanticEvidenceV1,
   type SemanticHarness,
+  type SemanticInvalidReasonCode,
   type SemanticUsageReceiptV1,
 } from "./contract.ts";
 import { buildSemanticEvidenceV1 } from "./evidence.ts";
@@ -20,6 +21,7 @@ import {
   selectSemanticPending,
   semanticDocumentEligible,
   semanticGenerationCallEligible,
+  semanticPendingCallIntervalMs,
   semanticRateCap,
 } from "./scheduler.ts";
 import {
@@ -38,7 +40,7 @@ import {
   writeSemanticManifest,
 } from "./storage.ts";
 import { unreportedSemanticUsage } from "./usage.ts";
-import { validateSemanticModelReply } from "./validate.ts";
+import { classifySemanticValidationIssues, validateSemanticModelReply } from "./validate.ts";
 
 export interface SemanticOnceOutcome {
   generation_id: string;
@@ -52,6 +54,7 @@ export interface SemanticOnceOutcome {
   input_bytes?: number;
   output_bytes?: number;
   usage?: SemanticUsageReceiptV1;
+  invalid_reason_codes?: SemanticInvalidReasonCode[];
 }
 
 export interface SemanticOnceReport {
@@ -220,7 +223,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
         current.call_history,
         pending.generation_id,
         nowDate.getTime(),
-        input.minimumGenerationCallIntervalMs,
+        input.minimumGenerationCallIntervalMs ?? semanticPendingCallIntervalMs(pending),
       )
     ) {
       heldGenerations.add(pending.generation_id);
@@ -251,6 +254,9 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     callReceipt.outcome = outcome.document.reader_outcome as "accepted" | "invalid" | "unavailable";
     callReceipt.duration_ms = result.duration_ms;
     callReceipt.usage = result.usage;
+    if (outcome.invalid_reason_codes) {
+      callReceipt.invalid_reason_codes = outcome.invalid_reason_codes;
+    }
     if (result.resolved_model_id) callReceipt.resolved_model_id = result.resolved_model_id;
     if (result.model_attestation) callReceipt.model_attestation = result.model_attestation;
     if (result.ok) callReceipt.output_bytes = result.output_bytes;
@@ -271,6 +277,9 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       input_bytes: prompt.bytes,
       ...(result.ok ? { output_bytes: result.output_bytes } : {}),
       usage: result.usage,
+      ...(outcome.invalid_reason_codes
+        ? { invalid_reason_codes: outcome.invalid_reason_codes }
+        : {}),
     });
     if (pending.band === 1) current.last_first_band_generation_id = pending.generation_id;
     removePending(current, pending.generation_id);
@@ -318,7 +327,7 @@ function materializeAdapterResult(
   resolution: SemanticReaderResolution,
   result: SemanticAdapterResult,
   generatedAt: string,
-): { document: SemanticAgentReadModelV2 } {
+): { document: SemanticAgentReadModelV2; invalid_reason_codes?: SemanticInvalidReasonCode[] } {
   if (!result.ok) {
     return {
       document: unavailableDocument(
@@ -337,6 +346,7 @@ function materializeAdapterResult(
   }
   const verdict = validateSemanticModelReply(extractSemanticJson(result.text), evidence);
   if (!verdict.ok) {
+    const invalidReasonCodes = classifySemanticValidationIssues(verdict.issues);
     return {
       document: {
         ...documentBase(evidence, generatedAt),
@@ -348,8 +358,13 @@ function materializeAdapterResult(
           model_attestation: result.model_attestation,
           prompt_contract_version: SEMANTIC_PROMPT_CONTRACT_VERSION,
         },
-        receipt: { reason_code: "invalid_output", usage: result.usage },
+        receipt: {
+          reason_code: "invalid_output",
+          validation_issue_codes: invalidReasonCodes,
+          usage: result.usage,
+        },
       },
+      invalid_reason_codes: invalidReasonCodes,
     };
   }
   return {

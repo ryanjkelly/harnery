@@ -80,6 +80,7 @@ describe("semantic usage receipts", () => {
         model_attestation: "verified",
         action: "invalid",
         model_call: true,
+        invalid_reason_codes: ["citation", "unsupported_claim"],
         usage: estimateVisibleSemanticUsage("prompt", "invalid reply"),
       },
       {
@@ -98,10 +99,14 @@ describe("semantic usage receipts", () => {
 
     expect(aggregate.call_count).toBe(3);
     expect(aggregate.outcomes).toEqual({ accepted: 1, invalid: 1, unavailable: 1, deferred: 1 });
+    expect(aggregate.invalid_reasons).toEqual({ citation: 1, unsupported_claim: 1 });
     expect(aggregate.native_tokens).toEqual({ input_tokens: 100, output_tokens: 20 });
     expect(aggregate.estimated_tokens.total_tokens).toBeGreaterThan(0);
     expect(aggregate.unreported_calls).toBe(1);
     expect(aggregate.breakdowns).toHaveLength(4);
+    expect(aggregate.breakdowns.find((row) => row.harness === "cursor")).toMatchObject({
+      invalid_reasons: { citation: 1, unsupported_claim: 1 },
+    });
     expect(
       aggregate.breakdowns.find((row) => row.harness === "codex" && row.call_count === 1),
     ).toMatchObject({

@@ -285,6 +285,50 @@ describe("semantic once", () => {
     }
   });
 
+  test("preserves the rolling rate cap across a prompt contract reset", async () => {
+    const root = fixtureRoot();
+    const firstEvidence = evidence("a");
+    const nextEvidence = evidence("b");
+    const calls = { count: 0 };
+    try {
+      await runSemanticOnce({
+        coordRoot: root,
+        evidence: [firstEvidence],
+        adapters: fakeAdapters(firstEvidence, calls),
+        now: () => new Date(NOW),
+        callsPerHour: 1,
+      });
+      const manifest = readSemanticManifest(root)!;
+      writeSemanticManifest(root, {
+        ...manifest,
+        prompt_contract_version: 3,
+      } as unknown as typeof manifest);
+
+      const report = await runSemanticOnce({
+        coordRoot: root,
+        evidence: [nextEvidence],
+        adapters: fakeAdapters(nextEvidence, calls),
+        now: () => new Date(Date.parse(NOW) + 60_000),
+        callsPerHour: 1,
+      });
+
+      expect(report.outcomes[0]?.action).toBe("deferred");
+      expect(calls.count).toBe(1);
+      expect(readSemanticManifest(root)).toMatchObject({
+        prompt_contract_version: 4,
+        call_history: [
+          {
+            generation_id: GENERATION,
+            started_at: NOW,
+            usage: { source: "estimated", scope: "visible-payload" },
+          },
+        ],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("stores invalid output without retaining the raw reply", async () => {
     const root = fixtureRoot();
     const source = evidence();
@@ -297,11 +341,13 @@ describe("semantic once", () => {
         now: () => new Date(NOW),
       });
       expect(report.outcomes[0]?.action).toBe("invalid");
+      expect(report.outcomes[0]?.invalid_reason_codes).toEqual(["schema"]);
       const stored = inspectSemanticDocument(root, GENERATION);
       expect(stored).toMatchObject({
         reader_outcome: "invalid",
-        receipt: { reason_code: "invalid_output" },
+        receipt: { reason_code: "invalid_output", validation_issue_codes: ["schema"] },
       });
+      expect(readSemanticManifest(root)?.call_history[0]?.invalid_reason_codes).toEqual(["schema"]);
       expect(JSON.stringify(stored)).not.toContain("private raw output");
       expect(readFileSync(semanticPaths(root).manifest, "utf8")).not.toContain(
         "private raw output",

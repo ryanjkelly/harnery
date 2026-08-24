@@ -89,6 +89,7 @@ export function readSemanticServiceStatus(coordRootRaw: string): SemanticService
       action: call.outcome,
       model_call: true,
       usage: call.usage,
+      invalid_reason_codes: call.invalid_reason_codes,
     })),
   );
   const processUsage = record?.process_usage ?? legacyProcessUsage(record?.model_calls ?? 0);

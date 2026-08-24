@@ -3,17 +3,26 @@ import type { SemanticCallReceipt, SemanticPendingItem } from "./storage.ts";
 
 export const SEMANTIC_HARD_CALLS_PER_HOUR = 60;
 export const SEMANTIC_INVALID_RETRY_COOLDOWN_MS = 5 * 60_000;
-export const SEMANTIC_MIN_GENERATION_CALL_INTERVAL_MS = 30_000;
+export const SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS = 30_000;
+export const SEMANTIC_MIN_AMBIENT_GENERATION_CALL_INTERVAL_MS = 5 * 60_000;
+export const SEMANTIC_MIN_GENERATION_CALL_INTERVAL_MS =
+  SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS;
 
 export function semanticPriorityBand(evidence: SemanticEvidenceV1): 1 | 2 {
   if (
     evidence.attention ||
-    evidence.lifecycle ||
+    (evidence.lifecycle && evidence.lifecycle.state !== "active") ||
     evidence.recent.some((item) => item.kind === "terminal")
   ) {
     return 1;
   }
   return 2;
+}
+
+export function semanticPendingCallIntervalMs(pending: SemanticPendingItem): number {
+  return pending.band === 1
+    ? SEMANTIC_MIN_PRIORITY_GENERATION_CALL_INTERVAL_MS
+    : SEMANTIC_MIN_AMBIENT_GENERATION_CALL_INTERVAL_MS;
 }
 
 export function enqueueSemanticPending(
@@ -118,7 +127,7 @@ export function semanticPendingPassDue(input: {
       input.callHistory,
       item.generation_id,
       input.nowMs,
-      input.minimumGenerationCallIntervalMs,
+      input.minimumGenerationCallIntervalMs ?? semanticPendingCallIntervalMs(item),
     ),
   );
 }

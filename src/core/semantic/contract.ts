@@ -3,7 +3,7 @@ import { type Static, type TProperties, type TSchema, Type } from "@sinclair/typ
 export const SEMANTIC_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const SEMANTIC_READ_MODEL_SCHEMA_VERSION = 2 as const;
 export const SEMANTIC_EVIDENCE_CONTRACT_VERSION = 1 as const;
-export const SEMANTIC_PROMPT_CONTRACT_VERSION = 3 as const;
+export const SEMANTIC_PROMPT_CONTRACT_VERSION = 4 as const;
 export const SEMANTIC_USAGE_SCHEMA_VERSION = 1 as const;
 export const SEMANTIC_VISIBLE_USAGE_ESTIMATOR_ID = "visible-o200k-base" as const;
 export const SEMANTIC_VISIBLE_USAGE_ESTIMATOR_VERSION = 1 as const;
@@ -77,6 +77,16 @@ export const SEMANTIC_EVIDENCE_KINDS = [
   "recovery",
   "claim-conflict",
 ] as const;
+export const SEMANTIC_INVALID_REASON_CODES = [
+  "schema",
+  "identity",
+  "citation",
+  "basis",
+  "confidence",
+  "privacy",
+  "unsupported_claim",
+  "unknown",
+] as const;
 
 export type SemanticHarness = (typeof SEMANTIC_HARNESSES)[number];
 export type SemanticConfiguredModel = (typeof SEMANTIC_CONFIGURED_MODELS)[number];
@@ -84,6 +94,7 @@ export type SemanticPhase = (typeof SEMANTIC_PHASES)[number];
 export type SemanticExpressionCue = (typeof SEMANTIC_EXPRESSION_CUES)[number];
 export type SemanticTag = (typeof SEMANTIC_TAGS)[number];
 export type SemanticEvidenceKind = (typeof SEMANTIC_EVIDENCE_KINDS)[number];
+export type SemanticInvalidReasonCode = (typeof SEMANTIC_INVALID_REASON_CODES)[number];
 export type SemanticBasis =
   | "direct-fact"
   | "deterministic-projection"
@@ -101,6 +112,9 @@ const ExpressionCueSchema = Type.Union(
 );
 const TagSchema = Type.Union(SEMANTIC_TAGS.map((value) => Type.Literal(value)));
 const EvidenceKindSchema = Type.Union(SEMANTIC_EVIDENCE_KINDS.map((value) => Type.Literal(value)));
+const InvalidReasonCodeSchema = Type.Union(
+  SEMANTIC_INVALID_REASON_CODES.map((value) => Type.Literal(value)),
+);
 const ConfidenceSchema = Type.Union([
   Type.Literal("high"),
   Type.Literal("medium"),
@@ -262,12 +276,56 @@ export const SemanticModelReplyV2Schema = StrictObject({
 export function semanticModelReplyV2SchemaFor(expected: {
   generation_id: string;
   evidence_digest: string;
+  evidence_event_ids: string[];
 }) {
+  const citationSchema = Type.Union(
+    expected.evidence_event_ids.map((value) => Type.Literal(value)),
+  );
+  const field = <T extends TSchema>(
+    value: T,
+    options: {
+      allowEmptyCitations?: boolean;
+      kind?: "synthesis" | "prediction" | "expression";
+    } = {},
+  ) => {
+    const kind = options.kind ?? "synthesis";
+    return StrictObject({
+      value,
+      basis: Type.Literal(kind === "prediction" ? "prediction" : "model-synthesis"),
+      confidence:
+        kind === "prediction"
+          ? Type.Literal("low")
+          : kind === "expression"
+            ? Type.Union([Type.Literal("medium"), Type.Literal("low")])
+            : ConfidenceSchema,
+      evidence_event_ids: Type.Array(citationSchema, {
+        minItems: options.allowEmptyCitations ? 0 : 1,
+        maxItems: 16,
+        uniqueItems: true,
+      }),
+    });
+  };
   return StrictObject({
     schema_version: Type.Literal(SEMANTIC_READ_MODEL_SCHEMA_VERSION),
     generation_id: Type.Literal(expected.generation_id),
     evidence_digest: Type.Literal(expected.evidence_digest),
-    meaning: SemanticMeaningV2Schema,
+    meaning: StrictObject({
+      headline: field(Type.String({ minLength: 1, maxLength: 60 })),
+      summary: field(Type.String({ minLength: 1, maxLength: 240 })),
+      phase: field(PhaseSchema),
+      expression_cue: Type.Optional(field(ExpressionCueSchema, { kind: "expression" })),
+      purpose: Type.Optional(field(Type.String({ minLength: 1, maxLength: 180 }))),
+      recent_result: Type.Optional(field(Type.String({ minLength: 1, maxLength: 180 }))),
+      attention: Type.Optional(field(Type.String({ minLength: 1, maxLength: 180 }))),
+      next_step: Type.Optional(
+        field(Type.String({ minLength: 1, maxLength: 180 }), { kind: "prediction" }),
+      ),
+      tags: Type.Optional(
+        field(Type.Array(TagSchema, { maxItems: 8, uniqueItems: true }), {
+          allowEmptyCitations: true,
+        }),
+      ),
+    }),
   });
 }
 
@@ -326,6 +384,11 @@ export const SemanticInvalidReadModelV2Schema = StrictObject({
   reader: ResolvedReaderSchema,
   receipt: StrictObject({
     reason_code: Type.Literal("invalid_output"),
+    validation_issue_codes: Type.Array(InvalidReasonCodeSchema, {
+      minItems: 1,
+      maxItems: SEMANTIC_INVALID_REASON_CODES.length,
+      uniqueItems: true,
+    }),
     usage: Type.Optional(SemanticUsageReceiptV1Schema),
   }),
 });

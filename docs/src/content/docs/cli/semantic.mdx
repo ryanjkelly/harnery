@@ -61,6 +61,9 @@ current reader process and active rolling hour. It keeps native and estimated
 token maps separate, counts unreported calls, and groups calls and outcomes by
 source harness, configured model, resolved model, and model attestation. It also
 lists the three fixed harness routes, pending work, and the latest reader error.
+Invalid outcomes are grouped into bounded reason categories such as `schema`,
+`citation`, `privacy`, and `unsupported_claim`; rejected model text is not
+stored.
 
 ## Usage receipts
 
@@ -103,8 +106,9 @@ authority in the document.
 service for an active V3 coordination root. If startup fails, the dashboard
 still starts and Codec keeps its deterministic scene. Restarting the dashboard
 tries again. The service watches the canonical active-ledger path, debounces
-changes for five seconds, consumes an incremental ledger cursor, and keeps at
-least 30 seconds between calls for one generation.
+changes for five seconds, and consumes an incremental ledger cursor. Routine
+generation reads stay at least five minutes apart. Explicit attention,
+non-active lifecycle, and terminal evidence use a 30-second minimum interval.
 
 Embedding hosts can call `ensureSemanticServiceRunning` from
 `harnery/core/semantic` before they launch the dashboard. The operation is
@@ -141,8 +145,8 @@ recovery, compaction, observation, context pressure, and open-subagent state
 always take precedence.
 
 The structured-response schema binds each reply to the request's exact
-generation ID and evidence digest. A structurally valid reply for a different
-request is rejected before persistence.
+generation ID, evidence digest, and event ID set. A reply for a different
+request or a fabricated citation is rejected before persistence.
 
 The scene header reports whether the semantic service is running and how many
 rolling calls are in use. Opening its details panel shows routes, pending work,
@@ -170,7 +174,8 @@ resolved model IDs, evidence contract version, and prompt contract version.
 Changing any of those inputs prevents stale reuse.
 
 `manifest.json` keeps only the active rolling-hour call history. Each new call
-record contains numeric usage metadata but never the raw prompt or model reply.
+record contains numeric usage metadata and bounded invalid-reason categories,
+but never the raw prompt or model reply.
 `service.json` keeps the current process aggregate, and the bounded service log
 records per-pass usage totals. None of these files enters Event Ledger V3.
 
