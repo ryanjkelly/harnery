@@ -709,9 +709,16 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const panelActivity = activity(hb);
     const panelContextBand = contextBand(hb.instance_id, ev, hb.last_heartbeat);
     const panelLifecycle = lifecycle(hb, ev);
+    const panelPresence = presence(hb, isActive, ev, now);
+    const expressionObservedAt =
+      ev?.lastEventTs && ms(ev.lastEventTs) > ms(hb.last_heartbeat)
+        ? ev.lastEventTs
+        : hb.last_heartbeat;
     const channels = deriveExpressiveChannels(
       {
+        presence: panelPresence.value,
         activity: panelActivity.value,
+        lastObservedAt: expressionObservedAt,
         ...(ev?.lastLifecycleChanged?.task_state
           ? {
               lifecycleState: {
@@ -749,7 +756,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
         display_name: ev?.identityName ?? hb.name,
         ...(task ? { task } : {}),
       },
-      presence: presence(hb, isActive, ev, now),
+      presence: panelPresence,
       activity: panelActivity,
       lifecycle: panelLifecycle,
       expression: channels.expression,
@@ -800,7 +807,9 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const evContextBand = contextBand(instanceId, ev, fallbackTs);
     const channels = deriveExpressiveChannels(
       {
+        presence: evPresence.value,
         activity: evActivity.value,
+        lastObservedAt: fallbackTs,
         ...(ev.lastTurnStarted
           ? {
               lastTurnStarted: {

@@ -26,6 +26,7 @@ function action(overrides: Partial<ExpressiveAction>): ExpressiveAction {
 
 function inputs(overrides: Partial<ExpressiveInputs>): ExpressiveInputs {
   return {
+    presence: "online",
     activity: "working",
     lastTurnStarted: { ts: at(300), event_id: "prompt-1" },
     actions: [],
@@ -240,6 +241,57 @@ describe("extended-tier expressions", () => {
       NOW,
     );
     expect(inputWait.expression.value).not.toBe("dormant");
+  });
+
+  test("dormant when presence is stale or an ended session is past its grace", () => {
+    const stale = deriveExpressiveChannels(
+      inputs({
+        presence: "unknown",
+        activity: "working",
+        lastObservedAt: at(600),
+      }),
+      NOW,
+    );
+    expect(stale.expression).toMatchObject({
+      value: "dormant",
+      provenance: "projection",
+      confidence: "medium",
+    });
+
+    const freshlyEnded = deriveExpressiveChannels(
+      inputs({
+        presence: "offline",
+        activity: "idle",
+        lastObservedAt: at(30),
+        lastTurnCompleted: { ts: at(30), event_id: "stop-fresh" },
+        lifecycleState: { value: "done", ts: at(30), event_id: "lc-fresh" },
+      }),
+      NOW,
+    );
+    expect(freshlyEnded.expression.value).toBe("wrapping-up");
+
+    const sleeping = deriveExpressiveChannels(
+      inputs({
+        presence: "offline",
+        activity: "idle",
+        lastObservedAt: at(90),
+        lastTurnCompleted: { ts: at(90), event_id: "stop-old" },
+        lifecycleState: { value: "done", ts: at(90), event_id: "lc-old" },
+      }),
+      NOW,
+    );
+    expect(sleeping.expression.value).toBe("dormant");
+
+    const onlineIdle = deriveExpressiveChannels(
+      inputs({
+        presence: "online",
+        activity: "idle",
+        lastObservedAt: at(600),
+        lastTurnStarted: undefined,
+      }),
+      NOW,
+    );
+    expect(onlineIdle.expression.value).toBe("neutral");
   });
 
   test("compacting fires on a fresh compaction boundary and decays", () => {

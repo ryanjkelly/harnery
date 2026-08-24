@@ -13,7 +13,13 @@
  * and attention overlays always expire.
  */
 
-import type { CodecActivity, CodecAttention, CodecExpression, Presented } from "./contracts";
+import type {
+  CodecActivity,
+  CodecAttention,
+  CodecExpression,
+  CodecPresence,
+  Presented,
+} from "./contracts";
 
 export interface ExpressiveAction {
   category: "research" | "diagnostic" | "build" | "edit" | "test" | "coordinate" | "other";
@@ -27,8 +33,12 @@ export interface ExpressiveAction {
 }
 
 export interface ExpressiveInputs {
+  /** Current presence after heartbeat/event freshness has been projected. */
+  presence: CodecPresence;
   /** Authoritative activity from the V3 coordination projection. */
   activity: CodecActivity;
+  /** Newest heartbeat or event observation for offline grace timing. */
+  lastObservedAt?: string;
   /** Last turn.started, if any. */
   lastTurnStarted?: { ts: string; event_id: string };
   /** Last turn.completed, if any. */
@@ -227,6 +237,22 @@ export function deriveExpressiveChannels(
       ) {
         return from("dormant", "event", "high", inputs.openWait.ts, [inputs.openWait.event_id]);
       }
+    }
+
+    // A stale presence projection invalidates old activity labels: a card
+    // last seen "working" is not still working after its heartbeat ages out.
+    // Unknown presence already passed the projector's freshness window, so it
+    // reads as dormant immediately. An explicit offline/end observation gets
+    // a short grace period so a fresh completion can still bow/wrap up first.
+    const lastObservedMs = ms(inputs.lastObservedAt);
+    const offlinePastGrace =
+      inputs.presence === "offline" &&
+      Number.isFinite(lastObservedMs) &&
+      age(lastObservedMs) >= DORMANT_MIN_MS;
+    const inputLikeWait =
+      inputs.openWait !== undefined && INPUT_WAIT_KINDS.has(inputs.openWait.kind ?? "");
+    if ((inputs.presence === "unknown" || offlinePastGrace) && !inputLikeWait) {
+      return from("dormant", "projection", "medium", inputs.lastObservedAt ?? now);
     }
 
     // alert: companion to a fresh failure, not a severity claim.
