@@ -67,7 +67,11 @@ describe("event ledger V3 turn telemetry", () => {
     expect(extractTurnTelemetryV3("cursor", {})).toMatchObject({
       usage: { state: "unsupported", capability: "model_usage" },
       inference: { state: "unsupported", capability: "inference_timing" },
-      context: { state: "unsupported", capability: "context_usage" },
+      context: {
+        state: "expected_but_missing",
+        capability: "context_usage",
+        reason: "conditional_signal_not_reported",
+      },
     });
   });
 
@@ -88,8 +92,9 @@ describe("event ledger V3 turn telemetry", () => {
       reason: "context_limit_tokens_not_reported",
     });
     expect(extractTurnTelemetryV3("codex", {}).context).toEqual({
-      state: "unsupported",
+      state: "expected_but_missing",
       capability: "context_usage",
+      reason: "promised_signal_not_reported",
     });
     expect(
       extractTurnTelemetryV3("codex", {}, undefined, { context_usage: "native" }).context,

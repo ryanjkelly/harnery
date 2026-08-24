@@ -138,9 +138,14 @@ describe("Codex PermissionRequest contract fixture", () => {
 });
 
 describe("installed adapter events", () => {
-  test("every hook installed by harn init has a canonical V3 event", () => {
+  test("every installed hook is canonical or an explicit evidence-only boundary", () => {
     for (const [adapter, spec] of Object.entries(ADAPTER_SPECS)) {
       for (const event of spec.events) {
+        if (event.subcommand === "after-agent-response") {
+          expect(adapter).toBe("cursor");
+          expect(normalizeEventName(event.subcommand)).toBeNull();
+          continue;
+        }
         expect(
           normalizeEventName(event.subcommand),
           `${adapter}:${event.settingsKey}`,

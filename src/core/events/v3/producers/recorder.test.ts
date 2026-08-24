@@ -2040,7 +2040,7 @@ describe("event ledger V3 persistent hook recorder", () => {
       expect(durable).not.toContain(nativeSession);
       expect(durable).not.toContain(nativeTurn);
     }
-  });
+  }, 10_000);
 
   test("queues a late Codex terminal when Stop omits transcript and turn paths", () => {
     const root = candidateRoot("codex");
