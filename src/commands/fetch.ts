@@ -86,7 +86,7 @@ async function runFetch(
   const timeoutMs = Number.parseInt(opts.timeout, 10);
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
-  let result: Awaited<ReturnType<typeof fetchWithJar>>;
+  let result: Awaited<ReturnType<typeof fetchWithJar<"bytes">>>;
   try {
     result = await fetchWithJar(url, {
       method: opts.method,
@@ -96,13 +96,14 @@ async function runFetch(
       redirect: opts.redirect as RequestRedirect,
       signal: ac.signal,
       extraHeaders: context?.extraHeaders,
+      responseType: "bytes",
     });
   } finally {
     clearTimeout(timer);
   }
 
   if (opts.json) {
-    emit.data(result as unknown as Record<string, unknown>);
+    emit.data({ ...result, body: new TextDecoder().decode(result.body) });
     return;
   }
   if (opts.status) {
@@ -117,14 +118,14 @@ async function runFetch(
   if (opts.output) {
     writeFileSync(opts.output, result.body);
     emit.file(opts.output, {
-      bytes: result.body.length,
+      bytes: result.body.byteLength,
       status: result.status,
       status_text: result.statusText,
     });
   } else {
-    // Body is potentially binary; route as text since most fetch responses
-    // are text/HTML/JSON. Binary callers should use --output.
-    emit.text(result.body);
+    // Text destinations decode at the presentation boundary. File output
+    // above keeps the response bytes intact regardless of MIME type.
+    emit.text(new TextDecoder().decode(result.body));
   }
 
   if (jar && result.cookiesSaved > 0) {

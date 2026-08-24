@@ -1,2 +1,7 @@
-export { type FetchOptions, type FetchResult, fetchWithJar } from "./client.js";
+export {
+  type FetchOptions,
+  type FetchResponseType,
+  type FetchResult,
+  fetchWithJar,
+} from "./client.js";
 export * from "./request.ts";

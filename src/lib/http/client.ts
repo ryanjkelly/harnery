@@ -11,7 +11,9 @@ import type { Cookie, CookieJar } from "../cookies/index.ts";
  * state with `browse`.
  */
 
-export interface FetchOptions {
+export type FetchResponseType = "text" | "bytes";
+
+export interface FetchOptions<TResponseType extends FetchResponseType = "text"> {
   /** HTTP method. Default GET. */
   method?: string;
   /** Request body. Strings/Buffers/Streams pass through to fetch directly. */
@@ -37,14 +39,20 @@ export interface FetchOptions {
    * only land when the key isn't already set.
    */
   extraHeaders?: (url: string) => Record<string, string>;
+  /** Response body representation. Default `text`; use `bytes` for lossless file output. */
+  responseType?: TResponseType;
 }
 
-export interface FetchResult {
+type FetchBody<TResponseType extends FetchResponseType> = TResponseType extends "bytes"
+  ? Uint8Array
+  : string;
+
+export interface FetchResult<TBody = string> {
   status: number;
   statusText: string;
   url: string;
   headers: Record<string, string>;
-  body: string;
+  body: TBody;
   /** Number of cookies persisted back into the jar (0 if no jar passed). */
   cookiesSaved: number;
 }
@@ -52,11 +60,15 @@ export interface FetchResult {
 /**
  * Fetch a URL with optional cookie-jar attach + persist.
  *
- * Returns the response body as a string (callers handle JSON parsing).
+ * Returns the response body as text by default (callers handle JSON parsing).
+ * Pass `responseType: "bytes"` when the caller must preserve the body exactly.
  * Streams aren't supported; this is a CLI helper, not a streaming HTTP
  * client. Use Bun's `fetch` directly for streaming workloads.
  */
-export async function fetchWithJar(url: string, opts: FetchOptions = {}): Promise<FetchResult> {
+export async function fetchWithJar<TResponseType extends FetchResponseType = "text">(
+  url: string,
+  opts: FetchOptions<TResponseType> = {},
+): Promise<FetchResult<FetchBody<TResponseType>>> {
   const headers: Record<string, string> = { ...(opts.headers ?? {}) };
 
   if (opts.jar) {
@@ -102,12 +114,17 @@ export async function fetchWithJar(url: string, opts: FetchOptions = {}): Promis
     headerObj[key] = value;
   });
 
+  const body =
+    opts.responseType === "bytes"
+      ? new Uint8Array(await response.arrayBuffer())
+      : await response.text();
+
   return {
     status: response.status,
     statusText: response.statusText,
     url: response.url,
     headers: headerObj,
-    body: await response.text(),
+    body: body as FetchBody<TResponseType>,
     cookiesSaved,
   };
 }

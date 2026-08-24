@@ -29,7 +29,7 @@ An HTTP request that writes the response body to stdout and speaks to the **shar
 
 ## Output
 
-The body goes to stdout (or the `--output` file) by default. Because the body is routed as text, binary responses should use `--output`. `--json` instead emits the whole `FetchResult` (`{ status, statusText, url, headers, body, cookiesSaved }`) as a single JSON object. When cookies are saved back to the jar, a note is logged to stderr.
+The body goes to stdout by default. With `--output`, Harnery writes the response bytes exactly as received, regardless of the file extension or `Content-Type`. Stdout and `--json` decode the body as UTF-8 text, so use `--output` for binary files and text in another encoding. `--json` emits the whole `FetchResult` (`{ status, statusText, url, headers, body, cookiesSaved }`) as a single JSON object. When cookies are saved back to the jar, a note is logged to stderr.
 
 ## Examples
 
