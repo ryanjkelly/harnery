@@ -23,7 +23,7 @@ Settings resolve from these sources, lowest precedence first (later wins):
 2. `<project>/.harnery/config.jsonc`: the project settings file, which overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
 3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `agents`, `tools`, `workflow`, `skills`, `presence`, `coord`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. Two values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file, and so does `agents.finalizationRoots`, because a global setting cannot grant filesystem authority to a project. A user-global `binName` is a display fallback, never a project pin.
+The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, `coord`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. Three values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots` and `instructions.promptReminder`. A global setting cannot grant filesystem authority to a project or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
 
 ## Top-level fields
 
@@ -38,7 +38,7 @@ The config reader (`src/core/config.ts`) merges the two files and owns `binName`
 | `tools`        | object  | see below        | Managed-tool provisioning consent (`tools.ripgrep.autoInstall`) |
 | `workflow`     | object  | see below        | Workflow-engine defaults |
 | `skills`       | object  | see below        | Shipped-skill suppression (`skills.exclude`) |
-| `instructions` | object  | see below        | Host-owned addendum spliced into `AGENTS.md` (`instructions.hostAddendumFile`) |
+| `instructions` | object  | see below        | Host-owned agent instructions and prompt reminder |
 | `presence`     | object  | see below        | Cross-machine presence transports |
 | `files`        | object  | see below        | Web file-viewer path policy (additive deny/allow globs) |
 | `web`          | object  | see below        | Standalone Next.js dashboard |
@@ -180,11 +180,29 @@ Env override per process: `HARNERY_TOOLS_AUTOINSTALL=1|0`.
 | Field              | Type   | Default | Description |
 | ------------------ | ------ | ------- | ----------- |
 | `hostAddendumFile` | string | none    | Repo-relative path to a markdown file holding this project's own coordination policy. [`init`](/cli/init/) splices its contents into a second managed region in `AGENTS.md`, `init --check` reports drift against it, and `deinit` (or deleting this key) removes the region. Harnery never parses the content |
+| `promptReminder`   | string | none    | One project-owned line emitted on every supported prompt for adapters that lack native reminder behavior |
 
 The path must be repo-relative and resolve inside the project, and the file must exist and be non-empty; anything else fails the run before the first write. Delete the key and re-run `init` to take the region back out.
 
+`promptReminder` is project-only. Harnery ignores a value from the user-global
+config so one host's wording cannot follow the user into another project. The
+line must contain 1 to 500 characters and cannot contain a newline. Harnery
+reads it at emission time, passes only an enable flag through the hook process,
+and does not copy the text into coordination state.
+
+Harnery currently emits this line through Codex `UserPromptSubmit`. Claude Code
+already supplies native output-style reminders, so Harnery does not duplicate
+them. Cursor's `beforeSubmitPrompt` output can allow or block submission but
+cannot inject model context. Use an Always Apply Cursor rule for the same host
+policy.
+
 ```jsonc
-{ "instructions": { "hostAddendumFile": ".agents/host-instructions.md" } }
+{
+  "instructions": {
+    "hostAddendumFile": ".agents/host-instructions.md",
+    "promptReminder": "Lead with the answer and preserve exact facts."
+  }
+}
 ```
 
 ## `presence`

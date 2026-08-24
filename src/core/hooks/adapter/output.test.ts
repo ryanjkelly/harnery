@@ -59,6 +59,15 @@ describe("emitContext PostToolUse", () => {
       }
     }
   });
+
+  test("skips Cursor UserPromptSubmit because beforeSubmitPrompt cannot inject context", () => {
+    capture();
+    emitContext("cursor", "UserPromptSubmit", "fresh reminder");
+    process.stdout.write = realOut;
+    process.stderr.write = realErr;
+    expect(outChunks.join("")).toBe("");
+    expect(errChunks.join("")).toBe("");
+  });
 });
 
 describe("emitStopBlock", () => {

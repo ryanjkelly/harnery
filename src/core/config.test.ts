@@ -11,6 +11,8 @@ import {
   DEFAULT_BIN_NAME,
   DEFAULT_FRESHNESS_SECS,
   endOfTurnStatusCommand,
+  hostPromptReminder,
+  MAX_HOST_PROMPT_REMINDER_CHARS,
   pinnedBinName,
   resolveBinName,
   sessionFinalizationConfig,
@@ -152,6 +154,45 @@ describe("agentsRequireGitFinalization", () => {
 
     process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION = "1";
     expect(agentsRequireGitFinalization(disabled)).toBe(true);
+  });
+});
+
+describe("hostPromptReminder", () => {
+  const roots: string[] = [];
+  const savedXdg = process.env.XDG_CONFIG_HOME;
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdg;
+  });
+
+  test("reads and trims one bounded project-owned line", () => {
+    const root = makeRoot(`{ "instructions": { "promptReminder": "  Use the host voice.  " } }`);
+    roots.push(root);
+    expect(hostPromptReminder(root)).toBe("Use the host voice.");
+  });
+
+  test("ignores blank, multiline, oversized, and non-string values", () => {
+    const values = ["   ", "first\nsecond", "x".repeat(MAX_HOST_PROMPT_REMINDER_CHARS + 1), 42];
+    for (const value of values) {
+      const root = makeRoot(JSON.stringify({ instructions: { promptReminder: value } }));
+      roots.push(root);
+      expect(hostPromptReminder(root)).toBeNull();
+    }
+  });
+
+  test("does not carry a user-global host reminder into another project", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "harnery-reminder-xdg-"));
+    const root = makeRoot(`{}`);
+    roots.push(xdg, root);
+    mkdirSync(join(xdg, "harnery"), { recursive: true });
+    writeFileSync(
+      join(xdg, "harnery", "config.jsonc"),
+      `{ "instructions": { "promptReminder": "private global wording" } }`,
+    );
+    process.env.XDG_CONFIG_HOME = xdg;
+    expect(hostPromptReminder(root)).toBeNull();
   });
 });
 

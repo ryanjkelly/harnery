@@ -8,8 +8,10 @@
  * - **Claude Code**: `{hookSpecificOutput: {hookEventName, additionalContext}}`
  *   for SessionStart / UserPromptSubmit / SubagentStart; deny uses
  *   `{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason}}`.
- * - **Cursor**: `{additional_context, env?}` flat for sessionStart /
- *   beforeSubmitPrompt; deny uses `{permission: "deny", agent_message, user_message}`.
+ * - **Cursor**: `{additional_context, env?}` flat for sessionStart and other
+ *   context-capable events. Its current beforeSubmitPrompt schema can validate
+ *   or block but cannot inject context, so UserPromptSubmit output is skipped.
+ *   Deny uses `{permission: "deny", agent_message, user_message}`.
  * - **Codex**: structurally identical to Claude Code for context and tool
  *   denials. Stop blocks are deliberately suppressed because their automatic
  *   continuation can replace a completed user-facing answer.
@@ -32,6 +34,7 @@ export type SystemEvent =
 /** Emit a context-injection (peer table, wiring check, council pending, …). */
 export function emitContext(adapter: Adapter, event: SystemEvent, text: string): void {
   if (!text || text.length === 0) return;
+  if (adapter === "cursor" && event === "UserPromptSubmit") return;
   const json = buildContextJson(adapter, event, text);
   process.stdout.write(`${JSON.stringify(json)}\n`);
 }

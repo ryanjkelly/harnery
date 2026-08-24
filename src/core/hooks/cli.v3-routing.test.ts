@@ -34,6 +34,46 @@ afterEach(() => {
 });
 
 describe("agent-hook V3 hard cut", () => {
+  test("routes a fresh host prompt reminder only through the supported non-native adapter", () => {
+    const reminder = "HOST_REMINDER_SENTINEL: keep the reader-facing voice.";
+    const cases = [
+      { adapter: "claude-code" as const, sessionKey: "session_id", expected: false },
+      { adapter: "codex" as const, sessionKey: "session_id", expected: true },
+      { adapter: "cursor" as const, sessionKey: "conversation_id", expected: false },
+    ];
+
+    for (const entry of cases) {
+      const root = candidateRoot(entry.adapter);
+      writeFileSync(
+        join(root, ".harnery", "config.jsonc"),
+        JSON.stringify({ instructions: { promptReminder: reminder } }),
+        "utf8",
+      );
+      const owner = `${entry.adapter}-reminder-owner`;
+      const payload = { [entry.sessionKey]: owner, cwd: root };
+      expect(
+        run(AGENT_HOOK, ["session-start", "--adapter", entry.adapter], payload, root, {
+          HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+        }).status,
+      ).toBe(0);
+
+      for (const prompt of ["first", "second"]) {
+        const result = run(
+          AGENT_HOOK,
+          ["user-prompt-submit", "--adapter", entry.adapter],
+          { ...payload, prompt },
+          root,
+          { HARNERY_AGENT_COORD_BYPASS_STOP: "1" },
+        );
+        expect(result.status).toBe(0);
+        expect(result.stdout.includes(reminder)).toBe(entry.expected);
+      }
+
+      expect(JSON.stringify(readLedgerV3(root))).not.toContain(reminder);
+      expect(JSON.stringify(readLiveCoordinationRows(root))).not.toContain(reminder);
+    }
+  });
+
   test("PostToolUse injects and PreToolUse enforces the pending session-name display", () => {
     const root = candidateRoot();
     const owner = "session-name-latch-owner";

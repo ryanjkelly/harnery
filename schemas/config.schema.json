@@ -285,6 +285,13 @@
         "hostAddendumFile": {
           "type": "string",
           "description": "Repo-relative path to a markdown file holding this project's own coordination policy. `harn init` splices its contents into a second managed region in AGENTS.md, `init --check` reports drift against it, and `deinit` (or removing this key) takes the region back out. Harnery never parses the content. Must resolve inside the project and be non-empty."
+        },
+        "promptReminder": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$",
+          "description": "One project-owned line emitted on every supported prompt for adapters that lack native reminder behavior. Project config only; user-global values are ignored. The text is not copied into coordination state."
         }
       }
     },

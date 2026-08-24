@@ -7,7 +7,7 @@
  *   2. `<project-root>/.harnery/config.jsonc` — project override (authoritative)
  *
  * Fields owned here: `binName` (host CLI name for agent-facing strings),
- * `hooksSetupHint`, `agents`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
+ * `hooksSetupHint`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
  * `coord` (heartbeat freshness), `artifacts` (working-file retention),
  * `backup` (restic repo/password/prune policy), `sync` (rclone
  * remote/prefix), and `web` (dashboard port) sections. The `files` deny/override section
@@ -32,6 +32,9 @@ export const DEFAULT_FRESHNESS_SECS = 600;
 
 /** Mnemonic dashboard port: 4276 spells HARN on a phone keypad. */
 export const DEFAULT_WEB_PORT = 4276;
+
+/** Keep a fresh host reminder bounded to one short prompt-context line. */
+export const MAX_HOST_PROMPT_REMINDER_CHARS = 500;
 
 export interface SessionFinalizationConfig {
   archiveGraceSeconds: number;
@@ -75,6 +78,11 @@ interface HarneryConfig {
   agents?: {
     requireGitFinalization?: boolean;
     finalizationRoots?: AgentFinalizationRoot[];
+  };
+  /** Host-owned agent instruction settings. */
+  instructions?: {
+    hostAddendumFile?: unknown;
+    promptReminder?: unknown;
   };
   /**
    * Managed-tool provisioning consent. `{ ripgrep: { autoInstall: true } }`
@@ -385,6 +393,28 @@ export function resolveHooksSetupHint(coordRoot?: string | null): string | null 
   if (!root) return null;
   const hint = readConfig(root).hooksSetupHint;
   return typeof hint === "string" && hint.trim() ? hint.trim() : null;
+}
+
+/**
+ * One project-owned reminder that a supported prompt hook can place immediately
+ * before a model response. The value is deliberately project-only: host policy
+ * must not follow the user-global config into unrelated repositories. It is
+ * emitted directly from config and never copied into coordination state.
+ *
+ * The reminder must be one non-empty line of at most 500 characters. Invalid
+ * values fail closed to no reminder so a malformed optional setting cannot
+ * break the prompt hook.
+ */
+export function hostPromptReminder(coordRoot?: string | null): string | null {
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return null;
+  const value = readProjectConfig(root).instructions?.promptReminder;
+  if (typeof value !== "string") return null;
+  const reminder = value.trim();
+  if (!reminder || reminder.length > MAX_HOST_PROMPT_REMINDER_CHARS || /[\r\n]/.test(reminder)) {
+    return null;
+  }
+  return reminder;
 }
 
 /**

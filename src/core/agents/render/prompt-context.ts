@@ -1,8 +1,8 @@
 /**
  * UserPromptSubmit UX renderer. Combines the peer-refresh dedup, the
  * council-pending hash-dedup, the cross-adapter first-session naming nudge,
- * the Cursor/Codex set-task staleness nudge, and the Codex status-footer
- * reminder.
+ * the Cursor/Codex set-task staleness nudge, a host-configured prompt reminder,
+ * and the Codex status-footer reminder.
  * agent-hook's turn.started post-emit handler calls this
  * and forwards the result as the adapter-shaped additionalContext payload.
  *
@@ -18,7 +18,10 @@
  *      Cursor/Codex additionally get the existing unset/stale-task reminder
  *      because their Stop hooks do not enforce task declarations as reliably
  *      as Claude Code's.
- *   4. Codex status footer: a non-deduplicated reminder to put the live status
+ *   4. Host prompt reminder: a project-owned, non-deduplicated line for
+ *      adapters whose prompt hook can inject context and which lack a native
+ *      reminder mechanism. Hook routing decides which adapters enable it.
+ *   5. Codex status footer: a non-deduplicated reminder to put the live status
  *      box after the substantive answer. Stop stays observe-only, so missing the
  *      footer can never trigger a replacement response.
  *
@@ -43,7 +46,7 @@ import {
 import { join } from "node:path";
 
 import { coordEnv } from "../../../lib/env.ts";
-import { endOfTurnStatusCommand, resolveBinName } from "../../config.ts";
+import { endOfTurnStatusCommand, hostPromptReminder, resolveBinName } from "../../config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
 import {
@@ -83,6 +86,9 @@ export interface PromptContextOpts {
   /** When true, run the unset/stale-task check after the first set-task.
    * Cursor/Codex use this; Claude Code has Stop-hook transcript enforcement. */
   taskNudge?: boolean;
+  /** When true, append the project-configured prompt reminder without hash
+   * deduplication. The caller enables this only on supported adapter routes. */
+  hostPromptReminder?: boolean;
   /** When true, append the non-deduplicated Codex status-footer reminder.
    * The caller enables this only for human-facing Codex sessions. */
   statusFooterNudge?: boolean;
@@ -110,6 +116,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     agentName,
     sessionNameNudge,
     taskNudge,
+    hostPromptReminder: promptReminderEnabled,
     statusFooterNudge,
     turnRitualNudge,
   } = opts;
@@ -136,7 +143,15 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (nudgeMsg) sections.push(nudgeMsg);
   }
 
-  // 4. Codex gets this on every prompt. It is intentionally not hash-deduped:
+  // 4. A supported adapter gets the host reminder on every prompt. The text is
+  // intentionally not hash-deduped or persisted into runtime state: freshness
+  // is the feature, and the project config remains its only durable copy.
+  if (promptReminderEnabled) {
+    const reminder = renderHostPromptReminder(coordRoot, instanceId);
+    if (reminder) sections.push(reminder);
+  }
+
+  // 5. Codex gets this on every prompt. It is intentionally not hash-deduped:
   // the reminder must be fresh in the model's context when it writes the reply.
   // Missing it is harmless because Codex Stop enforcement remains observe-only.
   if (statusFooterNudge) {
@@ -144,7 +159,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (statusMsg) sections.push(statusMsg);
   }
 
-  // 5. Adapters whose Stop hook ENFORCES the turn ritual get a fresh reminder
+  // 6. Adapters whose Stop hook ENFORCES the turn ritual get a fresh reminder
   // on every prompt. Reminding before the reply is drafted is far cheaper than
   // the bounce-and-retry the Stop hook otherwise forces: enforcement-only
   // compliance was measured missing on a double-digit share of turns. Not
@@ -155,6 +170,12 @@ export function renderPromptContext(opts: PromptContextOpts): string {
   }
 
   return sections.join("\n\n");
+}
+
+function renderHostPromptReminder(coordRoot: string, selfInstanceId: string): string {
+  const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);
+  if (!hb || hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) return "";
+  return hostPromptReminder(coordRoot) ?? "";
 }
 
 function renderTurnRitualReminder(

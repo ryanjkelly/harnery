@@ -1,0 +1,63 @@
+---
+title: "ADR 0107: route host prompt reminders by adapter capability"
+description: Let projects supply one fresh prompt reminder without duplicating native behavior or exposing host wording in Harnery.
+sidebar:
+  order: 107
+---
+
+**Date:** 2026-08-23
+**Status:** Accepted
+
+## Context
+
+Static repository instructions can lose influence during a long agent session.
+Some hosts need one short instruction placed immediately before each response,
+but the instruction is host policy and may contain private organization
+wording. Harnery must provide the transport without owning that text.
+
+The three supported adapters do not offer the same reminder channel. [Claude
+Code output styles](https://code.claude.com/docs/en/output-styles) already
+receive native adherence reminders. Codex `UserPromptSubmit` accepts additional
+model context. Cursor runs `beforeSubmitPrompt` on each prompt, but its
+[documented output](https://cursor.com/docs/hooks#beforesubmitprompt) can only
+allow or block submission; it cannot add model context. Cursor Always Apply
+rules remain the persistent instruction carrier.
+
+## Alternatives considered
+
+- **Inject the reminder through every prompt hook.** Rejected because it would
+  duplicate Claude Code's native reminder and write an unsupported output field
+  for Cursor.
+- **Put the host wording in Harnery source or documentation.** Rejected because
+  the public package must stay source-neutral and a host must own its policy.
+- **Use the user-global config as a fallback.** Rejected because wording for one
+  project could then appear in an unrelated repository.
+- **Hash-deduplicate the reminder.** Rejected because freshness is the purpose
+  of the feature. A reminder emitted only after a content change has the same
+  long-session decay as static instructions.
+
+## Decision
+
+Add `instructions.promptReminder` to the project's `.harnery/config.jsonc`. It
+accepts one non-empty line of at most 500 characters. The accessor reads only
+the project file. It returns no reminder when the value is blank, multiline,
+oversized, or not a string.
+
+The prompt hook passes only a boolean `--host-prompt-reminder` flag to
+`agent-coord`. The renderer reads the text from config, emits it on every
+eligible top-level prompt, and does not write it to a deduplication file, live
+coordination row, or Event Ledger V3 record. Subagents, transient sessions, and
+workflow children do not receive the human-facing reminder.
+
+Adapter routing enables the flag for Codex. Claude Code keeps its native output
+style reminder. Cursor receives no `UserPromptSubmit` context output until its
+documented hook contract adds an injection field; hosts use an Always Apply
+rule there.
+
+## Result
+
+Hosts can keep their wording in their own repository while Harnery delivers the
+line on each supported prompt without persisting it in runtime state. Tests
+cover config validation, project-only scope, repeated rendering,
+deduplication-state privacy, runtime-state privacy, and the Claude Code, Codex,
+and Cursor routing matrix.

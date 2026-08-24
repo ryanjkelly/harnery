@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
@@ -40,6 +40,28 @@ describe("renderPromptContext on the V3 coordination projection", () => {
       "utf8",
     );
     expect(render({ statusFooterNudge: true })).toContain("harn agents status --end-turn");
+  });
+
+  test("the host prompt reminder stays fresh without entering deduplication state", () => {
+    const reminder = "Use the project voice without dropping uncertainty.";
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({ instructions: { promptReminder: reminder } }),
+      "utf8",
+    );
+    seedV3Session(root, "peer", { name: "Adelaide", claims: ["docs/x.md"] });
+
+    expect(render({ hostPromptReminder: true })).toContain(reminder);
+    expect(render({ hostPromptReminder: true })).toBe(reminder);
+
+    const runtimeFiles = readdirSync(join(root, ".harnery"))
+      .filter((name) => name !== "config.jsonc")
+      .filter((name) => existsSync(join(root, ".harnery", name)))
+      .filter((name) => name.startsWith(".last-"));
+    const runtimeText = runtimeFiles
+      .map((name) => readFileSync(join(root, ".harnery", name), "utf8"))
+      .join("\n");
+    expect(runtimeText).not.toContain(reminder);
   });
 
   test("the stop-enforced turn ritual is adapter-specific", () => {
