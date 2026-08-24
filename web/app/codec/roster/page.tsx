@@ -104,7 +104,7 @@ export default function CodecRosterPage() {
         <p className={styles.empty}>No complete character packs are installed.</p>
       ) : (
         <section data-codec-roster className={styles.packStack} aria-label="Codec character packs">
-          {packs.map((pack) => {
+          {packs.map((pack, packIndex) => {
             const bound = summary.active_bindings.filter(
               (binding) => binding.pack_id === pack.pack_id,
             );
@@ -167,7 +167,8 @@ export default function CodecRosterPage() {
                         alt={`${pack.pack_id} character with ${expression} expression`}
                         width={512}
                         height={512}
-                        loading="eager"
+                        loading={packIndex === 0 ? "eager" : "lazy"}
+                        fetchPriority={packIndex === 0 ? "high" : "low"}
                         decoding="async"
                       />
                       <figcaption>{expression}</figcaption>

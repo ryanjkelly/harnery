@@ -105,6 +105,11 @@ export interface CodecRosterSummary {
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FILE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const MAX_VALIDATION_CACHE_ENTRIES = 128;
+
+type ValidPackResult = { ok: true; pack: CodecPack };
+
+const validationCache = new Map<string, { manifestJson: string; result: ValidPackResult }>();
 
 export function codecDir(root = harneryDir()): string {
   return path.join(root, "codec");
@@ -122,10 +127,25 @@ function registryPath(root = harneryDir()): string {
 export function validatePackDir(
   dir: string,
 ): { ok: true; pack: CodecPack } | { ok: false; problems: string[] } {
+  const manifestPath = path.join(dir, "pack.json");
+  let manifestJson: string;
+  try {
+    manifestJson = fs.readFileSync(manifestPath, "utf8");
+  } catch (err) {
+    return { ok: false, problems: [`unreadable pack.json: ${(err as Error).message}`] };
+  }
+
+  const cached = validationCache.get(dir);
+  if (cached?.manifestJson === manifestJson) {
+    validationCache.delete(dir);
+    validationCache.set(dir, cached);
+    return cached.result;
+  }
+
   const problems: string[] = [];
   let manifest: Record<string, unknown>;
   try {
-    manifest = JSON.parse(fs.readFileSync(path.join(dir, "pack.json"), "utf8"));
+    manifest = JSON.parse(manifestJson);
   } catch (err) {
     return { ok: false, problems: [`unreadable pack.json: ${(err as Error).message}`] };
   }
@@ -167,7 +187,7 @@ export function validatePackDir(
     validated[expr] = file;
   }
   if (problems.length > 0) return { ok: false, problems };
-  return {
+  const result: ValidPackResult = {
     ok: true,
     pack: {
       pack_id: packId,
@@ -183,6 +203,12 @@ export function validatePackDir(
       ...(typeof manifest.quality === "string" ? { quality: manifest.quality } : {}),
     },
   };
+  validationCache.set(dir, { manifestJson, result });
+  if (validationCache.size > MAX_VALIDATION_CACHE_ENTRIES) {
+    const oldest = validationCache.keys().next().value;
+    if (oldest !== undefined) validationCache.delete(oldest);
+  }
+  return result;
 }
 
 /** Every complete pack in the roster, sorted by id for stable allocation. */
@@ -355,7 +381,7 @@ export function resolvePackAsset(
   packId: string,
   expression: string,
   root = harneryDir(),
-): { filePath: string; contentType: string } | null {
+): { filePath: string; contentType: string; packVersion: string } | null {
   if (!SLUG_RE.test(packId) || !SLUG_RE.test(expression)) return null;
   const dir = path.join(packsDir(root), packId);
   const result = validatePackDir(dir);
@@ -377,5 +403,5 @@ export function resolvePackAsset(
           ? "image/jpeg"
           : null;
   if (!contentType) return null;
-  return { filePath, contentType };
+  return { filePath, contentType, packVersion: result.pack.pack_version };
 }
