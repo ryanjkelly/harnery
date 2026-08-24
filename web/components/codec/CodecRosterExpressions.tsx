@@ -4,14 +4,19 @@ import { useEffect, useRef, useState } from "react";
 
 import styles from "./codecRoster.module.css";
 
+export interface RosterExpressionAsset {
+  label: string;
+  source: string;
+}
+
 interface CodecRosterExpressionsProps {
   packId: string;
   packVersion: string;
-  expressions: readonly string[];
+  expressions: readonly RosterExpressionAsset[];
   initiallyLoad?: boolean;
 }
 
-const LOAD_MARGIN = "600px 0px";
+const LOAD_MARGIN = "1200px 0px";
 
 /**
  * Keep every expression label searchable while assigning portrait URLs only
@@ -27,7 +32,6 @@ export function CodecRosterExpressions({
   const [shouldLoad, setShouldLoad] = useState(initiallyLoad);
 
   useEffect(() => {
-    if (shouldLoad) return;
     const grid = gridRef.current;
     if (!grid || typeof IntersectionObserver === "undefined") {
       setShouldLoad(true);
@@ -36,15 +40,13 @@ export function CodecRosterExpressions({
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) return;
-        setShouldLoad(true);
-        observer.disconnect();
+        setShouldLoad(entries.some((entry) => entry.isIntersecting));
       },
       { rootMargin: LOAD_MARGIN },
     );
     observer.observe(grid);
     return () => observer.disconnect();
-  }, [shouldLoad]);
+  }, []);
 
   return (
     <div
@@ -54,22 +56,25 @@ export function CodecRosterExpressions({
       aria-busy={!shouldLoad}
     >
       {expressions.map((expression) => (
-        <figure data-codec-expression={expression} className={styles.expression} key={expression}>
+        <figure
+          data-codec-expression={expression.label}
+          className={styles.expression}
+          key={expression.label}
+        >
           {shouldLoad ? (
-            // biome-ignore lint/performance/noImgElement: runtime packs are already optimized WebP assets
+            // biome-ignore lint/performance/noImgElement: the route returns a fixed roster thumbnail
             <img
-              src={`/api/codec-pack/${packId}/${expression}?v=${packVersion}`}
-              alt={`${packId} character with ${expression} expression`}
-              width={512}
-              height={512}
+              src={`/api/codec-pack/${packId}/${expression.source}?v=${packVersion}&variant=roster-v1`}
+              alt={`${packId} character with ${expression.label} expression`}
+              width={256}
+              height={384}
               loading="eager"
               fetchPriority={initiallyLoad ? "high" : "low"}
-              decoding="async"
             />
           ) : (
             <span className={styles.expressionPlaceholder} aria-hidden />
           )}
-          <figcaption>{expression}</figcaption>
+          <figcaption>{expression.label}</figcaption>
         </figure>
       ))}
     </div>

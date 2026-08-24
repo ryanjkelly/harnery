@@ -3,7 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { CodecRosterExpressions } from "./CodecRosterExpressions";
 
-const expressions = ["neutral", "focused", "dormant"];
+const expressions = [
+  { label: "neutral", source: "neutral" },
+  { label: "focused", source: "focused" },
+  { label: "dormant", source: "waiting" },
+];
 
 test("only the initially visible pack emits image requests during server rendering", () => {
   const deferred = renderToStaticMarkup(
@@ -23,4 +27,7 @@ test("only the initially visible pack emits image requests during server renderi
   expect(deferred).toContain("dormant");
   expect(visible.match(/src="\/api\/codec-pack\//g)).toHaveLength(expressions.length);
   expect(visible).toContain('data-codec-images="loaded"');
+  expect(visible).toContain("waiting?v=2&amp;variant=roster-v1");
+  expect(visible).toContain('width="256"');
+  expect(visible).toContain('height="384"');
 });

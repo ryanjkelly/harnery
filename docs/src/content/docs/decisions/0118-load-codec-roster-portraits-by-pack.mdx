@@ -54,13 +54,14 @@ It does not remove the 35.4 MiB first-view payload.
 roster. It renders every pack, expression figure, and caption immediately, so
 browser Find still sees the complete roster. The first pack includes its 21
 portrait URLs in the server response. Later packs render fixed-size placeholders
-until an `IntersectionObserver` sees the expression grid within a 600-pixel
+until an `IntersectionObserver` sees the expression grid within a 1,200-pixel
 vertical margin.
 
-When a deferred pack enters that margin, the component assigns all 21
-individual versioned URLs and disconnects its observer. It does not unload a
-pack after it has appeared. Browsers without `IntersectionObserver` load the
-pack instead of leaving permanent placeholders.
+When a deferred pack enters that margin, the component assigns its individual
+versioned URLs. It keeps observing the pack and removes those `<img>` elements
+after the pack leaves the margin. The figures and captions stay in the DOM.
+Browsers without `IntersectionObserver` load the pack instead of leaving
+permanent placeholders.
 
 The existing image route keeps its bounded byte cache, request coalescing,
 `ETag`, `Last-Modified`, and one-year immutable browser cache. HTTP/1.1 remains
@@ -74,3 +75,29 @@ The initial server response now contains 21 portrait URLs instead of 1,008.
 All expression labels remain present before hydration. Nearby packs start
 loading before they enter the viewport, and the page keeps the original
 individual WebP files instead of generating sprites.
+
+A reload after viewing the full roster exposed a second bottleneck. Chrome's
+Network panel reported the portraits as `200 (memory cache)` in `0 ms`, but
+some visible cells remained blank. The memory-cache hit proved that the
+response bytes were available. It did not prove that Chrome had a decoded
+bitmap ready to paint. A representative portrait was 40,798 bytes on disk and
+512 by 768 pixels. Its decoded RGBA bitmap needs about 1.5 MiB. Mounting roughly
+900 full-size portraits can therefore ask the browser to manage more than 1
+GiB of decoded image data even when it transfers no bytes.
+
+The asset route now accepts the fixed `variant=roster-v1` query. It uses Sharp to
+produce a 256-pixel-wide WebP, keeps that transformed result in the existing
+bounded promise cache, and sends the same one-year immutable browser cache
+headers. `CodecRosterExpressions` uses this variant, observes packs with a
+1,200-pixel vertical margin, and removes offscreen image elements when they
+leave the margin. When an extended expression uses a required-expression
+fallback, the roster now reuses the fallback URL instead of requesting the
+same file under a second expression URL. The source portrait route remains
+unchanged for the live Codec view.
+
+For the representative portrait, the roster response was 12,444 bytes and its
+decoded bitmap is 384 KiB, one quarter of the source pixel count and decoded
+memory. After compilation, the local route served that cached thumbnail in
+0.009 seconds. One cold 21-expression pack produced 307,660 response bytes in
+0.207 seconds. The first server-rendered roster response still contained 21
+image URLs, every expression label, and no sprite reference.

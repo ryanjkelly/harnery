@@ -3,6 +3,7 @@ import Link from "next/link";
 import { CodecRosterExpressions } from "@/components/codec/CodecRosterExpressions";
 import styles from "@/components/codec/codecRoster.module.css";
 import {
+  EXPRESSION_FALLBACK,
   listPacks,
   ROSTER_EXPRESSIONS,
   readPackRegistry,
@@ -155,7 +156,13 @@ export default function CodecRosterPage() {
                 <CodecRosterExpressions
                   packId={pack.pack_id}
                   packVersion={pack.pack_version}
-                  expressions={ROSTER_EXPRESSIONS}
+                  expressions={ROSTER_EXPRESSIONS.map((expression) => ({
+                    label: expression,
+                    source:
+                      expression in pack.expressions
+                        ? expression
+                        : (EXPRESSION_FALLBACK[expression] ?? "neutral"),
+                  }))}
                   initiallyLoad={packIndex === 0}
                 />
               </article>

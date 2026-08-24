@@ -24,7 +24,9 @@ export async function GET(
   const asset = resolvePackAsset(pack, expression);
   if (!asset) return new Response("not found", { status: 404 });
   try {
-    const cached = await loadCachedPackAsset(asset);
+    const variant =
+      new URL(request.url).searchParams.get("variant") === "roster-v1" ? "roster" : "source";
+    const cached = await loadCachedPackAsset(asset, variant);
     const headers = packAssetHeaders(cached);
     if (packAssetNotModified(request, cached)) {
       return new Response(null, { status: 304, headers });

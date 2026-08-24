@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 
+import sharp from "sharp";
+
 const MAX_ASSET_CACHE_ENTRIES = 512;
+export const ROSTER_THUMBNAIL_WIDTH = 256;
+
+export type PackAssetVariant = "source" | "roster";
 
 export interface PackAssetDescriptor {
   filePath: string;
@@ -26,8 +31,9 @@ const assetCache = new Map<string, Promise<CachedPackAsset>>();
  */
 export async function loadCachedPackAsset(
   descriptor: PackAssetDescriptor,
+  variant: PackAssetVariant = "source",
 ): Promise<CachedPackAsset> {
-  const key = `${descriptor.filePath}\0${descriptor.packVersion}`;
+  const key = `${descriptor.filePath}\0${descriptor.packVersion}\0${variant}`;
   const cached = assetCache.get(key);
   if (cached) {
     assetCache.delete(key);
@@ -35,7 +41,7 @@ export async function loadCachedPackAsset(
     return cached;
   }
 
-  const pending = readPackAsset(descriptor);
+  const pending = readPackAsset(descriptor, variant);
   assetCache.set(key, pending);
   if (assetCache.size > MAX_ASSET_CACHE_ENTRIES) {
     const oldest = assetCache.keys().next().value;
@@ -50,15 +56,25 @@ export async function loadCachedPackAsset(
   }
 }
 
-async function readPackAsset(descriptor: PackAssetDescriptor): Promise<CachedPackAsset> {
-  const [body, stat] = await Promise.all([
+async function readPackAsset(
+  descriptor: PackAssetDescriptor,
+  variant: PackAssetVariant,
+): Promise<CachedPackAsset> {
+  const [source, stat] = await Promise.all([
     fs.promises.readFile(descriptor.filePath),
     fs.promises.stat(descriptor.filePath),
   ]);
+  const body =
+    variant === "roster"
+      ? await sharp(source)
+          .resize({ width: ROSTER_THUMBNAIL_WIDTH, withoutEnlargement: true })
+          .webp({ quality: 82, effort: 2 })
+          .toBuffer()
+      : source;
   const hash = createHash("sha256").update(body).digest("base64url").slice(0, 22);
   return {
     body: new Uint8Array(body),
-    contentType: descriptor.contentType,
+    contentType: variant === "roster" ? "image/webp" : descriptor.contentType,
     etag: `"${hash}"`,
     lastModified: stat.mtime.toUTCString(),
     mtimeMs: stat.mtimeMs,
