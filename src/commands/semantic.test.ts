@@ -79,4 +79,18 @@ describe("semantic command", () => {
       ],
     });
   });
+
+  test("soak reports an empty bounded window before the service has emitted passes", async () => {
+    const root = fixture();
+    const { data, error } = await run(["semantic", "soak", "--minutes", "15", "--root", root]);
+    expect(error).toBeUndefined();
+    expect(data).toMatchObject({
+      schema_version: 1,
+      window: { requested_minutes: 15, window_complete: false },
+      service: { running: false, stale: false },
+      coverage: { pass_count: 0, instrumented_pass_count: 0, accepted_reading_count: 0 },
+      usage: { call_count: 0, unreported_calls: 0 },
+      stability: { subject_count: 0, rapid_reversals: 0 },
+    });
+  });
 });

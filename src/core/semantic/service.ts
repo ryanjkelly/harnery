@@ -33,6 +33,7 @@ import {
   type SemanticServiceStatus,
   type SemanticServiceStatusRecord,
 } from "./service-status.ts";
+import { semanticSoakReadings } from "./soak.ts";
 import {
   listSemanticAgentDocuments,
   readSemanticManifest,
@@ -344,6 +345,7 @@ export async function runSemanticServiceDaemon(
             deferred: report.outcomes.filter((outcome) => outcome.action === "deferred").length,
             harness_metrics: semanticHarnessMetrics(report),
             usage: aggregateSemanticUsage(report.outcomes),
+            semantic_readings: semanticSoakReadings(coordRoot, report.outcomes),
           };
           if (report.model_calls > 0 || report.cache_hits > 0 || logEntry.unavailable > 0) {
             appendSemanticServiceLog(coordRoot, logEntry);

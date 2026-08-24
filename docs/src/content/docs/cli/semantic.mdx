@@ -42,6 +42,7 @@ harn semantic once --calls-per-hour 12     # use a lower local ceiling
 harn semantic service start                # explicitly start or resume the reader
 harn semantic service status               # inspect liveness, rolling calls, and usage
 harn semantic service stop                 # finish the current call, then stop
+harn semantic soak --minutes 60             # summarize a bounded live-reader window
 harn semantic doctor                       # check readers without a model call
 harn semantic inspect <instance-or-generation>
 ```
@@ -64,6 +65,26 @@ lists the three fixed harness routes, pending work, and the latest reader error.
 Invalid outcomes are grouped into bounded reason categories such as `schema`,
 `citation`, `privacy`, and `unsupported_claim`; rejected model text is not
 stored.
+
+## Live soak reports
+
+`harn semantic soak` summarizes the last 60 minutes by default. Pass
+`--minutes <count>` to choose another whole-minute lookback. The command makes
+no model request. It reads the bounded semantic service log and reports:
+
+- accepted, invalid, unavailable, and deferred outcomes;
+- native, estimated, and unreported token usage with the existing model and
+  harness breakdowns;
+- controlled phase, expression, abstention, confidence, and harness counts;
+- consecutive cue comparisons, changes, transition pairs, and rapid
+  A-to-B-to-A reversals within 10 minutes; and
+- how many passes contain expression instrumentation and whether the retained
+  log covers the entire requested window.
+
+Frequency means accepted model readings, not time displayed in Codec. A cue
+change can reflect a real work transition. A rapid reversal is a review
+candidate, not proof of flicker, and the report does not claim that an inference
+is correct without a labeled review.
 
 ## Usage receipts
 
@@ -177,7 +198,11 @@ Changing any of those inputs prevents stale reuse.
 record contains numeric usage metadata and bounded invalid-reason categories,
 but never the raw prompt or model reply.
 `service.json` keeps the current process aggregate, and the bounded service log
-records per-pass usage totals. None of these files enters Event Ledger V3.
+records per-pass usage totals plus controlled semantic-reading observations for
+soak reports. A reading retains an opaque subject fingerprint, model labels,
+phase, optional expression, and confidence. It excludes task text, model prose,
+event citations, instance IDs, and generation IDs. None of these files enters
+Event Ledger V3.
 
 Version 1 documents and cache entries are rebuildable derived state. The V2
 reader does not migrate or consume them.

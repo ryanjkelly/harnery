@@ -7,6 +7,7 @@ import {
   inspectSemanticDocument,
   readSemanticManifest,
   readSemanticServiceStatus,
+  readSemanticSoakReport,
   requestSemanticServiceStop,
   runSemanticOnce,
   runSemanticServiceDaemon,
@@ -126,6 +127,23 @@ export function registerSemanticCommand(
         emit.data(document);
       } catch (error) {
         emitFailure(emit, "semantic_inspect_failed", error);
+      }
+    });
+
+  semantic
+    .command("soak")
+    .description("Summarize recent reader outcomes, controlled cues, stability, and token usage")
+    .option("--root <path>", "Explicit coordination root")
+    .option("--minutes <count>", "Lookback window in whole minutes", integer)
+    .action((options: { root?: string; minutes?: number }) => {
+      try {
+        emit.data(
+          readSemanticSoakReport(resolve(options.root ?? coordRoot(context)), {
+            ...(options.minutes !== undefined ? { minutes: options.minutes } : {}),
+          }),
+        );
+      } catch (error) {
+        emitFailure(emit, "semantic_soak_failed", error);
       }
     });
 

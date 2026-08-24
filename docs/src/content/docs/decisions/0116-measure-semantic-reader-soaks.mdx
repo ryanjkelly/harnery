@@ -1,0 +1,73 @@
+---
+title: "0116: Measure semantic reader soaks"
+description: "ADR: retain controlled pass observations so bounded reports can measure semantic cue frequency, stability, outcomes, and token usage."
+---
+
+**Status:** accepted (2026-08-24) · **Scope:** semantic service log, soak report, CLI
+
+## Context
+
+The semantic service already reports liveness, rolling calls, validation
+outcomes, and token usage. Those totals do not answer two product questions:
+which controlled expression cues the reader produces during ordinary work, and
+whether a generation holds a cue or repeatedly reverses between cues.
+
+Current agent documents keep only the latest reading for each generation.
+The bounded service log records every material pass, but older entries predate
+expression instrumentation. The soak needs interval aggregation and an honest
+statement of measurement coverage.
+
+The measurement cannot create a second archive of task text, model prose,
+event citations, instance IDs, or generation IDs. It also cannot infer whether
+a reading is correct without a labeled review.
+
+## Alternatives considered
+
+**Keep every semantic document version.** Rejected because it would duplicate
+model prose and private work context merely to count controlled state changes.
+
+**Sample the rendered Codec page.** Rejected because deterministic event-backed
+expressions can override the semantic cue. Page sampling would mix inference
+behavior with display precedence and would still need a durable observer.
+
+**Treat every cue change as flicker.** Rejected because agents genuinely move
+between planning, implementation, verification, and delivery. A transition is
+an observation. It becomes a review candidate only when it rapidly reverses.
+
+**Judge inference accuracy from validator acceptance.** Rejected because the
+validator proves schema, citation, and evidence support. It does not prove that
+the chosen phrase is the best human interpretation.
+
+## Decision
+
+Each material semantic service pass writes an optional `semantic_readings`
+array beside its existing outcome and usage aggregate. A reading contains only
+an opaque 16-hex subject fingerprint, capture origin, generated time, source
+harness, configured and resolved model labels, attestation, controlled phase,
+optional controlled expression cue, and their confidence levels.
+
+The fingerprint is a truncated SHA-256 digest of the generation ID. It lets one
+local log compare consecutive readings without retaining the generation or
+instance ID. The log does not retain task text, semantic headlines, summaries,
+predictions, evidence IDs, or model replies.
+
+`harn semantic soak --minutes <count>` reads the bounded service log and returns
+one report for the requested lookback. The report merges the existing typed
+usage aggregates, counts outcomes, phases, expressions, abstentions, confidence,
+and harnesses, and compares consecutive accepted model-call readings per
+subject. It reports unchanged cues, cue changes, transitions, and A-to-B-to-A
+reversals completed within 10 minutes. Cache hits remain visible in coverage but
+do not count as new model readings.
+
+The report separates instrumented passes from legacy passes and says
+whether the retained log covers the entire requested window. It states three
+limits in every response: reading frequency is not on-screen dwell time, cue
+changes can reflect real work, and inference correctness still requires labeled
+review.
+
+## Result
+
+Semantic Reader V2 can now produce a repeatable live-soak report without another
+model call and without storing model prose. Existing service logs continue to
+work. Their older pass entries count toward outcomes and usage while expression
+coverage remains explicitly partial until new instrumented passes accumulate.

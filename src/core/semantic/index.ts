@@ -111,6 +111,15 @@ export {
   spawnSemanticService,
 } from "./service.ts";
 export {
+  readSemanticSoakReport,
+  SEMANTIC_SOAK_DEFAULT_MINUTES,
+  SEMANTIC_SOAK_REVERSAL_WINDOW_MS,
+  SEMANTIC_SOAK_SCHEMA_VERSION,
+  type SemanticSoakReadingV1,
+  type SemanticSoakReportV1,
+  semanticSoakReadings,
+} from "./soak.ts";
+export {
   inspectSemanticDocument,
   invalidateSemanticDerivedState,
   listSemanticAgentDocuments,
