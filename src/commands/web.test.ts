@@ -4,7 +4,12 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
-import { isWebPortAvailable, nodeOptionsWithHeapCap, resolveMaxOldSpaceMb } from "./web.ts";
+import {
+  isWebPortAvailable,
+  nodeOptionsWithHeapCap,
+  nodeOptionsWithWebDiagnostics,
+  resolveMaxOldSpaceMb,
+} from "./web.ts";
 
 describe("resolveWebPort", () => {
   let savedEnv: string | undefined;
@@ -148,5 +153,19 @@ describe("nodeOptionsWithHeapCap", () => {
 
   test("opting out with nothing inherited leaves NODE_OPTIONS unset", () => {
     expect(nodeOptionsWithHeapCap(0)).toBeUndefined();
+  });
+
+  test("adds the web diagnostics preload after inherited Node options", () => {
+    process.env.NODE_OPTIONS = "--enable-source-maps";
+    const options = nodeOptionsWithWebDiagnostics("/tmp/harnery web", 2048);
+    expect(options).toContain("--enable-source-maps --max-old-space-size=2048");
+    expect(options).toContain("--import=file:///tmp/harnery%20web/server-performance.mjs");
+  });
+
+  test("does not add a duplicate web diagnostics preload", () => {
+    process.env.NODE_OPTIONS = "--import=file:///tmp/server-performance.mjs";
+    expect(nodeOptionsWithWebDiagnostics("/elsewhere", 0)).toBe(
+      "--import=file:///tmp/server-performance.mjs",
+    );
   });
 });

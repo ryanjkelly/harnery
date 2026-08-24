@@ -2,11 +2,16 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
 import { ensureSemanticServiceRunning } from "../core/semantic/service.ts";
+import {
+  parsePerformanceWindow,
+  readWebPerformanceReport,
+  WEB_PERFORMANCE_LOG,
+} from "../lib/web-performance.ts";
 import { lazyFetchWebRoot, webRunner } from "./web-fetch.ts";
 
 /**
@@ -16,6 +21,7 @@ import { lazyFetchWebRoot, webRunner } from "./web-fetch.ts";
  *   up [--prod]:   start the server (dev mode default; --prod runs next start)
  *   build:         next build (production bundle)
  *   start:         next start (must `harn web build` first)
+ *   performance:   summarize request latency and event-loop delays
  *
  * Launches the Next.js app under `harnery/web/` against the user's current
  * working directory. The web app reads `.harnery/` via `HARNERY_COORD_ROOT`;
@@ -68,6 +74,14 @@ export function nodeOptionsWithHeapCap(mb: number): string | undefined {
   if (mb <= 0) return inherited || undefined;
   if (/--max-old-space-size[=\s]/.test(inherited)) return inherited;
   return `${inherited} --max-old-space-size=${mb}`.trim();
+}
+
+/** Preload the request diagnostics hook without replacing Next's HTTP server. */
+export function nodeOptionsWithWebDiagnostics(webDir: string, mb: number): string {
+  const inherited = nodeOptionsWithHeapCap(mb) ?? "";
+  if (inherited.includes("server-performance.mjs")) return inherited;
+  const preload = pathToFileURL(path.join(webDir, "server-performance.mjs")).href;
+  return `${inherited} --import=${preload}`.trim();
 }
 
 async function startSemanticServiceWithWeb(coordRoot: string, emit: EmitContext): Promise<void> {
@@ -208,9 +222,11 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       await startSemanticServiceWithWeb(coordRoot, emit);
 
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
+      const nodeOptions = nodeOptionsWithWebDiagnostics(root, heapMb);
       emit.log(`harn web · http://localhost:${port} (${mode})`, "info");
       emit.log(`files origin · http://harnery-files.localhost:${port}`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
+      emit.log(`performance log · .harnery/logs/${WEB_PERFORMANCE_LOG}`, "info");
       if (heapMb > 0) emit.log(`heap ceiling · ${heapMb} MB`, "info");
 
       const child = spawn(webRunner(), ["run", mode], {
@@ -219,9 +235,8 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
           ...process.env,
           HARNERY_COORD_ROOT: coordRoot,
           HARNERY_WEB_PORT: String(port),
-          ...(nodeOptionsWithHeapCap(heapMb)
-            ? { NODE_OPTIONS: nodeOptionsWithHeapCap(heapMb) as string }
-            : {}),
+          HARNERY_WEB_MODE: mode,
+          NODE_OPTIONS: nodeOptions,
         },
         stdio: "inherit",
       });
@@ -297,8 +312,10 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       if (!(await requireAvailablePort(emit, port))) return;
       await startSemanticServiceWithWeb(coordRoot, emit);
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
+      const nodeOptions = nodeOptionsWithWebDiagnostics(root, heapMb);
       emit.log(`harn web · http://localhost:${port} (start)`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
+      emit.log(`performance log · .harnery/logs/${WEB_PERFORMANCE_LOG}`, "info");
       if (heapMb > 0) emit.log(`heap ceiling · ${heapMb} MB`, "info");
 
       const child = spawn(webRunner(), ["run", "start"], {
@@ -307,9 +324,8 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
           ...process.env,
           HARNERY_COORD_ROOT: coordRoot,
           HARNERY_WEB_PORT: String(port),
-          ...(nodeOptionsWithHeapCap(heapMb)
-            ? { NODE_OPTIONS: nodeOptionsWithHeapCap(heapMb) as string }
-            : {}),
+          HARNERY_WEB_MODE: "start",
+          NODE_OPTIONS: nodeOptions,
         },
         stdio: "inherit",
       });
@@ -323,5 +339,41 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       child.on("exit", (code) => {
         process.exitCode = code ?? 0;
       });
+    });
+
+  web
+    .command("performance")
+    .description("Rank dashboard request latency and event-loop delays from the bounded local log")
+    .option("--coord-root <dir>", "Override the coordination root", process.cwd())
+    .option("--since <window>", "Include the last Nm, Nh, or Nd", "1h")
+    .option("--limit <n>", "Keep the N slowest requests and delays", "20")
+    .option("--json", "Emit structured JSON")
+    .action((opts: { coordRoot: string; since: string; limit: string; json?: boolean }) => {
+      const windowMs = parsePerformanceWindow(opts.since);
+      if (windowMs === null) {
+        emit.error({
+          code: "invalid_web_performance_window",
+          message: `invalid --since value '${opts.since}'`,
+          hint: "Use Nm, Nh, or Nd, for example 30m, 1h, or 7d.",
+        });
+        return;
+      }
+      const limit = Number(opts.limit);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+        emit.error({
+          code: "invalid_web_performance_limit",
+          message: `invalid --limit value '${opts.limit}'`,
+          hint: "Use an integer from 1 through 500.",
+        });
+        return;
+      }
+      if (opts.json) emit.config({ format: "json" });
+      emit.data(
+        readWebPerformanceReport({
+          root: opts.coordRoot,
+          since: opts.since,
+          limit,
+        }),
+      );
     });
 }

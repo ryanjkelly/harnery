@@ -1,0 +1,88 @@
+---
+title: "0121: Record dashboard request and event-loop latency"
+description: "ADR: preload bounded process-level diagnostics into the Next.js dashboard and summarize them through the Harnery CLI."
+---
+
+**Status:** accepted (2026-08-24) · **Scope:** standalone webserver startup, local performance log, web CLI
+
+## Context
+
+The standalone dashboard can become slow enough that navigation appears
+serialized. Next.js prints a completion time for some requests, but those lines
+are transient and do not show whether the process stopped servicing the event
+loop. They also do not preserve the concurrent requests that were active during
+a pause.
+
+The dashboard uses one Node.js process and performs synchronous filesystem work
+in several server-side readers. Development mode can also compile a cold route
+inside the request window. A useful diagnostic needs to separate long request
+time from event-loop delay and retain enough overlap evidence to identify the
+next function or route to inspect.
+
+## Alternatives considered
+
+**Keep Next.js console timing as the only record.** Rejected because the output
+is not structured, rotates with the process manager, and carries no event-loop
+or concurrency evidence.
+
+**Replace Next.js with a custom HTTP server.** Rejected because a custom server
+would own routing and startup behavior solely for instrumentation. It would
+increase the chance of development HMR or production startup drifting from the
+supported Next.js CLI.
+
+**Wrap each page and route handler.** Rejected because it would require repeated
+changes across the App Router tree, miss framework work before the handler, and
+silently lose coverage whenever a new route was added without the wrapper.
+
+**Ship every trace to an external observability service.** Rejected for the
+local-first dashboard. It would add credentials, networking, dependency cost,
+and a privacy boundary before local evidence has shown that remote collection
+is necessary.
+
+## Decision
+
+The dashboard's `dev` and `start` package scripts preload
+`web/server-performance.mjs` with Node's `--import` flag. `harn web up` and
+`harn web start` also add the absolute preload URL to `NODE_OPTIONS` so a
+fetched dashboard retains the same floor. A process-global guard makes the two
+paths idempotent. The module subscribes to `http.server.request.start` through
+`node:diagnostics_channel`, then observes the response `finish` and `close`
+events. This keeps the supported Next.js server in place while covering all
+HTTP routes and framework work.
+
+The module records two structured event types:
+
+- `request_complete` stores the method, query-free pathname, status, duration,
+  process CPU consumed during the request window, concurrency, and event-loop
+  delay measurements. Long-lived server-sent event streams are marked and
+  excluded from latency rankings, concurrency counts, and delay attribution.
+- `event_loop_delay` stores the delayed interval and up to 12 requests that
+  overlapped it. A completed response stays attributable through the next timer
+  phase so a synchronous handler cannot disappear from the delay record by
+  calling `response.end()` before the monitor runs.
+
+The recorder does not store query strings, headers, bodies, or response data.
+It excludes Next.js static assets. It appends asynchronously to
+`.harnery/logs/web-performance.jsonl`, rotates at 5 MB, and retains three backup
+generations by default.
+
+`harn web performance` reads the active and rotated files for a bounded window.
+It reports route counts, p50, p95, maximum duration, slow and aborted requests,
+maximum overlapping event-loop delay, and maximum concurrency. It also returns
+bounded lists of the slowest request records and largest delay records.
+
+## Result
+
+The dashboard now keeps durable local evidence for both kinds of perceived
+slowness: requests that take a long time while the event loop remains available,
+and periods when the process cannot service another request. The initial Node
+integration fixture proves that a 120 ms synchronous handler produces both a
+slow request record and an overlapping event-loop delay record while omitting
+the request query string.
+
+The first live development-server sample confirmed the original complaint. A
+`/codec` request took 10,762 ms and overlapped a 6,088 ms
+event-loop delay. A later `/api/agents` request took 3,377 ms while overlapping
+a 2,648 ms delay; another request to the same route completed in 104 ms when no
+delay was observed. An idle `/api/codec-stream` connection was present during
+the sample but was correctly excluded from attribution.
