@@ -123,6 +123,43 @@ describe("event ledger V3 turn telemetry", () => {
       state: "observed",
       value: { used_tokens: 42_000, limit_tokens: 64_000 },
     });
+    expect(
+      extractTurnTelemetryV3("cursor", {
+        context_tokens: 236_096,
+        context_window_size: 256_000,
+        context_usage_percent: 92.225,
+      }).context,
+    ).toEqual({
+      state: "observed",
+      value: {
+        used_tokens: 236_096,
+        limit_tokens: 256_000,
+        remaining_tokens: 19_904,
+        measured_at: expect.any(String),
+        method: "cursor_hook",
+      },
+      attestation: "native",
+      confidence: "exact",
+    });
+    expect(
+      extractTurnTelemetryV3("cursor", { context_usage_percent: 41.25 }, "2026-08-18T14:00:00.000Z")
+        .context,
+    ).toEqual({
+      state: "observed",
+      value: {
+        used_percent: 41.25,
+        remaining_percent: 58.75,
+        measured_at: "2026-08-18T14:00:00.000Z",
+        method: "cursor_hook",
+      },
+      attestation: "native",
+      confidence: "exact",
+    });
+    expect(extractTurnTelemetryV3("cursor", { context_usage_percent: 100.1 }).context).toEqual({
+      state: "expected_but_missing",
+      capability: "context_usage",
+      reason: "context_usage_percent_invalid",
+    });
   });
 
   test("distinguishes conditional absence from a broken native promise", () => {

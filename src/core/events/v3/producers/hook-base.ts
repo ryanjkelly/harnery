@@ -472,7 +472,7 @@ function inputContextMeasurement(payload: ParsedPayload, phase: "before" | "afte
   const metadata = plainRecord(payload.raw.compact_metadata);
   const usedKeys =
     phase === "before"
-      ? ["pre_tokens", "pre_compact_tokens", "used_tokens"]
+      ? ["pre_tokens", "pre_compact_tokens", "used_tokens", "context_tokens"]
       : ["post_tokens", "post_compact_tokens", "used_tokens"];
   const limitKeys = [
     "context_window_size",

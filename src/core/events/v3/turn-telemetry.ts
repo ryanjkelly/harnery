@@ -120,9 +120,11 @@ export function extractTurnTelemetryV3(
 
   const usedTokens =
     number(context?.used_tokens) ??
+    number(context?.context_tokens) ??
     number(context?.input_tokens) ??
     number(context?.total_tokens) ??
     number(payload.used_tokens) ??
+    number(payload.context_tokens) ??
     number(payload.total_input_tokens) ??
     number(usage?.total_tokens) ??
     number(usage?.prompt_tokens) ??
@@ -141,10 +143,17 @@ export function extractTurnTelemetryV3(
     number(payload.context_window_size) ??
     number(payload.context_window_tokens) ??
     (typeof payload.context_window === "number" ? number(payload.context_window) : undefined);
+  const usedPercent =
+    finiteNumber(context?.context_usage_percent) ??
+    finiteNumber(context?.used_percent) ??
+    finiteNumber(context?.used_percentage) ??
+    finiteNumber(payload.context_usage_percent) ??
+    finiteNumber(payload.used_percent);
   const contextMeasurement = contextObservation(
     adapter,
     usedTokens,
     limitTokens,
+    usedPercent,
     observedAt,
     support.context_usage,
   );
@@ -156,6 +165,7 @@ function contextObservation(
   adapter: Adapter,
   usedTokens: number | undefined,
   limitTokens: number | undefined,
+  usedPercent: number | undefined,
   observedAt: string,
   override: CapabilitySupportV3 | undefined,
 ): TelemetryObservationV3<ContextMeasurementV3> {
@@ -171,6 +181,28 @@ function contextObservation(
       },
       attestation: "native",
       confidence: "exact",
+    };
+  }
+
+  if (usedPercent !== undefined && usedPercent >= 0 && usedPercent <= 100) {
+    return {
+      state: "observed",
+      value: {
+        used_percent: usedPercent,
+        remaining_percent: Math.max(0, 100 - usedPercent),
+        measured_at: observedAt,
+        method: `${adapter.replaceAll("-", "_")}_hook`,
+      },
+      attestation: "native",
+      confidence: "exact",
+    };
+  }
+
+  if (usedPercent !== undefined) {
+    return {
+      state: "expected_but_missing",
+      capability: "context_usage",
+      reason: "context_usage_percent_invalid",
     };
   }
 
@@ -263,6 +295,10 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function number(value: unknown): number | undefined {
   return typeof value === "number" ? safeInteger(value) : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function safeInteger(value: number): number | undefined {

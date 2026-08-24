@@ -8,8 +8,8 @@ import { transcriptPathCandidates } from "../resolve/transcript.ts";
 
 const DEFAULT_TAIL_BYTES = 256 * 1024;
 /**
- * An active turn can accumulate enough tool traffic to push its task_started
- * row beyond the ordinary status tail. Keep turn attribution bounded while
+ * An active turn can accumulate enough tool traffic to push its native turn
+ * ancestor beyond the ordinary status tail. Keep attribution bounded while
  * giving long-running interactive turns a larger matching window.
  */
 const ACTIVE_TURN_TAIL_BYTES = 4 * 1024 * 1024;
@@ -71,6 +71,7 @@ export type RuntimeContextMissingReason =
   | "context_limit_tokens_not_reported"
   | "context_limit_tokens_invalid"
   | "claude_context_limit_tokens_not_reported"
+  | "claude_transcript_sample_stale"
   | "claude_transcript_session_mismatch"
   | "claude_transcript_turn_not_found"
   | "claude_transcript_unreadable"
@@ -156,9 +157,6 @@ export function readRuntimeContextTelemetry(
   if (!request.session_id) return unsupported("runtime_session_id_not_reported", startedAt);
   if (request.mode !== "status" && !request.turn_id && request.adapter !== "cursor") {
     return unsupported("runtime_turn_id_not_reported", startedAt);
-  }
-  if (request.mode === "active_turn" && request.adapter !== "codex") {
-    return unsupported("runtime_adapter_not_supported", startedAt);
   }
   if (request.adapter === "codex") return readCodexContext(request, options, startedAt);
   if (request.adapter === "claude-code") return readClaudeContext(request, options, startedAt);
@@ -578,7 +576,11 @@ function readClaudeContext(
     existsSync(candidate),
   );
   if (!readablePath) return unsupported("runtime_context_telemetry_unavailable", startedAt);
-  const tail = readTail(readablePath, options.maxTailBytes ?? DEFAULT_TAIL_BYTES);
+  const tail = readTail(
+    readablePath,
+    options.maxTailBytes ??
+      (request.mode === "active_turn" ? ACTIVE_TURN_TAIL_BYTES : DEFAULT_TAIL_BYTES),
+  );
   if (!tail) return partial("claude_transcript_unreadable", 0, startedAt);
   const rows = parseRuntimeRows(tail.text);
   const sessionRows = rows.filter(
@@ -587,11 +589,11 @@ function readClaudeContext(
   if (rows.some((row) => row.session_id !== undefined) && sessionRows.length === 0) {
     return partial("claude_transcript_session_mismatch", tail.bytes, startedAt);
   }
-  const candidateRows =
-    request.mode === "turn"
-      ? claudeAssistantRowsForTurn(sessionRows, request.turn_id!)
-      : sessionRows.filter((row) => row.type === "assistant");
-  if (request.mode === "turn" && candidateRows.length === 0) {
+  const turnAttributed = request.mode === "turn" || request.mode === "active_turn";
+  const candidateRows = turnAttributed
+    ? claudeAssistantRowsForTurn(sessionRows, request.turn_id!)
+    : sessionRows.filter((row) => row.type === "assistant");
+  if (turnAttributed && candidateRows.length === 0) {
     return partial("claude_transcript_turn_not_found", tail.bytes, startedAt);
   }
   for (let index = candidateRows.length - 1; index >= 0; index--) {
@@ -611,6 +613,19 @@ function readClaudeContext(
     const model = stringValue(message?.model);
     const capability = model ? claudeModelContextCapability(model) : undefined;
     if (capability && row.timestamp) {
+      if (request.mode === "active_turn" && request.observed_at) {
+        const age = Date.parse(request.observed_at) - Date.parse(row.timestamp);
+        if (
+          !Number.isFinite(age) ||
+          age < -5_000 ||
+          age > (options.maxSampleAgeMs ?? DEFAULT_MAX_SAMPLE_AGE_MS)
+        ) {
+          return partial("claude_transcript_sample_stale", tail.bytes, startedAt, {
+            used_tokens: used,
+            measured_at: row.timestamp,
+          });
+        }
+      }
       const witness = [
         request.session_id,
         request.turn_id ?? "status",
@@ -743,7 +758,7 @@ function cursorObservation(
   if (!Number.isFinite(sampleMs)) {
     return partial("cursor_context_sample_time_not_reported", sample.bytes_read, startedAt);
   }
-  if (request.mode === "turn" && request.observed_at) {
+  if ((request.mode === "turn" || request.mode === "active_turn") && request.observed_at) {
     const observedMs = Date.parse(request.observed_at);
     const age = observedMs - sampleMs;
     if (

@@ -522,6 +522,80 @@ describe("runtime context telemetry", () => {
     }
   });
 
+  test("reads fresh turn-matched Claude context during an active turn", () => {
+    const transcript = join(root, "claude-active-turn.jsonl");
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          type: "user",
+          uuid: "active-user",
+          promptId: TURN,
+          sessionId: SESSION,
+          message: { role: "user", content: "PRIVATE_ACTIVE_PROMPT" },
+        },
+        {
+          type: "assistant",
+          uuid: "active-assistant",
+          parentUuid: "active-user",
+          sessionId: SESSION,
+          timestamp: TOKEN_TIME,
+          message: {
+            model: "claude-opus-5",
+            usage: {
+              input_tokens: 68_000,
+              cache_creation_input_tokens: 320,
+              cache_read_input_tokens: 300,
+            },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "claude-code",
+        session_id: SESSION,
+        turn_id: TURN,
+        transcript_path: transcript,
+        observed_at: COMPLETE_TIME,
+        mode: "active_turn",
+      }),
+    ).toMatchObject({
+      state: "observed",
+      used_tokens: 68_620,
+      limit_tokens: 1_000_000,
+      measured_at: TOKEN_TIME,
+      attestation: "inferred",
+      confidence: "high",
+    });
+    expect(
+      readRuntimeContextTelemetry(
+        {
+          adapter: "claude-code",
+          session_id: SESSION,
+          turn_id: TURN,
+          transcript_path: transcript,
+          observed_at: "2026-08-21T20:30:00.000Z",
+          mode: "active_turn",
+        },
+        { maxSampleAgeMs: 5_000 },
+      ),
+    ).toMatchObject({ state: "partial", reason: "claude_transcript_sample_stale" });
+    expect(
+      readRuntimeContextTelemetry({
+        adapter: "claude-code",
+        session_id: SESSION,
+        turn_id: "different-turn",
+        transcript_path: transcript,
+        observed_at: COMPLETE_TIME,
+        mode: "active_turn",
+      }),
+    ).toMatchObject({ state: "partial", reason: "claude_transcript_turn_not_found" });
+  });
+
   test("reads Cursor first-party composer percentage without inventing token counts", () => {
     const cursorRoot = join(root, "Cursor", "User", "workspaceStorage");
     writeCursorDatabase(cursorRoot, "workspace-a", [
@@ -546,6 +620,25 @@ describe("runtime context telemetry", () => {
       confidence: "high",
     });
     expect(JSON.stringify(result)).not.toContain("limit_tokens");
+  });
+
+  test("keeps a fresh Cursor database percentage usable during an active turn", () => {
+    const cursorRoot = join(root, "Cursor-active", "User", "workspaceStorage");
+    writeCursorDatabase(cursorRoot, "workspace-a", [
+      { composerId: SESSION, contextUsagePercent: 63.5, lastUpdatedAt: Date.parse(TOKEN_TIME) },
+    ]);
+
+    expect(
+      readRuntimeContextTelemetry(
+        {
+          adapter: "cursor",
+          session_id: SESSION,
+          observed_at: COMPLETE_TIME,
+          mode: "active_turn",
+        },
+        { cursorRoots: [cursorRoot] },
+      ),
+    ).toMatchObject({ state: "observed", used_percent: 63.5 });
   });
 
   test("caches Cursor's session database and bounds discovery", () => {

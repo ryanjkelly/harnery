@@ -1,0 +1,80 @@
+---
+title: "ADR 0115: admit active adapter context evidence"
+description: Sample truthful Claude and Cursor context evidence into V3 without estimating from transcript size.
+sidebar:
+  order: 115
+---
+
+**Date:** 2026-08-24
+**Status:** Accepted
+
+## Context
+
+ADR 0108 defines exact-token, inferred-token, and percentage-only context
+measurements. ADR 0112 adds bounded active-turn sampling for Codex. Claude Code
+and Cursor still need an active path into Event Ledger V3 before a terminal
+hook.
+
+Claude transcripts contain a turn-attributed assistant usage row and the exact
+model ID. Anthropic's
+[model capability table](https://platform.claude.com/docs/en/about-claude/models/overview)
+publishes the context window for current canonical model IDs. The existing
+reader can join those sources honestly, but active-turn mode previously refused
+every adapter except Codex.
+
+Cursor's documented [hook schema](https://cursor.com/docs/hooks) exposes
+`context_usage_percent` on context-aware payloads. Its `preCompact` hook also
+exposes `context_tokens` and `context_window_size`. Those fields are stronger
+evidence than the legacy workspace database. Current Cursor releases may omit
+the old composer collection from that database, and transcript serialization
+does not include all hidden, system, and tool context.
+
+## Alternatives considered
+
+- **Estimate Cursor tokens from transcript bytes or message text.** Rejected
+  because serialized transcripts omit context that the runtime counts. A local
+  tokenization heuristic cannot claim either an exact total or a trustworthy
+  percentage.
+- **Assume a Cursor denominator from the selected model.** Rejected because
+  runtime modes can change the effective window and the hook already exposes
+  exact values at compaction.
+- **Wait for Stop for Claude.** Rejected because the same fresh, turn-matched
+  transcript evidence is available at tool boundaries during long turns.
+- **Read adapter files from Codec.** Rejected because V3 remains the telemetry
+  authority and public UI code must not receive private paths or transcript
+  bodies.
+
+## Decision
+
+The active V3 sampler runs at bounded tool-completion boundaries for Codex,
+Claude Code, and local Cursor sessions. Its owner-only cadence remains one
+attempt per turn every 15 seconds, and source-witness deduplication remains
+shared across active and terminal observations.
+
+Claude active reads use the supplied transcript path, require the assistant row
+to descend from the current native prompt ID, and reject samples that are more
+than 30 seconds old. A known exact model ID joins to the published limit and is
+recorded as `inferred` with high confidence. An unknown model, a truncated
+parent chain, a session mismatch, or a stale row remains an explicit missing
+state.
+
+Cursor prefers native hook evidence. A complete `context_tokens` and
+`context_window_size` pair is `native` and `exact`; a valid
+`context_usage_percent` without a token pair is also native but remains
+percentage-only. `preCompact` writes the exact pair to both the compaction event
+and a canonical `context.observed` event for the active turn. The bounded,
+session-matched workspace database remains a conditional fallback when it
+actually yields a fresh first-party percentage. Cursor cloud sessions do not
+probe local databases.
+
+Public events contain only numeric values, measurement time, method, and opaque
+provenance. They never contain transcript text, database contents, private
+paths, or native session and turn IDs.
+
+## Result
+
+Long-running Claude turns can update Codec before Stop with an honestly
+inferred limit. Cursor can publish exact remaining context at compaction and can
+publish a native percentage earlier when the runtime supplies one. Missing,
+stale, ambiguous, and schema-migrated sources continue to produce the neutral
+unknown gauge instead of a fabricated estimate.

@@ -2077,6 +2077,94 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(durable).not.toContain(nativeTurn);
   });
 
+  test("records fresh turn-matched Claude context during an open turn", () => {
+    const root = candidateRoot("claude-code");
+    const nativeSession = "claude-active-context-session";
+    const nativeTurn = "claude-active-context-turn";
+    const transcript = join(root, "claude-active-context.jsonl");
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          type: "user",
+          uuid: "claude-active-user",
+          promptId: nativeTurn,
+          sessionId: nativeSession,
+          message: { role: "user", content: "PRIVATE_CLAUDE_PROMPT" },
+        },
+        {
+          type: "assistant",
+          uuid: "claude-active-assistant",
+          parentUuid: "claude-active-user",
+          sessionId: nativeSession,
+          timestamp: "2026-08-21T20:24:14.100Z",
+          message: {
+            model: "claude-opus-5",
+            usage: {
+              input_tokens: 68_000,
+              cache_creation_input_tokens: 320,
+              cache_read_input_tokens: 300,
+            },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "claude-code"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+        "claude-code",
+      ),
+    );
+    const toolPayload = parsed({
+      session_id: nativeSession,
+      turn_id: nativeTurn,
+      transcript_path: transcript,
+      tool_use_id: "claude-tool",
+      tool_name: "Bash",
+    });
+    recordHookSignalV3({
+      ...baseInput(root, "pre-tool-use", toolPayload, "claude-code"),
+      observed_at: "2026-08-21T20:24:15.000Z",
+    });
+    expect(
+      recordHookSignalV3({
+        ...baseInput(root, "post-tool-use", toolPayload, "claude-code"),
+        observed_at: "2026-08-21T20:24:15.200Z",
+      }).state,
+    ).toBe("recorded");
+
+    const contexts = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "context.observed");
+    expect(contexts).toHaveLength(1);
+    expect(
+      contexts[0]?.event_type === "context.observed" && contexts[0].payload.measurement,
+    ).toEqual({
+      state: "observed",
+      value: {
+        used_tokens: 68_620,
+        limit_tokens: 1_000_000,
+        remaining_tokens: 931_380,
+        measured_at: "2026-08-21T20:24:14.100Z",
+        method: "claude_transcript_usage_model_capability",
+      },
+      attestation: "inferred",
+      confidence: "high",
+    });
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(durable).not.toContain(transcript);
+    expect(durable).not.toContain(nativeSession);
+    expect(durable).not.toContain(nativeTurn);
+    expect(durable).not.toContain("PRIVATE_CLAUDE_PROMPT");
+  });
+
   test("reconciles a late Codex terminal on the next hook or session end", () => {
     for (const retrySignal of ["user-prompt-submit", "session-end"] as const) {
       const root = candidateRoot("codex");
@@ -3050,7 +3138,7 @@ describe("event ledger V3 persistent hook recorder", () => {
     ).toBe(1);
   });
 
-  test("records Cursor pre-compaction but refuses unsupported completion telemetry", () => {
+  test("records exact Cursor pre-compaction context but refuses unsupported completion telemetry", () => {
     const root = candidateRoot("cursor");
     const nativeSession = "cursor-session";
     expect(
@@ -3062,12 +3150,48 @@ describe("event ledger V3 persistent hook recorder", () => {
       recordHookSignalV3(
         baseInput(
           root,
-          "pre-compact",
-          parsed({ session_id: nativeSession, raw: { pre_tokens: 80, context_window_size: 100 } }),
+          "user-prompt-submit",
+          parsed({ session_id: nativeSession, turn_id: "cursor-turn" }),
           "cursor",
         ),
       ).state,
     ).toBe("recorded");
+    expect(
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "pre-compact",
+          parsed({
+            session_id: nativeSession,
+            raw: {
+              context_tokens: 236_096,
+              context_window_size: 256_000,
+              context_usage_percent: 92.225,
+            },
+          }),
+          "cursor",
+        ),
+      ).state,
+    ).toBe("recorded");
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const compaction = events.find((event) => event.event_type === "context.compaction_started");
+    expect(
+      compaction?.event_type === "context.compaction_started" && compaction.payload.before,
+    ).toMatchObject({
+      state: "observed",
+      value: { used_tokens: 236_096, limit_tokens: 256_000, remaining_tokens: 19_904 },
+      attestation: "native",
+      confidence: "exact",
+    });
+    const context = events.find((event) => event.event_type === "context.observed");
+    expect(context?.event_type === "context.observed" && context.payload.measurement).toMatchObject(
+      {
+        state: "observed",
+        value: { used_tokens: 236_096, limit_tokens: 256_000, remaining_tokens: 19_904 },
+        attestation: "native",
+        confidence: "exact",
+      },
+    );
     expect(
       recordHookSignalV3(
         baseInput(
@@ -3078,6 +3202,86 @@ describe("event ledger V3 persistent hook recorder", () => {
         ),
       ),
     ).toEqual({ state: "gate_closed", reason: "signal_not_approved:post_compaction" });
+  });
+
+  test("records Cursor native percentage telemetry at an active tool boundary", () => {
+    const root = candidateRoot("cursor");
+    const nativeSession = "cursor-active-context";
+    const nativeTurn = "cursor-active-turn";
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "cursor"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+        "cursor",
+      ),
+    );
+    const request = parsed({
+      session_id: nativeSession,
+      turn_id: nativeTurn,
+      tool_use_id: "cursor-context-tool",
+      tool_name: "Shell",
+    });
+    recordHookSignalV3(baseInput(root, "pre-tool-use", request, "cursor"));
+    expect(
+      recordHookSignalV3({
+        ...baseInput(
+          root,
+          "post-tool-use",
+          parsed({
+            ...request,
+            raw: { context_usage_percent: 41.25 },
+          }),
+          "cursor",
+        ),
+        observed_at: "2026-08-21T20:24:15.200Z",
+      }).state,
+    ).toBe("recorded");
+
+    const contexts = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "context.observed");
+    expect(contexts).toHaveLength(1);
+    expect(
+      contexts[0]?.event_type === "context.observed" && contexts[0].payload.measurement,
+    ).toEqual({
+      state: "observed",
+      value: {
+        used_percent: 41.25,
+        remaining_percent: 58.75,
+        measured_at: "2026-08-21T20:24:15.200Z",
+        method: "cursor_hook",
+      },
+      attestation: "native",
+      confidence: "exact",
+    });
+
+    for (const signal of ["pre-tool-use", "post-tool-use"] as const) {
+      recordHookSignalV3({
+        ...baseInput(
+          root,
+          signal,
+          parsed({
+            session_id: nativeSession,
+            turn_id: nativeTurn,
+            tool_use_id: "cursor-context-tool-two",
+            tool_name: "Shell",
+            raw: { context_usage_percent: 41.25 },
+          }),
+          "cursor",
+        ),
+        observed_at: "2026-08-21T20:24:16.200Z",
+        runtimeTelemetryOptions: { activeContextProbeIntervalMs: 0 },
+      });
+    }
+    expect(
+      readLedgerV3(root)
+        .events.map(({ event }) => event)
+        .filter((event) => event.event_type === "context.observed"),
+    ).toHaveLength(1);
   });
 
   test("marks a regressing wall clock instead of poisoning the authority", () => {

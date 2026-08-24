@@ -97,7 +97,7 @@ const CLOSED_TURN_MEMORY_CAP = 16;
 const SPAN_SOFT_WATERMARK = 128;
 const PENDING_RUNTIME_CONTEXT_CAP = 4;
 const RUNTIME_CONTEXT_RETRY_LIMIT = 2;
-/** Active Codex turns pay for at most one bounded rollout read per interval. */
+/** Active turns pay for at most one bounded adapter telemetry read per interval. */
 const ACTIVE_RUNTIME_CONTEXT_PROBE_INTERVAL_MS = 15_000;
 /** Codex can flush the terminal row just after Stop; keep this grace bounded and off other hooks. */
 const STOP_RUNTIME_CONTEXT_RETRY_DELAYS_MS = [75, 175] as const;
@@ -1188,6 +1188,16 @@ function processHookSignalLocked(
     // native identity long enough to seed a delayed context retry afterward.
     const nativeTurnIdForContext = input.payload.turn_id ?? state.current_native_turn_id;
     const durability = commitEventLocked(input, state, path, event, sourceId);
+    if (event.event_type === "context.compaction_started" && input.signal === "pre-compact") {
+      maybeCommitNativeHookContextObservation(
+        input,
+        state,
+        path,
+        rootId,
+        fingerprintContext,
+        event,
+      );
+    }
     if (event.event_type === "tool.requested" && sourceId) {
       const explicitWait = explicitNativeWait(input);
       if (explicitWait) {
@@ -1795,11 +1805,10 @@ function commitContextObservation(
 }
 
 /**
- * Admit an exact, turn-matched Codex status sample while the turn is open.
- * Tool completions are safe sampling boundaries: Codex has already appended
- * the token_count row emitted with the tool request. Persistent
- * owner-only cadence state prevents short-lived hook processes from scanning
- * on every request, and the source witness prevents duplicate public events.
+ * Admit fresh adapter-native or bounded runtime context while a turn is open.
+ * Tool completions are safe sampling boundaries. Persistent owner-only cadence
+ * state prevents short-lived hook processes from reading on every request,
+ * and the source witness prevents duplicate public events.
  */
 function maybeCommitActiveRuntimeContextObservation(
   input: RecordHookSignalV3Input,
@@ -1809,17 +1818,12 @@ function maybeCommitActiveRuntimeContextObservation(
   fingerprintContext: ReturnType<typeof fingerprintContextV3>,
   sourceEvent: EventV3,
 ): void {
-  if (
-    input.adapter !== "codex" ||
-    input.signal !== "post-tool-use" ||
-    state.terminal ||
-    !state.current_turn_id
-  ) {
+  if (input.signal !== "post-tool-use" || state.terminal || !state.current_turn_id) {
     return;
   }
   const nativeSessionId = input.payload.session_id ?? input.payload.conversation_id;
   const nativeTurnId = input.payload.turn_id ?? state.current_native_turn_id;
-  if (!nativeSessionId || !nativeTurnId) return;
+  if (!nativeSessionId || (!nativeTurnId && input.adapter !== "cursor")) return;
 
   const now = Date.now();
   const configuredInterval = input.runtimeTelemetryOptions?.activeContextProbeIntervalMs;
@@ -1844,16 +1848,39 @@ function maybeCommitActiveRuntimeContextObservation(
     boundary: "tool_completed",
   };
 
+  const native = extractTurnTelemetryV3(
+    input.adapter,
+    input.payload.raw,
+    sourceEvent.time.observed_at,
+  ).context;
+  if (native.state === "observed") {
+    commitActiveContextObservation(
+      input,
+      state,
+      path,
+      rootId,
+      fingerprintContext,
+      sourceEvent,
+      native,
+      nativeContextProvenance(input, state, native),
+    );
+    return;
+  }
+  if (input.adapter === "cursor" && state.cursor_mode === "cloud") {
+    publishProducerState(path, state);
+    return;
+  }
+
   const transcriptPath = runtimeTranscriptPath(input, state);
-  if (!transcriptPath) {
+  if (!transcriptPath && input.adapter !== "cursor") {
     publishProducerState(path, state);
     return;
   }
   const runtime = readRuntimeContextTelemetry(
     {
-      adapter: "codex",
+      adapter: input.adapter,
       session_id: nativeSessionId,
-      turn_id: nativeTurnId,
+      ...(nativeTurnId ? { turn_id: nativeTurnId } : {}),
       ...(state.current_turn_span?.opened_at
         ? { turn_started_at: state.current_turn_span.opened_at }
         : {}),
@@ -1864,11 +1891,40 @@ function maybeCommitActiveRuntimeContextObservation(
     input.runtimeTelemetryOptions,
   );
   if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
-  if (runtime.state !== "observed" || !("used_tokens" in runtime)) {
+  if (runtime.state !== "observed") {
     publishProducerState(path, state);
     return;
   }
 
+  commitActiveContextObservation(
+    input,
+    state,
+    path,
+    rootId,
+    fingerprintContext,
+    sourceEvent,
+    runtimeContextObservation(runtime),
+    {
+      source_event: runtime.source_event,
+      source_witness: runtime.source_witness,
+      ...(input.adapterVersion ? { runtime_version: input.adapterVersion } : {}),
+      attestation: runtime.attestation,
+      confidence: runtime.confidence,
+    },
+  );
+}
+
+function commitActiveContextObservation(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+  sourceEvent: EventV3,
+  measurement: TelemetryObservationV3<ContextMeasurementV3>,
+  provenance: ContextTelemetryProvenanceV3,
+): void {
+  if (!state.current_turn_id) return;
   const scope = sourceEvent.scope as {
     run_id?: `run_${string}`;
     workflow_id?: `wf_${string}`;
@@ -1888,14 +1944,55 @@ function maybeCommitActiveRuntimeContextObservation(
       ...(scope.workflow_id ? { workflow_id: scope.workflow_id } : {}),
       ...(scope.workflow_agent_id ? { workflow_agent_id: scope.workflow_agent_id } : {}),
     },
-    runtimeContextObservation(runtime),
-    {
-      source_event: runtime.source_event,
-      source_witness: runtime.source_witness,
-      ...(input.adapterVersion ? { runtime_version: input.adapterVersion } : {}),
-      attestation: runtime.attestation,
-      confidence: runtime.confidence,
-    },
+    measurement,
+    provenance,
+  );
+}
+
+function nativeContextProvenance(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  measurement: Extract<TelemetryObservationV3<ContextMeasurementV3>, { state: "observed" }>,
+): ContextTelemetryProvenanceV3 {
+  const { measured_at: _measuredAt, ...stableValue } = measurement.value;
+  const witness = canonicalJsonV3({
+    adapter: input.adapter,
+    session_id: state.session_id,
+    turn_id: state.current_turn_id,
+    value: stableValue,
+  });
+  return {
+    source_event: `${input.adapter}.native_context`,
+    source_witness: createHash("sha256").update(witness).digest("hex"),
+    ...(input.adapterVersion ? { runtime_version: input.adapterVersion } : {}),
+    attestation: measurement.attestation,
+    confidence: measurement.confidence,
+  };
+}
+
+function maybeCommitNativeHookContextObservation(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+  sourceEvent: EventV3,
+): void {
+  const measurement = extractTurnTelemetryV3(
+    input.adapter,
+    input.payload.raw,
+    sourceEvent.time.observed_at,
+  ).context;
+  if (measurement.state !== "observed") return;
+  commitActiveContextObservation(
+    input,
+    state,
+    path,
+    rootId,
+    fingerprintContext,
+    sourceEvent,
+    measurement,
+    nativeContextProvenance(input, state, measurement),
   );
 }
 
