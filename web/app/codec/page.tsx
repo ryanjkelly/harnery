@@ -8,8 +8,6 @@
  * or coordination state (see the host repo's Codec visual-director plan).
  */
 
-import Link from "next/link";
-
 import { AgentChipProvider } from "@/components/AgentChip";
 import { CodecView } from "@/components/codec/CodecView";
 import styles from "@/components/codec/codec.module.css";
@@ -27,26 +25,6 @@ export default async function CodecPage() {
     <AgentChipProvider summaries={summaries}>
       <main className={styles.codecPage}>
         <div className={styles.pageGrid} aria-hidden />
-        <header className={styles.codecHeader}>
-          <div className={styles.headerTitleRow}>
-            <span className={styles.headerBeacon} aria-hidden />
-            <p className={styles.headerKicker}>Live agent director</p>
-            <h1 className={styles.codecTitle}>Codec</h1>
-            <Link className={styles.rosterLink} href="/codec/roster" prefetch={false}>
-              Roster lab
-            </Link>
-            <Link className={styles.rosterLink} href="/codec/replay" prefetch={false}>
-              Replay lab
-            </Link>
-            <Link className={styles.rosterLink} href="/codec/evaluate" prefetch={false}>
-              Comprehension test
-            </Link>
-          </div>
-          <p className={styles.codecDeck}>
-            A read-only, ledger-backed view of the team in motion. Local intent stays on this
-            machine; the dashboard remains the control surface.
-          </p>
-        </header>
         <div className={styles.codecStage}>
           <CodecView initialScene={scene} />
         </div>

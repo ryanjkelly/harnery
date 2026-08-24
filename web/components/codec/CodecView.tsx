@@ -39,6 +39,7 @@ import {
   TriangleAlert,
   Wrench,
 } from "lucide-react";
+import Link from "next/link";
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { AgentChip } from "@/components/AgentChip";
 import { Badge } from "@/components/ui/badge";
@@ -87,7 +88,7 @@ const AMBIENCE_CLASS: Record<string, string | undefined> = {
 
 const REMOTE_PANEL_STORAGE_KEY = "harnery.codec.remote-panel";
 const TEAM_PANEL_STORAGE_KEY = "harnery.codec.team-panel";
-const BALANCED_ROW_MIN_VIEWPORT_HEIGHT_REM = 64;
+const BALANCED_ROW_MIN_VIEWPORT_HEIGHT_REM = 56;
 const BALANCED_ROW_CARD_TARGET_WIDTH_REM = 27;
 const BALANCED_ROW_GRID_GAP_REM = 1;
 
@@ -463,7 +464,34 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
             </div>
           </section>
         )}
-        <div className={styles.sceneStatusBar}>
+        <div data-codec-top-bar className={styles.sceneStatusBar}>
+          <header data-codec-top-bar-identity className={styles.headerTitleRow}>
+            <span
+              className={mode === "replay" ? styles.headerBeaconReplay : styles.headerBeacon}
+              aria-hidden
+            />
+            <p className={styles.headerKicker}>
+              {mode === "replay" ? "Non-live visual study" : "Live agent director"}
+            </p>
+            <h1 className={styles.codecTitle}>{mode === "replay" ? "Codec replay" : "Codec"}</h1>
+            {mode === "replay" ? (
+              <Link className={styles.rosterLink} href="/codec" prefetch={false}>
+                Live Codec
+              </Link>
+            ) : (
+              <>
+                <Link className={styles.rosterLink} href="/codec/roster" prefetch={false}>
+                  Roster lab
+                </Link>
+                <Link className={styles.rosterLink} href="/codec/replay" prefetch={false}>
+                  Replay lab
+                </Link>
+                <Link className={styles.rosterLink} href="/codec/evaluate" prefetch={false}>
+                  Comprehension test
+                </Link>
+              </>
+            )}
+          </header>
           <div className={styles.sceneRail}>
             <Badge
               data-codec-feed-status
@@ -543,7 +571,6 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
               ))}
             </div>
           </div>
-          <ActivityLedger panels={panels} />
         </>
       )}
     </div>
@@ -820,43 +847,6 @@ function SceneControls({
         </button>
       </Tooltip>
     </nav>
-  );
-}
-
-function ActivityLedger({ panels }: { panels: CodecPanelScene[] }) {
-  return (
-    <section
-      data-codec-activity-ledger
-      className={styles.activityLedger}
-      aria-labelledby="codec-activity-ledger-title"
-    >
-      <header>
-        <p className={styles.teamPulseKicker}>Live ledger</p>
-        <h2 id="codec-activity-ledger-title">What every agent is doing now</h2>
-      </header>
-      <ol>
-        {panels.map((panel) => {
-          const operation = panel.operation?.value;
-          const lastAction = panel.recent_actions[0];
-          const summary = operation
-            ? `${operation.intent ?? operation.label} · ${humanizeCueToken(operation.state)}`
-            : (panel.identity.task?.value ?? "No declared task");
-          return (
-            <li key={panel.instance_id} data-activity={panel.activity.value}>
-              <span className={styles.activityBeacon} aria-hidden />
-              <strong>{panel.identity.display_name}</strong>
-              <span title={summary}>{summary}</span>
-              <small>
-                {panel.activity.value}
-                {lastAction
-                  ? ` · ${lastAction.category} ${lastAction.outcome} · ${formatReceiptTime(lastAction.observed_at)}`
-                  : " · no recent tool signal"}
-              </small>
-            </li>
-          );
-        })}
-      </ol>
-    </section>
   );
 }
 
