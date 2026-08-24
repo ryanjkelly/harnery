@@ -130,7 +130,7 @@ All three adapters are fully auto-wired. Pass `--adapter`:
 | `--adapter` | Settings file | Notes |
 |---|---|---|
 | `claude-code` (default) | `.claude/settings.json` | 13 events; nested `{ hooks: [{ type, command }] }` entries |
-| `cursor` | `.cursor/hooks.json` | 10 events; flat `{ command }` entries + `"version": 1` |
+| `cursor` | `.cursor/hooks.json` | 13 events; flat `{ command }` entries + `"version": 1` |
 | `codex` | `.codex/hooks.json` | 11 native events; nested `{ hooks: [{ type, command }] }` entries; strict `description` + `hooks` top-level schema |
 
 Each writes only its own file, so you can wire several adapters in one project by running `init` once per adapter. The canonical file path + event→subcommand map + entry shape for every adapter lives in [`src/core/hooks/adapter/events.ts`](https://github.com/ryanjkelly/harnery/blob/main/src/core/hooks/adapter/events.ts) (`ADAPTER_SPECS`).

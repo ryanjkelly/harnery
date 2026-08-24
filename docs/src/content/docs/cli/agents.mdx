@@ -157,11 +157,13 @@ Subagents and workflow children are never named.
 
 With hooks installed, Harnery treats the suggestion as pending until the exact
 copyable block has been displayed. PostToolUse asks for that block as the next
-assistant text. PreToolUse rejects another tool while the name is pending:
-Claude Code and Codex verify transcript text, while Cursor verifies its native
-`agent_message`. The block must be the first non-whitespace content and contain
-only `suggested_session_name`. Chat UIs add a one-click Copy button, so the
-operator gets the exact title without hand-selecting.
+assistant text. Claude Code and Codex verify ordered transcript text before
+allowing another tool. Cursor stamps the completed assistant text from
+`afterAgentResponse`; its `preToolUse.agent_message` is only the current
+narration, so missing the earlier block there cannot reject the tool. The block
+must be the first non-whitespace content and contain only
+`suggested_session_name`. Chat UIs add a one-click Copy button, so the operator
+gets the exact title without hand-selecting.
 
 For transcript-backed adapters, the evidence boundary is the first assistant
 message after the mint result. Later commentary or a user prompt does not erase

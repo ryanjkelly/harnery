@@ -202,7 +202,7 @@ describe("agent-hook V3 hard cut", () => {
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
   });
 
-  test("Cursor satisfies the same latch from native PreToolUse agent_message", () => {
+  test("Cursor records response evidence and never treats later narration as an omission", () => {
     const root = candidateRoot("cursor");
     const owner = "cursor-session-name-owner";
     const name = "Agent Maya - Auth refactor";
@@ -232,11 +232,33 @@ describe("agent-hook V3 hard cut", () => {
       "utf8",
     );
 
+    const narration = runHook("pre-tool-use", {
+      conversation_id: owner,
+      generation_id: "cursor-name-narration",
+      hook_event_name: "preToolUse",
+      agent_message: "I will inspect the project now.",
+      tool_name: "Grep",
+      tool_use_id: "cursor-after-later-narration",
+      tool_input: { pattern: "example" },
+    });
+    expect(narration.status).toBe(0);
+    expect(narration.stdout).not.toContain('"permission":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
+
+    const response = runHook("after-agent-response", {
+      conversation_id: owner,
+      generation_id: "cursor-name-response",
+      hook_event_name: "afterAgentResponse",
+      text: `\`\`\`\n${name}\n\`\`\``,
+    });
+    expect(response.status).toBe(0);
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
+
     const allowed = runHook("pre-tool-use", {
       conversation_id: owner,
       generation_id: "cursor-name-tool",
       hook_event_name: "preToolUse",
-      agent_message: `\`\`\`\n${name}\n\`\`\``,
+      agent_message: "Continuing after the displayed title.",
       tool_name: "Shell",
       tool_use_id: "cursor-after-display",
       tool_input: { command: "echo allowed" },

@@ -207,6 +207,9 @@ describe("wireHooks: Cursor", () => {
     expect(hooks.afterShellExecution[0]).toEqual({
       command: `bash ${HOOK} after-shell-execution --adapter cursor`,
     });
+    expect(hooks.afterAgentResponse[0]).toEqual({
+      command: `bash ${HOOK} after-agent-response --adapter cursor`,
+    });
     expect(hooks.StopFailure).toBeUndefined(); // Cursor has no StopFailure event
   });
 

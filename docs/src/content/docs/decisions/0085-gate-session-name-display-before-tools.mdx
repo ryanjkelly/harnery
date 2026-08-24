@@ -56,10 +56,12 @@ before prose or another tool call.
 
 Every later PreToolUse checks the latch before other tool guards. Claude Code
 and Codex read the first assistant message after the mint result from their
-JSONL transcripts. Cursor reads its native `agent_message` field. The tool is
-denied until the message begins with a block containing only the current
-suggested name. A successful check stamps `session_name_seen_for` and lets the
-tool continue.
+JSONL transcripts. Cursor stamps completed assistant text from its native
+`afterAgentResponse` hook. Its `preToolUse.agent_message` contains only the
+current narration before that tool, so it can provide positive evidence when
+the block is present but cannot prove that an earlier response omitted it. A
+successful check stamps `session_name_seen_for`; unavailable evidence fails
+open instead of rejecting unrelated tools.
 
 `agents set-task`, `agents status`, and `agents suggest-name` are narrow escape
 hatches. The latch allows any one as a single command while display is pending,
@@ -84,10 +86,11 @@ re-minted but not displayed.
 
 ## Result
 
-Substantive tool work cannot begin while the current name is pending and reply
-text is observable. Claude Code, Codex, and Cursor use the same state
-transition and block rule without adding durable state or pretending their
-Stop hooks behave alike.
+Substantive tool work cannot begin while the current name is pending and
+ordered reply text is observable. All three adapters use the same state
+transition, but each uses only evidence its native hooks can support. Cursor
+records a positive response sighting and never treats later narration as proof
+that the earlier response was malformed.
 
 If an adapter ends immediately after displaying the block and exposes no
 transcript at Stop, the operator still sees the correct title. The latch may
@@ -118,10 +121,17 @@ display. Routine `set-task` calls remain title-silent.
 
 Native Codex child hooks exposed another trust boundary. Their
 `agent_message` field can carry adapter-supplied or inherited text rather than
-the child's displayed assistant reply. Cursor remains the only adapter that
-uses native `agent_message` as display evidence. Codex and Claude Code use the
+the child's displayed assistant reply. Codex and Claude Code therefore use the
 transcript resolver; when that transcript is unavailable or not flushed, the
 gate stays pending and fails open instead of accepting unrelated text.
+
+A Cursor session exposed the corresponding boundary in the other direction.
+`preToolUse.agent_message` is the narration immediately preceding the current
+tool, not a transcript of prior assistant responses. Treating a missing block
+there as an observed omission rejected every substantive tool after a correctly
+displayed title. Harnery now wires `afterAgentResponse` for the completed text,
+stamps exact blocks there, and treats later tool narration as unavailable rather
+than negative evidence.
 
 A resumed Codex session then showed the remaining fail-open loop. Codex
 PreToolUse payloads had no transcript path, so every tool received a generic

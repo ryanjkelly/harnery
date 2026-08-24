@@ -661,6 +661,30 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  // Cursor's preToolUse `agent_message` is only the current narration before
+  // that tool. It is not a transcript and therefore cannot prove that an
+  // earlier assistant response omitted the required session-name block.
+  // afterAgentResponse is the one native boundary that carries the completed
+  // assistant text, so stamp a positive sighting here without retaining or
+  // emitting the response body into V3.
+  if (adapter === "cursor" && eventName === "after-agent-response") {
+    const payload = parsePayload(raw, adapter);
+    const owner = resolveOwner({ payload: payload?.raw ?? null, coordRoot });
+    if (!owner) {
+      appendDebug(coordRoot, { ...debugBase, skipped: "no-owner-resolved" });
+      return 0;
+    }
+    const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, owner.instance_id));
+    const text = typeof payload?.raw.text === "string" ? payload.raw.text : "";
+    if (name && assistantTextStartsWithSessionNameBlock(text, name)) {
+      stampSessionNameSeen(coordRoot, owner.instance_id, name);
+      appendDebug(coordRoot, { ...debugBase, effect: "session-name-display-stamped" });
+    } else {
+      appendDebug(coordRoot, { ...debugBase, skipped: "no-session-name-sighting" });
+    }
+    return 0;
+  }
+
   const norm = normalizeEventName(eventName);
   if (!norm) {
     appendDebug(coordRoot, { ...debugBase, skipped: "non-canonical-event" });
@@ -1141,8 +1165,11 @@ async function main(): Promise<number> {
     // runs before a name exists; every later tool waits until the exact block
     // is the first assistant text after the mint result. Cursor supplies
     // agent_message directly; Claude Code and Codex are resolved from their
-    // JSONL transcripts. Later commentary must not erase an already-correct
-    // display, and an unreadable transcript must not deadlock every tool.
+    // JSONL transcripts. Cursor's current narration can provide positive
+    // evidence, but cannot disprove an earlier response; afterAgentResponse
+    // stamps that durable sighting. Later commentary must not erase an
+    // already-correct display, and unavailable evidence must not deadlock
+    // every tool.
     try {
       const displayAllowed = await enforcePendingSessionNameDisplay(
         coordRoot,
@@ -1242,7 +1269,7 @@ async function enforcePendingSessionNameDisplay(
       ? {
           state: assistantTextStartsWithSessionNameBlock(payload.agent_message, name)
             ? ("present" as const)
-            : ("absent" as const),
+            : ("unavailable" as const),
         }
       : inspectSessionNameDisplayImmediately(
           // Codex hook payloads omit transcript_path on every event, which

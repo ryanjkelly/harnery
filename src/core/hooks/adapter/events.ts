@@ -86,6 +86,7 @@ export const CURSOR_EVENTS: HookEvent[] = [
   { settingsKey: "subagentStart", subcommand: "sub-agent-start" },
   { settingsKey: "subagentStop", subcommand: "sub-agent-stop" },
   { settingsKey: "beforeSubmitPrompt", subcommand: "user-prompt-submit" },
+  { settingsKey: "afterAgentResponse", subcommand: "after-agent-response" },
   { settingsKey: "preCompact", subcommand: "pre-compact" },
   { settingsKey: "stop", subcommand: "stop" },
 ];
