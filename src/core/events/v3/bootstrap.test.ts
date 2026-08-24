@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
@@ -9,7 +11,9 @@ import {
   EVENT_V3_GENESIS_MANIFEST,
   readEventV3ControlState,
 } from "./control.ts";
+import { resolveLiveEventLedgerRouteV3 } from "./live-routing.ts";
 import { eventV3Paths } from "./writer.ts";
+import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 
 const roots: string[] = [];
 
@@ -85,6 +89,47 @@ describe("universal V3 ledger initialization", () => {
       readFileSync(join(replaced.archived_epoch!, "genesis.json"), "utf8"),
     ) as { profile: { initial_schema_digest: string } };
     expect(archivedGenesis.profile.initial_schema_digest).toBe(`sha256:${"a".repeat(64)}`);
+  });
+
+  test("refreshes a schema-incompatible epoch at the live routing boundary", () => {
+    const root = freshRoot();
+    initialize(root, "2026-08-18T12:00:00.000Z");
+    const genesisPath = join(root, EVENT_V3_GENESIS_MANIFEST);
+    const genesis = JSON.parse(readFileSync(genesisPath, "utf8")) as {
+      profile: { initial_schema_digest: string };
+    };
+    genesis.profile.initial_schema_digest = `sha256:${"b".repeat(64)}`;
+    writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`, "utf8");
+
+    const route = resolveLiveEventLedgerRouteV3(root);
+
+    expect(route).toMatchObject({ state: "v3", mode: "active" });
+    expect(readEventV3ControlState(root).state).toBe("active");
+  });
+
+  test("serializes runtime refresh and succeeds after the bootstrap lease clears", () => {
+    const root = freshRoot();
+    initialize(root, "2026-08-18T12:00:00.000Z");
+    const genesisPath = join(root, EVENT_V3_GENESIS_MANIFEST);
+    const genesis = JSON.parse(readFileSync(genesisPath, "utf8")) as {
+      profile: { initial_schema_digest: string };
+    };
+    genesis.profile.initial_schema_digest = `sha256:${"d".repeat(64)}`;
+    writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`, "utf8");
+    const lease = acquireNoClobberLease({
+      path: join(root, ".harnery", "private", "event-v3-bootstrap-lease"),
+      scope: "event-v3-bootstrap",
+      authoritySha256: createHash("sha256").update(root).digest("hex"),
+      staleAfterMs: 10_000,
+      validateStaleOwner: (owner) => owner.host === hostname() && owner.pid !== process.pid,
+    });
+
+    expect(resolveLiveEventLedgerRouteV3(root)).toMatchObject({
+      state: "blocked",
+      reason: expect.stringContaining("runtime_refresh_failed"),
+    });
+    lease.release();
+    expect(resolveLiveEventLedgerRouteV3(root)).toMatchObject({ state: "v3", mode: "active" });
   });
 
   test("resumes a candidate left before activation publication", () => {

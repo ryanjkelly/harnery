@@ -30,6 +30,7 @@ import {
   classifyWriteClaimFinalization,
   formatWriteClaimFinalizationDenial,
 } from "../agents/finalization.ts";
+import { restoreLiveCoordinationStateAfterEpochV3 } from "../agents/live-authority-v3.ts";
 import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "../agents/rules/stop-hook.ts";
 import {
   assistantTextStartsWithSessionNameBlock,
@@ -39,7 +40,7 @@ import {
   sessionNameDisplayRecoveryInstruction,
   toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
-import { stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
+import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
 import {
   ensureLiveCoordinationHeartbeat,
   readLiveCoordinationRow,
@@ -715,6 +716,7 @@ async function main(): Promise<number> {
   }
 
   const sessionId = payload?.session_id ?? payload?.conversation_id ?? owner.instance_id;
+  const priorCoordination = readHeartbeat(coordRoot, owner.instance_id);
 
   const data = buildEventData(norm.event_type, {
     coordRoot,
@@ -789,6 +791,19 @@ async function main(): Promise<number> {
     ...(turnRitual ? { turn_ritual: turnRitual } : {}),
     ...(deferV3Drain ? { defer_drain: true } : {}),
   });
+  if (v3Result?.state === "recorded" || v3Result?.state === "already_started") {
+    try {
+      restoreLiveCoordinationStateAfterEpochV3({
+        coordRoot,
+        owner: owner.instance_id,
+        nativeSessionId: sessionId,
+        adapter,
+        prior: priorCoordination,
+      });
+    } catch (error) {
+      logError(coordRoot, error, { phase: "epoch-coordination-restore" });
+    }
+  }
   const v3EventId =
     v3Result && "event" in v3Result
       ? v3Result.event.event_id

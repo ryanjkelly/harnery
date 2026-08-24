@@ -66,6 +66,18 @@ privacy, terminal-race, rotation, and run-quality boundary tests. Sessions that
 started under the archived epoch remain audit evidence and do not become part
 of the new epoch retroactively.
 
+At a live hook or command boundary, Harnery automatically performs this archive
+and replacement only when the current runtime can prove that the stored schema
+or active adapter capability profiles are incompatible. The bootstrap lease
+serializes concurrent boundaries. A supported adapter bridge then opens one
+new session generation and restores the session's private task, lifecycle, and
+file-claim projection through canonical coordination events. Private task text
+and lifecycle reasons stay out of the ledger.
+
+This automatic path does not cover a missing ledger, damaged control packet,
+or any state whose cause is ambiguous. Those states keep the writer gate closed
+and require the explicit recovery process below.
+
 ## Backup and recovery
 
 `harn backup snapshot` includes `ledgers/` by default along with durable
@@ -73,9 +85,11 @@ coordination state. Disposable caches in `active/` and process attribution in
 `pid-map/` are rebuilt from live V3 observations and are not backup authority.
 
 If an active control pair is damaged, producers and authority-bearing commands
-stop rather than inventing state. Restore the complete V3 epoch from a verified
-backup or initialize a new epoch with an explicit approval record. Do not copy
-individual rows or synthesize missing lifecycle events.
+stop rather than inventing state. The command error names the unavailable V3
+control or session generation instead of reporting only a missing process-map
+entry. Restore the complete V3 epoch from a verified backup or initialize a new
+epoch with an explicit approval record. Do not copy individual rows or
+synthesize missing lifecycle events.
 
 ## Evidence boundary
 

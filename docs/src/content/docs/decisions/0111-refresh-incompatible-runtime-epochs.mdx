@@ -1,0 +1,80 @@
+---
+title: "ADR 0111: refresh incompatible runtime epochs"
+description: Replace a provably incompatible event epoch at the next live boundary and preserve the active session's private coordination state.
+sidebar:
+  order: 111
+---
+
+**Date:** 2026-08-23
+**Status:** Accepted
+
+## Context
+
+An Event Ledger V3 schema or adapter capability change can make the active
+control packet incompatible with the Harnery runtime that is now serving
+hooks and commands. The existing fail-closed reader correctly rejected that
+packet, but the rejection could strand a still-running session. Adapter
+bridges then reported a missing process-map identity even when the adapter had
+supplied a valid native session identifier.
+
+Running the initializer by hand created a compatible epoch, but it also left a
+short interval with no live session generation. The task, lifecycle state, and
+file claims in the old generation-bound cache were not projected into the new
+epoch.
+
+## Alternatives considered
+
+- **Keep every incompatibility manual.** Rejected because a known runtime
+  upgrade is already enough evidence to replace a schema-incompatible epoch.
+  Requiring a separate repair command turns a routine package update into a
+  coordination outage.
+- **Recover every invalid control state automatically.** Rejected because a
+  damaged or ambiguous control packet needs explicit recovery. Automatic
+  replacement would hide evidence that may need inspection.
+- **Trust the old heartbeat after replacement.** Rejected because heartbeats
+  are generation-bound caches, not authority. Reading one as current would
+  bypass the new epoch.
+- **Copy private task text into the ledger.** Rejected because the ledger keeps
+  privacy-safe set or cleared signals. Human task text and lifecycle reasons
+  belong only in the disposable local projection.
+
+## Decision
+
+The live routing boundary may replace an epoch only when incompatibility is
+provable from the current runtime: the genesis schema digest is incompatible,
+or an active epoch does not contain the current adapter capability profiles.
+Candidate epochs remain usable when at least one current adapter profile is
+approved. Every other invalid, missing, or ambiguous state continues to fail
+closed.
+
+Initialization and automatic replacement share one no-clobber lease. A waiter
+rechecks control state after it obtains the lease, so concurrent hooks cannot
+create competing epochs. The complete prior directory is archived before the
+new epoch is activated.
+
+When a supported adapter bridge reaches a command without a current producer,
+the command invokes the normal session-start hook with the adapter's native
+session identifier. After the new generation opens, Harnery replays the prior
+task state, file claims, and lifecycle through the canonical coordination
+authority API. Task text and lifecycle reason stay in the generation-bound
+cache and never enter the event ledger. Native adapters that already provide
+their own session-start behavior are not duplicated.
+
+Failure messages distinguish a missing process-map identity from an unavailable
+V3 control packet or session generation.
+
+## Result and gotchas
+
+A running bridged session can cross a compatible runtime epoch handoff on its
+next command. It keeps its operator-facing task, blocked or done state, and
+file claims, while the new ledger receives one session generation and
+privacy-safe coordination events.
+
+Automatic replacement is deliberately narrow. Corruption, an uninitialized
+ledger, and control states that the runtime cannot classify still require the
+documented explicit recovery flow. Build-only changes do not replace an epoch;
+the control packet remains the authority for approved producer builds.
+
+Regression coverage holds the bootstrap lease during a refresh attempt, checks
+the schema handoff, verifies state carry and event deduplication, and confirms
+that private task and lifecycle prose never appears in the new ledger.

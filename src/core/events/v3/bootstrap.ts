@@ -11,8 +11,10 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
+import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { ADAPTER_CAPABILITY_PROFILES_V3 } from "./capabilities.ts";
 import {
@@ -27,7 +29,7 @@ import {
 } from "./control.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "./fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
-import { liveEventV3BuildId, livePlatformV3 } from "./live-routing.ts";
+import { currentHarneryRuntimeBuild, liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
 
 export interface InitializeEventLedgerV3Input {
   coordRoot: string;
@@ -46,6 +48,17 @@ export interface InitializeEventLedgerV3Result {
   archived_epoch?: string;
   control: Extract<EventV3ControlState, { state: "active" }>;
 }
+
+export interface RefreshIncompatibleEventLedgerV3Result {
+  state: "current" | "refreshed";
+  archived_epoch?: string;
+  control: Extract<EventV3ControlState, { state: "active" }>;
+}
+
+const BOOTSTRAP_LEASE_RETRIES = 12;
+const BOOTSTRAP_LEASE_RETRY_MS = 25;
+const BOOTSTRAP_LEASE_STALE_MS = 10_000;
+const bootstrapSleepCell = new Int32Array(new SharedArrayBuffer(4));
 
 /**
  * Ensure programmatic Harnery entry points have the same universal V3
@@ -78,6 +91,53 @@ export function ensureEventLedgerV3(
  * pair is published. No historical ledger bytes are rewritten or deleted.
  */
 export function initializeEventLedgerV3(
+  input: InitializeEventLedgerV3Input,
+): InitializeEventLedgerV3Result {
+  return withBootstrapLease(input.coordRoot, () => initializeEventLedgerV3Locked(input));
+}
+
+/**
+ * Replace only a runtime-incompatible epoch that the current code can name
+ * exactly. Corruption and ambiguous control failures remain closed for the
+ * explicit recovery command.
+ */
+export function refreshIncompatibleEventLedgerV3(
+  coordRoot: string,
+): RefreshIncompatibleEventLedgerV3Result {
+  const root = resolve(coordRoot);
+  return withBootstrapLease(root, () => {
+    const current = readEventV3ControlState(root);
+    if (current.state === "active" && runtimeCapabilityProfileCurrent(current)) {
+      return { state: "current", control: current };
+    }
+    const refreshable =
+      (current.state === "invalid" && current.reason === "genesis_schema_digest_incompatible") ||
+      ((current.state === "candidate" || current.state === "active") &&
+        !runtimeCapabilityProfileCurrent(current));
+    if (!refreshable) {
+      const reason = "reason" in current ? `${current.state}:${current.reason}` : current.state;
+      throw new Error(`event_v3_runtime_refresh_refused:${reason}`);
+    }
+    const configPath = join(root, ".harnery", "config.jsonc");
+    const initialized = initializeEventLedgerV3Locked({
+      coordRoot: root,
+      harneryBuild: currentHarneryRuntimeBuild(),
+      hostBuild: repositoryBuild(root),
+      configDigest: sha256V3(
+        existsSync(configPath) ? readFileSync(configPath) : Buffer.from("{}\n"),
+      ),
+      approvalRecordId: "harnery-runtime-v3-auto-refresh",
+      forceNewEpoch: true,
+    });
+    return {
+      state: "refreshed",
+      ...(initialized.archived_epoch ? { archived_epoch: initialized.archived_epoch } : {}),
+      control: initialized.control,
+    };
+  });
+}
+
+function initializeEventLedgerV3Locked(
   input: InitializeEventLedgerV3Input,
 ): InitializeEventLedgerV3Result {
   const root = resolve(input.coordRoot);
@@ -145,6 +205,56 @@ export function initializeEventLedgerV3(
     ...activated,
     ...(archivedEpoch ? { archived_epoch: archivedEpoch } : {}),
   };
+}
+
+function runtimeCapabilityProfileCurrent(
+  control: Extract<EventV3ControlState, { state: "candidate" | "active" }>,
+): boolean {
+  const expected = Object.values(ADAPTER_CAPABILITY_PROFILES_V3).map((profile) =>
+    sha256V3(canonicalJsonV3(profile)),
+  );
+  const approved = control.genesis.profile.adapter_capability_profile_digests;
+  const expectedDigests = new Set<string>(expected);
+  return control.state === "candidate"
+    ? approved.some((digest) => expectedDigests.has(digest))
+    : expected.every((digest) => approved.includes(digest));
+}
+
+function withBootstrapLease<T>(coordRoot: string, operation: () => T): T {
+  const root = resolve(coordRoot);
+  const authority = createHash("sha256").update(root).digest("hex");
+  let lease: ReturnType<typeof acquireNoClobberLease> | undefined;
+  for (let attempt = 0; attempt < BOOTSTRAP_LEASE_RETRIES; attempt += 1) {
+    try {
+      lease = acquireNoClobberLease({
+        path: join(root, ".harnery", "private", "event-v3-bootstrap-lease"),
+        scope: "event-v3-bootstrap",
+        authoritySha256: authority,
+        staleAfterMs: BOOTSTRAP_LEASE_STALE_MS,
+        validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+      });
+      break;
+    } catch (error) {
+      if (attempt === BOOTSTRAP_LEASE_RETRIES - 1) throw error;
+      Atomics.wait(bootstrapSleepCell, 0, 0, BOOTSTRAP_LEASE_RETRY_MS);
+    }
+  }
+  if (!lease) throw new Error("event_v3_bootstrap_lease_busy");
+  try {
+    return operation();
+  } finally {
+    lease.release();
+  }
+}
+
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
 }
 
 function activateCandidateEpoch(

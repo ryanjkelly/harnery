@@ -38,6 +38,7 @@ import {
 import {
   ensureLiveCoordinationHeartbeat,
   liveCoordinationAdapterV3,
+  readLiveCoordinationRow,
 } from "./state/live-coordination-view.ts";
 import { recordNameAssumption } from "./state/names.ts";
 
@@ -61,6 +62,13 @@ export interface ReopenedLiveCoordinationGenerationV3 {
   generation_id: `gen_${string}`;
 }
 
+export interface RestoredLiveCoordinationStateV3 {
+  state: "unchanged" | "restored";
+  task: boolean;
+  claims: number;
+  lifecycle: boolean;
+}
+
 interface LiveAuthorityBaseV3 {
   coordRoot: string;
   owner: string;
@@ -68,6 +76,98 @@ interface LiveAuthorityBaseV3 {
   nativeSessionId: string;
   adapter: Adapter;
   observationId?: string;
+}
+
+/**
+ * Reapply private, generation-bound coordination state after a runtime epoch
+ * replaces the canonical ledger. The old heartbeat is only accepted for the
+ * same native session and a different V3 generation. Its task prose and
+ * lifecycle reason remain in the disposable cache; canonical events retain
+ * only the privacy-safe authority signals.
+ */
+export function restoreLiveCoordinationStateAfterEpochV3(input: {
+  coordRoot: string;
+  owner: string;
+  nativeSessionId: string;
+  adapter: Adapter;
+  prior: Heartbeat | null;
+}): RestoredLiveCoordinationStateV3 {
+  const unchanged: RestoredLiveCoordinationStateV3 = {
+    state: "unchanged",
+    task: false,
+    claims: 0,
+    lifecycle: false,
+  };
+  const prior = input.prior;
+  if (!prior || prior.instance_id !== input.owner) return unchanged;
+  if (
+    prior.session_id !== input.nativeSessionId &&
+    prior.native_session_id !== input.nativeSessionId
+  ) {
+    return unchanged;
+  }
+  const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(input.coordRoot));
+  const priorGenerationStillCurrent = [
+    ...Object.values(view.instances),
+    ...Object.values(view.terminal_generations),
+  ].some((generation) => generation.generation_id === prior.v3_generation_id);
+  if (priorGenerationStillCurrent) return unchanged;
+  const current = readLiveCoordinationRow(input.coordRoot, input.owner);
+  if (!current || !prior.v3_generation_id || current.v3_generation_id === prior.v3_generation_id) {
+    return unchanged;
+  }
+
+  let task = false;
+  let claims = 0;
+  let lifecycle = false;
+  if (typeof prior.task === "string" && prior.task.length > 0 && current.task !== prior.task) {
+    recordLiveTaskChangeV3({
+      coordRoot: input.coordRoot,
+      owner: input.owner,
+      nativeSessionId: input.nativeSessionId,
+      adapter: input.adapter,
+      task: prior.task,
+    });
+    task = true;
+  }
+  const currentClaims = new Set(
+    (current.files_touched ?? []).map((path) => canonicalClaimPath(input.coordRoot, path)),
+  );
+  for (const path of [...new Set(prior.files_touched ?? [])].sort()) {
+    const canonical = canonicalClaimPath(input.coordRoot, path);
+    if (currentClaims.has(canonical)) continue;
+    recordLiveClaimChangeV3({
+      coordRoot: input.coordRoot,
+      owner: input.owner,
+      nativeSessionId: input.nativeSessionId,
+      adapter: input.adapter,
+      operation: "acquired",
+      path: canonical,
+    });
+    currentClaims.add(canonical);
+    claims += 1;
+  }
+  const priorLifecycle = prior.task_state ?? "active";
+  if (
+    priorLifecycle !== "active" &&
+    (current.task_state !== priorLifecycle || current.task_state_reason !== prior.task_state_reason)
+  ) {
+    recordLiveLifecycleChangeV3({
+      coordRoot: input.coordRoot,
+      owner: input.owner,
+      nativeSessionId: input.nativeSessionId,
+      adapter: input.adapter,
+      state: priorLifecycle,
+      ...(prior.task_state_reason ? { reason: prior.task_state_reason } : {}),
+      ...(prior.suggested_session_name
+        ? { suggestedSessionName: prior.suggested_session_name }
+        : {}),
+    });
+    lifecycle = true;
+  }
+  return task || claims > 0 || lifecycle
+    ? { state: "restored", task, claims, lifecycle }
+    : unchanged;
 }
 
 /**

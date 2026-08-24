@@ -938,14 +938,15 @@ function runIdentityAssume(
     });
     process.exit(1);
   }
-  if (!opts.sessionId) ensureCursorSession(root);
+  if (!opts.sessionId) ensureAdapterSession(root);
   const owner = opts.sessionId ?? resolveOwner();
   if (!owner) {
-    emit.error({
-      code: "no_pidmap_entry",
-      message:
+    emit.error(
+      sessionResolutionFailure(
+        root,
         "not in an agent session; ppid walk found no pid-map entry (pass --session-id to bypass)",
-    });
+      ),
+    );
     process.exit(1);
   }
   try {
@@ -1217,14 +1218,13 @@ function runWhoami(opts: { json?: boolean }): void {
     process.exit(1);
   }
 
-  ensureCursorSession(root);
+  ensureAdapterSession(root);
   const resolved = resolveOwnerWithSource();
   const myOwner = resolved.owner;
   if (!myOwner) {
-    emit.error({
-      code: "no_pidmap_entry",
-      message: "not in an agent session; ppid walk found no pid-map entry",
-    });
+    emit.error(
+      sessionResolutionFailure(root, "not in an agent session; ppid walk found no pid-map entry"),
+    );
     process.exit(1);
   }
 
@@ -1706,47 +1706,85 @@ function cursorEnvSessionId(): string | null {
   return raw.startsWith("bc-") && raw.length > 3 ? raw.slice(3) : raw;
 }
 
-function shouldBootstrapCursorSession(): boolean {
-  return process.env.CURSOR_AGENT === "1" && cursorEnvSessionId() !== null;
+interface CommandSessionBootstrap {
+  adapter: "cursor" | "codex";
+  sessionId: string;
 }
 
-function ensureCursorSession(root: string): void {
-  if (!shouldBootstrapCursorSession()) return;
+function commandSessionBootstrap(): CommandSessionBootstrap | null {
+  const cursorSessionId = cursorEnvSessionId();
+  if (process.env.CURSOR_AGENT === "1" && cursorSessionId) {
+    return { adapter: "cursor", sessionId: cursorSessionId };
+  }
+  if (process.env.HARNERY_AGENT_COORD_BRIDGE?.trim() === "codex-wsl") {
+    const sessionId = sessionIdentityFromEnv();
+    if (sessionId) return { adapter: "codex", sessionId };
+  }
+  return null;
+}
+
+function ensureAdapterSession(root: string): void {
+  const bootstrap = commandSessionBootstrap();
+  if (!bootstrap) return;
   // Explicit owner override means the caller already knows who they are.
   // Bootstrapping sessionStart inherits that env into the child hook, which
   // re-projects a fresh heartbeat onto the override owner and can wipe an
   // assumed persona agent_id (seen under Cursor integration fixtures).
-  if (process.env.HARNERY_AGENT_COORD_OWNER?.trim()) return;
+  if (bootstrap.adapter === "cursor" && process.env.HARNERY_AGENT_COORD_OWNER?.trim()) return;
   if (resolveOwnerBySessionEnv(root)) return;
 
-  const sessionId = cursorEnvSessionId();
-  if (!sessionId) return;
   const agentHook = coordBinPath("agent-hook", root);
   if (!agentHook) return;
 
   const payload = JSON.stringify({
-    conversation_id: sessionId,
-    session_id: sessionId,
+    ...(bootstrap.adapter === "cursor" ? { conversation_id: bootstrap.sessionId } : {}),
+    session_id: bootstrap.sessionId,
     hook_event_name: "sessionStart",
     workspace_roots: [root],
     cwd: root,
-    composer_mode: "agent",
-    is_background_agent: false,
+    ...(bootstrap.adapter === "cursor"
+      ? { composer_mode: "agent", is_background_agent: false }
+      : { source: "resume" }),
   });
 
-  spawnSync("bash", [agentHook, "session-start", "--adapter", "cursor"], {
+  spawnSync("bash", [agentHook, "session-start", "--adapter", bootstrap.adapter], {
     input: payload,
     cwd: root,
     encoding: "utf8",
     timeout: 3000,
     env: {
       ...process.env,
-      HARNERY_AGENT_COORD_PLATFORM: "cursor",
+      HARNERY_AGENT_COORD_PLATFORM: bootstrap.adapter,
       HARNERY_COORD_ROOT_OVERRIDE: root,
-      CURSOR_SESSION_ID: sessionId,
-      CURSOR_CONVERSATION_ID: sessionId,
+      HARNERY_AGENT_COORD_SESSION_ID: bootstrap.sessionId,
+      ...(bootstrap.adapter === "cursor"
+        ? {
+            CURSOR_SESSION_ID: bootstrap.sessionId,
+            CURSOR_CONVERSATION_ID: bootstrap.sessionId,
+          }
+        : { CODEX_THREAD_ID: bootstrap.sessionId }),
     },
   });
+}
+
+function sessionResolutionFailure(
+  root: string,
+  fallbackMessage: string,
+): { code: string; message: string } {
+  if (!sessionIdentityFromEnv()) return { code: "no_pidmap_entry", message: fallbackMessage };
+  const control = readEventV3ControlState(root);
+  if (control.state !== "candidate" && control.state !== "active") {
+    const detail = `${control.state}:${control.reason}`;
+    return {
+      code: "event_v3_control_unavailable",
+      message: `the adapter session identity is present, but the V3 control state cannot accept session onboarding (${detail})`,
+    };
+  }
+  return {
+    code: "session_generation_unavailable",
+    message:
+      "the adapter session identity is present, but no current V3 session generation was available after onboarding",
+  };
 }
 
 function runReleaseClaim(path: string): void {
@@ -1760,10 +1798,9 @@ function runReleaseClaim(path: string): void {
   }
   const myOwner = resolveOwner();
   if (!myOwner) {
-    emit.error({
-      code: "no_pidmap_entry",
-      message: "not in an agent session; ppid walk found no pid-map entry",
-    });
+    emit.error(
+      sessionResolutionFailure(root, "not in an agent session; ppid walk found no pid-map entry"),
+    );
     process.exit(1);
   }
   // Canonicalize: absolute paths under coordRoot get the prefix stripped;
@@ -1804,14 +1841,15 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // returns null by design, and erroring here orphans the session's first
   // ritual command. The env id carries the same trust as an explicit
   // --session-id, and set-task mints the heartbeat exactly as that path does.
-  if (!opts?.sessionId) ensureCursorSession(root);
+  if (!opts?.sessionId) ensureAdapterSession(root);
   const myOwner = opts?.sessionId ?? resolveOwner() ?? sessionIdentityFromEnv();
   if (!myOwner) {
-    emit.error({
-      code: "no_pidmap_entry",
-      message:
+    emit.error(
+      sessionResolutionFailure(
+        root,
         "not in an agent session; no session-id environment identity and the ppid walk found no pid-map entry (pass --session-id to bypass)",
-    });
+      ),
+    );
     process.exit(1);
   }
 
@@ -1900,14 +1938,15 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     process.exitCode = 1;
     return;
   }
-  if (!opts.sessionId) ensureCursorSession(root);
+  if (!opts.sessionId) ensureAdapterSession(root);
   const myOwner = opts.sessionId ?? resolveOwner() ?? sessionIdentityFromEnv();
   if (!myOwner) {
-    emit.error({
-      code: "no_pidmap_entry",
-      message:
+    emit.error(
+      sessionResolutionFailure(
+        root,
         "not in an agent session; ppid walk found no pid-map entry (pass --session-id to bypass)",
-    });
+      ),
+    );
     process.exitCode = 1;
     return;
   }
@@ -2082,14 +2121,15 @@ function runSuggestName(
 
   // Identity: prefer explicit --session-id (ppid-walk-free escape hatch, mirrors
   // `status`/`set-task`), fall back to the ppid walk for interactive shell use.
-  if (!opts.sessionId) ensureCursorSession(root);
+  if (!opts.sessionId) ensureAdapterSession(root);
   const myOwner = opts.sessionId ?? resolveOwner();
   if (!myOwner) {
-    emit.error({
-      code: "no_pidmap_entry",
-      message:
+    emit.error(
+      sessionResolutionFailure(
+        root,
         "not in an agent session; ppid walk found no pid-map entry (pass --session-id to bypass)",
-    });
+      ),
+    );
     process.exit(1);
   }
 
@@ -2161,14 +2201,15 @@ function runStatus(opts: {
 
   // Identity resolution: prefer explicit --session-id (hook-friendly), fall
   // back to ppid walk for interactive shell usage.
-  if (!opts.sessionId) ensureCursorSession(root);
+  if (!opts.sessionId) ensureAdapterSession(root);
   const myOwner = opts.sessionId ?? resolveOwner();
   if (!myOwner) {
-    emit.error({
-      code: "no_pidmap_entry",
-      message:
+    emit.error(
+      sessionResolutionFailure(
+        root,
         "not in an agent session; ppid walk found no pid-map entry (pass --session-id from a hook payload)",
-    });
+      ),
+    );
     process.exit(1);
   }
 
@@ -4495,10 +4536,18 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
   }
   const myOwner = resolveOwner();
   if (!myOwner) {
-    emit.error({
-      code: "no_pidmap_entry",
-      message: "not in an agent session; ppid walk found no pid-map entry",
-    });
+    const root = monorepoRoot();
+    emit.error(
+      root
+        ? sessionResolutionFailure(
+            root,
+            "not in an agent session; ppid walk found no pid-map entry",
+          )
+        : {
+            code: "no_pidmap_entry",
+            message: "not in an agent session; ppid walk found no pid-map entry",
+          },
+    );
     process.exit(1);
   }
   const peerOwner = resolveOwnerByName(name);

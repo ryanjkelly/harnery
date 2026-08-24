@@ -8,8 +8,10 @@ import {
   recordLiveTaskChangeV3,
 } from "../../src/core/agents/live-authority-v3.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
+import { readHeartbeat } from "../../src/core/agents/state/heartbeat-writer.ts";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
+import { EVENT_V3_GENESIS_MANIFEST } from "../../src/core/events/v3/control.ts";
 import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
@@ -18,6 +20,7 @@ import {
   readHookProducerStateV3,
   recordApprovedSessionEndV3,
 } from "../../src/core/events/v3/producers/recorder.ts";
+import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
 const HARN = path.join(HARNERY_DIR, "bin", "harn");
@@ -295,7 +298,7 @@ describe("codex-wsl bridge ping attribution", () => {
       HARNERY_AGENT_COORD_OWNER: OWNER,
     });
     expect(result.status).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain("no_pidmap_entry");
+    expect(`${result.stdout}\n${result.stderr}`).toContain("session_generation_unavailable");
     expect(existsSync(path.join(root, ".harnery", "journal", `${TARGET}.md`))).toBe(false);
   });
 
@@ -345,4 +348,60 @@ describe("codex-wsl bridge ping attribution", () => {
     },
     { timeout: 30_000 },
   );
+
+  test(
+    "status repairs a schema epoch and preserves the bridged session state once",
+    () => {
+      const root = makeSandbox();
+      const genesisPath = path.join(root, EVENT_V3_GENESIS_MANIFEST);
+      const genesis = JSON.parse(readFileSync(genesisPath, "utf8")) as {
+        profile: { initial_schema_digest: string };
+      };
+      genesis.profile.initial_schema_digest = `sha256:${"c".repeat(64)}`;
+      writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`, "utf8");
+      const bridgeEnv = {
+        HARNERY_AGENT_COORD_BRIDGE: "codex-wsl",
+        HARNERY_AGENT_COORD_PLATFORM: "codex",
+        HARNERY_AGENT_COORD_SESSION_ID: OWNER,
+        CODEX_THREAD_ID: OWNER,
+        HARNERY_AGENT_COORD_OWNER: "stale-owner",
+      };
+
+      const first = json(harn(root, ["agents", "status", "--json"], bridgeEnv));
+      const second = json(harn(root, ["agents", "status", "--json"], bridgeEnv));
+
+      expect(first).toMatchObject({
+        instance_id: OWNER,
+        task_state: "blocked",
+        task_state_reason: "waiting for approval",
+      });
+      expect(second).toMatchObject({ instance_id: OWNER, task_state: "blocked" });
+      expect(readHeartbeat(root, OWNER)).toMatchObject({
+        task: "Review auth",
+        task_state: "blocked",
+        task_state_reason: "waiting for approval",
+      });
+      const ledger = readLedgerV3(root).events.map(({ event }) => event);
+      expect(ledger.filter((event) => event.event_type === "session.started")).toHaveLength(1);
+      expect(JSON.stringify(ledger)).not.toContain("Review auth");
+      expect(JSON.stringify(ledger)).not.toContain("waiting for approval");
+    },
+    { timeout: 30_000 },
+  );
+
+  test("status names a damaged V3 control packet instead of blaming pid-map", () => {
+    const root = makeSandbox();
+    writeFileSync(path.join(root, EVENT_V3_GENESIS_MANIFEST), "{\n", "utf8");
+    const result = harn(root, ["agents", "status", "--json"], {
+      HARNERY_AGENT_COORD_BRIDGE: "codex-wsl",
+      HARNERY_AGENT_COORD_PLATFORM: "codex",
+      HARNERY_AGENT_COORD_SESSION_ID: OWNER,
+      CODEX_THREAD_ID: OWNER,
+      HARNERY_AGENT_COORD_OWNER: "stale-owner",
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("event_v3_control_unavailable");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("no_pidmap_entry");
+  });
 });

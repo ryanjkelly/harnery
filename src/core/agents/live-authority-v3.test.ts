@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { buildEventV3 } from "../events/v3/builder.ts";
+import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../events/v3/capabilities.ts";
 import {
@@ -21,9 +22,14 @@ import { reduceSafetyProjectionV3 } from "../events/v3/projection.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
 import type { ParsedPayload } from "../hooks/adapter/parse.ts";
 import {
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
+import {
   recordLiveClaimChangeV3,
   recordLiveLifecycleChangeV3,
   recordLiveTaskChangeV3,
+  restoreLiveCoordinationStateAfterEpochV3,
 } from "./live-authority-v3.ts";
 import {
   recordLiveResumeObservationV3,
@@ -154,6 +160,65 @@ describe("live V3 coordination", () => {
         },
       },
     });
+  });
+
+  test("restores private coordination state after an epoch handoff", () => {
+    const root = startedRoot();
+    recordLiveTaskChangeV3(liveInput(root, { task: "Preserve private focus" }));
+    recordLiveClaimChangeV3(
+      liveInput(root, { operation: "acquired", path: "src/private-focus.ts" }),
+    );
+    recordLiveLifecycleChangeV3(
+      liveInput(root, { state: "blocked", reason: "waiting for a dependency" }),
+    );
+    const prior = readHeartbeat(root, "operator");
+
+    initializeEventLedgerV3({
+      coordRoot: root,
+      harneryBuild: "replacement",
+      hostBuild: "fixture",
+      configDigest: sha256V3("config"),
+      approvalRecordId: "test-epoch-handoff",
+      forceNewEpoch: true,
+    });
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected replacement V3 route");
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "session-start",
+        payload: { session_id: "native-session", raw: {} },
+        adapter: "claude-code",
+        instanceId: "operator",
+      }).state,
+    ).toBe("recorded");
+
+    expect(
+      restoreLiveCoordinationStateAfterEpochV3({
+        coordRoot: root,
+        owner: "operator",
+        nativeSessionId: "native-session",
+        adapter: "claude-code",
+        prior,
+      }),
+    ).toEqual({ state: "restored", task: true, claims: 1, lifecycle: true });
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      task: "Preserve private focus",
+      files_touched: ["src/private-focus.ts"],
+      task_state: "blocked",
+      task_state_reason: "waiting for a dependency",
+    });
+    expect(JSON.stringify(readLedgerV3(root).events)).not.toContain("Preserve private focus");
+    expect(
+      restoreLiveCoordinationStateAfterEpochV3({
+        coordRoot: root,
+        owner: "operator",
+        nativeSessionId: "native-session",
+        adapter: "claude-code",
+        prior,
+      }),
+    ).toEqual({ state: "unchanged", task: false, claims: 0, lifecycle: false });
   });
 
   test("releases an out-of-root claim across dot-dot and absolute forms", () => {

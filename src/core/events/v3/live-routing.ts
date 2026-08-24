@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Adapter } from "../../adapter.ts";
 import type { ParsedPayload } from "../../hooks/adapter/parse.ts";
+import { refreshIncompatibleEventLedgerV3 } from "./bootstrap.ts";
+import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
+import { ADAPTER_CAPABILITY_PROFILES_V3 } from "./capabilities.ts";
 import type { EventV3 } from "./contract.ts";
 import {
   type EventV3WriteMode,
@@ -15,6 +18,9 @@ import {
   reconcilePendingRuntimeContextV3,
   recordHookSignalV3,
 } from "./producers/recorder.ts";
+import { liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
+
+export { liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
 
 export const LIVE_HOOK_V3_PRODUCER_ID = "prd_agent-hook" as const;
 export const LIVE_COMMAND_V3_PRODUCER_ID = "prd_session-tee" as const;
@@ -33,6 +39,20 @@ export function resolveLiveEventLedgerRouteV3(coordRoot: string): LiveEventLedge
   let control = readEventV3ControlState(coordRoot);
   if (control.state === "closed") return { state: "blocked", reason: "v3_not_initialized" };
   if (control.state === "repairable") control = repairEventV3ControlPair(coordRoot);
+  if (
+    (control.state === "invalid" && control.reason === "genesis_schema_digest_incompatible") ||
+    ((control.state === "candidate" || control.state === "active") &&
+      !runtimeCapabilityProfileCurrent(control))
+  ) {
+    try {
+      control = refreshIncompatibleEventLedgerV3(coordRoot).control;
+    } catch (error) {
+      return {
+        state: "blocked",
+        reason: `runtime_refresh_failed:${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
   if (control.state !== "candidate" && control.state !== "active") {
     return { state: "blocked", reason: `${control.state}:${control.reason}` };
   }
@@ -43,10 +63,17 @@ export function resolveLiveEventLedgerRouteV3(coordRoot: string): LiveEventLedge
   return { state: "v3", mode: control.state, build_id: buildId };
 }
 
-export function liveEventV3BuildId(harneryCommit: string): `build_${string}` {
-  const exact = harneryCommit.normalize("NFC");
-  if (/^[a-zA-Z0-9._-]{1,120}$/.test(exact)) return `build_${exact}`;
-  return `build_${createHash("sha256").update(exact).digest("hex")}`;
+function runtimeCapabilityProfileCurrent(
+  control: Extract<ReturnType<typeof readEventV3ControlState>, { state: "candidate" | "active" }>,
+): boolean {
+  const expected = Object.values(ADAPTER_CAPABILITY_PROFILES_V3).map((profile) =>
+    sha256V3(canonicalJsonV3(profile)),
+  );
+  const approved = control.genesis.profile.adapter_capability_profile_digests;
+  const expectedDigests = new Set<string>(expected);
+  return control.state === "candidate"
+    ? approved.some((digest) => expectedDigests.has(digest))
+    : expected.every((digest) => approved.includes(digest));
 }
 
 export function liveInstanceIdV3(instanceId: string): `inst_${string}` {
@@ -266,11 +293,4 @@ export function recordLiveDelegatedChildSessionV3(input: {
     },
   });
   return started;
-}
-
-export function livePlatformV3(): "linux" | "windows" | "macos" | "unknown" {
-  if (process.platform === "linux") return "linux";
-  if (process.platform === "win32") return "windows";
-  if (process.platform === "darwin") return "macos";
-  return "unknown";
 }
