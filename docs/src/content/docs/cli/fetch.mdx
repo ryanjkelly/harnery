@@ -29,7 +29,7 @@ An HTTP request that writes the response body to stdout and speaks to the **shar
 
 ## Output
 
-The body goes to stdout by default. With `--output`, Harnery writes the response bytes exactly as received, regardless of the file extension or `Content-Type`. Stdout and `--json` decode the body as UTF-8 text, so use `--output` for binary files and text in another encoding. `--json` emits the whole `FetchResult` (`{ status, statusText, url, headers, body, cookiesSaved }`) as a single JSON object. When cookies are saved back to the jar, a note is logged to stderr.
+The body goes to stdout by default. With `--output`, Harnery writes the HTTP representation bytes exactly as received, before content decoding, regardless of the file extension or `Content-Type`. Byte-mode requests ask the server for identity encoding and do not automatically decompress a response that still carries `Content-Encoding`, so `--headers` continues to describe the saved file. The Bun runtime supports this directly. The Node fallback fails instead of saving altered bytes if a server ignores the identity request and returns content-encoded data. Stdout and `--json` decode the body as UTF-8 text, so use `--output` for binary files and text in another encoding. `--json` emits the whole `FetchResult` (`{ status, statusText, url, headers, body, cookiesSaved }`) as a single JSON object. When cookies are saved back to the jar, a note is logged to stderr.
 
 ## Examples
 

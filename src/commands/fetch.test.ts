@@ -67,6 +67,22 @@ describe("fetch command response bodies", () => {
     ]);
   });
 
+  test("creates an empty --output file for an empty response", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-fetch-command-"));
+    roots.push(root);
+    const output = join(root, "empty.bin");
+    globalThis.fetch = (async () => new Response(null)) as unknown as typeof fetch;
+    const captured = captureEmit();
+
+    await createHarneryProgram({ emit: captured.emit }).parseAsync(
+      ["fetch", "https://example.com/empty", "--no-cookies", "--output", output],
+      { from: "user" },
+    );
+
+    expect(readFileSync(output).byteLength).toBe(0);
+    expect(captured.files[0]?.summary).toMatchObject({ bytes: 0, status: 200 });
+  });
+
   test("keeps stdout and --json bodies as UTF-8 text", async () => {
     const payload = new TextEncoder().encode("café");
     globalThis.fetch = (async () => new Response(payload)) as unknown as typeof fetch;

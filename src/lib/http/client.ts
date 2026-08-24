@@ -86,13 +86,32 @@ export async function fetchWithJar<TResponseType extends FetchResponseType = "te
     }
   }
 
-  const response = await fetch(url, {
+  // Byte mode is a download boundary, so keep the HTTP representation bytes
+  // aligned with the response headers. Bun otherwise decompresses the body
+  // while retaining Content-Encoding and the encoded Content-Length.
+  if (opts.responseType === "bytes" && !headers["Accept-Encoding"] && !headers["accept-encoding"]) {
+    headers["Accept-Encoding"] = "identity";
+  }
+  const fetchInit: RequestInit & { decompress?: boolean } = {
     method: opts.method ?? "GET",
     body: opts.body,
     headers,
     redirect: opts.redirect ?? "follow",
     signal: opts.signal,
-  });
+  };
+  if (opts.responseType === "bytes") fetchInit.decompress = false;
+
+  const response = await fetch(url, fetchInit);
+
+  if (
+    opts.responseType === "bytes" &&
+    typeof Bun === "undefined" &&
+    response.headers.has("content-encoding")
+  ) {
+    throw new Error(
+      "cannot preserve a content-encoded response under the Node fallback; install Bun or request identity encoding",
+    );
+  }
 
   let cookiesSaved = 0;
   if (opts.jar) {
