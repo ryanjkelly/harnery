@@ -481,6 +481,9 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
                 <Link className={styles.rosterLink} href="/codec/evaluate" prefetch={false}>
                   Comprehension test
                 </Link>
+                <Link className={styles.rosterLink} href="/codec/review" prefetch={false}>
+                  Meaning review
+                </Link>
               </>
             )}
           </header>

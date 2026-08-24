@@ -1,0 +1,88 @@
+---
+title: "0120: Label semantic inference with bounded local reviews"
+description: "ADR: pair accepted semantic readings with short-lived source snapshots for human labeling while retaining only controlled review receipts."
+---
+
+**Status:** accepted (2026-08-24) · **Scope:** semantic reader, review CLI, Codec review page, local evaluation storage
+
+## Context
+
+Schema validation proves that a semantic reading has the right shape, cites the
+supplied events, respects the controlled vocabulary, and avoids disallowed
+content. A live soak can measure how often the reader chooses each phase and
+expression, plus whether those choices change quickly. Neither check proves that
+the interpretation is correct.
+
+A useful accuracy review needs the bounded source facts that were available when
+the model answered. The current semantic document does not retain those facts,
+and the active ledger can change before a person reviews the result. A review
+receipt should still avoid becoming a second archive of tasks, model prose, or
+Event Ledger identities.
+
+## Alternatives considered
+
+**Remove the semantic privacy filter and retain every prompt and response.**
+Rejected because a global retention change would expose more information to
+every consumer and keep it longer than the evaluation needs. The review can use
+the already bounded evidence envelope without changing the production document.
+
+**Ask for a single correct or incorrect verdict.** Rejected because it would not
+show whether the model misunderstood the overall work, chose the wrong phase,
+picked an unhelpful expression, or merely changed state during a real transition.
+
+**Reconstruct source facts when the review page opens.** Rejected because the
+ledger may have advanced. Comparing a new state with an older semantic answer
+would create false failures.
+
+**Allow free-text corrections.** Rejected because free text is harder to
+aggregate and can copy private work context into a durable result.
+
+## Decision
+
+Every accepted semantic pass may write one local review candidate under
+`.harnery/semantic/evaluations/meaning/candidates/`. The candidate contains the
+exact bounded evidence values used by the reader, the accepted semantic fields,
+their confidence, the reader identity, timestamps, an evidence digest, and
+opaque candidate and subject hashes. It removes event IDs, instance IDs,
+generation IDs, and the ledger genesis ID.
+
+Candidates are observational. A capture failure cannot fail an accepted
+semantic pass. The store keeps at most 100 candidates and removes candidates
+after seven days. `harn semantic review prepare` also backfills candidates from
+current accepted documents when their evidence digest still matches the active
+projection.
+
+The prepare command freezes at most 12 pending candidates for one review. It
+prefers readings whose phase or expression differs from the previous captured
+reading for the same opaque subject, then readings with an expression cue, then
+newer readings. A changed reading includes its previous bounded candidate so a
+person can label the transition as real work, flicker, or unsure.
+
+Codec exposes the queue at `/codec/review`. Each response records:
+
+- overall meaning as correct, close, wrong, or unsure;
+- phase and expression as correct, wrong, or unsure;
+- a controlled expected phase or expression when either field is wrong;
+- portrait usefulness as helpful, neutral, or misleading;
+- real change, flicker, or unsure when a prior reading changed; and
+- reviewer confidence and bounded response timing.
+
+The page cannot submit free text. Its API shells the Harnery CLI for both queue
+preparation and receipt writes, so validation and storage remain in the semantic
+engine.
+
+Completed receipts live under
+`.harnery/semantic/evaluations/meaning/receipts/`. They retain opaque candidate
+and subject hashes, controlled verdicts and corrections, source harness,
+configured and resolved model labels, attestation, proposed controlled phase and
+expression, confidence, and timing. They do not retain task text, evidence
+labels, semantic headlines, summaries, predictions, citations, or raw model
+replies. The store keeps at most 1,000 receipts for up to one year.
+
+## Result
+
+The reader now has a human-labeled accuracy loop without weakening the semantic
+document's privacy contract. Reviewers can separate prompt errors, vocabulary
+errors, expression-mapping errors, and legitimate transitions. The controlled
+receipt format supports aggregate evaluation by harness and model after the
+short-lived review context has been pruned.

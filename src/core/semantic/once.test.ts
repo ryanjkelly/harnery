@@ -10,6 +10,7 @@ import type {
   SemanticModelReplyV2,
 } from "./contract.ts";
 import { runSemanticOnce } from "./once.ts";
+import { listSemanticReviewCandidates } from "./review.ts";
 import {
   inspectSemanticDocument,
   readSemanticManifest,
@@ -163,6 +164,13 @@ describe("semantic once", () => {
         receipt: { usage: { source: "estimated", scope: "visible-payload" } },
         meaning: { headline: { value: "Verifying semantic reading" } },
       });
+      expect(listSemanticReviewCandidates(root)).toMatchObject([
+        {
+          source: { configured_model: "gpt-5.6-luna" },
+          evidence: { task: "Implement semantic reading" },
+          proposal: { phase: { value: "verifying" } },
+        },
+      ]);
 
       const second = await runSemanticOnce({
         coordRoot: root,
@@ -218,7 +226,7 @@ describe("semantic once", () => {
         now: () => new Date(NOW),
       });
       const manifest = readSemanticManifest(root)!;
-      manifest.call_history = Array.from({ length: 60 }, () => ({
+      manifest.call_history = Array.from({ length: 120 }, () => ({
         generation_id: GENERATION,
         started_at: NOW,
       }));

@@ -43,6 +43,8 @@ harn semantic service start                # explicitly start or resume the read
 harn semantic service status               # inspect liveness, rolling calls, and usage
 harn semantic service stop                 # finish the current call, then stop
 harn semantic soak --minutes 60             # summarize a bounded live-reader window
+harn semantic review prepare                # freeze the next bounded local review set
+harn semantic review submit --file result.json
 harn semantic doctor                       # check readers without a model call
 harn semantic inspect <instance-or-generation>
 ```
@@ -90,6 +92,20 @@ Frequency means accepted model readings, not time displayed in Codec. A cue
 change can reflect a real work transition. A rapid reversal is a review
 candidate, not proof of flicker, and the report does not claim that an inference
 is correct without a labeled review.
+
+## Human inference review
+
+Accepted readings also create short-lived local review candidates. The queue
+prefers phase or expression transitions, then expression-bearing readings, then
+the newest remaining readings. It freezes at most 12 candidates per study and
+does not make a model request.
+
+Open `/codec/review` to compare bounded source facts with the accepted model
+reading. The page identifies the source harness, requested reader model, and
+model attestation. Answers use controlled labels for overall correctness,
+phase, expression, portrait helpfulness, transition quality, and confidence.
+There is no free-text field. The dashboard submits the completed frozen set
+through `harn semantic review submit`; the CLI remains the only write boundary.
 
 ## Usage receipts
 
@@ -193,6 +209,9 @@ All state is disposable and rebuildable:
 ├── cache/<cache_key>.json
 ├── service.json
 └── service.log
+.harnery/semantic/evaluations/meaning/
+├── candidates/<candidate_id>.json
+└── receipts/<receipt_id>.json
 ```
 
 The cache key includes the evidence digest, source harness, configured and
@@ -208,6 +227,13 @@ soak reports. A reading retains an opaque subject fingerprint, model labels,
 phase, optional expression, and confidence. It excludes task text, model prose,
 event citations, instance IDs, and generation IDs. None of these files enters
 Event Ledger V3.
+
+Review candidates retain bounded evidence values and the accepted reading for
+up to 7 days, with a maximum of 100 files. They exclude ledger event IDs,
+instance IDs, generation IDs, and raw model replies. Review receipts retain
+only opaque candidate IDs, controlled answers, corrections, model labels, and
+response timing for up to one year, with a maximum of 1,000 files. They do not
+retain task text, evidence text, or semantic prose.
 
 Version 1 documents and cache entries are rebuildable derived state. The V2
 reader does not migrate or consume them.

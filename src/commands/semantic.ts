@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
@@ -5,6 +6,7 @@ import {
   createSemanticAdapters,
   discoverSemanticReaders,
   inspectSemanticDocument,
+  prepareSemanticReviewStudy,
   readSemanticManifest,
   readSemanticServiceStatus,
   readSemanticSoakReport,
@@ -13,6 +15,7 @@ import {
   runSemanticServiceDaemon,
   semanticPaths,
   spawnSemanticService,
+  storeSemanticReviewSubmission,
 } from "../core/semantic/index.ts";
 
 export function registerSemanticCommand(
@@ -144,6 +147,50 @@ export function registerSemanticCommand(
         );
       } catch (error) {
         emitFailure(emit, "semantic_soak_failed", error);
+      }
+    });
+
+  const review = semantic
+    .command("review")
+    .description("Prepare and record a local human review of accepted semantic readings");
+
+  review
+    .command("prepare")
+    .description("Capture current accepted readings and return the next bounded review set")
+    .option("--root <path>", "Explicit coordination root")
+    .option("--limit <count>", "Maximum candidates in this review set", integer)
+    .action((options: { root?: string; limit?: number }) => {
+      try {
+        emit.data(
+          prepareSemanticReviewStudy(resolve(options.root ?? coordRoot(context)), {
+            ...(options.limit !== undefined ? { limit: options.limit } : {}),
+          }),
+        );
+      } catch (error) {
+        emitFailure(emit, "semantic_review_prepare_failed", error);
+      }
+    });
+
+  review
+    .command("submit")
+    .description("Validate one frozen review set and store its controlled-label receipt")
+    .requiredOption("--file <path>", "JSON submission file")
+    .option("--root <path>", "Explicit coordination root")
+    .action((options: { file: string; root?: string }) => {
+      try {
+        const file = resolve(options.file);
+        const size = statSync(file).size;
+        if (size <= 0 || size > 128 * 1024) {
+          throw new Error("semantic review submission has invalid size");
+        }
+        emit.data(
+          storeSemanticReviewSubmission(
+            resolve(options.root ?? coordRoot(context)),
+            JSON.parse(readFileSync(file, "utf8")),
+          ),
+        );
+      } catch (error) {
+        emitFailure(emit, "semantic_review_submit_failed", error);
       }
     });
 

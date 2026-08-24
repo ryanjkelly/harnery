@@ -69,7 +69,7 @@ describe("semantic command", () => {
       running: false,
       stale: false,
       pending_count: 0,
-      rolling_calls: { used: 0, limit: 60, available: 60 },
+      rolling_calls: { used: 0, limit: 120, available: 120 },
       rolling_usage: { call_count: 0, unreported_calls: 0 },
       process_usage: { call_count: 0, unreported_calls: 0 },
       routes: [
@@ -91,6 +91,19 @@ describe("semantic command", () => {
       coverage: { pass_count: 0, instrumented_pass_count: 0, accepted_reading_count: 0 },
       usage: { call_count: 0, unreported_calls: 0 },
       stability: { subject_count: 0, rapid_reversals: 0 },
+    });
+  });
+
+  test("review prepare returns an empty frozen set before accepted readings exist", async () => {
+    const root = fixture();
+    const { data, error } = await run(["semantic", "review", "prepare", "--root", root]);
+    expect(error).toBeUndefined();
+    expect(data).toMatchObject({
+      schema_version: 1,
+      total_candidate_count: 0,
+      reviewed_candidate_count: 0,
+      pending_candidate_count: 0,
+      candidates: [],
     });
   });
 });

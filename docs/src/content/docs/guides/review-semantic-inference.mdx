@@ -1,0 +1,52 @@
+---
+title: Review semantic inference
+description: Label accepted semantic readings against the bounded facts that produced them.
+---
+
+Harnery validates every semantic reply before Codec can use it. Validation
+checks shape, citations, confidence, vocabulary, and privacy. It does not decide
+whether the model chose the best interpretation. The local meaning review adds
+that missing human judgment.
+
+Open `/codec/review` while the Harnery dashboard is running. The page prepares a
+frozen set of up to 12 accepted readings. Each item places two panels side by
+side on wide screens and stacks them on narrow screens:
+
+- **Bounded source facts** shows the task, lifecycle, intent, operation, waits,
+  attention, and recent controlled observations available to the model.
+- **Accepted model reading** shows the model, attestation, headline, summary,
+  phase, optional expression, and other accepted semantic fields.
+
+Judge the evidence first, then answer each controlled question. Overall meaning,
+phase, and expression are separate because they fail for different reasons.
+When phase or expression is wrong, choose the expected value from the controlled
+vocabulary. When the current reading changed from the prior captured reading,
+label that transition as real work, flicker, or unsure.
+
+Submitting the final item writes one private receipt and removes every item in
+that set from the pending queue. The receipt keeps the model identity, proposed
+controlled phase and expression, verdicts, corrections, confidence, opaque
+hashes, and bounded timing. It does not keep the task, source labels, semantic
+prose, citations, or raw model reply.
+
+Candidate context stays local for seven days and is capped at 100 files. Review
+receipts are capped at 1,000 files and one year. Neither store enters Event
+Ledger V3.
+
+## CLI workflow
+
+The page uses the same commands available to an embedding host:
+
+```bash
+harn semantic review prepare
+harn semantic review submit --file result.json
+```
+
+`prepare` backfills current accepted documents only when their evidence digest
+still matches the active projection. It then prefers changed readings,
+expression-bearing readings, and newer readings. `submit` checks the frozen
+study hash, candidate IDs, controlled values, correction requirements, and
+duplicate-review state before it writes an atomic receipt.
+
+The review capture is observational. A local evaluation-storage failure cannot
+turn an otherwise accepted semantic reading into a failed reader pass.

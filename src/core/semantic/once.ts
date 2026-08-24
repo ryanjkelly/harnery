@@ -15,6 +15,7 @@ import {
 } from "./contract.ts";
 import { buildSemanticEvidenceV1 } from "./evidence.ts";
 import { buildSemanticPrompt, extractSemanticJson } from "./prompt.ts";
+import { captureSemanticReviewCandidate } from "./review.ts";
 import {
   activeSemanticCallHistory,
   enqueueSemanticPending,
@@ -143,7 +144,11 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
         !heldGenerations.has(pending.generation_id) &&
         Date.parse(pending.pending_since) <= nowDate.getTime() - (input.debounceMs ?? 0),
     );
-    const pending = selectSemanticPending(eligiblePending, current.last_first_band_generation_id);
+    const pending = selectSemanticPending(
+      eligiblePending,
+      current.last_first_band_generation_id,
+      activeSemanticCallHistory(current.call_history, nowDate.getTime()),
+    );
     if (!pending) break;
     const item = evidenceByGeneration.get(pending.generation_id);
     if (!item || item.evidence_digest !== pending.evidence_digest) {
@@ -187,6 +192,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
       cached.source.evidence_digest === item.evidence_digest
     ) {
       writeSemanticAgentDocument(input.coordRoot, cached);
+      captureReviewCandidateSafely(input.coordRoot, item, cached);
       cacheHits += 1;
       outcomes.push({
         generation_id: item.generation_id,
@@ -263,6 +269,7 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     writeSemanticAgentDocument(input.coordRoot, outcome.document);
     if (outcome.document.reader_outcome === "accepted") {
       writeSemanticCache(input.coordRoot, cacheKey, outcome.document);
+      captureReviewCandidateSafely(input.coordRoot, item, outcome.document);
       current.newest_successful_pass = nowIso;
     }
     outcomes.push({
@@ -301,6 +308,20 @@ export async function runSemanticOnce(input: RunSemanticOnceInput): Promise<Sema
     outcomes,
     completed_at: nowIso,
   };
+}
+
+function captureReviewCandidateSafely(
+  coordRoot: string,
+  evidence: SemanticEvidenceV1,
+  document: SemanticAgentReadModelV2,
+): void {
+  if (document.reader_outcome !== "accepted") return;
+  try {
+    captureSemanticReviewCandidate(coordRoot, evidence, document);
+  } catch {
+    // Evaluation capture is observational. A local storage problem must not
+    // turn an otherwise valid semantic reading into a failed reader pass.
+  }
 }
 
 function countEvidenceByHarness(
