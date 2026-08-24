@@ -5,6 +5,8 @@ import { notFound } from "next/navigation";
 import { AgentChip } from "@/components/AgentChip";
 import { AgentLedgerStateBadge } from "@/components/AgentLedgerStateBadge";
 import { AgentStateBadges } from "@/components/AgentStateBadges";
+import { AgentStateAtlas } from "@/components/agent/AgentStateAtlas";
+import { BreakableMono } from "@/components/BreakableMono";
 import { EndSessionButton } from "@/components/EndSessionButton";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { HealActions } from "@/components/HealActions";
@@ -16,6 +18,8 @@ import { RecentActivity } from "@/components/RecentActivity";
 import { ReleaseClaimButton } from "@/components/ReleaseClaimButton";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { selectAgentSceneDetail } from "@/lib/agent-detail";
+import { buildScene } from "@/lib/codec/scene-source";
 import {
   ageLabel,
   coordRoot,
@@ -24,9 +28,13 @@ import {
   readAgent,
   readEndedAgent,
   readEvents,
+  readInstanceIdentities,
   readJournal,
 } from "@/lib/coord-reader";
 import { NO_DATA } from "@/lib/format/no-data";
+import { lookupByName } from "@/lib/identities";
+import type { SemanticAgentReadModelV2 } from "../../../../src/core/semantic/contract";
+import { inspectSemanticDocument } from "../../../../src/core/semantic/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +54,31 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
   const journalBody = existsSync(journalPath) ? readFileSync(journalPath, "utf-8") : null;
   const archives = listJournalArchives(decoded);
   const events = readEvents({ instanceId: hb.generation_id ? hb.instance_id : decoded, limit: 60 });
+  const scene = await buildScene();
+  const sceneDetail = selectAgentSceneDetail(scene, [
+    decoded,
+    hb.instance_id,
+    hb.v3_instance_id,
+    hb.generation_id,
+  ]);
+  const persona = lookupByName(hb.name);
+  const instanceIdentities = readInstanceIdentities();
+  const instanceIdentity = [hb.v3_instance_id, hb.instance_id, decoded]
+    .map((candidate) => (candidate ? instanceIdentities[candidate] : undefined))
+    .find((candidate) => candidate !== undefined);
+  let semanticDocument: SemanticAgentReadModelV2 | undefined;
+  try {
+    semanticDocument = inspectSemanticDocument(
+      coordRoot(),
+      hb.generation_id ?? sceneDetail.panel?.instance_id ?? hb.v3_instance_id ?? hb.instance_id,
+    );
+  } catch {
+    // The readable deterministic page remains available when a local semantic
+    // file is corrupt; the raw event and coordination records still diagnose it.
+  }
+  const namesByInstance = Object.fromEntries(
+    scene.panels.map((panel) => [panel.instance_id, panel.identity.display_name]),
+  );
 
   return (
     <>
@@ -73,15 +106,27 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
           </div>
         </header>
 
+        <AgentStateAtlas
+          panel={sceneDetail.panel}
+          relationships={sceneDetail.relationships}
+          transients={sceneDetail.transients}
+          sceneFreshness={scene.freshness}
+          sceneGeneratedAt={scene.generated_at}
+          semanticDocument={semanticDocument}
+          namesByInstance={namesByInstance}
+        />
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
           <Card className="lg:col-span-2">
             <CardHeader>
-              <CardTitle>V3 generation</CardTitle>
+              <CardTitle>Direct coordination record</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-[8rem_1fr] gap-y-1 text-xs">
                 <span className="text-muted-foreground">instance_id</span>
                 <span className="font-mono break-all">{hb.instance_id}</span>
+                <span className="text-muted-foreground">v3_instance_id</span>
+                <span className="font-mono break-all">{hb.v3_instance_id ?? NO_DATA}</span>
                 <span className="text-muted-foreground">session_id</span>
                 <span className="font-mono break-all">{hb.session_id ?? NO_DATA}</span>
                 <span className="text-muted-foreground">started</span>
@@ -94,6 +139,10 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
                 <span className="font-mono">{hb.model || NO_DATA}</span>
                 <span className="text-muted-foreground">task</span>
                 <span>{hb.task ?? <span className="text-muted-foreground italic">none</span>}</span>
+                <span className="text-muted-foreground">task observed</span>
+                <span>
+                  {hb.task_updated_at ? <FormattedDateTime iso={hb.task_updated_at} /> : NO_DATA}
+                </span>
                 <span className="text-muted-foreground">activity</span>
                 <span>
                   {hb.activity}
@@ -101,11 +150,27 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
                     <span className="text-muted-foreground"> via {hb.activity_source}</span>
                   )}
                 </span>
+                <span className="text-muted-foreground">activity observed</span>
+                <span>
+                  {hb.activity_updated_at ? (
+                    <FormattedDateTime iso={hb.activity_updated_at} />
+                  ) : (
+                    NO_DATA
+                  )}
+                </span>
                 <span className="text-muted-foreground">lifecycle</span>
                 <span>
                   {hb.task_state}
                   {hb.task_state_reason && (
                     <span className="text-muted-foreground">: {hb.task_state_reason}</span>
+                  )}
+                </span>
+                <span className="text-muted-foreground">lifecycle observed</span>
+                <span>
+                  {hb.task_state_updated_at ? (
+                    <FormattedDateTime iso={hb.task_state_updated_at} />
+                  ) : (
+                    NO_DATA
                   )}
                 </span>
                 {hb.generation_id && (
@@ -129,29 +194,69 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>File claims ({hb.files_touched.length})</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {hb.files_touched.length === 0 ? (
-                <p className="text-muted-foreground text-sm italic">No file claims.</p>
-              ) : (
-                <ul className="text-xs space-y-1 max-h-60 overflow-y-auto">
-                  {hb.files_touched.map((p) => (
-                    <li key={p} className="flex items-center justify-between gap-2 group">
-                      <span className="font-mono break-all min-w-0 flex-1">{p}</span>
-                      <ReleaseClaimButton
-                        instanceId={hb.instance_id}
-                        path={p}
-                        agentName={`agent-${hb.name}`}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
+          <div className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Durable identity</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-[7rem_1fr] gap-y-1 text-xs">
+                  <span className="text-muted-foreground">persona id</span>
+                  <span className="font-mono break-all">
+                    {persona?.agent_id ?? instanceIdentity?.agent_id ?? NO_DATA}
+                  </span>
+                  <span className="text-muted-foreground">created</span>
+                  <span>
+                    {persona?.created_at ? <FormattedDateTime iso={persona.created_at} /> : NO_DATA}
+                  </span>
+                  <span className="text-muted-foreground">aliases</span>
+                  <span>
+                    {persona?.aliases.length
+                      ? persona.aliases
+                          .map((alias) => `${alias.name} (${alias.retired_at})`)
+                          .join(", ")
+                      : NO_DATA}
+                  </span>
+                  <span className="text-muted-foreground">agent type</span>
+                  <span>{instanceIdentity?.agent_type ?? hb.kind ?? NO_DATA}</span>
+                  <span className="text-muted-foreground">durable model</span>
+                  <span className="font-mono">{instanceIdentity?.model ?? NO_DATA}</span>
+                  <span className="text-muted-foreground">durable last seen</span>
+                  <span>
+                    {instanceIdentity?.last_ts ? (
+                      <FormattedDateTime iso={instanceIdentity.last_ts} />
+                    ) : (
+                      NO_DATA
+                    )}
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>File claims ({hb.files_touched.length})</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {hb.files_touched.length === 0 ? (
+                  <p className="text-muted-foreground text-sm italic">No file claims.</p>
+                ) : (
+                  <ul className="text-xs space-y-1 max-h-60 overflow-y-auto">
+                    {hb.files_touched.map((p) => (
+                      <li key={p} className="flex items-center justify-between gap-2 group">
+                        <BreakableMono text={p} className="min-w-0 flex-1" />
+                        <ReleaseClaimButton
+                          instanceId={hb.instance_id}
+                          path={p}
+                          agentName={`agent-${hb.name}`}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         </div>
 
         {hasLiveGeneration && !isTerminal ? (
@@ -178,8 +283,29 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
         </div>
 
         <div className="mb-4">
-          <HeartbeatJson heartbeat={hb as unknown as Record<string, unknown>} />
+          <HeartbeatJson
+            title="Direct coordination JSON"
+            heartbeat={hb as unknown as Record<string, unknown>}
+          />
         </div>
+
+        {sceneDetail.panel && (
+          <div className="mb-4">
+            <HeartbeatJson
+              title="Codec projection JSON"
+              heartbeat={sceneDetail.panel as unknown as Record<string, unknown>}
+            />
+          </div>
+        )}
+
+        {semanticDocument && (
+          <div className="mb-4">
+            <HeartbeatJson
+              title="Semantic document JSON"
+              heartbeat={semanticDocument as unknown as Record<string, unknown>}
+            />
+          </div>
+        )}
 
         <RecentActivity events={events.rows} />
       </main>

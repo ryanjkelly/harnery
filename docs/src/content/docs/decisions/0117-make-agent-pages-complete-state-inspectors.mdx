@@ -1,0 +1,76 @@
+---
+title: "0117: Make agent pages complete state inspectors"
+description: "ADR: make each dedicated agent page a readable superset of its Codec card by reusing the canonical scene projection and retaining every evidence receipt."
+---
+
+**Status:** accepted (2026-08-24) · **Scope:** dashboard agent pages, Codec read model
+
+## Context
+
+The dedicated `/agents/[id]` page showed the live coordination row, file claims,
+journal, recent events, and raw heartbeat JSON. Codec had since gained a much
+richer view of the same generation: runtime tuning, exact context use, current
+operation, declared intents, recent action rhythm, attention, friction,
+telemetry defects, artifact activity, parentage, relationships, transients, and
+the bounded semantic read model.
+
+Operators could see those signals only in a compact card whose tooltips were
+designed for scanning a team. Opening the agent page discarded most of them.
+Reimplementing the projection on the detail route would create two definitions
+of agent state and would eventually let their provenance rules drift.
+
+## Alternatives considered
+
+**Expand only the heartbeat table.** Rejected because heartbeat state is the
+direct coordination record, not the event-derived or semantic state already
+available to Codec.
+
+**Copy Codec card components into the detail page.** Rejected because the card
+is optimized for compact live scanning. Its hidden tooltips and decayed cues do
+not form a complete inspection surface, and copied presentation logic would
+drift.
+
+**Build a new agent-detail projector from raw events.** Rejected because
+`buildScene()` already owns sanitization, event folding, provenance,
+confidence, semantic precedence, remote freshness, artifact capability, and
+relationship derivation.
+
+## Decision
+
+The dedicated page calls `buildScene()` and selects the panel by all known
+native and canonical instance identifiers. It renders every
+`CodecPanelScene` channel as an inspectable signal with its value, provenance,
+confidence, observation time, expiry, and cited event IDs. It also renders all
+recent intents and actions, relationships, transients, remote receipts,
+character assignment, and artifact-workspace capability.
+
+The page reads the durable persona identity, V3 instance identity, and semantic
+agent document separately. Those records survive beyond Codec's bounded recent
+panel window. Semantic fields retain their basis, confidence, and citations;
+reader identity, source digest, usage, deferral, invalid-output details, and
+timestamps remain visible. Raw coordination, Codec panel, and semantic JSON
+stay available as diagnostic disclosures after the readable sections.
+
+The existing operator controls, journal, file claims, and recent event history
+remain on the page. The page does not start readers, write coordination state,
+or weaken the Codec sanitizer. It is a read-only composition of existing
+authoritative and derived models except for the already-authorized controls.
+
+## Result
+
+The agent page now puts the canonical Codec projection before the direct
+coordination record. It shows all 20 signal channels and their evidence, along
+with every intent, action, relationship, transient cue, durable identity field,
+and semantic field. Three labeled JSON disclosures keep the complete source
+records available for diagnosis.
+
+The selector has focused unit coverage, and the production dashboard build
+passes. Browser QA covered desktop and mobile in light and dark themes. The
+final visual review covered 34 tiles and found no problems. Layout, contrast,
+interaction, clipping, overflow, hit targets, placeholders, truncation, and
+prose runts also passed their checks.
+
+The first version let long identifiers widen a 390-pixel viewport because the
+grid had an implicit track. Explicit single-column tracks, flattened structured
+values, and safe break opportunities now preserve exact identifiers without
+horizontal overflow.

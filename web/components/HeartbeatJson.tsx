@@ -10,13 +10,24 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
  * common case is "I just want the summary"; expand for diagnosis or schema
  * drift hunting. Mirrors the upstream app's HeartbeatJson.
  */
-export function HeartbeatJson({ heartbeat }: { heartbeat: Record<string, unknown> }) {
+export function HeartbeatJson({
+  heartbeat,
+  title = "V3 coordination state",
+}: {
+  heartbeat: Record<string, unknown>;
+  title?: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>V3 coordination state</CardTitle>
-        <Button variant="outline" size="sm" onClick={() => setOpen((v) => !v)}>
+        <CardTitle>{title}</CardTitle>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`${open ? "Hide" : "Show"} ${title}`}
+          onClick={() => setOpen((v) => !v)}
+        >
           {open ? "Hide" : "Show JSON"}
         </Button>
       </CardHeader>
