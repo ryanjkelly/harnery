@@ -43,6 +43,8 @@ function makePack(
   return dir;
 }
 
+const target = (instance_id: string, display_name?: string) => ({ instance_id, display_name });
+
 beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), "codec-packs-"));
 });
@@ -56,6 +58,19 @@ describe("validatePackDir / listPacks", () => {
     const bad = validatePackDir(path.join(root, "codec", "packs", "basalt"));
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.problems.join(" ")).toContain("alert");
+  });
+
+  test("sorts gender-prefixed packs by their encoded character sequence", () => {
+    makePack("m04-d");
+    makePack("f03-c");
+    makePack("m02-b");
+    makePack("f01-a");
+    expect(listPacks(root).map((pack) => pack.pack_id)).toEqual([
+      "f01-a",
+      "m02-b",
+      "f03-c",
+      "m04-d",
+    ]);
   });
 
   test("an empty roster yields no packs, not an error", () => {
@@ -88,22 +103,22 @@ describe("allocateCharacters", () => {
     makePack("basalt");
 
     // Two instances, two packs: unique assignment.
-    const first = allocateCharacters(["i-1", "i-2"], NOW, root);
+    const first = allocateCharacters([target("i-1"), target("i-2")], NOW, root);
     const assigned = [first.get("i-1")?.pack_id, first.get("i-2")?.pack_id];
     expect(new Set(assigned).size).toBe(2);
 
     // A third visible instance exceeds the roster: it still gets a stable
     // portrait, even though preserving uniqueness is impossible at capacity.
-    const shortage = allocateCharacters(["i-1", "i-2", "i-3"], NOW, root);
+    const shortage = allocateCharacters([target("i-1"), target("i-2"), target("i-3")], NOW, root);
     expect(shortage.get("i-1")?.pack_id).toBe(first.get("i-1")?.pack_id); // stable
     expect(shortage.get("i-3")?.pack_id).not.toBe("fallback-neutral");
-    expect(allocateCharacters(["i-1", "i-2", "i-3"], NOW, root).get("i-3")).toEqual(
-      shortage.get("i-3"),
-    );
+    expect(
+      allocateCharacters([target("i-1"), target("i-2"), target("i-3")], NOW, root).get("i-3"),
+    ).toEqual(shortage.get("i-3"));
 
     // i-1 ends; its pack returns to the pool and i-3 picks it up next build,
     // while the historical binding for i-1 is retained, not rewritten.
-    const after = allocateCharacters(["i-2", "i-3"], LATER, root);
+    const after = allocateCharacters([target("i-2"), target("i-3")], LATER, root);
     expect(after.get("i-3")?.pack_id).toBe(first.get("i-1")?.pack_id);
     const registry = JSON.parse(readFileSync(path.join(root, "codec", "registry.json"), "utf8"));
     const i1 = registry.bindings.filter((b: { instance_id: string }) => b.instance_id === "i-1");
@@ -112,9 +127,42 @@ describe("allocateCharacters", () => {
     expect(i1[0].pack_id).toBe(first.get("i-1")?.pack_id);
   });
 
+  test("matches canonical agent-name gender and repairs a wrong live binding", () => {
+    makePack("f01-a");
+    makePack("m02-b");
+    makePack("f03-c");
+    makePack("m04-d");
+    mkdirSync(path.join(root, "codec"), { recursive: true });
+    writeFileSync(
+      path.join(root, "codec", "registry.json"),
+      JSON.stringify({
+        schema_version: 1,
+        bindings: [{ instance_id: "boris", pack_id: "f01-a", pack_version: "1", bound_at: NOW }],
+      }),
+    );
+
+    const assigned = allocateCharacters(
+      [target("boris", "Boris"), target("esme", "Esme"), target("forrest", "Forrest")],
+      LATER,
+      root,
+    );
+    expect(assigned.get("boris")?.pack_id).toStartWith("m");
+    expect(assigned.get("esme")?.pack_id).toStartWith("f");
+    expect(assigned.get("forrest")?.pack_id).toStartWith("m");
+
+    const registry = JSON.parse(readFileSync(path.join(root, "codec", "registry.json"), "utf8"));
+    const boris = registry.bindings.filter(
+      (binding: { instance_id: string }) => binding.instance_id === "boris",
+    );
+    expect(boris).toHaveLength(2);
+    expect(boris[0]).toMatchObject({ pack_id: "f01-a", released_at: LATER });
+    expect(boris[1].pack_id).toStartWith("m");
+    expect(boris[1].released_at).toBeUndefined();
+  });
+
   test("a pack upgrade preserves history and refreshes the live cache version", () => {
     const dir = makePack("aurora");
-    expect(allocateCharacters(["i-1"], NOW, root).get("i-1")).toEqual({
+    expect(allocateCharacters([target("i-1")], NOW, root).get("i-1")).toEqual({
       pack_id: "aurora",
       pack_version: "1",
     });
@@ -123,7 +171,7 @@ describe("allocateCharacters", () => {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     writeFileSync(manifestPath, JSON.stringify({ ...manifest, pack_version: "2" }));
 
-    expect(allocateCharacters(["i-1"], LATER, root).get("i-1")).toEqual({
+    expect(allocateCharacters([target("i-1")], LATER, root).get("i-1")).toEqual({
       pack_id: "aurora",
       pack_version: "2",
     });

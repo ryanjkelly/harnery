@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { harneryDir } from "@/lib/coord-reader";
+import { COORD_NAMES } from "../../../src/core/agents/state/names";
 
 import { type CodecExpression, FALLBACK_PACK } from "./contracts";
 
@@ -97,6 +98,11 @@ export interface PackBinding {
 export interface PackRegistry {
   schema_version: 1;
   bindings: PackBinding[];
+}
+
+export interface CharacterAllocationTarget {
+  instance_id: string;
+  display_name?: string;
 }
 
 export interface CodecRosterSummary {
@@ -216,7 +222,7 @@ export function validatePackDir(
   return result;
 }
 
-/** Every complete pack in the roster, sorted by id for stable allocation. */
+/** Every complete pack in stable character-sequence order. */
 export function listPacks(root = harneryDir()): CodecPack[] {
   let entries: string[];
   try {
@@ -225,7 +231,7 @@ export function listPacks(root = harneryDir()): CodecPack[] {
     return []; // no roster yet: everyone gets the fallback pack
   }
   const packs: CodecPack[] = [];
-  for (const entry of entries.sort()) {
+  for (const entry of entries.sort(comparePackIds)) {
     const dir = path.join(packsDir(root), entry);
     try {
       if (!fs.statSync(dir).isDirectory()) continue;
@@ -236,6 +242,39 @@ export function listPacks(root = harneryDir()): CodecPack[] {
     if (result.ok) packs.push(result.pack);
   }
   return packs;
+}
+
+function comparePackIds(left: string, right: string): number {
+  const leftOrdinal = packOrdinal(left);
+  const rightOrdinal = packOrdinal(right);
+  if (leftOrdinal !== null && rightOrdinal !== null && leftOrdinal !== rightOrdinal) {
+    return leftOrdinal - rightOrdinal;
+  }
+  if (leftOrdinal !== null && rightOrdinal === null) return -1;
+  if (leftOrdinal === null && rightOrdinal !== null) return 1;
+  return left.localeCompare(right, "en", { numeric: true });
+}
+
+function packOrdinal(packId: string): number | null {
+  const match = /^[fm](\d+)-/.exec(packId);
+  return match ? Number.parseInt(match[1]!, 10) : null;
+}
+
+type CharacterGender = "female" | "male";
+
+function packGender(packId: string): CharacterGender | null {
+  if (/^f\d+-/.test(packId)) return "female";
+  if (/^m\d+-/.test(packId)) return "male";
+  return null;
+}
+
+function nameGender(displayName: string | undefined): CharacterGender | null {
+  if (!displayName) return null;
+  const index = COORD_NAMES.findIndex((name) => name === displayName);
+  if (index < 0) return null;
+  const startsFemale = Math.floor(index / 26) % 2 === 0;
+  const evenLetter = (index % 26) % 2 === 0;
+  return startsFemale === evenLetter ? "female" : "male";
 }
 
 export function readPackRegistry(root = harneryDir()): PackRegistry {
@@ -307,13 +346,17 @@ function writeRegistry(root: string, registry: PackRegistry): void {
  * unique, durable identities whenever roster capacity allows.
  */
 export function allocateCharacters(
-  instanceIds: readonly string[],
+  targets: readonly CharacterAllocationTarget[],
   now: string,
   root = harneryDir(),
 ): Map<string, { pack_id: string; pack_version: string }> {
   const packs = listPacks(root);
   const registry = readPackRegistry(root);
+  const instanceIds = targets.map((target) => target.instance_id);
   const live = new Set(instanceIds);
+  const desiredGender = new Map(
+    targets.map((target) => [target.instance_id, nameGender(target.display_name)]),
+  );
   const byId = new Map(packs.map((p) => [p.pack_id, p]));
   let changed = false;
 
@@ -328,6 +371,16 @@ export function allocateCharacters(
       continue;
     }
     const currentPack = byId.get(binding.pack_id);
+    const expectedGender = desiredGender.get(binding.instance_id);
+    const currentGender = packGender(binding.pack_id);
+    if (expectedGender && currentGender && expectedGender !== currentGender) {
+      // The original allocator consumed lexical pack ids, which exhausted all
+      // f-prefixed packs before reaching m-prefixed packs. Preserve that
+      // history, but release the wrong live portrait so it can be corrected.
+      binding.released_at = now;
+      changed = true;
+      continue;
+    }
     if (currentPack && currentPack.pack_version !== binding.pack_version) {
       // Pack upgrades preserve the historical binding and immediately rebind
       // the live instance below so the asset URL gets the new cache key.
@@ -345,7 +398,8 @@ export function allocateCharacters(
   const out = new Map<string, { pack_id: string; pack_version: string }>();
   const freePacks = packs.filter((p) => !packInUse.has(p.pack_id));
 
-  for (const instanceId of instanceIds) {
+  for (const target of targets) {
+    const instanceId = target.instance_id;
     const existing = activeByInstance.get(instanceId);
     if (existing && byId.has(existing.pack_id)) {
       out.set(instanceId, { pack_id: existing.pack_id, pack_version: existing.pack_version });
@@ -355,10 +409,19 @@ export function allocateCharacters(
     const upgradedPackIndex = upgradedPackId
       ? freePacks.findIndex((candidate) => candidate.pack_id === upgradedPackId)
       : -1;
-    const pack =
-      upgradedPackIndex >= 0 ? freePacks.splice(upgradedPackIndex, 1)[0] : freePacks.shift();
+    const expectedGender = desiredGender.get(instanceId);
+    const genderPackIndex = expectedGender
+      ? freePacks.findIndex((candidate) => packGender(candidate.pack_id) === expectedGender)
+      : -1;
+    const packIndex = upgradedPackIndex >= 0 ? upgradedPackIndex : genderPackIndex;
+    const pack = packIndex >= 0 ? freePacks.splice(packIndex, 1)[0] : freePacks.shift();
     if (!pack) {
-      const overflowPack = packs[stablePackIndex(instanceId, packs.length)];
+      const overflowPacks = expectedGender
+        ? packs.filter((candidate) => packGender(candidate.pack_id) === expectedGender)
+        : packs;
+      const fallbackOverflowPacks = overflowPacks.length > 0 ? overflowPacks : packs;
+      const overflowPack =
+        fallbackOverflowPacks[stablePackIndex(instanceId, fallbackOverflowPacks.length)];
       out.set(
         instanceId,
         overflowPack

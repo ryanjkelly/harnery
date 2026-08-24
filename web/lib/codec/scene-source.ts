@@ -207,7 +207,10 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
   // dashboard, so the source machine does not need to own the selected pack.
   try {
     const characters = allocateCharacters(
-      scene.panels.map((p) => p.instance_id),
+      scene.panels.map((panel) => ({
+        instance_id: panel.instance_id,
+        display_name: panel.identity.display_name,
+      })),
       scene.generated_at,
     );
     for (const panel of scene.panels) {
