@@ -1,0 +1,100 @@
+---
+title: "0122: Bound and share Codec scene builds"
+description: "ADR: project Codec from bounded presentation caches and multicast one process-wide scene to every open stream."
+---
+
+**Status:** accepted (2026-08-24) · **Scope:** Codec scene source, live stream, dashboard read models
+
+## Context
+
+The request and event-loop recorder from ADR 0121 collected 1,389 dashboard
+requests during a one-hour Codec work session. It marked 457 requests slow and
+recorded 1,122 event-loop delays. Individual character-pack requests reached
+111,445 ms even though Next's application-code timing was usually 2–20 ms. The
+delay accumulated in Next and middleware while another request occupied the
+process.
+
+Codec scene work explained the pattern. `/codec` had a 6,587 ms median and a
+25,245 ms maximum. Event-loop freezes reached 11,032 ms, and Next twice logged
+`Server is approaching the used memory threshold, restarting`. Each open
+`/api/codec-stream` connection owned its own filesystem watchers and
+five-second rebuild timer.
+
+The scene builder also violated its own bounded-tail premise. The active V3
+ledger was 70,755,817 bytes across 36,224 events. `readSanitizedTail` called
+`readLedgerV3`, retained the complete parsed authority, sanitized every event,
+and sliced afterward. `readAgents` and workflow relationship reads derived the
+complete coordination view again. A direct cold `buildScene` measurement took
+6,205 ms and increased process RSS by about 882 MiB.
+
+## Alternatives considered
+
+**Run the dashboard only through `next start`.** Rejected as the primary fix.
+Production mode avoids development recompilation, but the measured six-second
+scene build still blocks its Node process and consumes the same ledger memory.
+
+**Raise Next's memory limit or restart threshold.** Rejected because it delays
+the restart without removing the repeated full-ledger allocation.
+
+**Optimize the character-pack response handler.** Rejected by the timing
+split. Cached pack responses generally spent only a few milliseconds in
+application code. They appeared slow because they waited behind the Codec
+scene work.
+
+**Keep the complete authority read inside Codec and cache its result.**
+Rejected because the generic ledger cache deliberately retains the complete
+validated event history. That contract is appropriate for operational
+decisions, but makes a high-frequency presentation feed carry hundreds of
+megabytes of unrelated history.
+
+## Decision
+
+Codec now uses a presentation-only read path:
+
+1. `readCachedAgentsForCodec` reads generation-bound heartbeat caches. Missing
+   or invalid cache facts render as unknown. It is never used for coordination,
+   finalization, authorization, or another operational decision.
+2. `readIncrementalSanitizedTail` reads at most the newest 4,000,000 source
+   bytes on a cold start. Every retained NDJSON row still passes
+   `sanitizeEvent` and the complete V3 event schema validator. While the active
+   file keeps the same device and inode, later reads validate only appended
+   complete rows and retain a source-byte-bounded window.
+3. Workflow dependency edges use the already-read heartbeat snapshot for live
+   children and durable workflow transcripts for finished children. They do
+   not derive another complete coordination view.
+4. Live-display overlays keep a per-file presentation cache. Codec rereads a
+   generation file only when its size or modification time changes, while
+   expiration is still checked on every projection. This replaces reparsing
+   hundreds of unchanged append-only files on each refresh.
+
+`scene-service.ts` owns one process-global builder, filesystem watcher set,
+and five-second safety poll. A five-second refresh floor collapses event
+bursts without letting page loads start extra builds between polls. A queued
+watcher refresh also rechecks the cache, so it cannot repeat a build that a
+request just completed. Concurrent reads share the same promise, and changed
+scenes are multicast to every ready Codec stream. The server-rendered page and
+polling fallback use the same scene cache. The singleton is stored on
+`globalThis` so separate Next route bundles and development HMR share it.
+
+The authoritative V3 reader and every operational caller remain unchanged.
+This decision narrows only Codec's fail-closed visual projection.
+
+## Result
+
+Focused tests prove that concurrent reads produce one build, two connected
+tabs receive one shared refresh, a queued watcher cannot repeat a fresh build,
+incremental tail reads retain appended valid events, unchanged live-display
+files stay cached while changed and expired rows remain correct, and
+cache-backed workflow child resolution preserves transcripted sessions.
+
+Against the same 68 MiB live ledger, a fresh-process scene build fell from
+6,205 ms and roughly 882 MiB of RSS growth to 423 ms and roughly 173 MiB. A
+second build in the same process took 74 ms and added about 1 MiB.
+
+A clean production soak opened four live streams and sent 68 requests,
+including six rounds with ten simultaneous page, scene, and sprite requests.
+Only the first cold page load exceeded one second. Warm page loads took 176 to
+293 ms when requested alone; scene JSON took 3 to 4 ms and sprite responses
+took 2 to 3 ms. The concurrent page p95 was 817 ms, and no event-loop delay was
+recorded without an active request. The server stayed on one process and used
+about 560 MiB of resident memory after the cold load and soak.

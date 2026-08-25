@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildEventV3 } from "../../../src/core/events/v3/builder";
 import { attestationIdV3, eventIdV3, generationIdV3 } from "../../../src/core/events/v3/ids";
-import type { LiveDisplayRowV3 } from "../../../src/core/events/v3/live-feed";
+import { type LiveDisplayRowV3, writeLiveDisplayV3 } from "../../../src/core/events/v3/live-feed";
 import {
   CODEC_SCHEMA_VERSION,
   type CodecScene,
@@ -14,7 +14,9 @@ import {
 } from "./contracts";
 import {
   applyLiveFeedOverlay,
+  listCachedLiveDisplayForCodec,
   mergeRemotePanels,
+  readIncrementalSanitizedTail,
   readSanitizedTails,
   stripLiveFeedOverlay,
 } from "./scene-source";
@@ -101,10 +103,59 @@ describe("Codec V3 ledger tail", () => {
     const rows = await readSanitizedTails([v3Path]);
     expect(rows.map((row) => row.event_id)).toEqual([eventId]);
     expect(rows.map((row) => row.event_type)).toEqual(["session.started"]);
+
+    const firstIncremental = await readIncrementalSanitizedTail(v3Path);
+    expect(firstIncremental.map((row) => row.event_id)).toEqual([eventId]);
+    const secondEventId = eventIdV3();
+    const second = structuredClone(v3);
+    second.event_id = secondEventId;
+    second.producer.sequence = 2;
+    second.payload.runtime_attestation.declared_by_event_id = secondEventId;
+    appendFileSync(v3Path, `${JSON.stringify(second)}\n`);
+    const appended = await readIncrementalSanitizedTail(v3Path);
+    expect(appended.map((row) => row.event_id)).toEqual([eventId, secondEventId]);
   });
 });
 
 describe("Codec live-display overlay", () => {
+  test("rereads changed generation files and expires cached rows", () => {
+    const root = mkdtempSync(join(tmpdir(), "codec-live-cache-"));
+    roots.push(root);
+    const generationId = generationIdV3();
+    const firstEventId = eventIdV3();
+    const startedAt = new Date("2026-08-16T10:00:00.000Z");
+    writeLiveDisplayV3(
+      root,
+      {
+        generation_id: generationId,
+        event_id: firstEventId,
+        intent_display: "Inspect the first boundary",
+        ttl_ms: 60_000,
+      },
+      () => startedAt,
+    );
+
+    expect(listCachedLiveDisplayForCodec(root, new Date(startedAt.getTime() + 1_000))).toHaveLength(
+      1,
+    );
+    writeLiveDisplayV3(
+      root,
+      {
+        generation_id: generationId,
+        event_id: eventIdV3(),
+        intent_display: "Inspect the second boundary",
+        ttl_ms: 60_000,
+      },
+      () => new Date(startedAt.getTime() + 2_000),
+    );
+    expect(listCachedLiveDisplayForCodec(root, new Date(startedAt.getTime() + 3_000))).toHaveLength(
+      2,
+    );
+    expect(
+      listCachedLiveDisplayForCodec(root, new Date(startedAt.getTime() + 63_000)),
+    ).toHaveLength(0);
+  });
+
   test("merges unexpired intent onto matching event ids and strips it for remote", () => {
     const eventId = eventIdV3();
     const generationId = generationIdV3();

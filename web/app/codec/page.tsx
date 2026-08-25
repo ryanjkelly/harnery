@@ -12,13 +12,13 @@ import { AgentChipProvider } from "@/components/AgentChip";
 import { CodecView } from "@/components/codec/CodecView";
 import styles from "@/components/codec/codec.module.css";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
-import { buildScene } from "@/lib/codec/scene-source";
+import { getSharedCodecScene } from "@/lib/codec/scene-service";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function CodecPage() {
-  const scene = await buildScene();
+  const scene = await getSharedCodecScene();
   const summaries = buildAgentSummaryMap(scene.panels.map((p) => p.identity.display_name));
 
   return (

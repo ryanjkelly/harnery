@@ -9,6 +9,7 @@ import {
 } from "../../src/core/workflow/live-session-v3";
 import {
   readWorkflowChildSessions,
+  readWorkflowChildSessionsFromCache,
   readWorkflowRun,
   readWorkflowRuns,
   resolveRunCoordRoot,
@@ -164,6 +165,34 @@ describe("workflow proof reader", () => {
       // Transcript names the agent; the heartbeat still says it is running.
       { sessionId: "s-ended", agentId: "a1", live: true },
       { sessionId: "s-live", agentId: "live", live: true },
+    ]);
+  });
+
+  test("unions cached live children with transcripted sessions without reading coordination authority", () => {
+    writeFileSync(
+      join(runDir, "transcript.jsonl"),
+      `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "done" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:01.000Z", event: "agent.end", id: "a1", session_id: "s-ended" })}\n`,
+      "utf8",
+    );
+
+    const children = readWorkflowChildSessionsFromCache(root, "wf-reader", [
+      {
+        workflow_run_id: "wf-reader",
+        workflow_agent_id: "a2",
+        session_id: "s-live",
+      },
+      {
+        workflow_run_id: "wf-other",
+        workflow_agent_id: "other",
+        session_id: "s-other",
+      },
+    ]).sort((left, right) => left.sessionId.localeCompare(right.sessionId));
+
+    expect(children).toEqual([
+      { sessionId: "s-ended", agentId: "a1", live: false },
+      { sessionId: "s-live", agentId: "a2", live: true },
     ]);
   });
 

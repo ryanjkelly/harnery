@@ -13,16 +13,15 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { type AgentsSnapshot, coordRoot, readAgents } from "@/lib/coord-reader";
+import { type AgentsSnapshot, coordRoot, readCachedAgentsForCodec } from "@/lib/coord-reader";
 import { readDurableWork } from "@/lib/work-reader";
-import { readWorkflowChildSessions } from "@/lib/workflow-reader";
-import { readEventV3ControlState } from "../../../src/core/events/v3/control";
+import { readWorkflowChildSessionsFromCache } from "@/lib/workflow-reader";
 import {
   EVENT_V3_LIVE_RELATIVE_ROOT,
   type LiveDisplayRowV3,
-  listLiveDisplayV3,
+  readLiveDisplayV3,
 } from "../../../src/core/events/v3/live-feed";
-import { eventV3Paths, readLedgerV3 } from "../../../src/core/events/v3/reader";
+import { eventV3Paths } from "../../../src/core/events/v3/reader";
 import { SEMANTIC_HARD_CALLS_PER_HOUR } from "../../../src/core/semantic/scheduler";
 import { readSemanticServiceStatus } from "../../../src/core/semantic/service-status";
 
@@ -32,12 +31,174 @@ import { allocateCharacters } from "./packs";
 import { projectScene } from "./projector";
 import { deriveRelationships } from "./relationships";
 import { readRemotePresence } from "./remote-source";
-import { sanitizeEvent, sanitizeLine } from "./sanitize";
+import { sanitizeLine } from "./sanitize";
 import { applySemanticReadModel } from "./semantic";
 import { stripCodecSemantic } from "./semantic-contract";
 
 /** How much of the log tail to fold. ~1KB/row → a few thousand recent rows. */
 const TAIL_BYTES = 4_000_000;
+
+interface SanitizedTailRow {
+  event: CodecSourceEvidence;
+  sourceBytes: number;
+}
+
+interface SanitizedTailCache {
+  device: bigint;
+  inode: bigint;
+  size: number;
+  partial: string;
+  rows: SanitizedTailRow[];
+  rowBytes: number;
+}
+
+const sanitizedTailCache = new Map<string, SanitizedTailCache>();
+
+interface CachedLiveDisplayFile {
+  size: number;
+  modifiedAtMs: number;
+  rows: LiveDisplayRowV3[];
+}
+
+const liveDisplayCache = new Map<string, Map<string, CachedLiveDisplayFile>>();
+const LIVE_DISPLAY_HARD_TTL_MS = 60 * 60 * 1_000;
+
+/** Cache unchanged append-only live-display files while rechecking row expiry
+ * on every projection. A directory listing plus metadata checks replaces
+ * reparsing hundreds of historical generation files every five seconds. */
+export function listCachedLiveDisplayForCodec(
+  root: string,
+  now: Date = new Date(),
+): LiveDisplayRowV3[] {
+  const liveRoot = path.join(root, EVENT_V3_LIVE_RELATIVE_ROOT);
+  let names: string[];
+  try {
+    names = fs.readdirSync(liveRoot).filter((name) => name.endsWith(".ndjson"));
+  } catch {
+    liveDisplayCache.delete(root);
+    return [];
+  }
+
+  const files = liveDisplayCache.get(root) ?? new Map<string, CachedLiveDisplayFile>();
+  liveDisplayCache.set(root, files);
+  const present = new Set(names);
+  const nowMs = now.getTime();
+  const rows: LiveDisplayRowV3[] = [];
+
+  for (const name of names) {
+    const filePath = path.join(liveRoot, name);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      files.delete(name);
+      continue;
+    }
+    const cached = files.get(name);
+    let fileRows = cached?.rows ?? [];
+    if (!cached || cached.size !== stat.size || cached.modifiedAtMs !== stat.mtimeMs) {
+      const generationId = name.slice(0, -".ndjson".length);
+      try {
+        fileRows = readLiveDisplayV3(root, generationId, () => now);
+      } catch {
+        fileRows = [];
+      }
+      files.set(name, { size: stat.size, modifiedAtMs: stat.mtimeMs, rows: fileRows });
+    }
+    rows.push(
+      ...fileRows.filter((row) => {
+        const writtenAtMs = Date.parse(row.written_at);
+        return Date.parse(row.expires_at) > nowMs && writtenAtMs + LIVE_DISPLAY_HARD_TTL_MS > nowMs;
+      }),
+    );
+  }
+  for (const name of files.keys()) {
+    if (!present.has(name)) files.delete(name);
+  }
+  return rows;
+}
+
+async function readRange(filePath: string, start: number, length: number): Promise<Buffer> {
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    let offset = 0;
+    while (offset < length) {
+      const { bytesRead } = await handle.read(buffer, offset, length - offset, start + offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return offset === buffer.length ? buffer : buffer.subarray(0, offset);
+  } finally {
+    await handle.close();
+  }
+}
+
+function sanitizedRows(text: string): SanitizedTailRow[] {
+  const rows: SanitizedTailRow[] = [];
+  for (const line of text.split("\n")) {
+    const event = sanitizeLine(line);
+    if (event) rows.push({ event, sourceBytes: Buffer.byteLength(line, "utf8") + 1 });
+  }
+  return rows;
+}
+
+function trimTail(cache: SanitizedTailCache): void {
+  while (cache.rowBytes > TAIL_BYTES && cache.rows.length > 1) {
+    cache.rowBytes -= cache.rows.shift()?.sourceBytes ?? 0;
+  }
+}
+
+/** Read a bounded validated tail once, then validate only newly appended
+ * complete rows while the active file keeps the same identity. */
+export async function readIncrementalSanitizedTail(
+  filePath: string,
+): Promise<CodecSourceEvidence[]> {
+  const stat = await fs.promises.stat(filePath, { bigint: true });
+  const size = Number(stat.size);
+  const cached = sanitizedTailCache.get(filePath);
+  if (cached && cached.device === stat.dev && cached.inode === stat.ino && size >= cached.size) {
+    if (size > cached.size) {
+      const appended = await readRange(filePath, cached.size, size - cached.size);
+      const text = cached.partial + appended.toString("utf8");
+      const finalNewline = text.lastIndexOf("\n");
+      if (finalNewline >= 0) {
+        const complete = text.slice(0, finalNewline + 1);
+        const added = sanitizedRows(complete);
+        cached.rows.push(...added);
+        cached.rowBytes += added.reduce((sum, row) => sum + row.sourceBytes, 0);
+        cached.partial = text.slice(finalNewline + 1);
+        trimTail(cached);
+      } else {
+        cached.partial = text;
+      }
+      cached.size = size;
+    }
+    return cached.rows.map((row) => row.event);
+  }
+
+  const start = Math.max(0, size - TAIL_BYTES);
+  let text = (await readRange(filePath, start, size - start)).toString("utf8");
+  if (start > 0) {
+    const firstNewline = text.indexOf("\n");
+    text = firstNewline >= 0 ? text.slice(firstNewline + 1) : "";
+  }
+  const finalNewline = text.lastIndexOf("\n");
+  const complete = finalNewline >= 0 ? text.slice(0, finalNewline + 1) : "";
+  const partial = finalNewline >= 0 ? text.slice(finalNewline + 1) : text;
+  const rows = sanitizedRows(complete);
+  const next: SanitizedTailCache = {
+    device: stat.dev,
+    inode: stat.ino,
+    size,
+    partial,
+    rows,
+    rowBytes: rows.reduce((sum, row) => sum + row.sourceBytes, 0),
+  };
+  trimTail(next);
+  sanitizedTailCache.set(filePath, next);
+  return next.rows.map((row) => row.event);
+}
 
 async function readOneSanitizedTail(filePath: string): Promise<CodecSourceEvidence[]> {
   let text: string;
@@ -75,19 +236,19 @@ export async function readSanitizedTail(filePath?: string): Promise<CodecSourceE
   if (filePath) return readSanitizedTails([filePath]);
 
   const root = coordRoot();
-  const control = readEventV3ControlState(root);
-  if (control.state !== "candidate" && control.state !== "active") return [];
-
-  const ledger = readLedgerV3(root);
-  if (!ledger.complete) return [];
-  const rows = ledger.events
-    .map(({ event }) => sanitizeEvent(event))
-    .filter((event): event is CodecSourceEvidence => event !== null);
-  const sliced = rows.slice(-Math.max(1, Math.floor(TAIL_BYTES / 1_000)));
+  // Codec is a presentation projection, not an authority reader. Reading the
+  // complete ledger here retained every parsed event and re-sanitized the
+  // entire history on every scene refresh. The active authority can grow to
+  // tens of megabytes, while the projector explicitly needs only a bounded
+  // latest-wins tail. Each retained row still crosses sanitizeEvent's full V3
+  // contract validator; malformed and partial final frames fail closed.
+  const activePath = eventV3Paths(root).active;
+  if (!fs.existsSync(activePath)) return [];
+  const rows = await readIncrementalSanitizedTail(activePath);
   try {
-    return applyLiveFeedOverlay(sliced, listLiveDisplayV3(root));
+    return applyLiveFeedOverlay(rows, listCachedLiveDisplayForCodec(root));
   } catch {
-    return sliced;
+    return rows;
   }
 }
 
@@ -111,7 +272,11 @@ export interface CodecSceneSource {
 }
 
 export async function readSceneSource(): Promise<CodecSceneSource> {
-  return { snapshot: readAgents(), events: await readSanitizedTail() };
+  const [snapshot, events] = await Promise.all([
+    Promise.resolve(readCachedAgentsForCodec()),
+    readSanitizedTail(),
+  ]);
+  return { snapshot, events };
 }
 
 export async function buildScene(now?: string, source?: CodecSceneSource): Promise<CodecScene> {
@@ -224,6 +389,7 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
   // Failure means no lines, never a degraded scene.
   try {
     const root = coordRoot();
+    const cachedChildren = [...snapshot.active, ...snapshot.stale, ...snapshot.terminal];
     const items = readDurableWork(root).map((r) => ({
       id: r.projection.id,
       state: r.projection.state,
@@ -232,7 +398,7 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
       ...(r.projection.latest_run_id ? { latest_run_id: r.projection.latest_run_id } : {}),
     }));
     scene.relationships = deriveRelationships(scene.panels, items, (runId) =>
-      readWorkflowChildSessions(root, runId).map((c) => c.sessionId),
+      readWorkflowChildSessionsFromCache(root, runId, cachedChildren).map((c) => c.sessionId),
     );
   } catch {
     scene.relationships = [];
@@ -259,15 +425,11 @@ export function mergeRemotePanels(
 
 export function eventsFilePaths(): string[] {
   const root = coordRoot();
-  const control = readEventV3ControlState(root);
-  if (control.state === "candidate" || control.state === "active") {
-    const paths = eventV3Paths(root);
-    const watched = [paths.active, paths.catalog];
-    const liveRoot = path.join(root, EVENT_V3_LIVE_RELATIVE_ROOT);
-    if (fs.existsSync(liveRoot)) watched.push(liveRoot);
-    return watched;
-  }
-  return [];
+  const paths = eventV3Paths(root);
+  const watched = [paths.active, paths.catalog];
+  const liveRoot = path.join(root, EVENT_V3_LIVE_RELATIVE_ROOT);
+  if (fs.existsSync(liveRoot)) watched.push(liveRoot);
+  return watched;
 }
 
 // Match the V3 live-display contract so Codec does not pre-truncate valid

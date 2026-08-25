@@ -95,6 +95,13 @@ export interface WorkflowChildSession {
   live: boolean;
 }
 
+export interface CachedWorkflowChild {
+  session_id?: string;
+  native_session_id?: string;
+  workflow_run_id?: string;
+  workflow_agent_id?: string;
+}
+
 interface WorkflowChildGeneration {
   workflow_run_id?: string;
   workflow_agent_id?: string;
@@ -161,6 +168,45 @@ export function readWorkflowChildSessions(
     const existing = byId.get(agent.sessionId);
     // The transcript is authoritative for which agent ran a session; the V3 generation
     // is authoritative for whether it is still running.
+    byId.set(agent.sessionId, {
+      sessionId: agent.sessionId,
+      agentId: agent.id,
+      live: existing?.live ?? false,
+    });
+  }
+  return Array.from(byId.values());
+}
+
+/**
+ * Resolve workflow children from an already-read heartbeat cache snapshot.
+ * Codec calls this variant because it refreshes frequently and must not derive
+ * the complete coordination view again for every dependency edge. Finished
+ * children still come from the durable workflow transcript.
+ */
+export function readWorkflowChildSessionsFromCache(
+  root: string,
+  runId: string,
+  cachedChildren: readonly CachedWorkflowChild[],
+): WorkflowChildSession[] {
+  const byId = new Map<string, WorkflowChildSession>();
+  const stableRunId = stableScopeId("run", runId);
+  for (const child of cachedChildren) {
+    if (child.workflow_run_id !== runId && child.workflow_run_id !== stableRunId) continue;
+    const sessionId = child.native_session_id ?? child.session_id;
+    if (!sessionId) continue;
+    byId.set(sessionId, {
+      sessionId,
+      agentId: child.workflow_agent_id,
+      live: true,
+    });
+  }
+
+  // Supplying an empty generation index keeps readWorkflowRun on its
+  // transcript-only path instead of rescanning the coordination ledger.
+  const run = readWorkflowRun(root, runId, new Map());
+  for (const agent of run?.agents ?? []) {
+    if (!agent.sessionId) continue;
+    const existing = byId.get(agent.sessionId);
     byId.set(agent.sessionId, {
       sessionId: agent.sessionId,
       agentId: agent.id,

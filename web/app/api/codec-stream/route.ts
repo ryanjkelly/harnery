@@ -12,43 +12,21 @@
  * burst becomes one scene.
  */
 
-import fs from "node:fs";
-import type { CodecScene } from "@/lib/codec/contracts";
-import { buildScene, eventsFilePaths } from "@/lib/codec/scene-source";
+import { connectSharedCodecScene } from "@/lib/codec/scene-service";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const runtime = "nodejs";
 
 const HEARTBEAT_INTERVAL_MS = 5_000;
-/** Minimum spacing between scene emissions; bursts coalesce into one. */
-const SCENE_COALESCE_MS = 1_000;
-/** Heartbeat-driven changes (activity, presence age) have no file watcher on
- * this route, so rebuild on a modest cadence and rely on content dedupe. */
-const SCENE_POLL_MS = 5_000;
-
-/** Content signature ignoring volatile generation fields, so an unchanged
- * world does not re-emit. */
-function sceneSignature(scene: CodecScene): string {
-  const { generated_at: _generatedAt, freshness: _freshness, ...rest } = scene;
-  return JSON.stringify(rest);
-}
-
 export async function GET(request: Request): Promise<Response> {
   const encoder = new TextEncoder();
-  const filePaths = eventsFilePaths();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const watchers: fs.FSWatcher[] = [];
       let heartbeat: ReturnType<typeof setInterval> | null = null;
-      let scenePoll: ReturnType<typeof setInterval> | null = null;
-      let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+      let closeSceneConnection: (() => void) | null = null;
       let closed = false;
-      let building = false;
-      let dirty = false;
-      let lastEmitMs = 0;
-      let lastSignature = "";
 
       function send(event: string, data: unknown): void {
         if (closed) return;
@@ -62,14 +40,8 @@ export async function GET(request: Request): Promise<Response> {
       function cleanup(): void {
         if (closed) return;
         closed = true;
-        try {
-          for (const watcher of watchers) watcher.close();
-        } catch {
-          /* ignore */
-        }
+        closeSceneConnection?.();
         if (heartbeat) clearInterval(heartbeat);
-        if (scenePoll) clearInterval(scenePoll);
-        if (pendingTimer) clearTimeout(pendingTimer);
         try {
           controller.close();
         } catch {
@@ -77,62 +49,26 @@ export async function GET(request: Request): Promise<Response> {
         }
       }
 
-      async function emitScene(eventName: "snapshot" | "scene"): Promise<void> {
-        if (building) {
-          dirty = true;
+      try {
+        const connection = await connectSharedCodecScene(
+          (scene) => send("scene", scene),
+          () => send("stale", { reason: "scene_build_failed" }),
+        );
+        closeSceneConnection = connection.close;
+        if (closed) {
+          connection.close();
           return;
         }
-        building = true;
-        try {
-          const scene = await buildScene();
-          const signature = sceneSignature(scene);
-          if (eventName === "snapshot" || signature !== lastSignature) {
-            lastSignature = signature;
-            lastEmitMs = Date.now();
-            send(eventName, scene);
-          }
-        } catch {
-          send("stale", { reason: "scene_build_failed" });
-        } finally {
-          building = false;
-          if (dirty && !closed) {
-            dirty = false;
-            scheduleScene();
-          }
+        if (request.signal.aborted) {
+          cleanup();
+          return;
         }
-      }
-
-      function scheduleScene(): void {
-        if (closed) return;
-        const wait = Math.max(0, SCENE_COALESCE_MS - (Date.now() - lastEmitMs));
-        if (pendingTimer) return;
-        pendingTimer = setTimeout(() => {
-          pendingTimer = null;
-          void emitScene("scene");
-        }, wait);
-      }
-
-      // 1. Every connection begins with a complete current snapshot.
-      await emitScene("snapshot");
-
-      // 2. Event-log appends schedule a coalesced rebuild.
-      try {
-        for (const filePath of filePaths) {
-          if (!fs.existsSync(filePath)) continue;
-          const watcher = fs.watch(filePath, () => scheduleScene());
-          watcher.on("error", () => {
-            send("stale", { reason: "watcher_error" });
-            cleanup();
-          });
-          watchers.push(watcher);
-        }
+        send("snapshot", connection.snapshot);
       } catch {
-        // non-fatal; the scene poll below keeps things flowing
+        send("stale", { reason: "scene_build_failed" });
+        cleanup();
+        return;
       }
-
-      // 3. Cadence rebuild catches heartbeat-only changes and silent watcher
-      // death; content dedupe keeps an idle world quiet.
-      scenePoll = setInterval(() => scheduleScene(), SCENE_POLL_MS);
 
       heartbeat = setInterval(() => {
         send("heartbeat", { ts: new Date().toISOString() });

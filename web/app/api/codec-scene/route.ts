@@ -4,7 +4,7 @@
  * events. See docs plan "Harnery Codec visual director" (host repo).
  */
 
-import { buildScene } from "@/lib/codec/scene-source";
+import { getSharedCodecScene } from "@/lib/codec/scene-service";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 
 export async function GET(): Promise<Response> {
   try {
-    const scene = await buildScene();
+    const scene = await getSharedCodecScene();
     return Response.json(scene);
   } catch {
     // Fail closed: an unavailable director must not fabricate panels.

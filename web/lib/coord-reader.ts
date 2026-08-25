@@ -99,6 +99,9 @@ export interface Heartbeat {
   kind?: string;
   platform?: string | null;
   session_id?: string;
+  native_session_id?: string;
+  workflow_run_id?: string;
+  workflow_agent_id?: string;
   started_at?: string;
   last_heartbeat: string;
   files_touched: string[];
@@ -182,16 +185,21 @@ function isV3CacheShape(v: unknown): v is Omit<Heartbeat, "age_seconds"> & {
   );
 }
 
-function readCacheDiagnostics(): { invalid: InvalidHeartbeat[]; dir: string } {
+function readCacheDiagnostics(): {
+  invalid: InvalidHeartbeat[];
+  dir: string;
+  rows: Array<Omit<Heartbeat, "age_seconds">>;
+} {
   const dir = activeDir();
   const invalid: InvalidHeartbeat[] = [];
+  const rows: Array<Omit<Heartbeat, "age_seconds">> = [];
 
   let files: string[] = [];
   try {
     files = readdirSync(dir);
   } catch (err) {
     invalid.push({ file: dir, issue: `active dir missing: ${(err as Error).message}` });
-    return { invalid, dir };
+    return { invalid, dir, rows };
   }
 
   for (const file of files) {
@@ -206,9 +214,11 @@ function readCacheDiagnostics(): { invalid: InvalidHeartbeat[]; dir: string } {
     }
     if (!isV3CacheShape(parsed)) {
       invalid.push({ file, issue: "not a generation-bound V3 cache" });
+      continue;
     }
+    rows.push(parsed);
   }
-  return { invalid, dir };
+  return { invalid, dir, rows };
 }
 
 /**
@@ -291,6 +301,64 @@ export function readAgents(): AgentsSnapshot {
       invalid,
       stale_threshold_seconds: STALE_AGE_SECONDS,
       read_state: all.length === 0 ? probeLedgerReadState(root) : { ok: true },
+    },
+  };
+}
+
+/**
+ * Bounded presentation snapshot for Codec.
+ *
+ * Generation-bound heartbeat files are disposable read models, not authority.
+ * That makes them unsuitable for coordination decisions, but ideal for a
+ * frequently refreshed dashboard projection that already fails missing facts
+ * to unknown. Recent terminal and swept sessions are recovered from Codec's
+ * separately validated event tail.
+ */
+export function readCachedAgentsForCodec(): AgentsSnapshot {
+  const { invalid, dir, rows } = readCacheDiagnostics();
+  const now = Date.now();
+  const all: Heartbeat[] = rows
+    .map((row) => {
+      const ts = Date.parse(row.last_heartbeat);
+      return {
+        ...row,
+        name: row.name ?? row.instance_id,
+        activity: row.activity ?? "unknown",
+        task_state: row.task_state ?? "active",
+        age_seconds: Number.isFinite(ts)
+          ? Math.max(0, Math.floor((now - ts) / 1_000))
+          : Number.MAX_SAFE_INTEGER,
+      };
+    })
+    .sort((left, right) => right.last_heartbeat.localeCompare(left.last_heartbeat));
+  const active = all.filter((heartbeat) => heartbeat.age_seconds < STALE_AGE_SECONDS);
+  const stale = all.filter((heartbeat) => heartbeat.age_seconds >= STALE_AGE_SECONDS);
+  const claims: ClaimRow[] = [];
+  for (const heartbeat of all) {
+    for (const claimedPath of heartbeat.files_touched) {
+      claims.push({
+        instance_id: heartbeat.instance_id,
+        name: heartbeat.name,
+        platform: heartbeat.platform,
+        path: claimedPath,
+        last_heartbeat: heartbeat.last_heartbeat,
+      });
+    }
+  }
+  return {
+    active,
+    stale,
+    terminal: [],
+    claims,
+    meta: {
+      scanned_dir: dir,
+      count: all.length,
+      invalid,
+      stale_threshold_seconds: STALE_AGE_SECONDS,
+      read_state:
+        all.length > 0
+          ? { ok: true }
+          : { ok: false, reason: "no generation-bound heartbeat caches" },
     },
   };
 }
