@@ -424,7 +424,7 @@ function presence(
   return present("unknown", "projection", "low", hb.last_heartbeat ?? now);
 }
 
-function activity(hb: Heartbeat): Presented<CodecActivity> {
+function activity(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<CodecActivity> {
   const map: Record<string, CodecActivity> = {
     working: "working",
     needs_input: "needs-input",
@@ -432,12 +432,21 @@ function activity(hb: Heartbeat): Presented<CodecActivity> {
     unknown: "unknown",
   };
   const value = map[hb.activity] ?? "unknown";
-  return present(
+  const heartbeat = present(
     value,
     value === "unknown" ? "unknown" : "projection",
     value === "unknown" ? "low" : "high",
     hb.activity_updated_at ?? hb.last_heartbeat,
   );
+  const event = ev?.activityEvidence;
+  if (!event) return heartbeat;
+
+  const heartbeatAt = ms(heartbeat.observed_at);
+  const eventAt = ms(event.ts);
+  if (Number.isFinite(heartbeatAt) && (!Number.isFinite(eventAt) || heartbeatAt > eventAt)) {
+    return heartbeat;
+  }
+  return present(event.value, "event", "high", event.ts, [event.event_id]);
 }
 
 function lifecycle(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<CodecLifecycle> {
@@ -706,7 +715,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const ev = evidence.get(hb.instance_id);
     const task = taskLabel(hb, ev);
     const usage = contextUsage(ev);
-    const panelActivity = activity(hb);
+    const panelActivity = activity(hb, ev);
     const panelContextBand = contextBand(hb.instance_id, ev, hb.last_heartbeat);
     const panelLifecycle = lifecycle(hb, ev);
     const panelPresence = presence(hb, isActive, ev, now);

@@ -318,6 +318,47 @@ describe("projectScene", () => {
     expect(fromEvent.panels[0]?.lifecycle).toMatchObject({ value: "done", provenance: "event" });
   });
 
+  test("newer turn completion overrides stale working activity from the heartbeat cache", () => {
+    const scene = projectScene({
+      snapshot: snapshot([
+        hb({
+          activity: "working",
+          activity_updated_at: "2026-08-16T10:01:00.000Z",
+        }),
+      ]),
+      events: [
+        ev({ event_type: "turn.started", ts: "2026-08-16T10:01:00.000Z" }),
+        ev({ event_type: "turn.completed", ts: "2026-08-16T10:04:30.000Z" }),
+      ],
+      now: NOW,
+    });
+
+    expect(scene.panels[0]?.activity).toMatchObject({
+      value: "idle",
+      provenance: "event",
+      observed_at: "2026-08-16T10:04:30.000Z",
+    });
+  });
+
+  test("newer heartbeat activity still outranks older event evidence", () => {
+    const scene = projectScene({
+      snapshot: snapshot([
+        hb({
+          activity: "working",
+          activity_updated_at: "2026-08-16T10:04:50.000Z",
+        }),
+      ]),
+      events: [ev({ event_type: "turn.completed", ts: "2026-08-16T10:04:30.000Z" })],
+      now: NOW,
+    });
+
+    expect(scene.panels[0]?.activity).toMatchObject({
+      value: "working",
+      provenance: "projection",
+      observed_at: "2026-08-16T10:04:50.000Z",
+    });
+  });
+
   test("context bands map remaining capacity and hold at boundaries (hysteresis)", () => {
     const band = (usedPercent: number) =>
       projectScene({
