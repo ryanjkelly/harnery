@@ -10,12 +10,15 @@
 import { channel } from "node:diagnostics_channel";
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { performance } from "node:perf_hooks";
+import { constants, performance, PerformanceObserver } from "node:perf_hooks";
+import { getHeapStatistics } from "node:v8";
 
 export const WEB_PERFORMANCE_LOG = "web-performance.jsonl";
 
 const DEFAULT_SLOW_REQUEST_MS = 1_000;
 const DEFAULT_EVENT_LOOP_DELAY_MS = 250;
+const DEFAULT_MEMORY_SAMPLE_MS = 30_000;
+const DEFAULT_GC_PAUSE_MS = 100;
 const DEFAULT_MAX_LOG_BYTES = 5 * 1024 * 1024;
 const DEFAULT_LOG_BACKUPS = 3;
 const MAX_ACTIVE_REQUESTS_IN_EVENT = 12;
@@ -51,6 +54,38 @@ export function ignoredRequestPath(route) {
     route === "/favicon.ico" ||
     route === "/icon.svg"
   );
+}
+
+/** @param {number | undefined} kind */
+export function gcKindName(kind) {
+  switch (kind) {
+    case constants.NODE_PERFORMANCE_GC_MAJOR:
+      return "major";
+    case constants.NODE_PERFORMANCE_GC_MINOR:
+      return "minor";
+    case constants.NODE_PERFORMANCE_GC_INCREMENTAL:
+      return "incremental";
+    case constants.NODE_PERFORMANCE_GC_WEAKCB:
+      return "weak_callbacks";
+    default:
+      return "unknown";
+  }
+}
+
+export function memorySnapshot() {
+  const memory = process.memoryUsage();
+  const heap = getHeapStatistics();
+  return {
+    rss_bytes: memory.rss,
+    heap_used_bytes: memory.heapUsed,
+    heap_total_bytes: memory.heapTotal,
+    heap_limit_bytes: heap.heap_size_limit,
+    heap_used_percent: Number(((memory.heapUsed / heap.heap_size_limit) * 100).toFixed(1)),
+    external_bytes: memory.external,
+    array_buffers_bytes: memory.arrayBuffers,
+    native_contexts: heap.number_of_native_contexts,
+    detached_contexts: heap.number_of_detached_contexts,
+  };
 }
 
 class BoundedJsonlWriter {
@@ -128,6 +163,11 @@ export function installWebPerformanceDiagnostics() {
     process.env.HARNERY_WEB_EVENT_LOOP_DELAY_MS,
     DEFAULT_EVENT_LOOP_DELAY_MS,
   );
+  const memorySampleMs = positiveNumber(
+    process.env.HARNERY_WEB_MEMORY_SAMPLE_MS,
+    DEFAULT_MEMORY_SAMPLE_MS,
+  );
+  const gcPauseMs = positiveNumber(process.env.HARNERY_WEB_GC_PAUSE_MS, DEFAULT_GC_PAUSE_MS);
   const maxLogBytes = positiveInteger(
     process.env.HARNERY_WEB_PERFORMANCE_LOG_MAX_BYTES,
     DEFAULT_MAX_LOG_BYTES,
@@ -141,6 +181,10 @@ export function installWebPerformanceDiagnostics() {
   const active = new Map();
   let requestSequence = 0;
   let monitorStarted = false;
+  let gcCount = 0;
+  let gcDurationMs = 0;
+  let maxGcPauseMs = 0;
+  let gcByKind = {};
 
   const write = (event) =>
     writer.write({
@@ -160,9 +204,67 @@ export function installWebPerformanceDiagnostics() {
     return /(?:^|\r\n)content-type:\s*text\/event-stream\b/i.test(String(response._header ?? ""));
   };
 
+  const actionableActiveRequests = () =>
+    [...active.entries()]
+      .filter(([response]) => !isEventStreamResponse(response))
+      .map(([, request]) => request);
+
+  const drainGcSummary = () => {
+    const summary = {
+      gc_count: gcCount,
+      gc_duration_ms: Math.round(gcDurationMs),
+      max_gc_pause_ms: Math.round(maxGcPauseMs),
+      gc_by_kind: gcByKind,
+    };
+    gcCount = 0;
+    gcDurationMs = 0;
+    maxGcPauseMs = 0;
+    gcByKind = {};
+    return summary;
+  };
+
+  const writeMemorySample = (reason) => {
+    write({
+      event: "memory_sample",
+      reason,
+      ...memorySnapshot(),
+      active_request_count: actionableActiveRequests().length,
+      ...drainGcSummary(),
+    });
+  };
+
   const startEventLoopMonitor = () => {
     if (monitorStarted) return;
     monitorStarted = true;
+    const gcObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const durationMs = entry.duration;
+        const kind = gcKindName(entry.detail?.kind);
+        gcCount += 1;
+        gcDurationMs += durationMs;
+        maxGcPauseMs = Math.max(maxGcPauseMs, durationMs);
+        const previous = gcByKind[kind] ?? { count: 0, duration_ms: 0 };
+        gcByKind[kind] = {
+          count: previous.count + 1,
+          duration_ms: Math.round(previous.duration_ms + durationMs),
+        };
+        if (durationMs >= gcPauseMs) {
+          write({
+            event: "gc_pause",
+            kind,
+            duration_ms: Math.round(durationMs),
+            ...memorySnapshot(),
+            active_request_count: actionableActiveRequests().length,
+          });
+        }
+      }
+    });
+    gcObserver.observe({ entryTypes: ["gc"] });
+
+    writeMemorySample("started");
+    const memoryTimer = setInterval(() => writeMemorySample("interval"), memorySampleMs);
+    memoryTimer.unref();
+
     const intervalMs = Math.min(100, Math.max(25, Math.floor(eventLoopDelayMs / 2)));
     let expectedAt = performance.now() + intervalMs;
     const timer = setInterval(() => {
@@ -174,9 +276,7 @@ export function installWebPerformanceDiagnostics() {
       // An open SSE connection is idle coordination infrastructure, not a
       // request doing work. Keep it in the lifecycle map so its eventual close
       // is recorded, but never implicate it in a process-wide delay.
-      const activeRequests = [...active.entries()]
-        .filter(([response]) => !isEventStreamResponse(response))
-        .map(([, request]) => request);
+      const activeRequests = actionableActiveRequests();
       for (const request of activeRequests) {
         request.eventLoopDelayCount += 1;
         request.eventLoopDelayTotalMs += delayMs;
@@ -196,6 +296,7 @@ export function installWebPerformanceDiagnostics() {
           0,
           activeRequests.length - MAX_ACTIVE_REQUESTS_IN_EVENT,
         ),
+        ...memorySnapshot(),
       });
       const routes = activeRequests
         .slice(0, 3)
@@ -212,6 +313,8 @@ export function installWebPerformanceDiagnostics() {
       event: "diagnostics_started",
       slow_request_ms: slowRequestMs,
       event_loop_delay_ms: eventLoopDelayMs,
+      memory_sample_ms: memorySampleMs,
+      gc_pause_ms: gcPauseMs,
       log_path: logPath,
       max_log_bytes: maxLogBytes,
       log_backups: logBackups,
@@ -224,9 +327,7 @@ export function installWebPerformanceDiagnostics() {
     if (ignoredRequestPath(route)) return;
 
     startEventLoopMonitor();
-    const actionableActive = [...active.entries()]
-      .filter(([currentResponse]) => !isEventStreamResponse(currentResponse))
-      .map(([, current]) => current);
+    const actionableActive = actionableActiveRequests();
     const concurrentRequests = actionableActive.length + 1;
     for (const current of actionableActive) {
       current.maxConcurrentRequests = Math.max(current.maxConcurrentRequests, concurrentRequests);

@@ -38,6 +38,8 @@ describe("web server performance preload", () => {
         HARNERY_WEB_MODE: "test",
         HARNERY_WEB_SLOW_REQUEST_MS: "20",
         HARNERY_WEB_EVENT_LOOP_DELAY_MS: "20",
+        HARNERY_WEB_MEMORY_SAMPLE_MS: "25",
+        HARNERY_WEB_GC_PAUSE_MS: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -61,6 +63,7 @@ describe("web server performance preload", () => {
       .map((line) => JSON.parse(line));
     const request = log.find((event) => event.event === "request_complete");
     const delay = log.find((event) => event.event === "event_loop_delay");
+    const memory = log.find((event) => event.event === "memory_sample");
     expect(request).toMatchObject({
       route: "/slow",
       slow: true,
@@ -70,6 +73,17 @@ describe("web server performance preload", () => {
     expect(request.duration_ms).toBeGreaterThanOrEqual(100);
     expect(delay.delay_ms).toBeGreaterThanOrEqual(20);
     expect(delay.active_requests[0]).toMatchObject({ route: "/slow" });
+    expect(delay).toMatchObject({
+      rss_bytes: expect.any(Number),
+      heap_used_bytes: expect.any(Number),
+    });
+    expect(memory).toMatchObject({
+      reason: "started",
+      rss_bytes: expect.any(Number),
+      heap_used_bytes: expect.any(Number),
+      heap_limit_bytes: expect.any(Number),
+      gc_count: expect.any(Number),
+    });
     expect(JSON.stringify(log)).not.toContain("secret=omitted");
   });
 

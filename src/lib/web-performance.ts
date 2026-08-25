@@ -41,7 +41,43 @@ export interface WebEventLoopDelayEvent extends BaseEvent {
   active_requests_truncated: number;
 }
 
-type WebPerformanceEvent = WebRequestPerformanceEvent | WebEventLoopDelayEvent | BaseEvent;
+export interface WebMemoryPerformanceEvent extends BaseEvent {
+  event: "memory_sample";
+  reason: "started" | "interval";
+  rss_bytes: number;
+  heap_used_bytes: number;
+  heap_total_bytes: number;
+  heap_limit_bytes: number;
+  heap_used_percent: number;
+  external_bytes: number;
+  array_buffers_bytes: number;
+  native_contexts: number;
+  detached_contexts: number;
+  active_request_count: number;
+  gc_count: number;
+  gc_duration_ms: number;
+  max_gc_pause_ms: number;
+  gc_by_kind: Record<string, { count: number; duration_ms: number }>;
+}
+
+export interface WebGcPauseEvent extends BaseEvent {
+  event: "gc_pause";
+  kind: string;
+  duration_ms: number;
+  rss_bytes: number;
+  heap_used_bytes: number;
+  heap_total_bytes: number;
+  heap_limit_bytes: number;
+  heap_used_percent: number;
+  active_request_count: number;
+}
+
+type WebPerformanceEvent =
+  | WebRequestPerformanceEvent
+  | WebEventLoopDelayEvent
+  | WebMemoryPerformanceEvent
+  | WebGcPauseEvent
+  | BaseEvent;
 
 export interface WebRoutePerformanceSummary {
   method: string;
@@ -66,9 +102,23 @@ export interface WebPerformanceReport {
   streams_observed: number;
   slow_requests: number;
   event_loop_delays: number;
+  memory: {
+    samples: number;
+    latest: WebMemoryPerformanceEvent;
+    peak_rss_bytes: number;
+    peak_heap_used_bytes: number;
+    max_heap_used_percent: number;
+  } | null;
+  garbage_collection: {
+    observed_collections: number;
+    observed_duration_ms: number;
+    recorded_pauses: number;
+    max_pause_ms: number;
+  };
   routes: WebRoutePerformanceSummary[];
   slowest_requests: WebRequestPerformanceEvent[];
   largest_event_loop_delays: WebEventLoopDelayEvent[];
+  largest_gc_pauses: WebGcPauseEvent[];
   hint?: string;
 }
 
@@ -116,6 +166,19 @@ function isDelayEvent(event: WebPerformanceEvent): event is WebEventLoopDelayEve
   );
 }
 
+function isMemoryEvent(event: WebPerformanceEvent): event is WebMemoryPerformanceEvent {
+  return (
+    event.event === "memory_sample" &&
+    numberField((event as WebMemoryPerformanceEvent).rss_bytes) &&
+    numberField((event as WebMemoryPerformanceEvent).heap_used_bytes) &&
+    numberField((event as WebMemoryPerformanceEvent).heap_limit_bytes)
+  );
+}
+
+function isGcPauseEvent(event: WebPerformanceEvent): event is WebGcPauseEvent {
+  return event.event === "gc_pause" && numberField((event as WebGcPauseEvent).duration_ms);
+}
+
 function percentile(sorted: number[], fraction: number): number {
   if (sorted.length === 0) return 0;
   return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)] ?? 0;
@@ -144,9 +207,17 @@ export function readWebPerformanceReport(options: {
       streams_observed: 0,
       slow_requests: 0,
       event_loop_delays: 0,
+      memory: null,
+      garbage_collection: {
+        observed_collections: 0,
+        observed_duration_ms: 0,
+        recorded_pauses: 0,
+        max_pause_ms: 0,
+      },
       routes: [],
       slowest_requests: [],
       largest_event_loop_delays: [],
+      largest_gc_pauses: [],
       hint: "Start or restart `harn web`; performance diagnostics begin when the server receives its first request.",
     };
   }
@@ -173,6 +244,8 @@ export function readWebPerformanceReport(options: {
   const allRequests = events.filter(isRequestEvent);
   const requests = allRequests.filter((event) => !event.stream);
   const delays = events.filter(isDelayEvent);
+  const memorySamples = events.filter(isMemoryEvent);
+  const gcPauses = events.filter(isGcPauseEvent);
   const groups = new Map<string, WebRequestPerformanceEvent[]>();
   for (const request of requests) {
     const key = `${request.method}\0${request.route}`;
@@ -209,6 +282,26 @@ export function readWebPerformanceReport(options: {
     streams_observed: allRequests.length - requests.length,
     slow_requests: requests.filter((event) => event.slow).length,
     event_loop_delays: delays.length,
+    memory:
+      memorySamples.length > 0
+        ? {
+            samples: memorySamples.length,
+            latest: memorySamples.at(-1)!,
+            peak_rss_bytes: Math.max(...memorySamples.map((event) => event.rss_bytes)),
+            peak_heap_used_bytes: Math.max(...memorySamples.map((event) => event.heap_used_bytes)),
+            max_heap_used_percent: Math.max(
+              ...memorySamples.map((event) => event.heap_used_percent),
+            ),
+          }
+        : null,
+    garbage_collection: {
+      observed_collections: memorySamples.reduce((sum, event) => sum + event.gc_count, 0),
+      observed_duration_ms: Math.round(
+        memorySamples.reduce((sum, event) => sum + event.gc_duration_ms, 0),
+      ),
+      recorded_pauses: gcPauses.length,
+      max_pause_ms: Math.max(0, ...gcPauses.map((event) => event.duration_ms)),
+    },
     routes,
     slowest_requests: requests
       .slice()
@@ -217,6 +310,10 @@ export function readWebPerformanceReport(options: {
     largest_event_loop_delays: delays
       .slice()
       .sort((left, right) => right.delay_ms - left.delay_ms)
+      .slice(0, options.limit),
+    largest_gc_pauses: gcPauses
+      .slice()
+      .sort((left, right) => right.duration_ms - left.duration_ms)
       .slice(0, options.limit),
   };
 }

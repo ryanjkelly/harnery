@@ -50,7 +50,7 @@ paths idempotent. The module subscribes to `http.server.request.start` through
 events. This keeps the supported Next.js server in place while covering all
 HTTP routes and framework work.
 
-The module records two structured event types:
+The module initially recorded two structured event types:
 
 - `request_complete` stores the method, query-free pathname, status, duration,
   process CPU consumed during the request window, concurrency, and event-loop
@@ -66,10 +66,22 @@ It excludes Next.js static assets. It appends asynchronously to
 `.harnery/logs/web-performance.jsonl`, rotates at 5 MB, and retains three backup
 generations by default.
 
+After the request-level fix exposed a second class of pauses near the configured
+V8 ceiling, the same preload gained two process-memory event types. A
+`memory_sample` records RSS, used and allocated heap, the heap limit, external
+memory, native and detached context counts, and garbage-collection totals every
+30 seconds. A `gc_pause` records collections lasting at least 100 ms. Event-loop
+delay records include an in-window heap snapshot as well. The intervals and GC
+pause threshold are configurable through environment variables, while the
+bounded file and privacy contract stay unchanged.
+
 `harn web performance` reads the active and rotated files for a bounded window.
 It reports route counts, p50, p95, maximum duration, slow and aborted requests,
 maximum overlapping event-loop delay, and maximum concurrency. It also returns
 bounded lists of the slowest request records and largest delay records.
+The report also includes current and peak memory, aggregate garbage-collection
+time, and the largest GC pauses, so an event-loop stall can be tested against
+heap pressure without attaching an inspector to the live process.
 
 ## Result
 

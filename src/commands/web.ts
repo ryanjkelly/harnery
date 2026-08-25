@@ -343,7 +343,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
 
   web
     .command("performance")
-    .description("Rank dashboard request latency and event-loop delays from the bounded local log")
+    .description("Summarize dashboard request, event-loop, memory, and GC diagnostics")
     .option("--coord-root <dir>", "Override the coordination root", process.cwd())
     .option("--since <window>", "Include the last Nm, Nh, or Nd", "1h")
     .option("--limit <n>", "Keep the N slowest requests and delays", "20")

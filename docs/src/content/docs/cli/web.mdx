@@ -74,9 +74,10 @@ For a dashboard that stays up, prefer `build` + `start` over `up`: the productio
 
 ## Performance diagnostics
 
-`harn web up` and `harn web start` record request timing and event-loop delays
-to `.harnery/logs/web-performance.jsonl`. The recorder runs below Next.js, so
-it covers pages, route handlers, React Server Component refreshes, and requests
+`harn web up` and `harn web start` record request timing, event-loop delays,
+memory samples, and long garbage-collection pauses to
+`.harnery/logs/web-performance.jsonl`. The recorder runs below Next.js, so it
+covers pages, route handlers, React Server Component refreshes, and requests
 that spend most of their time in framework compilation.
 
 Query strings, headers, request bodies, and response bodies are never logged.
@@ -92,11 +93,13 @@ harn web performance --since 30m --limit 10
 
 The report ranks routes by maximum and p95 duration, lists individual slow
 requests, and lists the largest event-loop delays with the requests that
-overlapped them. A large request duration with little event-loop delay points
+overlapped them. It also reports current and peak heap, RSS, external memory,
+array-buffer memory, garbage-collection counts, total collection time, and the
+longest pauses. A large request duration with little event-loop delay points
 toward asynchronous I/O or framework compilation. A large event-loop delay
-points toward synchronous filesystem work, CPU work, garbage collection, or a
-descheduled process. It is evidence about overlap, not proof that one listed
-request caused the delay.
+with no matching garbage-collection pause points toward synchronous filesystem
+or CPU work, or a descheduled process. It is evidence about overlap, not proof
+that one listed request caused the delay.
 
 The server also prints a short warning when a request crosses 1,000 ms or the
 event loop is delayed by at least 250 ms. These environment variables tune the
@@ -106,6 +109,8 @@ recorder without changing the log schema:
 | --- | ---: | --- |
 | `HARNERY_WEB_SLOW_REQUEST_MS` | `1000` | Slow-request warning threshold |
 | `HARNERY_WEB_EVENT_LOOP_DELAY_MS` | `250` | Event-loop delay warning threshold |
+| `HARNERY_WEB_MEMORY_SAMPLE_MS` | `30000` | Memory and garbage-collection summary interval |
+| `HARNERY_WEB_GC_PAUSE_MS` | `100` | Long garbage-collection warning threshold |
 | `HARNERY_WEB_PERFORMANCE_LOG_MAX_BYTES` | `5242880` | Bytes per log generation |
 | `HARNERY_WEB_PERFORMANCE_LOG_BACKUPS` | `3` | Rotated generations to retain |
 
