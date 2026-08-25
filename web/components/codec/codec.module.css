@@ -721,7 +721,7 @@
   align-items: stretch;
 }
 
-.panelGrid[data-panel-density="featured"] {
+.panelGrid[data-panel-density="featured"]:not([data-balanced-rows="true"]) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
