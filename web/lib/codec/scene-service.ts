@@ -32,8 +32,10 @@ interface CodecSceneServiceState {
   pollTimer: ReturnType<typeof setInterval> | null;
   watchers: fs.FSWatcher[];
   subscribers: Set<CodecSceneSubscriber>;
+  sourceSignature?: string;
   build: () => Promise<CodecScene>;
   eventPaths: () => string[];
+  fingerprint: (paths: string[]) => string;
   watch: typeof fs.watch;
   refreshMs: number;
 }
@@ -56,6 +58,7 @@ export interface CodecSceneService {
 export interface CodecSceneServiceOptions {
   build?: () => Promise<CodecScene>;
   eventPaths?: () => string[];
+  fingerprint?: (paths: string[]) => string;
   watch?: typeof fs.watch;
   refreshMs?: number;
 }
@@ -72,9 +75,43 @@ function freshState(options: CodecSceneServiceOptions): CodecSceneServiceState {
     subscribers: new Set(),
     build: options.build ?? buildScene,
     eventPaths: options.eventPaths ?? eventsFilePaths,
+    fingerprint: options.fingerprint ?? codecSourceFingerprint,
     watch: options.watch ?? fs.watch,
     refreshMs: options.refreshMs ?? SCENE_REFRESH_MS,
   };
+}
+
+/**
+ * Cheap change token for the files a scene consumes. Directories contribute
+ * one metadata row per direct child so an append to an existing live-display
+ * file is visible even when the directory's own mtime does not change.
+ */
+export function codecSourceFingerprint(paths: string[]): string {
+  const parts: string[] = [];
+  for (const sourcePath of paths) {
+    try {
+      const sourceStat = fs.statSync(sourcePath);
+      if (!sourceStat.isDirectory()) {
+        parts.push(
+          `${sourcePath}\0${sourceStat.dev}\0${sourceStat.ino}\0${sourceStat.size}\0${sourceStat.mtimeMs}`,
+        );
+        continue;
+      }
+      const names = fs.readdirSync(sourcePath).sort();
+      parts.push(`${sourcePath}\0directory\0${names.length}\0${sourceStat.mtimeMs}`);
+      for (const name of names) {
+        try {
+          const child = fs.statSync(`${sourcePath}/${name}`);
+          parts.push(`${name}\0${child.dev}\0${child.ino}\0${child.size}\0${child.mtimeMs}`);
+        } catch {
+          parts.push(`${name}\0unreadable`);
+        }
+      }
+    } catch {
+      parts.push(`${sourcePath}\0missing`);
+    }
+  }
+  return parts.join("\n");
 }
 
 /** Ignore timestamps that change on every projection when deciding whether a
@@ -102,14 +139,18 @@ function scheduleBuild(state: CodecSceneServiceState): void {
   }, wait);
 }
 
+function markDirtyAndSchedule(state: CodecSceneServiceState): void {
+  state.dirty = true;
+  scheduleBuild(state);
+}
+
 async function rebuildScene(state: CodecSceneServiceState): Promise<CodecScene> {
-  if (state.building) {
-    state.dirty = true;
-    return state.building;
-  }
+  if (state.building) return state.building;
 
   state.buildStartedAtMs = Date.now();
   state.dirty = false;
+  const sourceSignature = state.fingerprint(state.eventPaths());
+  state.sourceSignature = sourceSignature;
   const pending = state
     .build()
     .then((scene) => {
@@ -126,6 +167,7 @@ async function rebuildScene(state: CodecSceneServiceState): Promise<CodecScene> 
       return scene;
     })
     .catch((error: unknown) => {
+      state.sourceSignature = undefined;
       notifyStale(state);
       throw error;
     })
@@ -141,7 +183,11 @@ async function rebuildScene(state: CodecSceneServiceState): Promise<CodecScene> 
 }
 
 async function currentScene(state: CodecSceneServiceState): Promise<CodecScene> {
-  if (state.scene && Date.now() - state.builtAtMs <= state.refreshMs) {
+  if (
+    state.scene &&
+    !state.dirty &&
+    (state.subscribers.size > 0 || Date.now() - state.builtAtMs <= state.refreshMs)
+  ) {
     return state.scene;
   }
   return rebuildScene(state);
@@ -153,7 +199,7 @@ function startService(state: CodecSceneServiceState): void {
   for (const filePath of state.eventPaths()) {
     if (!fs.existsSync(filePath)) continue;
     try {
-      const watcher = state.watch(filePath, () => scheduleBuild(state));
+      const watcher = state.watch(filePath, () => markDirtyAndSchedule(state));
       watcher.on("error", () => {
         notifyStale(state);
         watcher.close();
@@ -165,7 +211,10 @@ function startService(state: CodecSceneServiceState): void {
     }
   }
 
-  state.pollTimer = setInterval(() => scheduleBuild(state), state.refreshMs);
+  state.pollTimer = setInterval(() => {
+    const sourceSignature = state.fingerprint(state.eventPaths());
+    if (sourceSignature !== state.sourceSignature) markDirtyAndSchedule(state);
+  }, state.refreshMs);
 }
 
 function stopService(state: CodecSceneServiceState): void {

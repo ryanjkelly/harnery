@@ -68,13 +68,14 @@ Codec now uses a presentation-only read path:
    hundreds of unchanged append-only files on each refresh.
 
 `scene-service.ts` owns one process-global builder, filesystem watcher set,
-and five-second safety poll. A five-second refresh floor collapses event
-bursts without letting page loads start extra builds between polls. A queued
-watcher refresh also rechecks the cache, so it cannot repeat a build that a
-request just completed. Concurrent reads share the same promise, and changed
-scenes are multicast to every ready Codec stream. The server-rendered page and
-polling fallback use the same scene cache. The singleton is stored on
-`globalThis` so separate Next route bundles and development HMR share it.
+and five-second safety poll. Watcher events mark the scene dirty immediately.
+The safety poll compares file metadata and rebuilds only after an actual source
+change, so an open tab no longer rebuilds an unchanged scene every five
+seconds. A request that joins an active build shares its promise without
+queuing a redundant follow-up build. Changed scenes are multicast to every
+ready Codec stream. The server-rendered page and polling fallback use the same
+scene cache. The singleton is stored on `globalThis` so separate Next route
+bundles and development HMR share it.
 
 The authoritative V3 reader and every operational caller remain unchanged.
 This decision narrows only Codec's fail-closed visual projection.
@@ -83,9 +84,11 @@ This decision narrows only Codec's fail-closed visual projection.
 
 Focused tests prove that concurrent reads produce one build, two connected
 tabs receive one shared refresh, a queued watcher cannot repeat a fresh build,
-incremental tail reads retain appended valid events, unchanged live-display
-files stay cached while changed and expired rows remain correct, and
-cache-backed workflow child resolution preserves transcripted sessions.
+an unchanged source stays cached across safety polls, a missed watcher event is
+caught by the next metadata poll, incremental tail reads retain appended valid
+events, unchanged live-display files stay cached while changed and expired rows
+remain correct, and cache-backed workflow child resolution preserves
+transcripted sessions.
 
 Against the same 68 MiB live ledger, a fresh-process scene build fell from
 6,205 ms and roughly 882 MiB of RSS growth to 423 ms and roughly 173 MiB. A

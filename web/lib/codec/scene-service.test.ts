@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { CodecScene } from "./contracts";
-import { createCodecSceneService } from "./scene-service";
+import { codecSourceFingerprint, createCodecSceneService } from "./scene-service";
 
 function scene(label: string): CodecScene {
   return {
@@ -13,13 +16,27 @@ function scene(label: string): CodecScene {
 }
 
 const services: CodecSceneService[] = [];
+const tempRoots: string[] = [];
 type CodecSceneService = ReturnType<typeof createCodecSceneService>;
 
 afterEach(() => {
   for (const service of services.splice(0)) service.close();
+  for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("Codec scene service", () => {
+  test("changes the source fingerprint when a direct child is appended", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-codec-fingerprint-"));
+    tempRoots.push(root);
+    const source = join(root, "live.ndjson");
+    writeFileSync(source, "one\n");
+
+    const before = codecSourceFingerprint([root]);
+    appendFileSync(source, "two\n");
+
+    expect(codecSourceFingerprint([root])).not.toBe(before);
+  });
+
   test("coalesces concurrent scene reads into one build", async () => {
     let finishBuild: ((value: CodecScene) => void) | undefined;
     let builds = 0;
@@ -100,6 +117,54 @@ describe("Codec scene service", () => {
     await Bun.sleep(45);
 
     expect(builds).toBe(2);
+    connection.close();
+  });
+
+  test("keeps one scene while a subscriber is connected and sources are unchanged", async () => {
+    let builds = 0;
+    const watcher = Object.assign(new EventEmitter(), { close() {} });
+    const service = createCodecSceneService({
+      eventPaths: () => [import.meta.path],
+      fingerprint: () => "unchanged",
+      refreshMs: 20,
+      watch: (() => watcher) as unknown as typeof import("node:fs").watch,
+      build: async () => scene(`scene-${++builds}`),
+    });
+    services.push(service);
+
+    const connection = await service.connect(
+      () => {},
+      () => {},
+    );
+    await Bun.sleep(55);
+    expect((await service.getScene()).generated_at).toBe("scene-1");
+    expect(builds).toBe(1);
+    connection.close();
+  });
+
+  test("polls source metadata and rebuilds after a missed watcher event", async () => {
+    let builds = 0;
+    let sourceSignature = "one";
+    const watcher = Object.assign(new EventEmitter(), { close() {} });
+    const service = createCodecSceneService({
+      eventPaths: () => [import.meta.path],
+      fingerprint: () => sourceSignature,
+      refreshMs: 20,
+      watch: (() => watcher) as unknown as typeof import("node:fs").watch,
+      build: async () => scene(`scene-${++builds}`),
+    });
+    services.push(service);
+
+    const updates: CodecScene[] = [];
+    const connection = await service.connect(
+      (next) => updates.push(next),
+      () => {},
+    );
+    sourceSignature = "two";
+    await Bun.sleep(55);
+
+    expect(builds).toBe(2);
+    expect(updates.map((value) => value.generated_at)).toEqual(["scene-2"]);
     connection.close();
   });
 });
