@@ -1,0 +1,98 @@
+---
+title: "0126: Resident gateway telemetry ships as a first-class host plugin"
+description: "ADR: package native Event Ledger V3 capture as a Harnery-owned host plugin with one gateway writer and an attributed enrichment seam."
+---
+
+**Status:** accepted (2026-08-26) · **Scope:** host-plugin packaging, composition, event intake, and model attribution
+
+## Context
+
+ADR 0125 separates event adapters from workflow adapters, which lets a resident
+harness emit native evidence without claiming Harnery can launch it. The next
+question is how that event adapter belongs inside a plugin-based host.
+
+A host's business plugin could carry a generated Harnery bundle and register
+every hook on Harnery's behalf. That approach makes Harnery an implementation
+detail of a different plugin. It also ties reproducibility to a host
+repository's local bundle build rather than a versioned Harnery release.
+
+The gateway and its sandboxes may see the same workspace through different
+process and mount namespaces. If both act as canonical ledger writers, a stale
+lease owner cannot be validated safely with a same-host PID check. Recovery
+must not assume a process id has the same meaning across those boundaries.
+
+Model failover adds another evidence problem. Request-side hooks can report the
+provider originally selected even when a different provider completes the
+turn. Treating the request as the resolved model would create precise but false
+attribution.
+
+Resident plugin hosts commonly provide external-package manifests, long-lived
+gateway services, typed lifecycle hooks, and plugin-attributed event streams.
+These are the native seams Harnery needs.
+
+## Decision
+
+Harnery ships resident-gateway telemetry as a separately versioned external
+host plugin. Each supported host integration has a Harnery-owned package and
+plugin id. The package uses the host's public manifest and entry-point contract.
+It contains that integration and the Event Ledger V3 runtime it needs;
+installing it does not install Harnery's workflow CLI.
+
+The plugin owns generic hook registration, envelope normalization, lifecycle
+state, privacy, recovery, and health reporting. A long-lived gateway service is
+the only canonical ledger writer. Other processes submit bounded envelopes to
+producer-scoped intake directories by atomic temporary-to-ready publication.
+They never acquire canonical ledger leases. The gateway drains ready envelopes
+idempotently, including after either producer or gateway restarts.
+
+Host-specific business plugins may add bounded context through the host's
+native, plugin-attributed event streams. The Harnery plugin accepts only
+configured publisher ids and exact schema versions. Enrichment cannot replace
+a native lifecycle event or upgrade the strength of evidence. Plugins do not
+import one another or read one another's private storage.
+
+Requested and resolved provider/model identity are separate observations. An
+unobserved resolved identity remains unknown. Usage keeps input, output, cache
+creation, and cache read separate. Each claimed field needs fixture and live
+evidence from the installed host contract.
+
+Harnery may publish its package through the host's community distribution
+channel without waiting for host-maintained status. Official host inventory or
+access to restricted diagnostic events requires an upstream review and is
+pursued separately.
+
+## Alternatives considered
+
+**Embed a generated Harnery bundle in a business plugin.** Rejected because it
+hides the product boundary, couples releases to a different repository, and
+makes local bundler output part of deployment identity.
+
+**Install the main Harnery package in the gateway.** Rejected because the host
+needs a narrow plugin runtime, not Harnery's workflow CLI and full dependency
+surface.
+
+**Let plugins import one another.** Rejected because private module layouts are
+not a stable host contract. Attributed event streams provide the supported
+composition boundary.
+
+**Let gateway and sandbox processes share canonical writer leases.** Rejected
+because PID liveness and ownership do not cross process namespaces reliably.
+Immutable intake plus one writer gives deterministic recovery.
+
+**Treat the requested model as the resolved model.** Rejected because provider
+fallback can make those identities differ. Missing evidence must stay missing.
+
+## Consequences
+
+- Users can install and inspect one Harnery-owned integration package with an
+  exact version and package integrity record.
+- Host-specific plugins can enrich evidence without becoming Harnery delivery
+  vehicles or creating private coupling.
+- Sandbox crashes and gateway restarts replay through durable intake without
+  cross-namespace lease recovery.
+- Initial releases may report less model and cost detail than a trusted
+  diagnostics consumer. They must report only what the public contract proves.
+- Packaging, compatibility, privacy, intake recovery, and native hook fixtures
+  become part of the Harnery release surface.
+- Upstream official status is useful but is not a prerequisite for a
+  Harnery-owned package release.
