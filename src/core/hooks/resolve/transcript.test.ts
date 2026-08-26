@@ -7,6 +7,7 @@ import { assistantTextStartsWithSessionNameBlock } from "../../agents/session-na
 import {
   detectForkParent,
   inspectSessionNameDisplayImmediately,
+  scanAssistantStatusBoxPresent,
   scanAssistantTextIncludes,
   scanLatestAssistantText,
   scanSessionNameDisplayedImmediately,
@@ -97,6 +98,21 @@ describe("scanAssistantTextIncludes", () => {
       { type: "assistant", message: { content: [{ type: "text", text: NAME }] } },
     ]);
     expect(scanAssistantTextIncludes(p, "")).toBe(false);
+  });
+
+  test("the shared strict status-box helper accepts assistant text and rejects tool results", () => {
+    const toolResultOnly = writeTranscript([
+      {
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", content: "┌─ agent-Maya status" }],
+        },
+      },
+    ]);
+    expect(scanAssistantStatusBoxPresent(toolResultOnly, undefined)).toBe(false);
+    expect(scanAssistantStatusBoxPresent(toolResultOnly, "```\n┌─ agent-Maya status\n```")).toBe(
+      true,
+    );
   });
 });
 

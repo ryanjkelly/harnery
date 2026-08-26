@@ -36,14 +36,20 @@ function counterPath(sessionId: string): string {
  *
  * Call only when the Stop verdict blocked. `continuation` is the adapter's
  * "this stop follows a stop-hook block" flag; false starts a fresh cycle.
- * Returns true when this cycle has already been blocked `cap` times, meaning
- * the caller should allow the stop instead of blocking again.
+ * Returns the retained block count and whether this cycle has already been
+ * blocked `cap` times, meaning the caller should allow the stop instead of
+ * blocking again.
  */
-export function remediationCapExceeded(
+export interface RemediationBlockRecord {
+  count: number;
+  exceeded: boolean;
+}
+
+export function recordRemediationBlock(
   sessionId: string,
   continuation: boolean,
   cap = DEFAULT_STOP_REMEDIATION_CAP,
-): boolean {
+): RemediationBlockRecord {
   const path = counterPath(sessionId);
   let count = 1;
   if (continuation) {
@@ -62,9 +68,9 @@ export function remediationCapExceeded(
     writeFileSync(path, String(count), "utf8");
   } catch {
     // Counter IO must never turn into a block or a crash; fail open (no cap).
-    return false;
+    return { count, exceeded: false };
   }
-  return count > cap;
+  return { count, exceeded: count > cap };
 }
 
 /** Clear the cycle counter after an allowed stop. */

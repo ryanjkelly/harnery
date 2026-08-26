@@ -10,4 +10,5 @@ export type VerdictResult = {
   exit_code: 0 | 2;
   rule: string;
   reason?: string;
+  remediation_cycle_anchor?: string;
 };

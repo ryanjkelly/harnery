@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -22,9 +23,11 @@ import { loadOrCreateFingerprintKeyStoreV3 } from "../events/v3/fingerprint-keys
 import { EVENT_V3_SCHEMA_DIGEST } from "../events/v3/generated.ts";
 import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
+import { clearRemediationCount, DEFAULT_STOP_REMEDIATION_CAP } from "./remediation-cap.ts";
 
 const HARNERY_DIR = resolve(import.meta.dir, "../../..");
 const AGENT_HOOK = join(HARNERY_DIR, "bin", "agent-hook");
+const HARN = join(HARNERY_DIR, "bin", "harn");
 const roots: string[] = [];
 
 setDefaultTimeout(15_000);
@@ -580,6 +583,265 @@ describe("agent-hook V3 hard cut", () => {
       status_box_present: { state: "observed", value: false },
     });
   });
+
+  test("Claude Stop remediation accumulates recovered status and current assistant-box evidence", () => {
+    const root = candidateRoot();
+    const owner = "zia-remediation-owner";
+    const turnId = "zia-original-turn";
+    const hook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
+    const coord = (args: string[]) =>
+      run(HARN, args, {}, root, { HARNERY_AGENT_COORD_SESSION_ID: owner });
+
+    expect(hook("session-start", { session_id: owner, cwd: root, source: "startup" }).status).toBe(
+      0,
+    );
+    expect(
+      hook("user-prompt-submit", {
+        session_id: owner,
+        cwd: root,
+        turn_id: turnId,
+        prompt: "inventory the pages",
+      }).status,
+    ).toBe(0);
+
+    expect(
+      hook("pre-tool-use", {
+        session_id: owner,
+        cwd: root,
+        turn_id: turnId,
+        tool_name: "Bash",
+        tool_use_id: "set-task",
+        tool_input: { command: "harn agents set-task Inventory pages" },
+      }).status,
+    ).toBe(0);
+    const taskResult = coord(["agents", "set-task", "Inventory pages", "--session-id", owner]);
+    expect(taskResult.status).toBe(0);
+    const taskPayload = JSON.parse(taskResult.stdout) as { suggested_session_name?: string };
+    expect(taskPayload.suggested_session_name).toMatch(/^Agent /);
+    const transcript = join(root, "zia-transcript.jsonl");
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", content: taskResult.stdout }],
+        },
+      })}\n${JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "text",
+              text: `\`\`\`\n${taskPayload.suggested_session_name}\n\`\`\`\nInventory complete.`,
+            },
+          ],
+        },
+      })}\n`,
+      "utf8",
+    );
+    expect(
+      hook("post-tool-use", {
+        session_id: owner,
+        cwd: root,
+        turn_id: turnId,
+        tool_name: "Bash",
+        tool_use_id: "set-task",
+        tool_response: taskResult.stdout,
+      }).status,
+    ).toBe(0);
+
+    const firstStop = hook("stop", {
+      session_id: owner,
+      cwd: root,
+      turn_id: turnId,
+      transcript_path: transcript,
+      last_assistant_message: "Inventory complete.",
+      stop_hook_active: false,
+    });
+    expect(firstStop.status).toBe(2);
+    expect(firstStop.stderr).toContain("rule=stop-hook.rule_1_3");
+
+    expect(
+      hook("pre-tool-use", {
+        session_id: owner,
+        cwd: root,
+        turn_id: turnId,
+        transcript_path: transcript,
+        tool_name: "Bash",
+        tool_use_id: "status-repair",
+        tool_input: { command: "harn agents status" },
+      }).status,
+    ).toBe(0);
+    const statusResult = coord(["agents", "status", "--session-id", owner]);
+    expect(statusResult.status).toBe(0);
+    expect(statusResult.stdout).toContain("┌─ agent-");
+    expect(
+      hook("post-tool-use", {
+        session_id: owner,
+        cwd: root,
+        turn_id: turnId,
+        transcript_path: transcript,
+        tool_name: "Bash",
+        tool_use_id: "status-repair",
+        tool_response: statusResult.stdout,
+      }).status,
+    ).toBe(0);
+
+    const missingPaste = hook("stop", {
+      session_id: owner,
+      cwd: root,
+      turn_id: turnId,
+      transcript_path: transcript,
+      last_assistant_message: "Status checked.",
+      stop_hook_active: true,
+    });
+    expect(missingPaste.status).toBe(2);
+    expect(missingPaste.stderr).toContain("rule=stop-hook.rule_2_3");
+
+    const repaired = hook("stop", {
+      session_id: owner,
+      cwd: root,
+      turn_id: turnId,
+      transcript_path: transcript,
+      last_assistant_message: `\`\`\`\n${statusResult.stdout.trim()}\n\`\`\``,
+      stop_hook_active: true,
+    });
+    expect(repaired.stderr).toBe("");
+    expect(repaired.status).toBe(0);
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    expect(
+      events.filter(
+        (event) =>
+          event.event_type === "turn.started" &&
+          event.provenance.source_event === "claude-code.recovery",
+      ),
+    ).toHaveLength(1);
+    expect(events.filter((event) => event.event_type === "coord.task_changed")).toHaveLength(1);
+    expect(events.filter((event) => event.event_type === "coord.status_observed")).toHaveLength(1);
+  }, 10_000);
+
+  test("Claude Stop remediation does not turn a pure-prose reply into a tool-policy turn", () => {
+    const root = candidateRoot();
+    const owner = "sterling-prose-owner";
+    const turnId = "sterling-prose-turn";
+    const hook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
+    const coord = (args: string[]) =>
+      run(HARN, args, {}, root, { HARNERY_AGENT_COORD_SESSION_ID: owner });
+
+    expect(hook("session-start", { session_id: owner, cwd: root, source: "startup" }).status).toBe(
+      0,
+    );
+    expect(
+      hook("user-prompt-submit", {
+        session_id: owner,
+        cwd: root,
+        turn_id: turnId,
+        prompt: "say hello",
+      }).status,
+    ).toBe(0);
+    const firstStop = hook("stop", {
+      session_id: owner,
+      cwd: root,
+      turn_id: turnId,
+      last_assistant_message: "Hello.",
+      stop_hook_active: false,
+    });
+    expect(firstStop.status).toBe(2);
+    expect(firstStop.stderr).toContain("rule=stop-hook.rule_2_3");
+
+    expect(
+      hook("pre-tool-use", {
+        session_id: owner,
+        cwd: root,
+        turn_id: turnId,
+        tool_name: "Bash",
+        tool_use_id: "status-repair",
+        tool_input: { command: "harn agents status" },
+      }).status,
+    ).toBe(0);
+    const statusResult = coord(["agents", "status", "--session-id", owner]);
+    expect(statusResult.status).toBe(0);
+    expect(
+      hook("post-tool-use", {
+        session_id: owner,
+        cwd: root,
+        turn_id: turnId,
+        tool_name: "Bash",
+        tool_use_id: "status-repair",
+        tool_response: statusResult.stdout,
+      }).status,
+    ).toBe(0);
+
+    const repaired = hook("stop", {
+      session_id: owner,
+      cwd: root,
+      turn_id: turnId,
+      last_assistant_message: `\`\`\`\n${statusResult.stdout.trim()}\n\`\`\``,
+      stop_hook_active: true,
+    });
+    expect(repaired.status).toBe(0);
+    expect(readLedgerV3(root).events.map(({ event }) => event.event_type)).not.toContain(
+      "coord.task_changed",
+    );
+  }, 10_000);
+
+  test("Claude Stop cap releases an unsatisfied cycle with a retained diagnostic", () => {
+    const root = candidateRoot();
+    const owner = `cap-owner-${randomUUID()}`;
+    const turnId = "unsatisfied-remediation-turn";
+    const hook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
+
+    try {
+      expect(
+        hook("session-start", { session_id: owner, cwd: root, source: "startup" }).status,
+      ).toBe(0);
+      expect(
+        hook("user-prompt-submit", {
+          session_id: owner,
+          cwd: root,
+          turn_id: turnId,
+          prompt: "never paste the required box",
+        }).status,
+      ).toBe(0);
+
+      for (let block = 1; block <= DEFAULT_STOP_REMEDIATION_CAP; block += 1) {
+        const denied = hook("stop", {
+          session_id: owner,
+          cwd: root,
+          turn_id: turnId,
+          last_assistant_message: "Still no box.",
+          stop_hook_active: block > 1,
+        });
+        expect(denied.status).toBe(2);
+      }
+      const released = hook("stop", {
+        session_id: owner,
+        cwd: root,
+        turn_id: turnId,
+        last_assistant_message: "Still no box.",
+        stop_hook_active: true,
+      });
+      expect(released.status).toBe(0);
+
+      const diagnostics = readFileSync(join(root, ".harnery", "debug", "agent-hook.ndjson"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(diagnostics.at(-1)).toMatchObject({
+        skipped: "stop-remediation-cap-exhausted",
+        blocked_rule: "stop-hook.rule_2_3",
+        blocked_count: DEFAULT_STOP_REMEDIATION_CAP + 1,
+        session_id: owner,
+      });
+      expect(diagnostics.at(-1)?.remediation_cycle_anchor).toMatch(/^tid_/);
+    } finally {
+      clearRemediationCount(owner);
+    }
+  }, 15_000);
 
   test("stop hook completes an explicit end queued by its own open tool span", () => {
     const root = candidateRoot();

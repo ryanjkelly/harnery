@@ -133,6 +133,98 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     });
   });
 
+  test("a Claude continuation accumulates recovered ritual evidence without changing original-turn policy", () => {
+    const recovered = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      task(2),
+      turnCompleted(3, ritual(false)),
+      recoveredTurnStarted(4),
+      event("tool.requested", 5),
+      status(6),
+      turnCompleted(7, ritual(false)),
+    ];
+
+    expect(
+      verdict("claude-code", recovered, {
+        stop_hook_active: true,
+        status_box_present_strict: true,
+      }),
+    ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
+  });
+
+  test("Claude remediation tools do not escalate an original pure-prose turn", () => {
+    const pureProseRecovery = [
+      turnStarted(0),
+      turnCompleted(1, ritual(false)),
+      recoveredTurnStarted(2),
+      event("tool.requested", 3),
+      status(4),
+      turnCompleted(5, ritual(true)),
+    ];
+
+    expect(
+      verdict("claude-code", pureProseRecovery, {
+        stop_hook_active: true,
+        status_box_present_strict: true,
+      }),
+    ).toMatchObject({ allow: true, rule: "stop-hook.pure_prose_pass" });
+  });
+
+  test("ordinary Claude recovery does not inherit the preceding turn evidence", () => {
+    const ordinaryRecovery = [
+      turnStarted(0),
+      task(1),
+      turnCompleted(2, ritual(true)),
+      recoveredTurnStarted(3),
+      event("tool.requested", 4),
+      status(5),
+      turnCompleted(6, ritual(true)),
+    ];
+
+    expect(verdict("claude-code", ordinaryRecovery)).toMatchObject({
+      allow: false,
+      rule: "stop-hook.rule_3_3",
+    });
+  });
+
+  test("a recovery tool can interleave inside one Claude remediation cycle without leaking past a new prompt", () => {
+    const cycle = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      task(2),
+      turnCompleted(3, ritual(false)),
+      recoveredTurnStarted(4),
+      event("tool.requested", 5),
+      status(6),
+      turnCompleted(7, ritual(false)),
+      recoveredTurnStarted(8),
+      event("tool.requested", 9),
+      turnCompleted(10, ritual(true)),
+    ];
+
+    expect(
+      verdict("claude-code", cycle, {
+        stop_hook_active: true,
+        status_box_present_strict: false,
+      }),
+    ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
+
+    const nextPrompt = [
+      ...cycle,
+      turnStarted(11),
+      event("tool.requested", 12),
+      status(13),
+      turnCompleted(14, ritual(true)),
+    ];
+    expect(
+      verdict("claude-code", nextPrompt, {
+        stop_hook_active: false,
+        status_box_present_strict: true,
+      }),
+    ).toMatchObject({ allow: false, rule: "stop-hook.rule_3_3" });
+  });
+
   test("enforces the Claude Code session-name observation without retaining the name", () => {
     const base = [turnStarted(0), event("tool.requested", 1), status(2), task(3)];
     expect(
@@ -219,17 +311,29 @@ function stampedRoot(suggestedName: string, seenFor: string): string {
   return value;
 }
 
-function verdict(adapter: "claude-code" | "cursor", events: EventV3[]) {
+function verdict(
+  adapter: "claude-code" | "cursor",
+  events: EventV3[],
+  request: { stop_hook_active?: boolean; status_box_present_strict?: boolean } = {},
+) {
   return evaluateStopHookV3Events(
     root(),
     {
       rule: "stop-hook",
       instance_id: "operator",
       adapter,
-      now_ms: START + 10_000,
+      now_ms: Math.max(...events.map((event) => Date.parse(event.time.observed_at))) + 1_000,
+      ...request,
     },
     events,
   );
+}
+
+function recoveredTurnStarted(second: number): EventV3 {
+  const value = turnStarted(second);
+  fixtureObject(value.provenance).source_event = "claude-code.recovery";
+  fixtureObject(value.provenance).attestation = "derived";
+  return value;
 }
 
 function event(eventType: string, second: number): EventV3 {

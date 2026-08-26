@@ -94,6 +94,9 @@ describe("emitStopBlock", () => {
     expect(code).toBe(2);
     expect(outChunks.join("")).toBe("");
     expect(errChunks.join("")).toContain("harn agents status");
+    expect(errChunks.join("")).toContain("Repair the whole ritual");
+    expect(errChunks.join("")).toContain("agents set-task");
+    expect(errChunks.join("")).toContain("paste its status box verbatim");
     expect(errChunks.join("")).toContain("rule=stop-hook.rule_1_3");
   });
 

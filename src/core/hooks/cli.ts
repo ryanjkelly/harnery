@@ -103,7 +103,7 @@ import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
 import {
   inspectSessionNameDisplayImmediately,
-  scanAssistantTextIncludes,
+  scanAssistantStatusBoxPresent,
   scanSessionNameDisplayedImmediately,
   scanStatusBoxPresent,
   scanTranscriptRuntime,
@@ -413,9 +413,10 @@ function buildEventData(
         // assistant text only (same window, same scanner as the session-name
         // detection). The Stop verdict enforces this field; the loose field is
         // retained as diagnostic telemetry for the measured detector divergence.
-        status_box_present_strict:
-          scanAssistantTextIncludes(p?.transcript_path, "┌─ agent-") ||
-          lastAssistantMessage.includes("┌─ agent-"),
+        status_box_present_strict: scanAssistantStatusBoxPresent(
+          p?.transcript_path,
+          lastAssistantMessage,
+        ),
         // Whether the session's suggested name is satisfied as of this turn,
         // and which name that refers to. Reported on every stop while a name
         // exists (the stop-hook.session_name verdict reads it per turn); the
@@ -1115,6 +1116,8 @@ async function main(): Promise<number> {
       instance_id: owner.instance_id,
       session_id: sessionId,
       adapter,
+      stop_hook_active: payload?.stop_hook_active === true,
+      status_box_present_strict: data.status_box_present_strict === true,
       bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
       workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
     });
@@ -1124,13 +1127,16 @@ async function main(): Promise<number> {
       // `cap` consecutive blocked stops in one cycle, allow the stop instead
       // of bouncing the model forever. Cycle boundaries come from the
       // adapter's continuation flag, so adapters without one are unaffected.
-      const { remediationCapExceeded } = await import("./remediation-cap.ts");
-      if (remediationCapExceeded(sessionId, payload?.stop_hook_active === true)) {
+      const { recordRemediationBlock } = await import("./remediation-cap.ts");
+      const remediation = recordRemediationBlock(sessionId, payload?.stop_hook_active === true);
+      if (remediation.exceeded) {
         appendDebug(coordRoot, {
           ...debugBase,
           skipped: "stop-remediation-cap-exhausted",
           blocked_rule: verdict.rule,
+          blocked_count: remediation.count,
           session_id: sessionId,
+          remediation_cycle_anchor: verdict.remediation_cycle_anchor,
         });
       } else {
         // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr

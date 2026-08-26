@@ -30,6 +30,8 @@ export interface StopHookRequest {
   adapter?: string;
   now_ms?: number;
   turn_window?: { start_ms: number; end_ms: number };
+  stop_hook_active?: boolean;
+  status_box_present_strict?: boolean;
   bypass?: boolean;
   workflow_child?: boolean;
 }
@@ -107,15 +109,24 @@ export function evaluateStopHookV3Events(
       "generation_id" in event.scope &&
       event.scope.generation_id === generationId,
   );
+  const fallbackStartMs = Math.max(0, endMs - 5 * 60 * 1000);
+  const claudeContinuation = req.adapter === "claude-code" && req.stop_hook_active === true;
+  const resolvedStart = resolveTurnStart(ownerEvents, endMs, claudeContinuation);
+  const resolvedStartMs = eventTimeMs(resolvedStart);
   const startMs =
     req.turn_window?.start_ms ??
-    resolveTurnStartMs(ownerEvents, endMs, Math.max(0, endMs - 5 * 60 * 1000));
+    (Number.isFinite(resolvedStartMs) ? resolvedStartMs : fallbackStartMs);
   const inTurn = ownerEvents.filter((event) => {
     const time = eventTimeMs(event);
     return Number.isFinite(time) && time >= startMs && time <= endMs;
   });
 
-  const usedTool = inTurn.some((event) => event.event_type === "tool.requested");
+  const policyEvents =
+    claudeContinuation && resolvedStart
+      ? originalTurnEvents(ownerEvents, resolvedStart, endMs)
+      : inTurn;
+  const usedTool = policyEvents.some((event) => event.event_type === "tool.requested");
+  const cycleAnchor = remediationCycleAnchor(resolvedStart, startMs);
   const statusEvents = inTurn.filter(
     (event) =>
       event.event_type === "coord.status_observed" && event.payload.subject_instance_id === owner,
@@ -139,13 +150,22 @@ export function evaluateStopHookV3Events(
   );
   const latestTerminal = turnTerminals.at(-1);
   const latestBox = observedBoolean(latestTerminal?.payload.ritual?.status_box_present_strict);
-  if (req.adapter !== "cursor" && latestBox === undefined) {
+  const strictBoxObservations = turnTerminals
+    .map((event) => observedBoolean(event.payload.ritual?.status_box_present_strict))
+    .filter((value): value is boolean => value !== undefined);
+  const currentStrictBox = claudeContinuation ? req.status_box_present_strict : undefined;
+  if (req.adapter !== "cursor" && latestBox === undefined && currentStrictBox === undefined) {
     return evidenceUnavailable(
       "turn.completed has no observed V3 assistant-text status-box result; Stop remains fail-open",
     );
   }
 
-  const ackPresent = req.adapter === "cursor" ? requiredStatusChecked : latestBox === true;
+  const ackPresent =
+    req.adapter === "cursor"
+      ? requiredStatusChecked
+      : claudeContinuation
+        ? strictBoxObservations.includes(true) || currentStrictBox === true
+        : latestBox === true;
   const ackBlock =
     req.adapter === "cursor"
       ? () => rule13Block(coordRoot, req.session_id)
@@ -154,7 +174,7 @@ export function evaluateStopHookV3Events(
   // Pure prose turns keep the human-visible acknowledgement but do not require
   // task or final-status mutations. This preserves the pre-V3 policy exactly.
   if (!usedTool) {
-    if (!ackPresent) return ackBlock();
+    if (!ackPresent) return withCycleAnchor(ackBlock(), cycleAnchor);
     return {
       allow: true,
       exit_code: 0,
@@ -163,9 +183,11 @@ export function evaluateStopHookV3Events(
     };
   }
 
-  if (!requiredStatusChecked) return rule13Block(coordRoot, req.session_id);
-  if (!ackPresent) return ackBlock();
-  if (!taskSet) return rule33Block(coordRoot, req.session_id);
+  if (!requiredStatusChecked) {
+    return withCycleAnchor(rule13Block(coordRoot, req.session_id), cycleAnchor);
+  }
+  if (!ackPresent) return withCycleAnchor(ackBlock(), cycleAnchor);
+  if (!taskSet) return withCycleAnchor(rule33Block(coordRoot, req.session_id), cycleAnchor);
 
   // Claude Code can prove session-name presentation from assistant-only text.
   // Cursor cannot expose that text and Codex returned observe-only above.
@@ -178,7 +200,7 @@ export function evaluateStopHookV3Events(
       !naming.some(({ present }) => present) &&
       !sessionNameSeenStamped(coordRoot, req.instance_id)
     ) {
-      return sessionNameBlock(coordRoot, req.instance_id);
+      return withCycleAnchor(sessionNameBlock(coordRoot, req.instance_id), cycleAnchor);
     }
   }
 
@@ -213,29 +235,65 @@ function unconditionalVerdict(req: StopHookRequest): VerdictResult | undefined {
   return undefined;
 }
 
-function resolveTurnStartMs(
+function resolveTurnStart(
   ownerEvents: readonly EventV3[],
   nowMs: number,
-  fallbackMs: number,
-): number {
+  claudeContinuation: boolean,
+): Extract<EventV3, { event_type: "turn.started" }> | undefined {
   const turns = ownerEvents.filter(
     (event): event is Extract<EventV3, { event_type: "turn.started" }> =>
       event.event_type === "turn.started" && eventTimeMs(event) <= nowMs,
   );
-  if (turns.length === 0) return fallbackMs;
+  if (turns.length === 0) return undefined;
 
   let index = turns.length - 1;
   let hops = 0;
   while (index > 0 && hops < MAX_REMEDIATION_WALK_BACK) {
     const turn = turns[index];
-    if (!turn?.payload.stop_remediation) break;
+    const continuesCycle = claudeContinuation
+      ? turn?.provenance.source_event === "claude-code.recovery" &&
+        turn.provenance.attestation === "derived"
+      : turn?.payload.stop_remediation === true;
+    if (!continuesCycle) break;
     index -= 1;
     hops += 1;
   }
-  return eventTimeMs(turns[index]!);
+  return turns[index];
 }
 
-function eventTimeMs(event: EventV3): number {
+function originalTurnEvents(
+  ownerEvents: readonly EventV3[],
+  turnStart: Extract<EventV3, { event_type: "turn.started" }> | undefined,
+  endMs: number,
+): EventV3[] {
+  if (!turnStart) return [];
+  const startMs = eventTimeMs(turnStart);
+  const terminal = ownerEvents.find(
+    (event) => event.event_type === "turn.completed" && eventTimeMs(event) >= startMs,
+  );
+  const policyEndMs = terminal ? eventTimeMs(terminal) : endMs;
+  return ownerEvents.filter((event) => {
+    const time = eventTimeMs(event);
+    return time >= startMs && time <= policyEndMs;
+  });
+}
+
+function remediationCycleAnchor(
+  turnStart: Extract<EventV3, { event_type: "turn.started" }> | undefined,
+  startMs: number,
+): string {
+  if (turnStart && "turn_id" in turnStart.scope && turnStart.scope.turn_id) {
+    return turnStart.scope.turn_id;
+  }
+  return new Date(startMs).toISOString();
+}
+
+function withCycleAnchor(verdict: VerdictResult, anchor: string): VerdictResult {
+  return { ...verdict, remediation_cycle_anchor: anchor };
+}
+
+function eventTimeMs(event: EventV3 | undefined): number {
+  if (!event) return Number.NaN;
   return Date.parse(event.time.observed_at);
 }
 

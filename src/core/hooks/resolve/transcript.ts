@@ -3,6 +3,8 @@ import { basename, dirname, join } from "node:path";
 
 import { toolResponseMintedSessionName } from "../../agents/session-name-display.ts";
 
+export const ASSISTANT_STATUS_BOX_PREFIX = "┌─ agent-";
+
 /**
  * Scan a CC-style JSONL transcript for the `┌─ agent-` status-box prefix in
  * the most-recent assistant turn. Used by `turn.completed` events to populate
@@ -74,6 +76,22 @@ export function scanAssistantTextIncludes(
     }
   }
   return false;
+}
+
+/**
+ * Strict status-box evidence shared by turn telemetry and the Stop-time
+ * continuation fallback. Both inputs are assistant-only surfaces: the JSONL
+ * scanner rejects tool_result rows, while lastAssistantMessage comes directly
+ * from the adapter's completed assistant response.
+ */
+export function scanAssistantStatusBoxPresent(
+  transcriptPath: string | undefined,
+  lastAssistantMessage: string | undefined,
+): boolean {
+  return (
+    scanAssistantTextIncludes(transcriptPath, ASSISTANT_STATUS_BOX_PREFIX) ||
+    lastAssistantMessage?.includes(ASSISTANT_STATUS_BOX_PREFIX) === true
+  );
 }
 
 /** Most recent user-visible assistant text across Claude Code and Codex JSONL. */

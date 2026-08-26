@@ -92,9 +92,13 @@ export function emitStopBlock(
     process.stdout.write(`${JSON.stringify({ followup_message: message })}\n`);
     return 0;
   }
-  // Claude Code continues the SAME turn on exit 2, so the single failing rule is
-  // both accurate and sufficient there. Left unchanged deliberately.
-  process.stderr.write(`${reason}\n[agent-hook stop]: rule=${verdict.rule}\n`);
+  // Claude Code re-prompts inside one native Stop remediation cycle, but tools
+  // run after the first terminal are recorded in recovered telemetry turns.
+  // Name the whole ritual so one continuation can repair every required signal.
+  const bin = resolveBinName(coordRoot);
+  const statusCommand = endOfTurnStatusCommand(coordRoot);
+  const remediation = `Repair the whole ritual in this continuation: if the original turn used a tool and task evidence is missing, run \`${bin} agents set-task "<short focus>"\`; then run \`${statusCommand}\` as your last tool call and paste its status box verbatim in your reply.`;
+  process.stderr.write(`${reason}\n${remediation}\n[agent-hook stop]: rule=${verdict.rule}\n`);
   return 2;
 }
 
