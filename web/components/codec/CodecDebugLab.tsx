@@ -68,7 +68,7 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
 
   useEffect(() => {
     if (!autoPing || visibleAgents.length < 2) return;
-    const timer = window.setInterval(() => setPingSequence((value) => value + 1), 2_400);
+    const timer = window.setInterval(() => setPingSequence((value) => value + 1), 6_500);
     return () => window.clearInterval(timer);
   }, [autoPing, visibleAgents.length]);
 
@@ -273,7 +273,7 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
                 disabled={pingDisabled}
                 onChange={(event) => setAutoPing(event.target.checked)}
               />
-              Repeat every 2.4 seconds
+              Repeat every 6.5 seconds
             </label>
             <p className={styles.controlHint} aria-live="polite">
               {pingSequence > 0 ? `Ping cue ${pingSequence} emitted.` : "No ping cue emitted yet."}

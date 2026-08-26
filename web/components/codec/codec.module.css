@@ -2086,54 +2086,218 @@
   }
 }
 
-/* Ping arrival glow on the recipient panel (static-friendly). */
-.pingArrive {
-  outline: 4px solid rgba(125, 211, 252, 0.88);
-  outline-offset: 4px;
-  box-shadow:
-    0 0 0 1px rgb(255 255 255 / 0.42),
-    0 0 42px 10px rgb(56 189 248 / 0.42),
-    0 20px 60px rgb(0 0 0 / 0.36),
-    inset 0 1px 0 rgb(255 255 255 / 0.09);
-  transition: outline-color 1.4s ease-out;
-}
-.pingArriveFade {
+/* A ping keeps both endpoints unmistakable for the whole trip. The labels are
+ * the static/reduced-motion equivalent; motion only adds charge and impact. */
+.pingIdle {
   outline: 2px solid transparent;
   outline-offset: 2px;
   transition:
-    outline-color 1.4s ease-out,
-    box-shadow 1.4s ease-out;
+    outline-color 1.8s ease-out,
+    box-shadow 1.8s ease-out;
+}
+
+.pingSource,
+.pingDestination {
+  outline-offset: 5px;
+}
+
+.pingSource {
+  outline: 4px solid rgb(250 204 21 / 0.92);
+  box-shadow:
+    0 0 0 2px rgb(255 255 255 / 0.28),
+    0 0 44px 12px rgb(250 204 21 / 0.34),
+    0 20px 60px rgb(0 0 0 / 0.42),
+    inset 0 0 38px rgb(250 204 21 / 0.08);
+}
+
+.pingDestination {
+  outline: 4px solid rgb(103 232 249 / 0.94);
+  box-shadow:
+    0 0 0 2px rgb(255 255 255 / 0.28),
+    0 0 46px 12px rgb(56 189 248 / 0.4),
+    0 20px 60px rgb(0 0 0 / 0.42),
+    inset 0 0 38px rgb(56 189 248 / 0.09);
+}
+
+.pingDestinationImpact {
+  outline-color: rgb(255 255 255 / 1);
+  box-shadow:
+    0 0 0 10px rgb(165 243 252 / 0.62),
+    0 0 72px 24px rgb(56 189 248 / 0.72),
+    0 20px 60px rgb(0 0 0 / 0.42),
+    inset 0 0 54px rgb(165 243 252 / 0.2);
+}
+
+.pingEndpointCue {
+  position: absolute;
+  z-index: 24;
+  top: 0.72rem;
+  left: 0.72rem;
+  display: inline-flex;
+  max-width: calc(100% - 1.44rem);
+  align-items: center;
+  gap: 0.36rem;
+  padding: 0.38rem 0.58rem;
+  border: 1px solid rgb(255 255 255 / 0.72);
+  border-radius: 999px;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.76rem;
+  font-weight: 850;
+  letter-spacing: 0.055em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.5);
+}
+
+.pingEndpointCue svg {
+  width: 0.82rem;
+  height: 0.82rem;
+  flex: 0 0 auto;
+}
+
+.pingEndpointCue > :last-child {
+  overflow: hidden;
+  max-width: 8rem;
+  text-overflow: ellipsis;
+}
+
+.pingEndpointSource {
+  color: rgb(254 249 195);
+  background: rgb(66 50 4 / 0.94);
+  box-shadow:
+    0 0 0 2px rgb(250 204 21 / 0.34),
+    0 8px 30px rgb(250 204 21 / 0.28);
+}
+
+.pingEndpointDestination {
+  color: rgb(236 254 255);
+  background: rgb(8 47 73 / 0.95);
+  box-shadow:
+    0 0 0 2px rgb(103 232 249 / 0.36),
+    0 8px 30px rgb(56 189 248 / 0.34);
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .pingArrive {
-    animation: codec-ping-arrive 1.6s ease-out both;
+  .pingSource {
+    animation: codec-ping-source 6.2s ease-out both;
   }
 
-  @keyframes codec-ping-arrive {
+  .pingDestination {
+    animation: codec-ping-destination-wait 6.2s ease-in-out both;
+  }
+
+  .pingDestinationImpact {
+    animation: codec-ping-destination-impact 1.7s cubic-bezier(0.16, 0.8, 0.2, 1) both;
+  }
+
+  .pingEndpointSource svg {
+    animation: codec-ping-icon-charge 0.9s ease-in-out infinite alternate;
+  }
+
+  .pingEndpointDestination svg {
+    animation: codec-ping-icon-receive 1.2s ease-in-out infinite;
+  }
+
+  @keyframes codec-ping-source {
     0% {
-      outline-color: rgb(165 243 252 / 0);
+      outline-color: rgb(250 204 21 / 0);
       box-shadow:
-        0 0 0 0 rgb(165 243 252 / 0),
-        0 0 0 0 rgb(168 85 247 / 0),
+        0 0 0 0 rgb(250 204 21 / 0),
+        0 0 0 0 rgb(250 204 21 / 0),
         0 20px 60px rgb(0 0 0 / 0.36),
         inset 0 1px 0 rgb(255 255 255 / 0.06);
     }
-    28% {
-      outline-color: rgb(165 243 252 / 1);
+    10%,
+    24%,
+    38%,
+    52% {
+      outline-color: rgb(254 240 138 / 1);
       box-shadow:
-        0 0 0 8px rgb(165 243 252 / 0.42),
-        0 0 54px 16px rgb(168 85 247 / 0.5),
+        0 0 0 9px rgb(250 204 21 / 0.34),
+        0 0 62px 18px rgb(250 204 21 / 0.52),
         0 20px 60px rgb(0 0 0 / 0.36),
-        inset 0 1px 0 rgb(255 255 255 / 0.12);
+        inset 0 0 42px rgb(250 204 21 / 0.15);
     }
     100% {
-      outline-color: rgb(125 211 252 / 0.18);
+      outline-color: rgb(250 204 21 / 0.22);
       box-shadow:
-        0 0 0 18px rgb(165 243 252 / 0),
-        0 0 24px 5px rgb(56 189 248 / 0.12),
+        0 0 0 18px rgb(250 204 21 / 0),
+        0 0 24px 5px rgb(250 204 21 / 0.1),
         0 20px 60px rgb(0 0 0 / 0.36),
         inset 0 1px 0 rgb(255 255 255 / 0.06);
+    }
+  }
+
+  @keyframes codec-ping-destination-wait {
+    0%,
+    100% {
+      outline-color: rgb(103 232 249 / 0.48);
+      box-shadow:
+        0 0 0 2px rgb(103 232 249 / 0.12),
+        0 0 34px 8px rgb(56 189 248 / 0.24),
+        0 20px 60px rgb(0 0 0 / 0.42),
+        inset 0 0 28px rgb(56 189 248 / 0.06);
+    }
+    50% {
+      outline-color: rgb(165 243 252 / 1);
+      box-shadow:
+        0 0 0 7px rgb(103 232 249 / 0.3),
+        0 0 54px 14px rgb(56 189 248 / 0.48),
+        0 20px 60px rgb(0 0 0 / 0.42),
+        inset 0 0 40px rgb(56 189 248 / 0.14);
+    }
+  }
+
+  @keyframes codec-ping-destination-impact {
+    0% {
+      outline-color: rgb(103 232 249 / 0.7);
+      transform: scale(1);
+    }
+    16% {
+      outline-color: white;
+      transform: scale(1.025);
+      box-shadow:
+        0 0 0 18px rgb(165 243 252 / 0.64),
+        0 0 100px 34px rgb(56 189 248 / 0.8),
+        0 20px 60px rgb(0 0 0 / 0.42),
+        inset 0 0 68px rgb(255 255 255 / 0.3);
+    }
+    42% {
+      transform: scale(0.995);
+    }
+    100% {
+      outline-color: rgb(103 232 249 / 0.7);
+      transform: scale(1);
+      box-shadow:
+        0 0 0 10px rgb(165 243 252 / 0),
+        0 0 44px 10px rgb(56 189 248 / 0.28),
+        0 20px 60px rgb(0 0 0 / 0.42),
+        inset 0 0 38px rgb(56 189 248 / 0.09);
+    }
+  }
+
+  @keyframes codec-ping-icon-charge {
+    from {
+      transform: scale(0.86);
+      opacity: 0.66;
+    }
+    to {
+      transform: scale(1.16);
+      opacity: 1;
+    }
+  }
+
+  @keyframes codec-ping-icon-receive {
+    0%,
+    100% {
+      transform: scale(0.9);
+      opacity: 0.62;
+    }
+    50% {
+      transform: scale(1.14);
+      opacity: 1;
     }
   }
 }
@@ -2150,22 +2314,23 @@
 /* Traveling message particle (created imperatively, motion-gated in JS). */
 .pingDot {
   position: fixed;
-  z-index: 80;
-  width: 24px;
-  height: 24px;
+  z-index: 100;
+  width: 40px;
+  height: 40px;
   border-radius: 999px;
   pointer-events: none;
   background: radial-gradient(
     circle,
-    #fff 0 18%,
-    rgb(165 243 252) 30%,
-    rgb(56 189 248) 58%,
-    transparent 74%
+    #fff 0 16%,
+    rgb(207 250 254) 26%,
+    rgb(34 211 238) 52%,
+    rgb(168 85 247 / 0.66) 68%,
+    transparent 76%
   );
   box-shadow:
-    0 0 16px 6px rgb(56 189 248 / 0.88),
-    0 0 42px 14px rgb(168 85 247 / 0.42);
-  filter: saturate(1.3);
+    0 0 22px 9px rgb(56 189 248 / 0.94),
+    0 0 58px 20px rgb(168 85 247 / 0.54);
+  filter: saturate(1.45);
 }
 
 .pingDot::before {
@@ -2173,18 +2338,19 @@
   position: absolute;
   top: 50%;
   right: 50%;
-  width: 72px;
-  height: 12px;
+  width: 148px;
+  height: 18px;
   border-radius: 999px 0 0 999px;
   opacity: 0.9;
   background: linear-gradient(
     90deg,
     transparent,
-    rgb(168 85 247 / 0.4),
-    rgb(103 232 249 / 0.9),
+    rgb(168 85 247 / 0.08),
+    rgb(168 85 247 / 0.56),
+    rgb(103 232 249 / 0.96),
     #fff
   );
-  filter: blur(2px);
+  filter: blur(3px);
   transform: translateY(-50%) rotate(var(--ping-angle, 0rad));
   transform-origin: right center;
 }
@@ -2192,10 +2358,107 @@
 .pingDot::after {
   content: "";
   position: absolute;
-  inset: -7px;
-  border: 2px solid rgb(165 243 252 / 0.78);
+  inset: -12px;
+  border: 3px solid rgb(165 243 252 / 0.86);
   border-radius: 999px;
-  box-shadow: 0 0 18px rgb(56 189 248 / 0.72);
+  box-shadow:
+    0 0 20px rgb(56 189 248 / 0.88),
+    inset 0 0 18px rgb(168 85 247 / 0.52);
+}
+
+.pingDotLabel {
+  position: absolute;
+  top: -2rem;
+  left: 50%;
+  padding: 0.24rem 0.42rem;
+  transform: translateX(-50%);
+  border: 1px solid rgb(165 243 252 / 0.72);
+  border-radius: 999px;
+  color: white;
+  background: rgb(8 47 73 / 0.9);
+  box-shadow: 0 0 20px rgb(56 189 248 / 0.62);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  line-height: 1;
+}
+
+.pingImpact {
+  position: fixed;
+  z-index: 99;
+  width: 112px;
+  height: 112px;
+  pointer-events: none;
+  border: 4px solid rgb(207 250 254 / 0.96);
+  border-radius: 999px;
+  background: radial-gradient(circle, white 0 4%, rgb(103 232 249 / 0.88) 8%, transparent 42%);
+  box-shadow:
+    0 0 32px 14px rgb(56 189 248 / 0.86),
+    0 0 90px 30px rgb(168 85 247 / 0.62);
+  animation: codec-ping-impact 1.65s cubic-bezier(0.16, 0.8, 0.2, 1) both;
+}
+
+.pingImpact::before,
+.pingImpact::after {
+  content: "";
+  position: absolute;
+  border-radius: inherit;
+}
+
+.pingImpact::before {
+  inset: -34px;
+  border: 5px solid rgb(103 232 249 / 0.72);
+  box-shadow: 0 0 36px rgb(56 189 248 / 0.84);
+}
+
+.pingImpact::after {
+  inset: -58px;
+  background: repeating-conic-gradient(
+    from 0deg,
+    transparent 0deg 12deg,
+    rgb(165 243 252 / 0.92) 13deg 15deg,
+    transparent 16deg 30deg
+  );
+  mask: radial-gradient(circle, transparent 0 47%, #000 49% 54%, transparent 56%);
+}
+
+.pingImpactLabel {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  padding: 0.36rem 0.54rem;
+  transform: translate(-50%, -50%);
+  border: 1px solid white;
+  border-radius: 999px;
+  color: rgb(8 47 73);
+  background: white;
+  box-shadow: 0 0 24px rgb(255 255 255 / 0.9);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.68rem;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
+@keyframes codec-ping-impact {
+  0% {
+    transform: scale(0.16) rotate(-12deg);
+    opacity: 0;
+  }
+  12% {
+    transform: scale(1.22) rotate(0deg);
+    opacity: 1;
+  }
+  36% {
+    transform: scale(0.88) rotate(3deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2.7) rotate(12deg);
+    opacity: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2587,6 +2850,10 @@
   box-shadow:
     0 18px 42px rgb(0 0 0 / 0.36),
     inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+.mobileCodecCard .pingEndpointCue {
+  top: 4.7rem;
 }
 
 .mobileCodecCard::before {
