@@ -1,0 +1,80 @@
+---
+title: "0125: Event adapters are separate from workflow adapters"
+description: "ADR: let resident harnesses emit native V3 evidence without claiming Harnery can launch them as workflow backends."
+---
+
+**Status:** accepted (2026-08-26) · **Scope:** Event Ledger V3 adapter identity, capabilities, and host embedding
+
+## Context
+
+Harnery's workflow adapter registry answers whether Harnery can plan, launch,
+and normalize a headless harness run. Event Ledger V3 answers a different
+question: which native runtime produced an observed session, turn, or tool
+event, and what evidence that runtime can deliver.
+
+The first three supported harnesses use both surfaces, so the distinction was
+hidden. A resident gateway can expose a complete typed lifecycle through host
+hooks without being a CLI backend that `harn run` should launch. Adding that
+harness to the workflow adapter union would make command choices, invocation
+planning, and offline workflow conformance claim support that does not exist.
+Mapping it to an existing event adapter would be worse: its rows would carry a
+false capability profile and could enter the wrong evidence stratum.
+
+Event V3 schemas already store adapter identity as a bounded token. The closed
+part is the producer implementation and its capability registry, not the
+persisted schema.
+
+## Decision
+
+Event Ledger V3 has its own `EventAdapterRegistryV3`. Each registered event
+adapter owns an id, a capability profile, a vendor-contract attestation, and a
+native-envelope normalizer. Producer discovery, intake validation, runtime
+attestation, and capability drift checks derive their adapter ids from this
+registry.
+
+The workflow `Adapter` union and `AdapterRegistry` remain limited to harnesses
+that Harnery can invoke through the workflow engine. A harness may implement
+the event contract without implementing the workflow contract. Product code
+must name these types separately; `Adapter` is not reused as shorthand for an
+event source.
+
+Capability approval is root-specific. A ledger control manifest records the
+digests it approved when the epoch started. A newer Harnery build may know more
+event adapters without invalidating that root. Runtime compatibility requires
+every approved digest to resolve unchanged; it does not require the root to
+approve every currently registered adapter.
+
+Embedding hosts may register hooks and package the normalizer in the form
+their resident harness supports. They must still call the canonical V3
+recorder and writer. A host-specific plugin may not create a parallel ledger,
+weaken privacy, or infer a native event from post hoc transcript parsing.
+
+## Alternatives considered
+
+**Widen the workflow adapter union.** Rejected because a resident harness is
+not necessarily spawnable, resumable, or normalizable through the workflow
+engine.
+
+**Use one open string for every adapter surface.** Rejected because it removes
+the compile-time boundary between launch support and evidence support without
+adding a registry that can verify either claim.
+
+**Map a resident harness to the nearest existing adapter.** Rejected because
+adapter identity determines capability promises, eligibility, and drift
+checks. Similar tool names do not make two harness contracts equivalent.
+
+**Keep resident harness telemetry in a host-owned ledger.** Rejected because a
+second contract would need its own writer, recovery, privacy, readers, and
+eligibility rules. Native envelopes should enter the canonical recorder.
+
+## Consequences
+
+- Harnery can add native event support for a resident or embedded harness
+  without advertising workflow-launch support.
+- Adding an event adapter is additive when existing roots did not approve its
+  capability digest. It does not force a new epoch by itself.
+- Event-adapter conformance needs native hook fixtures and an explicit vendor
+  version basis. Workflow fixtures do not prove event delivery.
+- Code that truly needs both contracts must join them explicitly by adapter id
+  and verify that both registries contain the id.
+- Existing ledgers and the three workflow adapters keep their current meaning.
