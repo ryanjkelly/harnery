@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m32-af",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Black Caribbean man in his mid 30s with deep warm-brown skin, broad amber-brown eyes, shoulder-length black locs gathered low behind his neck, a trimmed mustache and short goatee, a compact coral communications headset, and a plain cream overshirt over a navy crew neck.",
+  "palette": "cream, navy, coral, black, amber brown",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

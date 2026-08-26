@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m14-n",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A white man in his early 30s with fair skin, broad gray-blue eyes, tousled sandy-blond hair with a soft undercut, slim indigo glasses, a cobalt communications earpiece, and a soft-gray technical sweater with a bright yellow zipper collar.",
+  "palette": "soft gray, bright yellow, sandy blond, indigo, cobalt",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

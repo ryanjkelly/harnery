@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "f13-m",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Southeast Asian woman in her late 20s with warm tan skin, broad dark-hazel eyes, straight black hair in a crisp chin-length bob with blunt bangs, a rose-gold ear-clip communications microphone, and a rust-orange utility vest over a cream mock-neck shirt.",
+  "palette": "rust orange, cream, rose gold, black, dark hazel",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

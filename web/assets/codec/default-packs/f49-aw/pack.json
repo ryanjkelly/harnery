@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "f49-aw",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Finnish woman age 29 with very fair skin, broad pale gray-blue eyes, copper-blond hair in a short asymmetrical bob with one long side sweep, a visible jade ear-cuff communications earpiece with a short cheek microphone, and a plain midnight-blue cardigan over an apricot collared shirt.",
+  "palette": "midnight blue, apricot, jade, copper blond, pale gray blue",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

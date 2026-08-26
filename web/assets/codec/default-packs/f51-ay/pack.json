@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "f51-ay",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Ukrainian woman age 22 with fair rosy skin, broad bright-blue eyes, long wheat-blond hair gathered into one thick low braid with soft face-framing strands, a visible magenta communications headset with a short cheek microphone, and a plain plum work jacket over a pale-yellow knit collar.",
+  "palette": "plum, pale yellow, magenta, wheat blond, bright blue",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

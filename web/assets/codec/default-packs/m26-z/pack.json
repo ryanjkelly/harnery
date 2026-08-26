@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m26-z",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A North African man in his early 30s with tawny olive skin, broad hazel-brown eyes, short loose dark curls, a tidy close beard, a sky-blue communications earpiece, and a plain maroon utility jacket over a sand-colored crew neck.",
+  "palette": "maroon, sand, sky blue, dark brown, tawny olive",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

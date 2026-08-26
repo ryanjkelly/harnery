@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m42-ap",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Baltic man in his early 60s with fair skin, broad deep-blue eyes, short steel-gray hair brushed back from a high forehead, a neat thick mustache, a visible amber ear-cuff communications earpiece with a short cheek microphone, and a plain forest-green cardigan over a pale-blue collared shirt.",
+  "palette": "forest green, pale blue, amber, steel gray, deep blue",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

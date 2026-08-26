@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m34-ah",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "An East African man in his early 50s with deep umber skin, broad dark-hazel eyes, short silver-flecked curls, a neat close salt-and-pepper beard, a vivid-blue communications earpiece, and a plain sand-colored technical jacket over a forest-green crew neck.",
+  "palette": "sand, forest green, vivid blue, silver, deep umber",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

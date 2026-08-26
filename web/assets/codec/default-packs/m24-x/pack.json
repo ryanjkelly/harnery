@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m24-x",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Latino man in his mid 40s with warm tan skin, broad dark-brown eyes, shoulder-length wavy black hair, a neat mustache and short goatee, an orange communications earpiece, and a plain teal field jacket over a cream henley shirt.",
+  "palette": "teal, cream, orange, black, warm tan",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

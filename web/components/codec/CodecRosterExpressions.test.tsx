@@ -31,3 +31,14 @@ test("only the initially visible pack emits image requests during server renderi
   expect(visible).toContain('width="256"');
   expect(visible).toContain('height="384"');
 });
+
+test("complete-render mode emits every image without making every request high priority", () => {
+  const complete = renderToStaticMarkup(
+    <CodecRosterExpressions packId="aurora" packVersion="2" expressions={expressions} persistent />,
+  );
+
+  expect(complete.match(/src="\/api\/codec-pack\//g)).toHaveLength(expressions.length);
+  expect(complete).toContain('data-codec-images="persistent"');
+  expect(complete).toContain('fetchPriority="low"');
+  expect(complete).not.toContain('fetchPriority="high"');
+});

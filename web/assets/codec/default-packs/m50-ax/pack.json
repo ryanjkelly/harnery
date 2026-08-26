@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m50-ax",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A German man age 25 with fair skin, broad warm-brown eyes, sandy-brown hair shaped into a tidy high quiff, slim round teal glasses, a visible orange communications earpiece with a short cheek microphone, and a plain steel-gray utility jacket over a maroon crew-neck top.",
+  "palette": "steel gray, maroon, orange, teal, sandy brown",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m44-ar",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Scottish man age 26 with fair rosy skin, broad blue-gray eyes, thick auburn curls cropped neatly at the nape, a clean-shaven face, a visible teal ear-cuff communications earpiece with a short cheek microphone, and a plain slate-blue work jacket over a saffron knit collar.",
+  "palette": "slate blue, saffron, teal, auburn, blue gray",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

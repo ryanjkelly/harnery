@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "f45-as",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Dutch woman age 24 with fair skin, broad turquoise-blue eyes, a smooth platinum-blond jaw-length bob with softly flipped ends, a visible orange on-ear communications headset with a short cheek microphone, and a plain cobalt jacket over a cream mock-neck top.",
+  "palette": "cobalt, cream, orange, platinum blond, turquoise blue",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

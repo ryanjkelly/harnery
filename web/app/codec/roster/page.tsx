@@ -13,7 +13,13 @@ import {
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export default function CodecRosterPage() {
+export default async function CodecRosterPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ render?: string | string[] }>;
+}) {
+  const params = await searchParams;
+  const completeRender = params.render === "complete";
   const packs = listPacks();
   const registry = readPackRegistry();
   const summary = summarizePackRoster(packs, registry);
@@ -21,14 +27,14 @@ export default function CodecRosterPage() {
   return (
     <main className={styles.rosterPage}>
       <div className={styles.pageGlow} aria-hidden />
-      <header className={styles.rosterHeader}>
+      <header className={styles.rosterHeader} data-codec-roster-header>
         <div>
           <p className={styles.kicker}>Character system</p>
           <h1>Codec roster lab</h1>
           <p className={styles.deck}>
-            Every live portrait state, shown at the same narrow crop the agent cards use. Packs
-            remain ahead-of-demand presentation assets; this page never generates or controls agent
-            work.
+            Every live portrait state, shown at the same narrow crop the agent cards use. Harnery's
+            default roster is available immediately, and valid host packs can extend or replace it.
+            This page never generates portraits or controls agent work.
           </p>
         </div>
         <div className={styles.headerStats}>
@@ -145,9 +151,9 @@ export default function CodecRosterPage() {
                       </dd>
                     </div>
                     <div>
-                      <dt>Use</dt>
+                      <dt>Agent bindings</dt>
                       <dd>
-                        {bound.length} live · {historicalUses} total
+                        {bound.length} active · {historicalUses} ever
                       </dd>
                     </div>
                   </dl>
@@ -164,6 +170,7 @@ export default function CodecRosterPage() {
                         : (EXPRESSION_FALLBACK[expression] ?? "neutral"),
                   }))}
                   initiallyLoad={packIndex === 0}
+                  persistent={completeRender}
                 />
               </article>
             );

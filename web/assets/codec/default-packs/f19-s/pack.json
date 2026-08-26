@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "f19-s",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "An Indigenous North American woman in her early 30s with warm bronze skin, broad dark-teal eyes, long chestnut hair in two low braids, an aqua earbud communications microphone, and a plain denim-blue field jacket over a copper knit collar.",
+  "palette": "denim blue, copper, aqua, chestnut, warm bronze",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

@@ -14,6 +14,7 @@ interface CodecRosterExpressionsProps {
   packVersion: string;
   expressions: readonly RosterExpressionAsset[];
   initiallyLoad?: boolean;
+  persistent?: boolean;
 }
 
 const LOAD_MARGIN = "1200px 0px";
@@ -27,11 +28,16 @@ export function CodecRosterExpressions({
   packVersion,
   expressions,
   initiallyLoad = false,
+  persistent = false,
 }: CodecRosterExpressionsProps) {
   const gridRef = useRef<HTMLDivElement>(null);
-  const [shouldLoad, setShouldLoad] = useState(initiallyLoad);
+  const [shouldLoad, setShouldLoad] = useState(initiallyLoad || persistent);
 
   useEffect(() => {
+    if (persistent) {
+      setShouldLoad(true);
+      return;
+    }
     const grid = gridRef.current;
     if (!grid || typeof IntersectionObserver === "undefined") {
       setShouldLoad(true);
@@ -46,13 +52,13 @@ export function CodecRosterExpressions({
     );
     observer.observe(grid);
     return () => observer.disconnect();
-  }, []);
+  }, [persistent]);
 
   return (
     <div
       ref={gridRef}
       className={styles.expressionGrid}
-      data-codec-images={shouldLoad ? "loaded" : "deferred"}
+      data-codec-images={persistent ? "persistent" : shouldLoad ? "loaded" : "deferred"}
       aria-busy={!shouldLoad}
     >
       {expressions.map((expression) => (
@@ -69,7 +75,7 @@ export function CodecRosterExpressions({
               width={256}
               height={384}
               loading="eager"
-              fetchPriority={initiallyLoad ? "high" : "low"}
+              fetchPriority={initiallyLoad && !persistent ? "high" : "low"}
             />
           ) : (
             <span className={styles.expressionPlaceholder} aria-hidden />

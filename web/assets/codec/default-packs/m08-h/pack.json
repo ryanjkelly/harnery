@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m08-h",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Latino man in his late 20s with light olive skin, broad warm-green eyes, tousled wavy chestnut hair, faint neat stubble, a compact black-and-teal on-ear communications headset, and a charcoal utility overshirt over a mustard hooded collar.",
+  "palette": "charcoal, mustard, chestnut, teal, warm green",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

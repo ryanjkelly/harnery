@@ -2,13 +2,18 @@
  * Character-pack roster + presentation registry (plan § character asset
  * strategy).
  *
- * Packs are pre-generated image sets on disk under the host's
- * `.harnery/codec/packs/<pack_id>/`; the live view only SELECTS from them,
- * never generates. The registry (`.harnery/codec/registry.json`) is the one
- * durable Codec-owned artifact: immutable historical session→pack bindings
- * plus which bindings are active. It is presentation metadata — Harnery
- * operational code never reads it, and it is never an input to identity,
- * lifecycle, scheduling, or control.
+ * Harnery ships a complete default roster under
+ * `web/assets/codec/default-packs/<pack_id>/`. A host may add packs, or replace
+ * one default by id, under `.harnery/codec/packs/<pack_id>/`; the live view
+ * only SELECTS from those sources and never generates. A valid host pack wins
+ * over its bundled counterpart. A missing or invalid host override leaves the
+ * valid bundled pack available.
+ *
+ * The registry (`.harnery/codec/registry.json`) is the one durable Codec-owned
+ * artifact: immutable historical session→pack bindings plus which bindings
+ * are active. It is presentation metadata — Harnery operational code never
+ * reads it, and it is never an input to identity, lifecycle, scheduling, or
+ * control.
  *
  * A pack is usable only when its manifest validates AND every expression in
  * the supported library has a file on disk; anything less falls back to the
@@ -130,6 +135,13 @@ export function packsDir(root = harneryDir()): string {
   return path.join(codecDir(root), "packs");
 }
 
+/** Tracked default roster shipped with the Harnery dashboard checkout. */
+export function defaultPacksDir(): string {
+  const fromWebRoot = path.join(process.cwd(), "assets", "codec", "default-packs");
+  if (fs.existsSync(fromWebRoot)) return fromWebRoot;
+  return path.join(process.cwd(), "web", "assets", "codec", "default-packs");
+}
+
 function registryPath(root = harneryDir()): string {
   return path.join(codecDir(root), "registry.json");
 }
@@ -222,26 +234,42 @@ export function validatePackDir(
   return result;
 }
 
-/** Every complete pack in stable character-sequence order. */
-export function listPacks(root = harneryDir()): CodecPack[] {
+function validPacksInDir(dir: string): CodecPack[] {
   let entries: string[];
   try {
-    entries = fs.readdirSync(packsDir(root));
+    entries = fs.readdirSync(dir);
   } catch {
-    return []; // no roster yet: everyone gets the fallback pack
+    return [];
   }
   const packs: CodecPack[] = [];
   for (const entry of entries.sort(comparePackIds)) {
-    const dir = path.join(packsDir(root), entry);
+    const packDir = path.join(dir, entry);
     try {
-      if (!fs.statSync(dir).isDirectory()) continue;
+      if (!fs.statSync(packDir).isDirectory()) continue;
     } catch {
       continue;
     }
-    const result = validatePackDir(dir);
+    const result = validatePackDir(packDir);
     if (result.ok) packs.push(result.pack);
   }
   return packs;
+}
+
+function defaultsForRoot(root: string): string | null {
+  return path.resolve(root) === path.resolve(harneryDir()) ? defaultPacksDir() : null;
+}
+
+/** Every complete bundled and host pack in stable character-sequence order. */
+export function listPacks(
+  root = harneryDir(),
+  bundledDir: string | null = defaultsForRoot(root),
+): CodecPack[] {
+  const byId = new Map<string, CodecPack>();
+  if (bundledDir) {
+    for (const pack of validPacksInDir(bundledDir)) byId.set(pack.pack_id, pack);
+  }
+  for (const pack of validPacksInDir(packsDir(root))) byId.set(pack.pack_id, pack);
+  return [...byId.values()].sort((left, right) => comparePackIds(left.pack_id, right.pack_id));
 }
 
 function comparePackIds(left: string, right: string): number {
@@ -467,14 +495,16 @@ export function resolvePackAsset(
   packId: string,
   expression: string,
   root = harneryDir(),
+  bundledDir: string | null = defaultsForRoot(root),
 ): { filePath: string; contentType: string; packVersion: string } | null {
   if (!SLUG_RE.test(packId) || !SLUG_RE.test(expression)) return null;
-  const dir = path.join(packsDir(root), packId);
-  const result = validatePackDir(dir);
-  if (!result.ok) return null;
-  const file = resolveExpressionFile(result.pack, expression);
+  const local = validatePackDir(path.join(packsDir(root), packId));
+  const bundled = bundledDir ? validatePackDir(path.join(bundledDir, packId)) : null;
+  const pack = local.ok ? local.pack : bundled?.ok ? bundled.pack : null;
+  if (!pack) return null;
+  const file = resolveExpressionFile(pack, expression);
   if (!file) return null;
-  const filePath = path.join(dir, file);
+  const filePath = path.join(pack.dir, file);
   const ext = path.extname(file).toLowerCase();
   const contentType =
     ext === ".webp"
@@ -485,7 +515,7 @@ export function resolvePackAsset(
           ? "image/jpeg"
           : null;
   if (!contentType) return null;
-  return { filePath, contentType, packVersion: result.pack.pack_version };
+  return { filePath, contentType, packVersion: pack.pack_version };
 }
 
 function resolveExpressionFile(pack: CodecPack, expression: string): string | undefined {

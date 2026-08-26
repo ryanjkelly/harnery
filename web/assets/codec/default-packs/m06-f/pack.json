@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m06-f",
+  "pack_version": "5",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A man in his mid 40s with East Asian features, black undercut hair swept back, light skin, calm focused dark eyes, a matte black earpiece, a forest-green field jacket with a high collar.",
+  "palette": "forest green, jet black, mint, bronze, storm gray",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

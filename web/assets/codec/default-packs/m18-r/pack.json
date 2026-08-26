@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m18-r",
+  "pack_version": "3",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A South Asian man in his late 30s with warm brown skin, broad deep-brown eyes, a tidy full black beard, a teal ear-cuff communications microphone, and a plain sand-colored operations jacket over an emerald knit collar.",
+  "palette": "midnight blue, sand, emerald, teal, warm brown",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

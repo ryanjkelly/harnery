@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "f35-ai",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "An Irish woman in her early 30s with fair freckled skin, broad gray-green eyes, long dark-chestnut hair gathered into a sleek high ponytail with a soft side fringe, an emerald communications earpiece, and a plain deep-navy work jacket over a copper knit collar.",
+  "palette": "deep navy, copper, emerald, dark chestnut, fair freckles",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

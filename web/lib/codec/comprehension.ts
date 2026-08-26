@@ -5,13 +5,7 @@ import path from "node:path";
 import { harneryDir } from "@/lib/coord-reader";
 
 import type { CodecExpression } from "./contracts";
-import {
-  EXTENDED_EXPRESSIONS,
-  packsDir,
-  REQUIRED_EXPRESSIONS,
-  resolvePackAsset,
-  validatePackDir,
-} from "./packs";
+import { EXTENDED_EXPRESSIONS, REQUIRED_EXPRESSIONS, resolvePackAsset } from "./packs";
 
 export const CODEC_COMPREHENSION_SCHEMA_VERSION = 1 as const;
 export const CODEC_COMPREHENSION_CHOICES = ["a", "same", "b"] as const;
@@ -196,10 +190,10 @@ export function resolveCodecComprehensionAsset(
   if (!cohort || cohort.study_id !== studyId) return null;
   const trial = cohort.trials.find((candidate) => candidate.trial_id === trialId);
   if (!trial) return null;
-  const pack = validatePackDir(path.join(packsDir(runtimeRoot), trial.pack_id));
-  if (!pack.ok || pack.pack.pack_version !== trial.pack_version) return null;
   const expression = expressionForSide(trial, side);
-  return resolvePackAsset(trial.pack_id, expression, runtimeRoot);
+  const asset = resolvePackAsset(trial.pack_id, expression, runtimeRoot);
+  if (!asset || asset.packVersion !== trial.pack_version) return null;
+  return asset;
 }
 
 export function storeCodecComprehensionResult(

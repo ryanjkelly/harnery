@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m36-aj",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Scandinavian man in his late 20s with very fair skin, broad ice-blue eyes, pale-blond hair swept into a long side wave, a neat light beard, a cobalt communications headset, and a plain charcoal-blue overshirt over a pale-mint crew neck.",
+  "palette": "charcoal blue, pale mint, cobalt, pale blond, ice blue",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

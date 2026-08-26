@@ -262,6 +262,7 @@
   margin-top: 0.28rem;
   font-size: 0.76rem;
   line-height: 1.45;
+  text-wrap: pretty;
   color: rgb(161 161 170);
 }
 
@@ -322,6 +323,7 @@
   overflow-wrap: anywhere;
   font-size: 0.68rem;
   line-height: 1.35;
+  text-wrap: pretty;
   color: rgb(212 212 216);
 }
 

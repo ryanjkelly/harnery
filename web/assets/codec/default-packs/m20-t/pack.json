@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "m20-t",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Southeast Asian man in his mid 20s with golden-tan skin, broad dark-brown eyes, thick wavy black hair swept loosely upward, a compact lime-and-black communications headset, and a plain burnt-orange overshirt over a charcoal crew neck.",
+  "palette": "burnt orange, charcoal, lime, black, golden tan",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

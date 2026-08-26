@@ -1,0 +1,65 @@
+---
+title: "0123: Ship the default Codec roster with the dashboard"
+description: "ADR: keep a complete tracked character roster beside the dashboard while preserving machine-local overrides and assignments."
+---
+
+**Status:** accepted (2026-08-26) · **Scope:** Codec character assets, dashboard distribution, host overrides
+
+## Context
+
+Codec can render character portraits only when complete character packs are
+available on the machine running the dashboard. The original loader read packs
+solely from `.harnery/codec/packs/`. That directory is runtime state and is
+normally ignored by version control, so a fresh Harnery checkout showed letter
+fallbacks until an operator separately copied portrait files into place.
+
+The approved default roster contains 52 characters. Every character has the 11
+required expressions and 10 extended expressions as 512 × 768 WebP files. The
+complete roster occupies about 58 MiB. Character assignment history remains a
+machine-specific concern because registry rows contain local instance ids.
+
+## Alternatives considered
+
+**Copy the roster into `.harnery/` during initialization.** Rejected because a
+generated copy would drift from the tracked source, consume another 58 MiB, and
+make upgrades choose between overwriting host changes and preserving stale
+defaults.
+
+**Put the roster in the npm coordination package.** Rejected because the
+dashboard is fetched as a separate Git checkout and is intentionally excluded
+from the npm package. Adding dashboard-only images to the coordination library
+would substantially increase every package installation without making the
+dashboard self-contained.
+
+**Download the roster from a remote asset service.** Rejected because the local
+dashboard should retain portraits without a network dependency, external asset
+availability, or a separate version and integrity channel.
+
+## Decision
+
+Harnery tracks the default roster under
+`web/assets/codec/default-packs/<pack_id>/`. The Codec loader reads that source
+alongside the host's `.harnery/codec/packs/` directory.
+
+Pack ids define precedence. A complete, valid host pack replaces the bundled
+pack with the same id. An invalid host override does not hide a valid bundled
+pack. Host-only pack ids join the roster. This preserves customization while
+making the default experience complete on a fresh checkout.
+
+The loader serves portrait bytes directly from the selected source. It does not
+copy bundled files into runtime state. `.harnery/codec/registry.json` remains
+machine-local and continues to own only historical instance-to-pack bindings.
+Updating the dashboard therefore updates the available artwork without moving
+another machine's assignments.
+
+## Result
+
+The tracked roster contains 52 valid packs and 1,092 portrait files: 21
+expressions for each character. Tests enforce the exact pack and expression
+counts, host override precedence, invalid-override fallback, and asset serving
+from the selected source.
+
+The roster's normal viewport-aware loader still removes distant thumbnails to
+bound decoded image memory. `?render=complete` keeps the 256-pixel roster
+thumbnails mounted for one complete export or visual QA capture without making
+every request high priority. It does not change the normal browsing state.

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "f05-e",
+  "pack_version": "5",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A woman in her late 20s with warm medium-brown skin, a chin-length wavy plum-black bob with a vivid magenta underlayer, luminous amber eyes, one small gold star stud earring, a visible white-and-coral ear-cuff communications earpiece with a short microphone, and a cream flight jacket over a plum high-neck top.",
+  "palette": "plum, coral, cream, amber, black",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

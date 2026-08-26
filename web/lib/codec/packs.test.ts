@@ -5,10 +5,12 @@ import path from "node:path";
 
 import {
   allocateCharacters,
+  defaultPacksDir,
   EXPRESSION_FALLBACK,
   EXTENDED_EXPRESSIONS,
   listPacks,
   REQUIRED_EXPRESSIONS,
+  ROSTER_EXPRESSIONS,
   resolvePackAsset,
   summarizePackRoster,
   validatePackDir,
@@ -22,8 +24,9 @@ let root: string;
 function makePack(
   id: string,
   opts: { missing?: string[]; version?: string; metadata?: Record<string, string> } = {},
+  baseRoot = root,
 ): string {
-  const dir = path.join(root, "codec", "packs", id);
+  const dir = path.join(baseRoot, "codec", "packs", id);
   mkdirSync(dir, { recursive: true });
   const expressions: Record<string, string> = {};
   for (const expr of REQUIRED_EXPRESSIONS) {
@@ -77,6 +80,35 @@ describe("validatePackDir / listPacks", () => {
     expect(listPacks(root)).toEqual([]);
   });
 
+  test("merges bundled defaults with host packs and lets valid host packs override by id", () => {
+    const bundledRoot = path.join(root, "bundled-root");
+    const runtimeRoot = path.join(root, "runtime-root");
+    makePack("f01-a", { version: "1", metadata: { character: "bundled" } }, bundledRoot);
+    makePack("f01-a", { version: "2", metadata: { character: "host" } }, runtimeRoot);
+    makePack("m02-b", { version: "1", metadata: { character: "host-only" } }, runtimeRoot);
+
+    const packs = listPacks(runtimeRoot, path.join(bundledRoot, "codec", "packs"));
+    expect(packs.map((pack) => [pack.pack_id, pack.pack_version, pack.character])).toEqual([
+      ["f01-a", "2", "host"],
+      ["m02-b", "1", "host-only"],
+    ]);
+  });
+
+  test("falls back to a valid bundled pack when a host override is incomplete", () => {
+    const bundledRoot = path.join(root, "bundled-root");
+    const runtimeRoot = path.join(root, "runtime-root");
+    makePack("f01-a", { version: "1" }, bundledRoot);
+    makePack("f01-a", { version: "2", missing: ["alert"] }, runtimeRoot);
+    const bundledDir = path.join(bundledRoot, "codec", "packs");
+
+    expect(listPacks(runtimeRoot, bundledDir)).toMatchObject([
+      { pack_id: "f01-a", pack_version: "1" },
+    ]);
+    const asset = resolvePackAsset("f01-a", "alert", runtimeRoot, bundledDir);
+    expect(asset?.packVersion).toBe("1");
+    expect(asset?.filePath.startsWith(bundledDir)).toBe(true);
+  });
+
   test("exposes optional art-direction metadata for roster previews", () => {
     makePack("aurora", {
       metadata: {
@@ -94,6 +126,16 @@ describe("validatePackDir / listPacks", () => {
       generated_with: "gpt-image-1-mini",
       quality: "low",
     });
+  });
+});
+
+describe("tracked default roster", () => {
+  test("ships 52 complete packs with all 21 roster expressions", () => {
+    const packs = listPacks(root, defaultPacksDir());
+    expect(packs).toHaveLength(52);
+    for (const pack of packs) {
+      expect(Object.keys(pack.expressions).sort()).toEqual([...ROSTER_EXPRESSIONS].sort());
+    }
   });
 });
 

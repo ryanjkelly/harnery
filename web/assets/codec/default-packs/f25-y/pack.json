@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "f25-y",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "A Pacific Islander woman in her early 40s with deep bronze skin, broad dark-brown eyes, thick raven hair gathered into a loose low ponytail with soft face-framing waves, a turquoise earbud communications microphone, and a plain cobalt work jacket over a coral knit collar.",
+  "palette": "cobalt, coral, turquoise, raven black, deep bronze",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}

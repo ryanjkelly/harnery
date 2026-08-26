@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pack_id": "f23-w",
+  "pack_version": "2",
+  "style": "gentle-rounded-anime-v1",
+  "character": "An East Asian woman in her early 60s with pale skin, broad warm-brown eyes, straight silver hair in a crisp chin-length bob, slim cyan glasses, a jade ear-clip communications microphone, and a plain plum jacket over an ice-blue mock-neck top.",
+  "palette": "plum, ice blue, jade, silver, warm brown",
+  "generated_with": "gpt-image-2",
+  "quality": "high",
+  "expressions": {
+    "neutral": "neutral.webp",
+    "focused": "focused.webp",
+    "curious": "curious.webp",
+    "deliberating": "deliberating.webp",
+    "investigating": "investigating.webp",
+    "building": "building.webp",
+    "coordinating": "coordinating.webp",
+    "waiting": "waiting.webp",
+    "recovering": "recovering.webp",
+    "celebrating": "celebrating.webp",
+    "alert": "alert.webp",
+    "observing": "observing.webp",
+    "wrapping-up": "wrapping-up.webp",
+    "compacting": "compacting.webp",
+    "conducting": "conducting.webp",
+    "weighing": "weighing.webp",
+    "planning": "planning.webp",
+    "verifying": "verifying.webp",
+    "strained": "strained.webp",
+    "blocked": "blocked.webp",
+    "dormant": "dormant.webp"
+  }
+}
