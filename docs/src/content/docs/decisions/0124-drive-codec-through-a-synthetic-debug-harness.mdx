@@ -1,0 +1,32 @@
+---
+title: "0124: Drive Codec through a synthetic debug harness"
+description: "ADR: test Codec card, layout, and animation states through the production view without writing coordination data."
+---
+
+**Status:** accepted (2026-08-26) · **Scope:** Codec dashboard testing and visual debugging
+
+## Context
+
+Codec has many states that are difficult to reproduce on demand. Card count depends on live sessions. Ping animations require a new message cue. Presence, lifecycle, attention, context pressure, remote agents, and degraded telemetry each depend on different event evidence. Testing those combinations against live coordination data is slow and can disturb active sessions.
+
+The replay page demonstrates three fixed scenes. It is useful for presentation review, but it cannot isolate one card, stress a specific card count, or repeatedly emit a fresh ping cue.
+
+## Alternatives considered
+
+**Build a separate card mockup.** Rejected because copied markup and styles would drift from `CodecView`. A passing mockup would not prove that `/codec` renders the same state correctly.
+
+**Add test controls to the live page.** Rejected because a debug control could be mistaken for a coordination write, and the controls would compete with the operational view.
+
+**Write synthetic events into `.harnery/`.** Rejected because visual testing must not alter the event ledger, active-agent projection, or peer state.
+
+## Decision
+
+Add `/codec/debug` as a separate, synthetic route. `CodecDebugLab` owns the controls and builds sanitized `CodecScene` values with `buildCodecDebugScene`. It passes those scenes to the production `CodecView` through `mode="debug"`.
+
+Debug mode disables the live stream and accepts updated `initialScene` props. The first scene has snapshot semantics. Later scenes use the normal ingestion path, so a newly minted message cue runs the same ping animation and arrival glow as `/codec`.
+
+The route offers card-count presets up to the 52-character roster, point-to-point ping controls, automatic pings, per-card activity and lifecycle fields, presence, expression, attention, telemetry, context pressure, ambience, relationships, remote agents, deterministic randomization, and reset. It never imports a coordination writer.
+
+## Result
+
+The debug route exercises the real desktop grid and mobile deck without changing coordination state. Fixture tests cover controlled card fields, context-band thresholds, relationship status, and valid ping endpoints. Browser QA covers the controls, card-count changes, state changes, ping cues, and responsive layout.

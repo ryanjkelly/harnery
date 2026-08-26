@@ -1,0 +1,264 @@
+.debugHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem clamp(0.9rem, 2vw, 1.75rem) 0.85rem;
+}
+
+.debugHeader h1 {
+  margin-top: 0.15rem;
+  font-size: clamp(1.55rem, 3vw, 2.25rem);
+  font-weight: 760;
+  letter-spacing: -0.04em;
+}
+
+.debugHeader p:last-child {
+  max-width: 46rem;
+  margin-top: 0.25rem;
+  color: rgb(161 161 170);
+  font-size: 0.82rem;
+}
+
+.debugHeader > a {
+  flex: 0 0 auto;
+  border: 1px solid rgb(34 211 238 / 0.34);
+  border-radius: 999px;
+  padding: 0.48rem 0.72rem;
+  color: rgb(165 243 252);
+  background: rgb(8 145 178 / 0.1);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.eyebrow {
+  color: rgb(103 232 249);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.console {
+  margin: 0 clamp(0.75rem, 1.2vw, 1.5rem);
+  border: 1px solid rgb(34 211 238 / 0.2);
+  border-radius: 1rem;
+  background: rgb(14 18 27 / 0.92);
+  box-shadow: 0 22px 70px rgb(0 0 0 / 0.28);
+}
+
+.console > summary {
+  display: flex;
+  min-height: 2.8rem;
+  cursor: pointer;
+  list-style: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.72rem 0.9rem;
+  color: rgb(228 228 231);
+  font-weight: 700;
+}
+
+.console > summary::-webkit-details-marker {
+  display: none;
+}
+
+.console > summary::before {
+  content: "▸";
+  color: rgb(103 232 249);
+  transition: transform 150ms ease;
+}
+
+.console[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.console > summary > :first-child {
+  margin-right: auto;
+}
+
+.summaryState {
+  color: rgb(161 161 170);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.64rem;
+  font-weight: 550;
+}
+
+.controlGrid {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.85fr) minmax(12rem, 0.85fr) minmax(24rem, 1.7fr) minmax(
+      11rem,
+      0.7fr
+    );
+  gap: 0.7rem;
+  padding: 0 0.75rem 0.75rem;
+}
+
+.controlGroup {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.55rem;
+  border: 1px solid rgb(255 255 255 / 0.08);
+  border-radius: 0.72rem;
+  padding: 0.75rem;
+  background: rgb(255 255 255 / 0.025);
+}
+
+.controlGroup:disabled {
+  opacity: 0.5;
+}
+
+.controlGroup legend {
+  padding: 0 0.3rem;
+  color: rgb(103 232 249);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.controlGroup label {
+  display: grid;
+  min-width: 0;
+  gap: 0.28rem;
+  color: rgb(161 161 170);
+  font-size: 0.66rem;
+  font-weight: 650;
+}
+
+.controlGroup select,
+.controlGroup button {
+  min-height: 2.05rem;
+  border: 1px solid rgb(255 255 255 / 0.13);
+  border-radius: 0.48rem;
+  padding: 0.38rem 0.52rem;
+  color: rgb(228 228 231);
+  background: rgb(9 11 18 / 0.92);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.65rem;
+}
+
+.controlGroup button {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.controlGroup button:hover,
+.controlGroup button:focus-visible,
+.controlGroup select:focus-visible {
+  border-color: rgb(34 211 238 / 0.65);
+  outline: 2px solid rgb(34 211 238 / 0.16);
+}
+
+.controlGroup button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.controlGroup .primaryButton {
+  border-color: rgb(34 211 238 / 0.55);
+  color: rgb(207 250 254);
+  background: rgb(8 145 178 / 0.22);
+}
+
+.controlGroup .rangeLabel {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.rangeLabel output {
+  color: rgb(207 250 254);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.rangeLabel input[type="range"] {
+  width: 100%;
+  grid-column: 1 / -1;
+  accent-color: rgb(34 211 238);
+}
+
+.presetRow {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.25rem;
+}
+
+.presetRow button {
+  min-width: 0;
+  min-height: 1.8rem;
+  padding-inline: 0.25rem;
+}
+
+.presetRow button[aria-pressed="true"] {
+  border-color: rgb(34 211 238 / 0.68);
+  color: rgb(207 250 254);
+  background: rgb(8 145 178 / 0.25);
+}
+
+.controlGroup .checkLabel {
+  display: flex;
+  min-height: 1.6rem;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.checkLabel input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: rgb(34 211 238);
+}
+
+.stateGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.controlHint {
+  color: rgb(161 161 170);
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+
+@media (max-width: 1200px) {
+  .controlGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .debugHeader {
+    align-items: flex-start;
+    padding-top: 0.9rem;
+  }
+
+  .debugHeader > a {
+    padding: 0.42rem 0.55rem;
+    font-size: 0.58rem;
+  }
+
+  .controlGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .stateGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .summaryState {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .console > summary::before {
+    transition: none;
+  }
+}

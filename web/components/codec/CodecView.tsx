@@ -96,7 +96,7 @@ const BALANCED_ROW_GRID_GAP_REM = 1;
 
 interface CodecViewProps {
   initialScene: CodecScene;
-  mode?: "live" | "replay";
+  mode?: "live" | "replay" | "debug";
   replayPhases?: CodecReplayPhase[];
 }
 
@@ -117,6 +117,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   const [balancedRows, setBalancedRows] = useState(false);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const replayHydrated = useRef(false);
+  const debugHydrated = useRef(false);
   // The server-rendered scene counts as a snapshot: its cues never animate.
   const seenCues = useRef<Set<string>>(new Set(initialScene.transients.map((t) => t.cue_id)));
   const glowTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -328,6 +329,12 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   }, [activeReplayPhase, ingestScene, mode]);
 
   useEffect(() => {
+    if (mode !== "debug") return;
+    ingestScene(initialScene, debugHydrated.current);
+    debugHydrated.current = true;
+  }, [initialScene, ingestScene, mode]);
+
+  useEffect(() => {
     if (mode !== "replay") return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       setReplayPlaying(false);
@@ -400,7 +407,15 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
       data-team-panel={teamPanelOpen ? "open" : "closed"}
       data-fullscreen={fullscreen ? "true" : "false"}
       data-codec-layout={mobileLayout ? "mobile" : "desktop"}
-      data-codec-feed-state={mode === "replay" ? "replay" : feedHealth.stale ? "stale" : "current"}
+      data-codec-feed-state={
+        mode === "replay"
+          ? "replay"
+          : mode === "debug"
+            ? "debug"
+            : feedHealth.stale
+              ? "stale"
+              : "current"
+      }
       className={cn(styles.codecArena, AMBIENCE_CLASS[scene.team_ambience.value])}
     >
       <p aria-live="polite" className="sr-only">
@@ -459,14 +474,20 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
         <div data-codec-top-bar className={styles.sceneStatusBar}>
           <header data-codec-top-bar-identity className={styles.headerTitleRow}>
             <span
-              className={mode === "replay" ? styles.headerBeaconReplay : styles.headerBeacon}
+              className={mode === "live" ? styles.headerBeacon : styles.headerBeaconReplay}
               aria-hidden
             />
             <p className={styles.headerKicker}>
-              {mode === "replay" ? "Non-live visual study" : "Live agent director"}
+              {mode === "replay"
+                ? "Non-live visual study"
+                : mode === "debug"
+                  ? "Synthetic debug harness"
+                  : "Live agent director"}
             </p>
-            <h1 className={styles.codecTitle}>{mode === "replay" ? "Codec replay" : "Codec"}</h1>
-            {mode === "replay" ? (
+            <h1 className={styles.codecTitle}>
+              {mode === "replay" ? "Codec replay" : mode === "debug" ? "Codec debug" : "Codec"}
+            </h1>
+            {mode !== "live" ? (
               <Link className={styles.rosterLink} href="/codec" prefetch={false}>
                 Live Codec
               </Link>
@@ -477,6 +498,9 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
                 </Link>
                 <Link className={styles.rosterLink} href="/codec/replay" prefetch={false}>
                   Replay lab
+                </Link>
+                <Link className={styles.rosterLink} href="/codec/debug" prefetch={false}>
+                  Debug console
                 </Link>
                 <Link className={styles.rosterLink} href="/codec/evaluate" prefetch={false}>
                   Comprehension test
@@ -689,6 +713,7 @@ function MobileCodecPanel({
       aria-label={`Agent ${panel.identity.display_name}, card ${position} of ${total}`}
       data-instance={panel.instance_id}
       data-codec-mobile-card
+      data-ping-arrival={glowing ? "active" : "idle"}
       data-activity={panel.activity.value}
       data-attention={panel.attention.value}
       className={cn(
@@ -1135,6 +1160,7 @@ function CodecPanel({
       aria-label={`Agent ${panel.identity.display_name}`}
       data-instance={panel.instance_id}
       data-codec-card
+      data-ping-arrival={glowing ? "active" : "idle"}
       data-balanced-row-start={balancedRowStart ? "true" : undefined}
       data-activity={panel.activity.value}
       data-attention={panel.attention.value}
@@ -2009,7 +2035,6 @@ function ContextGauge({ panel }: { panel: CodecPanelScene }) {
         style={gaugeStyle}
         aria-label={label}
         role="img"
-        tabIndex={0}
       >
         <span className={styles.contextGaugeDial} aria-hidden>
           <span className={styles.contextGaugeValue}>{remainingLabel}</span>
