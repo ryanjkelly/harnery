@@ -64,7 +64,7 @@ import {
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
 import { captureSpanClockV3 } from "../events/v3/span-state.ts";
-import { fetchPresence } from "../presence/index.ts";
+import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
 import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
 import {
@@ -967,10 +967,13 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-systemMessage" });
     }
-    // Pull advisory cross-machine presence. V3 never publishes from the
-    // disposable heartbeat cache.
+    // Cross-machine presence is derived from the authority-safe V3 projection,
+    // not the disposable heartbeat cache. Announce this session, pull peers,
+    // and keep the optional live relay connected.
     try {
+      publishPresence(coordRoot);
       fetchPresence(coordRoot);
+      ensureRelayDaemon(coordRoot);
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-presence" });
     }
@@ -989,6 +992,13 @@ async function main(): Promise<number> {
     if (adapter === "claude-code") {
       journalArchive(coordRoot, owner.instance_id);
       runSessionSyncExtension(coordRoot, true);
+    }
+    // Publish the post-cleanup V3 projection so remote machines see this
+    // session disappear without waiting for the stale window.
+    try {
+      publishPresence(coordRoot);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "session-end-presence" });
     }
   }
 
@@ -1106,6 +1116,16 @@ async function main(): Promise<number> {
     // Claude Code session telemetry sync remains an independent side effect.
     if (adapter === "claude-code") {
       runSessionSyncExtension(coordRoot, false);
+    }
+
+    // Publish after the canonical turn event has landed so the blob carries
+    // current task, activity, and claim state. Re-ensure the relay here because
+    // its daemon intentionally exits when a machine has no live sessions.
+    try {
+      publishPresence(coordRoot);
+      ensureRelayDaemon(coordRoot);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "stop-presence" });
     }
 
     // Stop verdict (V3 ritual + task/status gate). Direct in-process call: the

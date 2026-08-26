@@ -23,6 +23,7 @@ import { loadOrCreateFingerprintKeyStoreV3 } from "../events/v3/fingerprint-keys
 import { EVENT_V3_SCHEMA_DIGEST } from "../events/v3/generated.ts";
 import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
+import { relayDaemonStatus } from "../presence/index.ts";
 import { clearRemediationCount, DEFAULT_STOP_REMEDIATION_CAP } from "./remediation-cap.ts";
 
 const HARNERY_DIR = resolve(import.meta.dir, "../../..");
@@ -37,6 +38,62 @@ afterEach(() => {
 });
 
 describe("agent-hook V3 hard cut", () => {
+  test("session start publishes V3 presence and starts the configured relay daemon", async () => {
+    const root = candidateRoot();
+    const origin = join(root, "presence-origin.git");
+    expect(spawnSync("git", ["init", "--bare", "-q", origin]).status).toBe(0);
+    expect(spawnSync("git", ["-C", root, "remote", "add", "origin", origin]).status).toBe(0);
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({ presence: { relay: "ws://127.0.0.1:1" } }),
+      "utf8",
+    );
+
+    const machine = `hook-relay-${randomUUID().slice(0, 8)}`;
+    const result = run(
+      AGENT_HOOK,
+      ["session-start", "--adapter", "claude-code"],
+      { session_id: "presence-relay-owner", cwd: root, source: "startup" },
+      root,
+      { HARNERY_MACHINE: machine },
+    );
+    expect(result.status).toBe(0);
+
+    let daemonPid: number | undefined;
+    try {
+      await waitFor(() => {
+        const daemon = relayDaemonStatus(root);
+        daemonPid = daemon.pid;
+        const ref = spawnSync(
+          "git",
+          ["--git-dir", origin, "rev-parse", "--verify", `refs/harnery/presence/${machine}`],
+          { encoding: "utf8" },
+        );
+        return daemon.running && ref.status === 0;
+      });
+
+      expect(relayDaemonStatus(root).running).toBeTrue();
+      const message = spawnSync(
+        "git",
+        ["--git-dir", origin, "show", "-s", "--format=%B", `refs/harnery/presence/${machine}`],
+        { encoding: "utf8" },
+      ).stdout;
+      expect(JSON.parse(message)).toMatchObject({
+        v: 1,
+        machine,
+        agents: [{ task_state: "active" }],
+      });
+    } finally {
+      if (daemonPid) {
+        try {
+          process.kill(daemonPid, "SIGTERM");
+        } catch {
+          // The daemon may have already exited after a failed connection.
+        }
+      }
+    }
+  });
+
   test("routes a fresh host prompt reminder only through the supported non-native adapter", () => {
     const reminder = "HOST_REMINDER_SENTINEL: keep the reader-facing voice.";
     const cases = [
@@ -1077,4 +1134,13 @@ function run(
     env: { ...env, HARNERY_COORD_ROOT_OVERRIDE: root, ...extraEnv },
   });
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await Bun.sleep(50);
+  }
+  throw new Error(`condition not met within ${timeoutMs}ms`);
 }
