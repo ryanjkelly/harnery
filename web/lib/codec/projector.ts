@@ -762,7 +762,10 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const panel: CodecPanelScene = {
       instance_id: hb.instance_id,
       identity: {
-        display_name: ev?.identityName ?? hb.name,
+        display_name:
+          ev?.identityName?.trim() ||
+          hb.name?.trim() ||
+          nativeInstanceIdV3(hb.instance_id).slice(0, 8),
         ...(task ? { task } : {}),
       },
       presence: panelPresence,

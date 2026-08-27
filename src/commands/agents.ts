@@ -56,6 +56,7 @@ import {
   SESSION_NAME_DISPLAY_NOTE,
   sessionNameDisplayPending,
 } from "../core/agents/session-name-display.ts";
+import { agentDisplayName } from "../core/agents/state/activity-log.ts";
 import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
@@ -2337,7 +2338,7 @@ function runStatus(opts: {
   }
 
   const timeStr = formatLocalTime(new Date());
-  const displayName = `agent-${hb.name || "unknown"}`;
+  const displayName = agentDisplayName(hb.instance_id, hb.name);
 
   // Council pending: list of council IDs where this agent is a member of an
   // active council in `open` round_status without a contribution to that round.

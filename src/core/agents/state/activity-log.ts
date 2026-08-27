@@ -20,6 +20,11 @@ import { readLiveCoordinationRow } from "./live-coordination-view.ts";
 export function resolveShortName(coordRoot: string, instanceId: string | null): string {
   if (!instanceId) return "agent-unknown";
   const row = readLiveCoordinationRow(coordRoot, instanceId);
-  if (row?.name) return `agent-${row.name}`;
-  return `agent-${instanceId.slice(0, 8)}`;
+  return agentDisplayName(instanceId, row?.name);
+}
+
+/** Build a collision-resistant agent label even when identity onboarding has
+ * not produced a usable display name yet. */
+export function agentDisplayName(instanceId: string, name?: string | null): string {
+  return `agent-${name?.trim() || instanceId.slice(0, 8) || "unknown"}`;
 }

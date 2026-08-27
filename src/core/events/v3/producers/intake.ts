@@ -73,6 +73,10 @@ const DIAGNOSTIC_METADATA_KEYS = new Set([
   "sequence",
   "expected",
   "actual",
+  "thread_id_present",
+  "wslenv_present",
+  "wslenv_names",
+  "identity_recovery_source",
 ]);
 
 export interface HookIntakeRecordV3 {

@@ -91,6 +91,22 @@ describe("projectScene", () => {
     expect(scene.transients).toEqual([]);
   });
 
+  test("unnamed heartbeat panels use distinct short instance ids", () => {
+    const scene = projectScene({
+      snapshot: snapshot([
+        hb({ instance_id: "11111111-aaaa-bbbb-cccc-000000000000", name: "" }),
+        hb({ instance_id: "22222222-aaaa-bbbb-cccc-000000000000", name: "   " }),
+      ]),
+      events: [],
+      now: NOW,
+    });
+
+    expect(scene.panels.map((panel) => panel.identity.display_name)).toEqual([
+      "11111111",
+      "22222222",
+    ]);
+  });
+
   test("projects exact runtime identity and only explicit model-encoded tuning", () => {
     const cursor = projectScene({
       snapshot: snapshot([hb({ platform: "cursor" })]),

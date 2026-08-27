@@ -52,6 +52,14 @@ trust system.
 
 - A missing or incomplete thread-id bridge now appears at SessionStart and in
   `doctor`, before Git finalization depends on it.
+- `doctor` also reports Codex mid-flight onboarding recorded during the last 48
+  hours. A bridge that works now no longer hides a recent intermittent drop.
+- The first task declaration repairs a missing pool name before it builds the
+  session title. Unnamed status and Codec rows use the short native instance id
+  until that repair runs, so concurrent rows stay distinct.
+- Mid-flight diagnostics record whether the thread id and `WSLENV` were present,
+  the forwarded variable names, and the native payload field used for recovery.
+  They never record environment values or the native identifier.
 - The check cannot repair or bypass an untrusted hook. If Codex refuses to run
   SessionStart, its own trust prompt remains authoritative.
 - The code stays portable. It keys off standard Codex and WSL environment

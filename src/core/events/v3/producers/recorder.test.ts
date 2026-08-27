@@ -40,6 +40,7 @@ import { projectLatencyV3 } from "../latency.ts";
 import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths } from "../writer.ts";
 import {
+  codexMidFlightDiagnosticContext,
   drainHookIntakeSpoolV3,
   readHookProducerStateV3,
   reconcilePendingRuntimeContextV3,
@@ -54,6 +55,21 @@ afterEach(() => {
 });
 
 describe("event ledger V3 persistent hook recorder", () => {
+  test("describes Codex mid-flight recovery without recording environment values", () => {
+    expect(
+      codexMidFlightDiagnosticContext(parsed({ session_id: "private-thread-id" }), {
+        WSLENV: "SECRET_TOKEN/u:CODEX_THREAD_ID:PATH/p:SECRET_TOKEN",
+        CODEX_THREAD_ID: "private-thread-id",
+        SECRET_TOKEN: "must-not-appear",
+      }),
+    ).toEqual({
+      thread_id_present: true,
+      wslenv_present: true,
+      wslenv_names: "CODEX_THREAD_ID:PATH:SECRET_TOKEN",
+      identity_recovery_source: "native_session_id",
+    });
+  });
+
   test("is inert without an exact candidate or active gate", () => {
     const result = recordHookSignalV3({
       ...baseInput(temporaryRoot(), "session-start", parsed({ session_id: "native" })),

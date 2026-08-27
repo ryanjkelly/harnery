@@ -1,10 +1,23 @@
-import { beforeAll, describe, expect, test } from "bun:test";
-import { codexAuthorizationCheck, runChecks } from "../../src/commands/doctor.ts";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  codexAuthorizationCheck,
+  codexWslBridgeCheck,
+  countRecentCodexMidFlightOnboardings,
+  runChecks,
+} from "../../src/commands/doctor.ts";
 
 let checks: Awaited<ReturnType<typeof runChecks>>;
+const sandboxes: string[] = [];
 
 beforeAll(async () => {
   checks = await runChecks();
+});
+
+afterEach(() => {
+  for (const root of sandboxes.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("harn doctor", () => {
@@ -53,5 +66,44 @@ describe("harn doctor", () => {
     });
     expect(review.severity).toBe("warn");
     expect(review.hint).toContain("Settings > Hooks");
+  });
+
+  test("reports recent Codex mid-flight onboarding after the live bridge heals", () => {
+    const root = mkdtempSync(join(tmpdir(), "harn-doctor-mid-flight-"));
+    sandboxes.push(root);
+    const directory = join(root, ".harnery", "ledgers", "v3", "diagnostics");
+    mkdirSync(directory, { recursive: true });
+    const now = Date.parse("2026-08-27T18:00:00.000Z");
+    const write = (name: string, recordedAt: string, adapter = "codex") =>
+      writeFileSync(
+        join(directory, name),
+        JSON.stringify({
+          recorded_at: recordedAt,
+          category: "mid_flight_onboarding",
+          adapter,
+        }),
+      );
+    write("mid_flight_onboarding-recent.json", "2026-08-27T17:00:00.000Z");
+    write("mid_flight_onboarding-old.json", "2026-08-24T17:00:00.000Z");
+    write("mid_flight_onboarding-cursor.json", "2026-08-27T17:00:00.000Z", "cursor");
+    writeFileSync(join(directory, "mid_flight_onboarding-malformed.json"), "{");
+
+    const count = countRecentCodexMidFlightOnboardings(root, now);
+    expect(count).toBe(1);
+    expect(
+      codexWslBridgeCheck(
+        {
+          ok: true,
+          detail: "thread identity forwarded through WSLENV (Ubuntu)",
+          threadIdPresent: true,
+          wslenvForwardsThreadId: true,
+        },
+        count,
+      ),
+    ).toMatchObject({
+      severity: "warn",
+      detail:
+        "thread identity forwarded through WSLENV (Ubuntu); 1 Codex mid-flight onboarding recorded in the last 48h",
+    });
   });
 });

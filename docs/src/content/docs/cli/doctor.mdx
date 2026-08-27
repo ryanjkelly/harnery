@@ -37,7 +37,7 @@ Exits `0` unless a required dep is missing.
 | `git hooks` | optional | Reports whether the project has Harnery's managed git-hook regions ([ADR 0068](/decisions/0068-managed-git-hook-lifecycle/)) and whether they are current. A project that never ran `init` gets a warn naming what is missing (commit guard, claim pruning) with the `init` remedy; never an error, and `init --check` stays green for it |
 | `adapter hooks`| optional | Compares wired `agent-hook` entries against the current adapter spec. Also flags an adapter whose CLI is installed but which has no Harnery hooks at all, reports invalid JSON, and, for Codex, strict-schema fields or event names that make Codex reject the whole file (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
 | `codex:hook authorization` | optional | Uses Codex app-server's read-only `hooks/list` method to distinguish trusted and enabled Harnery commands from new, modified, disabled, or unverifiable hooks. It never grants trust |
-| `codex:WSL bridge` | optional | In a Windows-native Codex task running inside WSL, verifies that `CODEX_THREAD_ID` arrived and that `WSLENV` will forward it to later WSL processes |
+| `codex:WSL bridge` | optional | In a Windows-native Codex task running inside WSL, verifies that `CODEX_THREAD_ID` arrived and that `WSLENV` will forward it to later WSL processes. It also warns when Codex mid-flight onboarding was recorded during the last 48 hours, even if the current bridge is healthy |
 | `workflow:claude-code` / `workflow:codex` / `workflow:cursor` | optional | Spawn targets for [`harn run`](/cli/run/): is the adapter CLI installed, and how will headless children bill (subscription login vs API key)? A missing CLI warns with the vendor's official install one-liner + login command; installed-but-unauthenticated warns with the login hint |
 | `restic`       | optional | Required for `harn backup` |
 | `rclone`       | optional | Required for `harn sync` |
@@ -142,6 +142,11 @@ The same check runs during Codex SessionStart when the adapter reports a
 Windows-to-WSL bridge from Codex running natively inside WSL. Healthy sessions
 print nothing. If the bridge is incomplete, the agent sees a warning before it
 starts work and can run `harn doctor` for the specific failure.
+
+The live check is only one part of the result. `doctor` also reads recent,
+privacy-safe `mid_flight_onboarding` diagnostics. This catches intermittent
+identity drops that have already cleared. The diagnostics record forwarded
+environment variable names, never their values.
 
 Harnery does not add Git safe-directory entries or approve Codex hooks. Those
 are machine-level trust decisions. The diagnostic reports bridge drift but

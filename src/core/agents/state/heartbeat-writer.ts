@@ -108,6 +108,25 @@ export function setIdentityCache(
   return heartbeat;
 }
 
+/** Restore the pool-assigned display name on a generation that was
+ * materialized before the adapter's normal SessionStart naming path ran.
+ * The durable assignment lives in `.name-history`; this only repairs the
+ * disposable generation cache and deliberately leaves durable persona state
+ * (`agent_id`) untouched. */
+export function setAssignedNameCache(
+  coordRoot: string,
+  instanceId: string,
+  name: string,
+  kind: "session" | "subagent" | "transient" = "session",
+): Heartbeat | null {
+  const heartbeat = readHeartbeat(coordRoot, instanceId);
+  if (!heartbeat) return null;
+  heartbeat.name = name;
+  heartbeat.kind = heartbeat.kind ?? kind;
+  atomicWrite(heartbeatPath(coordRoot, instanceId), JSON.stringify(heartbeat, null, 2));
+  return heartbeat;
+}
+
 /**
  * Build the copy-pasteable session name from the coord identity + the agent's
  * description parts. Pure (no coord-state reads) so it's unit-testable; collapses

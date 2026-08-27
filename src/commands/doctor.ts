@@ -12,7 +12,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
@@ -107,8 +107,10 @@ export function registerDoctorCommand(program: Command, emit: EmitContext): void
 }
 
 export async function runChecks(): Promise<Check[]> {
+  const root = findCoordProjectRoot();
   const codexWslStatus = inspectCodexWslBridge();
-  const codexWslBridge = checkCodexWslBridge(codexWslStatus);
+  const recentCodexMidFlightCount = root ? countRecentCodexMidFlightOnboardings(root) : 0;
+  const codexWslBridge = codexWslBridgeCheck(codexWslStatus, recentCodexMidFlightCount);
   // Probe the adapter CLIs before the hook check runs, not in output order:
   // an unwired adapter only matters if its CLI is actually installed, and
   // probing once here keeps that join to one spawn per CLI.
@@ -163,16 +165,61 @@ function checkGitHookRegions(): Check {
   }
 }
 
-function checkCodexWslBridge(status: CodexWslBridgeStatus | null): Check | null {
-  if (!status) return null;
+export function codexWslBridgeCheck(
+  status: CodexWslBridgeStatus | null,
+  recentMidFlightCount = 0,
+): Check | null {
+  if (!status && recentMidFlightCount === 0) return null;
+  const historical =
+    recentMidFlightCount === 0
+      ? null
+      : `${recentMidFlightCount} Codex mid-flight onboarding${recentMidFlightCount === 1 ? "" : "s"} recorded in the last 48h`;
   return {
     name: "codex:WSL bridge",
-    severity: status.ok ? "ok" : "warn",
-    detail: status.detail,
-    hint: status.ok
-      ? undefined
-      : "forward CODEX_THREAD_ID through WSLENV in the Codex shell environment policy, then start a fresh task",
+    severity: status?.ok && !historical ? "ok" : "warn",
+    detail: [status?.detail, historical].filter(Boolean).join("; "),
+    hint:
+      status?.ok && !historical
+        ? undefined
+        : "forward CODEX_THREAD_ID through WSLENV in the Codex shell environment policy, then start a fresh task",
   };
+}
+
+const CODEX_MID_FLIGHT_HISTORY_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/** Count bounded, privacy-safe recovery diagnostics so a healthy environment
+ * now does not hide an intermittent Codex-to-WSL identity drop. */
+export function countRecentCodexMidFlightOnboardings(
+  coordRoot: string,
+  nowMs = Date.now(),
+  windowMs = CODEX_MID_FLIGHT_HISTORY_WINDOW_MS,
+): number {
+  const directory = path.join(coordRoot, ".harnery", "ledgers", "v3", "diagnostics");
+  if (!existsSync(directory)) return 0;
+  let count = 0;
+  for (const name of readdirSync(directory)) {
+    if (!name.startsWith("mid_flight_onboarding-") || !name.endsWith(".json")) continue;
+    try {
+      const row = JSON.parse(readFileSync(path.join(directory, name), "utf8")) as {
+        recorded_at?: unknown;
+        category?: unknown;
+        adapter?: unknown;
+      };
+      const recordedAt = typeof row.recorded_at === "string" ? Date.parse(row.recorded_at) : NaN;
+      if (
+        row.category === "mid_flight_onboarding" &&
+        row.adapter === "codex" &&
+        Number.isFinite(recordedAt) &&
+        recordedAt <= nowMs &&
+        nowMs - recordedAt <= windowMs
+      ) {
+        count += 1;
+      }
+    } catch {
+      // A malformed best-effort diagnostic cannot make doctor fail.
+    }
+  }
+  return count;
 }
 
 export function codexAuthorizationCheck(result: CodexHookAuthorizationResult): Check {

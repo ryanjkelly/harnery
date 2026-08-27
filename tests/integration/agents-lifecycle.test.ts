@@ -76,6 +76,38 @@ function makeSandbox(): string {
   return root;
 }
 
+function makeMidFlightSandbox(): string {
+  const root = mkdtempSync(path.join(os.tmpdir(), "harn-lifecycle-mid-flight-"));
+  sandboxes.push(root);
+  const git = (args: string[]) => spawnSync("git", args, { cwd: root, stdio: "ignore" });
+  git(["init", "-q"]);
+  git(["config", "user.email", "test@example.com"]);
+  git(["config", "user.name", "Test"]);
+  writeFileSync(path.join(root, "seed.txt"), "seed\n");
+  git(["add", "seed.txt"]);
+  git(["commit", "-qm", "seed"]);
+  initializeEventLedgerV3({
+    coordRoot: root,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V3("config"),
+    approvalRecordId: "test-agents-lifecycle-mid-flight",
+  });
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state !== "v3") throw new Error("expected V3 route");
+  recordLiveHookSignalV3({
+    coordRoot: root,
+    route,
+    eventName: "user-prompt-submit",
+    payload: { session_id: OWNER, turn_id: "turn-1", prompt: "Start", raw: {} },
+    adapter: "codex",
+    instanceId: OWNER,
+  });
+  const hb = ensureLiveCoordinationHeartbeat(root, OWNER, OWNER, "codex", "gpt-5.6");
+  if (!hb) throw new Error("expected mid-flight heartbeat");
+  return root;
+}
+
 function harn(root: string, args: string[]): RunResult {
   const result = spawnSync("bash", [HARN, ...args], {
     cwd: root,
@@ -115,6 +147,26 @@ afterEach(() => {
 });
 
 describe("harn agents lifecycle on the V3 ledger", () => {
+  test("first set-task assigns a real name to a mid-flight-onboarded session", () => {
+    const root = makeMidFlightSandbox();
+    expect(heartbeat(root)).toMatchObject({ name: "" });
+
+    const result = harn(root, ["agents", "set-task", "Recovered focus", "--session-id", OWNER]);
+
+    expect(result.status).toBe(0);
+    expect(outputObject(result)).toMatchObject({
+      name: "Anna",
+      first_of_session: true,
+      session_name_retry: false,
+      suggested_session_name: "Agent Anna - Recovered focus",
+    });
+    expect(heartbeat(root)).toMatchObject({
+      name: "Anna",
+      task: "Recovered focus",
+      suggested_session_name: "Agent Anna - Recovered focus",
+    });
+  });
+
   test("routine set-task stays title-silent and suggest-name explicitly retries", () => {
     const pendingRoot = makeSandbox();
     const repeated = harn(pendingRoot, [
@@ -187,13 +239,7 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       }).state,
     ).toBe("recorded");
 
-    const restarted = harn(root, [
-      "agents",
-      "set-task",
-      "Follow-up review",
-      "--session-id",
-      OWNER,
-    ]);
+    const restarted = harn(root, ["agents", "set-task", "Follow-up review", "--session-id", OWNER]);
     expect(restarted.status).toBe(0);
     expect(outputObject(restarted)).toMatchObject({
       first_of_session: false,

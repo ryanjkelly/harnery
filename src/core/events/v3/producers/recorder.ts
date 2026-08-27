@@ -702,6 +702,7 @@ function processHookSignalLocked(
           instance_id: input.instance_id,
           signal: input.signal,
           session_hash: sessionHash,
+          ...(input.adapter === "codex" ? codexMidFlightDiagnosticContext(input.payload) : {}),
         });
       }
     }
@@ -2843,6 +2844,40 @@ function isCursorPromptBootstrap(input: RecordHookSignalV3Input): boolean {
     (input.payload.conversation_id !== undefined || input.payload.session_id !== undefined) &&
     input.payload.turn_id !== undefined
   );
+}
+
+/** Privacy-safe environment and recovery provenance for Codex mid-flight
+ * onboarding. WSLENV values are never recorded, only normalized variable
+ * names, and the native session identifier itself remains fingerprinted. */
+export function codexMidFlightDiagnosticContext(
+  payload: ParsedPayload,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string | boolean> {
+  const wslenv = env.WSLENV?.trim() ?? "";
+  const wslenvNames = [
+    ...new Set(
+      wslenv
+        .split(":")
+        .map((entry) => entry.split("/", 1)[0]?.trim() ?? "")
+        .filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)),
+    ),
+  ]
+    .sort()
+    .join(":")
+    .slice(0, 512);
+  const identityRecoverySource = payload.session_id
+    ? "native_session_id"
+    : payload.conversation_id
+      ? "native_conversation_id"
+      : payload.agent_id
+        ? "native_agent_id"
+        : "unavailable";
+  return {
+    thread_id_present: Boolean(env.CODEX_THREAD_ID?.trim()),
+    wslenv_present: wslenv.length > 0,
+    wslenv_names: wslenvNames,
+    identity_recovery_source: identityRecoverySource,
+  };
 }
 
 function suppressClosedSpanSignal(

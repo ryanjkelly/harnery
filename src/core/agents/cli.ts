@@ -162,7 +162,24 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
   switch (action) {
     case "set-task": {
       const task = args.join(" ");
-      const before = writer.readHeartbeat(root, owner);
+      let before = writer.readHeartbeat(root, owner);
+      const humanFacing =
+        before?.kind !== "subagent" && before?.kind !== "transient" && !before?.workflow_run_id;
+      // A mid-flight-onboarded generation can exist before SessionStart's
+      // assign-name step ran. Repair that private display metadata before the
+      // first non-empty task mints its operator-facing title. assignName is the
+      // same durable, idempotent pool path used by normal SessionStart.
+      if (task && before && humanFacing && !before.name?.trim()) {
+        const { assignName } = await import("./state/names.ts");
+        const name = assignName(root, owner, "session");
+        before = writer.setAssignedNameCache(root, owner, name, "session");
+        if (!before) {
+          process.stderr.write(
+            `agent-coord set-task: could not restore assigned name for ${owner}\n`,
+          );
+          return 1;
+        }
+      }
       let hb: ReturnType<typeof writer.setTask>;
       try {
         const { recordLiveTaskChangeV3 } = await import("./live-authority-v3.ts");
