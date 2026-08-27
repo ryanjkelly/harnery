@@ -571,12 +571,11 @@ export function registerAgentsCommand(
   cmd
     .command("heal")
     .description(
-      "Force a coord-layer recovery action on a specific agent. " +
-        "Kinds: pidmap (repair process attribution) and cache (rebuild the " +
-        "disposable V3 coordination cache from the authoritative ledger).",
+      "Repair the current session's disposable coordination cache from V3. " +
+        "Use explicit options to target another generation or repair process attribution.",
     )
-    .requiredOption("--owner <id>", "Target agent's instance_id")
-    .requiredOption("--kind <kind>", "pidmap | cache")
+    .option("--owner <id>", "Target agent's instance_id. Defaults to the current session.")
+    .option("--kind <kind>", "pidmap | cache. Defaults to cache.")
     .option(
       "--session-id <id>",
       "(--kind cache) native session id used to join the authoritative V3 generation.",
@@ -596,8 +595,8 @@ export function registerAgentsCommand(
     .option("--json", "JSON envelope output")
     .action(
       (opts: {
-        owner: string;
-        kind: string;
+        owner?: string;
+        kind?: string;
         sessionId?: string;
         adapter?: string;
         pid?: string;
@@ -4715,8 +4714,8 @@ function emitWaitResult(
 }
 
 function runHeal(opts: {
-  owner: string;
-  kind: string;
+  owner?: string;
+  kind?: string;
   sessionId?: string;
   adapter?: string;
   pid?: string;
@@ -4724,12 +4723,8 @@ function runHeal(opts: {
 }): void {
   if (opts.json) emit.config({ format: "json" });
 
-  const owner = opts.owner.trim();
-  const kind = opts.kind.trim();
-  if (!owner) {
-    emit.error({ code: "missing_owner", message: "--owner is required" });
-    process.exit(1);
-  }
+  const requestedOwner = opts.owner?.trim() ?? "";
+  const kind = opts.kind?.trim() || "cache";
   if (kind !== "pidmap" && kind !== "cache") {
     emit.error({
       code: "bad_kind",
@@ -4758,6 +4753,29 @@ function runHeal(opts: {
     });
     process.exit(1);
   }
+
+  const currentSessionRepair = kind === "cache" && requestedOwner.length === 0;
+  if (currentSessionRepair) ensureAdapterSession(root);
+
+  const owner = requestedOwner || resolveOwner() || sessionIdentityFromEnv() || "";
+  if (!owner) {
+    emit.error({
+      code: "session_identity_missing",
+      message:
+        `could not resolve the current session; run ${resolveBinName()} doctor, or pass ` +
+        "--owner <instance-id> --session-id <native-session-id> --adapter <adapter>",
+    });
+    process.exit(1);
+  }
+
+  const currentRow = readLiveCoordinationRow(root, owner);
+  const inferredAdapter = normalizeAdapter(
+    opts.adapter?.trim() || currentRow?.platform || commandSessionBootstrap()?.adapter,
+  );
+  const sessionId =
+    opts.sessionId?.trim() ||
+    (currentSessionRepair ? sessionIdentityFromEnv() : null) ||
+    nativeSessionIdentity(currentRow, owner);
 
   const action = kind === "pidmap" ? "heal-pidmap" : "repair-coordination-cache";
 
@@ -4803,8 +4821,7 @@ function runHeal(opts: {
   //   repair-coordination-cache <instance_id> [<session_id>]
   const helperArgs: string[] = [action, owner];
   if (kind === "pidmap" && opts.pid) helperArgs.push(opts.pid);
-  if (kind === "cache" && opts.sessionId) helperArgs.push(opts.sessionId);
-  if (kind === "cache" && opts.adapter) helperArgs.push(`--adapter=${opts.adapter}`);
+  if (kind === "cache") helperArgs.push(sessionId, `--adapter=${inferredAdapter}`);
 
   // Both recovery actions are handled by the bundled agent-coord binary.
   const helper = agentCoordOrExit(root);
@@ -4849,6 +4866,9 @@ function runHeal(opts: {
     ],
     meta: {
       kind,
+      automatic: currentSessionRepair,
+      authority: "event-ledger-v3",
+      adapter: kind === "cache" ? inferredAdapter : undefined,
       // The path actually spawned, not a guess at the layout: the helper is
       // resolved from harnery's own package location, which differs between a
       // submodule, an installed dependency, and a standalone checkout.
@@ -4859,7 +4879,10 @@ function runHeal(opts: {
     if (kind === "pidmap") {
       emit.text(`agent-coord ${action} ok\n`);
     } else {
-      emit.text(`agent-coord ${action} ok: cache ${after ? "present" : "absent"} after\n`);
+      emit.text(
+        `coordination repaired: V3 authority live; ${currentSessionRepair ? "current-session " : ""}` +
+          `cache ${after ? "present" : "absent"} (${inferredAdapter})\n`,
+      );
     }
   }
 

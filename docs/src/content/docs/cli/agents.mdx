@@ -47,6 +47,7 @@ harn agents wait <name>         # block until a peer releases its files (or exit
 harn agents release-claim <path> # drop a file claim from your own heartbeat (escape hatch)
 harn agents health              # one-screen coord-layer health rollup
 harn agents heal-events         # PIDMAP_HEAL telemetry (how often self-heal fixed drift)
+harn agents heal                # repair this session's disposable cache from V3
 ```
 
 One further subtree lives under `agents` for advanced use: `harn agents identity`
@@ -56,16 +57,19 @@ One further subtree lives under `agents` for advanced use: `harn agents identity
 `harn agents <sub> --help` for any of them. Councils are their own top-level
 command; see [Councils](/concepts/councils/).
 
-When an adapter session survives a WSL or coordination-state restart, recreate
-its heartbeat with the full session ID and the adapter that owns it:
+When an adapter session survives a WSL or coordination-state restart, let
+Harnery resolve the current session and rebuild its disposable cache from the
+authoritative V3 generation:
 
 ```bash
-harn agents heal --kind heartbeat --owner "$CODEX_THREAD_ID" \
-  --session-id "$CODEX_THREAD_ID" --adapter codex
+harn agents heal
 ```
 
-The adapter matters: it keeps recovered presence, telemetry, and end-of-turn
-behavior attributed to Codex instead of the manual-heal default.
+Running the command with no options is the normal agent recovery path. Operators can still
+target a known generation with `--kind cache --owner <instance-id>`, plus
+`--session-id` and `--adapter` when the live projection cannot supply them.
+Harnery validates the V3 route before it writes the cache. Never edit
+`.harnery/active/` or ledger rows by hand.
 
 ### identity assume
 

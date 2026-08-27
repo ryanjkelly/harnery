@@ -1,0 +1,65 @@
+---
+title: "ADR 0127: make current-session recovery self-resolving"
+description: Let an agent repair its V3-backed coordination cache without reconstructing its owner, session, or adapter flags.
+sidebar:
+  order: 127
+---
+
+**Date:** 2026-08-27
+**Status:** Accepted
+
+## Context
+
+An adapter session can survive a WSL restart or a coordination-runtime refresh
+while its disposable cache does not. Harnery already has enough evidence to
+recover safely: the adapter exports its native session identifier, the V3
+generation records its adapter, and the canonical ledger remains authoritative.
+
+The recovery command still required an agent to supply `--owner`,
+`--session-id`, and `--adapter`. That exposed implementation detail at exactly
+the moment the agent had lost coordination context. It also left room for a
+truncated owner id, a wrong adapter default, or instructions for the retired
+heartbeat-heal interface.
+
+## Alternatives considered
+
+- **Keep the explicit three-flag command.** Rejected as the normal path because
+  the running adapter has already supplied those values. Requiring an agent to
+  reconstruct them creates more ways for recovery to fail without making it
+  safer.
+- **Add a separate `agents repair` command.** Rejected because `agents heal`
+  already owns coordination recovery. A second command would make agents choose
+  between two names for the same operation.
+- **Restore `--kind heartbeat` as an alias.** Rejected because Harnery is
+  pre-1.0 and cuts over public contracts directly. The old name also implies
+  that the cache, rather than V3, is authoritative.
+- **Edit `.harnery/active/` or the ledger directly.** Rejected because cache
+  files are projections and ledger bytes are immutable authority. Manual edits
+  bypass the validation and attribution rules that make recovery trustworthy.
+
+## Decision
+
+`harn agents heal` with no options repairs the running session's disposable
+coordination cache. It resolves the full owner and native session identifier
+from the adapter environment or the current live generation, infers the
+adapter, performs normal mid-flight onboarding when needed, and runs the same
+`repair-coordination-cache` helper used by explicit recovery.
+
+The command remains fail-closed. It must find a valid V3 generation
+before writing a cache. Its result identifies V3 as the authority and reports
+whether the cache is present. It never creates ledger events outside the
+normal producer path and never repairs an invalid ledger epoch.
+
+Targeted recovery stays available through `--owner`, `--session-id`, and
+`--adapter`. Process attribution repair remains explicit as
+`--kind pidmap`; cache repair is the default. `ledger-v3 recover` remains a
+separate operation that requires approval and is used only for
+`ledger_integrity_failure`.
+
+## Result
+
+An agent can recover after a supported adapter restart with one
+command and verify the result with `agents whoami` or `agents trace`. Operators
+can still target another known generation when diagnosing a damaged session.
+The CLI documentation names the current cache contract and no longer instructs
+agents to use the retired heartbeat-heal syntax.
