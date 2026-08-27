@@ -35,6 +35,7 @@ import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME } from "../core/config.ts";
 import { ADAPTER_SPECS, type AdapterId } from "../core/hooks/adapter/events.ts";
 import type { SettingsFile } from "../core/hooks/adapter/wiring.ts";
+import { removeIndexerExclusions } from "../lib/indexer-exclusions.ts";
 import { removeInstructions } from "../lib/instructions/apply.ts";
 import { removeGitHooks } from "../lib/instructions/git-hooks.ts";
 import { unwireHooks } from "./init.ts";
@@ -135,6 +136,11 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
           );
         }
       }
+
+      // ── 1a′. editor indexer exclusions ─────────────────────────────────────
+      // Reverse only what init wrote: the managed .cursorindexingignore entry
+      // and the files.watcherExclude key. Consumer-authored entries stay.
+      actions.push(...removeIndexerExclusions(projectRoot, dryRun));
 
       // ── 1b. agent-facing instructions block + skills ───────────────────────
       const removed = removeInstructions(projectRoot, { adapter, dryRun });

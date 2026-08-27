@@ -46,6 +46,7 @@ import {
   makeEntry,
   type SettingsFile,
 } from "../core/hooks/adapter/wiring.ts";
+import { applyIndexerExclusions } from "../lib/indexer-exclusions.ts";
 import {
   type ApplyResult,
   applyInstructions,
@@ -241,6 +242,13 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         writeFileSync(resolve(coordDir, ".gitignore"), "*\n!.gitignore\n");
         actions.push("+ created .harnery/ (+ .harnery/.gitignore)");
       }
+
+      // ── 1a′. editor indexer exclusions ─────────────────────────────────────
+      // .harnery/.gitignore keeps git-aware tools out, but Cursor's codebase
+      // indexer and the VS Code/Cursor file watcher do not respect gitignore.
+      // A busy coord root holds enough ledger events and artifacts to become a
+      // boot-time indexing storm, so exclude it from both here.
+      actions.push(...applyIndexerExclusions(projectRoot, dryRun));
 
       // ── 1b. stamp the host bin name ────────────────────────────────────────
       // The coord binaries (agent-hook/agent-coord) and web UI run as harnery
