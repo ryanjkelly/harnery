@@ -130,7 +130,7 @@ interface HarneryConfig {
    * Managed working-artifact defaults. `default_retention_days` is the
    * create-time TTL when the caller does not pass `artifacts create --days`.
    */
-  artifacts?: { default_retention_days?: number };
+  artifacts?: { default_retention_days?: number; auto_clean?: boolean };
   /**
    * `harn backup` (restic) defaults: `repo` path/URL, `password_file`, and the
    * `keep_daily`/`keep_weekly`/`keep_monthly` prune policy. Read via `backupConfig()`.
@@ -640,6 +640,36 @@ export function artifactDefaultRetentionDays(coordRoot?: string | null): number 
     configured <= 3650
     ? configured
     : 3;
+}
+
+/**
+ * Whether the daily SessionStart sweep of expired artifact workspaces runs.
+ * Precedence: `HARNERY_ARTIFACT_AUTO_CLEAN` (0/false disables) ->
+ * `artifacts.auto_clean` -> enabled. The sweep only ever deletes
+ * `managed-expired` entries via the same guarded classifier as
+ * `artifacts clean --yes`.
+ */
+export function artifactAutoCleanEnabled(coordRoot?: string | null): boolean {
+  const env = coordEnv("ARTIFACT_AUTO_CLEAN");
+  if (env !== undefined) return !(env === "0" || env.toLowerCase() === "false");
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return true;
+  return readConfig(root).artifacts?.auto_clean !== false;
+}
+
+/**
+ * Sweep cadence in hours. Env-only (`HARNERY_ARTIFACT_AUTO_CLEAN_INTERVAL_HOURS`,
+ * mainly for tests): the cadence is an implementation detail, not policy, and
+ * retention itself is quantized in whole days, so the 24h default is not a
+ * config surface.
+ */
+export function artifactAutoCleanIntervalHours(): number {
+  const env = coordEnv("ARTIFACT_AUTO_CLEAN_INTERVAL_HOURS");
+  if (env !== undefined) {
+    const n = Number(env);
+    if (Number.isFinite(n) && n > 0 && n <= 24 * 365) return n;
+  }
+  return 24;
 }
 
 /** Resolved `harn backup` defaults (restic repo/password + prune policy). */

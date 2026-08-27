@@ -67,6 +67,29 @@ Set a project default in `.harnery/config.jsonc`:
 the requested length. The `expires_at` field returned by `list` and `show` is
 the effective deadline after accounting for the latest change.
 
+## Automatic cleanup
+
+Expired workspaces are also swept automatically: the first session start of
+each day runs the same guarded deletion as `clean --yes`, so retention holds
+without anyone remembering a maintenance command. The sweep is throttled by a
+stamp file (`.harnery/artifacts-auto-clean.json`, which also records the last
+run's deleted count and bytes), deletes only entries still classified
+`managed-expired` after the final recheck, and never touches unmanaged or
+legacy directories. A repo with no sessions accumulates nothing and pays
+nothing.
+
+Disable it per project or per process:
+
+```json
+{
+  "artifacts": {
+    "auto_clean": false
+  }
+}
+```
+
+`HARNERY_ARTIFACT_AUTO_CLEAN=0` disables it for one process.
+
 ## Cleanup classes
 
 | Classification | Meaning | `clean --yes` |

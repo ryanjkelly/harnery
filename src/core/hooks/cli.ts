@@ -44,6 +44,7 @@ import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-w
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
+import { autoCleanArtifacts } from "../artifacts/index.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
 import {
   checkpointContext,
@@ -936,6 +937,14 @@ async function main(): Promise<number> {
     // session-start additionalContext inside emitSessionStartSystemMessage.
     if (adapter === "claude-code") journalJanitor(coordRoot);
     imageJanitor(coordRoot);
+    // Effect: throttled daily sweep of expired artifact workspaces (guarded,
+    // managed-expired only; see autoCleanArtifacts). Best-effort like every
+    // janitor here: a failure logs and never blocks session start.
+    try {
+      autoCleanArtifacts(coordRoot);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "artifact-auto-clean" });
+    }
     let recovery: PreparedContextRecovery | null = null;
     if (payload?.source === "compact") {
       try {

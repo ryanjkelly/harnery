@@ -149,6 +149,7 @@ wait, freshness, and rollout contract.
 | Field                    | Type   | Default | Description |
 | ------------------------ | ------ | ------- | ----------- |
 | `default_retention_days` | number | `3`     | Retention used by `harn artifacts create` when `--days` is absent |
+| `auto_clean` | boolean | `true` | Daily session-start sweep of expired workspaces (same guarded deletion as `artifacts clean --yes`) |
 
 Resolution: `HARNERY_ARTIFACT_RETENTION_DAYS` env → this `config.jsonc` key →
 `3`. See [`harn artifacts`](/cli/artifacts/) for cleanup behavior.
@@ -265,6 +266,7 @@ vars and CLI flags override other config values per invocation:
 | --- | --- | --- | --- |
 | `coord` | `freshness_seconds` | `HARNERY_AGENT_COORD_FRESHNESS` | (none) |
 | `artifacts` | `default_retention_days` | `HARNERY_ARTIFACT_RETENTION_DAYS` | `artifacts create --days` |
+| `artifacts` | `auto_clean` | `HARNERY_ARTIFACT_AUTO_CLEAN` | — |
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
 | `sync` | `remote`, `prefix` | `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX` | `~/.config/harnery/sync.json` (written by `harn sync init`) is a lower-precedence fallback than the `sync` config section |
 | `files` | `deny_globs`, `allow_overrides` | (none) | read by the web layer, not the core reader |

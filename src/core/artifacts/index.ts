@@ -23,7 +23,11 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
-import { artifactDefaultRetentionDays } from "../config.ts";
+import {
+  artifactAutoCleanEnabled,
+  artifactAutoCleanIntervalHours,
+  artifactDefaultRetentionDays,
+} from "../config.ts";
 import { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
 
 export { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
@@ -275,6 +279,65 @@ export function cleanArtifacts(
       };
     }
   });
+}
+
+/** Sibling of the artifacts root so the stamp never appears in the inventory scan. */
+const AUTO_CLEAN_STAMP = ".harnery/artifacts-auto-clean.json";
+
+export interface ArtifactAutoCleanResult {
+  ran: boolean;
+  reason: "swept" | "disabled" | "fresh" | "no-root";
+  deleted: number;
+  bytes: number;
+}
+
+/**
+ * Throttled expired-artifact sweep, fired as a SessionStart effect.
+ *
+ * Retention was previously enforced only when someone remembered to run
+ * `artifacts clean --yes`, so expired workspaces accumulated indefinitely on
+ * busy hosts. This runs the exact same guarded deletion (only
+ * `managed-expired` entries, each re-classified immediately before removal;
+ * unmanaged and legacy directories are never touched) at most once per
+ * interval (default 24h), claim-first via a stamp file so concurrent session
+ * starts do not double-sweep. Disable with `artifacts.auto_clean: false` or
+ * `HARNERY_ARTIFACT_AUTO_CLEAN=0`.
+ */
+export function autoCleanArtifacts(
+  repoRoot: string,
+  opts: { now?: Date } = {},
+): ArtifactAutoCleanResult {
+  const now = opts.now ?? new Date();
+  assertValidDate(now, "now");
+  if (!existsSync(artifactsRoot(repoRoot))) {
+    return { ran: false, reason: "no-root", deleted: 0, bytes: 0 };
+  }
+  if (!artifactAutoCleanEnabled(repoRoot)) {
+    return { ran: false, reason: "disabled", deleted: 0, bytes: 0 };
+  }
+  const stampPath = join(resolve(repoRoot), AUTO_CLEAN_STAMP);
+  const intervalMs = artifactAutoCleanIntervalHours() * 60 * 60 * 1000;
+  try {
+    const stamp = JSON.parse(readFileSync(stampPath, "utf8")) as { last_run_at?: string };
+    const last = Date.parse(stamp.last_run_at ?? "");
+    if (Number.isFinite(last) && now.getTime() - last < intervalMs) {
+      return { ran: false, reason: "fresh", deleted: 0, bytes: 0 };
+    }
+  } catch {
+    // Missing or unreadable stamp: sweep now and write a fresh one.
+  }
+  // Claim first: a crash mid-sweep costs one skipped interval, while claiming
+  // after would let two concurrent session starts both walk the store.
+  writeFileSync(stampPath, `${JSON.stringify({ last_run_at: now.toISOString() }, null, 2)}\n`);
+  const rows = cleanArtifacts(repoRoot, { yes: true, now });
+  const deletedRows = rows.filter((row) => row.action === "deleted");
+  const deleted = deletedRows.length;
+  const bytes = deletedRows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
+  writeFileSync(
+    stampPath,
+    `${JSON.stringify({ last_run_at: now.toISOString(), deleted, bytes }, null, 2)}\n`,
+  );
+  return { ran: true, reason: "swept", deleted, bytes };
 }
 
 export function resolveArtifactRef(repoRoot: string, ref: string): string {
