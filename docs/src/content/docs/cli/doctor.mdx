@@ -80,7 +80,7 @@ $ harn doctor --json
 
 ## Keeping hooks current after an upgrade
 
-After updating Harnery (`npm i -g harnery@latest`, `npm update harnery`, or `git pull` for a cloned checkout), re-run [`harn init`](/cli/init). Existing commands pick up the new code immediately, but the V3 ledger keeps its producer build and adapter capability approvals immutable. Init archives the prior epoch intact and activates a compatible one when those approvals changed. It also migrates Harnery-owned entries without touching third-party hooks. `harn doctor` and `harn init --check` catch the drift:
+After updating Harnery (`npm i -g harnery@latest`, `npm update harnery`, or `git pull` for a cloned checkout), re-run [`harn init`](/cli/init). Existing commands pick up the new code immediately. Init migrates Harnery-owned entries without touching third-party hooks, and it replaces the V3 epoch only when the schema or adapter capability contract changed. A build-only update keeps the current epoch and its live sessions. `harn doctor` and `harn init --check` catch the drift:
 
 ```bash
 $ harn doctor

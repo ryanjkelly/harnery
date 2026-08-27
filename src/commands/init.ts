@@ -33,7 +33,6 @@ import {
   readEventV3ControlState,
   sha256V3,
 } from "../core/events/v3/index.ts";
-import { liveEventV3BuildId } from "../core/events/v3/live-routing.ts";
 import { ADAPTER_SPECS, type AdapterId, type AdapterSpec } from "../core/hooks/adapter/events.ts";
 import {
   agentHookPathForProject,
@@ -202,7 +201,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         if (gitHooks.status !== "fresh") issues.push(...gitHooks.issues);
         const ledger = readEventV3ControlState(projectRoot);
         if (ledger.state !== "active") issues.push(`event ledger V3 is ${ledger.state}`);
-        const ledgerRuntimeIssues = eventLedgerV3RuntimeIssues(ledger, gitBuild(HARNERY_ROOT));
+        const ledgerRuntimeIssues = eventLedgerV3RuntimeIssues(ledger);
         if (ledgerRuntimeIssues.length > 0) {
           issues.push(`event ledger V3 is runtime-stale (${ledgerRuntimeIssues.join(", ")})`);
         }
@@ -276,7 +275,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       // ── 1d. universal V3 event ledger ────────────────────────────────────
       if (dryRun) {
         const ledger = readEventV3ControlState(projectRoot);
-        const runtimeIssues = eventLedgerV3RuntimeIssues(ledger, gitBuild(HARNERY_ROOT));
+        const runtimeIssues = eventLedgerV3RuntimeIssues(ledger);
         actions.push(
           ledger.state === "active" && runtimeIssues.length === 0
             ? "· event ledger V3 is active"
@@ -287,7 +286,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       } else {
         const harneryBuild = gitBuild(HARNERY_ROOT);
         const ledgerBefore = readEventV3ControlState(projectRoot);
-        const runtimeIssues = eventLedgerV3RuntimeIssues(ledgerBefore, harneryBuild);
+        const runtimeIssues = eventLedgerV3RuntimeIssues(ledgerBefore);
         const initialized = initializeEventLedgerV3({
           coordRoot: projectRoot,
           harneryBuild,
@@ -388,23 +387,16 @@ function digestConfig(path: string): `sha256:${string}` {
 }
 
 /**
- * Runtime gates bound into an immutable V3 epoch. `init` is the explicit
- * upgrade boundary: when code or capability profiles change, it archives the
- * old epoch intact and activates a compatible one instead of letting upgraded
- * hooks fail closed against stale approvals.
+ * Runtime contracts bound into an immutable V3 epoch. `init` replaces the
+ * epoch only when the schema or adapter capability contract changed. A new
+ * Harnery build alone keeps the current epoch and its live session generations.
  */
-export function eventLedgerV3RuntimeIssues(
-  control: EventV3ControlState,
-  harneryBuild: string,
-): string[] {
+export function eventLedgerV3RuntimeIssues(control: EventV3ControlState): string[] {
   if (control.state !== "active") return [];
   const issues: string[] = [];
   const profile = control.genesis.profile;
   if (profile.initial_schema_digest !== EVENT_V3_SCHEMA_DIGEST) issues.push("schema digest");
   if (profile.contract_source_digest !== EVENT_V3_SCHEMA_DIGEST) issues.push("contract digest");
-  if (!profile.producer_build_ids.includes(liveEventV3BuildId(harneryBuild))) {
-    issues.push("producer build");
-  }
   const expectedCapabilities = Object.values(ADAPTER_CAPABILITY_PROFILES_V3).map((value) =>
     sha256V3(canonicalJsonV3(value)),
   );

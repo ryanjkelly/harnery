@@ -365,7 +365,7 @@ describe("event ledger V3 init compatibility", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  test("requires an epoch refresh when the live producer build changes", () => {
+  test("keeps the active epoch when only the live producer build changes", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-init-v3-runtime-"));
     dirs.push(root);
     const initialized = initializeEventLedgerV3({
@@ -376,10 +376,21 @@ describe("event ledger V3 init compatibility", () => {
       approvalRecordId: "test-init-runtime",
       now: () => new Date("2026-08-18T12:00:00.000Z"),
     });
-    expect(eventLedgerV3RuntimeIssues(initialized.control, "fixture")).toEqual([]);
-    expect(eventLedgerV3RuntimeIssues(initialized.control, "next-build")).toContain(
-      "producer build",
-    );
+    expect(eventLedgerV3RuntimeIssues(initialized.control)).toEqual([]);
+
+    const afterUpgrade = initializeEventLedgerV3({
+      coordRoot: root,
+      harneryBuild: "next-build",
+      hostBuild: "fixture",
+      configDigest: sha256V3("config"),
+      approvalRecordId: "test-init-runtime-upgrade",
+      forceNewEpoch: eventLedgerV3RuntimeIssues(initialized.control).length > 0,
+      now: () => new Date("2026-08-18T12:01:00.000Z"),
+    });
+
+    expect(afterUpgrade.initialized).toBeFalse();
+    expect(afterUpgrade.archived_epoch).toBeUndefined();
+    expect(afterUpgrade.control.genesis).toEqual(initialized.control.genesis);
   });
 });
 
