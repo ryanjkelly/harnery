@@ -1,6 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
-  appendFileSync,
   chmodSync,
   existsSync,
   linkSync,
@@ -11,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { appendSegmentedJsonlFile } from "../storage/durable-history.ts";
 import { createWorkItem, readWorkItem } from "../work/index.ts";
 import {
   digestResult,
@@ -1573,13 +1573,10 @@ function appendPlanEvent(
     actor: bounded(input.actor, "plan actor", 200),
     reason: bounded(input.reason, "plan reason", MAX_REASON),
   };
-  const line = `${JSON.stringify(event)}\n`;
-  const existing = existsSync(path) ? statSync(path).size : 0;
-  if (existing + Buffer.byteLength(line) > MAX_EVENTS_BYTES) {
-    throw new Error("governor plan event log would exceed its byte limit");
-  }
-  appendFileSync(path, line, { encoding: "utf8", mode: 0o600 });
-  chmodSync(path, 0o600);
+  appendSegmentedJsonlFile(path, event, {
+    max_record_bytes: MAX_RECORD_BYTES,
+    max_segment_bytes: MAX_EVENTS_BYTES,
+  });
 }
 
 function appendPlanEventIfMissing(

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { readSegmentedJsonlFileSync } from "../storage/durable-history.ts";
 import { readWorkItem } from "../work/read.ts";
 import {
   GOVERNOR_PLAN_SCHEMA_VERSION,
@@ -29,8 +30,6 @@ const PLAN_KEY = /^[a-z][a-z0-9-]{0,31}$/;
 const TEMPLATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_PLANS = 100;
 const MAX_RECORD_BYTES = 256 * 1024;
-const MAX_EVENTS_BYTES = 512 * 1024;
-const MAX_EVENTS = 100;
 const EVENT_TYPES = new Set<GovernorPlanEventType>([
   "plan.awaiting_approval",
   "plan.resumed",
@@ -232,22 +231,10 @@ function deriveStatus(
 }
 
 function readEvents(path: string, planId: string): GovernorPlanEvent[] {
-  if (!existsSync(path)) return [];
-  const size = statSync(path).size;
-  if (size > MAX_EVENTS_BYTES) throw new Error("governor plan events exceed their byte limit");
-  const body = readFileSync(path, "utf8");
-  if (body && !body.endsWith("\n")) throw new Error(`governor plan ${planId} has a partial event`);
-  const lines = body.split("\n").filter(Boolean);
-  if (lines.length > MAX_EVENTS) throw new Error(`governor plan exceeds ${MAX_EVENTS} events`);
-  return lines.map((line, index) => {
-    let event: GovernorPlanEvent;
-    try {
-      event = JSON.parse(line) as GovernorPlanEvent;
-    } catch (error) {
-      throw new Error(
-        `cannot parse governor plan ${planId} event ${index + 1}: ${(error as Error).message}`,
-      );
-    }
+  return readSegmentedJsonlFileSync<GovernorPlanEvent>(path, {
+    max_record_bytes: MAX_RECORD_BYTES,
+    max_records: 1_000_000,
+  }).map((event, index) => {
     validateEvent(event, planId, index + 1);
     return event;
   });

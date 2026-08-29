@@ -1,6 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
-  appendFileSync,
   chmodSync,
   closeSync,
   existsSync,
@@ -14,6 +13,10 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  appendSegmentedJsonlFile,
+  readSegmentedJsonlFileSync,
+} from "../storage/durable-history.ts";
 import { readWorkflowApproval } from "../workflow/approvals.ts";
 import { stableDigest } from "../workflow/durable-record.ts";
 import { readWorkflowProof } from "../workflow/proof.ts";
@@ -988,8 +991,6 @@ function appendWorkEventUnderLease(
     });
     return appendWorkEventUnderLease(coordRoot, workId, input);
   }
-  if (events.length >= MAX_EVENTS)
-    throw new Error(`work item ${workId} exceeds ${MAX_EVENTS} events`);
   const event: WorkEvent = {
     schema_version: WORK_EVENT_SCHEMA_VERSION,
     work_id: workId,
@@ -1002,13 +1003,10 @@ function appendWorkEventUnderLease(
   if (Buffer.byteLength(line) > MAX_EVENT_BYTES) {
     throw new Error(`work event exceeds ${MAX_EVENT_BYTES} bytes`);
   }
-  const path = join(workDir(coordRoot, workId), "events.jsonl");
-  const existingBytes = existsSync(path) ? statSync(path).size : 0;
-  if (existingBytes + Buffer.byteLength(line) > MAX_EVENTS_BYTES) {
-    throw new Error("work event log would exceed its limit");
-  }
-  appendFileSync(path, line, { encoding: "utf8", mode: 0o600 });
-  chmodSync(path, 0o600);
+  appendSegmentedJsonlFile(join(workDir(coordRoot, workId), "events.jsonl"), event, {
+    max_record_bytes: MAX_EVENT_BYTES,
+    max_segment_bytes: MAX_EVENTS_BYTES,
+  });
   return event;
 }
 
@@ -1029,17 +1027,10 @@ function readWorkIntent(coordRoot: string, workId: string): WorkIntent {
 function readWorkEvents(coordRoot: string, workId: string): WorkEvent[] {
   assertWorkId(workId);
   const path = join(workDir(coordRoot, workId), "events.jsonl");
-  if (!existsSync(path)) return [];
-  const events = readBoundedLines(
-    path,
-    MAX_EVENTS_BYTES,
-    MAX_EVENT_BYTES,
-    `work item ${workId} events`,
-  ).map((line, index) => {
-    const event = parseObject(
-      line,
-      `work item ${workId} event ${index + 1}`,
-    ) as unknown as WorkEvent;
+  const events = readSegmentedJsonlFileSync<WorkEvent>(path, {
+    max_record_bytes: MAX_EVENT_BYTES,
+    max_records: 1_000_000,
+  }).map((event, index) => {
     validateWorkEvent(event, workId, index + 1);
     return event;
   });
