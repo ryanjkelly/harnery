@@ -102,6 +102,11 @@
       "types": "./dist/core/events/v3/index.d.ts",
       "import": "./dist/core/events/v3/index.js"
     },
+    "./core/storage": {
+      "bun": "./src/core/storage/index.ts",
+      "types": "./dist/core/storage/index.d.ts",
+      "import": "./dist/core/storage/index.js"
+    },
     "./core/semantic": {
       "bun": "./src/core/semantic/index.ts",
       "types": "./dist/core/semantic/index.d.ts",

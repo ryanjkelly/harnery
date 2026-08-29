@@ -193,6 +193,12 @@ export interface HarneryProgramContext {
    */
   docsRootAllowlist?: readonly string[];
   /**
+   * Construction-time storage families, logger bindings, and explicit host
+   * exclusions. Harnery validates these against its source-owned catalog;
+   * hosts cannot replace or weaken Harnery descriptors at runtime.
+   */
+  storage?: import("./core/storage/contract.ts").HarneryHostStorageRegistration;
+  /**
    * Default Host header for `tunnel up` when `--vhost` is omitted: a literal
    * host, or a resolver evaluated at start time (e.g. read a dev stack's
    * configured hostname so the tunnel lands on the right vhost). When unset, or
