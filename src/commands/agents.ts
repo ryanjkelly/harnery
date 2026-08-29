@@ -44,7 +44,11 @@ import {
   resolveOwnerWithSource,
   sessionIdentityFromEnv,
 } from "../core/agents/index.ts";
-import { reopenLiveCoordinationGenerationV3 } from "../core/agents/live-authority-v3.ts";
+import {
+  bootstrapLiveCoordinationAuthorityV3,
+  LiveCoordinationAuthorityV3Error,
+  reopenLiveCoordinationGenerationV3,
+} from "../core/agents/live-authority-v3.ts";
 import {
   listSessionFinalizationRequestsV3,
   observeHostDisappearedV3,
@@ -4858,10 +4862,21 @@ function runHeal(opts: {
     process.exit(1);
   }
 
-  const currentSessionRepair = kind === "cache" && requestedOwner.length === 0;
-  if (currentSessionRepair) ensureAdapterSession(root);
+  const currentSessionRepair =
+    kind === "cache" &&
+    opts.owner === undefined &&
+    opts.sessionId === undefined &&
+    opts.adapter === undefined &&
+    !quarantineTransaction;
 
-  const owner = requestedOwner || resolveOwner() || sessionIdentityFromEnv() || "";
+  const ownerResolution = resolveOwnerWithSource();
+  const bootstrapIdentity = currentSessionRepair ? commandSessionBootstrap() : null;
+  const resolvedCurrentOwner =
+    bootstrapIdentity &&
+    (ownerResolution.source === "none" || ownerResolution.source === "active_singleton")
+      ? bootstrapIdentity.sessionId
+      : ownerResolution.owner;
+  const owner = requestedOwner || resolvedCurrentOwner || sessionIdentityFromEnv() || "";
   if (!owner) {
     emit.error({
       code: "session_identity_missing",
@@ -4880,6 +4895,13 @@ function runHeal(opts: {
     opts.sessionId?.trim() ||
     (currentSessionRepair ? sessionIdentityFromEnv() : null) ||
     nativeSessionIdentity(currentRow, owner);
+
+  if (kind === "cache") {
+    const refusal = cacheHealAuthorityRefusal(root, owner, sessionId, inferredAdapter, currentRow);
+    if (refusal) {
+      emitHealFailure(refusal.reason, refusal.message);
+    }
+  }
 
   const action = quarantineTransaction
     ? "quarantine-authority-transaction"
@@ -4942,17 +4964,58 @@ function runHeal(opts: {
 
   // Both recovery actions are handled by the bundled agent-coord binary.
   const helper = agentCoordOrExit(root);
-  const proc = spawnSync(helper, helperArgs, {
+  let proc = spawnSync(helper, helperArgs, {
     encoding: "utf8",
     ...coordHelperOpts(root),
   });
 
-  if (proc.status !== 0) {
-    emit.error({
-      code: "heal_failed",
-      message: spawnFailureMessage(proc, `agent-coord ${action}`),
+  let bootstrapState: "created" | "reused" | undefined;
+  if (
+    proc.status !== 0 &&
+    currentSessionRepair &&
+    missingAuthorityForCurrentSessionBootstrap(root, owner, sessionId)
+  ) {
+    const bootstrap = commandSessionBootstrap();
+    if (
+      !bootstrap ||
+      bootstrap.sessionId !== sessionId ||
+      bootstrap.sessionId !== owner ||
+      bootstrap.adapter !== inferredAdapter
+    ) {
+      emitHealFailure(
+        "native_identity_unverified",
+        "the current adapter did not provide one matching native session id and adapter",
+      );
+    }
+    try {
+      const bootstrapped = bootstrapLiveCoordinationAuthorityV3({
+        coordRoot: root,
+        owner,
+        nativeSessionId: bootstrap.sessionId,
+        adapter: bootstrap.adapter,
+      });
+      bootstrapState = bootstrapped.state;
+    } catch (error) {
+      const reason =
+        error instanceof LiveCoordinationAuthorityV3Error
+          ? error.reason
+          : "authority_bootstrap_failed";
+      emitHealFailure(
+        reason,
+        "the current native session could not establish authority; no fallback cache was accepted",
+      );
+    }
+    proc = spawnSync(helper, helperArgs, {
+      encoding: "utf8",
+      ...coordHelperOpts(root),
     });
-    process.exit(1);
+  }
+
+  if (proc.status !== 0) {
+    emitHealFailure(
+      healFailureReason(root, owner, sessionId, inferredAdapter),
+      spawnFailureMessage(proc, `agent-coord ${action}`),
+    );
   }
 
   // Read the derived cache to surface post-action state.
@@ -4988,6 +5051,7 @@ function runHeal(opts: {
       automatic: currentSessionRepair && !quarantineTransaction,
       authority: "event-ledger-v3",
       adapter: kind === "cache" ? inferredAdapter : undefined,
+      bootstrap: bootstrapState,
       // The path actually spawned, not a guess at the layout: the helper is
       // resolved from harnery's own package location, which differs between a
       // submodule, an installed dependency, and a standalone checkout.
@@ -5015,6 +5079,98 @@ function runHeal(opts: {
   // above on actual writes only: write-only telemetry, no double-emit, no
   // event when an already-correct heal no-ops. (Previously emitted here
   // unconditionally on every `harn agents heal`, which over-counted no-op heals.)
+}
+
+type HealAuthorityRefusal = {
+  reason: "adapter_mismatch" | "owner_mismatch" | "session_mismatch" | "terminal_generation";
+  message: string;
+};
+
+function cacheHealAuthorityRefusal(
+  root: string,
+  owner: string,
+  sessionId: string,
+  adapter: "claude-code" | "cursor" | "codex",
+  currentRow: LiveCoordinationRow | null,
+): HealAuthorityRefusal | null {
+  if (currentRow && normalizeAdapter(currentRow.platform) !== adapter) {
+    return {
+      reason: "adapter_mismatch",
+      message: `the live generation belongs to adapter ${normalizeAdapter(currentRow.platform)}, not ${adapter}`,
+    };
+  }
+  let producer: ReturnType<typeof readHookProducerStateV3>;
+  try {
+    producer = readHookProducerStateV3(root, adapter, sessionId);
+  } catch {
+    return {
+      reason: "session_mismatch",
+      message: "the native session producer state could not be read safely",
+    };
+  }
+  if (producer?.terminal) {
+    return {
+      reason: "terminal_generation",
+      message: "the matching generation is terminal and cannot be repaired or reopened by heal",
+    };
+  }
+  if (producer && producer.instance_id !== liveInstanceIdV3(owner)) {
+    return {
+      reason: "owner_mismatch",
+      message: "the native session is bound to a different instance owner",
+    };
+  }
+  if (currentRow && (!producer || producer.generation_id !== currentRow.v3_generation_id)) {
+    return {
+      reason: "session_mismatch",
+      message: "the native session does not bind to the requested live generation",
+    };
+  }
+  return null;
+}
+
+function missingAuthorityForCurrentSessionBootstrap(
+  root: string,
+  owner: string,
+  sessionId: string,
+): boolean {
+  if (readLiveCoordinationRow(root, owner)) return false;
+  try {
+    const nativeSessionHasProducer = (["claude-code", "codex", "cursor"] as const).some(
+      (adapter) => readHookProducerStateV3(root, adapter, sessionId) !== undefined,
+    );
+    if (nativeSessionHasProducer) return false;
+    const instanceId = liveInstanceIdV3(owner);
+    return !listHookProducerStateRecordsV3(root, { includeTerminal: true }).some(
+      ({ state }) => state.instance_id === instanceId,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function healFailureReason(
+  root: string,
+  owner: string,
+  sessionId: string,
+  adapter: "claude-code" | "cursor" | "codex",
+): string {
+  const refusal = cacheHealAuthorityRefusal(
+    root,
+    owner,
+    sessionId,
+    adapter,
+    readLiveCoordinationRow(root, owner),
+  );
+  return refusal?.reason ?? "authority_missing";
+}
+
+function emitHealFailure(reason: string, message: string): never {
+  emit.error({
+    code: "heal_failed",
+    message: `coordination heal refused (reason=${reason}): ${message}`,
+  });
+  process.exit(1);
 }
 
 /**

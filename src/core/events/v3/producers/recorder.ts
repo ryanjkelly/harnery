@@ -201,7 +201,7 @@ export interface HookProducerStateV3 {
   started_event_id?: `evt_${string}`;
   /** A derived lifecycle reopen is allowed to exist before the adapter's next
    * native prompt. Retained owner-only until that prompt starts a real turn. */
-  session_start_derivation?: "approved_lifecycle_reopen";
+  session_start_derivation?: "approved_lifecycle_reopen" | "validated_current_session_heal";
   session_span: OpenSpanStateV3;
   current_turn_span?: OpenSpanStateV3;
   terminal: boolean;
@@ -260,7 +260,7 @@ export interface RecordHookSignalV3Input {
   hook_duration_ms?: number;
   stop_remediation?: boolean;
   turn_ritual?: TurnRitualEvidenceV3;
-  session_start_derivation?: "approved_lifecycle_reopen";
+  session_start_derivation?: "approved_lifecycle_reopen" | "validated_current_session_heal";
   delegated_child?: {
     generation_id: `gen_${string}`;
     parent_generation_id: `gen_${string}`;
@@ -665,7 +665,10 @@ function processHookSignalLocked(
       if (state && !state.terminal && state.started_event_id) {
         return { state: "already_started", event_id: state.started_event_id };
       }
-      if (input.session_start_derivation && !state?.terminal) {
+      if (
+        (input.session_start_derivation === "approved_lifecycle_reopen" && !state?.terminal) ||
+        (input.session_start_derivation === "validated_current_session_heal" && state?.terminal)
+      ) {
         return { state: "missing_session_start" };
       }
       state = newProducerState(input, sessionId, epochId, boundaryEventId as `evt_${string}`);
@@ -1163,12 +1166,16 @@ function processHookSignalLocked(
     }
     if (
       input.signal === "session-start" &&
-      input.session_start_derivation === "approved_lifecycle_reopen" &&
+      input.session_start_derivation &&
       event.event_type === "session.started"
     ) {
+      const lifecycleReopen = input.session_start_derivation === "approved_lifecycle_reopen";
+      const reason = lifecycleReopen
+        ? "approved_lifecycle_reopen"
+        : "validated_current_session_heal";
       event.provenance = {
         ...event.provenance,
-        source_event: `${input.adapter}.approved-lifecycle-reopen`,
+        source_event: `${input.adapter}.${reason.replaceAll("_", "-")}`,
         attestation: "derived",
         confidence: "high",
         attribution: {
@@ -1179,7 +1186,7 @@ function processHookSignalLocked(
       };
       event.payload.resume = {
         state: "unknown",
-        reason: "approved_lifecycle_reopen",
+        reason,
       };
       assertEventV3(event);
     }
@@ -3952,7 +3959,8 @@ function readProducerState(path: string): HookProducerStateV3 {
       !Number.isFinite(Date.parse(state.last_observed_at))) ||
     (state.started_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.started_event_id)) ||
     (state.session_start_derivation !== undefined &&
-      state.session_start_derivation !== "approved_lifecycle_reopen") ||
+      state.session_start_derivation !== "approved_lifecycle_reopen" &&
+      state.session_start_derivation !== "validated_current_session_heal") ||
     (state.pending_runtime_contexts !== undefined &&
       (!Array.isArray(state.pending_runtime_contexts) ||
         state.pending_runtime_contexts.length === 0 ||

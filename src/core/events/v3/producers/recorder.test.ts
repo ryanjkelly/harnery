@@ -826,6 +826,56 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(prompted?.session_start_derivation).toBeUndefined();
   });
 
+  test("records validated current-session healing as derived and never revives terminal state", () => {
+    const root = candidateRoot();
+    const nativeSession = "validated-current-session-heal";
+    const heal = {
+      ...baseInput(root, "session-start", parsed({ session_id: nativeSession })),
+      session_start_derivation: "validated_current_session_heal" as const,
+    };
+
+    const created = recordHookSignalV3(heal);
+    expect(created.state).toBe("recorded");
+    if (created.state !== "recorded") throw new Error("expected derived session start");
+    expect(created.event).toMatchObject({
+      event_type: "session.started",
+      provenance: {
+        source_event: "claude-code.validated-current-session-heal",
+        attestation: "derived",
+        confidence: "high",
+      },
+      payload: {
+        resume: { state: "unknown", reason: "validated_current_session_heal" },
+      },
+    });
+    const live = readHookProducerStateV3(root, "claude-code", nativeSession);
+    expect(live).toMatchObject({
+      terminal: false,
+      session_start_derivation: "validated_current_session_heal",
+    });
+    expect(live?.current_turn_id).toBeUndefined();
+    expect(recordHookSignalV3(heal).state).toBe("already_started");
+
+    if (!live) throw new Error("expected healed producer state");
+    expect(
+      recordApprovedSessionEndV3({
+        coordRoot: root,
+        mode: "candidate",
+        instance_id: live.instance_id,
+        generation_id: live.generation_id,
+        build_id: "build_fixture",
+        platform: "linux",
+        reason: "approved_explicit_end",
+        outcome: "succeeded",
+        coordination_finalized: true,
+      }).state,
+    ).toBe("recorded");
+    expect(recordHookSignalV3(heal).state).toBe("missing_session_start");
+    expect(
+      readLedgerV3(root).events.filter(({ event }) => event.event_type === "session.started"),
+    ).toHaveLength(1);
+  });
+
   test("pairs child-agent start and completion without persisting the native child identity", () => {
     const root = candidateRoot();
     const nativeSession = "parent-session";

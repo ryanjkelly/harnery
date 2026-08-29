@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import type { Adapter } from "../adapter.ts";
@@ -21,11 +29,15 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
-import { recordHookSignalV3 } from "../events/v3/producers/recorder.ts";
+import {
+  listHookProducerStateRecordsV3,
+  recordHookSignalV3,
+} from "../events/v3/producers/recorder.ts";
 import { reduceSafetyProjectionV3 } from "../events/v3/projection.ts";
-import { readLedgerV3 } from "../events/v3/reader.ts";
+import { EVENT_V3_LEDGER_RELATIVE_ROOT, readLedgerV3 } from "../events/v3/reader.ts";
 import type { ParsedPayload } from "../hooks/adapter/parse.ts";
 import {
+  bootstrapLiveCoordinationAuthorityV3,
   recordLiveClaimChangeV3,
   recordLiveLifecycleChangeV3,
   recordLiveTaskChangeV3,
@@ -52,6 +64,207 @@ afterEach(() => {
 });
 
 describe("live V3 coordination", () => {
+  test("bootstraps one missing generation without synthesizing a turn", () => {
+    const root = candidateRoot("codex");
+
+    const created = bootstrapLiveCoordinationAuthorityV3({
+      coordRoot: root,
+      owner: "operator",
+      nativeSessionId: "native-session",
+      adapter: "codex",
+    });
+
+    expect(created).toMatchObject({
+      state: "created",
+      adapter: "codex",
+      heartbeat: {
+        instance_id: "operator",
+        session_id: "native-session",
+        platform: "codex",
+      },
+    });
+    expect(created.heartbeat.v3_generation_id).toBe(created.generation_id);
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    expect(events.map((event) => event.event_type)).toEqual(["ledger.genesis", "session.started"]);
+    expect(events[1]).toMatchObject({
+      provenance: {
+        source_event: "codex.validated-current-session-heal",
+        attestation: "derived",
+        confidence: "high",
+      },
+      payload: {
+        resume: { state: "unknown", reason: "validated_current_session_heal" },
+      },
+    });
+    const producer = listHookProducerStateRecordsV3(root);
+    expect(producer).toHaveLength(1);
+    expect(producer[0]?.state).toMatchObject({
+      adapter: "codex",
+      instance_id: "inst_operator",
+      generation_id: created.generation_id,
+      terminal: false,
+      session_start_derivation: "validated_current_session_heal",
+    });
+    expect(producer[0]?.state.current_turn_id).toBeUndefined();
+  });
+
+  test("reuses the exact generation idempotently", () => {
+    const root = candidateRoot("codex");
+    const input = {
+      coordRoot: root,
+      owner: "operator",
+      nativeSessionId: "native-session",
+      adapter: "codex" as const,
+    };
+
+    const created = bootstrapLiveCoordinationAuthorityV3(input);
+    rmSync(join(root, ".harnery/active/operator.json"));
+    const reused = bootstrapLiveCoordinationAuthorityV3(input);
+
+    expect(reused.state).toBe("reused");
+    expect(reused.generation_id).toBe(created.generation_id);
+    expect(existsSync(join(root, ".harnery/active/operator.json"))).toBe(true);
+    expect(
+      readLedgerV3(root).events.filter(({ event }) => event.event_type === "session.started"),
+    ).toHaveLength(1);
+    expect(listHookProducerStateRecordsV3(root)).toHaveLength(1);
+  });
+
+  test("refuses cross-adapter and cross-instance native-session collisions", () => {
+    const crossAdapterRoot = candidateRoot("codex");
+    bootstrapLiveCoordinationAuthorityV3({
+      coordRoot: crossAdapterRoot,
+      owner: "operator",
+      nativeSessionId: "shared-session",
+      adapter: "codex",
+    });
+    expect(() =>
+      bootstrapLiveCoordinationAuthorityV3({
+        coordRoot: crossAdapterRoot,
+        owner: "operator",
+        nativeSessionId: "shared-session",
+        adapter: "claude-code",
+      }),
+    ).toThrow("event_v3_coordination_authority:cross_adapter_identity");
+
+    const crossInstanceRoot = candidateRoot("codex");
+    expect(
+      recordHookSignalV3({
+        coordRoot: crossInstanceRoot,
+        mode: "candidate",
+        signal: "session-start",
+        payload: parsed({ session_id: "shared-session" }),
+        adapter: "codex",
+        instance_id: "inst_other",
+        producer_id: "prd_agent-hook",
+        build_id: "build_fixture",
+        platform: "linux",
+      }).state,
+    ).toBe("recorded");
+    expect(() =>
+      bootstrapLiveCoordinationAuthorityV3({
+        coordRoot: crossInstanceRoot,
+        owner: "operator",
+        nativeSessionId: "shared-session",
+        adapter: "codex",
+      }),
+    ).toThrow("event_v3_coordination_authority:cross_instance_identity");
+  });
+
+  test("refuses a different native session for an existing instance generation", () => {
+    const root = candidateRoot("codex");
+    bootstrapLiveCoordinationAuthorityV3({
+      coordRoot: root,
+      owner: "operator",
+      nativeSessionId: "first-session",
+      adapter: "codex",
+    });
+
+    expect(() =>
+      bootstrapLiveCoordinationAuthorityV3({
+        coordRoot: root,
+        owner: "operator",
+        nativeSessionId: "second-session",
+        adapter: "codex",
+      }),
+    ).toThrow("event_v3_coordination_authority:cross_session_identity");
+    expect(
+      readLedgerV3(root).events.filter(({ event }) => event.event_type === "session.started"),
+    ).toHaveLength(1);
+  });
+
+  test("never resurrects a terminal native session", () => {
+    const root = candidateRoot("codex");
+    const input = {
+      coordRoot: root,
+      owner: "operator",
+      nativeSessionId: "native-session",
+      adapter: "codex" as const,
+    };
+    bootstrapLiveCoordinationAuthorityV3(input);
+    expect(
+      recordHookSignalV3({
+        coordRoot: root,
+        mode: "candidate",
+        signal: "session-end",
+        payload: parsed({ session_id: "native-session", clean_exit: true }),
+        adapter: "codex",
+        instance_id: "inst_operator",
+        producer_id: "prd_agent-hook",
+        build_id: "build_fixture",
+        platform: "linux",
+      }).state,
+    ).toBe("recorded");
+
+    expect(() => bootstrapLiveCoordinationAuthorityV3(input)).toThrow(
+      "event_v3_coordination_authority:terminal_generation_forbidden",
+    );
+    expect(
+      readLedgerV3(root).events.filter(({ event }) => event.event_type === "session.started"),
+    ).toHaveLength(1);
+  });
+
+  test("fails closed on producer-generation drift and unsafe or uninitialized V3", () => {
+    const driftedRoot = candidateRoot("codex");
+    const input = {
+      coordRoot: driftedRoot,
+      owner: "operator",
+      nativeSessionId: "native-session",
+      adapter: "codex" as const,
+    };
+    bootstrapLiveCoordinationAuthorityV3(input);
+    const [record] = listHookProducerStateRecordsV3(driftedRoot);
+    if (!record) throw new Error("producer fixture missing");
+    const producer = JSON.parse(readFileSync(record.path, "utf8")) as Record<string, unknown>;
+    producer.generation_id = "gen_00000000-0000-0000-0000-000000000099";
+    writeFileSync(record.path, `${JSON.stringify(producer)}\n`, { mode: 0o600 });
+    expect(() => bootstrapLiveCoordinationAuthorityV3(input)).toThrow(
+      "event_v3_coordination_authority:generation_control_mismatch",
+    );
+
+    const unsafeRoot = candidateRoot("codex");
+    appendFileSync(join(unsafeRoot, EVENT_V3_LEDGER_RELATIVE_ROOT, "active.ndjson"), "{}\n");
+    expect(() =>
+      bootstrapLiveCoordinationAuthorityV3({
+        coordRoot: unsafeRoot,
+        owner: "operator",
+        nativeSessionId: "native-session",
+        adapter: "codex",
+      }),
+    ).toThrow("event_v3_coordination_authority:invalid:ledger_integrity_failure");
+
+    const uninitialized = mkdtempSync(join(tmpdir(), "harnery-live-coord-v3-empty-"));
+    roots.push(uninitialized);
+    expect(() =>
+      bootstrapLiveCoordinationAuthorityV3({
+        coordRoot: uninitialized,
+        owner: "operator",
+        nativeSessionId: "native-session",
+        adapter: "codex",
+      }),
+    ).toThrow("event_v3_coordination_authority:v3_not_initialized");
+  });
+
   test("records status, presence, message, council, and decision observations without raw bodies", () => {
     const root = startedRoot();
     const record = { id: "record-1", secret_text: "never persist this record body" };

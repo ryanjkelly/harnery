@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Adapter } from "../adapter.ts";
 import type { AuthorityMutationV3 } from "../events/v3/authority-outbox.ts";
-import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
-import type { EventV3WriteMode } from "../events/v3/control.ts";
+import { canonicalJsonV3, normalizeNativeIdV3, sha256V3 } from "../events/v3/canonical.ts";
+import { type EventV3WriteMode, readEventV3ControlState } from "../events/v3/control.ts";
 import {
   readCoordinationViewV3,
   requireAuthoritySafeCoordinationViewV3,
 } from "../events/v3/coordination-view.ts";
+import { fingerprintContextV3 } from "../events/v3/fingerprint-keys.ts";
 import {
   LIVE_HOOK_V3_PRODUCER_ID,
   liveInstanceIdV3,
@@ -22,6 +23,9 @@ import {
   recordCoordinationAuthorityV3,
 } from "../events/v3/producers/coordination-recorder.ts";
 import {
+  type HookProducerStateV3,
+  listHookProducerStateRecordsV3,
+  readHookProducerStateV3,
   readTerminalHookProducerStateV3,
   recordHookSignalV3,
 } from "../events/v3/producers/recorder.ts";
@@ -62,6 +66,13 @@ export interface ReopenedLiveCoordinationGenerationV3 {
   generation_id: `gen_${string}`;
 }
 
+export interface BootstrappedLiveCoordinationAuthorityV3 {
+  state: "created" | "reused";
+  adapter: Adapter;
+  generation_id: `gen_${string}`;
+  heartbeat: Heartbeat;
+}
+
 export interface RestoredLiveCoordinationStateV3 {
   state: "unchanged" | "restored";
   task: boolean;
@@ -76,6 +87,216 @@ interface LiveAuthorityBaseV3 {
   nativeSessionId: string;
   adapter: Adapter;
   observationId?: string;
+}
+
+/**
+ * Establish the missing generation authority for one adapter-native session,
+ * then reconstruct its disposable heartbeat cache.
+ *
+ * This is intentionally narrower than mid-flight hook onboarding. The caller
+ * must supply an already validated native session, adapter, and current
+ * instance identity. Existing authority is reused only when all three bind to
+ * the same non-terminal producer generation. A terminal generation, an
+ * adapter/session collision, or any disagreement between private producer
+ * control and the public projection fails closed. No turn is synthesized.
+ */
+export function bootstrapLiveCoordinationAuthorityV3(input: {
+  coordRoot: string;
+  owner: string;
+  nativeSessionId: string;
+  adapter: Adapter;
+}): BootstrappedLiveCoordinationAuthorityV3 {
+  if (!/^[a-zA-Z0-9._-]{1,128}$/.test(input.owner)) {
+    throw new LiveCoordinationAuthorityV3Error("invalid_instance_identity");
+  }
+  if (
+    input.nativeSessionId.length === 0 ||
+    input.nativeSessionId.length > 512 ||
+    input.nativeSessionId.includes("\0")
+  ) {
+    throw new LiveCoordinationAuthorityV3Error("invalid_native_session_identity");
+  }
+
+  const route = resolveLiveEventLedgerRouteV3(input.coordRoot);
+  if (route.state === "blocked") throw new LiveCoordinationAuthorityV3Error(route.reason);
+  const control = readEventV3ControlState(input.coordRoot);
+  if (control.state !== route.mode) {
+    throw new LiveCoordinationAuthorityV3Error("control_state_mismatch");
+  }
+
+  const instanceId = liveInstanceIdV3(input.owner);
+  const rootId = control.genesis.event.scope.root_id as `root_${string}`;
+  const context = fingerprintContextV3(
+    input.coordRoot,
+    rootId,
+    undefined,
+    control.genesis.profile.privacy_key_epoch,
+  );
+  const sessionId = `sid_${normalizeNativeIdV3(
+    context,
+    `${input.adapter}.session`,
+    input.nativeSessionId,
+  ).slice(4)}`;
+
+  const view = readAuthoritySafeViewForBootstrap(input.coordRoot);
+  const existing = view.instances[instanceId];
+  const sessionStates = readSessionProducerStatesForBootstrap(
+    input.coordRoot,
+    input.nativeSessionId,
+  );
+  const instanceStates = readInstanceProducerStatesForBootstrap(input.coordRoot, instanceId);
+
+  const crossAdapter = sessionStates.find((state) => state.adapter !== input.adapter);
+  if (crossAdapter) {
+    throw new LiveCoordinationAuthorityV3Error("cross_adapter_identity");
+  }
+  const crossInstance = sessionStates.find((state) => state.instance_id !== instanceId);
+  if (crossInstance) {
+    throw new LiveCoordinationAuthorityV3Error("cross_instance_identity");
+  }
+
+  const direct = sessionStates.find((state) => state.adapter === input.adapter);
+  if (
+    direct?.terminal ||
+    (!existing && terminalGenerationForSession(view, instanceId, sessionId))
+  ) {
+    throw new LiveCoordinationAuthorityV3Error("terminal_generation_forbidden");
+  }
+
+  const liveInstanceStates = instanceStates.filter((state) => !state.terminal);
+  if (liveInstanceStates.length > 1 || sessionStates.length > 1) {
+    throw new LiveCoordinationAuthorityV3Error("generation_ambiguous");
+  }
+
+  if (existing) {
+    const observedAdapter = existing.runtime_attestation.adapter;
+    if (observedAdapter.state !== "observed" || observedAdapter.value.id !== input.adapter) {
+      throw new LiveCoordinationAuthorityV3Error("cross_adapter_identity");
+    }
+    if (existing.session_id !== sessionId) {
+      throw new LiveCoordinationAuthorityV3Error("cross_session_identity");
+    }
+    if (
+      !direct ||
+      direct.terminal ||
+      direct.generation_id !== existing.generation_id ||
+      liveInstanceStates.length !== 1 ||
+      liveInstanceStates[0]?.generation_id !== existing.generation_id
+    ) {
+      throw new LiveCoordinationAuthorityV3Error("generation_control_mismatch");
+    }
+    return materializeBootstrappedAuthority(input, existing.generation_id, "reused");
+  }
+
+  if (direct || liveInstanceStates.length > 0) {
+    throw new LiveCoordinationAuthorityV3Error("generation_control_mismatch");
+  }
+
+  const started = recordHookSignalV3({
+    coordRoot: input.coordRoot,
+    mode: route.mode,
+    signal: "session-start",
+    payload: { raw: {}, session_id: input.nativeSessionId },
+    adapter: input.adapter,
+    instance_id: instanceId,
+    producer_id: LIVE_HOOK_V3_PRODUCER_ID,
+    build_id: route.build_id,
+    platform: livePlatformV3(),
+    session_start_derivation: "validated_current_session_heal",
+  });
+  if (started.state !== "recorded" && started.state !== "already_started") {
+    const reason = "reason" in started ? `:${started.reason}` : "";
+    throw new LiveCoordinationAuthorityV3Error(
+      `generation_bootstrap_failed:${started.state}${reason}`,
+    );
+  }
+
+  const after = readAuthoritySafeViewForBootstrap(input.coordRoot).instances[instanceId];
+  const producer = readSessionProducerStatesForBootstrap(
+    input.coordRoot,
+    input.nativeSessionId,
+  ).filter((state) => state.adapter === input.adapter && state.instance_id === instanceId);
+  if (
+    !after ||
+    after.session_id !== sessionId ||
+    producer.length !== 1 ||
+    producer[0]?.terminal ||
+    producer[0]?.generation_id !== after.generation_id
+  ) {
+    throw new LiveCoordinationAuthorityV3Error("generation_control_mismatch");
+  }
+  return materializeBootstrappedAuthority(
+    input,
+    after.generation_id,
+    started.state === "recorded" ? "created" : "reused",
+  );
+}
+
+function readAuthoritySafeViewForBootstrap(coordRoot: string) {
+  try {
+    return requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
+  } catch (error) {
+    if (error instanceof LiveCoordinationAuthorityV3Error) throw error;
+    throw new LiveCoordinationAuthorityV3Error("coordination_view_unsafe");
+  }
+}
+
+function readSessionProducerStatesForBootstrap(
+  coordRoot: string,
+  nativeSessionId: string,
+): HookProducerStateV3[] {
+  try {
+    return (["claude-code", "codex", "cursor"] as const)
+      .map((adapter) => readHookProducerStateV3(coordRoot, adapter, nativeSessionId))
+      .filter((state): state is HookProducerStateV3 => state !== undefined);
+  } catch {
+    throw new LiveCoordinationAuthorityV3Error("producer_state_unsafe");
+  }
+}
+
+function readInstanceProducerStatesForBootstrap(
+  coordRoot: string,
+  instanceId: `inst_${string}`,
+): HookProducerStateV3[] {
+  try {
+    return listHookProducerStateRecordsV3(coordRoot, { includeTerminal: true })
+      .map((record) => record.state)
+      .filter((state) => state.instance_id === instanceId);
+  } catch {
+    throw new LiveCoordinationAuthorityV3Error("producer_state_unsafe");
+  }
+}
+
+function terminalGenerationForSession(
+  view: ReturnType<typeof readCoordinationViewV3>,
+  instanceId: `inst_${string}`,
+  sessionId: string,
+): boolean {
+  return Object.values(view.terminal_generations).some(
+    (generation) => generation.instance_id === instanceId && generation.session_id === sessionId,
+  );
+}
+
+function materializeBootstrappedAuthority(
+  input: { coordRoot: string; owner: string; nativeSessionId: string; adapter: Adapter },
+  generationId: string,
+  state: "created" | "reused",
+): BootstrappedLiveCoordinationAuthorityV3 {
+  const heartbeat = ensureLiveCoordinationHeartbeat(
+    input.coordRoot,
+    input.owner,
+    input.nativeSessionId,
+    input.adapter,
+  );
+  if (!heartbeat || heartbeat.v3_generation_id !== generationId) {
+    throw new LiveCoordinationAuthorityV3Error("generation_materialization_failed");
+  }
+  return {
+    state,
+    adapter: input.adapter,
+    generation_id: generationId as `gen_${string}`,
+    heartbeat,
+  };
 }
 
 /**
