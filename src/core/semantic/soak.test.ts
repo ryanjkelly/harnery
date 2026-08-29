@@ -3,14 +3,20 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { createStorageCatalog } from "../storage/catalog.ts";
+import { encodeLogRecord, type HarneryLogRecordV1 } from "../storage/jsonl.ts";
+import { FileSegmentSink } from "../storage/segments.ts";
 import type { SemanticAgentReadModelV2 } from "./contract.ts";
 import { readSemanticSoakReport, semanticSoakReadings } from "./soak.ts";
 import { semanticPaths, writeSemanticAgentDocument } from "./storage.ts";
 
 const roots: string[] = [];
 const generationId = "gen_01922e33-7abc-7def-8abc-0123456789ab";
+const originalSharedLogs = process.env.HARNERY_SHARED_LOGS;
 
 afterEach(() => {
+  if (originalSharedLogs === undefined) delete process.env.HARNERY_SHARED_LOGS;
+  else process.env.HARNERY_SHARED_LOGS = originalSharedLogs;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -103,6 +109,67 @@ describe("semantic soak", () => {
       ],
     });
   });
+
+  test("merges manifest-backed shared generations with unique historical entries", async () => {
+    delete process.env.HARNERY_SHARED_LOGS;
+    const root = fixture();
+    const family = createStorageCatalog({ coord_root: root }).require("semantic-service-log");
+    const directory = join(root, ".harnery", "logs", "semantic-service");
+    const sink = new FileSegmentSink({ directory, family, max_segment_bytes: 1 });
+    const first = pass("2026-08-24T10:00:00.000Z", "verifying", "accepted", 100);
+    const second = pass("2026-08-24T10:04:00.000Z", "planning", "accepted", 100);
+    await sink.append([sharedPassRecord(family, 1, first)]);
+    await sink.append([sharedPassRecord(family, 2, second)]);
+
+    const legacy = semanticPaths(root).log;
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(
+      legacy,
+      `${[
+        { schema_version: 1, ts: "2026-08-24T09:55:00.000Z", event: "service_started" },
+        first,
+        pass("2026-08-24T10:08:00.000Z", "verifying", "accepted", 100),
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    mkdirSync(join(directory, "segments"), { recursive: true });
+    writeFileSync(join(directory, "segments", "unmanifested.jsonl.gz"), "ignored");
+
+    const report = readSemanticSoakReport(root, {
+      minutes: 10,
+      now: new Date("2026-08-24T10:10:00.000Z"),
+    });
+    expect(report.coverage).toMatchObject({
+      pass_count: 3,
+      instrumented_pass_count: 3,
+      legacy_pass_count: 0,
+      accepted_reading_count: 3,
+    });
+    expect(report.outcomes.accepted).toBe(3);
+    expect(report.window.window_complete).toBeTrue();
+  });
+
+  test("reads only the bounded legacy stream when shared logging is rolled back", async () => {
+    process.env.HARNERY_SHARED_LOGS = "0";
+    const root = fixture();
+    const family = createStorageCatalog({ coord_root: root }).require("semantic-service-log");
+    const directory = join(root, ".harnery", "logs", "semantic-service");
+    const sink = new FileSegmentSink({ directory, family });
+    await sink.append([
+      sharedPassRecord(family, 1, pass("2026-08-24T10:00:00.000Z", "verifying", "accepted", 100)),
+    ]);
+    const legacy = semanticPaths(root).log;
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, `${JSON.stringify(legacyPass("2026-08-24T10:01:00.000Z"))}\n`);
+
+    const report = readSemanticSoakReport(root, {
+      minutes: 10,
+      now: new Date("2026-08-24T10:10:00.000Z"),
+    });
+    expect(report.coverage.pass_count).toBe(1);
+    expect(report.outcomes).toEqual({ accepted: 0, invalid: 1, unavailable: 0, deferred: 0 });
+  });
 });
 
 function fixture(): string {
@@ -193,4 +260,29 @@ function usage(outcome: "accepted" | "invalid", input: number, output: number) {
     unreported_calls: 0,
     breakdowns: [],
   };
+}
+
+function sharedPassRecord(
+  family: ReturnType<typeof createStorageCatalog>["families"][number],
+  sequence: number,
+  row: ReturnType<typeof pass>,
+): Buffer {
+  const record: HarneryLogRecordV1 = {
+    schema: "harnery.log-record/v1",
+    kind: "record",
+    emitted_at: row.ts,
+    family_id: family.id,
+    policy_version: family.policy.policy_version,
+    component_id: "semantic-service",
+    level: "info",
+    event: row.event,
+    writer_id: "semantic-soak-fixture",
+    writer_seq: sequence,
+    context: {},
+    fields: {
+      usage: JSON.stringify(row.usage),
+      semantic_readings: JSON.stringify(row.semantic_readings),
+    },
+  };
+  return encodeLogRecord(record, family);
 }

@@ -24,7 +24,12 @@ import {
   readLedgerV3Since,
 } from "../events/v3/index.ts";
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
-import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+import {
+  closeProcessLoggers,
+  encodeBoundedLogObjectArray,
+  legacyLogFields,
+  processLogger,
+} from "../storage/logger.ts";
 import type { SemanticHarness } from "./contract.ts";
 import { runSemanticOnce, type SemanticOnceReport } from "./once.ts";
 import { semanticPendingPassDue } from "./scheduler.ts";
@@ -64,6 +69,20 @@ const FOREIGN_STATUS_STALE_MS = 2 * 60_000;
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LOG_BYTES = 512 * 1024;
 const REPEATED_ERROR_LOG_INTERVAL_MS = 60_000;
+const SEMANTIC_READINGS_FIELD_MAX_BYTES = 4_096;
+const SEMANTIC_READING_FIELDS = [
+  "subject_id",
+  "generated_at",
+  "source_harness",
+  "configured_model",
+  "resolved_model_id",
+  "model_attestation",
+  "origin",
+  "phase",
+  "phase_confidence",
+  "expression_cue",
+  "expression_confidence",
+] as const;
 
 interface SemanticServiceLease {
   pid: number;
@@ -571,21 +590,49 @@ export function appendSemanticServiceDiagnostic(
   coordRoot: string,
   entry: Record<string, unknown>,
 ): "shared" | "legacy" {
+  const prepared = prepareSemanticServiceDiagnostic(entry);
   if (coordEnv("SHARED_LOGS") !== "0") {
     try {
-      const event = typeof entry.event === "string" ? entry.event : "service_event";
-      const fields = { ...entry };
-      delete fields.event;
       const logger = processLogger(coordRoot, "semantic-service");
-      if (event.includes("error")) logger.error(event, legacyLogFields(fields));
-      else logger.info(event, legacyLogFields(fields));
+      if (prepared.event.includes("error")) {
+        logger.error(prepared.event, legacyLogFields(prepared.fields));
+      } else logger.info(prepared.event, legacyLogFields(prepared.fields));
       return "shared";
     } catch {
       // Bootstrap failures retain the bounded legacy writer as the process fallback.
     }
   }
-  appendSemanticServiceLegacyLog(coordRoot, entry);
+  appendSemanticServiceLegacyLog(coordRoot, prepared.legacyEntry);
   return "legacy";
+}
+
+function prepareSemanticServiceDiagnostic(entry: Record<string, unknown>): {
+  event: string;
+  fields: Record<string, unknown>;
+  legacyEntry: Record<string, unknown>;
+} {
+  const event = typeof entry.event === "string" ? entry.event : "service_event";
+  const fields = { ...entry };
+  delete fields.event;
+  const legacyEntry: Record<string, unknown> = { ...entry, event };
+  const semanticReadings = fields.semantic_readings;
+  if (semanticReadings === undefined) return { event, fields, legacyEntry };
+  if (!Array.isArray(semanticReadings)) throw new Error("semantic_readings must be an array");
+  const bounded = encodeBoundedLogObjectArray(semanticReadings, {
+    max_bytes: SEMANTIC_READINGS_FIELD_MAX_BYTES,
+    allowed_fields: SEMANTIC_READING_FIELDS,
+  });
+  fields.semantic_readings = bounded.json;
+  fields.semantic_readings_count = bounded.included;
+  legacyEntry.semantic_readings = JSON.parse(bounded.json) as unknown[];
+  legacyEntry.semantic_readings_count = bounded.included;
+  if (bounded.truncated) {
+    fields.semantic_readings_truncated = true;
+    fields.semantic_readings_omitted = bounded.omitted;
+    legacyEntry.semantic_readings_truncated = true;
+    legacyEntry.semantic_readings_omitted = bounded.omitted;
+  }
+  return { event, fields, legacyEntry };
 }
 
 function appendSemanticServiceLegacyLog(coordRoot: string, entry: Record<string, unknown>): void {

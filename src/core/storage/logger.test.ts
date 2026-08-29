@@ -7,7 +7,9 @@ import {
   closeProcessLoggers,
   createInMemoryLoggerRuntime,
   createNullLoggerRuntime,
+  encodeBoundedLogObjectArray,
   HarneryUnsupportedDurabilityError,
+  legacyLogFields,
   processLogger,
 } from "./logger.ts";
 
@@ -84,5 +86,24 @@ describe("Harnery logger facade", () => {
       expect(existsSync(path), partition).toBeTrue();
       expect(readFileSync(path, "utf8"), partition).toContain(`"family_id":"${familyId}"`);
     }
+  });
+
+  test("bounds allow-listed object arrays only at complete element boundaries", () => {
+    const encoded = encodeBoundedLogObjectArray(
+      [
+        { subject_id: "subject_one", phase: "planning" },
+        { subject_id: "subject_two", phase: "verifying" },
+      ],
+      { max_bytes: 60, allowed_fields: ["subject_id", "phase"] },
+    );
+    expect(() => JSON.parse(encoded.json)).not.toThrow();
+    expect(encoded).toMatchObject({ included: 1, omitted: 1, truncated: true });
+    expect(() =>
+      encodeBoundedLogObjectArray([{ subject_id: "safe", prompt: "private" }], {
+        max_bytes: 100,
+        allowed_fields: ["subject_id"],
+      }),
+    ).toThrow("rejects field: prompt");
+    expect(legacyLogFields({ oversized: { value: "x".repeat(5_000) } })).toEqual({});
   });
 });

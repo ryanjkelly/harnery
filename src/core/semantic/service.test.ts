@@ -12,6 +12,7 @@ import {
   requestSemanticServiceStop,
   runSemanticServiceDaemon,
 } from "./service.ts";
+import { readSemanticSoakReport } from "./soak.ts";
 import {
   readSemanticManifest,
   semanticPaths,
@@ -599,5 +600,46 @@ describe("semantic service", () => {
     expect(
       existsSync(join(rollbackRoot, ".harnery", "logs", "semantic-service", "active.jsonl")),
     ).toBeFalse();
+  });
+
+  test("keeps large semantic reading fields parseable and reports element truncation", async () => {
+    delete process.env.HARNERY_SHARED_LOGS;
+    const root = fixture();
+    const readings = Array.from({ length: 100 }, (_, index) => ({
+      subject_id: `subject_${index.toString(16).padStart(16, "0")}`,
+      generated_at: "2026-08-24T10:00:00.000Z",
+      source_harness: "codex",
+      configured_model: "gpt-5.6-luna",
+      origin: "model-call",
+      phase: "verifying",
+      phase_confidence: "high",
+      expression_cue: "verifying",
+      expression_confidence: "medium",
+    }));
+    expect(
+      appendSemanticServiceDiagnostic(root, {
+        event: "pass",
+        semantic_readings: readings,
+      }),
+    ).toBe("shared");
+    await closeProcessLoggers();
+    const record = JSON.parse(
+      readFileSync(join(root, ".harnery", "logs", "semantic-service", "active.jsonl"), "utf8"),
+    ) as { fields: Record<string, unknown> };
+    const stored = JSON.parse(String(record.fields.semantic_readings)) as unknown[];
+    expect(stored.length).toBeGreaterThan(0);
+    expect(stored.length).toBeLessThan(readings.length);
+    expect(record.fields.semantic_readings_truncated).toBeTrue();
+    expect(record.fields.semantic_readings_omitted).toBe(readings.length - stored.length);
+    const report = readSemanticSoakReport(root, { minutes: 60, now: new Date() });
+    expect(report.limitations[0]).toContain(
+      `${record.fields.semantic_readings_omitted} semantic readings were omitted`,
+    );
+    expect(() =>
+      appendSemanticServiceDiagnostic(root, {
+        event: "pass",
+        semantic_readings: [{ ...readings[0], prompt: "must not cross the log boundary" }],
+      }),
+    ).toThrow("rejects field: prompt");
   });
 });

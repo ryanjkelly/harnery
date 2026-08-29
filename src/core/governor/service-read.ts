@@ -1,6 +1,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { coordEnv } from "../../lib/env.ts";
+import { createStorageCatalog } from "../storage/catalog.ts";
+import { familyLogDirectory, readSegmentManifest } from "../storage/segments.ts";
 import type {
   GovernorServiceConfig,
   GovernorServiceRuntime,
@@ -81,7 +84,18 @@ export function readGovernorServiceStatus(coordRootRaw: string): GovernorService
 }
 
 export function governorServiceLogPath(coordRoot: string): string {
-  return join(serviceDir(resolve(coordRoot)), "service.log");
+  const root = resolve(coordRoot);
+  const legacy = join(serviceDir(root), "service.log");
+  if (coordEnv("SHARED_LOGS") === "0") return legacy;
+  try {
+    const family = createStorageCatalog({ coord_root: root }).require("governor-service-log");
+    const directory = familyLogDirectory(family);
+    readSegmentManifest(directory, family);
+    const active = join(directory, "active.jsonl");
+    return existsSync(active) || !existsSync(legacy) ? active : legacy;
+  } catch {
+    return legacy;
+  }
 }
 
 function readStatusRecord(coordRoot: string): GovernorServiceStatusRecord | undefined {

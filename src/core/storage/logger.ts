@@ -48,6 +48,8 @@ export interface HarneryLogLevelConfig {
   components?: Readonly<Record<string, HarneryLogLevel>>;
 }
 
+export type HarneryLogEnvironment = Readonly<Record<string, string | undefined>>;
+
 export class HarneryUnsupportedDurabilityError extends Error {
   constructor(readonly familyId: string) {
     super(`family ${familyId} does not support durable disk flush`);
@@ -73,7 +75,7 @@ export function createFileLoggerRuntime(options: {
   catalog: HarneryStorageCatalog;
   bindings?: readonly HarneryLoggerBinding[];
   level_config?: HarneryLogLevelConfig;
-  env?: NodeJS.ProcessEnv;
+  env?: HarneryLogEnvironment;
   strict_levels?: boolean;
 }): HarneryLoggerRuntime {
   return new LoggerRuntime(
@@ -90,7 +92,7 @@ export function createInMemoryLoggerRuntime(options: {
   bindings: readonly HarneryLoggerBinding[];
   records?: HarneryLogRecordV1[];
   level_config?: HarneryLogLevelConfig;
-  env?: NodeJS.ProcessEnv;
+  env?: HarneryLogEnvironment;
 }): HarneryLoggerRuntime & { records: HarneryLogRecordV1[] } {
   const records = options.records ?? [];
   const runtime = new LoggerRuntime(
@@ -128,7 +130,7 @@ class LoggerRuntime implements HarneryLoggerRuntime {
   readonly #pipelines = new Map<string, FamilyPipeline>();
   readonly #writerId = `${process.pid}-${Date.now()}-${randomBytes(8).toString("hex")}`;
   readonly #levels: HarneryLogLevelConfig;
-  readonly #env: NodeJS.ProcessEnv;
+  readonly #env: HarneryLogEnvironment;
   readonly #strict: boolean;
   readonly #drainOverride?: (items: readonly QueuedRecord[]) => Promise<void>;
   #writerSeq = 0;
@@ -138,7 +140,7 @@ class LoggerRuntime implements HarneryLoggerRuntime {
     catalog: HarneryStorageCatalog,
     bindings: readonly HarneryLoggerBinding[],
     levels?: HarneryLogLevelConfig,
-    env: NodeJS.ProcessEnv = process.env,
+    env: HarneryLogEnvironment = process.env,
     strict = true,
     drainOverride?: (items: readonly QueuedRecord[]) => Promise<void>,
   ) {
@@ -373,7 +375,7 @@ export function resolveLogLevel(options: {
   component_id: string;
   family: HarneryRegisteredStorageFamily;
   config?: HarneryLogLevelConfig;
-  env?: NodeJS.ProcessEnv;
+  env?: HarneryLogEnvironment;
   strict?: boolean;
 }): HarneryLogLevel {
   const env = options.env ?? process.env;
@@ -441,9 +443,72 @@ export function legacyLogFields(value: Record<string, unknown>): HarneryLogField
       )
     )
       out[key] = candidate as HarneryLogScalar[];
-    else out[key] = JSON.stringify(candidate).slice(0, 4_096);
+    else {
+      const encoded = JSON.stringify(candidate);
+      if (encoded !== undefined && Buffer.byteLength(encoded) <= 4_096) out[key] = encoded;
+    }
   }
   return out;
+}
+
+export interface HarneryBoundedObjectArray {
+  json: string;
+  included: number;
+  omitted: number;
+  truncated: boolean;
+}
+
+/** Encode an allow-listed array of scalar records without slicing a JSON token. */
+export function encodeBoundedLogObjectArray(
+  values: readonly unknown[],
+  options: { max_bytes: number; allowed_fields: readonly string[] },
+): HarneryBoundedObjectArray {
+  if (!Number.isSafeInteger(options.max_bytes) || options.max_bytes < 2) {
+    throw new Error("bounded log object array needs at least two bytes");
+  }
+  const allowed = new Set(options.allowed_fields);
+  if (allowed.size !== options.allowed_fields.length || allowed.size === 0) {
+    throw new Error("bounded log object array needs unique allowed fields");
+  }
+  const normalized = values.map((value, index) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`bounded log object array item ${index} must be an object`);
+    }
+    const source = value as Record<string, unknown>;
+    for (const key of Object.keys(source)) {
+      if (!allowed.has(key)) throw new Error(`bounded log object array rejects field: ${key}`);
+    }
+    const item: Record<string, HarneryLogScalar> = {};
+    for (const key of options.allowed_fields) {
+      const candidate = source[key];
+      if (candidate === undefined) continue;
+      if (
+        candidate !== null &&
+        typeof candidate !== "string" &&
+        typeof candidate !== "boolean" &&
+        (typeof candidate !== "number" || !Number.isFinite(candidate))
+      ) {
+        throw new Error(`bounded log object array field ${key} must be scalar`);
+      }
+      item[key] = candidate as HarneryLogScalar;
+    }
+    return item;
+  });
+  const included: Record<string, HarneryLogScalar>[] = [];
+  let bytes = 2;
+  for (const item of normalized) {
+    const encoded = JSON.stringify(item);
+    const nextBytes = Buffer.byteLength(encoded) + (included.length > 0 ? 1 : 0);
+    if (bytes + nextBytes > options.max_bytes) break;
+    included.push(item);
+    bytes += nextBytes;
+  }
+  return {
+    json: JSON.stringify(included),
+    included: included.length,
+    omitted: normalized.length - included.length,
+    truncated: included.length !== normalized.length,
+  };
 }
 
 const PROCESS_RUNTIMES = new Map<string, HarneryLoggerRuntime>();
