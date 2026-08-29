@@ -122,14 +122,16 @@ describe("web performance reports", () => {
       path.join(root, ".harnery", "logs", `${WEB_PERFORMANCE_LOG}.1`),
       `${older.map((event) => JSON.stringify(event)).join("\n")}\n`,
     );
+    mkdirSync(path.join(root, ".harnery", "logs", "web-performance"), { recursive: true });
     writeFileSync(
-      path.join(root, ".harnery", "logs", WEB_PERFORMANCE_LOG),
-      `${current.map((event) => JSON.stringify(event)).join("\n")}\nnot-json\n`,
+      path.join(root, ".harnery", "logs", "web-performance", "active.jsonl"),
+      `${[older[0], ...current].map((event) => JSON.stringify(event)).join("\n")}\nnot-json\n`,
     );
 
     const report = readWebPerformanceReport({ root, since: "1h", limit: 5, nowMs });
 
     expect(report.state).toBe("ok");
+    expect(report.files_read).toBe(2);
     expect(report.requests_observed).toBe(2);
     expect(report.streams_observed).toBe(1);
     expect(report.slow_requests).toBe(1);

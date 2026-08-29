@@ -1,17 +1,15 @@
+import { type ChildProcess, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 
-// Inline cachePath; see lib/tunnel/state.ts for rationale.
-function cachePath(tool: string, filename: string): string {
-  const dir = resolve(process.cwd(), ".cache", tool);
-  return resolve(dir, filename);
-}
-
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { resolveBinName } from "../core/config.ts";
+import {
+  processLogDestination,
+  runRotatingProcessSync,
+  spawnRotatingProcess,
+} from "../core/storage/process-log.ts";
 import {
   clearState,
   DEFAULT_INSTANCE,
@@ -77,6 +75,27 @@ interface LogsOpts {
   follow?: boolean;
   gate?: boolean;
   provider?: boolean;
+}
+
+export function tunnelLogDestinations(
+  name: string,
+  provider: TunnelProvider,
+  env: NodeJS.ProcessEnv = process.env,
+  root = process.cwd(),
+): { gate: string; provider: string } {
+  const destination = (filename: string) =>
+    processLogDestination({
+      coord_root: root,
+      project_root: root,
+      family_id: "tunnel-process-log",
+      filename,
+      legacy_path: resolve(root, ".cache", "tunnel", filename),
+      env,
+    });
+  return {
+    gate: destination(gateLogFile(name)),
+    provider: destination(providerLogFile(name, provider)),
+  };
 }
 
 /**
@@ -348,7 +367,6 @@ function runTailscaleShare(
   httpsPort: number,
   logPath: string,
 ): void {
-  const fd = openSync(logPath, "a");
   const args = [
     tailscaleCommand(mode),
     "--bg",
@@ -357,31 +375,36 @@ function runTailscaleShare(
     `--set-path=${path}`,
     targetUrl,
   ];
-  const r = spawnSync("tailscale", args, {
-    stdio: ["ignore", fd, fd],
+  const status = runRotatingProcessSync({
+    path: logPath,
+    command: "tailscale",
+    arguments: args,
   });
-  if (r.status !== 0) {
+  if (status !== 0) {
     emit.error({
       code: "tunnel_tailscale_failed",
       message: `tailscale ${tailscaleCommand(mode)} failed. Check log: ${logPath}`,
     });
-    process.exit(r.status ?? 1);
+    process.exit(status ?? 1);
   }
 }
 
 function stopTailscaleShare(state: TunnelState): boolean {
   if (state.provider !== "tailscale" || !state.tailscale_mode) return true;
   const cmd = tailscaleCommand(state.tailscale_mode);
-  const logPath = cachePath("tunnel", providerLogFile(state.name, "tailscale"));
-  const fd = openSync(logPath, "a");
+  const logPath = tunnelLogDestinations(state.name, "tailscale").provider;
   const args = [
     cmd,
     `--https=${state.tailscale_https_port ?? 443}`,
     `--set-path=${state.tailscale_path ?? "/"}`,
     "off",
   ];
-  const r = spawnSync("tailscale", args, { stdio: ["ignore", fd, fd] });
-  if (r.status !== 0) {
+  const status = runRotatingProcessSync({
+    path: logPath,
+    command: "tailscale",
+    arguments: args,
+  });
+  if (status !== 0) {
     // The gate is torn down and its port is freed for reuse regardless, so a
     // surviving serve/funnel mapping could later re-expose whatever next binds
     // that port. Surface it loudly so the operator can clear it by hand.
@@ -432,26 +455,22 @@ interface GateSpawnOpts {
  * re-reads — that snapshot is precisely why `reload` has to exist.
  */
 function spawnGate(o: GateSpawnOpts): ChildProcess {
-  const gateFd = openSync(o.gateLogPath, "a");
   // `--name`/`--port` on argv mirror the env vars; they're what makes the gate
   // process distinguishable per-instance in `pgrep -f` (see sweepStrays).
-  const gateProc = spawn(
-    "bun",
-    ["run", gateScriptPath(), "--name", o.name, "--port", String(o.gatePort)],
-    {
-      detached: true,
-      stdio: ["ignore", gateFd, gateFd],
-      env: {
-        ...process.env,
-        HARNERY_TUNNEL_ALLOW: o.allowedIps.join(","),
-        HARNERY_TUNNEL_ACCESS:
-          o.provider === "cloudflare" ? "cloudflare-allowlist" : "trusted-local-proxy",
-        HARNERY_TUNNEL_TARGET: o.target,
-        HARNERY_TUNNEL_VHOST: o.vhost,
-        HARNERY_TUNNEL_PORT: String(o.gatePort),
-      },
+  const gateProc = spawnRotatingProcess({
+    path: o.gateLogPath,
+    command: "bun",
+    arguments: ["run", gateScriptPath(), "--name", o.name, "--port", String(o.gatePort)],
+    env: {
+      ...process.env,
+      HARNERY_TUNNEL_ALLOW: o.allowedIps.join(","),
+      HARNERY_TUNNEL_ACCESS:
+        o.provider === "cloudflare" ? "cloudflare-allowlist" : "trusted-local-proxy",
+      HARNERY_TUNNEL_TARGET: o.target,
+      HARNERY_TUNNEL_VHOST: o.vhost,
+      HARNERY_TUNNEL_PORT: String(o.gatePort),
     },
-  );
+  });
   gateProc.unref();
   return gateProc;
 }
@@ -521,10 +540,9 @@ async function up(opts: UpOpts): Promise<void> {
     process.exit(1);
   }
 
-  const gateLogPath = cachePath("tunnel", gateLogFile(name));
-  const providerLogPath = cachePath("tunnel", providerLogFile(name, provider));
-  writeFileSync(gateLogPath, "");
-  writeFileSync(providerLogPath, "");
+  const logPaths = tunnelLogDestinations(name, provider);
+  const gateLogPath = logPaths.gate;
+  const providerLogPath = logPaths.provider;
 
   const gateProc = spawnGate({
     name,
@@ -551,20 +569,16 @@ async function up(opts: UpOpts): Promise<void> {
   let cloudflaredPid: number | undefined;
 
   if (provider === "cloudflare") {
-    const cfdFd = openSync(providerLogPath, "a");
     // Force HTTP/2 transport. The default QUIC transport wedges at precheck on
     // constrained hosts (e.g. WSL, where UDP receive buffers can't grow and ICMP
     // is restricted): the URL prints but the edge never registers. HTTP/2 is
     // marginally higher-latency but registers reliably, which is what a dev
     // tunnel needs.
-    const cfdProc = spawn(
-      cloudflaredBin!,
-      ["tunnel", "--protocol", "http2", "--url", `http://localhost:${gatePort}`],
-      {
-        detached: true,
-        stdio: ["ignore", cfdFd, cfdFd],
-      },
-    );
+    const cfdProc = spawnRotatingProcess({
+      path: providerLogPath,
+      command: cloudflaredBin!,
+      arguments: ["tunnel", "--protocol", "http2", "--url", `http://localhost:${gatePort}`],
+    });
     cfdProc.unref();
     cloudflaredPid = cfdProc.pid!;
 
@@ -788,7 +802,7 @@ export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; mess
     vhost: state.vhost,
     provider: state.provider,
     allowedIps: cfg.allowed_ips,
-    gateLogPath: cachePath("tunnel", gateLogFile(name)),
+    gateLogPath: tunnelLogDestinations(name, state.provider).gate,
   });
 
   await sleep(800);
@@ -952,8 +966,8 @@ function logs(opts: LogsOpts): void {
   const name = resolveName(opts.name);
   const state = readState(name);
   const provider = state?.provider ?? "cloudflare";
-  const which = opts.provider ? providerLogFile(name, provider) : gateLogFile(name);
-  const path = cachePath("tunnel", which);
+  const destinations = tunnelLogDestinations(name, provider);
+  const path = opts.provider ? destinations.provider : destinations.gate;
   if (!existsSync(path)) {
     emit.error({ code: "tunnel_no_log", message: `No log file at ${path}` });
     process.exit(1);

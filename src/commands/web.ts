@@ -7,6 +7,7 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
 import { ensureSemanticServiceRunning } from "../core/semantic/service.ts";
+import { processLogDestination } from "../core/storage/process-log.ts";
 import {
   parsePerformanceWindow,
   readWebPerformanceReport,
@@ -82,6 +83,19 @@ export function nodeOptionsWithWebDiagnostics(webDir: string, mb: number): strin
   if (inherited.includes("server-performance.mjs")) return inherited;
   const preload = pathToFileURL(path.join(webDir, "server-performance.mjs")).href;
   return `${inherited} --import=${preload}`.trim();
+}
+
+export function webPerformanceLogDestination(
+  coordRoot: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  return processLogDestination({
+    coord_root: coordRoot,
+    family_id: "web-performance-log",
+    filename: "active.jsonl",
+    legacy_path: path.join(coordRoot, ".harnery", "logs", WEB_PERFORMANCE_LOG),
+    env,
+  });
 }
 
 async function startSemanticServiceWithWeb(coordRoot: string, emit: EmitContext): Promise<void> {
@@ -223,10 +237,11 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
 
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       const nodeOptions = nodeOptionsWithWebDiagnostics(root, heapMb);
+      const performanceLogPath = webPerformanceLogDestination(coordRoot);
       emit.log(`harn web · http://localhost:${port} (${mode})`, "info");
       emit.log(`files origin · http://harnery-files.localhost:${port}`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
-      emit.log(`performance log · .harnery/logs/${WEB_PERFORMANCE_LOG}`, "info");
+      emit.log(`performance log · ${performanceLogPath}`, "info");
       if (heapMb > 0) emit.log(`heap ceiling · ${heapMb} MB`, "info");
 
       const child = spawn(webRunner(), ["run", mode], {
@@ -236,6 +251,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
           HARNERY_COORD_ROOT: coordRoot,
           HARNERY_WEB_PORT: String(port),
           HARNERY_WEB_MODE: mode,
+          HARNERY_WEB_PERFORMANCE_LOG_PATH: performanceLogPath,
           NODE_OPTIONS: nodeOptions,
         },
         stdio: "inherit",
@@ -313,9 +329,10 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       await startSemanticServiceWithWeb(coordRoot, emit);
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       const nodeOptions = nodeOptionsWithWebDiagnostics(root, heapMb);
+      const performanceLogPath = webPerformanceLogDestination(coordRoot);
       emit.log(`harn web · http://localhost:${port} (start)`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
-      emit.log(`performance log · .harnery/logs/${WEB_PERFORMANCE_LOG}`, "info");
+      emit.log(`performance log · ${performanceLogPath}`, "info");
       if (heapMb > 0) emit.log(`heap ceiling · ${heapMb} MB`, "info");
 
       const child = spawn(webRunner(), ["run", "start"], {
@@ -325,6 +342,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
           HARNERY_COORD_ROOT: coordRoot,
           HARNERY_WEB_PORT: String(port),
           HARNERY_WEB_MODE: "start",
+          HARNERY_WEB_PERFORMANCE_LOG_PATH: performanceLogPath,
           NODE_OPTIONS: nodeOptions,
         },
         stdio: "inherit",

@@ -134,17 +134,23 @@ export function parsePerformanceWindow(input: string): number | null {
 function performanceLogPaths(root: string): string[] {
   const logsDir = path.join(root, ".harnery", "logs");
   if (!existsSync(logsDir)) return [];
-  return readdirSync(logsDir)
-    .filter(
-      (name) =>
-        name === WEB_PERFORMANCE_LOG || new RegExp(`^${WEB_PERFORMANCE_LOG}\\.\\d+$`).test(name),
-    )
+  return [
+    ...rotatedLogPaths(path.join(logsDir, "web-performance"), "active.jsonl"),
+    ...rotatedLogPaths(logsDir, WEB_PERFORMANCE_LOG),
+  ];
+}
+
+function rotatedLogPaths(directory: string, activeName: string): string[] {
+  if (!existsSync(directory)) return [];
+  const escaped = activeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return readdirSync(directory)
+    .filter((name) => name === activeName || new RegExp(`^${escaped}\\.\\d+$`).test(name))
     .sort((left, right) => {
-      if (left === WEB_PERFORMANCE_LOG) return 1;
-      if (right === WEB_PERFORMANCE_LOG) return -1;
+      if (left === activeName) return 1;
+      if (right === activeName) return -1;
       return Number(right.split(".").at(-1)) - Number(left.split(".").at(-1));
     })
-    .map((name) => path.join(logsDir, name));
+    .map((name) => path.join(directory, name));
 }
 
 function numberField(value: unknown): value is number {
@@ -191,7 +197,7 @@ export function readWebPerformanceReport(options: {
   nowMs?: number;
 }): WebPerformanceReport {
   const root = path.resolve(options.root);
-  const logPath = path.join(root, ".harnery", "logs", WEB_PERFORMANCE_LOG);
+  const logPath = path.join(root, ".harnery", "logs", "web-performance", "active.jsonl");
   const windowMs = parsePerformanceWindow(options.since);
   if (windowMs === null) throw new Error(`invalid performance window: ${options.since}`);
   const cutoffMs = (options.nowMs ?? Date.now()) - windowMs;
@@ -223,6 +229,7 @@ export function readWebPerformanceReport(options: {
   }
 
   const events: WebPerformanceEvent[] = [];
+  const seenEvents = new Set<string>();
   let invalidLines = 0;
   for (const file of paths) {
     for (const line of readFileSync(file, "utf8").split("\n")) {
@@ -234,12 +241,21 @@ export function readWebPerformanceReport(options: {
           invalidLines++;
           continue;
         }
-        if (timestamp >= cutoffMs) events.push(event);
+        const identity = JSON.stringify(event);
+        if (timestamp >= cutoffMs && !seenEvents.has(identity)) {
+          seenEvents.add(identity);
+          events.push(event);
+        }
       } catch {
         invalidLines++;
       }
     }
   }
+  events.sort(
+    (left, right) =>
+      Date.parse(left.ts) - Date.parse(right.ts) ||
+      JSON.stringify(left).localeCompare(JSON.stringify(right)),
+  );
 
   const allRequests = events.filter(isRequestEvent);
   const requests = allRequests.filter((event) => !event.stream);

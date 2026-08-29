@@ -10,10 +10,11 @@
 import { channel } from "node:diagnostics_channel";
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { constants, performance, PerformanceObserver } from "node:perf_hooks";
+import { constants, PerformanceObserver, performance } from "node:perf_hooks";
 import { getHeapStatistics } from "node:v8";
 
 export const WEB_PERFORMANCE_LOG = "web-performance.jsonl";
+export const WEB_PERFORMANCE_SHARED_FILE = "active.jsonl";
 
 const DEFAULT_SLOW_REQUEST_MS = 1_000;
 const DEFAULT_EVENT_LOOP_DELAY_MS = 250;
@@ -34,6 +35,18 @@ export function positiveNumber(raw, fallback) {
 /** @param {string | undefined} raw @param {number} fallback */
 export function positiveInteger(raw, fallback) {
   return Math.max(1, Math.floor(positiveNumber(raw, fallback)));
+}
+
+/** Resolve the shared catalog partition by default and the untouched legacy path on rollback. */
+/** @param {string} coordRoot @param {Readonly<Record<string, string | undefined>>} [env] */
+export function webPerformanceLogPath(coordRoot, env = process.env) {
+  if (env.HARNERY_WEB_PERFORMANCE_LOG_PATH) {
+    return path.resolve(env.HARNERY_WEB_PERFORMANCE_LOG_PATH);
+  }
+  const logs = path.join(path.resolve(coordRoot), ".harnery", "logs");
+  return env.HARNERY_SHARED_LOGS === "0"
+    ? path.join(logs, WEB_PERFORMANCE_LOG)
+    : path.join(logs, "web-performance", WEB_PERFORMANCE_SHARED_FILE);
 }
 
 /** Strip query strings and fragments while retaining the actionable route. */
@@ -176,7 +189,7 @@ export function installWebPerformanceDiagnostics() {
     process.env.HARNERY_WEB_PERFORMANCE_LOG_BACKUPS,
     DEFAULT_LOG_BACKUPS,
   );
-  const logPath = path.join(path.resolve(coordRoot), ".harnery", "logs", WEB_PERFORMANCE_LOG);
+  const logPath = webPerformanceLogPath(coordRoot);
   const writer = new BoundedJsonlWriter(logPath, maxLogBytes, logBackups);
   const active = new Map();
   let requestSequence = 0;

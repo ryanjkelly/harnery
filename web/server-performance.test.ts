@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { webPerformanceLogPath } from "./server-performance.mjs";
 
 const modulePath = fileURLToPath(new URL("./server-performance.mjs", import.meta.url));
 const roots: string[] = [];
@@ -57,7 +58,8 @@ describe("web server performance preload", () => {
     const exitCode = await new Promise<number | null>((resolve) => child.once("exit", resolve));
     expect(exitCode).toBe(0);
 
-    const log = readFileSync(path.join(root, ".harnery", "logs", "web-performance.jsonl"), "utf8")
+    const sharedPath = path.join(root, ".harnery", "logs", "web-performance", "active.jsonl");
+    const log = readFileSync(sharedPath, "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
@@ -85,6 +87,7 @@ describe("web server performance preload", () => {
       gc_count: expect.any(Number),
     });
     expect(JSON.stringify(log)).not.toContain("secret=omitted");
+    expect(existsSync(path.join(root, ".harnery", "logs", "web-performance.jsonl"))).toBeFalse();
   });
 
   test("does not implicate an idle event stream in a later event-loop delay", async () => {
@@ -136,7 +139,10 @@ describe("web server performance preload", () => {
     await stream;
     expect(await new Promise<number | null>((resolve) => child.once("exit", resolve))).toBe(0);
 
-    const log = readFileSync(path.join(root, ".harnery", "logs", "web-performance.jsonl"), "utf8")
+    const log = readFileSync(
+      path.join(root, ".harnery", "logs", "web-performance", "active.jsonl"),
+      "utf8",
+    )
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
@@ -144,5 +150,43 @@ describe("web server performance preload", () => {
     expect(delay.active_requests.map((request: { route: string }) => request.route)).toEqual([
       "/blocking",
     ]);
+  });
+
+  test("rollback writes only the legacy destination", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "harnery-web-preload-rollback-"));
+    roots.push(root);
+    expect(webPerformanceLogPath(root, {})).toBe(
+      path.join(root, ".harnery", "logs", "web-performance", "active.jsonl"),
+    );
+    expect(webPerformanceLogPath(root, { HARNERY_SHARED_LOGS: "0" })).toBe(
+      path.join(root, ".harnery", "logs", "web-performance.jsonl"),
+    );
+    const fixture = `
+      const http = require("node:http");
+      const server = http.createServer((_request, response) => {
+        response.end("ok");
+        setTimeout(() => server.close(), 25);
+      });
+      server.listen(0, "127.0.0.1", () => console.log(server.address().port));
+    `;
+    const child = spawn("node", ["--import", modulePath, "-e", fixture], {
+      env: {
+        ...process.env,
+        HARNERY_COORD_ROOT: root,
+        HARNERY_SHARED_LOGS: "0",
+        HARNERY_WEB_MODE: "test",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const port = await new Promise<number>((resolve, reject) => {
+      child.stdout.once("data", (chunk) => resolve(Number(String(chunk).trim())));
+      child.once("error", reject);
+    });
+    expect(await (await fetch(`http://127.0.0.1:${port}/rollback`)).text()).toBe("ok");
+    expect(await new Promise<number | null>((resolve) => child.once("exit", resolve))).toBe(0);
+    expect(existsSync(path.join(root, ".harnery", "logs", "web-performance.jsonl"))).toBeTrue();
+    expect(
+      existsSync(path.join(root, ".harnery", "logs", "web-performance", "active.jsonl")),
+    ).toBeFalse();
   });
 });

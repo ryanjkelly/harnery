@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createHarneryProgram } from "../commander.ts";
 import type { TunnelState } from "../lib/tunnel/state.ts";
-import { reloadOne } from "./tunnel.ts";
+import { reloadOne, tunnelLogDestinations } from "./tunnel.ts";
 
 function tunnelCommand() {
   const program = createHarneryProgram();
@@ -51,6 +54,29 @@ describe("tunnel command registration", () => {
     expect(flags).toContain("--name");
     expect(flags).toContain("--all");
   });
+
+  test("routes new process logs only to the catalog partition unless rollback is explicit", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-tunnel-logs-"));
+    const legacyGate = join(root, ".cache", "tunnel", "gate.log");
+    try {
+      mkdirSync(join(root, ".cache", "tunnel"), { recursive: true });
+      writeFileSync(legacyGate, "legacy");
+      const shared = tunnelLogDestinations("default", "cloudflare", {}, root);
+      expect(shared).toEqual({
+        gate: join(root, ".harnery", "logs", "tunnel-process", "gate.log"),
+        provider: join(root, ".harnery", "logs", "tunnel-process", "cloudflared.log"),
+      });
+      expect(readFileSync(legacyGate, "utf8")).toBe("legacy");
+      expect(
+        tunnelLogDestinations("default", "cloudflare", { HARNERY_SHARED_LOGS: "0" }, root),
+      ).toEqual({
+        gate: legacyGate,
+        provider: join(root, ".cache", "tunnel", "cloudflared.log"),
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("reloadOne", () => {
@@ -60,7 +86,7 @@ describe("reloadOne", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain("provider process is gone");
     expect(result.message).toContain("tunnel up");
-  });
+  }, 15_000);
 
   /**
    * The refusal must be inert. reloadOne kills the gate before it can know

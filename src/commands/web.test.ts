@@ -9,6 +9,7 @@ import {
   nodeOptionsWithHeapCap,
   nodeOptionsWithWebDiagnostics,
   resolveMaxOldSpaceMb,
+  webPerformanceLogDestination,
 } from "./web.ts";
 
 describe("resolveWebPort", () => {
@@ -167,5 +168,21 @@ describe("nodeOptionsWithHeapCap", () => {
     expect(nodeOptionsWithWebDiagnostics("/elsewhere", 0)).toBe(
       "--import=file:///tmp/server-performance.mjs",
     );
+  });
+});
+
+describe("web performance log destination", () => {
+  test("uses only the catalog partition by default and the legacy file on rollback", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-web-log-destination-"));
+    try {
+      expect(webPerformanceLogDestination(root, {})).toBe(
+        join(root, ".harnery", "logs", "web-performance", "active.jsonl"),
+      );
+      expect(webPerformanceLogDestination(root, { HARNERY_SHARED_LOGS: "0" })).toBe(
+        join(root, ".harnery", "logs", "web-performance.jsonl"),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
