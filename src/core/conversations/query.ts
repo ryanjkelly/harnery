@@ -6,6 +6,8 @@ import type {
   HarneryConversationQueryResult,
   HarneryConversationRecordV1,
   HarneryConversationSourceSnapshot,
+  HarneryConversationSummary,
+  HarneryNativeConversationRecord,
 } from "./contract.ts";
 import { normalizeConversationRecord } from "./normalize.ts";
 
@@ -15,61 +17,171 @@ export async function queryConversationCatalog(
 ): Promise<HarneryConversationQueryResult> {
   validateRequest(request);
   const started = performance.now();
+  const deadline = started + request.budgets.max_wall_ms;
+  const controller = new AbortController();
   const records: HarneryConversationRecordV1[] = [];
   const snapshots: HarneryConversationSourceSnapshot[] = [];
   let decodedBytes = 0;
+  let sourceRecords = 0;
   let sourceTruncation: HarneryConversationQueryResult["truncation_reason"];
   const providers = request.provider_id ? [catalog.require(request.provider_id)] : catalog.list();
-  providerLoop: for (const provider of providers) {
-    if (!provider.capabilities.can_list || !provider.capabilities.can_stream_source) continue;
-    if (performance.now() - started > request.budgets.max_wall_ms) {
-      sourceTruncation = "wall_budget";
-      break;
-    }
-    const summaries = await provider.list(request.project_scope_id);
-    for (const summary of summaries) {
-      if (summary.project_scope_id !== request.project_scope_id) continue;
-      if (request.conversation_id && summary.conversation_id !== request.conversation_id) continue;
-      if (performance.now() - started > request.budgets.max_wall_ms) {
+  try {
+    providerLoop: for (const provider of providers) {
+      if (!provider.capabilities.can_list || !provider.capabilities.can_stream_source) continue;
+      if (deadlineExpired(deadline)) {
         sourceTruncation = "wall_budget";
-        break providerLoop;
+        break;
       }
-      const snapshot = await provider.snapshot(request.project_scope_id, summary.conversation_id);
-      snapshots.push(snapshot);
-      let sequence = 0;
-      for await (const native of provider.stream(
-        request.project_scope_id,
-        summary.conversation_id,
-      )) {
-        sequence += 1;
-        const normalized = normalizeConversationRecord({
-          capabilities: provider.capabilities,
-          snapshot,
-          native,
-          captured_at: snapshot.observed_at,
-          sequence,
-        });
-        if (!normalized.record) continue;
-        if (records.length >= request.budgets.max_source_records) {
-          sourceTruncation = "record_budget";
-          break providerLoop;
-        }
-        if (decodedBytes + normalized.record.content_bytes > request.budgets.max_decoded_bytes) {
-          sourceTruncation = "byte_budget";
-          break providerLoop;
-        }
-        if (performance.now() - started > request.budgets.max_wall_ms) {
+      let summaries: readonly HarneryConversationSummary[];
+      try {
+        summaries = await beforeDeadline(
+          provider.list(request.project_scope_id, { signal: controller.signal }),
+          deadline,
+          controller,
+        );
+      } catch (error) {
+        if (!isWallBudgetError(error)) throw error;
+        sourceTruncation = "wall_budget";
+        break;
+      }
+      for (const summary of summaries) {
+        if (deadlineExpired(deadline)) {
+          controller.abort();
           sourceTruncation = "wall_budget";
           break providerLoop;
         }
-        records.push(normalized.record);
-        decodedBytes += normalized.record.content_bytes;
+        if (summary.project_scope_id !== request.project_scope_id) continue;
+        if (request.conversation_id && summary.conversation_id !== request.conversation_id)
+          continue;
+        let snapshot: HarneryConversationSourceSnapshot;
+        try {
+          snapshot = await beforeDeadline(
+            provider.snapshot(request.project_scope_id, summary.conversation_id, {
+              signal: controller.signal,
+            }),
+            deadline,
+            controller,
+          );
+        } catch (error) {
+          if (!isWallBudgetError(error)) throw error;
+          sourceTruncation = "wall_budget";
+          break providerLoop;
+        }
+        snapshots.push(snapshot);
+        let sequence = 0;
+        const iterator = provider
+          .stream(request.project_scope_id, summary.conversation_id, {
+            signal: controller.signal,
+          })
+          [Symbol.asyncIterator]();
+        let iteratorCompleted = false;
+        try {
+          while (true) {
+            if (sourceRecords >= request.budgets.max_source_records) {
+              sourceTruncation = "record_budget";
+              break;
+            }
+            let next: IteratorResult<HarneryNativeConversationRecord>;
+            try {
+              next = await beforeDeadline(iterator.next(), deadline, controller);
+            } catch (error) {
+              if (!isWallBudgetError(error)) throw error;
+              sourceTruncation = "wall_budget";
+              break;
+            }
+            if (next.done) {
+              iteratorCompleted = true;
+              break;
+            }
+            sourceRecords += 1;
+            sequence += 1;
+            const native = next.value;
+            const rawBytes =
+              typeof native.content === "string" ? Buffer.byteLength(native.content) : 0;
+            if (decodedBytes + rawBytes > request.budgets.max_decoded_bytes) {
+              sourceTruncation = "byte_budget";
+              break;
+            }
+            if (deadlineExpired(deadline)) {
+              controller.abort();
+              sourceTruncation = "wall_budget";
+              break;
+            }
+            const normalized = normalizeConversationRecord({
+              capabilities: provider.capabilities,
+              snapshot,
+              native,
+              captured_at: snapshot.observed_at,
+              sequence,
+            });
+            decodedBytes += rawBytes;
+            if (deadlineExpired(deadline)) {
+              controller.abort();
+              sourceTruncation = "wall_budget";
+              break;
+            }
+            if (normalized.record) records.push(normalized.record);
+          }
+        } finally {
+          if (!iteratorCompleted) requestIteratorReturn(iterator);
+        }
+        if (sourceTruncation) break providerLoop;
       }
     }
+  } finally {
+    if (sourceTruncation) controller.abort();
   }
   const result = queryConversationRecords(records, snapshots, request, { started_at: started });
   if (!sourceTruncation || result.truncated) return result;
   return { ...result, truncated: true, truncation_reason: sourceTruncation };
+}
+
+class ConversationWallBudgetError extends Error {}
+
+async function beforeDeadline<T>(
+  operation: Promise<T>,
+  deadline: number,
+  controller: AbortController,
+): Promise<T> {
+  const remaining = deadline - performance.now();
+  if (remaining <= 0) {
+    controller.abort();
+    throw new ConversationWallBudgetError();
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new ConversationWallBudgetError());
+      }, remaining);
+    });
+    const result = await Promise.race([operation, timeout]);
+    if (deadlineExpired(deadline)) {
+      controller.abort();
+      throw new ConversationWallBudgetError();
+    }
+    return result;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function deadlineExpired(deadline: number): boolean {
+  return performance.now() >= deadline;
+}
+
+function isWallBudgetError(error: unknown): error is ConversationWallBudgetError {
+  return error instanceof ConversationWallBudgetError;
+}
+
+function requestIteratorReturn<T>(iterator: AsyncIterator<T>): void {
+  try {
+    const returned = iterator.return?.();
+    if (returned) void Promise.resolve(returned).catch(() => undefined);
+  } catch {
+    // A provider cleanup failure cannot widen the query budget or replace its reason code.
+  }
 }
 
 export function queryConversationRecords(

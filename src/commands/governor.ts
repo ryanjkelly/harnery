@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
@@ -22,7 +22,6 @@ import {
   type GovernorRunReport,
   type GovernorServiceConfig,
   type GovernorServiceStatus,
-  governorServiceLogPath,
   listGovernorsWithWarnings,
   readGovernor,
   readGovernorPlan,
@@ -35,6 +34,7 @@ import {
   runGovernorServiceDaemon,
   spawnGovernorService,
 } from "../core/governor/index.ts";
+import { readGovernorServiceLogs } from "../core/governor/service-read.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
@@ -401,16 +401,17 @@ function registerServiceCommand(
       withGovernorRoot(emit, (coordRoot) => {
         const lines = integer(opts.lines) ?? 50;
         if (lines > 10_000) throw new Error("service log lines must not exceed 10000");
-        const path = governorServiceLogPath(coordRoot);
-        if (!existsSync(path)) {
+        const result = readGovernorServiceLogs(coordRoot, {
+          max_bytes: 512 * 1024,
+          max_records: 10_000,
+        });
+        if (result.lines.length === 0) {
           emit.text("no governor service log\n");
           return;
         }
-        const selected = readFileSync(path, "utf8")
-          .split("\n")
-          .slice(-(lines + 1))
-          .join("\n");
-        emit.text(selected.endsWith("\n") ? selected : `${selected}\n`);
+        emit.text(`${result.lines.slice(-lines).join("\n")}\n`);
+        if (result.truncated)
+          emit.log("governor service log read stopped at its bounded budget", "warn");
       });
     });
 

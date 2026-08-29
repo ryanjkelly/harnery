@@ -1,8 +1,11 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { coordEnv } from "../../lib/env.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
+import type { HarneryLogRecordV1 } from "../storage/jsonl.ts";
+import { parseLogRecord } from "../storage/jsonl.ts";
 import { familyLogDirectory, readSegmentManifest } from "../storage/segments.ts";
 import type {
   GovernorServiceConfig,
@@ -12,6 +15,7 @@ import type {
 } from "./service.ts";
 
 const MAX_FILE_BYTES = 512 * 1024;
+const MAX_LOG_RECORDS = 10_000;
 const MAX_GOALS = 100;
 const FOREIGN_STATUS_STALE_MS = 30_000;
 
@@ -96,6 +100,306 @@ export function governorServiceLogPath(coordRoot: string): string {
   } catch {
     return legacy;
   }
+}
+
+export interface GovernorServiceLogReadOptions {
+  max_bytes?: number;
+  max_records?: number;
+}
+
+export interface GovernorServiceLogReadResult {
+  lines: readonly string[];
+  bytes_read: number;
+  records_examined: number;
+  truncated: boolean;
+}
+
+interface GovernorLogEntry {
+  identity: string;
+  line: string;
+  timestamp?: string;
+}
+
+interface GovernorLogRead {
+  entries: GovernorLogEntry[];
+  bytes: number;
+  records: number;
+  truncated: boolean;
+}
+
+/** Read shared generations plus untouched legacy history under one aggregate budget. */
+export function readGovernorServiceLogs(
+  coordRootRaw: string,
+  options: GovernorServiceLogReadOptions = {},
+): GovernorServiceLogReadResult {
+  const coordRoot = resolve(coordRootRaw);
+  const maxBytes = options.max_bytes ?? MAX_FILE_BYTES;
+  const maxRecords = options.max_records ?? MAX_LOG_RECORDS;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error("governor service log byte budget must be a positive integer");
+  }
+  if (!Number.isSafeInteger(maxRecords) || maxRecords <= 0) {
+    throw new Error("governor service log record budget must be a positive integer");
+  }
+
+  let bytes = 0;
+  let records = 0;
+  let truncated = false;
+  const reads: GovernorLogEntry[][] = [];
+  if (coordEnv("SHARED_LOGS") !== "0") {
+    try {
+      const shared = readSharedGovernorLogs(coordRoot, maxBytes, maxRecords);
+      reads.push(shared.entries);
+      bytes += shared.bytes;
+      records += shared.records;
+      truncated ||= shared.truncated;
+    } catch {
+      // A corrupt or racing shared generation fails closed into bounded legacy history.
+      truncated = true;
+    }
+  }
+  for (const legacy of [
+    { path: join(serviceDir(coordRoot), "events.jsonl"), structured: true },
+    { path: join(serviceDir(coordRoot), "service.log"), structured: false },
+  ]) {
+    const remainingBytes = maxBytes - bytes;
+    const remainingRecords = maxRecords - records;
+    if (remainingBytes <= 0 || remainingRecords <= 0) {
+      if (existsSync(legacy.path)) truncated = true;
+      continue;
+    }
+    const read = readLegacyGovernorLog(
+      legacy.path,
+      legacy.structured,
+      remainingBytes,
+      remainingRecords,
+    );
+    reads.push(read.entries);
+    bytes += read.bytes;
+    records += read.records;
+    truncated ||= read.truncated;
+  }
+
+  const merged = new Map<string, GovernorLogEntry>();
+  for (const entries of reads) {
+    for (const entry of entries) if (!merged.has(entry.identity)) merged.set(entry.identity, entry);
+  }
+  const lines = [...merged.values()]
+    .sort(
+      (left, right) =>
+        (left.timestamp ?? "").localeCompare(right.timestamp ?? "") ||
+        left.identity.localeCompare(right.identity),
+    )
+    .map(({ line }) => line);
+  return { lines, bytes_read: bytes, records_examined: records, truncated };
+}
+
+function readSharedGovernorLogs(
+  coordRoot: string,
+  maxBytes: number,
+  maxRecords: number,
+): GovernorLogRead {
+  const family = createStorageCatalog({ coord_root: coordRoot }).require("governor-service-log");
+  const directory = familyLogDirectory(family);
+  let totalBytes = 0;
+  let totalRecords = 0;
+  let raced = false;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const remainingBytes = maxBytes - totalBytes;
+    const remainingRecords = maxRecords - totalRecords;
+    if (remainingBytes <= 0 || remainingRecords <= 0) break;
+    const manifest = readSegmentManifest(directory, family);
+    const generation = manifestGeneration(manifest);
+    const sources = [
+      ...manifest.segments.map((segment) => ({ path: join(directory, segment.file), gzip: true })),
+      { path: join(directory, "active.jsonl"), gzip: false },
+    ];
+    const read = readSharedSources(sources, remainingBytes, remainingRecords);
+    totalBytes += read.bytes;
+    totalRecords += read.records;
+    const after = readSegmentManifest(directory, family);
+    if (manifestGeneration(after) === generation) {
+      return {
+        entries: read.entries,
+        bytes: totalBytes,
+        records: totalRecords,
+        truncated: raced || read.truncated,
+      };
+    }
+    raced = true;
+  }
+  return { entries: [], bytes: totalBytes, records: totalRecords, truncated: raced };
+}
+
+function readSharedSources(
+  sources: readonly { path: string; gzip: boolean }[],
+  maxBytes: number,
+  maxRecords: number,
+): GovernorLogRead {
+  const entries: GovernorLogEntry[] = [];
+  let bytes = 0;
+  let records = 0;
+  let truncated = false;
+  for (const source of sources) {
+    if (!existsSync(source.path)) continue;
+    if (bytes >= maxBytes || records >= maxRecords) {
+      truncated = true;
+      break;
+    }
+    const body = readBoundedSource(source.path, source.gzip, maxBytes - bytes, false);
+    bytes += body.bytes;
+    truncated ||= body.truncated;
+    for (const line of completeLines(body.body, false)) {
+      if (records >= maxRecords) {
+        truncated = true;
+        break;
+      }
+      records += 1;
+      try {
+        entries.push(normalizeSharedGovernorRecord(parseLogRecord(line)));
+      } catch {
+        // Malformed rows count against the source budget but cannot poison the readable tail.
+      }
+    }
+  }
+  return { entries, bytes, records, truncated };
+}
+
+function readLegacyGovernorLog(
+  path: string,
+  structured: boolean,
+  maxBytes: number,
+  maxRecords: number,
+): GovernorLogRead {
+  if (!existsSync(path)) return { entries: [], bytes: 0, records: 0, truncated: false };
+  const source = readBoundedSource(path, false, maxBytes, true);
+  const entries: GovernorLogEntry[] = [];
+  let records = 0;
+  let truncated = source.truncated;
+  for (const line of completeLines(source.body, source.truncated)) {
+    if (records >= maxRecords) {
+      truncated = true;
+      break;
+    }
+    records += 1;
+    if (!structured) {
+      entries.push({ identity: `text:${line}`, line });
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (isRecord(parsed)) entries.push(normalizeLegacyGovernorRecord(parsed));
+    } catch {
+      // Malformed legacy lines stay excluded while consuming their source budget.
+    }
+  }
+  return { entries, bytes: source.bytes, records, truncated };
+}
+
+function readBoundedSource(
+  path: string,
+  gzip: boolean,
+  maxBytes: number,
+  tail: boolean,
+): { body: string; bytes: number; truncated: boolean } {
+  if (maxBytes <= 0) return { body: "", bytes: 0, truncated: true };
+  const size = statSync(path).size;
+  if (size <= 0) return { body: "", bytes: 0, truncated: false };
+  if (gzip) {
+    if (size > maxBytes) return { body: "", bytes: maxBytes, truncated: true };
+    try {
+      const output = gunzipSync(readFileSync(path), { maxOutputLength: maxBytes });
+      return {
+        body: output.toString("utf8"),
+        bytes: Math.max(size, output.byteLength),
+        truncated: false,
+      };
+    } catch {
+      return { body: "", bytes: maxBytes, truncated: true };
+    }
+  }
+  const length = Math.min(size, maxBytes);
+  const buffer = Buffer.allocUnsafe(length);
+  const descriptor = openSync(path, "r");
+  try {
+    const bytes = readSync(descriptor, buffer, 0, length, tail ? size - length : 0);
+    return {
+      body: buffer.subarray(0, bytes).toString("utf8"),
+      bytes,
+      truncated: size > bytes,
+    };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function completeLines(body: string, truncatedPrefix: boolean): string[] {
+  const start = truncatedPrefix ? body.indexOf("\n") + 1 : 0;
+  const end = body.lastIndexOf("\n");
+  if (start < 0 || end < start) return [];
+  return body.slice(start, end).split("\n").filter(Boolean);
+}
+
+function normalizeSharedGovernorRecord(record: HarneryLogRecordV1): GovernorLogEntry {
+  if (record.family_id !== "governor-service-log") throw new Error("wrong governor log family");
+  const payload = {
+    ...Object.fromEntries(
+      Object.entries(record.fields).map(([key, value]) => [key, parseJsonField(value)]),
+    ),
+    ts: record.emitted_at,
+    event: record.event,
+  };
+  return normalizedGovernorEntry(payload);
+}
+
+function normalizeLegacyGovernorRecord(record: Record<string, unknown>): GovernorLogEntry {
+  const { schema_version: _schemaVersion, ...payload } = record;
+  return normalizedGovernorEntry(payload);
+}
+
+function normalizedGovernorEntry(payload: Record<string, unknown>): GovernorLogEntry {
+  const identity = stableJson(payload);
+  return {
+    identity,
+    line: JSON.stringify(payload),
+    ...(typeof payload.ts === "string" ? { timestamp: payload.ts } : {}),
+  };
+}
+
+function parseJsonField(value: unknown): unknown {
+  if (typeof value !== "string" || (!value.startsWith("[") && !value.startsWith("{"))) {
+    return value;
+  }
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function manifestGeneration(manifest: {
+  next_sequence: number;
+  segments: readonly { file: string; sha256: string }[];
+}): string {
+  return JSON.stringify([
+    manifest.next_sequence,
+    manifest.segments.map((segment) => [segment.file, segment.sha256]),
+  ]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readStatusRecord(coordRoot: string): GovernorServiceStatusRecord | undefined {

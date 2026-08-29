@@ -154,15 +154,25 @@ export interface HarneryNativeConversationRecord {
   attachment_refs?: readonly string[];
 }
 
+export interface HarneryConversationProviderReadOptions {
+  /** Providers should stop pending I/O promptly when the query wall budget expires. */
+  signal?: AbortSignal;
+}
+
 export interface HarneryConversationProvider {
   capabilities: HarneryConversationProviderCapabilities;
-  list(projectScopeId: string): Promise<readonly HarneryConversationSummary[]>;
+  list(
+    projectScopeId: string,
+    options?: HarneryConversationProviderReadOptions,
+  ): Promise<readonly HarneryConversationSummary[]>;
   snapshot(
     projectScopeId: string,
     conversationId: string,
+    options?: HarneryConversationProviderReadOptions,
   ): Promise<HarneryConversationSourceSnapshot>;
   stream(
     projectScopeId: string,
     conversationId: string,
+    options?: HarneryConversationProviderReadOptions,
   ): AsyncIterable<HarneryNativeConversationRecord>;
 }

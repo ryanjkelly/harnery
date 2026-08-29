@@ -211,8 +211,117 @@ describe("conversation history", () => {
       query({ budgets: { ...query().budgets, max_source_records: 2 } }),
     );
     expect(result).toMatchObject({ truncated: true, truncation_reason: "record_budget" });
-    expect(yielded).toBe(3);
+    expect(yielded).toBe(2);
     expect(result.scanned_records).toBe(2);
+  });
+
+  test("counts excluded native rows against the hard source ceiling", async () => {
+    let yielded = 0;
+    const provider = fixtureProvider();
+    provider.stream = async function* () {
+      for (let index = 0; index < 100_000; index += 1) {
+        yielded += 1;
+        yield {
+          native_conversation_id: "native-excluded",
+          role: "tool",
+          occurred_at: "2026-08-29T10:00:00.000Z",
+          content: "excluded",
+        };
+      }
+    };
+    const result = await queryConversationCatalog(
+      new HarneryConversationCatalog([provider]),
+      query({ budgets: { ...query().budgets, max_source_records: 2 } }),
+    );
+    expect(yielded).toBe(2);
+    expect(result).toMatchObject({
+      scanned_records: 0,
+      truncated: true,
+      truncation_reason: "record_budget",
+    });
+  });
+
+  test("rejects an oversized native row before normalization", async () => {
+    const provider = fixtureProvider();
+    provider.stream = async function* () {
+      yield {
+        native_conversation_id: "native-oversized",
+        role: "assistant",
+        occurred_at: "invalid-before-normalization",
+        content: "x".repeat(1_000_000),
+      };
+    };
+    const result = await queryConversationCatalog(
+      new HarneryConversationCatalog([provider]),
+      query({ budgets: { ...query().budgets, max_decoded_bytes: 32 } }),
+    );
+    expect(result).toMatchObject({
+      scanned_records: 0,
+      decoded_bytes: 0,
+      truncated: true,
+      truncation_reason: "byte_budget",
+    });
+  });
+
+  test("aborts delayed provider metadata reads at the wall deadline", async () => {
+    for (const delayed of ["list", "snapshot"] as const) {
+      let aborted = false;
+      const provider = fixtureProvider();
+      if (delayed === "list") {
+        const original = provider.list.bind(provider);
+        provider.list = async (projectScopeId, options) => {
+          await delayedRead(options?.signal, () => {
+            aborted = true;
+          });
+          return original(projectScopeId, options);
+        };
+      } else {
+        const original = provider.snapshot.bind(provider);
+        provider.snapshot = async (projectScopeId, conversationId, options) => {
+          await delayedRead(options?.signal, () => {
+            aborted = true;
+          });
+          return original(projectScopeId, conversationId, options);
+        };
+      }
+      const started = performance.now();
+      const result = await queryConversationCatalog(
+        new HarneryConversationCatalog([provider]),
+        query({ budgets: { ...query().budgets, max_wall_ms: 10 } }),
+      );
+      expect(result).toMatchObject({ truncated: true, truncation_reason: "wall_budget" });
+      expect(aborted, delayed).toBeTrue();
+      expect(performance.now() - started, delayed).toBeLessThan(200);
+    }
+  });
+
+  test("aborts and closes a delayed provider iterator at the wall deadline", async () => {
+    let aborted = false;
+    let returned = false;
+    const provider = fixtureProvider();
+    provider.stream = (_projectScopeId, _conversationId, options) => ({
+      [Symbol.asyncIterator]() {
+        options?.signal?.addEventListener("abort", () => {
+          aborted = true;
+        });
+        return {
+          next: () => new Promise<IteratorResult<never>>(() => undefined),
+          return: async () => {
+            returned = true;
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    });
+    const started = performance.now();
+    const result = await queryConversationCatalog(
+      new HarneryConversationCatalog([provider]),
+      query({ budgets: { ...query().budgets, max_wall_ms: 10 } }),
+    );
+    expect(result).toMatchObject({ truncated: true, truncation_reason: "wall_budget" });
+    expect(aborted).toBeTrue();
+    expect(returned).toBeTrue();
+    expect(performance.now() - started).toBeLessThan(200);
   });
 
   test("never includes cross-project records as conversation neighbors", async () => {
@@ -277,6 +386,21 @@ function fixtureProvider(): HarneryConversationProvider {
       yield* records();
     },
   };
+}
+
+async function delayedRead(signal: AbortSignal | undefined, onAbort: () => void): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 250);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        onAbort();
+        resolve();
+      },
+      { once: true },
+    );
+  });
 }
 
 function records(): HarneryNativeConversationRecord[] {
