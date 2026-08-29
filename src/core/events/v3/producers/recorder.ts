@@ -199,6 +199,9 @@ export interface HookProducerStateV3 {
   last_monotonic_ns?: string;
   last_observed_at?: string;
   started_event_id?: `evt_${string}`;
+  /** A derived lifecycle reopen is allowed to exist before the adapter's next
+   * native prompt. Retained owner-only until that prompt starts a real turn. */
+  session_start_derivation?: "approved_lifecycle_reopen";
   session_span: OpenSpanStateV3;
   current_turn_span?: OpenSpanStateV3;
   terminal: boolean;
@@ -3408,6 +3411,7 @@ function newProducerState(
       boot_id: bootId,
       clock: signalClock(input),
     }),
+    session_start_derivation: input.session_start_derivation,
     terminal: false,
     spans: [],
     delegations: [],
@@ -3438,6 +3442,7 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
   if (event.event_type === "turn.started") {
     const nextTurnId = (event.scope as { turn_id: `tid_${string}` }).turn_id;
     state.current_turn_id = nextTurnId;
+    state.session_start_derivation = undefined;
     if (state.tool_call_count_turn_id !== nextTurnId) {
       state.tool_call_count = 0;
       state.tool_call_count_turn_id = nextTurnId;
@@ -3847,6 +3852,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "runtime_transcript_path",
     "privacy_epoch_id",
     "session_id",
+    "session_start_derivation",
     "session_span",
     "spans",
     "started_event_id",
@@ -3945,6 +3951,8 @@ function readProducerState(path: string): HookProducerStateV3 {
     (state.last_observed_at !== undefined &&
       !Number.isFinite(Date.parse(state.last_observed_at))) ||
     (state.started_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.started_event_id)) ||
+    (state.session_start_derivation !== undefined &&
+      state.session_start_derivation !== "approved_lifecycle_reopen") ||
     (state.pending_runtime_contexts !== undefined &&
       (!Array.isArray(state.pending_runtime_contexts) ||
         state.pending_runtime_contexts.length === 0 ||

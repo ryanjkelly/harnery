@@ -102,6 +102,10 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
       monotonic_ns: process.hrtime.bigint().toString(),
     });
     if (result.state === "generation_unavailable") {
+      const expectedLifecycleReopenGap =
+        result.reason === "turn_not_started" &&
+        hook.session_start_derivation === "approved_lifecycle_reopen";
+      if (expectedLifecycleReopenGap) return;
       writeProducerDiagnosticV3(coordRoot, "command_emit_unjoinable", {
         type,
         instance_id: instanceId,

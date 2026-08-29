@@ -760,6 +760,72 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(events[1]?.producer.sequence).toBe(1);
   });
 
+  test("recovers an approved lifecycle reopen marker until the first real prompt", () => {
+    const root = candidateRoot();
+    const nativeSession = "lifecycle-reopen-recovery";
+    const initial = baseInput(root, "session-start", parsed({ session_id: nativeSession }));
+    expect(recordHookSignalV3(initial).state).toBe("recorded");
+    const terminal = readHookProducerStateV3(root, "claude-code", nativeSession);
+    if (!terminal) throw new Error("expected initial producer state");
+    expect(
+      recordApprovedSessionEndV3({
+        coordRoot: root,
+        mode: "candidate",
+        instance_id: terminal.instance_id,
+        generation_id: terminal.generation_id,
+        build_id: "build_fixture",
+        platform: "linux",
+        reason: "approved_explicit_end",
+        outcome: "succeeded",
+        coordination_finalized: true,
+      }).state,
+    ).toBe("recorded");
+    const reopen = {
+      ...initial,
+      session_start_derivation: "approved_lifecycle_reopen" as const,
+    };
+    expect(() =>
+      recordHookSignalV3({
+        ...reopen,
+        writerOptions: {
+          onStep: (step) => {
+            if (step === "ready_published") throw new Error("simulated reopen producer kill");
+          },
+        },
+      }),
+    ).toThrow("simulated reopen producer kill");
+    const crashed = readHookProducerStateV3(root, "claude-code", nativeSession);
+    expect(crashed).toMatchObject({
+      session_start_derivation: "approved_lifecycle_reopen",
+      pending: { event: { event_type: "session.started" } },
+    });
+    expect(crashed?.current_turn_id).toBeUndefined();
+
+    const recovered = recordHookSignalV3(reopen);
+    expect(recovered.state).toBe("recorded");
+    if (recovered.state === "recorded") expect(recovered.recovered).toBeTrue();
+    const recoveredState = readHookProducerStateV3(root, "claude-code", nativeSession);
+    expect(recoveredState).toMatchObject({
+      session_start_derivation: "approved_lifecycle_reopen",
+    });
+    expect(recoveredState?.current_turn_id).toBeUndefined();
+    expect(recoveredState?.pending).toBeUndefined();
+    expect(
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "user-prompt-submit",
+          parsed({ session_id: nativeSession, turn_id: "first-real-turn" }),
+        ),
+      ).state,
+    ).toBe("recorded");
+    const prompted = readHookProducerStateV3(root, "claude-code", nativeSession);
+    expect(prompted).toMatchObject({
+      current_turn_id: expect.stringMatching(/^tid_/),
+    });
+    expect(prompted?.session_start_derivation).toBeUndefined();
+  });
+
   test("pairs child-agent start and completion without persisting the native child identity", () => {
     const root = candidateRoot();
     const nativeSession = "parent-session";
