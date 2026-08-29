@@ -30,6 +30,7 @@ import { registerCheckpointCommand } from "./commands/checkpoint.ts";
 import { registerClaudeDesktopCommand } from "./commands/claude-desktop.ts";
 import { registerCompletionCommand } from "./commands/completion.ts";
 import { registerConfigGetCommand } from "./commands/config-get.ts";
+import { registerConversationsCommand } from "./commands/conversations.ts";
 import { registerCookiesCommand } from "./commands/cookies.ts";
 import { registerDecisionCommand } from "./commands/decision.ts";
 import { registerDeinitCommand } from "./commands/deinit.ts";
@@ -45,10 +46,13 @@ import { registerFileHistoryCommand } from "./commands/file-history.ts";
 import { registerFilesCommand } from "./commands/files.ts";
 import { registerGovernorCommand } from "./commands/governor.ts";
 import { registerGrepCommand } from "./commands/grep.ts";
+import { registerInboxCommand } from "./commands/inbox.ts";
 import { registerInitCommand } from "./commands/init.ts";
 import { registerInstructionsCommand } from "./commands/instructions.ts";
 import { registerJournalCommand } from "./commands/journal.ts";
 import { registerLedgerV3Command } from "./commands/ledger-v3.ts";
+import { registerLogsCommand } from "./commands/logs.ts";
+import { registerMessagesCommand } from "./commands/messages.ts";
 import { registerOutlineCommand } from "./commands/outline.ts";
 import { registerPolicyCommand } from "./commands/policy.ts";
 import { registerPresenceCommand } from "./commands/presence.ts";
@@ -201,6 +205,14 @@ export interface HarneryProgramContext {
   storage?: import("./core/storage/contract.ts").HarneryHostStorageRegistration;
   /** Maintenance implementations registered at construction time by storage owners. */
   storageMaintenanceProviders?: readonly import("./core/storage/maintenance.ts").HarneryMaintenanceProvider[];
+  /** Private inbox implementation. Omission keeps the commands visible but unavailable to invoke. */
+  coordinationInbox?: import("./core/inbox/service.ts").HarneryInboxService;
+  /** Adapter-native conversation providers. Omission keeps explicit history access unavailable. */
+  conversations?: {
+    catalog: import("./core/conversations/catalog.ts").HarneryConversationCatalog;
+    projectScopeId: string;
+    records?: () => readonly import("./core/conversations/contract.ts").HarneryConversationRecordV1[];
+  };
   /**
    * Default Host header for `tunnel up` when `--vhost` is omitted: a literal
    * host, or a resolver evaluated at start time (e.g. read a dev stack's
@@ -304,6 +316,24 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerLedgerV3Command(program, emit, opts.context);
   registerSemanticCommand(program, emit, opts.context);
   if (include("storage")) registerStorageCommand(program, emit, opts.context);
+  if (include("logs")) registerLogsCommand(program, emit, opts.context);
+  if (include("inbox")) registerInboxCommand(program, emit, opts.context?.coordinationInbox);
+  if (include("messages")) registerMessagesCommand(program, emit, opts.context?.coordinationInbox);
+  if (include("conversations")) {
+    registerConversationsCommand(
+      program,
+      emit,
+      opts.context?.conversations?.catalog,
+      opts.context?.conversations
+        ? {
+            project_scope_id: opts.context.conversations.projectScopeId,
+            ...(opts.context.conversations.records
+              ? { records: opts.context.conversations.records }
+              : {}),
+          }
+        : undefined,
+    );
+  }
   registerEventsCommand(program, emit, opts.context);
   registerArtifactsCommand(program, emit, opts.context);
   registerDecisionCommand(program, emit);

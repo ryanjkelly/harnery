@@ -13,3 +13,5 @@
 
 export type { HarneryContextOpts, HarneryProgramContext } from "./commander.ts";
 export { createHarneryProgram } from "./commander.ts";
+export * from "./core/conversations/index.ts";
+export * from "./core/inbox/index.ts";

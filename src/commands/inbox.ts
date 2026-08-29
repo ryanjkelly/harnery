@@ -16,12 +16,12 @@ export function registerInboxCommand(
         const rows = requireInboxService(service)
           .pending(recipient)
           .map((record) => ({
-          message_id: record.message_id,
-          sender_instance_id: record.sender_instance_id,
-          sender_display_name: record.sender_display_name,
-          created_at: record.created_at,
-          body_bytes: record.body_bytes,
-          body: record.body,
+            message_id: record.message_id,
+            sender_instance_id: record.sender_instance_id,
+            sender_display_name: record.sender_display_name,
+            created_at: record.created_at,
+            body_bytes: record.body_bytes,
+            body: record.body,
           }));
         if (options.json) {
           emit.config({ format: "json" });
