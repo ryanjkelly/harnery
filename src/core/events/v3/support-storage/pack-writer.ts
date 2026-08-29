@@ -23,6 +23,8 @@ export interface EventV3SupportPackSource {
   recorded_at?: string;
   diagnostic_category?: string;
   diagnostic_reason?: string;
+  expected_bytes?: number;
+  expected_digest?: `sha256:${string}`;
 }
 
 export interface WriteEventV3SupportPackInput {
@@ -35,6 +37,7 @@ export interface WriteEventV3SupportPackInput {
   sources: EventV3SupportPackSource[];
   minimum_harnery_version: string;
   created_at: string;
+  fault?: (boundary: "after_source_identity_before_open", path: string) => void;
 }
 
 export interface WrittenEventV3SupportPack {
@@ -61,9 +64,13 @@ export async function writeEventV3SupportPack(
     const relativePath = normalizeEventV3SupportPath(source.relative_path);
     if (inspected.at(-1)?.path === relativePath) throw new Error("event_v3_support_duplicate_path");
     const absolutePath = resolve(authorityRoot, ...relativePath.split("/"));
-    const sourceReal = await realpath(absolutePath);
-    assertContained(authorityReal, sourceReal);
-    const details = await inspectRegularFile(absolutePath);
+    const details = await inspectRegularFile(absolutePath, authorityReal, input.fault);
+    if (
+      (source.expected_bytes !== undefined && source.expected_bytes !== details.bytes) ||
+      (source.expected_digest !== undefined && source.expected_digest !== details.digest)
+    ) {
+      throw new Error("event_v3_support_source_planned_mismatch");
+    }
     inspected.push({
       ...source,
       relative_path: relativePath,
@@ -98,7 +105,7 @@ export async function writeEventV3SupportPack(
   await rejectExisting([payloadPath, manifestPath, payloadPartial, manifestPartial]);
 
   try {
-    await streamPayload(inspected, payloadPartial);
+    await streamPayload(inspected, payloadPartial, authorityReal);
     await chmod(payloadPartial, 0o600);
     await rename(payloadPartial, payloadPath);
     const payload = await inspectRegularFile(payloadPath);
@@ -155,7 +162,11 @@ export async function writeEventV3SupportPack(
   }
 }
 
-async function streamPayload(entries: InspectedSource[], destination: string): Promise<void> {
+async function streamPayload(
+  entries: InspectedSource[],
+  destination: string,
+  authorityReal: string,
+): Promise<void> {
   const gzip = createGzip({ level: 9 });
   const output = createWriteStream(destination, { flags: "wx", mode: 0o600 });
   const completed = pipeline(gzip, output);
@@ -167,16 +178,15 @@ async function streamPayload(entries: InspectedSource[], destination: string): P
           entry.digest,
         )},"content_base64":"`,
       );
-      const handle = await open(entry.absolute_path, constants.O_RDONLY | noFollow());
+      const handle = await openStableRegularFile(entry.absolute_path, authorityReal);
       try {
-        const stat = await handle.stat();
-        if (!stat.isFile()) throw new Error("event_v3_support_source_not_regular");
         const hash = createHash("sha256");
         let bytes = 0;
         let carry: Buffer<ArrayBufferLike> = Buffer.alloc(0);
         const stream = createReadStream(entry.absolute_path, {
           fd: handle.fd,
           autoClose: false,
+          start: 0,
           highWaterMark: 64 * 1024,
         });
         for await (const current of stream) {
@@ -210,17 +220,14 @@ async function streamPayload(entries: InspectedSource[], destination: string): P
 
 async function inspectRegularFile(
   path: string,
+  containmentRoot?: string,
+  fault?: WriteEventV3SupportPackInput["fault"],
 ): Promise<{ bytes: number; digest: `sha256:${string}` }> {
-  const before = await lstat(path);
-  if (!before.isFile() || before.isSymbolicLink())
-    throw new Error("event_v3_support_source_not_regular");
-  const handle = await open(path, constants.O_RDONLY | noFollow());
+  const handle = await openStableRegularFile(path, containmentRoot, fault);
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile()) throw new Error("event_v3_support_source_not_regular");
     const hash = createHash("sha256");
     let bytes = 0;
-    const stream = createReadStream(path, { fd: handle.fd, autoClose: false });
+    const stream = createReadStream(path, { fd: handle.fd, autoClose: false, start: 0 });
     for await (const current of stream) {
       const chunk = current as Buffer;
       bytes += chunk.length;
@@ -230,6 +237,48 @@ async function inspectRegularFile(
   } finally {
     await handle.close();
   }
+}
+
+async function openStableRegularFile(
+  path: string,
+  containmentRoot?: string,
+  fault?: WriteEventV3SupportPackInput["fault"],
+) {
+  const before = await lstat(path);
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw new Error("event_v3_support_source_not_regular");
+  }
+  const beforeReal = await realpath(path);
+  if (containmentRoot) assertContained(containmentRoot, beforeReal);
+  fault?.("after_source_identity_before_open", path);
+  const handle = await open(path, constants.O_RDONLY | noFollow());
+  try {
+    const opened = await handle.stat();
+    const after = await lstat(path);
+    const afterReal = await realpath(path);
+    if (
+      !opened.isFile() ||
+      !after.isFile() ||
+      after.isSymbolicLink() ||
+      !sameIdentity(before, opened) ||
+      !sameIdentity(opened, after) ||
+      beforeReal !== afterReal
+    ) {
+      throw new Error("event_v3_support_source_changed_during_open");
+    }
+    if (containmentRoot) assertContained(containmentRoot, afterReal);
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+function sameIdentity(
+  left: { dev: number | bigint; ino: number | bigint },
+  right: { dev: number | bigint; ino: number | bigint },
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 async function realDirectory(path: string, code: string): Promise<string> {

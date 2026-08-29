@@ -6,7 +6,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -98,6 +100,18 @@ describe("sealed legacy V1 storage", () => {
     await expect(collectRows(canary.manifest_path, { max_decompressed_bytes: 4 })).rejects.toThrow(
       "legacy_v1_decompression_bound_exceeded",
     );
+    let replaced = false;
+    expect(
+      await collectRows(canary.manifest_path, {
+        fault(boundary, path) {
+          if (boundary === "after_source_digest" && !replaced) {
+            replaced = true;
+            renameSync(path, `${path}.verified`);
+            writeFileSync(path, gzipSync(Buffer.from('{"event":"evil"}\n')));
+          }
+        },
+      }),
+    ).toEqual(looseRows);
     writeFileSync(canary.payload_path, "corrupt");
     await expect(collectRows(canary.manifest_path)).rejects.toThrow(
       "legacy_v1_payload_length_mismatch",
@@ -123,6 +137,43 @@ describe("sealed legacy V1 storage", () => {
     expect(await collectRows(segment)).toEqual([
       '{"at":"2026-08-20T00:00:00.000Z","event":"safe"}',
     ]);
+  });
+
+  test("rejects symlinks and keeps streaming the opened file when its pathname is replaced", async () => {
+    const root = fixtureRoot();
+    const outside = join(root, "outside.ndjson");
+    writeFileSync(outside, '{"event":"outside"}\n');
+    const symlink = join(root, "events-symlink.ndjson");
+    symlinkSync(outside, symlink);
+    await expect(collectRows(symlink)).rejects.toThrow("legacy_v1_segment_not_regular");
+
+    const fixture = legacyFixture();
+    const canary = await writeLegacyV1Canary({
+      coord_root: fixture.root,
+      source_filename: "events-2026-08-20.ndjson",
+      output_directory: join(fixture.root, "shadow"),
+      minimum_harnery_version: "0.36.0",
+      created_at: "2026-08-29T00:00:00.000Z",
+    });
+    renameSync(canary.payload_path, `${canary.payload_path}.outside`);
+    symlinkSync(`${canary.payload_path}.outside`, canary.payload_path);
+    await expect(collectRows(canary.manifest_path)).rejects.toThrow(
+      "legacy_v1_payload_not_regular",
+    );
+
+    const segment = join(root, "events-race.ndjson");
+    writeFileSync(segment, '{"event":"safe"}\n');
+    let replaced = false;
+    const rows = await collectRows(segment, {
+      fault(boundary, path) {
+        if (boundary === "after_source_digest" && !replaced) {
+          replaced = true;
+          renameSync(path, `${path}.verified`);
+          writeFileSync(path, '{"event":"evil"}\n');
+        }
+      },
+    });
+    expect(rows).toEqual(['{"event":"safe"}']);
   });
 
   test("accounts for an exact 17-file sealed census including manual and gzip variants", async () => {

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { EventV3SupportInventoryEntry } from "./inventory.ts";
 import {
   activateEventV3SupportReplacement,
@@ -14,6 +14,7 @@ import {
   verifyEventV3SupportTransactionShadow,
   writeEventV3SupportTransactionShadow,
 } from "./maintenance.ts";
+import { writeEventV3SupportPack } from "./pack-writer.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -131,6 +132,43 @@ describe("Event Ledger V3 support maintenance transaction", () => {
         expected_current_genesis_id: "gen_new_epoch",
       }),
     ).rejects.toThrow("event_v3_support_transaction_genesis_mismatch");
+  });
+
+  test("rejects a valid swap-pack-restore shadow whose logical authority differs from the plan", async () => {
+    const fixture = transactionFixture();
+    const planned = await planEventV3SupportTransaction(fixture.input);
+    const shadow = await writeEventV3SupportTransactionShadow({
+      transaction_root: fixture.transactions,
+      transaction_id: planned.transaction_id,
+      minimum_harnery_version: "0.36.0",
+      now: "2026-08-29T00:01:00.000Z",
+    });
+    writeFileSync(fixture.source, '{"code":"evil"}\n');
+    const forged = await writeEventV3SupportPack({
+      authority_root: fixture.input.authority_root,
+      output_directory: join(fixture.transactions, planned.transaction_id, "forged"),
+      root_id: "root_fixture",
+      genesis_id: "gen_fixture",
+      verification_mode: "active-frozen-files",
+      sources: [{ relative_path: "diagnostics/safe.json", family: "diagnostic" }],
+      minimum_harnery_version: "0.36.0",
+      created_at: planned.created_at,
+    });
+    writeFileSync(fixture.source, '{"code":"safe"}\n');
+    const transactionDirectory = join(fixture.transactions, planned.transaction_id);
+    const originalManifest = join(transactionDirectory, shadow.shadow!.manifest_path);
+    const originalShadowDirectory = join(transactionDirectory, "shadow");
+    copyFileSync(forged.payload_path, join(originalShadowDirectory, basename(forged.payload_path)));
+    copyFileSync(forged.manifest_path, originalManifest);
+
+    await expect(
+      verifyEventV3SupportTransactionShadow({
+        transaction_root: fixture.transactions,
+        transaction_id: planned.transaction_id,
+        expected_current_genesis_id: "gen_fixture",
+        now: "2026-08-29T00:02:00.000Z",
+      }),
+    ).rejects.toThrow("event_v3_support_shadow_authority_mismatch");
   });
 });
 

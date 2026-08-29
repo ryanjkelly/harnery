@@ -6,7 +6,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -185,6 +187,70 @@ describe("Event Ledger V3 support-pack protocol", () => {
       "event_v3_support_logical_digest_mismatch",
     );
     expect(existsSync(destination)).toBe(false);
+  });
+
+  test("rejects symlinked sources and a source replaced between identity check and open", async () => {
+    const root = fixtureRoot();
+    const authority = join(root, "authority");
+    mkdirSync(join(authority, "diagnostics"), { recursive: true });
+    const outside = join(root, "outside.json");
+    writeFileSync(outside, '{"code":"outside"}\n');
+    const source = join(authority, "diagnostics", "safe.json");
+    symlinkSync(outside, source);
+    const input = {
+      authority_root: authority,
+      output_directory: join(root, "shadow"),
+      root_id: "root_fixture",
+      genesis_id: "gen_fixture",
+      verification_mode: "active-frozen-files" as const,
+      sources: [{ relative_path: "diagnostics/safe.json", family: "diagnostic" as const }],
+      minimum_harnery_version: "0.36.0",
+      created_at: "2026-08-29T00:00:00.000Z",
+    };
+    await expect(writeEventV3SupportPack(input)).rejects.toThrow(
+      "event_v3_support_source_not_regular",
+    );
+
+    rmSync(source);
+    writeFileSync(source, '{"code":"safe"}\n');
+    let replaced = false;
+    await expect(
+      writeEventV3SupportPack({
+        ...input,
+        output_directory: join(root, "race-shadow"),
+        fault(boundary, path) {
+          if (boundary === "after_source_identity_before_open" && !replaced) {
+            replaced = true;
+            renameSync(path, `${path}.original`);
+            writeFileSync(path, '{"code":"evil"}\n');
+          }
+        },
+      }),
+    ).rejects.toThrow("event_v3_support_source_changed_during_open");
+  });
+
+  test("streams the already-verified payload handle when its pathname is replaced", async () => {
+    const manifestPath = rawPack([record("diagnostics/a.json", "safe")]);
+    let replaced = false;
+    const validated = await validateEventV3SupportPack(manifestPath, {
+      fault(boundary, path) {
+        if (boundary === "after_payload_digest" && !replaced) {
+          replaced = true;
+          renameSync(path, `${path}.verified`);
+          writeFileSync(path, "replacement");
+        }
+      },
+    });
+    expect(validated.records[0]?.content.toString("utf8")).toBe("safe");
+
+    const symlinkManifest = rawPack([record("diagnostics/a.json", "safe")]);
+    const symlinkPack = await readEventV3SupportPackManifest(symlinkManifest);
+    const symlinkPayload = join(join(symlinkManifest, ".."), symlinkPack.payload.path);
+    renameSync(symlinkPayload, `${symlinkPayload}.outside`);
+    symlinkSync(`${symlinkPayload}.outside`, symlinkPayload);
+    await expect(validateEventV3SupportPack(symlinkManifest)).rejects.toThrow(
+      "event_v3_support_payload_not_regular",
+    );
   });
 });
 

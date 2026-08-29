@@ -6,7 +6,7 @@ import { canonicalJsonV3 } from "../canonical.ts";
 import type { EventV3SupportInventoryEntry } from "./inventory.ts";
 import { digestEventV3LogicalAuthority } from "./logical-authority.ts";
 import type { EventV3SupportFamily, EventV3SupportVerificationMode } from "./pack-contract.ts";
-import { assertEventV3SupportPackAuthority } from "./pack-contract.ts";
+import { assertEventV3SupportPackAuthority, logicalEntriesDigestV3 } from "./pack-contract.ts";
 import { verifyEventV3SupportPack } from "./pack-reader.ts";
 import { writeEventV3SupportPack } from "./pack-writer.ts";
 
@@ -173,7 +173,15 @@ export async function writeEventV3SupportTransactionShadow(input: {
     ...(transaction.authority.source_authority_digest
       ? { source_authority_digest: transaction.authority.source_authority_digest }
       : {}),
-    sources: transaction.sources,
+    sources: transaction.sources.map((source) => ({
+      relative_path: source.relative_path,
+      family: source.family,
+      ...(source.recorded_at ? { recorded_at: source.recorded_at } : {}),
+      ...(source.diagnostic_category ? { diagnostic_category: source.diagnostic_category } : {}),
+      ...(source.diagnostic_reason ? { diagnostic_reason: source.diagnostic_reason } : {}),
+      expected_bytes: source.bytes,
+      expected_digest: source.digest,
+    })),
     minimum_harnery_version: input.minimum_harnery_version,
     created_at: transaction.created_at,
   });
@@ -212,8 +220,25 @@ export async function verifyEventV3SupportTransactionShadow(input: {
     genesis_id: transaction.authority.genesis_id,
     verification_mode: transaction.authority.verification_mode,
   });
-  if (validated.entries !== transaction.sources.length) {
+  const plannedSourceDigest = logicalEntriesDigestV3(
+    transaction.sources.map(({ relative_path, bytes, digest }) => ({
+      path: relative_path,
+      bytes,
+      digest,
+    })),
+  );
+  if (
+    validated.entries !== transaction.sources.length ||
+    validated.manifest.entries.logical_entries_digest !== plannedSourceDigest ||
+    validated.manifest.authority.source_files_digest !== plannedSourceDigest
+  ) {
     throw new Error("event_v3_support_shadow_authority_mismatch");
+  }
+  if (
+    validated.manifest.authority.source_authority_digest !==
+    transaction.authority.source_authority_digest
+  ) {
+    throw new Error("event_v3_support_shadow_source_authority_mismatch");
   }
   if (transaction.authority.verification_mode === "archive-logical-authority") {
     const currentDigest = await digestEventV3LogicalAuthority(transaction.authority.root);
