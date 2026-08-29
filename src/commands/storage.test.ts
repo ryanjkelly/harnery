@@ -26,6 +26,9 @@ describe("storage command", () => {
       "maintain",
       "status",
     ]);
+    expect(
+      storage?.commands.find((command) => command.name() === "maintain")?.helpInformation(),
+    ).toContain("--authorize-structured-log-deletion");
   }, 10_000);
 
   test("honors construction-time command exclusion", () => {
@@ -54,7 +57,7 @@ describe("storage command", () => {
       from: "user",
     });
     const report = output.data[0] as HarneryStorageInventoryReport;
-    expect(report.schema).toBe("harnery.storage-inventory/v1");
+    expect(report.schema).toBe("harnery.storage-inventory/v2");
     expect(report.filter).toEqual({ family_id: "host-history" });
     expect(report.families).toHaveLength(1);
     expect(report.families[0]).toMatchObject({
@@ -89,8 +92,8 @@ describe("storage command", () => {
       { from: "user" },
     );
     expect(health.data[0]).toMatchObject({
-      schema: "harnery.storage-health/v1",
-      inventory_schema: "harnery.storage-inventory/v1",
+      schema: "harnery.storage-health/v2",
+      inventory_schema: "harnery.storage-inventory/v2",
       status: "unknown",
     });
   });
@@ -140,6 +143,47 @@ describe("storage command", () => {
       { from: "user" },
     );
     expect(status.data[0]).toMatchObject([{ transaction_id: planned.transaction_id }]);
+  });
+
+  test("structured-log authorization does not authorize another destructive provider", async () => {
+    const root = fixture();
+    mkdirSync(join(root, ".host", "maintained"), { recursive: true });
+    writeFileSync(join(root, ".host", "maintained", "one.jsonl"), "one\n");
+    let applied = 0;
+    const output = captureEmit();
+    const program = createHarneryProgram({
+      emit: output.emit,
+      context: {
+        repoRoot: root,
+        storage: { families: [maintainedHostFamily()] },
+        storageMaintenanceProviders: [
+          destructiveMaintenanceProvider("host-owned-deletion", () => (applied += 1)),
+        ],
+      },
+    });
+    await program.parseAsync(["storage", "maintain", "--family", "host-maintained", "--json"], {
+      from: "user",
+    });
+    const planned = output.data[0] as { transaction_id: string; actions: unknown[] };
+    expect(planned.actions).toHaveLength(1);
+    await program.parseAsync(
+      [
+        "storage",
+        "maintain",
+        "--transaction",
+        planned.transaction_id,
+        "--yes",
+        "--authorize-structured-log-deletion",
+        "--json",
+      ],
+      { from: "user" },
+    );
+    expect(output.errors.at(-1)).toEqual({
+      code: "destructive_activation_required",
+      message:
+        "structured-log deletion requires its provider scope, exact transaction, --yes, and explicit authorization",
+    });
+    expect(applied).toBe(0);
   });
 });
 
@@ -211,6 +255,34 @@ function maintenanceProvider(onApply: () => void): HarneryMaintenanceProvider {
           files: 1,
           bytes: 4,
           destructive: false,
+        },
+      ],
+    }),
+    apply: () => {
+      onApply();
+      return { outcome: "applied" };
+    },
+  };
+}
+
+function destructiveMaintenanceProvider(
+  scope: string,
+  onApply: () => void,
+): HarneryMaintenanceProvider {
+  return {
+    family_id: "host-maintained",
+    destructive_scope: scope,
+    plan: () => ({
+      actions: [
+        {
+          action_id: "delete-one",
+          family_id: "host-maintained",
+          kind: "delete",
+          target_ref: "one",
+          files: 1,
+          bytes: 4,
+          destructive: true,
+          authorization_scope: scope,
         },
       ],
     }),

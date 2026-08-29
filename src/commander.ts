@@ -277,6 +277,23 @@ export const defaultEmit: EmitContext = {
   },
 };
 
+/** Mount Harnery's storage and log commands below an arbitrary host namespace. */
+export interface HarneryLogStorageCommandOptions
+  extends Pick<HarneryContextOpts, "emit" | "context"> {
+  commands?: readonly ("storage" | "logs")[];
+}
+
+export function registerHarneryLogStorageCommands(
+  parent: Command,
+  options: HarneryLogStorageCommandOptions = {},
+): Command {
+  const emit = options.emit ?? defaultEmit;
+  const commands = new Set(options.commands ?? ["storage", "logs"]);
+  if (commands.has("storage")) registerStorageCommand(parent, emit, options.context);
+  if (commands.has("logs")) registerLogsCommand(parent, emit, options.context);
+  return parent;
+}
+
 export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   const program = new Command();
   const emit = opts.emit ?? defaultEmit;
@@ -315,8 +332,12 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerJournalCommand(program, emit);
   registerLedgerV3Command(program, emit, opts.context);
   registerSemanticCommand(program, emit, opts.context);
-  if (include("storage")) registerStorageCommand(program, emit, opts.context);
-  if (include("logs")) registerLogsCommand(program, emit, opts.context);
+  if (include("storage") && include("logs")) {
+    registerHarneryLogStorageCommands(program, { emit, context: opts.context });
+  } else {
+    if (include("storage")) registerStorageCommand(program, emit, opts.context);
+    if (include("logs")) registerLogsCommand(program, emit, opts.context);
+  }
   if (include("inbox")) registerInboxCommand(program, emit, opts.context?.coordinationInbox);
   if (include("messages")) registerMessagesCommand(program, emit, opts.context?.coordinationInbox);
   if (include("conversations")) {

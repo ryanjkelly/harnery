@@ -14,6 +14,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  unlinkSync,
   writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
@@ -38,8 +39,31 @@ export interface HarneryLogManifestV1 {
   schema: "harnery.log-manifest/v1";
   family_id: string;
   policy_version: string;
+  /** Highest lifetime sequence intentionally expired by retention. */
+  pruned_through_sequence?: number;
   next_sequence: number;
   segments: readonly HarneryLogSegmentV1[];
+}
+
+export interface PruneSealedLogSegmentOptions {
+  directory: string;
+  family: HarneryRegisteredStorageFamily;
+  sequence: number;
+  file: string;
+  expected_bytes: number;
+  /** Digest of the compressed file at the exact target path. */
+  expected_file_sha256: string;
+  /** Digest of the uncompressed JSONL recorded by the manifest. */
+  expected_content_sha256: string;
+  /** Semantic fingerprint of the exact manifest state frozen at planning. */
+  expected_manifest_fingerprint: string;
+  /** Semantic fingerprint of the reduced manifest committed by this action. */
+  result_manifest_fingerprint: string;
+  lease_timeout_ms?: number;
+  lease_retry_ms?: number;
+  lease_stale_ms?: number;
+  /** Fault-injection seam after the manifest commit and before unlink. */
+  after_manifest_commit?: () => void;
 }
 
 export interface SegmentAppendOptions {
@@ -193,20 +217,113 @@ export function readSegmentManifest(
   ) {
     throw new Error(`log manifest identity mismatch: ${path}`);
   }
+  const prunedThrough = value.pruned_through_sequence ?? 0;
   if (
+    !Number.isSafeInteger(prunedThrough) ||
+    prunedThrough < 0 ||
     !Number.isSafeInteger(value.next_sequence) ||
     value.next_sequence < 1 ||
+    prunedThrough >= value.next_sequence ||
     value.segments.some(
       (segment, index) =>
-        segment.sequence !== index + 1 ||
+        segment.sequence !== prunedThrough + index + 1 ||
         !/^segments\/[0-9]{8}-[0-9]{8}\.jsonl\.gz$/.test(segment.file) ||
+        !Number.isSafeInteger(segment.bytes) ||
+        segment.bytes <= 0 ||
+        !Number.isFinite(Date.parse(segment.sealed_at)) ||
+        (index > 0 &&
+          Date.parse(segment.sealed_at) < Date.parse(value.segments[index - 1]!.sealed_at)) ||
         !/^[a-f0-9]{64}$/.test(segment.sha256),
     ) ||
-    value.next_sequence !== value.segments.length + 1
+    value.next_sequence !== prunedThrough + value.segments.length + 1
   ) {
     throw new Error(`invalid log manifest sequence: ${path}`);
   }
   return value;
+}
+
+export function logManifestFingerprint(manifest: HarneryLogManifestV1): string {
+  return createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
+}
+
+/**
+ * Expire exactly the oldest retained segment. The manifest is authoritative,
+ * so it commits before unlink. Replays cover all four crash states without
+ * ever accepting an absent source from an old manifest.
+ */
+export async function pruneSealedLogSegment(
+  options: PruneSealedLogSegmentOptions,
+): Promise<"applied" | "already_applied"> {
+  if (!Number.isSafeInteger(options.sequence) || options.sequence < 1) {
+    throw new Error("invalid log retention sequence");
+  }
+  if (!/^segments\/[0-9]{8}-[0-9]{8}\.jsonl\.gz$/.test(options.file)) {
+    throw new Error("invalid log retention segment path");
+  }
+  if (!Number.isSafeInteger(options.expected_bytes) || options.expected_bytes <= 0) {
+    throw new Error("invalid log retention segment bytes");
+  }
+  if (
+    !/^[a-f0-9]{64}$/.test(options.expected_file_sha256) ||
+    !/^[a-f0-9]{64}$/.test(options.expected_content_sha256) ||
+    !/^[a-f0-9]{64}$/.test(options.expected_manifest_fingerprint) ||
+    !/^[a-f0-9]{64}$/.test(options.result_manifest_fingerprint)
+  ) {
+    throw new Error("invalid log retention segment digest");
+  }
+  const policy = {
+    lease_timeout_ms:
+      options.lease_timeout_ms ?? options.family.lease_policy?.acquisition_timeout_ms ?? 2_000,
+    lease_retry_ms: options.lease_retry_ms ?? options.family.lease_policy?.retry_backoff_ms ?? 10,
+    lease_stale_ms: options.lease_stale_ms ?? options.family.lease_policy?.stale_owner_ms ?? 30_000,
+  };
+  return withFamilyLease(options.directory, policy, () => {
+    const manifest = readSegmentManifest(options.directory, options.family);
+    const currentManifestFingerprint = logManifestFingerprint(manifest);
+    const prunedThrough = manifest.pruned_through_sequence ?? 0;
+    const target = containedSegmentPath(options.directory, options.file);
+    if (options.sequence <= prunedThrough) {
+      if (currentManifestFingerprint !== options.result_manifest_fingerprint) {
+        throw new Error("log retention manifest changed after the planned prune");
+      }
+      if (!pathExists(target)) return "already_applied";
+      assertExactSegment(target, options.expected_bytes, options.expected_file_sha256);
+      unlinkSync(target);
+      return "applied";
+    }
+    if (options.sequence !== prunedThrough + 1) {
+      throw new Error("log retention segment is not the oldest retained sequence");
+    }
+    if (currentManifestFingerprint !== options.expected_manifest_fingerprint) {
+      throw new Error("log retention manifest changed after planning");
+    }
+    const entry = manifest.segments[0];
+    if (
+      !entry ||
+      entry.sequence !== options.sequence ||
+      entry.file !== options.file ||
+      entry.sha256 !== options.expected_content_sha256
+    ) {
+      throw new Error("log retention segment does not match the current manifest");
+    }
+    if (!pathExists(target)) {
+      throw new Error("log retention source is absent while the manifest still references it");
+    }
+    assertExactSegment(target, options.expected_bytes, options.expected_file_sha256);
+    const next: HarneryLogManifestV1 = {
+      ...manifest,
+      pruned_through_sequence: options.sequence,
+      segments: manifest.segments.slice(1),
+    };
+    if (logManifestFingerprint(next) !== options.result_manifest_fingerprint) {
+      throw new Error("log retention predicted manifest does not match apply state");
+    }
+    atomicJson(join(options.directory, "manifest.json"), next);
+    options.after_manifest_commit?.();
+    assertExactSegment(target, options.expected_bytes, options.expected_file_sha256);
+    unlinkSync(target);
+    return "applied";
+  });
 }
 
 export async function withFamilyLease<T>(
@@ -322,6 +439,26 @@ function emptyManifest(family: HarneryRegisteredStorageFamily): HarneryLogManife
     next_sequence: 1,
     segments: [],
   };
+}
+
+function containedSegmentPath(directory: string, relativePath: string): string {
+  const path = join(directory, ...relativePath.split("/"));
+  const parent = captureDirectoryIdentity(dirname(path));
+  const fromRoot = relative(realpathSync(directory), parent.real_path);
+  if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) {
+    throw new Error("log retention segment escapes its family directory");
+  }
+  return path;
+}
+
+function assertExactSegment(path: string, expectedBytes: number, expectedSha256: string): void {
+  const stat = regularFileStat(path);
+  if (stat.nlink !== 1) throw new Error(`log retention rejects hard-linked segment: ${path}`);
+  if (stat.size !== expectedBytes) throw new Error(`log retention segment size changed: ${path}`);
+  const bytes = readRegularFile(path, expectedBytes);
+  if (createHash("sha256").update(bytes).digest("hex") !== expectedSha256) {
+    throw new Error(`log retention segment digest changed: ${path}`);
+  }
 }
 
 function atomicJson(path: string, value: unknown): void {

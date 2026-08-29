@@ -21,6 +21,7 @@ import {
 import {
   createAutomaticMaintenanceComposition,
   createExistingMaintenanceProviders,
+  createStructuredLogMaintenanceProviders,
   runAutomaticMaintenancePass,
 } from "./maintenance-providers.ts";
 
@@ -73,6 +74,21 @@ describe("automatic maintenance provider composition", () => {
       metadata: { activation: "explicit-only" },
     });
     expect(calls).toBe(0);
+  });
+
+  test("keeps structured-log deletion providers out of automatic composition", () => {
+    const root = fixture();
+    const catalog = createStorageCatalog({ coord_root: root, project_root: root });
+    const structured = createStructuredLogMaintenanceProviders(catalog);
+    expect(structured.length).toBeGreaterThan(0);
+    expect(
+      structured.every(({ destructive_scope }) => destructive_scope === "structured-log-retention"),
+    ).toBeTrue();
+    expect(
+      createAutomaticMaintenanceComposition(root, noops()).providers.some(
+        ({ destructive_scope }) => destructive_scope === "structured-log-retention",
+      ),
+    ).toBeFalse();
   });
 
   test("one daily claim plans work without invoking destructive providers", async () => {
@@ -205,6 +221,7 @@ function action(): HarneryMaintenanceAction {
     files: 1,
     bytes: 10,
     destructive: true,
+    authorization_scope: "fixture-owner-delete",
   };
 }
 
@@ -214,6 +231,7 @@ function fixtureProvider(
 ): HarneryMaintenanceProvider {
   return {
     family_id: "storage-maintenance-run-log",
+    destructive_scope: "fixture-owner-delete",
     plan,
     apply: () => {
       apply?.();

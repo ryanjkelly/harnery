@@ -23,7 +23,7 @@ Settings resolve from these sources, lowest precedence first (later wins):
 2. `<project>/.harnery/config.jsonc`: the project settings file, which overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
 3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, `coord`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. Three values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots` and `instructions.promptReminder`. A global setting cannot grant filesystem authority to a project or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
+The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, `coord`, `logs`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. Three values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots` and `instructions.promptReminder`. A global setting cannot grant filesystem authority to a project or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
 
 ## Top-level fields
 
@@ -35,6 +35,7 @@ The config reader (`src/core/config.ts`) merges the two files and owns `binName`
 | `agents`       | object  | see below        | Host-owned agent ritual policy |
 | `coord`        | object  | see below        | Coord-layer settings |
 | `artifacts`    | object  | see below        | Working-artifact retention |
+| `logs`         | object  | see below        | Soft storage budgets for manifest-backed logs |
 | `tools`        | object  | see below        | Managed-tool provisioning consent (`tools.ripgrep.autoInstall`) |
 | `workflow`     | object  | see below        | Workflow-engine defaults |
 | `skills`       | object  | see below        | Shipped-skill suppression (`skills.exclude`) |
@@ -154,6 +155,64 @@ wait, freshness, and rollout contract.
 Resolution: `HARNERY_ARTIFACT_RETENTION_DAYS` env → this `config.jsonc` key →
 `3`. See [`harn artifacts`](/cli/artifacts/) for cleanup behavior.
 
+## `logs.storage`
+
+`logs.storage` controls soft retention budgets for manifest-backed operational
+and debug logs. It never changes roots, formats, record limits, privacy rules,
+or writer behavior. It also never turns storage pressure into rejected writes.
+
+```jsonc
+{
+  "logs": {
+    "storage": {
+      "classes": {
+        "operational-log": {
+          "max_bytes": 134217728,
+          "max_age_days": 30
+        },
+        "debug-log": {
+          "max_bytes": 67108864,
+          "max_age_days": 7
+        }
+      },
+      "families": {
+        "web-performance-log": {
+          "max_bytes": 67108864,
+          "max_age_days": 14
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Valid range | Meaning |
+| ----- | ---- | ----------- | ------- |
+| `classes.operational-log.max_bytes` | integer | 10 MiB through 1 TiB | Managed-partition byte budget for every operational log unless a family override is more specific |
+| `classes.operational-log.max_age_days` | integer | 1 through 3,650 | Maximum sealed-segment age for every operational log unless a family override is more specific |
+| `classes.debug-log.max_bytes` | integer | 10 MiB through 1 TiB | Managed-partition byte budget for every debug log unless a family override is more specific |
+| `classes.debug-log.max_age_days` | integer | 1 through 3,650 | Maximum sealed-segment age for every debug log unless a family override is more specific |
+| `families.<family-id>.max_bytes` | integer | 10 MiB through 1 TiB | Exact-family byte budget |
+| `families.<family-id>.max_age_days` | integer | 1 through 3,650 | Exact-family sealed-segment age |
+
+Resolution starts with the source-owned family default, applies the merged
+class value, then applies the merged exact-family value. The project file wins
+over the user-global file only at the same JSON path. A family value is always
+more specific than a class value, even when the family value came from the
+user-global file.
+
+There is no environment-variable or mutating CLI override. Invalid values,
+unknown classes, and unknown project family identifiers disable log-retention
+planning and execution. An unknown family in the user-global file is reported
+as dormant because it may belong to another host project.
+
+`max_bytes` counts known regular files in the managed structured-log partition.
+Compatibility and legacy files are reported separately as unmanaged usage and
+are never deletion candidates. The budget is soft: an active segment or
+unmanaged files can leave a family over budget after all eligible sealed
+segments are gone. See [`harn logs`](/cli/logs/) for the evidence fields and
+[`harn storage`](/cli/storage/) for manual cleanup.
+
 ## `workflow`
 
 | Field              | Type | Default | Description |
@@ -265,6 +324,7 @@ vars and CLI flags override other config values per invocation:
 | Section | Config keys | Env override | Other |
 | --- | --- | --- | --- |
 | `coord` | `freshness_seconds` | `HARNERY_AGENT_COORD_FRESHNESS` | (none) |
+| `logs` | `storage.classes`, `storage.families` | (none) | exact-family values override class values; invalid retention config fails closed |
 | `artifacts` | `default_retention_days` | `HARNERY_ARTIFACT_RETENTION_DAYS` | `artifacts create --days` |
 | `artifacts` | `auto_clean` | `HARNERY_ARTIFACT_AUTO_CLEAN` | — |
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |

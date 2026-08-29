@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createStorageCatalog, type HarneryStorageCatalog } from "./catalog.ts";
+import { HARNERY_STRUCTURED_LOG_PROVIDER_ID } from "./contract.ts";
+import { createStructuredLogRetentionProvider } from "./log-retention.ts";
 import {
   HARNERY_MAINTENANCE_CURSOR_SCHEMA,
   type HarneryAutomaticMaintenanceResult,
@@ -40,6 +42,23 @@ export function createExistingMaintenanceProviders(
   ];
 }
 
+/** Providers exist only for manifest-backed JSONL partitions with valid policy. */
+export function createStructuredLogMaintenanceProviders(
+  catalog: HarneryStorageCatalog,
+): readonly HarneryMaintenanceProvider[] {
+  return catalog.families
+    .filter(
+      (family) =>
+        family.provider.provider_id === HARNERY_STRUCTURED_LOG_PROVIDER_ID &&
+        family.format === "jsonl" &&
+        family.effective_log_retention?.state === "valid" &&
+        family.resolved_roots.some(
+          (root) => root.match === "provider-partition" && root.ownership !== "external",
+        ),
+    )
+    .map(createStructuredLogRetentionProvider);
+}
+
 export function createAutomaticMaintenanceComposition(
   coordRoot: string,
   janitors: ExistingMaintenanceJanitors,
@@ -75,8 +94,10 @@ function delegatedJanitorProvider(
   janitorId: string,
   janitor: () => unknown,
 ): HarneryMaintenanceProvider {
+  const destructiveScope = `${janitorId}-retention`;
   return {
     family_id: familyId,
+    destructive_scope: destructiveScope,
     budget: { max_duration_ms: 100, max_files: 25, max_bytes: 8 * 1024 * 1024 },
     plan: ({ pressure, budget, cursor, now }) => {
       const day = now.toISOString().slice(0, 10);
@@ -91,6 +112,7 @@ function delegatedJanitorProvider(
             files: Math.min(pressure.regular_files, budget.max_files),
             bytes: Math.min(pressure.logical_bytes, budget.max_bytes),
             destructive: true,
+            authorization_scope: destructiveScope,
             metadata: { activation: "explicit-only", existing_owner_rules: true },
           },
         ],

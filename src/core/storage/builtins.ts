@@ -9,6 +9,7 @@ import type {
   HarneryStorageRoot,
   HarneryStorageSensitivity,
 } from "./contract.ts";
+import { HARNERY_STRUCTURED_LOG_PROVIDER_ID } from "./contract.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const MIB = 1_024 * 1_024;
@@ -37,7 +38,7 @@ const LOG_PARTITIONS = [
 ] as const;
 
 const STRUCTURED_LOG_PROVIDER: HarneryStorageProvider = {
-  provider_id: "structured-log-provider",
+  provider_id: HARNERY_STRUCTURED_LOG_PROVIDER_ID,
   kind: "filesystem",
   inventory: "filesystem",
   maintenance: "storage",
@@ -814,13 +815,13 @@ function logPolicy(
     "internal-metadata",
     "metadata-only",
     {
-      status: "proposed",
+      status: "active",
       mode: "oldest-sealed",
       maxAge: bounded(proposedDays * DAY_MS, "milliseconds"),
       maxBytes: bounded(proposedBytes, "bytes"),
       maxFiles: unbounded("files", "segment count follows time and byte proposals"),
       maxRecords: unbounded("records", "record count follows time and byte proposals"),
-      reason: `${proposedDays}-day retention is proposed and inactive pending measured activation.`,
+      reason: `${proposedDays}-day and ${proposedBytes}-byte source-owned storage budget.`,
     },
   );
   result.rotation = {

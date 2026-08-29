@@ -26,6 +26,7 @@ describe("adapter command rendering", () => {
     const report = runAdapterBench(createBuiltinAdapterRegistry(), {
       adapters: ["codex"],
       versionProbe: () => "installed",
+      attestationReader: () => null,
     });
     expect(renderBenchReport(report)).toContain("offline (no model calls)");
   });

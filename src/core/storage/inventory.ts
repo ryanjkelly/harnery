@@ -19,6 +19,7 @@ import {
   type HarneryStorageRoot,
   type HarneryStorageRootInventory,
 } from "./contract.ts";
+import { inspectStructuredLogRetention } from "./log-retention.ts";
 
 const MAX_CONCURRENCY = 16;
 
@@ -95,6 +96,7 @@ export async function inventoryStorage(
   options: HarneryStorageInventoryOptions = {},
 ): Promise<HarneryStorageInventoryReport> {
   const coordStorageRoot = resolve(catalog.context.coord_root, ".harnery");
+  const capturedAt = (options.now ?? (() => new Date()))();
   const state: ScanState = {
     catalog,
     coordStorageRoot,
@@ -136,7 +138,7 @@ export async function inventoryStorage(
 
   return {
     schema: HARNERY_STORAGE_INVENTORY_SCHEMA,
-    captured_at: (options.now ?? (() => new Date()))().toISOString(),
+    captured_at: capturedAt.toISOString(),
     privacy: { content_read: false, path_mode: "aggregate-labels" },
     scan: {
       mode: "streaming-lstat",
@@ -150,7 +152,7 @@ export async function inventoryStorage(
       registered_external_roots: observedTotals(state.externalRootTotals),
     },
     families: [...state.families.values()]
-      .map((family) => familyInventory(catalog, family))
+      .map((family) => familyInventory(catalog, family, capturedAt))
       .sort((left, right) => left.family_id.localeCompare(right.family_id)),
     issues: issueRows(state.issues),
   };
@@ -611,6 +613,7 @@ function recordIssue(state: ScanState, reason: HarneryStorageReasonCode): void {
 function familyInventory(
   catalog: HarneryStorageCatalog,
   accumulator: FamilyAccumulator,
+  capturedAt: Date,
 ): HarneryStorageFamilyInventory {
   const delegated = accumulator.family.provider.inventory === "delegated";
   const roots = accumulator.roots.map((root) => rootInventory(catalog, accumulator, root));
@@ -639,7 +642,35 @@ function familyInventory(
       ? unavailableTotals("delegated_inventory_unavailable")
       : observedTotals(accumulator.totals),
     roots,
+    ...(isLogFamily(accumulator.family)
+      ? { log_storage: logStorageStatus(accumulator.family, capturedAt) }
+      : {}),
   };
+}
+
+function logStorageStatus(family: HarneryRegisteredStorageFamily, now: Date) {
+  const inspection = inspectStructuredLogRetention(family, now);
+  const effective = family.effective_log_retention;
+  return {
+    effective_policy: effective
+      ? {
+          state: effective.state,
+          max_bytes: effective.max_bytes,
+          max_age_days: effective.max_age_days,
+          max_age_ms: effective.max_age_ms,
+          fingerprint: effective.effective_policy_fingerprint,
+          provenance: effective.provenance,
+          diagnostics: effective.diagnostics,
+        }
+      : null,
+    usage: inspection.usage,
+    pressure: inspection.pressure,
+    retention: inspection.retention,
+  };
+}
+
+function isLogFamily(family: HarneryRegisteredStorageFamily): boolean {
+  return family.storage_class === "operational-log" || family.storage_class === "debug-log";
 }
 
 function rootInventory(

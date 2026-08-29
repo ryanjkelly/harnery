@@ -106,6 +106,7 @@ describe("storage framework real-process crash canary", () => {
     let destructiveApplied = false;
     const provider: HarneryMaintenanceProvider = {
       family_id: "storage-maintenance-run-log",
+      destructive_scope: "fixture-owner-delete",
       plan: () => ({
         actions: [
           {
@@ -116,6 +117,7 @@ describe("storage framework real-process crash canary", () => {
             files: 1,
             bytes: 10,
             destructive: true,
+            authorization_scope: "fixture-owner-delete",
           },
         ],
       }),

@@ -8,7 +8,8 @@
  *
  * Fields owned here: `binName` (host CLI name for agent-facing strings),
  * `hooksSetupHint`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
- * `coord` (heartbeat freshness), `artifacts` (working-file retention),
+ * `coord` (heartbeat freshness), `logs` (structured-log storage budgets),
+ * `artifacts` (working-file retention),
  * `backup` (restic repo/password/prune policy), `sync` (rclone
  * remote/prefix), and `web` (dashboard port) sections. The `files` deny/override section
  * is parsed separately by `web/lib/files.ts`.
@@ -126,6 +127,8 @@ interface HarneryConfig {
       reconcile_interval_seconds?: number;
     };
   };
+  /** Strictly validated structured-log storage overrides. */
+  logs?: { storage?: unknown };
   /**
    * Managed working-artifact defaults. `default_retention_days` is the
    * create-time TTL when the caller does not pass `artifacts create --days`.
@@ -238,6 +241,40 @@ export interface CoordRunQualityConfigSource {
   invalid: boolean;
   /** Stable digest seed that contains no config values when parsing failed. */
   digest_seed: unknown;
+}
+
+export interface LogStorageConfigLayerSource {
+  layer: "user" | "project";
+  value: unknown;
+  invalid: boolean;
+  /** Stable file signature for bounded diagnostics without retaining values. */
+  signature: string | null;
+}
+
+export interface LogStorageConfigSource {
+  layers: readonly [LogStorageConfigLayerSource, LogStorageConfigLayerSource];
+}
+
+/**
+ * Raw user and project `logs.storage` layers with their origin intact.
+ *
+ * Storage retention validates these as one fail-closed unit. It cannot use the
+ * ordinary merged reader because commands must explain whether each effective
+ * scalar came from a user class, user family, project class, or project family.
+ */
+export function logStorageConfigSource(root: string): LogStorageConfigSource {
+  const projectPath = join(root, ".harnery", "config.jsonc");
+  const user = parseConfigLayer(userConfigPath());
+  const project = parseConfigLayer(projectPath);
+  const layer = (source: ReturnType<typeof parseConfigLayer>): LogStorageConfigLayerSource => ({
+    layer: source.path_kind,
+    value: source.config.logs?.storage,
+    invalid: source.invalid,
+    signature: source.signature,
+  });
+  return {
+    layers: [layer(user), layer(project)],
+  };
 }
 
 /**

@@ -62,17 +62,45 @@ describe("logging framework command smoke", () => {
     }
     capture.help.push(renderHelp(dependencies, ["ledger-v3", "verify-support"]));
     capture.help.push(renderHelp(dependencies, ["ledger-v3", "support-plan"]));
+    capture.help.push(renderHelp(dependencies, ["storage", "maintain"]));
 
     expect(filesystemSnapshot(readRoot)).toEqual(beforeReads);
     expect(existsSync(inboxPath(readRoot, "recipient"))).toBeFalse();
     expect(capture.data).toContainEqual(
-      expect.objectContaining({ schema: "harnery.storage-inventory/v1" }),
+      expect.objectContaining({ schema: "harnery.storage-inventory/v2" }),
     );
     expect(capture.data).toContainEqual(
-      expect.objectContaining({ schema: "harnery.storage-health/v1" }),
+      expect.objectContaining({ schema: "harnery.storage-health/v2" }),
     );
     expect(capture.data).toContainEqual(
-      expect.objectContaining({ schema: "harnery.logs-list/v1" }),
+      expect.objectContaining({
+        schema: "harnery.logs-list/v2",
+        diagnostics: expect.any(Array),
+        dormant_families: expect.any(Array),
+        families: expect.arrayContaining([
+          expect.objectContaining({
+            effective_policy: expect.objectContaining({
+              max_bytes: expect.any(Number),
+              max_age_ms: expect.any(Number),
+              fingerprint: expect.any(String),
+              provenance: expect.any(Object),
+            }),
+            usage: expect.objectContaining({
+              managed_bytes: expect.any(Number),
+              unmanaged_bytes: expect.any(Number),
+            }),
+            pressure: expect.objectContaining({
+              state: expect.any(String),
+              reason_codes: expect.any(Array),
+            }),
+            retention: expect.objectContaining({
+              state: expect.any(String),
+              enforcement: expect.any(String),
+              reason_codes: expect.any(Array),
+            }),
+          }),
+        ]),
+      }),
     );
     expect(capture.data).toContainEqual(
       expect.objectContaining({ schema: "harnery.logs-query/v1", records: [] }),
@@ -102,6 +130,7 @@ describe("logging framework command smoke", () => {
     );
     expect(capture.help.join("\n")).toContain("Validate one V3 support-pack manifest");
     expect(capture.help.join("\n")).toContain("Inventory explicit V3 support evidence");
+    expect(capture.help.join("\n")).toContain("--authorize-structured-log-deletion");
     expect(readFilesBelow(join(readRoot, ".harnery", "ledgers", "v3"))).not.toContain(privateBody);
 
     const missingAuthorityExit = await invoke(dependencies, [

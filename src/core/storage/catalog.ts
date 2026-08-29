@@ -1,9 +1,12 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { harneryStorageFamilies } from "./builtins.ts";
+import { resolveLogStorageConfiguration, withEffectiveLogRetention } from "./config.ts";
 import type {
+  HarneryEffectiveLogRetention,
   HarneryHostStorageExclusion,
   HarneryHostStorageRegistration,
   HarneryLoggerBinding,
+  HarneryLogStorageDiagnostic,
   HarneryRegisteredStorageFamily,
   HarneryStorageContext,
   HarneryStorageFamily,
@@ -23,6 +26,8 @@ export class HarneryStorageCatalog {
   readonly families: readonly HarneryRegisteredStorageFamily[];
   readonly logger_bindings: readonly HarneryLoggerBinding[];
   readonly exclusions: readonly HarneryHostStorageExclusion[];
+  readonly log_storage_diagnostics: readonly HarneryLogStorageDiagnostic[];
+  readonly dormant_log_storage_families: readonly string[];
   readonly #byId: ReadonlyMap<string, HarneryRegisteredStorageFamily>;
 
   constructor(context: HarneryStorageContext, registration: HarneryHostStorageRegistration = {}) {
@@ -36,17 +41,30 @@ export class HarneryStorageCatalog {
     const sourceFamilies = harneryStorageFamilies();
     const sourceIds = new Set(sourceFamilies.map((family) => family.id));
     const seen = new Set<string>();
-    const families = [
-      ...sourceFamilies.map((family) => registerFamily(family, "harnery", this.context)),
+    const descriptors = [
+      ...sourceFamilies.map((family) => ({ family, source: "harnery" as const })),
       ...(registration.families ?? []).map((family) => {
         if (sourceIds.has(family.id)) {
           throw new HarneryStorageCatalogError(
             `host storage family ${family.id} cannot replace or weaken a Harnery descriptor`,
           );
         }
-        return registerFamily(family, "host", this.context);
+        return { family, source: "host" as const };
       }),
     ];
+    const logStorage = resolveLogStorageConfiguration(
+      this.context.project_root ?? inferredProjectRoot(this.context.coord_root),
+      descriptors.map(({ family }) => family),
+    );
+    const families = descriptors.map(({ family, source }) => {
+      const effective = logStorage.families.get(family.id);
+      return registerFamily(
+        withEffectiveLogRetention(family, effective),
+        source,
+        this.context,
+        effective,
+      );
+    });
     for (const family of families) {
       if (seen.has(family.id)) {
         throw new HarneryStorageCatalogError(`duplicate storage family id: ${family.id}`);
@@ -60,6 +78,8 @@ export class HarneryStorageCatalog {
     this.families = Object.freeze(families);
     this.logger_bindings = Object.freeze(bindings);
     this.exclusions = Object.freeze(exclusions);
+    this.log_storage_diagnostics = logStorage.diagnostics;
+    this.dormant_log_storage_families = logStorage.dormant_user_families;
     this.#byId = byId;
   }
 
@@ -81,6 +101,10 @@ export class HarneryStorageCatalog {
   }
 }
 
+function inferredProjectRoot(coordRoot: string): string {
+  return basename(coordRoot) === ".harnery" ? dirname(coordRoot) : coordRoot;
+}
+
 export function createStorageCatalog(
   context: HarneryStorageContext,
   registration: HarneryHostStorageRegistration = {},
@@ -92,6 +116,7 @@ function registerFamily(
   family: HarneryStorageFamily,
   source: "harnery" | "host",
   context: HarneryStorageContext,
+  effectiveLogRetention?: HarneryEffectiveLogRetention,
 ): HarneryRegisteredStorageFamily {
   if (!identifier(family.id)) invalid(`storage family id: ${family.id}`);
   if (!nonempty(family.owner)) invalid(`storage family ${family.id} owner`);
@@ -136,7 +161,12 @@ function registerFamily(
   ) {
     throw new HarneryStorageCatalogError(`log storage family ${family.id} needs a default_level`);
   }
-  return deepFreeze({ ...family, source, resolved_roots: roots });
+  return deepFreeze({
+    ...family,
+    source,
+    resolved_roots: roots,
+    ...(effectiveLogRetention ? { effective_log_retention: effectiveLogRetention } : {}),
+  });
 }
 
 function validateProvider(family: HarneryStorageFamily): void {

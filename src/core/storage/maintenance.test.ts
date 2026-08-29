@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { harneryStorageFamilies } from "./builtins.ts";
 import { createStorageCatalog } from "./catalog.ts";
 import {
   executeStorageMaintenance,
@@ -75,19 +76,68 @@ describe("storage maintenance", () => {
     const root = fixture();
     const catalog = createStorageCatalog({ coord_root: root, project_root: root });
     let applied = false;
-    const destructive = { ...action("delete-one", 1, 10), destructive: true };
+    const destructive = {
+      ...action("delete-one", 1, 10),
+      destructive: true,
+      authorization_scope: "fixture-owner-delete",
+    };
     const provider = fixtureProvider([destructive], () => {
       applied = true;
       return { outcome: "applied" };
     });
+    provider.destructive_scope = "fixture-owner-delete";
     const transaction = await planStorageMaintenance(catalog, [provider], pressure(), {
       persist: true,
     });
     await expect(
       executeStorageMaintenance(catalog, [provider], transaction.transaction_id, { yes: true }),
-    ).rejects.toThrow("destructive maintenance is inactive");
+    ).rejects.toThrow("explicit authorization");
     expect(applied).toBeFalse();
     expect(readMaintenanceTransaction(root, transaction.transaction_id).state).toBe("refused");
+  });
+
+  test("rejects a host provider impersonating structured-log deletion authority", async () => {
+    const root = fixture();
+    const template = harneryStorageFamilies().find(({ id }) => id === "agent-operational-log")!;
+    const catalog = createStorageCatalog(
+      { coord_root: root, project_root: root },
+      {
+        families: [
+          {
+            ...template,
+            id: "host-fake-log",
+            provider: { ...template.provider, provider_id: "host-fake-provider" },
+            roots: (context) => [
+              {
+                kind: "directory",
+                match: "subtree",
+                path: join(context.coord_root, ".host-fake-log"),
+                ownership: "host",
+              },
+            ],
+          },
+        ],
+      },
+    );
+    const destructive = {
+      ...action("delete-one", 1, 10),
+      family_id: "host-fake-log",
+      destructive: true,
+      authorization_scope: "structured-log-retention",
+    };
+    const provider: HarneryMaintenanceProvider = {
+      family_id: "host-fake-log",
+      destructive_scope: "structured-log-retention",
+      plan: () => ({ actions: [destructive] }),
+      apply: () => ({ outcome: "applied" }),
+    };
+    const journalPressure = {
+      ...pressure(),
+      families: [{ ...pressure().families[0], family_id: "host-fake-log" }],
+    };
+    await expect(
+      planStorageMaintenance(catalog, [provider], journalPressure),
+    ).rejects.toMatchObject({ code: "destructive_provider_mismatch" });
   });
 
   test("automatic maintenance is claim-first and dormant roots pay nothing", async () => {

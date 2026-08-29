@@ -1,0 +1,56 @@
+---
+title: harn logs
+description: Inspect log-family storage budgets and query bounded structured-log records.
+sidebar:
+  order: 44
+---
+
+```
+harn logs <subcommand> [options]
+```
+
+## Inspect effective storage budgets
+
+```bash
+harn logs list
+harn logs list --json
+```
+
+The list reports each operational and debug log family, its effective
+`max_bytes` and `max_age_ms`, the source of each value, managed and unmanaged
+usage, pressure, and whether retention is available. Stable reason codes
+explain an unknown measurement, unmanaged compatibility data, an active-only
+overshoot, invalid configuration, or another condition that prevents cleanup.
+
+These values are storage budgets, not hard caps. Writers keep accepting valid
+records while a family is over budget. Harnery can reclaim only eligible sealed
+segments from a valid manifest-backed partition. It never trims the active
+segment to satisfy a budget.
+
+JSON output uses `harnery.logs-list/v2`. The effective policy includes a
+fingerprint so a configuration change invalidates an older maintenance plan
+without changing the source-owned record and manifest `policy_version`.
+Manifest-backed families report their resolved segment directory. Delegated or
+otherwise unsupported log providers report `directory: null`, keep their
+registered roots visible, and use the `unsupported_log_family` reason code.
+
+Configure budgets through `logs.storage` in the user-global or project JSONC
+file. There is no environment-variable or mutating CLI override. See the
+[configuration schema](/reference/config-schema/#logsstorage).
+
+## Query and export
+
+```bash
+harn logs query --family agent-hook-debug-log --level warn --json
+harn logs export --since 2026-08-29T00:00:00Z --max-bytes 10485760
+harn logs tail agent-hook-debug-log --lines 50
+```
+
+`query` and `export` require global record and byte scan budgets. They read the
+manifest-listed sealed history and current active segment without treating a
+storage budget as a query result limit. `tail` returns recent records and a
+rotation-aware cursor.
+
+Raw process logs, legacy debug files, external roots, and Event Ledger V3 are
+outside structured-log retention. Harnery may report their size as unmanaged,
+but `storage maintain` cannot delete them.

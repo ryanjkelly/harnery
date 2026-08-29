@@ -102,6 +102,32 @@ describe("storage health", () => {
       maintenance_eligible: false,
     });
   });
+
+  test("degrades an invalid log budget and preserves retention reasons", async () => {
+    const root = fixture();
+    mkdirSync(join(root, ".harnery"), { recursive: true });
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      '{ "logs": { "storage": { "classes": { "debug-log": { "max_bytes": 1 } } } } }\n',
+    );
+    const report = storageHealth(
+      await inventoryStorage(createStorageCatalog({ coord_root: root })),
+    );
+    expect(health(report, "agent-hook-debug-log")).toMatchObject({
+      status: "degraded",
+      reason_codes: ["effective_policy_invalid", "root_dormant"],
+      log_storage: {
+        effective_policy: { state: "invalid", max_bytes: 64 * 1024 * 1024 },
+        pressure: { state: "unknown", reason_codes: ["effective_policy_invalid"] },
+        retention: {
+          state: "blocked",
+          enforcement: "none",
+          reason_codes: ["effective_policy_invalid"],
+        },
+      },
+    });
+    expect(report.reason_codes).toContain("effective_policy_invalid");
+  });
 });
 
 function fixture(): string {

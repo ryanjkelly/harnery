@@ -12,6 +12,7 @@ import {
   DEFAULT_FRESHNESS_SECS,
   endOfTurnStatusCommand,
   hostPromptReminder,
+  logStorageConfigSource,
   MAX_HOST_PROMPT_REMINDER_CHARS,
   pinnedBinName,
   resolveBinName,
@@ -82,6 +83,56 @@ describe("resolveBinName", () => {
     const root = makeRoot(`{ "binName": `);
     roots.push(root);
     expect(resolveBinName(root)).toBe(DEFAULT_BIN_NAME);
+  });
+});
+
+describe("logStorageConfigSource", () => {
+  const roots: string[] = [];
+  const savedXdg = process.env.XDG_CONFIG_HOME;
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdg;
+  });
+
+  test("preserves user and project layers for provenance-aware resolution", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "harnery-log-config-xdg-"));
+    const root = makeRoot(
+      `{ "logs": { "storage": { "classes": { "debug-log": { "max_age_days": 2 } } } } }`,
+    );
+    roots.push(xdg, root);
+    mkdirSync(join(xdg, "harnery"), { recursive: true });
+    writeFileSync(
+      join(xdg, "harnery", "config.jsonc"),
+      `{ "logs": { "storage": { "classes": { "debug-log": { "max_bytes": 10485760 } } } } }`,
+    );
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    const source = logStorageConfigSource(root);
+    expect(source.layers.map(({ layer, invalid }) => ({ layer, invalid }))).toEqual([
+      { layer: "user", invalid: false },
+      { layer: "project", invalid: false },
+    ]);
+    expect(source.layers[0].value).toMatchObject({
+      classes: { "debug-log": { max_bytes: 10_485_760 } },
+    });
+    expect(source.layers[1].value).toMatchObject({
+      classes: { "debug-log": { max_age_days: 2 } },
+    });
+  });
+
+  test("reports a malformed layer instead of substituting retention defaults", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "harnery-log-config-invalid-xdg-"));
+    const root = makeRoot(`{ "logs": {`);
+    roots.push(xdg, root);
+    mkdirSync(join(xdg, "harnery"), { recursive: true });
+    writeFileSync(join(xdg, "harnery", "config.jsonc"), `{}`);
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    const source = logStorageConfigSource(root);
+    expect(source.layers[0].invalid).toBeFalse();
+    expect(source.layers[1]).toMatchObject({ layer: "project", invalid: true, value: undefined });
   });
 });
 

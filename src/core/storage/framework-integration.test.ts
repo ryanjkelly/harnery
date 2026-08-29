@@ -35,7 +35,8 @@ import {
   runAutomaticMaintenanceSlice,
   writePressureSummary,
 } from "./maintenance.ts";
-import { queryLogs } from "./query.ts";
+import { createStructuredLogMaintenanceProviders } from "./maintenance-providers.ts";
+import { queryLogs, readLogFollow } from "./query.ts";
 import { FileSegmentSink, readSegmentManifest } from "./segments.ts";
 
 const roots: string[] = [];
@@ -58,6 +59,73 @@ describe("storage framework end-to-end canary", () => {
       "canary.started",
       "canary.completed",
     ]);
+  });
+
+  test("plans and executes one exact structured-log retention transaction", async () => {
+    const root = fixture("log-retention");
+    const catalog = createStorageCatalog({ coord_root: root, project_root: root });
+    const family = catalog.require("agent-hook-debug-log");
+    const directory = join(root, ".harnery", "logs", "agent-hook-debug");
+    const sink = new FileSegmentSink({ directory, family, max_segment_bytes: 1 });
+    await sink.append(
+      [logRecord(family, 1, "retention.expired")],
+      {},
+      false,
+      new Date("2026-08-01T00:00:00.000Z"),
+    );
+    await sink.append(
+      [logRecord(family, 2, "retention.current")],
+      {},
+      false,
+      new Date("2026-08-02T00:00:00.000Z"),
+    );
+    const providers = createStructuredLogMaintenanceProviders(catalog);
+    const pressure = {
+      schema: HARNERY_MAINTENANCE_PRESSURE_SCHEMA,
+      captured_at: "2026-08-29T12:00:00.000Z",
+      families: [
+        {
+          family_id: family.id,
+          logical_bytes: 1_000_000,
+          regular_files: 10,
+          needs_maintenance: true,
+          observed_at: "2026-08-29T12:00:00.000Z",
+        },
+      ],
+    } as const;
+    const refused = await planStorageMaintenance(catalog, providers, pressure, {
+      persist: true,
+      now: new Date("2026-08-29T12:00:00.000Z"),
+    });
+    await expect(
+      executeStorageMaintenance(catalog, providers, refused.transaction_id, { yes: false }),
+    ).rejects.toThrow("exact transaction id and --yes");
+    await expect(
+      executeStorageMaintenance(catalog, providers, refused.transaction_id, { yes: true }),
+    ).rejects.toThrow("explicit authorization");
+
+    const planned = await planStorageMaintenance(catalog, providers, pressure, {
+      persist: true,
+      now: new Date("2026-08-29T12:01:00.000Z"),
+    });
+    expect(planned.actions.some(({ kind }) => kind === "prune-log-segment")).toBeTrue();
+    const committed = await executeStorageMaintenance(catalog, providers, planned.transaction_id, {
+      yes: true,
+      authorize_structured_log_deletion: true,
+    });
+    expect(committed.state).toBe("committed");
+    const query = await queryLogs([family], { max_records: 10, max_bytes: 100_000 });
+    expect(query.records.map(({ event }) => event)).toEqual(["retention.current"]);
+    expect(query.expired_through).toEqual({ [family.id]: 1 });
+    expect(
+      (
+        await readLogFollow(
+          family,
+          { family_id: family.id, manifest_sequence: 0, active_offset: 0 },
+          100_000,
+        )
+      ).history_expired,
+    ).toBeTrue();
   });
 
   test("rotates crash-safe durable history and replays every record in order", async () => {
@@ -233,7 +301,7 @@ describe("storage framework end-to-end canary", () => {
         now: new Date("2026-08-29T12:00:00.000Z"),
         execute: true,
       }),
-    ).rejects.toThrow("destructive maintenance is inactive");
+    ).rejects.toThrow("explicit authorization");
     expect(destructiveApplied).toBeFalse();
   });
 });
@@ -413,12 +481,14 @@ function maintenanceAction(destructive: boolean): HarneryMaintenanceAction {
     files: 1,
     bytes: 10,
     destructive,
+    ...(destructive ? { authorization_scope: "fixture-owner-delete" } : {}),
   };
 }
 
 function maintenanceProvider(destructive: boolean, apply: () => void): HarneryMaintenanceProvider {
   return {
     family_id: "storage-maintenance-run-log",
+    ...(destructive ? { destructive_scope: "fixture-owner-delete" } : {}),
     plan: () => ({ actions: [maintenanceAction(destructive)] }),
     apply: () => {
       apply();

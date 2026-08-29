@@ -61,6 +61,28 @@ VS Code (and most modern editors) read the `$schema` URL and provide autocomplet
     "default_retention_days": 3
   },
 
+  // Soft storage budgets for manifest-backed operational and debug logs.
+  "logs": {
+    "storage": {
+      "classes": {
+        "operational-log": {
+          "max_bytes": 134217728,
+          "max_age_days": 30
+        },
+        "debug-log": {
+          "max_bytes": 67108864,
+          "max_age_days": 7
+        }
+      },
+      "families": {
+        "web-performance-log": {
+          "max_bytes": 67108864,
+          "max_age_days": 14
+        }
+      }
+    }
+  },
+
   // Web UI
   "web": {
     "port": 4276,
@@ -76,5 +98,10 @@ VS Code (and most modern editors) read the `$schema` URL and provide autocomplet
   }
 }
 ```
+
+Log storage values are retention budgets, not write quotas. Harnery keeps
+accepting valid records when a family is over budget. Use `harn logs list` to
+see effective limits and pressure, then preview any cleanup with
+`harn storage maintain` before confirming one exact transaction.
 
 See [reference / config schema](/reference/config-schema/) for the full field listing.

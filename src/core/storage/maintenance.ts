@@ -16,6 +16,10 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 import type { HarneryStorageCatalog } from "./catalog.ts";
+import {
+  HARNERY_STRUCTURED_LOG_PROVIDER_ID,
+  type HarneryRegisteredStorageFamily,
+} from "./contract.ts";
 
 export const HARNERY_MAINTENANCE_TRANSACTION_SCHEMA =
   "harnery.storage-maintenance-transaction/v1" as const;
@@ -56,6 +60,10 @@ export interface HarneryMaintenanceAction {
   files: number;
   bytes: number;
   destructive: boolean;
+  /** Exact provider-owned destructive scope; generic destructive actions are never authorized. */
+  authorization_scope?: string;
+  /** Effective user/source retention policy frozen into the plan. */
+  effective_policy_fingerprint?: string;
   expected_sha256?: string;
   metadata?: Readonly<Record<string, string | number | boolean>>;
 }
@@ -67,6 +75,8 @@ export interface HarneryMaintenanceProviderPlan {
 
 export interface HarneryMaintenanceProvider {
   family_id: string;
+  /** The sole destructive scope this provider may plan and apply. */
+  destructive_scope?: string;
   budget?: Partial<HarneryMaintenanceBudget>;
   plan(input: {
     coord_root: string;
@@ -97,6 +107,7 @@ export interface HarneryMaintenanceTransaction {
   state: "planned" | "running" | "committed" | "refused" | "failed";
   dry_run: boolean;
   catalog_policies: Readonly<Record<string, string>>;
+  effective_policy_fingerprints: Readonly<Record<string, string>>;
   budget: HarneryMaintenanceBudget;
   actions: readonly HarneryMaintenanceAction[];
   next_cursors: Readonly<Record<string, string>>;
@@ -190,6 +201,24 @@ export async function planStorageMaintenance(
     for (const action of planned.actions) {
       validateAction(action, row.family_id);
       if (
+        action.destructive &&
+        (!provider.destructive_scope || action.authorization_scope !== provider.destructive_scope)
+      ) {
+        throw new HarneryMaintenanceError(
+          "destructive_scope_mismatch",
+          `provider ${row.family_id} did not own destructive scope for ${action.action_id}`,
+        );
+      }
+      if (
+        action.authorization_scope === "structured-log-retention" &&
+        !isStructuredLogAuthority(family)
+      ) {
+        throw new HarneryMaintenanceError(
+          "destructive_provider_mismatch",
+          `family ${row.family_id} is not owned by the structured log provider`,
+        );
+      }
+      if (
         !fitsBudget(action, budget, actions, started) ||
         !fitsBudget(action, providerBudget, providerActions, started)
       ) {
@@ -214,6 +243,7 @@ export async function planStorageMaintenance(
         catalog.require(familyId).policy.policy_version,
       ]),
     ),
+    effective_policy_fingerprints: transactionFingerprints(actions),
     budget,
     actions,
     next_cursors: nextCursors,
@@ -228,7 +258,7 @@ export async function executeStorageMaintenance(
   catalog: HarneryStorageCatalog,
   providers: readonly HarneryMaintenanceProvider[],
   transactionId: string,
-  options: { yes: boolean; now?: Date; allow_destructive?: boolean },
+  options: { yes: boolean; now?: Date; authorize_structured_log_deletion?: boolean },
 ): Promise<HarneryMaintenanceTransaction> {
   if (!options.yes) {
     throw new HarneryMaintenanceError(
@@ -251,7 +281,28 @@ export async function executeStorageMaintenance(
       throw new HarneryMaintenanceError("policy_changed", `storage policy changed for ${familyId}`);
     }
   }
-  if (transaction.actions.some(({ destructive }) => destructive) && !options.allow_destructive) {
+  for (const [familyId, fingerprint] of Object.entries(transaction.effective_policy_fingerprints)) {
+    const current = catalog.require(familyId).effective_log_retention;
+    if (current?.state !== "valid" || current.effective_policy_fingerprint !== fingerprint) {
+      throw new HarneryMaintenanceError(
+        "effective_policy_changed",
+        `effective log retention policy changed for ${familyId}`,
+      );
+    }
+  }
+  const providerMap = providerRegistry(catalog, providers);
+  const unauthorized = transaction.actions.find((action) => {
+    if (!action.destructive) return false;
+    const provider = providerMap.get(action.family_id);
+    const family = catalog.require(action.family_id);
+    return (
+      action.authorization_scope !== "structured-log-retention" ||
+      provider?.destructive_scope !== action.authorization_scope ||
+      !isStructuredLogAuthority(family) ||
+      options.authorize_structured_log_deletion !== true
+    );
+  });
+  if (unauthorized) {
     const refused = updateTransaction(transaction, now, "refused", [
       ...transaction.reason_codes,
       "destructive_activation_required",
@@ -259,10 +310,9 @@ export async function executeStorageMaintenance(
     writeTransaction(catalog.context.coord_root, refused, true);
     throw new HarneryMaintenanceError(
       "destructive_activation_required",
-      "destructive maintenance is inactive; a separate policy decision and activation are required",
+      "structured-log deletion requires its provider scope, exact transaction, --yes, and explicit authorization",
     );
   }
-  const providerMap = providerRegistry(catalog, providers);
   let current = updateTransaction(transaction, now, "running");
   writeTransaction(catalog.context.coord_root, current, true);
   try {
@@ -340,7 +390,7 @@ export async function runAutomaticMaintenanceSlice(
         ? await executeStorageMaintenance(catalog, providers, refreshed.transaction_id, {
             yes: true,
             now,
-            allow_destructive: false,
+            authorize_structured_log_deletion: false,
           })
         : readMaintenanceTransaction(coordRoot, refreshed.transaction_id);
       if (resumed.state === "committed")
@@ -366,7 +416,7 @@ export async function runAutomaticMaintenanceSlice(
       {
         yes: true,
         now,
-        allow_destructive: false,
+        authorize_structured_log_deletion: false,
       },
     );
     writeDailyCursor(coordRoot, now, "complete", committed.transaction_id);
@@ -424,9 +474,20 @@ function providerRegistry(
     if (result.has(provider.family_id))
       throw new HarneryMaintenanceError("duplicate_provider", provider.family_id);
     if (provider.budget) intersectBudget(DEFAULT_MAINTENANCE_BUDGET, provider.budget);
+    if (provider.destructive_scope !== undefined) {
+      assertSafeId(provider.destructive_scope, "maintenance provider destructive scope");
+    }
     result.set(provider.family_id, provider);
   }
   return result;
+}
+
+function isStructuredLogAuthority(family: HarneryRegisteredStorageFamily): boolean {
+  return (
+    family.provider.provider_id === HARNERY_STRUCTURED_LOG_PROVIDER_ID &&
+    (family.storage_class === "operational-log" || family.storage_class === "debug-log") &&
+    family.format === "jsonl"
+  );
 }
 
 function validateAction(action: HarneryMaintenanceAction, expectedFamily: string): void {
@@ -452,6 +513,18 @@ function validateAction(action: HarneryMaintenanceAction, expectedFamily: string
   if (action.expected_sha256 !== undefined && !/^[a-f0-9]{64}$/.test(action.expected_sha256)) {
     throw new HarneryMaintenanceError("invalid_action_digest", action.action_id);
   }
+  if (action.authorization_scope !== undefined) {
+    assertSafeId(action.authorization_scope, "action authorization scope");
+  }
+  if (
+    action.effective_policy_fingerprint !== undefined &&
+    !/^[a-f0-9]{64}$/.test(action.effective_policy_fingerprint)
+  ) {
+    throw new HarneryMaintenanceError("invalid_action_policy_fingerprint", action.action_id);
+  }
+  if (action.destructive && !action.authorization_scope) {
+    throw new HarneryMaintenanceError("destructive_scope_required", action.action_id);
+  }
 }
 
 function validateTransaction(value: HarneryMaintenanceTransaction): void {
@@ -461,12 +534,54 @@ function validateTransaction(value: HarneryMaintenanceTransaction): void {
   assertDate(new Date(value.created_at));
   assertDate(new Date(value.updated_at));
   validateBudget(value.budget);
-  if (!Array.isArray(value.actions) || !Array.isArray(value.reason_codes))
+  if (
+    !Array.isArray(value.actions) ||
+    !Array.isArray(value.reason_codes) ||
+    !value.effective_policy_fingerprints ||
+    typeof value.effective_policy_fingerprints !== "object" ||
+    Array.isArray(value.effective_policy_fingerprints)
+  )
     throw new HarneryMaintenanceError("invalid_transaction", "arrays");
   for (const action of value.actions) validateAction(action, action.family_id);
+  for (const [familyId, fingerprint] of Object.entries(value.effective_policy_fingerprints)) {
+    assertSafeId(familyId, "effective policy family id");
+    if (!/^[a-f0-9]{64}$/.test(fingerprint)) {
+      throw new HarneryMaintenanceError("invalid_transaction", "effective policy fingerprint");
+    }
+  }
+  if (
+    stableJson(value.effective_policy_fingerprints) !==
+    stableJson(transactionFingerprints(value.actions))
+  ) {
+    throw new HarneryMaintenanceError(
+      "invalid_transaction",
+      "effective policy fingerprint binding",
+    );
+  }
   if (new Set(value.actions.map(({ action_id }) => action_id)).size !== value.actions.length) {
     throw new HarneryMaintenanceError("duplicate_action", value.transaction_id);
   }
+}
+
+function transactionFingerprints(
+  actions: readonly HarneryMaintenanceAction[],
+): Readonly<Record<string, string>> {
+  const result: Record<string, string> = {};
+  for (const action of actions) {
+    const fingerprint = action.effective_policy_fingerprint;
+    if (!fingerprint) continue;
+    const current = result[action.family_id];
+    if (current && current !== fingerprint) {
+      throw new HarneryMaintenanceError(
+        "mixed_effective_policy",
+        `maintenance actions mix effective policies for ${action.family_id}`,
+      );
+    }
+    result[action.family_id] = fingerprint;
+  }
+  return Object.fromEntries(
+    Object.entries(result).sort(([left], [right]) => left.localeCompare(right)),
+  );
 }
 
 function validatePressure(value: HarneryStoragePressureSummary): void {

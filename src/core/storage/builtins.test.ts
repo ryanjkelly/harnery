@@ -96,12 +96,15 @@ describe("source-owned storage descriptors", () => {
     }
   });
 
-  test("keeps proposed log retention inactive and dev scratch disabled", () => {
+  test("activates source-owned log storage budgets while keeping dev scratch writes disabled", () => {
     for (const family of catalog.families.filter(
       (candidate) =>
         candidate.storage_class === "operational-log" || candidate.storage_class === "debug-log",
     )) {
-      expect(family.policy.retention.status, family.id).not.toBe("active");
+      expect(family.policy.retention.status, family.id).toBe("active");
+      expect(family.policy.retention.max_bytes.limit, family.id).toBeGreaterThanOrEqual(
+        64 * 1_024 * 1_024,
+      );
     }
     expect(catalog.require("dev-scratch").policy.writes).toBe("disabled");
     expect(catalog.require("dev-scratch").policy.privacy.content).toBe("metadata-only");
@@ -110,11 +113,11 @@ describe("source-owned storage descriptors", () => {
     );
   });
 
-  test("activates only the cut-over service writers without activating retention", () => {
+  test("keeps write activation separate from active retention budgets", () => {
     for (const familyId of ["semantic-service-log", "governor-service-log", "presence-relay-log"]) {
       const family = catalog.require(familyId);
       expect(family.policy.writes, familyId).toBe("active");
-      expect(family.policy.retention.status, familyId).toBe("proposed");
+      expect(family.policy.retention.status, familyId).toBe("active");
       expect(family.provider.maintenance, familyId).toBe("storage");
     }
   });

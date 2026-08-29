@@ -185,6 +185,37 @@
         }
       }
     },
+    "logs": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Structured-log settings. Retention overrides change only approved byte and age scalars; roots, providers, privacy, durability, writers, and record limits stay source-owned.",
+      "properties": {
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Storage budgets for shared operational and debug log segments. Project values override user-global values at the same path; exact-family values are more specific than class values.",
+          "properties": {
+            "classes": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Defaults applied to every shared log family in the named storage class.",
+              "properties": {
+                "operational-log": { "$ref": "#/$defs/logStorageOverride" },
+                "debug-log": { "$ref": "#/$defs/logStorageOverride" }
+              }
+            },
+            "families": {
+              "type": "object",
+              "description": "Overrides for exact registered shared-log family IDs.",
+              "propertyNames": {
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+              },
+              "additionalProperties": { "$ref": "#/$defs/logStorageOverride" }
+            }
+          }
+        }
+      }
+    },
     "artifacts": {
       "type": "object",
       "additionalProperties": false,
@@ -357,6 +388,26 @@
           "type": "string",
           "default": "harnery",
           "description": "Subpath under the rclone remote root that holds the synced subset."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "logStorageOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 10485760,
+          "maximum": 1099511627776,
+          "description": "Logical storage budget in bytes. This is an asynchronous retention budget, not a producer write quota."
+        },
+        "max_age_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650,
+          "description": "Age in whole days after which an immutable sealed segment is eligible for retention."
         }
       }
     }

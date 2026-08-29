@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harneryStorageFamilies } from "./builtins.ts";
 import { createStorageCatalog, HarneryStorageCatalogError } from "./catalog.ts";
@@ -51,6 +53,65 @@ describe("storage catalog", () => {
     expect(Object.isFrozen(catalog.require("event-v3-canonical-active").policy)).toBeTrue();
     expect(catalog.logger_bindings).toHaveLength(1);
     expect(catalog.exclusions).toHaveLength(1);
+  });
+
+  test("loads project config from project_root when coord_root is the .harnery directory", () => {
+    const project = mkdtempSync(join(tmpdir(), "harnery-storage-catalog-project-"));
+    const xdg = mkdtempSync(join(tmpdir(), "harnery-storage-catalog-xdg-"));
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    try {
+      mkdirSync(join(project, ".harnery"));
+      mkdirSync(join(xdg, "harnery"));
+      writeFileSync(join(xdg, "harnery", "config.jsonc"), "{}\n");
+      writeFileSync(
+        join(project, ".harnery", "config.jsonc"),
+        JSON.stringify({
+          logs: {
+            storage: {
+              families: {
+                "agent-operational-log": { max_bytes: 20 * 1024 * 1024, max_age_days: 2 },
+              },
+            },
+          },
+        }),
+      );
+      process.env.XDG_CONFIG_HOME = xdg;
+
+      const catalog = createStorageCatalog({
+        coord_root: join(project, ".harnery"),
+        project_root: project,
+      });
+      expect(catalog.require("agent-operational-log").effective_log_retention).toMatchObject({
+        max_bytes: 20 * 1024 * 1024,
+        max_age_days: 2,
+        state: "valid",
+      });
+    } finally {
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      rmSync(project, { recursive: true, force: true });
+      rmSync(xdg, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps catalog readable while invalid config disables log retention", () => {
+    const project = mkdtempSync(join(tmpdir(), "harnery-storage-catalog-invalid-"));
+    try {
+      mkdirSync(join(project, ".harnery"));
+      writeFileSync(
+        join(project, ".harnery", "config.jsonc"),
+        `{ "logs": { "storage": { "families": { "missing": { "max_age_days": 2 } } } } }`,
+      );
+      const catalog = createStorageCatalog({ coord_root: project, project_root: project });
+      const family = catalog.require("agent-operational-log");
+      expect(family.effective_log_retention?.state).toBe("invalid");
+      expect(family.policy.retention.status).toBe("inactive");
+      expect(catalog.log_storage_diagnostics).toContainEqual(
+        expect.objectContaining({ code: "unknown_project_family", family_id: "missing" }),
+      );
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
   });
 
   test("rejects replacement of a Harnery descriptor", () => {

@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { resolveCoordRoot as resolveCanonicalCoordRoot } from "../core/agents/coord-client.ts";
 import { createStorageCatalog } from "../core/storage/catalog.ts";
 import type {
   HarneryStorageClass,
@@ -19,6 +20,7 @@ import {
   planStorageMaintenance,
   readMaintenanceTransaction,
 } from "../core/storage/maintenance.ts";
+import { createStructuredLogMaintenanceProviders } from "../core/storage/maintenance-providers.ts";
 
 const STORAGE_CLASSES = new Set<HarneryStorageClass>([
   "canonical-authority",
@@ -45,6 +47,7 @@ interface MaintainOptions {
   budget?: string;
   transaction?: string;
   yes?: boolean;
+  authorizeStructuredLogDeletion?: boolean;
   json?: boolean;
 }
 
@@ -109,6 +112,12 @@ export function registerStorageCommand(
               status: family.status,
               reasons: family.reason_codes.join(",") || "none",
               maintenance: family.maintenance.state,
+              max_bytes: family.log_storage?.effective_policy?.max_bytes ?? "unavailable",
+              max_age_days: family.log_storage?.effective_policy?.max_age_days ?? "unavailable",
+              managed_bytes: family.log_storage?.usage.managed_bytes ?? "not-a-log",
+              unmanaged_bytes: family.log_storage?.usage.unmanaged_bytes ?? "not-a-log",
+              pressure: family.log_storage?.pressure.state ?? "not-a-log",
+              enforcement: family.log_storage?.retention.enforcement ?? "not-a-log",
             })),
           );
         }
@@ -123,15 +132,22 @@ export function registerStorageCommand(
     .option("--dry-run", "Plan without mutating source storage", true)
     .option("--transaction <id>", "Execute one previously planned exact transaction")
     .option("--yes", "Confirm execution of the exact transaction")
+    .option(
+      "--authorize-structured-log-deletion",
+      "Authorize deletion only for exact manifest-backed structured-log actions",
+    )
     .option("--json", "Emit the versioned transaction schema")
     .action(async (options: MaintainOptions) => {
       await run(emit, async () => {
         const catalog = catalogFor(context);
-        const providers = context?.storageMaintenanceProviders ?? [];
+        const providers = [
+          ...createStructuredLogMaintenanceProviders(catalog),
+          ...(context?.storageMaintenanceProviders ?? []),
+        ];
         const transaction = options.transaction
           ? await executeStorageMaintenance(catalog, providers, options.transaction, {
               yes: options.yes === true,
-              allow_destructive: false,
+              authorize_structured_log_deletion: options.authorizeStructuredLogDeletion === true,
             })
           : await planStorageMaintenance(catalog, providers, await pressureFor(catalog), {
               ...(options.family ? { family_id: options.family } : {}),
@@ -194,6 +210,7 @@ function catalogFor(context?: HarneryProgramContext) {
     context?.resolveCoordRoot?.() ??
       context?.repoRoot ??
       process.env.HARNERY_COORD_ROOT ??
+      resolveCanonicalCoordRoot() ??
       process.cwd(),
   );
   return createStorageCatalog(
@@ -252,6 +269,12 @@ function inventoryRows(report: HarneryStorageInventoryReport): Record<string, un
     logical_bytes: measurementValue(family.totals.logical_bytes),
     allocated_bytes: measurementValue(family.totals.allocated_bytes),
     maintenance: family.maintenance.state,
+    max_bytes: family.log_storage?.effective_policy?.max_bytes ?? "unavailable",
+    max_age_days: family.log_storage?.effective_policy?.max_age_days ?? "unavailable",
+    managed_bytes: family.log_storage?.usage.managed_bytes ?? "not-a-log",
+    unmanaged_bytes: family.log_storage?.usage.unmanaged_bytes ?? "not-a-log",
+    pressure: family.log_storage?.pressure.state ?? "not-a-log",
+    enforcement: family.log_storage?.retention.enforcement ?? "not-a-log",
     reasons: family.reason_codes.join(",") || "none",
   }));
 }

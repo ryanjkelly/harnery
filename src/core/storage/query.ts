@@ -32,6 +32,8 @@ export interface HarneryLogQueryResult {
   records_examined: number;
   bytes_examined: number;
   truncated: boolean;
+  /** Per-family highest sequence intentionally expired by retention. */
+  expired_through: Readonly<Record<string, number>>;
 }
 
 export interface HarneryLogFollowCursor {
@@ -59,10 +61,13 @@ export async function queryLogs(
   let bytes = 0;
   let examined = 0;
   let truncated = false;
+  const expiredThrough: Record<string, number> = {};
   for (const family of families) {
     if (query.family_ids && !query.family_ids.includes(family.id)) continue;
     const directory = familyLogDirectory(family);
-    const sources = manifestSources(directory, family);
+    const manifest = readSegmentManifest(directory, family);
+    expiredThrough[family.id] = manifest.pruned_through_sequence ?? 0;
+    const sources = manifestSources(directory, manifest);
     const maximumLineBytes =
       family.policy.records.max_record_bytes.limit ?? MAX_UNBOUNDED_RECORD_BYTES;
     for (const source of sources) {
@@ -82,7 +87,13 @@ export async function queryLogs(
     }
     if (truncated) break;
   }
-  return { records, records_examined: examined, bytes_examined: bytes, truncated };
+  return {
+    records,
+    records_examined: examined,
+    bytes_examined: bytes,
+    truncated,
+    expired_through: expiredThrough,
+  };
 }
 
 export function rotationFollowCursor(
@@ -106,6 +117,7 @@ export async function readLogFollow(
   records: readonly HarneryLogRecordV1[];
   cursor: HarneryLogFollowCursor;
   rotated: boolean;
+  history_expired: boolean;
 }> {
   if (cursor.family_id !== family.id) throw new Error("follow cursor family mismatch");
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
@@ -114,8 +126,17 @@ export async function readLogFollow(
   const directory = familyLogDirectory(family);
   const manifest = readSegmentManifest(directory, family);
   const rotated = manifest.next_sequence - 1 > cursor.manifest_sequence;
+  const prunedThrough = manifest.pruned_through_sequence ?? 0;
+  const historyExpired = prunedThrough > 0 && cursor.manifest_sequence <= prunedThrough;
   const active = join(directory, "active.jsonl");
-  if (!existsSync(active)) return { records: [], cursor: rotationFollowCursor(family), rotated };
+  if (!existsSync(active)) {
+    return {
+      records: [],
+      cursor: rotationFollowCursor(family),
+      rotated,
+      history_expired: historyExpired,
+    };
+  }
   const opened = openRegularNoFollow(active);
   const maximumLineBytes =
     family.policy.records.max_record_bytes.limit ?? MAX_UNBOUNDED_RECORD_BYTES;
@@ -168,17 +189,18 @@ export async function readLogFollow(
       active_offset: offset + consumed,
     },
     rotated,
+    history_expired: historyExpired,
   };
 }
 
 function manifestSources(
   directory: string,
-  family: HarneryRegisteredStorageFamily,
+  manifest: ReturnType<typeof readSegmentManifest>,
 ): Array<{ path: string; gzip: boolean }> {
-  const manifest = readSegmentManifest(directory, family);
-  const sealed = manifest.segments
-    .map((segment) => ({ path: join(directory, segment.file), gzip: true }))
-    .filter((source) => existsSync(source.path));
+  const sealed = manifest.segments.map((segment) => ({
+    path: join(directory, segment.file),
+    gzip: true,
+  }));
   const active = join(directory, "active.jsonl");
   return existsSync(active) ? [...sealed, { path: active, gzip: false }] : sealed;
 }

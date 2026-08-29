@@ -3,10 +3,9 @@ import {
   type HarneryStorageFamilyHealth,
   type HarneryStorageHealthReport,
   type HarneryStorageInventoryReport,
-  type HarneryStorageReasonCode,
 } from "./contract.ts";
 
-const DEGRADED_REASONS = new Set<HarneryStorageReasonCode>([
+const DEGRADED_REASONS = new Set<string>([
   "hard_link_ambiguous",
   "overlapping_registration",
   "special_file_rejected",
@@ -22,7 +21,7 @@ export function storageHealth(
 ): HarneryStorageHealthReport {
   const families = inventory.families.map(familyHealth);
   const issueReasons = inventory.issues.map(({ reason_code }) => reason_code);
-  const reasons = new Set<HarneryStorageReasonCode>(issueReasons);
+  const reasons = new Set<string>(issueReasons);
   for (const family of families) for (const reason of family.reason_codes) reasons.add(reason);
   const status =
     issueReasons.some((reason) => DEGRADED_REASONS.has(reason)) ||
@@ -45,24 +44,34 @@ export function storageHealth(
 function familyHealth(
   family: HarneryStorageInventoryReport["families"][number],
 ): HarneryStorageFamilyHealth {
-  const reasons = new Set(family.reason_codes);
+  const reasons = new Set<string>(family.reason_codes);
   if (family.state === "delegated") reasons.add("delegated_inventory_unavailable");
   if (family.state === "dormant") reasons.add("root_dormant");
+  for (const reason of family.log_storage?.retention.reason_codes ?? []) reasons.add(reason);
   const degraded = [...reasons].some((reason) => DEGRADED_REASONS.has(reason));
+  const logDegraded =
+    family.log_storage?.pressure.state === "over_budget" ||
+    family.log_storage?.retention.state === "blocked";
+  const logUnknown =
+    family.log_storage?.pressure.state === "unknown" ||
+    family.log_storage?.retention.state === "unmanaged";
   return {
     family_id: family.family_id,
     policy_version: family.policy_version,
-    status: degraded
-      ? "degraded"
-      : family.state === "dormant" ||
-          family.state === "delegated" ||
-          family.state === "unavailable" ||
-          family.reason_codes.includes("allocated_bytes_unavailable")
-        ? "unknown"
-        : family.state === "partial"
+    status:
+      degraded || logDegraded
+        ? "degraded"
+        : family.state === "dormant" ||
+            family.state === "delegated" ||
+            family.state === "unavailable" ||
+            family.reason_codes.includes("allocated_bytes_unavailable") ||
+            logUnknown
           ? "unknown"
-          : "healthy",
+          : family.state === "partial"
+            ? "unknown"
+            : "healthy",
     reason_codes: [...reasons].sort(),
     maintenance: family.maintenance,
+    ...(family.log_storage ? { log_storage: family.log_storage } : {}),
   };
 }

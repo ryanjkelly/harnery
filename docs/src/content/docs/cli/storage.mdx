@@ -1,0 +1,69 @@
+---
+title: harn storage
+description: Inventory registered storage and run dry-run-first, exact-target maintenance.
+sidebar:
+  order: 45
+---
+
+```
+harn storage <subcommand> [options]
+```
+
+## Inventory and health
+
+```bash
+harn storage inventory --json
+harn storage inventory --family agent-hook-debug-log
+harn storage health --json
+```
+
+Inventory reads metadata without reading file bodies. Health adds stable reason
+codes for unavailable measurements, policy failures, unmanaged data, and log
+families that remain over their soft storage budget.
+
+JSON inventory and health reports use `harnery.storage-inventory/v2` and
+`harnery.storage-health/v2`. Each operational or debug log row includes its
+effective byte and age budgets, provenance, managed and unmanaged usage,
+pressure, enforcement state, and reason codes. Other storage families omit the
+log-specific block.
+
+## Preview maintenance
+
+```bash
+harn storage maintain --family agent-hook-debug-log --json
+```
+
+Maintenance is a dry run by default. It persists a versioned transaction that
+names each exact action and the bytes it would reclaim. Planning does not
+delete, truncate, rename, or rewrite source storage.
+
+For structured logs, a sealed segment becomes eligible when it is older than
+the effective age budget or is needed to bring managed usage within the byte
+budget. Selection is oldest first. Active files, unknown siblings, legacy and
+external roots, symlinks, ambiguous hard links, and non-log storage are not
+eligible.
+
+## Confirm one exact transaction
+
+```bash
+harn storage maintain \
+  --transaction <transaction-id> \
+  --yes \
+  --authorize-structured-log-deletion \
+  --json
+```
+
+All three controls are required for a destructive structured-log action: the
+exact persisted transaction ID, `--yes`, and explicit structured-log deletion
+authorization. This extra authorization does not grant deletion authority to
+another maintenance provider.
+
+Execution rechecks the effective policy fingerprint, manifest generation,
+path, file identity, size, digest, and sequence. Any change makes the plan stale
+and requires a new dry run. A successful apply writes a durable receipt.
+
+Session-start maintenance remains planning-only. Harnery does not automatically
+delete log data.
+
+Use `harn storage status --transaction <transaction-id> --json` to inspect a
+saved transaction without changing storage.

@@ -11,6 +11,7 @@ import {
   type HarneryStorageRoot,
 } from "./contract.ts";
 import { filterStorageInventory, inventoryStorage } from "./inventory.ts";
+import { familyLogDirectory } from "./segments.ts";
 
 const roots: string[] = [];
 
@@ -123,14 +124,46 @@ describe("storage inventory", () => {
     expect(filtered.filesystem_totals).toEqual(report.filesystem_totals);
   });
 
-  test("keeps every inactive storage maintenance policy ineligible", async () => {
+  test("keeps dormant storage maintenance ineligible", async () => {
     const report = await inventoryStorage(createStorageCatalog({ coord_root: fixture() }));
     expect(report.families.filter(({ maintenance }) => maintenance.state === "eligible")).toEqual(
       [],
     );
     expect(family(report, "agent-operational-log").maintenance).toEqual({
       state: "ineligible",
-      reason_code: "maintenance_policy_inactive",
+      reason_code: "provider_unavailable",
+    });
+  });
+
+  test("reports effective budgets and separates managed from unmanaged log bytes", async () => {
+    const root = fixture();
+    const catalog = createStorageCatalog({ coord_root: root });
+    const registered = catalog.require("agent-operational-log");
+    const directory = familyLogDirectory(registered);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "active.jsonl"), "{}\n");
+    writeFileSync(join(directory, "unmanaged.bin"), "unmanaged");
+    const report = await inventoryStorage(catalog, {
+      now: () => new Date("2026-08-29T12:00:00.000Z"),
+    });
+    expect(family(report, "agent-operational-log").log_storage).toMatchObject({
+      effective_policy: {
+        state: "valid",
+        max_bytes: 128 * 1024 * 1024,
+        max_age_days: 30,
+        max_age_ms: 30 * 24 * 60 * 60 * 1_000,
+        provenance: { max_bytes: { source: "built-in" } },
+      },
+      usage: { managed_bytes: 3, unmanaged_bytes: 9, total_bytes: 12 },
+      pressure: {
+        state: "within_budget",
+        reason_codes: ["unmanaged_bytes_present"],
+      },
+      retention: {
+        state: "active",
+        enforcement: "manual",
+        reason_codes: ["unmanaged_bytes_present"],
+      },
     });
   });
 

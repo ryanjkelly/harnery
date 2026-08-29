@@ -18,6 +18,50 @@ export type HarneryStorageDurability =
 export type HarneryStorageWriterModel = "single-process" | "multi-process" | "object-owned";
 export type HarneryLogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 
+export const HARNERY_STRUCTURED_LOG_PROVIDER_ID = "structured-log-provider" as const;
+
+export type HarneryLogRetentionSource =
+  | "built-in"
+  | "user-class"
+  | "user-family"
+  | "project-class"
+  | "project-family";
+
+export interface HarneryLogRetentionValueProvenance {
+  source: HarneryLogRetentionSource;
+  selector: string;
+}
+
+export interface HarneryLogStorageDiagnostic {
+  code:
+    | "config_file_invalid"
+    | "logs_storage_invalid"
+    | "unknown_class"
+    | "unknown_project_family"
+    | "dormant_user_family"
+    | "non_log_family"
+    | "unsupported_log_family"
+    | "unknown_field"
+    | "value_out_of_range";
+  layer?: "user" | "project";
+  family_id?: string;
+  field?: string;
+  message: string;
+}
+
+export interface HarneryEffectiveLogRetention {
+  state: "valid" | "invalid";
+  max_bytes: number;
+  max_age_days: number;
+  max_age_ms: number;
+  effective_policy_fingerprint: string;
+  provenance: {
+    max_bytes: HarneryLogRetentionValueProvenance;
+    max_age_days: HarneryLogRetentionValueProvenance;
+  };
+  diagnostics: readonly HarneryLogStorageDiagnostic[];
+}
+
 export interface HarneryStorageContext {
   coord_root: string;
   project_root?: string;
@@ -151,10 +195,11 @@ export interface HarneryHostStorageRegistration {
 export interface HarneryRegisteredStorageFamily extends HarneryStorageFamily {
   source: "harnery" | "host";
   resolved_roots: readonly HarneryStorageRoot[];
+  effective_log_retention?: HarneryEffectiveLogRetention;
 }
 
-export const HARNERY_STORAGE_INVENTORY_SCHEMA = "harnery.storage-inventory/v1" as const;
-export const HARNERY_STORAGE_HEALTH_SCHEMA = "harnery.storage-health/v1" as const;
+export const HARNERY_STORAGE_INVENTORY_SCHEMA = "harnery.storage-inventory/v2" as const;
+export const HARNERY_STORAGE_HEALTH_SCHEMA = "harnery.storage-health/v2" as const;
 
 export type HarneryStorageReasonCode =
   | "allocated_bytes_unavailable"
@@ -196,6 +241,36 @@ export interface HarneryStorageRootInventory {
   totals: HarneryStorageInventoryTotals;
 }
 
+export interface HarneryLogStorageStatus {
+  effective_policy: {
+    state: "valid" | "invalid";
+    max_bytes: number;
+    max_age_days: number;
+    max_age_ms: number;
+    fingerprint: string;
+    provenance: HarneryEffectiveLogRetention["provenance"];
+    diagnostics: readonly HarneryLogStorageDiagnostic[];
+  } | null;
+  usage: {
+    managed_bytes: number;
+    unmanaged_bytes: number;
+    total_bytes: number;
+    managed_files: number;
+    unmanaged_files: number;
+  };
+  pressure: {
+    state: "within_budget" | "over_budget" | "unknown";
+    ratio: number | null;
+    bytes_over: number | null;
+    reason_codes: readonly string[];
+  };
+  retention: {
+    state: "active" | "blocked" | "unmanaged";
+    enforcement: "manual" | "none";
+    reason_codes: readonly string[];
+  };
+}
+
 export interface HarneryStorageFamilyInventory {
   family_id: string;
   source: "harnery" | "host";
@@ -211,6 +286,7 @@ export interface HarneryStorageFamilyInventory {
   reason_codes: readonly HarneryStorageReasonCode[];
   totals: HarneryStorageInventoryTotals;
   roots: readonly HarneryStorageRootInventory[];
+  log_storage?: HarneryLogStorageStatus;
 }
 
 export interface HarneryStorageIssueSummary {
@@ -245,8 +321,9 @@ export interface HarneryStorageFamilyHealth {
   family_id: string;
   policy_version: string;
   status: "healthy" | "degraded" | "unknown";
-  reason_codes: readonly HarneryStorageReasonCode[];
+  reason_codes: readonly string[];
   maintenance: HarneryStorageFamilyInventory["maintenance"];
+  log_storage?: HarneryLogStorageStatus;
 }
 
 export interface HarneryStorageHealthReport {
@@ -254,7 +331,7 @@ export interface HarneryStorageHealthReport {
   captured_at: string;
   inventory_schema: typeof HARNERY_STORAGE_INVENTORY_SCHEMA;
   status: "healthy" | "degraded" | "unknown";
-  reason_codes: readonly HarneryStorageReasonCode[];
+  reason_codes: readonly string[];
   families: readonly HarneryStorageFamilyHealth[];
   issues: readonly HarneryStorageIssueSummary[];
 }

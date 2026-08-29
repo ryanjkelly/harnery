@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createHarneryProgram } from "../../src/commander.ts";
+import { Command } from "commander";
+import { createHarneryProgram, registerHarneryLogStorageCommands } from "../../src/commander.ts";
 import {
   appendDurableHistoryRecord,
   createInMemoryLoggerRuntime,
@@ -63,6 +64,19 @@ describe("createHarneryProgram", () => {
     );
     for (const name of excluded) expect(names.has(name), name).toBeFalse();
     expect(names.has("storage")).toBeTrue();
+  });
+
+  test("mounts log storage commands below a host-owned namespace", () => {
+    const host = new Command();
+    const namespace = host.command("harnery");
+    expect(registerHarneryLogStorageCommands(namespace)).toBe(namespace);
+    expect(namespace.commands.map((command) => command.name()).sort()).toEqual(["logs", "storage"]);
+  });
+
+  test("mounts only the selected log storage command below a host namespace", () => {
+    const namespace = new Command().command("harnery");
+    registerHarneryLogStorageCommands(namespace, { commands: ["logs"] });
+    expect(namespace.commands.map((command) => command.name())).toEqual(["logs"]);
   });
 
   test("exports the durable history, logger, and bounded query APIs", () => {
