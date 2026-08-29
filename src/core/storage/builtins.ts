@@ -254,7 +254,10 @@ function maintenanceFamilies(): HarneryStorageFamily[] {
       writer_model: "object-owned",
       policy: { ...artifactPolicy("storage-exports-v1"), writes: "disabled" },
       consumers: ["storage inventory", "storage query", "storage maintenance"],
-      provider: delegatedProvider("storage-export-provider", "storage export manifests"),
+      provider: filesystemInventoryDelegatedMaintenanceProvider(
+        "storage-export-provider",
+        "storage export manifests",
+      ),
     }),
   ];
 }
@@ -481,7 +484,10 @@ function artifactFamilies(): HarneryStorageFamily[] {
       writer_model: "object-owned",
       policy: artifactPolicy("managed-artifacts-v1"),
       consumers: ["artifact service", "artifact janitor", "storage inventory"],
-      provider: delegatedProvider("artifact-provider", "artifact manifests and owner protection"),
+      provider: filesystemInventoryDelegatedMaintenanceProvider(
+        "artifact-provider",
+        "artifact manifests and owner protection",
+      ),
     }),
     family({
       id: "captured-images",
@@ -493,7 +499,10 @@ function artifactFamilies(): HarneryStorageFamily[] {
       writer_model: "object-owned",
       policy: artifactPolicy("captured-images-v1"),
       consumers: ["image capture", "image janitor", "storage inventory"],
-      provider: delegatedProvider("image-provider", "image manifests and reference protection"),
+      provider: filesystemInventoryDelegatedMaintenanceProvider(
+        "image-provider",
+        "image manifests and reference protection",
+      ),
     }),
   ];
 }
@@ -690,6 +699,19 @@ function delegatedProvider(providerId: string, authority: string): HarneryStorag
     provider_id: providerId,
     kind: "delegated",
     inventory: "delegated",
+    maintenance: "delegated",
+    lifecycle_authority: authority,
+  };
+}
+
+function filesystemInventoryDelegatedMaintenanceProvider(
+  providerId: string,
+  authority: string,
+): HarneryStorageProvider {
+  return {
+    provider_id: providerId,
+    kind: "filesystem",
+    inventory: "filesystem",
     maintenance: "delegated",
     lifecycle_authority: authority,
   };

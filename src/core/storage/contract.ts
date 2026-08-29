@@ -152,3 +152,109 @@ export interface HarneryRegisteredStorageFamily extends HarneryStorageFamily {
   source: "harnery" | "host";
   resolved_roots: readonly HarneryStorageRoot[];
 }
+
+export const HARNERY_STORAGE_INVENTORY_SCHEMA = "harnery.storage-inventory/v1" as const;
+export const HARNERY_STORAGE_HEALTH_SCHEMA = "harnery.storage-health/v1" as const;
+
+export type HarneryStorageReasonCode =
+  | "allocated_bytes_unavailable"
+  | "delegated_inventory_unavailable"
+  | "hard_link_ambiguous"
+  | "host_exclusion"
+  | "maintenance_delegated"
+  | "maintenance_not_registered"
+  | "maintenance_policy_inactive"
+  | "overlapping_registration"
+  | "provider_unavailable"
+  | "root_dormant"
+  | "special_file_rejected"
+  | "symlink_rejected"
+  | "unreadable_path"
+  | "unregistered_path"
+  | "wrong_root_type";
+
+export type HarneryStorageMeasurement =
+  | { state: "observed"; unit: "files" | "bytes"; value: number }
+  | {
+      state: "unavailable";
+      unit: "files" | "bytes";
+      reason_code: HarneryStorageReasonCode;
+    };
+
+export interface HarneryStorageInventoryTotals {
+  regular_files: HarneryStorageMeasurement;
+  logical_bytes: HarneryStorageMeasurement;
+  allocated_bytes: HarneryStorageMeasurement;
+}
+
+export interface HarneryStorageRootInventory {
+  root_index: number;
+  root_label: string;
+  ownership: "harnery" | "host" | "external";
+  state: "present" | "dormant" | "delegated" | "unavailable" | "partial";
+  reason_codes: readonly HarneryStorageReasonCode[];
+  totals: HarneryStorageInventoryTotals;
+}
+
+export interface HarneryStorageFamilyInventory {
+  family_id: string;
+  source: "harnery" | "host";
+  storage_class: HarneryStorageClass;
+  policy_version: string;
+  provider_id: string;
+  inventory: "filesystem" | "delegated";
+  maintenance: {
+    state: "eligible" | "ineligible" | "delegated";
+    reason_code?: HarneryStorageReasonCode;
+  };
+  state: "present" | "dormant" | "delegated" | "unavailable" | "partial";
+  reason_codes: readonly HarneryStorageReasonCode[];
+  totals: HarneryStorageInventoryTotals;
+  roots: readonly HarneryStorageRootInventory[];
+}
+
+export interface HarneryStorageIssueSummary {
+  reason_code: HarneryStorageReasonCode;
+  count: number;
+  maintenance_eligible: false;
+}
+
+export interface HarneryStorageInventoryReport {
+  schema: typeof HARNERY_STORAGE_INVENTORY_SCHEMA;
+  captured_at: string;
+  privacy: {
+    content_read: false;
+    path_mode: "aggregate-labels";
+  };
+  scan: {
+    mode: "streaming-lstat";
+    max_concurrency: number;
+    project_filesystem_scope: ".harnery-and-registered-external-roots";
+  };
+  filter: { family_id?: string; storage_class?: HarneryStorageClass };
+  filesystem_totals: HarneryStorageInventoryTotals;
+  scope_totals: {
+    coordination_root: HarneryStorageInventoryTotals;
+    registered_external_roots: HarneryStorageInventoryTotals;
+  };
+  families: readonly HarneryStorageFamilyInventory[];
+  issues: readonly HarneryStorageIssueSummary[];
+}
+
+export interface HarneryStorageFamilyHealth {
+  family_id: string;
+  policy_version: string;
+  status: "healthy" | "degraded" | "unknown";
+  reason_codes: readonly HarneryStorageReasonCode[];
+  maintenance: HarneryStorageFamilyInventory["maintenance"];
+}
+
+export interface HarneryStorageHealthReport {
+  schema: typeof HARNERY_STORAGE_HEALTH_SCHEMA;
+  captured_at: string;
+  inventory_schema: typeof HARNERY_STORAGE_INVENTORY_SCHEMA;
+  status: "healthy" | "degraded" | "unknown";
+  reason_codes: readonly HarneryStorageReasonCode[];
+  families: readonly HarneryStorageFamilyHealth[];
+  issues: readonly HarneryStorageIssueSummary[];
+}

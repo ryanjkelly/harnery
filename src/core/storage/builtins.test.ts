@@ -121,6 +121,20 @@ describe("source-owned storage descriptors", () => {
     expect(metrics.policy.reconstruction_source).toContain("structured log segments");
   });
 
+  test("inventories local managed objects while delegating their maintenance", () => {
+    for (const id of ["managed-artifacts", "captured-images", "storage-exports"]) {
+      expect(catalog.require(id).provider).toMatchObject({
+        kind: "filesystem",
+        inventory: "filesystem",
+        maintenance: "delegated",
+      });
+    }
+    expect(catalog.require("adapter-native-conversations").provider).toMatchObject({
+      inventory: "delegated",
+      maintenance: "delegated",
+    });
+  });
+
   test("returns a fresh descriptor array without runtime registry mutation", () => {
     expect(harneryStorageFamilies()).not.toBe(harneryStorageFamilies());
   });
