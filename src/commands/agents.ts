@@ -1728,7 +1728,7 @@ function cursorEnvSessionId(): string | null {
 }
 
 interface CommandSessionBootstrap {
-  adapter: "cursor" | "codex";
+  adapter: "claude-code" | "cursor" | "codex";
   sessionId: string;
 }
 
@@ -1741,12 +1741,21 @@ function commandSessionBootstrap(): CommandSessionBootstrap | null {
     const sessionId = sessionIdentityFromEnv();
     if (sessionId) return { adapter: "codex", sessionId };
   }
+  const claudeSessionId = process.env.CLAUDE_CODE_SESSION_ID?.trim();
+  if (claudeSessionId) {
+    return { adapter: "claude-code", sessionId: claudeSessionId };
+  }
   return null;
 }
 
 function ensureAdapterSession(root: string): void {
   const bootstrap = commandSessionBootstrap();
   if (!bootstrap) return;
+  // Claude Code owns a reliable native SessionStart hook. Its environment is
+  // accepted by the explicit `agents heal` recovery path, but ordinary
+  // identity and status commands must not impersonate that hook. The heal
+  // bootstrap records derived provenance instead.
+  if (bootstrap.adapter === "claude-code") return;
   // Explicit owner override means the caller already knows who they are.
   // Bootstrapping sessionStart inherits that env into the child hook, which
   // re-projects a fresh heartbeat onto the override owner and can wipe an

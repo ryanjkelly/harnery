@@ -94,6 +94,21 @@ function cursorEnv(): Record<string, string> {
   };
 }
 
+function claudeEnv(): Record<string, string> {
+  return {
+    HARNERY_AGENT_COORD_BRIDGE: "",
+    HARNERY_AGENT_COORD_OWNER: "",
+    HARNERY_AGENT_COORD_SESSION_ID: "",
+    HARNERY_AGENT_COORD_PLATFORM: "claude-code",
+    CODEX_SESSION_ID: "",
+    CODEX_THREAD_ID: "",
+    CURSOR_AGENT: "",
+    CURSOR_SESSION_ID: "",
+    CURSOR_CONVERSATION_ID: "",
+    CLAUDE_CODE_SESSION_ID: OWNER,
+  };
+}
+
 function endSession(root: string, adapter: "codex" | "cursor", owner = OWNER): string {
   const route = resolveLiveEventLedgerRouteV3(root);
   if (route.state !== "v3") throw new Error("expected active V3 route");
@@ -175,6 +190,38 @@ describe("harn agents heal", () => {
     const repeatedCache = readHeartbeat(root, OWNER);
     expect(repeatedState?.generation_id).toBe(firstState.generation_id);
     expect(repeatedCache?.v3_generation_id).toBe(firstCache?.v3_generation_id);
+    expect(
+      ledgerEvents(root).filter((event) => event.event_type === "session.started"),
+    ).toHaveLength(1);
+    expectNoInventedTurn(root);
+  });
+
+  test("onboards a fresh Claude Code identity from its native session environment", () => {
+    const root = makeLedgerSandbox();
+
+    const beforeHeal = harn(root, ["agents", "whoami", "--json"], claudeEnv());
+    expect(beforeHeal.status).toBe(1);
+    expect(readHookProducerStateV3(root, "claude-code", OWNER)).toBeUndefined();
+    expect(readHeartbeat(root, OWNER)).toBeNull();
+
+    const result = harn(root, ["agents", "heal", "--json"], claudeEnv());
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      rows: [
+        {
+          instance_id: OWNER,
+          outcome: "cache_present",
+          after: { instance_id: OWNER, platform: "claude-code" },
+        },
+      ],
+      meta: { automatic: true, adapter: "claude-code", bootstrap: "created" },
+    });
+    expect(readHookProducerStateV3(root, "claude-code", OWNER)).toBeDefined();
+    expect(readHeartbeat(root, OWNER)).toMatchObject({
+      instance_id: OWNER,
+      platform: "claude-code",
+    });
     expect(
       ledgerEvents(root).filter((event) => event.event_type === "session.started"),
     ).toHaveLength(1);
