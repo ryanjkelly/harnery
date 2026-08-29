@@ -20,7 +20,20 @@ describe("exports map", () => {
   const root = join(import.meta.dir, "..", "..");
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
     exports: Record<string, Record<string, string>>;
+    files: string[];
   };
+  const buildConfig = JSON.parse(readFileSync(join(root, "tsconfig.build.json"), "utf8")) as {
+    exclude: string[];
+  };
+
+  const requiredFeatureSubpaths = [
+    "./core/storage",
+    "./core/inbox",
+    "./core/conversations",
+    "./core/events/v3",
+    "./core/events/v3/support-storage",
+    "./core/events/legacy-storage",
+  ];
 
   const sourceTargets = Object.entries(pkg.exports)
     .map(([subpath, conditions]) => ({ subpath, target: conditions.bun }))
@@ -43,5 +56,15 @@ describe("exports map", () => {
           "Update package.json exports to the moved path, or drop the subpath.",
       );
     }
+  });
+
+  test("release features have explicit public subpaths", () => {
+    expect(Object.keys(pkg.exports)).toEqual(expect.arrayContaining(requiredFeatureSubpaths));
+  });
+
+  test("internal fixtures cannot enter the published package", () => {
+    expect(buildConfig.exclude).toContain("**/__fixtures__/**");
+    expect(pkg.files).toContain("!src/**/__fixtures__/**");
+    expect(pkg.files).toContain("!dist/**/__fixtures__/**");
   });
 });

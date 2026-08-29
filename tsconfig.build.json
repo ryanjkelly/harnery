@@ -16,5 +16,14 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "docs", "src/web", "tests", "**/*.test.ts"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "docs",
+    "src/web",
+    "tests",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/__fixtures__/**"
+  ]
 }

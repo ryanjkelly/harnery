@@ -102,10 +102,30 @@
       "types": "./dist/core/events/v3/index.d.ts",
       "import": "./dist/core/events/v3/index.js"
     },
+    "./core/events/v3/support-storage": {
+      "bun": "./src/core/events/v3/support-storage/index.ts",
+      "types": "./dist/core/events/v3/support-storage/index.d.ts",
+      "import": "./dist/core/events/v3/support-storage/index.js"
+    },
+    "./core/events/legacy-storage": {
+      "bun": "./src/core/events/legacy-storage/index.ts",
+      "types": "./dist/core/events/legacy-storage/index.d.ts",
+      "import": "./dist/core/events/legacy-storage/index.js"
+    },
     "./core/storage": {
       "bun": "./src/core/storage/index.ts",
       "types": "./dist/core/storage/index.d.ts",
       "import": "./dist/core/storage/index.js"
+    },
+    "./core/inbox": {
+      "bun": "./src/core/inbox/index.ts",
+      "types": "./dist/core/inbox/index.d.ts",
+      "import": "./dist/core/inbox/index.js"
+    },
+    "./core/conversations": {
+      "bun": "./src/core/conversations/index.ts",
+      "types": "./dist/core/conversations/index.d.ts",
+      "import": "./dist/core/conversations/index.js"
     },
     "./core/semantic": {
       "bun": "./src/core/semantic/index.ts",
@@ -178,7 +198,7 @@
     "agent-coord": "./bin/agent-coord",
     "agent-hook": "./bin/agent-hook"
   },
-  "//files": "src ships as TS so the `bun` export condition resolves to source; negate co-located tests and their shared fixture helper so they don't ride into the tarball (a .npmignore is inert for paths already inside the files allowlist).",
+  "//files": "src ships as TS so the `bun` export condition resolves to source; negate co-located tests, fixture directories, and shared test helpers so they don't ride into the tarball (a .npmignore is inert for paths already inside the files allowlist).",
   "files": [
     "bin",
     "src",
@@ -188,6 +208,8 @@
     "LICENSE",
     "!src/**/*.test.ts",
     "!src/**/*.test.tsx",
+    "!src/**/__fixtures__/**",
+    "!dist/**/__fixtures__/**",
     "!dist/**/test-helpers.*",
     "!src/**/test-helpers.ts"
   ],
