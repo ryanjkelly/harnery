@@ -112,6 +112,22 @@ describe("ledger-v3 command", () => {
       sources_preserved: true,
       replacement_enabled: false,
     });
+    const wrongGenesisResume = await runSupport([
+      "support-shadow",
+      "--transaction",
+      transaction,
+      "--genesis-id",
+      "gen_wrong",
+      "--minimum-harnery-version",
+      "0.36.0",
+      "--root",
+      fixture.root,
+    ]);
+    expect(wrongGenesisResume.data).toBeUndefined();
+    expect(wrongGenesisResume.error).toEqual({
+      code: "ledger_v3_support_shadow_failed",
+      message: "event_v3_support_transaction_genesis_mismatch",
+    });
   });
 
   test("support-plan refuses missing evidence instead of inferring eligibility", async () => {

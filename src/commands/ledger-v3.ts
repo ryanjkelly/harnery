@@ -259,6 +259,9 @@ export function registerLedgerV3Command(
           const root = resolve(options.root ?? coordRoot(context));
           const transactions = transactionRoot(root);
           let current = await readEventV3SupportTransaction(transactions, options.transaction);
+          if (current.authority.genesis_id !== options.genesisId) {
+            throw new Error("event_v3_support_transaction_genesis_mismatch");
+          }
           if (current.state === "planned") {
             current = await writeEventV3SupportTransactionShadow({
               transaction_root: transactions,
