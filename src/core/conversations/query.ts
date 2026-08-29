@@ -14,15 +14,26 @@ export async function queryConversationCatalog(
   request: HarneryConversationQueryRequest,
 ): Promise<HarneryConversationQueryResult> {
   validateRequest(request);
+  const started = performance.now();
   const records: HarneryConversationRecordV1[] = [];
   const snapshots: HarneryConversationSourceSnapshot[] = [];
+  let decodedBytes = 0;
+  let sourceTruncation: HarneryConversationQueryResult["truncation_reason"];
   const providers = request.provider_id ? [catalog.require(request.provider_id)] : catalog.list();
-  for (const provider of providers) {
+  providerLoop: for (const provider of providers) {
     if (!provider.capabilities.can_list || !provider.capabilities.can_stream_source) continue;
+    if (performance.now() - started > request.budgets.max_wall_ms) {
+      sourceTruncation = "wall_budget";
+      break;
+    }
     const summaries = await provider.list(request.project_scope_id);
     for (const summary of summaries) {
       if (summary.project_scope_id !== request.project_scope_id) continue;
       if (request.conversation_id && summary.conversation_id !== request.conversation_id) continue;
+      if (performance.now() - started > request.budgets.max_wall_ms) {
+        sourceTruncation = "wall_budget";
+        break providerLoop;
+      }
       const snapshot = await provider.snapshot(request.project_scope_id, summary.conversation_id);
       snapshots.push(snapshot);
       let sequence = 0;
@@ -38,22 +49,40 @@ export async function queryConversationCatalog(
           captured_at: snapshot.observed_at,
           sequence,
         });
-        if (normalized.record) records.push(normalized.record);
+        if (!normalized.record) continue;
+        if (records.length >= request.budgets.max_source_records) {
+          sourceTruncation = "record_budget";
+          break providerLoop;
+        }
+        if (decodedBytes + normalized.record.content_bytes > request.budgets.max_decoded_bytes) {
+          sourceTruncation = "byte_budget";
+          break providerLoop;
+        }
+        if (performance.now() - started > request.budgets.max_wall_ms) {
+          sourceTruncation = "wall_budget";
+          break providerLoop;
+        }
+        records.push(normalized.record);
+        decodedBytes += normalized.record.content_bytes;
       }
     }
   }
-  return queryConversationRecords(records, snapshots, request);
+  const result = queryConversationRecords(records, snapshots, request, { started_at: started });
+  if (!sourceTruncation || result.truncated) return result;
+  return { ...result, truncated: true, truncation_reason: sourceTruncation };
 }
 
 export function queryConversationRecords(
   inputRecords: readonly HarneryConversationRecordV1[],
   snapshots: readonly HarneryConversationSourceSnapshot[],
   request: HarneryConversationQueryRequest,
+  internal: { started_at?: number } = {},
 ): HarneryConversationQueryResult {
   validateRequest(request);
-  const started = performance.now();
+  const started = internal.started_at ?? performance.now();
   const records = [...inputRecords].sort(
     (left, right) =>
+      left.project_scope_id.localeCompare(right.project_scope_id) ||
       left.provider_id.localeCompare(right.provider_id) ||
       left.conversation_id.localeCompare(right.conversation_id) ||
       left.sequence - right.sequence ||
@@ -150,6 +179,7 @@ function neighbors(
     .filter(
       (record) =>
         record.record_id !== target.record_id &&
+        record.project_scope_id === target.project_scope_id &&
         record.provider_id === target.provider_id &&
         record.conversation_id === target.conversation_id,
     );

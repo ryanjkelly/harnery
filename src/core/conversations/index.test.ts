@@ -13,6 +13,7 @@ import { buildConversationContextPack } from "./context-pack.ts";
 import type {
   HarneryConversationProvider,
   HarneryConversationQueryRequest,
+  HarneryConversationRecordV1,
   HarneryNativeConversationRecord,
 } from "./contract.ts";
 import { automaticConversationInjectionEnabled } from "./evaluation.ts";
@@ -187,6 +188,53 @@ describe("conversation history", () => {
       },
     );
     expect(result).toMatchObject({ truncated: true, truncation_reason: "byte_budget" });
+  });
+
+  test("stops provider iteration at source budgets before materializing the full stream", async () => {
+    let yielded = 0;
+    const provider = fixtureProvider();
+    provider.stream = async function* () {
+      for (let index = 0; index < 100; index += 1) {
+        yielded += 1;
+        yield {
+          native_conversation_id: "native-budget",
+          native_record_id: `record-${index}`,
+          native_sequence: index + 1,
+          role: "assistant",
+          occurred_at: new Date(Date.UTC(2026, 7, 29, 10, 0, index)).toISOString(),
+          content: `bounded record ${index}`,
+        };
+      }
+    };
+    const result = await queryConversationCatalog(
+      new HarneryConversationCatalog([provider]),
+      query({ budgets: { ...query().budgets, max_source_records: 2 } }),
+    );
+    expect(result).toMatchObject({ truncated: true, truncation_reason: "record_budget" });
+    expect(yielded).toBe(3);
+    expect(result.scanned_records).toBe(2);
+  });
+
+  test("never includes cross-project records as conversation neighbors", async () => {
+    const full = await queryConversationCatalog(
+      new HarneryConversationCatalog([fixtureProvider()]),
+      query(),
+    );
+    const authority = full.hits.map(({ record }) => record);
+    const foreign = authority.map(
+      (record, index): HarneryConversationRecordV1 => ({
+        ...record,
+        project_scope_id: "project-b",
+        record_id: `${record.record_id}-foreign-${index}`,
+      }),
+    );
+    const result = queryConversationRecords([...foreign, ...authority], full.snapshots, query());
+    expect(result.hits).not.toHaveLength(0);
+    expect(
+      result.hits
+        .flatMap(({ neighbors }) => neighbors)
+        .every(({ project_scope_id }) => project_scope_id === "project-a"),
+    ).toBeTrue();
   });
 });
 
