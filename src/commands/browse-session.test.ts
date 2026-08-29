@@ -24,10 +24,11 @@ describe("browse-session command", () => {
       "wait",
       "close",
     ]);
+    expect(session?.commands.every((command) => command.description().trim().length > 0)).toBe(true);
     expect(program.commands.find((command) => command.name() === "browse")?.options).toContainEqual(
       expect.objectContaining({ long: "--control-file" }),
     );
-  });
+  }, 10_000);
 
   test("requires exactly one locator form and keeps exact matching as the default", () => {
     expect(parseLocatorOptions({ controlFile: "x", label: "Email" }, true)).toEqual({

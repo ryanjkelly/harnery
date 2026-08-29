@@ -28,6 +28,7 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
 
   session
     .command("status")
+    .description("Report whether the opted-in browser session is reachable")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .action((opts: ControlFileOpts) => runAction(emit, opts.controlFile, "status", {}));
 
@@ -43,6 +44,7 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
 
   session
     .command("screenshot")
+    .description("Capture the active tab to a new PNG file")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .requiredOption("--out <path>", "New PNG path in an existing directory")
     .action((opts: ControlFileOpts & { out: string }) =>
@@ -51,11 +53,13 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
 
   session
     .command("tabs")
+    .description("List open tabs with stable session-local indexes")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .action((opts: ControlFileOpts) => runAction(emit, opts.controlFile, "tabs", {}));
 
   session
     .command("select-tab")
+    .description("Select an open tab by its stable session-local index")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .requiredOption("--index <n>", "Stable session-local tab index", parseIndex)
     .action((opts: ControlFileOpts & { index: number }) =>
@@ -64,6 +68,7 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
 
   session
     .command("open-tab <url>")
+    .description("Open a URL in a new tab and select it")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .action((url: string, opts: ControlFileOpts) =>
       runAction(emit, opts.controlFile, "open_tab", { url }),
@@ -71,6 +76,7 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
 
   session
     .command("close-tab")
+    .description("Close an open tab by its stable session-local index")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .requiredOption("--index <n>", "Stable session-local tab index", parseIndex)
     .action((opts: ControlFileOpts & { index: number }) =>
@@ -79,6 +85,7 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
 
   session
     .command("goto <url>")
+    .description("Navigate the active tab to a URL")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .action((url: string, opts: ControlFileOpts) =>
       runAction(emit, opts.controlFile, "goto", { url }),
@@ -86,12 +93,14 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
 
   session
     .command("reload")
+    .description("Reload the active tab")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .action((opts: ControlFileOpts) => runAction(emit, opts.controlFile, "reload", {}));
 
   addLocatorOptions(
     session
       .command("click")
+      .description("Click one strict locator in the active tab")
       .requiredOption("--control-file <path>", "Owner-only session descriptor"),
   ).action((opts: LocatorOpts) =>
     runAction(emit, opts.controlFile, "click", { locator: parseLocatorOptions(opts, true) }),
@@ -112,6 +121,7 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
 
   session
     .command("press <key>")
+    .description("Press a keyboard key in the active tab")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .action((key: string, opts: ControlFileOpts) =>
       runAction(emit, opts.controlFile, "press", { key }),
@@ -120,6 +130,7 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
   addLocatorOptions(
     session
       .command("wait")
+      .description("Wait for one strict locator in the active tab")
       .requiredOption("--control-file <path>", "Owner-only session descriptor"),
   ).action((opts: LocatorOpts) =>
     runAction(emit, opts.controlFile, "wait", { locator: parseLocatorOptions(opts, true) }),
@@ -127,6 +138,7 @@ export function registerBrowseSessionCommand(program: Command, emit: EmitContext
 
   session
     .command("close")
+    .description("Close the opted-in browser session")
     .requiredOption("--control-file <path>", "Owner-only session descriptor")
     .action((opts: ControlFileOpts) => runAction(emit, opts.controlFile, "close", {}));
 }
