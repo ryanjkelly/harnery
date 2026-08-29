@@ -55,11 +55,15 @@ interface OutlineResult {
   symbols: SymbolEntry[];
 }
 
-export function registerOutlineCommand(program: Command, emit: EmitContext): void {
+export function registerOutlineCommand(
+  program: Command,
+  emit: EmitContext,
+  binName = resolveBinName(),
+): void {
   program
     .command("outline <file>")
     .description(
-      `Print the structural skeleton of a code file (imports + top-level decls + line numbers). Supports TS/JS/TSX/JSX (AST), PHP/Python (regex). Use \`${resolveBinName()} toc\` for markdown.`,
+      `Print the structural skeleton of a code file (imports + top-level decls + line numbers). Supports TS/JS/TSX/JSX (AST), PHP/Python (regex). Use \`${binName} toc\` for markdown.`,
     )
     .option("--json", "Structured JSON envelope")
     .option("--exports-only", "Only show exported symbols")

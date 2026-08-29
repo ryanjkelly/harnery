@@ -17,6 +17,27 @@ describe("createHarneryProgram", () => {
     expect(program.name()).toBe("acme");
   });
 
+  test("uses the known binName in construction-time command help", () => {
+    const program = createHarneryProgram({ binName: "acme" });
+    const command = (name: string) => program.commands.find((entry) => entry.name() === name);
+
+    expect(command("outline")?.description()).toContain("`acme toc`");
+    expect(command("read")?.description()).toContain("`acme fetch`");
+    expect(
+      command("browse")?.options.find((option) => option.long === "--html")?.description,
+    ).toContain("`acme read -`");
+
+    const agents = command("agents");
+    expect(agents?.commands.find((entry) => entry.name() === "wait")?.description()).toContain(
+      "`acme agents ping`",
+    );
+    expect(
+      agents?.commands
+        .find((entry) => entry.name() === "set-task")
+        ?.options.find((option) => option.long === "--session-id")?.description,
+    ).toContain("`acme agents list --json`");
+  });
+
   test("version string is set", () => {
     const program = createHarneryProgram();
     expect(program.version()).toBeDefined();

@@ -230,6 +230,7 @@ export function registerBrowseCommand(
   program: Command,
   emitParam: EmitContext,
   context?: HarneryProgramContext,
+  binName = resolveBinName(),
 ): void {
   emit = emitParam;
   program
@@ -246,7 +247,7 @@ export function registerBrowseCommand(
     .option("--snapshot", "Print body innerText to stdout (skips file writes)")
     .option(
       "--html",
-      `Print raw outer HTML to stdout (skips file writes; pair with \`${resolveBinName()} read -\`)`,
+      `Print raw outer HTML to stdout (skips file writes; pair with \`${binName} read -\`)`,
     )
     .option("--json", "Print full JSON envelope to stdout (skips file writes)")
     .option("--selector <css>", "Scope --html / --snapshot to one element")

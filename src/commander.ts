@@ -295,7 +295,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerRelayCommand(program, emit);
   registerConfigGetCommand(program, emit);
   registerFileHistoryCommand(program, emit);
-  registerOutlineCommand(program, emit);
+  registerOutlineCommand(program, emit, opts.binName ?? "harn");
   registerTocCommand(program, emit);
   registerSectionCommand(program, emit);
   registerCallersCommand(program, emit, opts.context);
@@ -306,8 +306,8 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerCookiesCommand(program, emit);
   registerFetchCommand(program, emit, opts.context);
   registerFilesCommand(program, emit, opts.context);
-  registerReadCommand(program, emit);
-  registerBrowseCommand(program, emit, opts.context);
+  registerReadCommand(program, emit, opts.binName ?? "harn");
+  registerBrowseCommand(program, emit, opts.context, opts.binName ?? "harn");
   registerBrowseSessionCommand(program, emit);
   registerBrowseAiCommand(program, emit);
   registerCompletionCommand(program, emit, opts.context);
@@ -340,7 +340,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerDevtoolsCommand(program, emit);
   registerTunnelCommand(program, emit, opts.context);
   registerDocsCommand(program, emit, opts.context);
-  registerAgentsCommand(program, emit, opts.context);
+  registerAgentsCommand(program, emit, opts.context, opts.binName ?? "harn");
   registerCouncilCommands(program);
   registerDoctorCommand(program, emit);
   registerInstructionsCommand(program, emit);

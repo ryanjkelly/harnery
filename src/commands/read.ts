@@ -11,12 +11,16 @@ let emit: EmitContext;
 /**
  * `harn read`: extract clean readable markdown from HTML.
  */
-export function registerReadCommand(program: Command, emitParam: EmitContext): void {
+export function registerReadCommand(
+  program: Command,
+  emitParam: EmitContext,
+  binName = resolveBinName(),
+): void {
   emit = emitParam;
   program
     .command("read [html-file]")
     .description(
-      `Extract clean readable markdown from HTML. Reads from file or stdin (use '-'). Pair with \`${resolveBinName()} fetch\` or \`${resolveBinName()} browse\` for scrape-to-markdown.`,
+      `Extract clean readable markdown from HTML. Reads from file or stdin (use '-'). Pair with \`${binName} fetch\` or \`${binName} browse\` for scrape-to-markdown.`,
     )
     .option("-o, --output <file>", "Write markdown to file instead of stdout")
     .option("--url <url>", "Base URL: used to resolve relative links")

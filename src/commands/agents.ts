@@ -272,6 +272,7 @@ export function registerAgentsCommand(
   program: Command,
   emitParam: EmitContext,
   programContext?: HarneryProgramContext,
+  binName = resolveBinName(),
 ): void {
   emit = emitParam;
   const cmd = program
@@ -393,7 +394,7 @@ export function registerAgentsCommand(
     )
     .option(
       "--session-id <id>",
-      `Set the task on the heartbeat with this session_id directly, bypassing the ppid walk. Mirror of \`status --session-id\`: use it when the ppid walk can't resolve self (e.g. Cursor, whose shell tool calls don't descend from a pid-map-registered anchor). Discover the id via \`${resolveBinName()} agents list --json\`.`,
+      `Set the task on the heartbeat with this session_id directly, bypassing the ppid walk. Mirror of \`status --session-id\`: use it when the ppid walk can't resolve self (e.g. Cursor, whose shell tool calls don't descend from a pid-map-registered anchor). Discover the id via \`${binName} agents list --json\`.`,
     )
     .action((text: string[], opts: { sessionId?: string }) => {
       runSetTask(text.join(" "), opts);
@@ -492,7 +493,7 @@ export function registerAgentsCommand(
   cmd
     .command("wait <name>")
     .description(
-      `Block until a peer agent releases files (their \`files_touched\` becomes empty, OR they exit). Pair with \`${resolveBinName()} agents ping\` to coordinate hand-offs.`,
+      `Block until a peer agent releases files (their \`files_touched\` becomes empty, OR they exit). Pair with \`${binName} agents ping\` to coordinate hand-offs.`,
     )
     .option(
       "--file <path>",
