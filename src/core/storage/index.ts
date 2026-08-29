@@ -6,6 +6,7 @@ export * from "./health.ts";
 export * from "./inventory.ts";
 export * from "./logger.ts";
 export * from "./maintenance.ts";
+export * from "./maintenance-providers.ts";
 export * from "./policy.ts";
 export * from "./query.ts";
 export * from "./receipts.ts";

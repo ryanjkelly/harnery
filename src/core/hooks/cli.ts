@@ -67,6 +67,10 @@ import {
 import { captureSpanClockV3 } from "../events/v3/span-state.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+import {
+  createAutomaticMaintenanceComposition,
+  runAutomaticMaintenancePass,
+} from "../storage/maintenance-providers.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
 import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
 import {
@@ -965,6 +969,22 @@ async function main(): Promise<number> {
       autoCleanArtifacts(coordRoot);
     } catch (err) {
       logError(coordRoot, err, { phase: "artifact-auto-clean" });
+    }
+    // Plan one bounded, claim-first global slice from cached pressure only.
+    // Existing owner janitors above remain the only active executors until
+    // each provider receives a separate production activation.
+    try {
+      await runAutomaticMaintenancePass(
+        createAutomaticMaintenanceComposition(coordRoot, {
+          journal: () => {
+            if (adapter === "claude-code") journalJanitor(coordRoot);
+          },
+          images: () => imageJanitor(coordRoot),
+          artifacts: () => autoCleanArtifacts(coordRoot),
+        }),
+      );
+    } catch (err) {
+      logError(coordRoot, err, { phase: "storage-maintenance-auto" });
     }
     let recovery: PreparedContextRecovery | null = null;
     if (payload?.source === "compact") {
