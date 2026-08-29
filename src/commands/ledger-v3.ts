@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
@@ -16,9 +16,12 @@ import {
   recoverInvalidEventLedgerV3,
   sha256V3,
 } from "../core/events/v3/index.ts";
+import type { EventV3SupportClassificationEvidence } from "../core/events/v3/support-storage/index.ts";
 import {
   authorizeEventV3SupportReplacement,
+  inventoryEventV3Support,
   planEventV3SupportReplacement,
+  planEventV3SupportTransaction,
   readEventV3SupportPackManifest,
   readEventV3SupportTransaction,
   streamEventV3SupportPackRecords,
@@ -26,6 +29,14 @@ import {
   verifyEventV3SupportTransactionShadow,
   writeEventV3SupportTransactionShadow,
 } from "../core/events/v3/support-storage/index.ts";
+
+type SupportEvidence = Record<
+  string,
+  Omit<
+    EventV3SupportClassificationEvidence,
+    "family" | "authority_state" | "now" | "file_regular" | "file_owner_only"
+  >
+>;
 
 /** Inspect or initialize the universal V3 event ledger. */
 export function registerLedgerV3Command(
@@ -143,6 +154,92 @@ export function registerLedgerV3Command(
         emitFailure(emit, "ledger_v3_support_transaction_status_failed", error);
       }
     });
+
+  command
+    .command("support-plan")
+    .description("Inventory explicit V3 support evidence and persist a shadow-only transaction")
+    .requiredOption("--authority-root <directory>", "Exact active or archived authority root")
+    .requiredOption("--authority-state <state>", "Authority state: active or archived")
+    .requiredOption("--root-id <id>", "Authority root identifier")
+    .requiredOption("--genesis-id <id>", "Authority genesis binding")
+    .requiredOption("--evidence <json>", "JSON evidence map keyed by every support relative path")
+    .requiredOption("--observed-at <timestamp>", "Explicit ISO-8601 inventory time")
+    .requiredOption("--catalog-version <version>", "Storage catalog version used for the plan")
+    .requiredOption("--policy-version <version>", "Support classification policy version")
+    .option("--source-authority-digest <digest>", "Required archived authority digest")
+    .option("--root <path>", "Explicit coordination root for transaction persistence")
+    .action(
+      async (options: {
+        authorityRoot: string;
+        authorityState: string;
+        rootId: string;
+        genesisId: string;
+        evidence: string;
+        observedAt: string;
+        catalogVersion: string;
+        policyVersion: string;
+        sourceAuthorityDigest?: string;
+        root?: string;
+      }) => {
+        try {
+          const state = supportAuthorityState(options.authorityState);
+          const observedAt = exactIsoTimestamp(options.observedAt);
+          const evidence = readSupportEvidence(resolve(options.evidence));
+          const entries = await inventoryEventV3Support({
+            authority_root: resolve(options.authorityRoot),
+            authority: {
+              state,
+              genesis_id: nonemptyOption(options.genesisId, "genesis-id"),
+            },
+            now: observedAt,
+            evidence,
+          });
+          if (
+            !sameSortedStrings(
+              Object.keys(evidence),
+              entries.map((entry) => entry.relative_path),
+            )
+          ) {
+            throw new Error("event_v3_support_plan_evidence_paths_mismatch");
+          }
+          if (entries.some((entry) => entry.disposition !== "pack-eligible")) {
+            throw new Error("event_v3_support_transaction_contains_ineligible_source");
+          }
+          const rootId = nonemptyOption(options.rootId, "root-id");
+          const genesisId = nonemptyOption(options.genesisId, "genesis-id");
+          const catalogVersion = nonemptyOption(options.catalogVersion, "catalog-version");
+          const policyVersion = nonemptyOption(options.policyVersion, "policy-version");
+          const authorityDigest = options.sourceAuthorityDigest
+            ? exactSha256(options.sourceAuthorityDigest)
+            : undefined;
+          if (state === "archived" && !authorityDigest) {
+            throw new Error("event_v3_support_transaction_archive_digest_required");
+          }
+          if (state === "active" && authorityDigest) {
+            throw new Error("event_v3_support_transaction_active_digest_forbidden");
+          }
+          const root = resolve(options.root ?? coordRoot(context));
+          const transactions = transactionRoot(root);
+          mkdirSync(transactions, { recursive: true, mode: 0o700 });
+          emit.data(
+            await planEventV3SupportTransaction({
+              transaction_root: transactions,
+              authority_root: resolve(options.authorityRoot),
+              root_id: rootId,
+              genesis_id: genesisId,
+              authority_state: state,
+              ...(authorityDigest ? { source_authority_digest: authorityDigest } : {}),
+              entries,
+              catalog_version: catalogVersion,
+              policy_version: policyVersion,
+              now: observedAt,
+            }),
+          );
+        } catch (error) {
+          emitFailure(emit, "ledger_v3_support_plan_failed", error);
+        }
+      },
+    );
 
   command
     .command("support-shadow")
@@ -329,6 +426,100 @@ function configDigest(root: string): `sha256:${string}` {
 
 function transactionRoot(root: string): string {
   return resolve(root, ".harnery", "maintenance", "transactions", "v3-support");
+}
+
+function supportAuthorityState(value: string): "active" | "archived" {
+  if (value === "active" || value === "archived") return value;
+  throw new Error("event_v3_support_plan_authority_state_invalid");
+}
+
+function exactIsoTimestamp(value: string): string {
+  if (!Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
+    throw new Error("event_v3_support_plan_timestamp_invalid");
+  }
+  return value;
+}
+
+function exactSha256(value: string): `sha256:${string}` {
+  if (!/^sha256:[0-9a-f]{64}$/.test(value)) {
+    throw new Error("event_v3_support_plan_authority_digest_invalid");
+  }
+  return value as `sha256:${string}`;
+}
+
+function nonemptyOption(value: string, name: string): string {
+  if (value.trim().length === 0) throw new Error(`event_v3_support_plan_${name}_empty`);
+  return value;
+}
+
+function readSupportEvidence(path: string): SupportEvidence {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new Error("event_v3_support_plan_evidence_invalid");
+  }
+  if (!isRecord(parsed)) throw new Error("event_v3_support_plan_evidence_invalid");
+  for (const evidence of Object.values(parsed)) {
+    if (!isRecord(evidence) || !validSupportEvidence(evidence)) {
+      throw new Error("event_v3_support_plan_evidence_invalid");
+    }
+  }
+  return parsed as SupportEvidence;
+}
+
+const supportEvidenceBooleanFields = new Set([
+  "recovery_bound",
+  "recovery_packing_enabled",
+  "epoch_maintenance_enabled",
+  "active_session_tee_enabled",
+  "active_committed_receipt_enabled",
+  "contract_valid",
+  "maintenance_owned",
+  "terminal",
+  "pending",
+  "turn_sealed",
+  "finalization_complete",
+  "event_references_resolved",
+  "event_references_same_epoch",
+  "lease_live",
+  "stale_writer_grace_elapsed",
+  "ready_sibling",
+  "producer_pending_reference",
+  "event_row_digest_matches",
+  "transaction_digest_matches",
+  "receipt_grace_elapsed",
+  "archive_has_ready_transaction",
+]);
+const supportEvidenceStringFields = new Set(["recorded_at", "filename_recorded_at"]);
+const supportEvidenceNumberFields = new Set([
+  "maximum_loose_consumer_window_ms",
+  "fixed_consumer_grace_ms",
+  "writer_tolerance_ms",
+]);
+
+function validSupportEvidence(evidence: Record<string, unknown>): boolean {
+  return Object.entries(evidence).every(([key, value]) => {
+    if (supportEvidenceBooleanFields.has(key)) return typeof value === "boolean";
+    if (supportEvidenceStringFields.has(key)) return typeof value === "string";
+    if (supportEvidenceNumberFields.has(key)) {
+      return typeof value === "number" && Number.isFinite(value) && value >= 0;
+    }
+    return false;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sameSortedStrings(left: string[], right: string[]): boolean {
+  const leftSorted = [...left].sort();
+  const rightSorted = [...right].sort();
+  return (
+    leftSorted.length === rightSorted.length &&
+    leftSorted.every((value, index) => value === rightSorted[index])
+  );
 }
 
 function emitFailure(emit: EmitContext, code: string, error: unknown): never {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
+import { harneryStorageFamilies } from "../../src/core/storage/builtins.ts";
 
 const retired = [
   "events.ndjson",
@@ -31,25 +32,66 @@ const retired = [
 ] as const;
 
 const canonicalPrefixes = new Set(["session.started", "session.ended", "command.started"]);
+const legacyCatalogPath = "src/core/storage/builtins.ts";
+const legacyCatalogRegistration = '        subtree(context, ".harnery/events.ndjson"),';
 
 describe("V3-only runtime vocabulary", () => {
   test("production source has no retired V1 ledger or command semantics", () => {
     const root = join(import.meta.dir, "../..");
-    const findings: string[] = [];
-    for (const file of productionFiles(root)) {
-      const source = readFileSync(file, "utf8");
-      for (const token of retired) {
-        let offset = source.indexOf(token);
-        while (offset >= 0) {
-          const suffix = source.slice(offset, offset + token.length + 2);
-          if (!Array.from(canonicalPrefixes).some((prefix) => suffix.startsWith(prefix))) {
-            findings.push(`${relative(root, file)}:${token}`);
-          }
-          offset = source.indexOf(token, offset + token.length);
-        }
-      }
-    }
+    const findings = productionFiles(root).flatMap((file) =>
+      retiredRuntimeFindings(
+        relative(root, file).replaceAll("\\", "/"),
+        readFileSync(file, "utf8"),
+      ),
+    );
     expect(findings).toEqual([]);
+  });
+
+  test("the only legacy ledger path residue is an immutable inventory-only catalog root", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "../../src/core/storage/builtins.ts"),
+      "utf8",
+    );
+    expect(source.split("\n").filter((line) => line === legacyCatalogRegistration)).toHaveLength(1);
+    const [family] = harneryStorageFamilies().filter(
+      (candidate) => candidate.id === "legacy-canonical-ledgers",
+    );
+    expect(family).toMatchObject({
+      owner: "legacy event ledger reader",
+      storage_class: "canonical-authority",
+      durability: "immutable",
+      consumers: ["legacy ledger verifier", "migration inventory"],
+      provider: {
+        provider_id: "legacy-ledger-provider",
+        kind: "filesystem",
+        inventory: "filesystem",
+        maintenance: "none",
+        lifecycle_authority: "legacy ledger verifier",
+      },
+    });
+    expect(family?.policy.retention).toMatchObject({
+      status: "inactive",
+      mode: "indefinite",
+    });
+  });
+
+  test("the catalog exception still rejects writer or runtime resurrection", () => {
+    expect(retiredRuntimeFindings(legacyCatalogPath, `${legacyCatalogRegistration}\n`)).toEqual([]);
+    expect(
+      retiredRuntimeFindings(
+        legacyCatalogPath,
+        `${legacyCatalogRegistration}\nwriteFileSync(".harnery/events.ndjson", row);\n`,
+      ),
+    ).toEqual([`${legacyCatalogPath}:events.ndjson`]);
+    expect(
+      retiredRuntimeFindings(
+        "src/core/events/v1/writer.ts",
+        'const target = ".harnery/events.ndjson";\n',
+      ),
+    ).toEqual(["src/core/events/v1/writer.ts:events.ndjson"]);
+    expect(
+      retiredRuntimeFindings(legacyCatalogPath, 'const schema = ".harnery/events.ndjson";\n'),
+    ).toEqual([`${legacyCatalogPath}:events.ndjson`]);
   });
 
   test("owner resolution cannot import the disposable coordination cache reader", () => {
@@ -146,6 +188,36 @@ describe("V3-only runtime vocabulary", () => {
 
 function productionFiles(root: string): string[] {
   return [join(root, "src"), join(root, "web")].flatMap(walk);
+}
+
+function retiredRuntimeFindings(file: string, source: string): string[] {
+  const findings: string[] = [];
+  for (const token of retired) {
+    let offset = source.indexOf(token);
+    while (offset >= 0) {
+      const suffix = source.slice(offset, offset + token.length + 2);
+      const canonical = Array.from(canonicalPrefixes).some((prefix) => suffix.startsWith(prefix));
+      if (!canonical && !isLegacyCatalogRegistration(file, token, source, offset)) {
+        findings.push(`${file}:${token}`);
+      }
+      offset = source.indexOf(token, offset + token.length);
+    }
+  }
+  return findings;
+}
+
+function isLegacyCatalogRegistration(
+  file: string,
+  token: (typeof retired)[number],
+  source: string,
+  offset: number,
+): boolean {
+  if (file !== legacyCatalogPath || token !== "events.ndjson") return false;
+  const lineStart = source.lastIndexOf("\n", offset - 1) + 1;
+  const lineEnd = source.indexOf("\n", offset);
+  return (
+    source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd) === legacyCatalogRegistration
+  );
 }
 
 function walk(dir: string): string[] {

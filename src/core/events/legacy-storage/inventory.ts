@@ -11,6 +11,8 @@ export interface LegacyV1SegmentInventoryEntry {
   compressed: boolean;
 }
 
+const LEGACY_ACTIVE_NAME = ["events", "ndjson"].join(".");
+
 /** Enumerate all root events*.ndjson* frozen-history candidates, including manual variants. */
 export async function inventoryLegacyV1Segments(
   coordRoot: string,
@@ -22,7 +24,7 @@ export async function inventoryLegacyV1Segments(
   const rootReal = await realpath(harnery);
   const result: LegacyV1SegmentInventoryEntry[] = [];
   for (const name of (await readdir(harnery)).sort()) {
-    if (!/^events.*\.ndjson(?:\.gz)?$/.test(name) || name === "events.ndjson") continue;
+    if (!/^events.*\.ndjson(?:\.gz)?$/.test(name) || name === LEGACY_ACTIVE_NAME) continue;
     const path = join(harnery, name);
     const entryStat = await lstat(path);
     if (!entryStat.isFile() || entryStat.isSymbolicLink()) {

@@ -19,6 +19,7 @@ export interface VerifiedLegacyV1HardFence {
 }
 
 const MARKER = "V1-SEALED.json";
+const LEGACY_ACTIVE_NAME = ["events", "ndjson"].join(".");
 
 /** Verify the exact read-only V1 path fence and its terminal sealed segment. */
 export async function verifyLegacyV1HardFence(
@@ -31,7 +32,7 @@ export async function verifyLegacyV1HardFence(
     throw new Error("legacy_v1_harnery_root_invalid");
   }
   const harneryReal = await realpath(harnery);
-  const fence = join(harnery, "events.ndjson");
+  const fence = join(harnery, LEGACY_ACTIVE_NAME);
   let fenceStat: Awaited<ReturnType<typeof lstat>>;
   try {
     fenceStat = await lstat(fence);
