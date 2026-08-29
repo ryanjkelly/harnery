@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -68,6 +77,68 @@ describe("durable history", () => {
       }),
     ).rejects.toThrow("kill");
     expect(readFileSync(path, "utf8")).toContain('"one"');
+  });
+
+  test("rejects symlinked roots and active targets", () => {
+    const parent = fixture();
+    const target = fixture();
+    const linkedRoot = join(parent, "linked");
+    symlinkSync(target, linkedRoot, "dir");
+    expect(() => appendDurableHistoryRecord(linkedRoot, { id: 1 }, limits())).toThrow("symlink");
+
+    const activeTarget = join(target, "outside.jsonl");
+    writeFileSync(activeTarget, '{"id":"outside"}\n');
+    const root = fixture();
+    symlinkSync(activeTarget, join(root, "active.jsonl"));
+    expect(() => appendDurableHistoryRecord(root, { id: 2 }, limits())).toThrow("symlink");
+    expect(readFileSync(activeTarget, "utf8")).toBe('{"id":"outside"}\n');
+  });
+
+  test("write-all loop survives forced short writes before issuing a synced receipt", () => {
+    const root = fixture();
+    let calls = 0;
+    const receipt = appendDurableHistoryRecord(
+      root,
+      { id: "short-write" },
+      {
+        ...limits(),
+        write_sync: (fd, buffer, offset, length) => {
+          calls += 1;
+          return writeSync(fd, buffer, offset, Math.min(length, 3));
+        },
+      },
+    );
+    expect(calls).toBeGreaterThan(1);
+    expect(receipt.synced).toBeTrue();
+    expect(readDurableHistorySync(root, { max_record_bytes: 256 })).toEqual([
+      { id: "short-write" },
+    ]);
+  });
+
+  test("recovers only owner-bound stale leases", () => {
+    const root = fixture();
+    const lease = join(root, ".append.lease");
+    mkdirSync(lease);
+    writeFileSync(
+      join(lease, "owner.json"),
+      `${JSON.stringify({
+        owner_id: "crashed-owner",
+        pid: 2_147_483_647,
+        acquired_at: "2000-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    expect(appendDurableHistoryRecord(root, { id: "recovered" }, limits()).synced).toBeTrue();
+
+    const blocked = fixture();
+    const unboundLease = join(blocked, ".append.lease");
+    mkdirSync(unboundLease);
+    writeFileSync(
+      join(unboundLease, "owner.json"),
+      `${JSON.stringify({ pid: 2_147_483_647, acquired_at: "2000-01-01T00:00:00.000Z" })}\n`,
+    );
+    expect(() => appendDurableHistoryRecord(blocked, { id: "blocked" }, limits())).toThrow(
+      "lease busy",
+    );
   });
 });
 

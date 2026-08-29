@@ -1,21 +1,25 @@
+import { randomUUID } from "node:crypto";
 import {
   closeSync,
-  createReadStream,
   existsSync,
+  constants as fsConstants,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeSync,
 } from "node:fs";
-import { mkdir, open, rename, rm } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import { createInterface } from "node:readline";
+import type { FileHandle } from "node:fs/promises";
+import { open, rename, rm } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 
 export const HARNERY_DURABLE_HISTORY_SCHEMA = "harnery.durable-history/v1" as const;
 
@@ -23,7 +27,16 @@ export interface DurableHistoryOptions {
   max_record_bytes: number;
   max_segment_bytes: number;
   fault?: (boundary: DurableHistoryFaultBoundary) => void;
+  /** Fault-injection seam; production callers use the default syscall. */
+  write_sync?: DurableHistoryWriteSync;
 }
+
+export type DurableHistoryWriteSync = (
+  fd: number,
+  buffer: Buffer,
+  offset: number,
+  length: number,
+) => number;
 
 export type DurableHistoryFaultBoundary =
   | "after_segment_rename"
@@ -64,13 +77,19 @@ export function appendDurableHistoryRecord(
     const activeBytes = regularFileBytes(active);
     if (activeBytes > 0 && activeBytes + Buffer.byteLength(line) > options.max_segment_bytes) {
       const segments = join(objectDir, "segments");
-      ensurePrivateDirectory(segments);
-      renameSync(active, join(segments, nextSegmentName(segments)));
+      const segmentDirectory = ensurePrivateDirectory(segments);
+      validateJsonlBeforeSeal(active, options.max_record_bytes);
+      const target = join(segments, nextSegmentName(segments));
+      rejectExistingSymlink(target);
+      renameSync(active, target);
+      assertRegularPath(target, segmentDirectory);
+      syncDirectory(captureDirectoryIdentity(objectDir));
+      syncDirectory(segmentDirectory);
       options.fault?.("after_segment_rename");
       rotated = true;
     }
     options.fault?.("before_append");
-    appendAndSync(active, line, options.fault);
+    appendAndSync(active, line, options.fault, options.write_sync);
     return {
       schema: HARNERY_DURABLE_HISTORY_SCHEMA,
       segment: "active",
@@ -109,13 +128,19 @@ export function appendSegmentedJsonlFile(
     const activeBytes = regularFileBytes(activePath);
     if (activeBytes > 0 && activeBytes + Buffer.byteLength(line) > options.max_segment_bytes) {
       const segments = `${activePath}.segments`;
-      ensurePrivateDirectory(segments);
-      renameSync(activePath, join(segments, nextSegmentName(segments)));
+      const segmentDirectory = ensurePrivateDirectory(segments);
+      validateJsonlBeforeSeal(activePath, options.max_record_bytes);
+      const target = join(segments, nextSegmentName(segments));
+      rejectExistingSymlink(target);
+      renameSync(activePath, target);
+      assertRegularPath(target, segmentDirectory);
+      syncDirectory(captureDirectoryIdentity(dirname(activePath)));
+      syncDirectory(segmentDirectory);
       options.fault?.("after_segment_rename");
       rotated = true;
     }
     options.fault?.("before_append");
-    appendAndSync(activePath, line, options.fault);
+    appendAndSync(activePath, line, options.fault, options.write_sync);
     return {
       schema: HARNERY_DURABLE_HISTORY_SCHEMA,
       segment: "active",
@@ -153,14 +178,8 @@ export async function* streamDurableHistory<T>(
 ): AsyncGenerator<T> {
   let count = 0;
   for (const path of durableHistoryPaths(objectDir)) {
-    const input = createReadStream(path, { encoding: "utf8" });
-    const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
-    for await (const line of lines) {
+    for await (const line of boundedJsonlLines(path, options.max_record_bytes)) {
       if (line.length === 0) continue;
-      const bytes = Buffer.byteLength(line) + 1;
-      if (bytes > options.max_record_bytes) {
-        throw new Error(`durable history record exceeds ${options.max_record_bytes} bytes`);
-      }
       count += 1;
       if (options.max_records !== undefined && count > options.max_records) {
         throw new Error(`durable history exceeds ${options.max_records} records`);
@@ -245,18 +264,28 @@ export async function rewriteCrashSafeJsonlFile(
   fault?: DurableHistoryOptions["fault"],
 ): Promise<void> {
   const body = records.map((record) => encodeRecord(record, maxRecordBytes)).join("");
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const parent = ensurePrivateDirectory(dirname(path));
+  rejectExistingSymlink(path);
   const temp = `${path}.rewrite-${process.pid}`;
   await withLeaseAsync(`${path}.lease`, async () => {
-    const handle = await open(temp, "wx", 0o600);
+    const handle = await open(
+      temp,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag(),
+      0o600,
+    );
     try {
-      await handle.writeFile(body, "utf8");
+      await writeAll(handle, Buffer.from(body, "utf8"));
       await handle.sync();
+      assertOpenFileIdentity(temp, handle.fd, parent);
     } finally {
       await handle.close();
     }
     fault?.("after_rewrite_temp_sync");
+    assertDirectoryIdentity(parent);
+    rejectExistingSymlink(path);
     await rename(temp, path);
+    assertRegularPath(path, parent);
+    syncDirectory(parent);
     fault?.("after_rewrite_publish");
   });
   await rm(temp, { force: true });
@@ -268,6 +297,7 @@ export function durableHistoryPaths(objectDir: string): string[] {
   const paths: string[] = [];
   const segments = join(objectDir, "segments");
   if (existsSync(segments)) {
+    captureDirectoryIdentity(segments);
     rejectSymlink(segments);
     for (const name of readdirSync(segments).sort()) {
       if (!/^\d{8}\.jsonl$/.test(name)) continue;
@@ -288,19 +318,38 @@ function appendAndSync(
   path: string,
   line: string,
   fault: DurableHistoryOptions["fault"] | undefined,
+  writer: DurableHistoryWriteSync = nativeWriteSync,
 ): void {
-  const fd = openSync(path, "a", 0o600);
+  const parent = captureDirectoryIdentity(dirname(path));
+  rejectExistingSymlink(path);
+  const fd = openSync(
+    path,
+    fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_CREAT | noFollowFlag(),
+    0o600,
+  );
   try {
-    writeSync(fd, line, undefined, "utf8");
+    assertOpenFileIdentity(path, fd, parent);
+    assertCompleteTail(fd, path);
+    writeAllSync(fd, Buffer.from(line, "utf8"), writer);
     fault?.("after_append_before_sync");
     fsyncSync(fd);
+    assertOpenFileIdentity(path, fd, parent);
+    syncDirectory(parent);
   } finally {
     closeSync(fd);
   }
 }
 
-function ensurePrivateDirectory(path: string): void {
+interface DirectoryIdentity {
+  path: string;
+  real_path: string;
+  dev: number;
+  ino: number;
+}
+
+function ensurePrivateDirectory(path: string): DirectoryIdentity {
   mkdirSync(path, { recursive: true, mode: 0o700 });
+  return captureDirectoryIdentity(path);
 }
 
 function regularFileBytes(path: string): number {
@@ -316,11 +365,84 @@ function rejectSymlink(path: string): void {
 }
 
 function completeJsonl(path: string): string {
-  const content = readFileSync(path, "utf8");
+  const parent = captureDirectoryIdentity(dirname(path));
+  rejectExistingSymlink(path);
+  const fd = openSync(path, fsConstants.O_RDONLY | noFollowFlag());
+  let content: string;
+  try {
+    assertOpenFileIdentity(path, fd, parent);
+    content = readFileSync(fd, "utf8");
+    assertOpenFileIdentity(path, fd, parent);
+  } finally {
+    closeSync(fd);
+  }
   if (content && !content.endsWith("\n")) {
     throw new Error(`durable history has a partial record: ${basename(path)}`);
   }
   return content;
+}
+
+function validateJsonlBeforeSeal(path: string, maximumRecordBytes: number): void {
+  const content = completeJsonl(path);
+  const lines = content.split("\n");
+  lines.pop();
+  for (const [index, line] of lines.entries()) {
+    if (!line) throw new Error(`durable history has malformed JSONL in ${basename(path)}`);
+    if (Buffer.byteLength(line) + 1 > maximumRecordBytes) {
+      throw new Error(`durable history record exceeds ${maximumRecordBytes} bytes`);
+    }
+    parseRecord(line, basename(path), index + 1);
+  }
+}
+
+async function* boundedJsonlLines(
+  path: string,
+  maximumRecordBytes: number,
+): AsyncGenerator<string> {
+  const parent = captureDirectoryIdentity(dirname(path));
+  rejectExistingSymlink(path);
+  const fd = openSync(path, fsConstants.O_RDONLY | noFollowFlag());
+  let position = 0;
+  let pending: Buffer[] = [];
+  let pendingBytes = 0;
+  try {
+    assertOpenFileIdentity(path, fd, parent);
+    while (true) {
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maximumRecordBytes + 1));
+      const bytesRead = readSync(fd, chunk, 0, chunk.byteLength, position);
+      if (bytesRead === 0) break;
+      const view = chunk.subarray(0, bytesRead);
+      let start = 0;
+      for (let index = 0; index < view.byteLength; index += 1) {
+        if (view[index] !== 10) continue;
+        const part = view.subarray(start, index);
+        const lineBytes = pendingBytes + part.byteLength + 1;
+        if (lineBytes > maximumRecordBytes) {
+          throw new Error(`durable history record exceeds ${maximumRecordBytes} bytes`);
+        }
+        if (part.byteLength > 0) pending.push(part);
+        yield Buffer.concat(pending, pendingBytes + part.byteLength).toString("utf8");
+        pending = [];
+        pendingBytes = 0;
+        start = index + 1;
+      }
+      const tail = view.subarray(start);
+      if (pendingBytes + tail.byteLength >= maximumRecordBytes) {
+        throw new Error(`durable history record exceeds ${maximumRecordBytes} bytes`);
+      }
+      if (tail.byteLength > 0) {
+        pending.push(tail);
+        pendingBytes += tail.byteLength;
+      }
+      position += bytesRead;
+    }
+    if (pendingBytes > 0) {
+      throw new Error(`durable history has a partial record: ${basename(path)}`);
+    }
+    assertOpenFileIdentity(path, fd, parent);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function nextSegmentName(segments: string): string {
@@ -365,27 +487,252 @@ function validateOptions(options: DurableHistoryOptions): void {
 }
 
 function withLease<T>(lease: string, action: () => T): T {
-  try {
-    mkdirSync(lease, { mode: 0o700 });
-  } catch {
-    throw new Error(`durable history lease busy: ${lease}`);
-  }
+  const owner = acquireLease(lease);
   try {
     return action();
   } finally {
-    rmSync(lease, { recursive: true, force: true });
+    releaseOwnedLease(lease, owner);
   }
 }
 
 async function withLeaseAsync<T>(lease: string, action: () => Promise<T>): Promise<T> {
-  try {
-    await mkdir(lease, { mode: 0o700 });
-  } catch {
-    throw new Error(`durable history lease busy: ${lease}`);
-  }
+  const owner = acquireLease(lease);
   try {
     return await action();
   } finally {
-    await rm(lease, { recursive: true, force: true });
+    releaseOwnedLease(lease, owner);
+  }
+}
+
+const DURABLE_HISTORY_LEASE_STALE_MS = 30_000;
+
+interface LeaseOwner {
+  owner_id: string;
+  pid: number;
+  acquired_at: string;
+}
+
+function acquireLease(lease: string): LeaseOwner {
+  const parent = captureDirectoryIdentity(dirname(lease));
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const owner: LeaseOwner = {
+      owner_id: randomUUID(),
+      pid: process.pid,
+      acquired_at: new Date().toISOString(),
+    };
+    let claimed: DirectoryIdentity | undefined;
+    try {
+      mkdirSync(lease, { mode: 0o700 });
+      assertDirectoryWithinParent(lease, parent);
+      claimed = captureDirectoryIdentity(lease);
+      writeOwner(join(lease, "owner.json"), owner);
+      syncDirectory(claimed);
+      return owner;
+    } catch {
+      if (claimed) {
+        try {
+          assertDirectoryIdentity(claimed);
+          rmSync(lease, { recursive: true, force: false });
+        } catch {
+          // Never remove a lease after its directory identity changes.
+        }
+      }
+      if (recoverStaleLease(lease, DURABLE_HISTORY_LEASE_STALE_MS)) continue;
+      throw new Error(`durable history lease busy: ${lease}`);
+    }
+  }
+  throw new Error(`durable history lease busy: ${lease}`);
+}
+
+function writeOwner(path: string, owner: LeaseOwner): void {
+  const parent = captureDirectoryIdentity(dirname(path));
+  const fd = openSync(
+    path,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag(),
+    0o600,
+  );
+  try {
+    assertOpenFileIdentity(path, fd, parent);
+    writeAllSync(fd, Buffer.from(`${JSON.stringify(owner)}\n`, "utf8"), nativeWriteSync);
+    fsyncSync(fd);
+    assertOpenFileIdentity(path, fd, parent);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function recoverStaleLease(lease: string, staleMs: number): boolean {
+  let leaseIdentity: DirectoryIdentity;
+  try {
+    leaseIdentity = captureDirectoryIdentity(lease);
+  } catch {
+    return false;
+  }
+  const ownerPath = join(lease, "owner.json");
+  let raw: string;
+  try {
+    raw = completeJsonl(ownerPath);
+  } catch {
+    return false;
+  }
+  let owner: LeaseOwner;
+  try {
+    owner = JSON.parse(raw) as LeaseOwner;
+  } catch {
+    return false;
+  }
+  if (
+    typeof owner.owner_id !== "string" ||
+    owner.owner_id.length === 0 ||
+    !Number.isSafeInteger(owner.pid) ||
+    !Number.isFinite(Date.parse(owner.acquired_at)) ||
+    Date.now() - Date.parse(owner.acquired_at) < staleMs ||
+    processIsAlive(owner.pid)
+  ) {
+    return false;
+  }
+  try {
+    assertDirectoryIdentity(leaseIdentity);
+    if (completeJsonl(ownerPath) !== raw) return false;
+    rmSync(lease, { recursive: true, force: false });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseOwnedLease(lease: string, owner: LeaseOwner): void {
+  try {
+    const current = JSON.parse(completeJsonl(join(lease, "owner.json"))) as LeaseOwner;
+    if (current.owner_id !== owner.owner_id) return;
+    rmSync(lease, { recursive: true, force: false });
+  } catch {
+    // A missing or replaced lease does not belong to this operation.
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function nativeWriteSync(fd: number, buffer: Buffer, offset: number, length: number): number {
+  return writeSync(fd, buffer, offset, length);
+}
+
+function assertCompleteTail(fd: number, path: string): void {
+  const stat = fstatSync(fd);
+  if (stat.size === 0) return;
+  const tail = Buffer.allocUnsafe(1);
+  if (readSync(fd, tail, 0, 1, stat.size - 1) !== 1 || tail[0] !== 10) {
+    throw new Error(`durable history has a partial record: ${basename(path)}`);
+  }
+}
+
+function writeAllSync(fd: number, buffer: Buffer, writer: DurableHistoryWriteSync): void {
+  let offset = 0;
+  while (offset < buffer.byteLength) {
+    const written = writer(fd, buffer, offset, buffer.byteLength - offset);
+    if (!Number.isSafeInteger(written) || written <= 0 || written > buffer.byteLength - offset) {
+      throw new Error("durable history write made no forward progress");
+    }
+    offset += written;
+  }
+}
+
+async function writeAll(handle: FileHandle, buffer: Buffer): Promise<void> {
+  let offset = 0;
+  while (offset < buffer.byteLength) {
+    const { bytesWritten } = await handle.write(buffer, offset, buffer.byteLength - offset, null);
+    if (bytesWritten <= 0) throw new Error("durable history write made no forward progress");
+    offset += bytesWritten;
+  }
+}
+
+function noFollowFlag(): number {
+  return fsConstants.O_NOFOLLOW ?? 0;
+}
+
+function rejectExistingSymlink(path: string): void {
+  try {
+    rejectSymlink(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function captureDirectoryIdentity(path: string): DirectoryIdentity {
+  const stats = lstatSync(path);
+  if (stats.isSymbolicLink()) throw new Error(`durable history rejects symlink: ${path}`);
+  if (!stats.isDirectory()) throw new Error(`durable history path is not a directory: ${path}`);
+  return { path, real_path: realpathSync(path), dev: stats.dev, ino: stats.ino };
+}
+
+function assertDirectoryIdentity(identity: DirectoryIdentity): void {
+  const current = lstatSync(identity.path);
+  if (
+    current.isSymbolicLink() ||
+    !current.isDirectory() ||
+    current.dev !== identity.dev ||
+    current.ino !== identity.ino ||
+    realpathSync(identity.path) !== identity.real_path
+  ) {
+    throw new Error(`durable history directory identity changed: ${identity.path}`);
+  }
+}
+
+function assertDirectoryWithinParent(path: string, parent: DirectoryIdentity): void {
+  assertDirectoryIdentity(parent);
+  const child = captureDirectoryIdentity(path);
+  const fromParent = relative(parent.real_path, child.real_path);
+  if (fromParent.startsWith("..") || isAbsolute(fromParent)) {
+    throw new Error(`durable history path escapes parent boundary: ${path}`);
+  }
+}
+
+function assertRegularPath(path: string, parent: DirectoryIdentity): void {
+  const fd = openSync(path, fsConstants.O_RDONLY | noFollowFlag());
+  try {
+    assertOpenFileIdentity(path, fd, parent);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function assertOpenFileIdentity(path: string, fd: number, parent: DirectoryIdentity): void {
+  assertDirectoryIdentity(parent);
+  const opened = fstatSync(fd);
+  const current = lstatSync(path);
+  if (
+    !opened.isFile() ||
+    current.isSymbolicLink() ||
+    !current.isFile() ||
+    opened.dev !== current.dev ||
+    opened.ino !== current.ino
+  ) {
+    throw new Error(`durable history path identity changed: ${path}`);
+  }
+  const resolved = realpathSync(path);
+  const fromParent = relative(parent.real_path, resolved);
+  if (fromParent.startsWith("..") || isAbsolute(fromParent)) {
+    throw new Error(`durable history path escapes parent boundary: ${path}`);
+  }
+}
+
+function syncDirectory(identity: DirectoryIdentity): void {
+  assertDirectoryIdentity(identity);
+  const fd = openSync(identity.path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
+  try {
+    fsyncSync(fd);
+  } catch (error) {
+    if (!new Set(["EINVAL", "ENOTSUP", "EPERM"]).has((error as NodeJS.ErrnoException).code ?? "")) {
+      throw error;
+    }
+  } finally {
+    closeSync(fd);
   }
 }
