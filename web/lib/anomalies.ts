@@ -17,7 +17,13 @@
  *    window: usually means the agent is fighting one persistent error.
  */
 
-import { type Heartbeat, readAgents, readEvents } from "./coord-reader";
+import {
+  type AgentsSnapshot,
+  type EventsResponse,
+  type Heartbeat,
+  readAgents,
+  readEvents,
+} from "./coord-reader";
 
 export type AnomalySeverity = "info" | "warning";
 
@@ -39,13 +45,17 @@ interface AnomalyOptions {
   events?: number;
 }
 
-export function detectAnomalies(opts: AnomalyOptions = {}): Anomaly[] {
+export function detectAnomalies(
+  opts: AnomalyOptions = {},
+  agentsSnapshot?: AgentsSnapshot,
+  eventsSnapshot?: EventsResponse,
+): Anomaly[] {
   const { windowSeconds = 600, events: eventLimit = 600 } = opts;
   const now = Date.now();
   const cutoff = now - windowSeconds * 1000;
 
-  const eventsResp = readEvents({ limit: eventLimit });
-  const agents = readAgents();
+  const eventsResp = eventsSnapshot ?? readEvents({ limit: eventLimit });
+  const agents = agentsSnapshot ?? readAgents();
   const all: Heartbeat[] = [...agents.active, ...agents.stale];
   const byInstance = new Map<string, Heartbeat>();
   for (const hb of all) byInstance.set(hb.instance_id, hb);

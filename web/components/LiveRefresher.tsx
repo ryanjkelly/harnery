@@ -2,55 +2,57 @@
 
 import { Radio, RefreshCw, WifiOff } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 import { Tooltip } from "@/components/ui/tooltip";
+import { createLiveRefreshScheduler, liveRefreshIntervalMs } from "@/lib/live-refresh-scheduler";
 import { useLiveSignal } from "@/lib/useLiveSignal";
-
-/**
- * Routes whose page owns its own client-side live updates — a targeted
- * /api/events-stream subscription that folds new events into local state in
- * place (see ImageGallery's foldEvent). On those, a global router.refresh() is
- * both redundant (the page is already live) and destructive: /api/stream fires
- * a `refresh` on ANY .harnery change, so during active image production —
- * exactly when /images is being watched — it saturates at ~4/sec, and each
- * refresh re-runs the server render (validating the current V3 projection,
- * rebuilding every summary) and re-reconciles the whole grid. That was the
- * cause of the ~2-3fps scroll on /images. We keep the live badge (the SSE
- * connection is cheap) and just skip the refresh call.
- */
-const SELF_LIVE_ROUTES = ["/images"];
 
 /**
  * Subscribes to /api/stream (SSE) and calls router.refresh() on each "refresh"
  * event so the dashboard re-renders against fresh disk state. Connection
  * lifecycle, the polling fallback (for tunnel-buffered SSE), and the status
- * badge state all live in the shared useLiveSignal hook; see that file for
- * why the fallback exists. Here we just map the signal to router.refresh() —
- * except on self-live routes (above), where the page updates itself.
+ * badge state all live in the shared useLiveSignal hook.
+ *
+ * The event ledger changes several times per tool call. A direct
+ * router.refresh() for each change repeatedly rebuilds the complete V3
+ * projection, blocks the event loop, and eventually pushes Next over its memory
+ * restart threshold. The scheduler keeps the first server render authoritative
+ * while coalescing subsequent changes into a bounded refresh cadence. Routes
+ * with their own client-side live stream retain the badge but skip the global
+ * server refresh entirely.
  */
 export function LiveRefresher() {
   const router = useRouter();
   const pathname = usePathname();
-  const selfLive = SELF_LIVE_ROUTES.some((r) => pathname === r || pathname.startsWith(`${r}/`));
+  const refreshIntervalMs = liveRefreshIntervalMs(pathname);
+  const scheduler = useMemo(
+    () =>
+      refreshIntervalMs === null
+        ? null
+        : createLiveRefreshScheduler(() => router.refresh(), refreshIntervalMs, {
+            now: () => Date.now(),
+            setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+            clearTimeout: (handle) => window.clearTimeout(handle as number),
+          }),
+    [refreshIntervalMs, router],
+  );
+
+  useEffect(() => () => scheduler?.cancel(), [scheduler]);
 
   const events = useMemo(
     () => ({
       hello: () => {},
       ping: () => {},
-      refresh: () => {
-        if (!selfLive) router.refresh();
-      },
+      refresh: () => scheduler?.request(),
     }),
-    [router, selfLive],
+    [scheduler],
   );
 
   const status = useLiveSignal({
     streamUrl: "/api/stream",
     events,
-    onFallbackChange: () => {
-      if (!selfLive) router.refresh();
-    },
+    onFallbackChange: () => scheduler?.request(),
   });
 
   const isLive = status === "live";
@@ -76,9 +78,11 @@ export function LiveRefresher() {
   );
 
   const tip = isLive
-    ? "Live updates connected. UI auto-refreshes on .harnery/ changes."
+    ? refreshIntervalMs === null
+      ? "Live updates connected. This page folds updates into the current view."
+      : "Live updates connected. Coordination changes are coalesced to keep the dashboard responsive."
     : isPolling
-      ? "Live stream unavailable through this connection (proxy buffering the event stream); refreshing on change every few seconds instead."
+      ? "Live stream unavailable through this connection (proxy buffering the event stream); checking for changes by polling instead."
       : isReconnecting
         ? "Connection lost; retrying with exponential backoff. Manual refresh works in the meantime."
         : "Connecting to the live-update stream…";

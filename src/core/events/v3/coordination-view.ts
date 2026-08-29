@@ -68,6 +68,17 @@ export class CoordinationViewV3Error extends Error {
   }
 }
 
+/**
+ * A canonical ledger read is immutable and readLedgerV3 returns the same result
+ * object until the authority changes. Several web helpers derive the
+ * coordination view independently during one server render; without this
+ * cache each helper reduces the complete append-only history again.
+ *
+ * Weak keys bind the projection lifetime to the reader snapshot. A newly
+ * appended event produces a new ReadLedgerV3Result and therefore a fresh view.
+ */
+const coordinationViewCacheV3 = new WeakMap<ReadLedgerV3Result, CoordinationViewV3>();
+
 /** Read the complete V3 catalog and derive the disposable coordination view. */
 export function readCoordinationViewV3(coordRoot: string): CoordinationViewV3 {
   return projectCoordinationViewV3(readLedgerV3(coordRoot));
@@ -78,6 +89,9 @@ export function readCoordinationViewV3(coordRoot: string): CoordinationViewV3 {
  * finalization, web, and Codec adapters. This function performs no writes.
  */
 export function projectCoordinationViewV3(read: ReadLedgerV3Result): CoordinationViewV3 {
+  const cached = coordinationViewCacheV3.get(read);
+  if (cached) return cached;
+
   const safety = reduceSafetyProjectionV3(read);
   const starts = new Map<string, Extract<EventV3, { event_type: "session.started" }>>();
   const eventGeneration = new Map<string, string>();
@@ -169,7 +183,7 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
     }
   }
 
-  return {
+  const view: CoordinationViewV3 = {
     projection_version: EVENT_V3_COORDINATION_VIEW_VERSION,
     contract_major: 2,
     reducer_build_id: EVENT_V3_SAFETY_REDUCER_BUILD,
@@ -182,6 +196,8 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
     decisions: safety.decisions,
     health: safety.health,
   };
+  coordinationViewCacheV3.set(read, view);
+  return view;
 }
 
 /** Refuse authority decisions while still allowing callers to render diagnostics. */

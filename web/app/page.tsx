@@ -16,10 +16,10 @@ export const dynamic = "force-dynamic";
 
 export default function HomePage() {
   const snap = readAgents();
-  const anomalies = detectAnomalies();
   // 30-minute activity window. 600 events is enough to populate the lanes
   // even on busy multi-agent days (~20 events/min ceiling per agent).
   const recentEvents = readEvents({ limit: 600 });
+  const anomalies = detectAnomalies({}, snap, recentEvents);
   const identities = readInstanceIdentities();
   const instanceToName: Record<string, string> = {};
   for (const hb of [...snap.active, ...snap.stale, ...snap.terminal]) {
@@ -38,8 +38,8 @@ export default function HomePage() {
   const agentNames = Array.from(new Set(Object.values(instanceToName))).sort();
   const summaries = {
     ...buildEndedAgentSummaries(identities),
-    ...buildSubagentSummaries(identities),
-    ...buildAgentSummaryMap(agentNames, identities),
+    ...buildSubagentSummaries(identities, snap),
+    ...buildAgentSummaryMap(agentNames, identities, snap),
   };
 
   return (

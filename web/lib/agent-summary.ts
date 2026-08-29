@@ -8,7 +8,13 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { coordRoot, type Heartbeat, type InstanceIdentity, readAgents } from "./coord-reader";
+import {
+  type AgentsSnapshot,
+  coordRoot,
+  type Heartbeat,
+  type InstanceIdentity,
+  readAgents,
+} from "./coord-reader";
 import { type AgentIdentity, lookupByName } from "./identities";
 
 export interface AgentSummary {
@@ -56,7 +62,7 @@ interface ActivityState {
   files_touched?: string[];
 }
 
-function readActiveIndex(): {
+function readActiveIndex(agents?: AgentsSnapshot): {
   byName: Map<string, ActivityState>;
   idToName: Map<string, string>;
 } {
@@ -64,7 +70,7 @@ function readActiveIndex(): {
   // Every live V3 generation's instance_id → display name (no per-name dedupe): the
   // lookup table for resolving a subagent's session_id to its parent's name.
   const idToName = new Map<string, string>();
-  for (const hb of readAgents().active) {
+  for (const hb of (agents ?? readAgents()).active) {
     if (!hb.name) continue;
     idToName.set(hb.instance_id, hb.name);
     const bare = (
@@ -204,8 +210,9 @@ export function sessionMetaByName(
 export function buildAgentSummaryMap(
   names: Iterable<string>,
   identities?: Record<string, InstanceIdentity>,
+  agents?: AgentsSnapshot,
 ): Record<string, AgentSummary> {
-  const { byName: active, idToName } = readActiveIndex();
+  const { byName: active, idToName } = readActiveIndex(agents);
   const stale = readJournalIndex();
   const metaFallback = sessionMetaByName(identities);
   const out: Record<string, AgentSummary> = {};
@@ -275,9 +282,9 @@ export function buildAgentSummaryMap(
  * resolution. A subagent runs under its dispatcher's session id, so matching a
  * subagent's `session_id` to a live generation's `instance_id` names its parent.
  */
-function activeInstanceNames(): Map<string, string> {
+function activeInstanceNames(agents?: AgentsSnapshot): Map<string, string> {
   const idToName = new Map<string, string>();
-  for (const row of readAgents().active) {
+  for (const row of (agents ?? readAgents()).active) {
     if (row.name) idToName.set(row.instance_id, row.name);
   }
   return idToName;
@@ -295,9 +302,10 @@ function activeInstanceNames(): Map<string, string> {
  */
 export function buildSubagentSummaries(
   identities: Record<string, InstanceIdentity>,
+  agents?: AgentsSnapshot,
 ): Record<string, AgentSummary> {
   const out: Record<string, AgentSummary> = {};
-  const idToName = activeInstanceNames();
+  const idToName = activeInstanceNames(agents);
   for (const id of Object.values(identities)) {
     if (id.kind !== "subagent") continue;
     const parent = id.session_id ? (idToName.get(id.session_id) ?? null) : null;
@@ -440,7 +448,7 @@ export function listKnownAgents(): KnownAgent[] {
     if (!row.name) continue;
     const name = row.name.startsWith("agent-") ? row.name : `agent-${row.name}`;
     const existing = byName.get(name);
-    if (!existing || existing.state !== "active") {
+    if (existing?.state !== "active") {
       byName.set(name, { name, state: "active", last_seen: row.last_heartbeat });
     }
   }
