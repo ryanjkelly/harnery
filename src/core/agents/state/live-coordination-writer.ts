@@ -29,6 +29,42 @@ export function ensureLiveCoordinationHeartbeat(
   _adapter: Adapter,
   model?: string,
 ): Heartbeat | null {
+  return materializeLiveCoordinationHeartbeat(
+    coordRoot,
+    nativeInstanceId,
+    nativeSessionId,
+    _adapter,
+    model,
+    false,
+  );
+}
+
+/** Rebuild a disposable cache from V3 even when its generation markers look current. */
+export function repairLiveCoordinationHeartbeat(
+  coordRoot: string,
+  nativeInstanceId: string,
+  nativeSessionId: string,
+  adapter: Adapter,
+  model?: string,
+): Heartbeat | null {
+  return materializeLiveCoordinationHeartbeat(
+    coordRoot,
+    nativeInstanceId,
+    nativeSessionId,
+    adapter,
+    model,
+    true,
+  );
+}
+
+function materializeLiveCoordinationHeartbeat(
+  coordRoot: string,
+  nativeInstanceId: string,
+  nativeSessionId: string,
+  _adapter: Adapter,
+  model: string | undefined,
+  force: boolean,
+): Heartbeat | null {
   const route = resolveLiveEventLedgerRouteV3(coordRoot);
   if (route.state === "blocked") throw new Error(`event_v3_coordination_view:${route.reason}`);
   const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
@@ -39,7 +75,11 @@ export function ensureLiveCoordinationHeartbeat(
     throw new Error("event_v3_coordination_view:adapter_not_observed");
   }
   const current = readHeartbeat(coordRoot, nativeInstanceId);
-  if (isCurrentV3HeartbeatCache(current, generation) && current.platform === generationAdapter) {
+  if (
+    !force &&
+    isCurrentV3HeartbeatCache(current, generation) &&
+    current.platform === generationAdapter
+  ) {
     return current;
   }
 

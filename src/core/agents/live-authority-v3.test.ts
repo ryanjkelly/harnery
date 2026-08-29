@@ -40,7 +40,10 @@ import { renderPromptContext } from "./render/prompt-context.ts";
 import { renderSessionContext } from "./render/session-context.ts";
 import { readHeartbeat } from "./state/heartbeat-writer.ts";
 import { readLiveCoordinationRows } from "./state/live-coordination-view.ts";
-import { ensureLiveCoordinationHeartbeat } from "./state/live-coordination-writer.ts";
+import {
+  ensureLiveCoordinationHeartbeat,
+  repairLiveCoordinationHeartbeat,
+} from "./state/live-coordination-writer.ts";
 
 const roots: string[] = [];
 
@@ -300,6 +303,44 @@ describe("live V3 coordination", () => {
       suggested_session_name: "Agent unknown - fresh V3 task",
     });
     expect(JSON.stringify(readLedgerV3(root).events)).not.toContain("fresh V3 task");
+  });
+
+  test("repair reprojects a generation-current cache whose disposable fields drifted", () => {
+    const root = startedRoot();
+    const active = join(root, ".harnery/active/operator.json");
+    const current = ensureLiveCoordinationHeartbeat(
+      root,
+      "operator",
+      "native-session",
+      "claude-code",
+    );
+    expect(current).not.toBeNull();
+    writeFileSync(
+      active,
+      JSON.stringify({
+        ...current,
+        task_state: "done",
+        task_state_reason: "stale derived state",
+        files_touched: ["stale-claim.ts"],
+      }),
+    );
+
+    expect(
+      ensureLiveCoordinationHeartbeat(root, "operator", "native-session", "claude-code"),
+    ).toMatchObject({
+      task_state: "done",
+      files_touched: ["stale-claim.ts"],
+    });
+    expect(
+      repairLiveCoordinationHeartbeat(root, "operator", "native-session", "claude-code"),
+    ).toMatchObject({
+      task_state: "active",
+      files_touched: [],
+    });
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      task_state: "active",
+      files_touched: [],
+    });
   });
 
   test("carries naming evidence across a generation reopen of the same native session", () => {

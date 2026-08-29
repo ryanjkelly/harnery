@@ -288,10 +288,10 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
             adapter: adapterFromPlatform(adapter),
           });
         }
-        const { ensureLiveCoordinationHeartbeat } = await import(
+        const { repairLiveCoordinationHeartbeat } = await import(
           "./state/live-coordination-writer.ts"
         );
-        hb = ensureLiveCoordinationHeartbeat(
+        hb = repairLiveCoordinationHeartbeat(
           root,
           owner,
           sessionId ?? owner,
