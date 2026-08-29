@@ -71,6 +71,26 @@ target a known generation with `--kind cache --owner <instance-id>`, plus
 Harnery validates the V3 route before it writes the cache. Never edit
 `.harnery/active/` or ledger rows by hand.
 
+If a prepared authority transaction survives a crash and its prior state no
+longer exists, normal writes report `pending_transaction:<txn-id>`. Inspect the
+transaction and obtain operator approval before using the scoped quarantine
+mode:
+
+```bash
+harn agents heal \
+  --quarantine-transaction txn_... \
+  --approval-record-id <record-id> \
+  --yes
+```
+
+Harnery refuses the command when normal reconciliation is still possible, when
+the transaction's event reached the ledger or event spool, or when the private
+producer state does not own the exact transaction. A successful recovery keeps
+the original transaction in `.harnery/ledgers/v3/authority-recoveries/quarantine/`
+and writes a canonical receipt beside it. It does not add the abandoned event
+to the ledger. See [ADR 0128](/decisions/0128-quarantine-conflicting-authority-transactions/)
+for the safety and retry contract.
+
 ### identity assume
 
 Use `identity assume` when a new adapter session is continuing a durable role

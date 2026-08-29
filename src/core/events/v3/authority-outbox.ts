@@ -222,6 +222,11 @@ export function listPendingAuthorityTransactionsV3(coordRoot: string): Authority
     .map((name) => readAuthorityTransactionV3(join(outbox, name)));
 }
 
+export function authorityRecoveryIntentPathV3(coordRoot: string, transactionId: string): string {
+  assertTransactionId(transactionId);
+  return join(eventV3Paths(coordRoot).root, "authority-recoveries", `${transactionId}.ready.json`);
+}
+
 export function readAuthorityTransactionV3(path: string): AuthorityTransactionV3 {
   const serialized = readFileSync(path, "utf8");
   let parsed: unknown;

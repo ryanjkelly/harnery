@@ -285,7 +285,8 @@ export function recordLiveLifecycleChangeV3(
     task_state_reason: input.state === "active" ? undefined : input.reason,
     ...(input.suggestedSessionName ? { suggested_session_name: input.suggestedSessionName } : {}),
   };
-  if (authorityStateDigest(before) === authorityStateDigest(desired)) return { state: "unchanged" };
+  if (coordinationAuthorityStateDigestV3(before) === coordinationAuthorityStateDigestV3(desired))
+    return { state: "unchanged" };
   return recordLiveAuthority(
     input,
     "lifecycle-changed",
@@ -337,7 +338,8 @@ export function recordLiveClaimChangeV3(
           (path) => canonicalClaimPath(input.coordRoot, path) !== canonical,
         );
   const desired: Heartbeat = { ...before, files_touched: desiredFiles };
-  if (authorityStateDigest(before) === authorityStateDigest(desired)) return { state: "unchanged" };
+  if (coordinationAuthorityStateDigestV3(before) === coordinationAuthorityStateDigestV3(desired))
+    return { state: "unchanged" };
   return recordLiveAuthority(
     input,
     "claim-changed",
@@ -366,7 +368,8 @@ export function recordLiveIdentityChangeV3(
   const subject = input.subject ?? input.owner;
   const before = requireHeartbeat(input, subject);
   const desired: Heartbeat = { ...before, name: input.name, agent_id: input.identityId };
-  if (authorityStateDigest(before) === authorityStateDigest(desired)) return { state: "unchanged" };
+  if (coordinationAuthorityStateDigestV3(before) === coordinationAuthorityStateDigestV3(desired))
+    return { state: "unchanged" };
   return recordLiveAuthority(
     input,
     "identity-attested",
@@ -411,15 +414,15 @@ function recordLiveAuthority<S extends CoordinationAuthoritySignalV3>(
     producer_id: LIVE_COORDINATION_V3_PRODUCER_ID,
     build_id: route.build_id,
     platform: livePlatformV3(),
-    expected_prior_state_digest: authorityStateDigest(expected),
-    desired_state_digest: authorityStateDigest(desired),
+    expected_prior_state_digest: coordinationAuthorityStateDigestV3(expected),
+    desired_state_digest: coordinationAuthorityStateDigestV3(desired),
     reconciler: {
       readStateDigest: () => {
         const heartbeat = readHeartbeat(input.coordRoot, subject);
         if (!heartbeat || heartbeat.v3_generation_id !== expected.v3_generation_id) {
           throw new LiveCoordinationAuthorityV3Error(`heartbeat_generation_mismatch:${subject}`);
         }
-        return authorityStateDigest(heartbeat);
+        return coordinationAuthorityStateDigestV3(heartbeat);
       },
       apply: (_mutation: AuthorityMutationV3) => apply(),
     },
@@ -456,7 +459,7 @@ function requireHeartbeat(input: LiveAuthorityBaseV3, owner: string): Heartbeat 
   return heartbeat;
 }
 
-function authorityStateDigest(heartbeat: Heartbeat): `sha256:${string}` {
+export function coordinationAuthorityStateDigestV3(heartbeat: Heartbeat): `sha256:${string}` {
   return sha256V3(
     canonicalJsonV3({
       instance_id: heartbeat.v3_instance_id ?? heartbeat.instance_id,

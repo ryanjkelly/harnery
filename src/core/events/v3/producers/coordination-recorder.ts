@@ -6,6 +6,7 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { Adapter } from "../../../adapter.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
@@ -21,6 +22,7 @@ import {
   type AuthorityReceiptV3,
   type AuthorityReconcilerV3,
   type AuthorityTransactionV3,
+  authorityRecoveryIntentPathV3,
   buildAuthorityTransactionV3,
   publishAuthorityTransactionV3,
   reconcileAuthorityTransactionV3,
@@ -76,6 +78,11 @@ interface CoordinationRecorderStateV3 {
   observations: RecordedCoordinationObservationV3[];
   open_waits: Record<string, OpenSpanStateV3>;
   pending?: PendingCoordinationTransactionV3;
+}
+
+export interface PendingCoordinationTransactionV3Location {
+  producer_state_file: string;
+  transaction: AuthorityTransactionV3;
 }
 
 export interface RecordCoordinationAuthorityV3Input<
@@ -170,6 +177,17 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
       state.attestation_id = hook.attestation_id;
     }
     if (state?.pending) {
+      if (
+        existsSync(
+          authorityRecoveryIntentPathV3(input.coordRoot, state.pending.transaction.transaction_id),
+        )
+      ) {
+        return {
+          state: "pending_transaction",
+          transaction_id: state.pending.transaction.transaction_id,
+          mutation_kind: state.pending.transaction.mutation.kind,
+        };
+      }
       if (state.pending.source_id !== sourceId) {
         // A writer that died mid-commit leaves `pending` owned by an
         // observation that will never retry (hook observations are one-shot).
@@ -322,6 +340,68 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
   }
 }
 
+/** Locate the one private producer state that owns a pending authority transaction. */
+export function findPendingCoordinationTransactionV3(
+  coordRoot: string,
+  transactionId: string,
+): PendingCoordinationTransactionV3Location | null {
+  const directory = coordinationProducerDirectory(coordRoot);
+  if (!existsSync(directory)) return null;
+  const matches = readdirSync(directory)
+    .filter((name) => /^hid_[a-f0-9]{64}\.json$/.test(name))
+    .sort()
+    .flatMap((name) => {
+      const state = readCoordinationState(join(directory, name));
+      return state.pending?.transaction.transaction_id === transactionId
+        ? [{ producer_state_file: name, transaction: state.pending.transaction }]
+        : [];
+    });
+  if (matches.length > 1) {
+    throw new Error("authority transaction is pending in more than one coordination producer");
+  }
+  return matches[0] ?? null;
+}
+
+/** Clear one transaction from its exact producer state after durable quarantine is established. */
+export function withPendingCoordinationTransactionRecoveryV3<T>(
+  coordRoot: string,
+  producerStateFile: string,
+  transaction: AuthorityTransactionV3,
+  allowAlreadyCleared: boolean,
+  operation: (control: { clearPending: () => "cleared" | "already_cleared" }) => T,
+): T {
+  if (!/^hid_[a-f0-9]{64}\.json$/.test(producerStateFile)) {
+    throw new Error("coordination producer state file is invalid");
+  }
+  const path = join(coordinationProducerDirectory(coordRoot), basename(producerStateFile));
+  if (!existsSync(path)) throw new Error("coordination producer state is missing");
+  const lease = acquireCoordinationLease(coordRoot, path);
+  try {
+    const state = readCoordinationState(path);
+    if (!state.pending && !allowAlreadyCleared) {
+      throw new Error("coordination producer no longer owns the pending transaction");
+    }
+    if (state.pending) {
+      if (
+        state.pending.transaction.transaction_id !== transaction.transaction_id ||
+        canonicalJsonV3(state.pending.transaction) !== canonicalJsonV3(transaction)
+      ) {
+        throw new Error("coordination producer pending transaction changed during recovery");
+      }
+    }
+    return operation({
+      clearPending: () => {
+        if (!state.pending) return "already_cleared";
+        state.pending = undefined;
+        publishCoordinationState(path, state);
+        return "cleared";
+      },
+    });
+  } finally {
+    lease.release();
+  }
+}
+
 function newCoordinationState<S extends CoordinationAuthoritySignalV3>(
   input: RecordCoordinationAuthorityV3Input<S>,
   hook: NonNullable<ReturnType<typeof readJoinableHookProducerStateV3>>,
@@ -392,12 +472,11 @@ function eventFromTransaction(transaction: AuthorityTransactionV3): EventV3 {
 }
 
 function coordinationStatePath(coordRoot: string, producerSource: `hid_${string}`): string {
-  return join(
-    resolve(coordRoot),
-    EVENT_V3_LEDGER_RELATIVE_ROOT,
-    "private-producers/agent-coord",
-    `${producerSource}.json`,
-  );
+  return join(coordinationProducerDirectory(coordRoot), `${producerSource}.json`);
+}
+
+function coordinationProducerDirectory(coordRoot: string): string {
+  return join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT, "private-producers/agent-coord");
 }
 
 function acquireCoordinationLease(coordRoot: string, statePath: string) {

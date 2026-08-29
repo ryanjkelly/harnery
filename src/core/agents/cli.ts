@@ -307,6 +307,66 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       process.stdout.write(`${JSON.stringify({ instance_id: owner, recreated: !!hb })}\n`);
       return hb ? 0 : 1;
     }
+    case "quarantine-authority-transaction": {
+      const adapter = args.find((a) => a.startsWith("--adapter="))?.slice("--adapter=".length);
+      const positional = args.filter((a) => !a.startsWith("--"));
+      const [transactionId, approvalRecordId, sessionId] = positional;
+      if (!transactionId || !approvalRecordId) {
+        process.stderr.write(
+          "agent-coord quarantine-authority-transaction: missing <transaction-id> or <approval-record-id>\n",
+        );
+        return 2;
+      }
+      try {
+        const { coordinationAuthorityStateDigestV3, liveCoordinationWriteModeV3 } = await import(
+          "./live-authority-v3.ts"
+        );
+        liveCoordinationWriteModeV3(root);
+        const { liveInstanceIdV3 } = await import("../events/v3/live-routing.ts");
+        const { repairLiveCoordinationHeartbeat } = await import(
+          "./state/live-coordination-writer.ts"
+        );
+        const heartbeat = repairLiveCoordinationHeartbeat(
+          root,
+          owner,
+          sessionId ?? owner,
+          adapterFromPlatform(adapter),
+        );
+        if (!heartbeat) {
+          throw new Error("authoritative coordination cache could not be materialized");
+        }
+        const { quarantineConflictingCoordinationTransactionV3 } = await import(
+          "../events/v3/coordination-transaction-recovery.ts"
+        );
+        const receipt = quarantineConflictingCoordinationTransactionV3(root, {
+          transaction_id: transactionId,
+          actor_instance_id: liveInstanceIdV3(owner),
+          observed_current_state_digest: coordinationAuthorityStateDigestV3(heartbeat),
+          approval_record_id: approvalRecordId,
+        });
+        const repaired = repairLiveCoordinationHeartbeat(
+          root,
+          owner,
+          sessionId ?? owner,
+          adapterFromPlatform(adapter),
+        );
+        process.stdout.write(
+          `${JSON.stringify({
+            instance_id: owner,
+            receipt,
+            heartbeat: repaired
+              ? { task_state: repaired.task_state, files_touched: repaired.files_touched }
+              : null,
+          })}\n`,
+        );
+        return repaired ? 0 : 1;
+      } catch (error) {
+        process.stderr.write(
+          `agent-coord quarantine-authority-transaction: recovery refused (${error instanceof Error ? error.message : String(error)})\n`,
+        );
+        return 1;
+      }
+    }
     default:
       process.stderr.write(`agent-coord: unknown state action ${action}\n`);
       return 2;
@@ -913,7 +973,8 @@ async function main(): Promise<number> {
     subcommand === "set-task" ||
     subcommand === "release-claim" ||
     subcommand === "heal-pidmap" ||
-    subcommand === "repair-coordination-cache"
+    subcommand === "repair-coordination-cache" ||
+    subcommand === "quarantine-authority-transaction"
   ) {
     return handleStateAction(root, subcommand, rest);
   }

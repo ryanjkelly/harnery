@@ -592,6 +592,15 @@ export function registerAgentsCommand(
         "when calling from outside Claude Code's Bash tool tree (e.g. " +
         "from cron or an external script).",
     )
+    .option(
+      "--quarantine-transaction <id>",
+      "Quarantine one irreconcilable prepared authority transaction after proving its event was never committed.",
+    )
+    .option(
+      "--approval-record-id <id>",
+      "Durable identifier for the operator approval authorizing transaction quarantine.",
+    )
+    .option("--yes", "Confirm the exact prepared transaction may be quarantined.")
     .option("--json", "JSON envelope output")
     .action(
       (opts: {
@@ -600,6 +609,9 @@ export function registerAgentsCommand(
         sessionId?: string;
         adapter?: string;
         pid?: string;
+        quarantineTransaction?: string;
+        approvalRecordId?: string;
+        yes?: boolean;
         json?: boolean;
       }) => {
         runHeal(opts);
@@ -4719,16 +4731,45 @@ function runHeal(opts: {
   sessionId?: string;
   adapter?: string;
   pid?: string;
+  quarantineTransaction?: string;
+  approvalRecordId?: string;
+  yes?: boolean;
   json?: boolean;
 }): void {
   if (opts.json) emit.config({ format: "json" });
 
   const requestedOwner = opts.owner?.trim() ?? "";
+  const quarantineTransaction = opts.quarantineTransaction?.trim() ?? "";
+  const approvalRecordId = opts.approvalRecordId?.trim() ?? "";
   const kind = opts.kind?.trim() || "cache";
   if (kind !== "pidmap" && kind !== "cache") {
     emit.error({
       code: "bad_kind",
       message: "--kind must be one of: pidmap, cache",
+    });
+    process.exit(1);
+  }
+  if (quarantineTransaction) {
+    if (opts.kind || opts.pid) {
+      emit.error({
+        code: "conflicting_recovery_options",
+        message: "--quarantine-transaction cannot be combined with --kind or --pid",
+      });
+      process.exit(1);
+    }
+    if (!opts.yes || !approvalRecordId) {
+      emit.error({
+        code: "transaction_quarantine_confirmation_required",
+        message:
+          "--quarantine-transaction requires --approval-record-id <id> and --yes; " +
+          "the command abandons one uncommitted authority mutation while preserving its record",
+      });
+      process.exit(1);
+    }
+  } else if (approvalRecordId || opts.yes) {
+    emit.error({
+      code: "transaction_quarantine_target_required",
+      message: "--approval-record-id and --yes require --quarantine-transaction <id>",
     });
     process.exit(1);
   }
@@ -4777,7 +4818,11 @@ function runHeal(opts: {
     (currentSessionRepair ? sessionIdentityFromEnv() : null) ||
     nativeSessionIdentity(currentRow, owner);
 
-  const action = kind === "pidmap" ? "heal-pidmap" : "repair-coordination-cache";
+  const action = quarantineTransaction
+    ? "quarantine-authority-transaction"
+    : kind === "pidmap"
+      ? "heal-pidmap"
+      : "repair-coordination-cache";
 
   // Refuse to materialize a V3 cache at a truncated owner id.
   //
@@ -4820,8 +4865,17 @@ function runHeal(opts: {
   //   heal-pidmap <instance_id> [<pid>]
   //   repair-coordination-cache <instance_id> [<session_id>]
   const helperArgs: string[] = [action, owner];
-  if (kind === "pidmap" && opts.pid) helperArgs.push(opts.pid);
-  if (kind === "cache") helperArgs.push(sessionId, `--adapter=${inferredAdapter}`);
+  if (quarantineTransaction) {
+    helperArgs.push(
+      quarantineTransaction,
+      approvalRecordId,
+      sessionId,
+      `--adapter=${inferredAdapter}`,
+    );
+  } else {
+    if (kind === "pidmap" && opts.pid) helperArgs.push(opts.pid);
+    if (kind === "cache") helperArgs.push(sessionId, `--adapter=${inferredAdapter}`);
+  }
 
   // Both recovery actions are handled by the bundled agent-coord binary.
   const helper = agentCoordOrExit(root);
@@ -4846,8 +4900,9 @@ function runHeal(opts: {
     after = null;
   }
 
-  const outcome =
-    kind === "pidmap"
+  const outcome = quarantineTransaction
+    ? "transaction_quarantined"
+    : kind === "pidmap"
       ? proc.status === 0
         ? "ok"
         : "failed"
@@ -4862,11 +4917,12 @@ function runHeal(opts: {
         action,
         outcome,
         after,
+        ...(quarantineTransaction ? { recovery: JSON.parse(proc.stdout.trim()) as unknown } : {}),
       },
     ],
     meta: {
       kind,
-      automatic: currentSessionRepair,
+      automatic: currentSessionRepair && !quarantineTransaction,
       authority: "event-ledger-v3",
       adapter: kind === "cache" ? inferredAdapter : undefined,
       // The path actually spawned, not a guess at the layout: the helper is
@@ -4876,7 +4932,12 @@ function runHeal(opts: {
     },
   });
   if (!opts.json) {
-    if (kind === "pidmap") {
+    if (quarantineTransaction) {
+      emit.text(
+        `coordination recovered: ${quarantineTransaction} quarantined with approval ${approvalRecordId}; ` +
+          `cache ${after ? "present" : "absent"} (${inferredAdapter})\n`,
+      );
+    } else if (kind === "pidmap") {
       emit.text(`agent-coord ${action} ok\n`);
     } else {
       emit.text(

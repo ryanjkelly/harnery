@@ -1,0 +1,85 @@
+---
+title: "ADR 0128: quarantine conflicting authority transactions"
+description: Recover a live coordination producer when a prepared authority transaction can no longer be reconciled.
+sidebar:
+  order: 128
+---
+
+**Date:** 2026-08-28
+**Status:** Accepted
+
+## Context
+
+The authority outbox publishes a complete transaction before it changes
+coordination state. If the writer stops after that publication, the next write
+can finish the transaction when the current state matches either its expected
+or desired digest.
+
+The disposable cache can also drift after the transaction is prepared, leaving
+a current digest that matches neither value.
+The reconciler refuses this case because it cannot tell whether applying or
+discarding the mutation is correct. That refusal protects authority, but it
+also leaves the producer unable to record another coordination change.
+
+ADR 0127 made cache reconstruction automatic. Rebuilding the cache does not
+settle an old prepared transaction whose prior state no longer exists, so this
+case needs its own operator-approved recovery contract.
+
+## Alternatives considered
+
+- Delete the ready transaction and clear the producer's `pending` field by
+  hand. That would remove the evidence needed to explain the recovery and
+  bypass the producer lease and durability rules.
+- Run `ledger-v3 recover`. That command quarantines an invalid ledger
+  authority. Here the ledger is valid and the uncommitted transaction sits
+  outside it, so replacing the whole epoch would discard unrelated authority.
+- Apply the prepared mutation against the new state. A digest conflict means
+  the transaction was built from a different state. Replaying it would guess
+  at ordering and could restore a stale claim, task, lifecycle, or identity.
+- Abandon every conflicting transaction automatically. A conflict proves that
+  normal reconciliation is impossible, not that the original mutation is
+  obsolete. An operator must authorize the exact transaction.
+
+## Decision
+
+`harn agents heal` accepts a scoped recovery mode:
+
+```bash
+harn agents heal \
+  --quarantine-transaction <txn-id> \
+  --approval-record-id <record-id> \
+  --yes
+```
+
+The command targets one full transaction ID. It requires a durable approval
+identifier and explicit confirmation. Before changing producer state, it
+proves all of the following:
+
+- the transaction has a canonical ready record and no committed receipt;
+- its event is absent from both the ledger and the ready event spool;
+- one private coordination producer owns the same pending transaction;
+- the requested actor owns the transaction; and
+- the current authority digest matches neither the expected nor desired
+  digest. A transaction that normal recovery can settle is refused.
+
+Recovery holds the same producer lease used by normal coordination writes. It
+writes a canonical intent first, which fences normal writers if the recovery
+process stops and releases the lease. The command copies the original
+transaction byte for byte into an owner-only quarantine directory, then clears
+the matching `pending` field. It removes the ready outbox record only after the
+quarantine copy is durable. A committed recovery receipt links the transaction
+digest, event-row digest, approval record, producer state file, conflicting
+state digest, and quarantine file. The abandoned event never enters the ledger.
+
+The recovery is idempotent. A retry resumes after the intent, quarantine copy,
+producer update, ready-record removal, or receipt without duplicating or losing
+the transaction. The command refuses mismatched recovery records instead of
+overwriting them.
+
+## Result
+
+An irreconcilable prepared transaction no longer requires a manual edit or a
+whole-ledger reset. Focused tests interrupt recovery after every durable
+boundary and prove that a retry completes, the original transaction remains
+inspectable, its event stays out of the ledger, and the producer accepts the
+next authority change.

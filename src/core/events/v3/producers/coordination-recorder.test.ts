@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
@@ -14,6 +22,10 @@ import {
   EVENT_V3_GENESIS_MANIFEST,
 } from "../control.ts";
 import { repairEventV3ControlPair } from "../control-writer.ts";
+import {
+  type CoordinationTransactionRecoveryStep,
+  quarantineConflictingCoordinationTransactionV3,
+} from "../coordination-transaction-recovery.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
 import { readLedgerV3 } from "../reader.ts";
@@ -286,6 +298,148 @@ describe("event ledger V3 persistent coordination recorder", () => {
     expect(events).toHaveLength(2);
   });
 
+  test("quarantines one irreconcilable prepared transaction without inventing its event", () => {
+    const root = startedRoot();
+    let authorityState = sha256V3("prior");
+    const pending = pendingTaskInput(root, () => authorityState);
+    expect(() => recordCoordinationAuthorityV3(pending.input)).toThrow("simulated mutation crash");
+    authorityState = sha256V3("unrelated-current-state");
+    const transactionId = onlyPendingTransactionId(root);
+    const ready = join(eventV3Paths(root).authorityOutbox, `${transactionId}.ready.json`);
+    const preparedBytes = readFileSync(ready, "utf8");
+
+    const receipt = quarantineConflictingCoordinationTransactionV3(root, {
+      transaction_id: transactionId,
+      actor_instance_id: "inst_operator",
+      observed_current_state_digest: authorityState,
+      approval_record_id: "operator-chat-2026-08-28-self-heal",
+      now: () => new Date("2026-08-29T03:20:00.000Z"),
+    });
+
+    expect(receipt).toMatchObject({
+      transaction_id: transactionId,
+      reason: "current_state_conflict",
+      approval_record_id: "operator-chat-2026-08-28-self-heal",
+      mutation_kind: "task.transition",
+    });
+    expect(existsSync(ready)).toBe(false);
+    const recoveryRoot = join(eventV3Paths(root).root, "authority-recoveries");
+    expect(readFileSync(join(recoveryRoot, "quarantine", `${transactionId}.json`), "utf8")).toBe(
+      preparedBytes,
+    );
+    expect(existsSync(join(recoveryRoot, `${transactionId}.ready.json`))).toBe(false);
+    expect(existsSync(join(recoveryRoot, `${transactionId}.committed.json`))).toBe(true);
+    expect(readLedgerV3(root).events.some(({ event }) => event.event_id === receipt.event_id)).toBe(
+      false,
+    );
+
+    const next = recordCoordinationAuthorityV3(
+      lifecycleInput(root, "after-quarantine", authorityState, sha256V3("after"), {
+        readStateDigest: () => authorityState,
+        apply: () => {
+          authorityState = sha256V3("after");
+        },
+      }),
+    );
+    expect(next.state).toBe("recorded");
+    expect(
+      quarantineConflictingCoordinationTransactionV3(root, {
+        transaction_id: transactionId,
+        actor_instance_id: "inst_operator",
+        observed_current_state_digest: authorityState,
+        approval_record_id: "operator-chat-2026-08-28-self-heal",
+      }),
+    ).toEqual(receipt);
+  });
+
+  test("refuses to quarantine a transaction that normal recovery can still settle", () => {
+    const root = startedRoot();
+    const authorityState = sha256V3("prior");
+    const pending = pendingTaskInput(root, () => authorityState);
+    expect(() => recordCoordinationAuthorityV3(pending.input)).toThrow("simulated mutation crash");
+    const transactionId = onlyPendingTransactionId(root);
+
+    expect(() =>
+      quarantineConflictingCoordinationTransactionV3(root, {
+        transaction_id: transactionId,
+        actor_instance_id: "inst_operator",
+        observed_current_state_digest: authorityState,
+        approval_record_id: "operator-chat-2026-08-28-self-heal",
+      }),
+    ).toThrow("authority transaction is still reconcilable");
+    expect(
+      existsSync(join(eventV3Paths(root).authorityOutbox, `${transactionId}.ready.json`)),
+    ).toBe(true);
+  });
+
+  test("resumes transaction quarantine after every durable recovery boundary", () => {
+    const steps: CoordinationTransactionRecoveryStep[] = [
+      "intent_published",
+      "transaction_quarantined",
+      "producer_pending_cleared",
+      "outbox_ready_removed",
+      "receipt_committed",
+    ];
+    for (const failedStep of steps) {
+      const root = startedRoot();
+      let authorityState = sha256V3("prior");
+      const pending = pendingTaskInput(root, () => authorityState);
+      expect(() => recordCoordinationAuthorityV3(pending.input)).toThrow(
+        "simulated mutation crash",
+      );
+      authorityState = sha256V3(`conflict-${failedStep}`);
+      const transactionId = onlyPendingTransactionId(root);
+      let failOnce = true;
+      expect(() =>
+        quarantineConflictingCoordinationTransactionV3(root, {
+          transaction_id: transactionId,
+          actor_instance_id: "inst_operator",
+          observed_current_state_digest: authorityState,
+          approval_record_id: `test-${failedStep}`,
+          now: () => new Date("2026-08-29T03:20:00.000Z"),
+          onStep: (step) => {
+            if (step === failedStep && failOnce) {
+              failOnce = false;
+              throw new Error(`crash-${failedStep}`);
+            }
+          },
+        }),
+      ).toThrow(`crash-${failedStep}`);
+
+      if (failedStep === "intent_published") {
+        authorityState = sha256V3("prior");
+        const raced = recordCoordinationAuthorityV3(
+          lifecycleInput(root, "writer-racing-recovery", authorityState, sha256V3("after"), {
+            readStateDigest: () => authorityState,
+            apply: () => {
+              throw new Error("recovery intent must fence the normal writer");
+            },
+          }),
+        );
+        expect(raced.state).toBe("pending_transaction");
+        authorityState = sha256V3(`conflict-${failedStep}`);
+      }
+
+      const receipt = quarantineConflictingCoordinationTransactionV3(root, {
+        transaction_id: transactionId,
+        actor_instance_id: "inst_operator",
+        observed_current_state_digest: authorityState,
+        approval_record_id: `test-${failedStep}`,
+        now: () => new Date("2026-08-29T03:20:01.000Z"),
+      });
+      expect(receipt.transaction_id).toBe(transactionId);
+      const next = recordCoordinationAuthorityV3(
+        lifecycleInput(root, `after-${failedStep}`, authorityState, sha256V3("after"), {
+          readStateDigest: () => authorityState,
+          apply: () => {
+            authorityState = sha256V3("after");
+          },
+        }),
+      );
+      expect(next.state, failedStep).toBe("recorded");
+    }
+  });
+
   test("continues across a mid-generation re-attestation instead of refusing forever", () => {
     const root = startedRoot();
     let state = sha256V3("task-empty");
@@ -380,6 +534,48 @@ describe("event ledger V3 persistent coordination recorder", () => {
     expect(events[1]?.attestation_id).toBe(change.attestation_id);
   });
 });
+
+function pendingTaskInput(root: string, readState: () => `sha256:${string}`) {
+  return {
+    input: {
+      coordRoot: root,
+      mode: "candidate" as const,
+      signal: "task-changed" as const,
+      observation: {
+        native_observation_id: "pending-recovery-task",
+        state: "set" as const,
+        task: "Prepared task that must not enter the ledger",
+      },
+      adapter: "claude-code" as const,
+      native_actor_session_id: "native-session",
+      actor_instance_id: "inst_operator" as const,
+      subject_instance_id: "inst_worker" as const,
+      producer_id: "prd_coord" as const,
+      build_id: "build_fixture" as const,
+      platform: "linux" as const,
+      expected_prior_state_digest: sha256V3("prior"),
+      desired_state_digest: sha256V3("desired"),
+      reconciler: {
+        readStateDigest: readState,
+        apply: () => {
+          throw new Error("simulated mutation crash");
+        },
+      },
+    },
+  };
+}
+
+function onlyPendingTransactionId(root: string): `txn_${string}` {
+  const names = readdirSync(eventV3Paths(root).authorityOutbox).filter((name) =>
+    name.endsWith(".ready.json"),
+  );
+  expect(names).toHaveLength(1);
+  const transactionId = names[0]?.replace(/\.ready\.json$/, "") ?? "";
+  if (!/^txn_[0-9a-f-]{36}$/.test(transactionId)) {
+    throw new Error("expected one pending authority transaction");
+  }
+  return transactionId as `txn_${string}`;
+}
 
 function lifecycleInput(
   root: string,
