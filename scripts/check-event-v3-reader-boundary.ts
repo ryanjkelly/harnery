@@ -21,6 +21,27 @@ const ALLOWED = new Set([
   "web/lib/codec/scene-source.ts",
 ]);
 
+const STORAGE_CATALOG = "src/core/storage/builtins.ts";
+const STORAGE_CATALOG_INVENTORY_DECLARATIONS = new Set([
+  'exact(context, ".harnery/ledgers/v3/active.ndjson", "file"),',
+  'exact(context, ".harnery/ledgers/v3/catalog.json", "file"),',
+  'exact(context, ".harnery/ledgers/v3/genesis.json", "file"),',
+  'exact(context, ".harnery/ledgers/v3/activation.json", "file"),',
+  'subtree(context, ".harnery/ledgers/v3/segments"),',
+  'partition(context, ".harnery/ledgers/v3-archives", "canonical", [',
+  'subtree(context, ".harnery/ledgers/v3/diagnostics"),',
+  'subtree(context, ".harnery/ledgers/v3/diagnostic-summaries"),',
+  'subtree(context, ".harnery/ledgers/v3/private-producers"),',
+  'subtree(context, ".harnery/ledgers/v3/authority-outbox"),',
+  'subtree(context, ".harnery/ledgers/v3/authority-recoveries"),',
+  'subtree(context, ".harnery/ledgers/v3/intake"),',
+  'subtree(context, ".harnery/ledgers/v3/spool"),',
+  'subtree(context, ".harnery/ledgers/v3/quarantine"),',
+  'exact(context, ".harnery/ledgers/v3/append-lease", "file"),',
+  'partition(context, ".harnery/ledgers/v3-archives", "support", [',
+  'roots: (context) => [subtree(context, ".harnery/ledgers/v3-recoveries")],',
+]);
+
 const FORBIDDEN = [
   ".harnery/ledgers/v3",
   "eventV3Paths(",
@@ -38,7 +59,9 @@ export function scanEventV3ReaderBoundary(root: string): EventV3ReaderBoundaryVi
     const lines = readFileSync(absolute, "utf8").split("\n");
     for (const [index, line] of lines.entries()) {
       for (const token of FORBIDDEN) {
-        if (line.includes(token)) violations.push({ file, line: index + 1, token });
+        if (line.includes(token) && !isAllowedStorageCatalogInventory(file, line, token)) {
+          violations.push({ file, line: index + 1, token });
+        }
       }
     }
   }
@@ -47,6 +70,14 @@ export function scanEventV3ReaderBoundary(root: string): EventV3ReaderBoundaryVi
       left.file.localeCompare(right.file) ||
       left.line - right.line ||
       left.token.localeCompare(right.token),
+  );
+}
+
+function isAllowedStorageCatalogInventory(file: string, line: string, token: string): boolean {
+  return (
+    token === ".harnery/ledgers/v3" &&
+    file === STORAGE_CATALOG &&
+    STORAGE_CATALOG_INVENTORY_DECLARATIONS.has(line.trim())
   );
 }
 

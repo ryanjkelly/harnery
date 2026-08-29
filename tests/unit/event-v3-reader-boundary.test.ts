@@ -37,6 +37,51 @@ describe("event V3 canonical reader boundary", () => {
       { file: "web/lib/direct-reader.ts", line: 1, token: "eventV3Paths(" },
     ]);
   });
+
+  test("permits only the exact read-only storage catalog inventory declarations", () => {
+    const root = fixtureRoot();
+    write(
+      root,
+      "src/core/storage/builtins.ts",
+      [
+        'exact(context, ".harnery/ledgers/v3/active.ndjson", "file"),',
+        'subtree(context, ".harnery/ledgers/v3/diagnostics"),',
+        'partition(context, ".harnery/ledgers/v3-archives", "canonical", [',
+        'roots: (context) => [subtree(context, ".harnery/ledgers/v3-recoveries")],',
+      ].join("\n"),
+    );
+    expect(scanEventV3ReaderBoundary(root)).toEqual([]);
+  });
+
+  test("rejects runtime access and catalog near-misses even inside builtins", () => {
+    const root = fixtureRoot();
+    write(
+      root,
+      "src/core/storage/builtins.ts",
+      [
+        'const root = ".harnery/ledgers/v3";',
+        'exact(context, ".harnery/ledgers/v3/new-runtime.ndjson", "file"),',
+        "eventV3Paths(root);",
+      ].join("\n"),
+    );
+    expect(scanEventV3ReaderBoundary(root)).toEqual([
+      { file: "src/core/storage/builtins.ts", line: 1, token: ".harnery/ledgers/v3" },
+      { file: "src/core/storage/builtins.ts", line: 2, token: ".harnery/ledgers/v3" },
+      { file: "src/core/storage/builtins.ts", line: 3, token: "eventV3Paths(" },
+    ]);
+  });
+
+  test("rejects an allowlisted catalog declaration in every other source file", () => {
+    const root = fixtureRoot();
+    write(
+      root,
+      "src/core/storage/runtime-reader.ts",
+      'exact(context, ".harnery/ledgers/v3/active.ndjson", "file"),',
+    );
+    expect(scanEventV3ReaderBoundary(root)).toEqual([
+      { file: "src/core/storage/runtime-reader.ts", line: 1, token: ".harnery/ledgers/v3" },
+    ]);
+  });
 });
 
 function fixtureRoot(): string {
