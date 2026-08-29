@@ -1,0 +1,85 @@
+---
+title: "ADR 0131: Event Ledger V3 support-state packs"
+description: Represent eligible V3 support files as deterministic, checksummed packs behind a logical authority digest, shadow-first and never touching canonical events.
+sidebar:
+  order: 131
+---
+
+**Date:** 2026-08-28
+**Status:** Accepted
+
+## Context
+
+Event Ledger V3 keeps short-lived loose files as its concurrent crash-safe
+intake: producer diagnostics, per-command session-tee state, and authority
+outbox receipts. That design is correct for live recovery, but nothing retires
+the files after their recovery boundary closes. A baseline census of one
+active repository found 100,555 regular files under the V3 trees, of which
+only 53 were canonical `active.ndjson` streams; the three support families
+held 98.3% of the files but under 10% of the bytes. This is an inode and
+directory-scan problem, not a payload problem.
+
+Deleting old support files by age is not safe. ADR 0084 requires failed
+authorities to remain intact, and the recovery digest hashes every regular
+file by relative path, byte count, and content digest, so removing one
+apparently disposable JSON file changes the recovery witness even when every
+canonical event byte is unchanged.
+
+## Alternatives considered
+
+- Delete support files older than a cutoff. Age proves nothing about pending
+  or recovery-bound state, and deletion changes the physical authority digest
+  that committed recovery receipts reference.
+- Depend on a host archive tool such as `tar` or `zstd`. Harnery must stay
+  daemonless and dependency-free across macOS, Linux, WSL, Windows-native
+  Node, and CI. A pack format on Node standard-library primitives keeps
+  verification portable.
+- Compact into a parsed logical form that drops the original bytes. A lossy
+  transform cannot reproduce the source byte-for-byte, so it can never satisfy
+  a digest-equivalence proof and would silently discard fields a future reader
+  needs.
+- Pack canonical streams too. Canonical events already rotate under their own
+  epoch rules and hold most of the bytes in few files. Their authority path
+  stays untouched; only support state is in scope.
+
+## Decision
+
+Eligible V3 support files move into deterministic, checksummed support packs:
+a streaming gzip file of newline-delimited records, each carrying the original
+relative path, exact byte count, SHA-256 digest, and exact content as base64,
+sorted by normalized relative path. A manifest binds the pack to its
+authority's genesis, records per-family and per-diagnostic-category rollups so
+health reporting never decompresses history, and declares the digest of the
+logical entries. The validator rejects absolute paths, path traversal,
+duplicates, unknown families, symlinks, wrong byte counts, wrong digests,
+trailing data, and manifest disagreement. Final packs live inside their
+authority under a reserved `support-packs/` subtree so an epoch stays
+self-contained when copied.
+
+Recovery verification moves behind a logical authority iterator. For an
+unpacked authority it yields the physical files; for a packed authority it
+validates the pack and yields the original entries, excluding the pack
+containers themselves, so the sorted canonical array must hash to the exact
+pre-pack digest. When one logical path exists both loose and packed with equal
+digests the iterator yields it once; on a digest conflict it quarantines the
+pack and trusts the loose file; the same path in two packs fails closed.
+
+Eligibility is proof-based, never age-based. Open or pending command state,
+ready authority transactions, and anything a live lease references stay
+loose. Packing runs as a crash-safe maintenance transaction with frozen source
+paths and digests, a shadow-written pack outside the source subtree, full
+round-trip verification, and an explicit authorization step before any source
+replacement. Sealed archives verify by whole logical-authority digest; the
+active epoch verifies each frozen path individually because canonical events
+keep appending. The first shipped command stops at shadow verification and
+replaces nothing. Recovery-bound archives stay byte-for-byte intact until the
+production recovery verifier proves digest equivalence from packed bytes.
+
+## Result
+
+The support-state backlog gains a lossless retirement path: file counts fall
+by orders of magnitude while every accepted diagnostic, terminal command
+state, and committed receipt remains reproducible byte-for-byte with its
+original path and digest. Health reporting keeps its category and rate
+signals from manifest rollups, and recovery receipts keep their meaning
+because the logical digest equals the physical digest they recorded.

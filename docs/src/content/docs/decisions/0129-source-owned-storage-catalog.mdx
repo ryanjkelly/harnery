@@ -1,0 +1,83 @@
+---
+title: "ADR 0129: source-owned storage catalog"
+description: Register every Harnery-owned persistent file family with an owner, storage class, budgets, and lifecycle policy before any shared maintenance runs.
+sidebar:
+  order: 129
+---
+
+**Date:** 2026-08-28
+**Status:** Accepted
+
+## Context
+
+Harnery persists many kinds of local state under a project's coordination
+root: canonical event ledgers, crash-recovery transactions, operational and
+debug logs, workflow and object histories, journals, caches, and managed
+artifacts. Each family grew its own storage habits. Some rotate, some truncate
+their own tail, some stop accepting writes at a hard ceiling, and several grow
+without any bound. A census of one large active root found more than 160,000
+regular files, most of them small support records, and no command that could
+enumerate the families, say who owns each one, or say whether a file is over
+its intended budget.
+
+Any shared janitor, inventory, or health report is unsafe in that state.
+Durability cannot be inferred from a directory name or an extension: a small
+JSON file may be disposable telemetry, or it may participate in a recovery
+authority digest whose meaning changes when one file disappears.
+
+## Alternatives considered
+
+- Keep independent local policies and add one cleanup script. A script encodes
+  another directory list without fixing ownership, budgets, privacy, health
+  reporting, or future policy drift.
+- Move every persistent file under one `logs/` tree. Canonical authority,
+  recovery state, workflow proof, caches, and managed artifacts are not
+  operational logs. Forcing them into one tree would force unrelated
+  durability contracts into one lifecycle.
+- Let maintenance classify unknown files heuristically by age or size. Age
+  does not prove that pending or recovery-bound evidence is safe, and a wrong
+  guess destroys evidence that cannot be rebuilt.
+- Make the catalog user configuration. Configuration could then redefine an
+  authority ledger as a cache. Policy must be reviewable in source.
+
+## Decision
+
+Harnery adds a product-tier storage subsystem whose control plane is a
+source-owned catalog. Every Harnery-owned persistent family registers one
+descriptor naming its owner, storage class, roots, format, sensitivity,
+durability, writer concurrency model, consumers, budgets, and lifecycle
+policy. The storage classes are: canonical authority, recovery state,
+operational log, debug log, durable object history, repairable cache, and
+managed artifact.
+
+Every mutable family declares both a time budget and a byte or file-count
+budget. A `null` budget means intentionally unbounded and requires a recorded
+reason; a family cannot omit a dimension silently. Retention belongs to a
+family, never to a record level: a component needing a second retention class
+registers a second family.
+
+Harnery's own descriptors are source code, reviewed at compile time. An
+embedding host registers its families, logger bindings, and justified
+exclusions when it calls `createHarneryProgram`, never by patching a registry
+after the program starts. Validation rejects duplicate family identifiers,
+overlapping roots, bindings to unknown families, and any attempt to replace or
+weaken a Harnery-owned descriptor. An exclusion covers only a host-owned path
+and must name its owner, root, reason, and external lifecycle authority.
+
+Inventory is read-only and reports unregistered files as policy gaps;
+maintenance never guesses the purpose of an unknown path or removes it. A
+family may delegate maintenance to an existing janitor, but the global
+inventory still reports that family's budget and the janitor's last result.
+CI fails when a production writer creates a persistent path with no Harnery
+descriptor, host descriptor, or explicit host-owned exclusion: a source scan
+catches literal paths, and a runtime test records all writes in an isolated
+coordination root and compares them with the combined registry.
+
+## Result
+
+The catalog ships before any shared maintenance, so a janitor can operate
+beside canonical ledgers, recovery records, and managed artifacts without
+guessing which files carry a different authority contract. Operators get one
+inventory that accounts for the whole coordination root, counts canonical
+streams separately from support files, and names every family that lacks a
+policy instead of silently inheriting one.

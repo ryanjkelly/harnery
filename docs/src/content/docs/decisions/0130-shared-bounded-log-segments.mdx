@@ -1,0 +1,89 @@
+---
+title: "ADR 0130: shared bounded log segments"
+description: One family-bound logger facade, bounded batches under a short family lease, and immutable manifest-backed segments replace per-component rotation code.
+sidebar:
+  order: 130
+---
+
+**Date:** 2026-08-28
+**Status:** Accepted
+
+## Context
+
+Harnery components each own a private logging path today. The existing
+implementations disagree on filenames, envelopes, rotation, compression,
+retention, concurrency, privacy metadata, and failure reporting. Two debug
+streams in an active repository grew past 150 MB with no bound at all, one
+service trims its own tail in place and destroys the oldest evidence without a
+receipt, and two object histories refuse writes at a hard byte ceiling. No
+command can query records across these files, and no shared code protects a
+multi-process writer from racing a rotation.
+
+## Alternatives considered
+
+- Write every component into one global JSONL stream. That recreates the
+  contention and blast radius of the retired single-ledger design, mixes
+  privacy and retention classes, and lets one corrupt or over-budget family
+  affect every component. A shared format does not require a shared file.
+- Write every record synchronously. That charges short-lived hook processes
+  one lease and syscall path per record even though the records are declared
+  best-effort. Canonical and recovery writers stay synchronous under their own
+  protocols; operational logs do not need it.
+- Lease only the rotation and let `O_APPEND` writers run free. An appender may
+  open the active file before a rename and keep writing through that handle
+  after the roller advances the path, racing compression and manifesting. A
+  rotation-only lease stays a possible later optimization, but only with a
+  cross-platform quiescence proof.
+- Partition segments by record level so errors can outlive debug records.
+  Level partitioning forces segment rewrites during retention. Retention stays
+  per family; a second retention class means a second registered family.
+
+## Decision
+
+Operational and debug producers use one family-bound logger facade with six
+shared levels (`trace`, `debug`, `info`, `warn`, `error`, `fatal`), child
+correlation context, lazy field evaluation, and bounded error sanitization.
+Records buffer in a byte- and record-bounded in-process queue with reserved
+capacity for `warn` and above, then flush as one bounded batch per short
+family lease. The lease is the correctness boundary for append and rotation:
+each drain acquires the lease, opens the current active path, merges storm and
+metric state, rotates first when the batch would cross a boundary, appends,
+commits metrics, and releases. A writer never caches an active-file descriptor
+across lease acquisitions.
+
+Each family stores one active file plus immutable sealed segments and a
+manifest:
+
+```text
+<family>/active.jsonl
+<family>/segments/<utc-date>-<sequence>.jsonl.gz
+<family>/manifest.json
+```
+
+Size is the primary rotation boundary. A UTC-day change seals an active file
+only above a measured minimum size, and a mandatory maximum open age seals
+even a small quiet file. The segment sequence is monotonic across the family's
+lifetime; the date in the name is informational. Segment readers accept only
+versioned names listed in the manifest and never parse an unknown sibling as
+records. An unmanifested sealed file is recoverable input, not residue.
+
+Durability is a family property. A best-effort family may lose queued or
+page-cache records on a crash and says so; it rejects disk-durable flush
+requests with a typed error. A crash-safe family syncs every drained batch
+before acknowledging it, and registration for crash-safe behavior is refused
+until that implementation exists, never silently downgraded. Budget pressure
+never refuses a valid append; only declared overflow, storm control, encoding,
+disk, permission, or sink failures can lose a best-effort record, and every
+loss is counted by reason in a repairable per-family metrics sidecar.
+Coalesced, sampled, and storm-controlled counts are also written as immutable
+summary deltas in the same batch as the surviving records, so losing the
+sidecar cannot erase counts the sink already accepted.
+
+## Result
+
+Local rotation code in individual components becomes a migration target rather
+than a pattern. One query path can list, filter, tail, and follow any
+registered family across its active file and sealed segments, health reporting
+can compare every family against a declared budget, and a sustained warning
+storm forms bounded batches instead of acquiring one lease per record or
+producing one file per repetition.
