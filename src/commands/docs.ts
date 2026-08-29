@@ -92,10 +92,14 @@ export function registerDocsCommand(
     .command("validate")
     .description("Validate every managed Markdown file against harnery-doc/v2")
     .option("--repo <name>", "Limit to one submodule or '.' for parent")
-    .action(async (opts: { repo?: string }) => {
+    .option("--cached", "Read paths and contents from the Git index")
+    .action(async (opts: { repo?: string; cached?: boolean }) => {
       try {
         ensureContext(context);
-        const rows = await runDocsMetadataAudit(opts);
+        const rows = await runDocsMetadataAudit({
+          repo: opts.repo,
+          source: opts.cached ? "index" : "worktree",
+        });
         const errors = rows
           .flatMap((row) => row.issues)
           .filter((issue) => issue.severity === "error");
@@ -128,9 +132,13 @@ export function registerDocsCommand(
     .argument("[files...]", "Explicit repository-relative Markdown files; defaults to staged files")
     .option("--repo <name>", "Limit to one submodule or '.' for parent")
     .option("--check", "Report timestamp drift without writing")
+    .option("--cached", "Read current contents from the Git index (requires --check)")
     .option("--reviewed", "Record an explicit runbook review and move its due date")
     .action(
-      async (files: string[], opts: { repo?: string; check?: boolean; reviewed?: boolean }) => {
+      async (
+        files: string[],
+        opts: { repo?: string; check?: boolean; cached?: boolean; reviewed?: boolean },
+      ) => {
         try {
           ensureContext(context);
           const rows = await runDocsMetadataSync({ ...opts, files });
@@ -194,8 +202,9 @@ export function registerDocsCommand(
     )
     .option("--fast", "Skip content-reading checks; filename/structure only (for pre-commit)")
     .option("--repo <name>", "Limit to one submodule or '.' for parent")
+    .option("--cached", "Read paths and contents from the Git index")
     .option("--format <type>", "Output format: human, json", "human")
-    .action(async (opts: { fast?: boolean; repo?: string; format: string }) => {
+    .action(async (opts: { fast?: boolean; repo?: string; cached?: boolean; format: string }) => {
       try {
         ensureContext(context);
         await handleLint(opts);
@@ -311,8 +320,17 @@ async function handleDocs(opts: {
 
 // --- `harn docs lint` ---
 
-async function handleLint(opts: { fast?: boolean; repo?: string; format: string }): Promise<void> {
-  const violations = await runLint({ fast: opts.fast, repo: opts.repo });
+async function handleLint(opts: {
+  fast?: boolean;
+  repo?: string;
+  cached?: boolean;
+  format: string;
+}): Promise<void> {
+  const violations = await runLint({
+    fast: opts.fast,
+    repo: opts.repo,
+    source: opts.cached ? "index" : "worktree",
+  });
   const errors = violations.filter((v) => v.severity === "error");
   const warnings = violations.filter((v) => v.severity === "warning");
   const cold = await countColdHandoffs();
@@ -320,6 +338,7 @@ async function handleLint(opts: { fast?: boolean; repo?: string; format: string 
   emit.data({
     fast: !!opts.fast,
     repo: opts.repo ?? null,
+    source: opts.cached ? "index" : "worktree",
     error_count: errors.length,
     warning_count: warnings.length,
     cold_handoffs: cold,

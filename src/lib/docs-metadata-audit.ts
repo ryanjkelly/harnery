@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { parseFrontmatter } from "./docs-frontmatter.ts";
 import { isManagedDocsMetadataFile, managedDocsMetadataType } from "./docs-metadata-managed.ts";
@@ -9,7 +9,11 @@ import {
   isDocsMetadataV2,
   validateDocsMetadataV2,
 } from "./docs-metadata-v2.ts";
-import { sh } from "./exec.ts";
+import {
+  createDocsRepositoryView,
+  type DocsRepositorySource,
+  type DocsRepositoryView,
+} from "./docs-repository-view.ts";
 
 let REPO_ROOT = "";
 let SUBMODULES: readonly string[] = [];
@@ -24,6 +28,7 @@ export function initDocsMetadataAuditContext(opts: {
 
 export interface DocsMetadataAuditOpts {
   repo?: string;
+  source?: DocsRepositorySource;
 }
 
 export type DocsMetadataAuditState = "valid" | "invalid" | "legacy" | "missing";
@@ -40,20 +45,12 @@ function isInitializedRepo(path: string): boolean {
   return existsSync(join(path, ".git"));
 }
 
-async function trackedMarkdownFiles(repoPath: string): Promise<string[]> {
-  const result = await sh('git ls-files --cached "**/*.md" "*.md"', { cwd: repoPath });
-  if (result.exitCode !== 0 || !result.stdout.trim()) return [];
-  return result.stdout
-    .trim()
-    .split("\n")
-    .filter((path) => path.endsWith(".md"));
-}
-
-function auditFile(repoName: string, repoPath: string, path: string): DocsMetadataAuditRow | null {
-  let content: string;
-  try {
-    content = readFileSync(join(repoPath, path), "utf8");
-  } catch {
+function auditFile(
+  repoName: string,
+  path: string,
+  content: string | undefined,
+): DocsMetadataAuditRow | null {
+  if (content === undefined) {
     return {
       repo: repoName,
       path: join(repoName === "(root)" ? "" : repoName, path),
@@ -105,6 +102,17 @@ function auditFile(repoName: string, repoPath: string, path: string): DocsMetada
   };
 }
 
+export async function auditDocsMetadataRepository(
+  repoName: string,
+  view: DocsRepositoryView,
+): Promise<DocsMetadataAuditRow[]> {
+  const files = view.trackedPaths.filter((path) => path.endsWith(".md"));
+  const texts = await view.readTexts(files);
+  return files
+    .map((path) => auditFile(repoName, path, texts.get(path)))
+    .filter((row): row is DocsMetadataAuditRow => row !== null);
+}
+
 export async function runDocsMetadataAudit(
   opts: DocsMetadataAuditOpts,
 ): Promise<DocsMetadataAuditRow[]> {
@@ -120,11 +128,8 @@ export async function runDocsMetadataAudit(
 
   const rows: DocsMetadataAuditRow[] = [];
   for (const target of selected) {
-    const files = await trackedMarkdownFiles(target.path);
-    for (const path of files) {
-      const row = auditFile(target.name, target.path, path);
-      if (row) rows.push(row);
-    }
+    const view = await createDocsRepositoryView(target.path, opts.source ?? "worktree");
+    rows.push(...(await auditDocsMetadataRepository(target.name, view)));
   }
 
   return rows.sort((a, b) => a.path.localeCompare(b.path));

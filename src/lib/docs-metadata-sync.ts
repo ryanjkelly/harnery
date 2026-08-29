@@ -4,6 +4,7 @@ import { dump as dumpYaml, JSON_SCHEMA } from "js-yaml";
 import { parseFrontmatter } from "./docs-frontmatter.ts";
 import { managedDocsMetadataType } from "./docs-metadata-managed.ts";
 import { isDocsMetadataV2, validateDocsMetadataV2 } from "./docs-metadata-v2.ts";
+import { createDocsRepositoryView } from "./docs-repository-view.ts";
 import { sh } from "./exec.ts";
 
 let REPO_ROOT = "";
@@ -21,6 +22,7 @@ export interface DocsMetadataSyncOpts {
   repo?: string;
   files?: string[];
   check?: boolean;
+  cached?: boolean;
   reviewed?: boolean;
   now?: string;
 }
@@ -55,11 +57,7 @@ async function gitMarkdownPaths(target: Target, command: string): Promise<string
   return result.stdout.split("\n").filter(Boolean);
 }
 
-async function changedFiles(
-  target: Target,
-  explicit: string[],
-  check: boolean,
-): Promise<string[]> {
+async function changedFiles(target: Target, explicit: string[], check: boolean): Promise<string[]> {
   if (explicit.length > 0) return explicit;
   const staged = await gitMarkdownPaths(
     target,
@@ -123,13 +121,22 @@ function addDays(value: string, days: number): string {
 export async function runDocsMetadataSync(
   opts: DocsMetadataSyncOpts,
 ): Promise<DocsMetadataSyncRow[]> {
+  if (opts.cached && !opts.check) {
+    throw new Error("--cached requires --check because Git index validation is read-only");
+  }
   const now = opts.now ?? new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const rows: DocsMetadataSyncRow[] = [];
   for (const target of targets(opts.repo)) {
-    for (const path of await changedFiles(target, opts.files ?? [], opts.check ?? false)) {
+    const paths = await changedFiles(target, opts.files ?? [], opts.check ?? false);
+    const cachedView = opts.cached ? await createDocsRepositoryView(target.path, "index") : null;
+    const cachedTexts = cachedView ? await cachedView.readTexts(paths) : null;
+    for (const path of paths) {
       const full = join(target.path, path);
-      if (!existsSync(full)) continue;
-      const currentText = readFileSync(full, "utf8");
+      if (cachedView ? !cachedView.has(path) : !existsSync(full)) continue;
+      const currentText = cachedView ? cachedTexts?.get(path) : readFileSync(full, "utf8");
+      if (currentText === undefined) {
+        throw new Error(`Git index content could not be read for ${path}`);
+      }
       const current = parseFrontmatter(currentText);
       if (!managedDocsMetadataType(path, current.data, current.raw !== null)) continue;
       if (!isDocsMetadataV2(current.data)) {

@@ -1,0 +1,92 @@
+---
+title: "ADR 0133: validate documentation from one repository view"
+description: Make documentation gates read paths and bytes from one coherent worktree or Git-index view.
+sidebar:
+  order: 133
+---
+
+**Date:** 2026-08-29
+**Status:** Accepted
+
+## Context
+
+The documentation linter mixed two authorities. It enumerated tracked Markdown
+with `git ls-files --cached`, then read file contents and directory membership
+from the working tree. That usually described the same tree. It stopped being
+true in a shared checkout and during a path-scoped commit.
+
+Git builds a temporary index for a path-scoped commit. The pre-commit hook sees
+that index through `GIT_INDEX_FILE`, so `git diff --cached` correctly describes
+only the proposed commit. The linter nevertheless opened every tracked file
+from the shared working tree. A file that another process had temporarily
+renamed or deleted therefore appeared unreadable even when the proposed commit
+still contained the valid version from `HEAD`.
+
+Waiting for the working tree to become momentarily clean does not make the gate
+correct. It turns a deterministic commit check into a race. Skipping the gate
+also loses the repository-wide rules that make it useful, including required
+entry files, root allowlists, naming rules, and versioned metadata.
+
+## Alternatives considered
+
+- Add a documentation-lint bypass environment variable. Rejected as the
+  primary recovery path. It would preserve the other pre-commit checks but
+  would let invalid documentation enter the proposed commit.
+- Keep the repository-wide scan and discard findings whose paths are not in
+  `git diff --cached`. Rejected because it filters symptoms after reading the
+  wrong tree. It also weakens global rules whose finding path may not be the
+  only path that caused the violation.
+- Validate only changed Markdown files. Rejected because deleting a required
+  entry file or changing root membership is a tree property, not a single-file
+  content check.
+- Materialize the proposed tree in a temporary checkout. Rejected because the
+  extra filesystem copy is slower, needs cleanup, and duplicates Git's index,
+  which is already the authoritative proposed tree.
+- Teach only the host hook about shared checkout races. Rejected because the
+  mixed-authority read lives in the reusable documentation library. A host-side
+  exception would leave every other embedding with the same defect.
+
+## Decision
+
+Introduce one internal `DocsRepositoryView` seam with two sources:
+
+| Source | Path membership | File contents | Intended use |
+| --- | --- | --- | --- |
+| `worktree` | Tracked paths plus live directory checks | Filesystem | Interactive lint and maintenance |
+| `index` | The active Git index | Blobs named by that index | Pre-commit and CI validation |
+
+The index view loads stage-zero entries with `git ls-files --stage -z` and
+reads their object IDs through one `git cat-file --batch` process. Paths and
+bytes therefore come from the same authority. The process inherits
+`GIT_INDEX_FILE`; when Git supplies a partial-commit index, no Harnery-specific
+path list or wrapper protocol is needed.
+
+`docs lint --cached` runs every existing repository-wide rule against the index
+view. It does not downgrade or filter findings. A required `README.md` deleted
+from the proposed commit still fails. Invalid staged metadata still fails. A
+foreign working-tree deletion whose valid blob remains in the proposed commit
+does not appear in the verdict.
+
+`docs metadata validate --cached` uses the same view. `docs metadata sync
+--check --cached` compares the staged blobs with `HEAD`; cached mode is
+read-only and refuses to run without `--check`. The ordinary commands retain
+their worktree behavior.
+
+The repository view is an internal documentation seam, not a general virtual
+filesystem API. Other documentation commands may adopt it when they need a
+coherent commit snapshot, but this decision does not change interactive link,
+sweep, or index behavior.
+
+## Result
+
+Focused fixtures prove both authorities. A worktree deletion still reports as
+unreadable in interactive mode. The index mode reads the valid staged or
+committed blob instead. Repository-wide entry-tier checks still reject a staged
+`README.md` deletion, and an untracked loose document outside the proposed
+commit does not contaminate the cached verdict.
+
+An integration fixture stages one documentation deletion and one addition,
+then commits only the addition through a real pre-commit hook. Cached lint sees
+Git's proposed partial-commit index, the commit succeeds, and the unrelated
+deletion remains staged afterward. This is the shared-checkout case that the
+previous mixed view could not represent correctly.

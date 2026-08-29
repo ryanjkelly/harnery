@@ -98,4 +98,31 @@ describe("runDocsMetadataSync", () => {
     expect(rows[0]).toEqual(expect.objectContaining({ status: "unchanged", fields: [] }));
     expect(parseFrontmatter(readFileSync(file, "utf8")).data.updated_at).toBe(OLD);
   });
+
+  test("cached check reads staged bytes instead of a later worktree edit", async () => {
+    const { root, file } = repo();
+    const staged = readFileSync(file, "utf8")
+      .replace(`updated_at: ${OLD}`, `updated_at: ${NOW}`)
+      .replace("Original.", "Staged change.");
+    writeFileSync(file, staged);
+    spawnSync("git", ["add", "plan.md"], { cwd: root });
+    writeFileSync(file, "# Broken worktree copy\n");
+
+    const cached = await runDocsMetadataSync({
+      check: true,
+      cached: true,
+      now: "2026-08-20T12:00:00Z",
+    });
+    expect(cached[0]).toEqual(expect.objectContaining({ status: "unchanged", fields: [] }));
+
+    const worktree = await runDocsMetadataSync({ check: true, now: "2026-08-20T12:00:00Z" });
+    expect(worktree).toEqual([]);
+  });
+
+  test("cached mode refuses writes", async () => {
+    repo();
+    await expect(runDocsMetadataSync({ cached: true })).rejects.toThrow(
+      "--cached requires --check",
+    );
+  });
 });

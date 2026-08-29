@@ -1,8 +1,10 @@
 import { existsSync as __existsSyncForDocs } from "node:fs";
 import { resolve as __resolveForDocs } from "node:path";
 import { hasYamlStatus } from "./docs-frontmatter.ts";
-import { initDocsMetadataAuditContext, runDocsMetadataAudit } from "./docs-metadata-audit.ts";
-import { sh } from "./exec.ts";
+import {
+  auditDocsMetadataRepository,
+  initDocsMetadataAuditContext,
+} from "./docs-metadata-audit.ts";
 
 // Module-level docs context, initialized by initDocsContext() before any
 // other function in this file is called. Consumers pass repo metadata
@@ -34,8 +36,13 @@ function isSubmoduleInitialized(name: string): boolean {
   return __existsSyncForDocs(__resolveForDocs(REPO_ROOT, name, ".git"));
 }
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import {
+  createDocsRepositoryView,
+  type DocsRepositorySource,
+  type DocsRepositoryView,
+} from "./docs-repository-view.ts";
 
 /**
  * Documentation linter. Enforces the docs directory-layout + naming contract.
@@ -58,6 +65,7 @@ export interface Violation {
 export interface LintOpts {
   fast?: boolean;
   repo?: string; // limit to one submodule or "." for parent
+  source?: DocsRepositorySource;
 }
 
 /** Files allowed at a submodule root level. Includes:
@@ -145,15 +153,9 @@ function getTargetRepos(opts: LintOpts): { name: string; path: string; isSubmodu
   return all;
 }
 
-/** List all tracked .md files in the given repo via `git ls-files`.
- * Returns paths relative to the repo root. Automatically skips node_modules,
- * vendor, .venv, dbt_packages, build/ etc. because they're gitignored.
- */
-async function findMarkdownFiles(root: string): Promise<string[]> {
-  const result = await sh('git ls-files --cached "**/*.md" "*.md"', { cwd: root });
-  if (result.exitCode !== 0 || !result.stdout) return [];
-  return result.stdout
-    .split("\n")
+/** Select tracked Markdown from the coherent repository view. */
+function findMarkdownFiles(view: DocsRepositoryView): string[] {
+  return view.trackedPaths
     .filter((f) => f.endsWith(".md"))
     .filter(
       (f) =>
@@ -164,19 +166,9 @@ async function findMarkdownFiles(root: string): Promise<string[]> {
     );
 }
 
-/** Read first N lines of a file for header inspection */
-function readHead(path: string, lines = 20): string {
-  try {
-    const content = readFileSync(path, "utf8");
-    return content.split("\n").slice(0, lines).join("\n");
-  } catch {
-    return "";
-  }
-}
-
 /** Detect whether a file declares itself an intentional monolith */
-function isDeclaredMonolith(path: string): boolean {
-  const head = readHead(path, 10);
+function isDeclaredMonolith(content: string): boolean {
+  const head = content.split("\n").slice(0, 10).join("\n");
   return /INTENTIONAL-MONOLITH/i.test(head);
 }
 
@@ -192,10 +184,14 @@ export function hasStatusHeader(path: string): boolean {
 // --- Individual checks ---
 
 /** Entry tier files exist at the repo root */
-function checkEntryTier(repoName: string, repoPath: string, isSubmodule: boolean): Violation[] {
+function checkEntryTier(
+  repoName: string,
+  view: DocsRepositoryView,
+  isSubmodule: boolean,
+): Violation[] {
   const violations: Violation[] = [];
   // README.md is required for any repo
-  if (!existsSync(join(repoPath, "README.md"))) {
+  if (!view.has("README.md")) {
     violations.push({
       severity: "error",
       repo: repoName,
@@ -205,7 +201,7 @@ function checkEntryTier(repoName: string, repoPath: string, isSubmodule: boolean
     });
   }
   // CLAUDE.md required for submodules (primary LLM context)
-  if (isSubmodule && !existsSync(join(repoPath, "CLAUDE.md"))) {
+  if (isSubmodule && !view.has("CLAUDE.md")) {
     violations.push({
       severity: "error",
       repo: repoName,
@@ -218,14 +214,9 @@ function checkEntryTier(repoName: string, repoPath: string, isSubmodule: boolean
 }
 
 /** No forbidden root-level files */
-function checkRootAllowlist(repoName: string, repoPath: string): Violation[] {
+function checkRootAllowlist(repoName: string, view: DocsRepositoryView): Violation[] {
   const violations: Violation[] = [];
-  let entries: string[];
-  try {
-    entries = readdirSync(repoPath);
-  } catch {
-    return violations;
-  }
+  const entries = view.directFileNames(".");
   for (const entry of entries) {
     if (!entry.endsWith(".md")) continue;
     if (ROOT_FILE_ALLOWLIST.has(entry)) continue;
@@ -257,27 +248,13 @@ function checkRootAllowlist(repoName: string, repoPath: string): Violation[] {
  * a no-op unless the host supplies `docsRootAllowlist`. Parent-repo only:
  * submodule `docs/` roots have their own entry tiers, not this one.
  */
-function checkDocsRootAllowlist(repoName: string, repoPath: string): Violation[] {
+function checkDocsRootAllowlist(repoName: string, view: DocsRepositoryView): Violation[] {
   const violations: Violation[] = [];
   if (DOCS_ROOT_ALLOWLIST.length === 0) return violations; // opt-in
   if (repoName !== "(root)") return violations; // parent repo only
   const allow = new Set(DOCS_ROOT_ALLOWLIST);
-  const docsDir = join(repoPath, "docs");
-  let entries: string[];
-  try {
-    entries = readdirSync(docsDir);
-  } catch {
-    return violations; // no docs/ dir — nothing to check
-  }
+  const entries = view.directFileNames("docs");
   for (const entry of entries) {
-    // Subdirs are the intended home for topic docs; only loose files matter.
-    let isFile: boolean;
-    try {
-      isFile = statSync(join(docsDir, entry)).isFile();
-    } catch {
-      continue;
-    }
-    if (!isFile) continue;
     if (!(entry.endsWith(".md") || entry.endsWith(".json"))) continue;
     if (allow.has(entry)) continue;
     violations.push({
@@ -383,13 +360,14 @@ function checkChangelogNames(repoName: string, _repoPath: string, files: string[
 }
 
 /** Intentional monoliths >30KB need a declaration banner */
-function checkMonolithDeclaration(
+async function checkMonolithDeclaration(
   repoName: string,
-  repoPath: string,
+  view: DocsRepositoryView,
   files: string[],
-): Violation[] {
+): Promise<Violation[]> {
   const violations: Violation[] = [];
   const SIZE_THRESHOLD = 30 * 1024;
+  const candidatePaths: string[] = [];
   for (const rel of files) {
     // Only flag top-level docs/ files, not per-repo entry tier (LLM-BRIEFING
     // files are monoliths by convention, no banner needed).
@@ -399,15 +377,17 @@ function checkMonolithDeclaration(
     if (rel.startsWith("docs/audits/")) continue;
     if (rel.startsWith("docs/issues/")) continue;
     if (rel.startsWith("docs/changelogs/")) continue;
-    const full = join(repoPath, rel);
-    let size: number;
-    try {
-      size = statSync(full).size;
-    } catch {
-      continue;
-    }
+    const size = await view.byteLength(rel);
+    if (size === null) continue;
     if (size < SIZE_THRESHOLD) continue;
-    if (isDeclaredMonolith(full)) continue;
+    candidatePaths.push(rel);
+  }
+  const texts = await view.readTexts(candidatePaths);
+  for (const rel of candidatePaths) {
+    const content = texts.get(rel);
+    if (content === undefined || isDeclaredMonolith(content)) continue;
+    const size = await view.byteLength(rel);
+    if (size === null) continue;
     violations.push({
       severity: "warning",
       repo: repoName,
@@ -426,30 +406,31 @@ export async function runLint(opts: LintOpts): Promise<Violation[]> {
   const repos = getTargetRepos(opts);
 
   for (const { name, path, isSubmodule } of repos) {
-    violations.push(...checkEntryTier(name, path, isSubmodule));
-    violations.push(...checkRootAllowlist(name, path));
-    violations.push(...checkDocsRootAllowlist(name, path));
+    const view = await createDocsRepositoryView(path, opts.source ?? "worktree");
+    violations.push(...checkEntryTier(name, view, isSubmodule));
+    violations.push(...checkRootAllowlist(name, view));
+    violations.push(...checkDocsRootAllowlist(name, view));
 
-    const files = await findMarkdownFiles(path);
+    const files = findMarkdownFiles(view);
     violations.push(...checkNamingConvention(name, path, files));
     violations.push(...checkDatedDirs(name, path, files));
     violations.push(...checkChangelogNames(name, path, files));
 
     if (!opts.fast) {
-      violations.push(...checkMonolithDeclaration(name, path, files));
+      violations.push(...(await checkMonolithDeclaration(name, view, files)));
     }
-  }
 
-  const metadataRows = await runDocsMetadataAudit({ repo: opts.repo });
-  for (const row of metadataRows) {
-    for (const issue of row.issues.filter((entry) => entry.severity === "error")) {
-      violations.push({
-        severity: "error",
-        repo: row.repo,
-        path: row.path,
-        rule: `metadata-v2:${issue.code}`,
-        message: issue.field ? `${issue.field}: ${issue.message}` : issue.message,
-      });
+    const metadataRows = await auditDocsMetadataRepository(name, view);
+    for (const row of metadataRows) {
+      for (const issue of row.issues.filter((entry) => entry.severity === "error")) {
+        violations.push({
+          severity: "error",
+          repo: row.repo,
+          path: row.path,
+          rule: `metadata-v2:${issue.code}`,
+          message: issue.field ? `${issue.field}: ${issue.message}` : issue.message,
+        });
+      }
     }
   }
 

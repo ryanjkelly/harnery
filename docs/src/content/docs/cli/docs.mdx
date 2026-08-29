@@ -8,10 +8,10 @@ sidebar:
 ```bash
 harn docs
 harn docs meta <path> [key] [--json]
-harn docs metadata validate [--repo <name>]
-harn docs metadata sync [files...] [--repo <name>] [--check] [--reviewed]
+harn docs metadata validate [--repo <name>] [--cached]
+harn docs metadata sync [files...] [--repo <name>] [--check] [--cached] [--reviewed]
 harn docs new <type> <path> --summary <text> --owner <id> [--status <status>] [--severity <severity>]
-harn docs lint [--fast] [--repo <name>]
+harn docs lint [--fast] [--repo <name>] [--cached]
 harn docs links [--repo <name>] [--no-fragments] [--strict] [--check-escapes] [--fail]
 harn docs sweep [--repo <name>]
 harn docs index [--dry-run] [--repo <name>]
@@ -67,6 +67,8 @@ It advances `updated_at` for semantic metadata or body changes and advances
 `status_changed_at` only when `status` changes. `created_at` is immutable.
 `--reviewed` records a runbook review and sets its next review 180 days later.
 Use `--check` in hooks or CI to reject timestamp drift without writing.
+Add `--cached` when the check must read the staged blobs from Git rather than
+the working tree. Cached synchronization is read-only and requires `--check`.
 
 ## Create a managed document
 
@@ -137,6 +139,10 @@ there is at least one error finding.
 
 - `docs lint` checks directory layout, filenames, and lifecycle status.
   `--fast` skips content checks for pre-commit use.
+- `docs lint --cached` validates the complete Git-index tree. During a
+  path-scoped commit, Git supplies the proposed partial-commit index, so
+  unrelated working-tree edits cannot change the verdict. Repository-wide
+  entry and naming rules still run.
 - `docs sweep` reports stalled plans, cold issues and handoffs, stale topic
   docs, and unverified runbooks.
 - `docs index` rebuilds marker-delimited audit and issue index tables.
