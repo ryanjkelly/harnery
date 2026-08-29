@@ -1147,7 +1147,9 @@ describe("durable work ledger", () => {
     });
     const path = join(root, ".harnery", "work", "truncated", "events.jsonl");
     writeFileSync(path, `${readFileSync(path, "utf8")}{"event":`);
-    expect(() => readWorkItem(root, "truncated")).toThrow(/truncated final line/);
+    expect(() => readWorkItem(root, "truncated")).toThrow(
+      "durable history has a partial record: events.jsonl",
+    );
   });
 
   test("refuses proof from a workflow linked to another work item", async () => {

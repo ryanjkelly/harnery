@@ -2543,15 +2543,17 @@ export function collectStatusPeerHealth(
   root: string,
   myOwner: string,
   nowMs = Date.now(),
+  readRows: (root: string) => StatusPeerHeartbeat[] = readLiveCoordinationRows,
+  freshnessSeconds = freshnessCutoffSecs(),
 ): { livePeers: StatusPeerHeartbeat[]; stale: number } {
   let rows: StatusPeerHeartbeat[] = [];
   try {
-    rows = readLiveCoordinationRows(root);
+    rows = readRows(root);
   } catch {
     // V3 authority failures must not resurrect disposable cache rows.
   }
 
-  const cutoffMs = nowMs - freshnessCutoffSecs() * 1000;
+  const cutoffMs = nowMs - freshnessSeconds * 1000;
   const livePeers: StatusPeerHeartbeat[] = [];
   let stale = 0;
   for (const peer of rows) {
@@ -3772,13 +3774,15 @@ type ActiveHealthHeartbeat = {
 export function collectActiveAgentHealth(
   root: string,
   nowMs = Date.now(),
+  readRows: (root: string) => ActiveHealthHeartbeat[] = readLiveCoordinationRows,
+  freshnessSeconds = freshnessCutoffSecs(),
 ): ActiveAgentHealthSummary {
   const source: ActiveAgentHealthSummary["source"] = "event-ledger-v3";
   let heartbeats: ActiveHealthHeartbeat[] = [];
   try {
     const control = readEventV3ControlState(root);
     if (control.state === "candidate" || control.state === "active") {
-      heartbeats = readLiveCoordinationRows(root);
+      heartbeats = readRows(root);
     }
   } catch {
     // The event-ledger section reports the authority read failure. Do not
@@ -3804,7 +3808,7 @@ export function collectActiveAgentHealth(
     const ageMs = Number.isFinite(lastObservedMs)
       ? nowMs - lastObservedMs
       : Number.POSITIVE_INFINITY;
-    if (ageMs > freshnessCutoffSecs() * 1000) stale += 1;
+    if (ageMs > freshnessSeconds * 1000) stale += 1;
   }
   return {
     source,

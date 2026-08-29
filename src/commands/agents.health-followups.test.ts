@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,8 +12,6 @@ import { repairEventV3ControlPair } from "../core/events/v3/control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../core/events/v3/fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
 import { writeProducerDiagnosticV3 } from "../core/events/v3/producers/intake.ts";
-import { recordHookSignalV3 } from "../core/events/v3/producers/recorder.ts";
-import type { ParsedPayload } from "../core/hooks/adapter/parse.ts";
 import {
   collectActiveAgentHealth,
   collectEventLedgerHealthV3,
@@ -22,27 +20,20 @@ import {
 } from "./agents.ts";
 
 const roots: string[] = [];
+let sharedCandidateRoot = "";
 
-afterEach(() => {
+beforeAll(() => {
+  sharedCandidateRoot = candidateRoot();
+}, 15_000);
+
+afterAll(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("agent health follow-up diagnostics", () => {
   test("uses V3 generations instead of stale heartbeat caches for active health", () => {
-    const root = candidateRoot();
-    expect(
-      recordHookSignalV3({
-        coordRoot: root,
-        mode: "candidate",
-        signal: "session-start",
-        payload: parsed({ session_id: "live-session" }),
-        adapter: "claude-code",
-        instance_id: "inst_live",
-        producer_id: "prd_hook",
-        build_id: "build_fixture",
-        platform: "linux",
-      }).state,
-    ).toBe("recorded");
+    const root = sharedCandidateRoot;
+    const now = Date.parse("2026-08-29T12:00:00.000Z");
     const staleCache = join(root, ".harnery/active/stale-generation.json");
     mkdirSync(dirname(staleCache), { recursive: true });
     writeFileSync(
@@ -60,7 +51,22 @@ describe("agent health follow-up diagnostics", () => {
       }),
     );
 
-    expect(collectActiveAgentHealth(root)).toMatchObject({
+    expect(
+      collectActiveAgentHealth(
+        root,
+        now,
+        () => [
+          {
+            instance_id: "live",
+            platform: "claude-code",
+            kind: "session",
+            schema_version: 3,
+            last_heartbeat: "2026-08-29T12:00:00.000Z",
+          },
+        ],
+        600,
+      ),
+    ).toMatchObject({
       source: "event-ledger-v3",
       total: 1,
       by_schema_version: { v3: 1 },
@@ -69,25 +75,8 @@ describe("agent health follow-up diagnostics", () => {
   });
 
   test("uses V3 generations instead of stale heartbeat caches for status peers", () => {
-    const root = candidateRoot();
-    for (const [sessionId, instanceId, producerId] of [
-      ["self-session", "inst_self", "prd_self"],
-      ["peer-session", "inst_peer", "prd_peer"],
-    ] as const) {
-      expect(
-        recordHookSignalV3({
-          coordRoot: root,
-          mode: "candidate",
-          signal: "session-start",
-          payload: parsed({ session_id: sessionId }),
-          adapter: "claude-code",
-          instance_id: instanceId,
-          producer_id: producerId,
-          build_id: "build_fixture",
-          platform: "linux",
-        }).state,
-      ).toBe("recorded");
-    }
+    const root = sharedCandidateRoot;
+    const now = Date.parse("2026-08-29T12:00:00.000Z");
     const staleCache = join(root, ".harnery/active/stale-generation.json");
     mkdirSync(dirname(staleCache), { recursive: true });
     writeFileSync(
@@ -103,13 +92,22 @@ describe("agent health follow-up diagnostics", () => {
       }),
     );
 
-    const status = collectStatusPeerHealth(root, "self");
+    const status = collectStatusPeerHealth(
+      root,
+      "self",
+      now,
+      () => [
+        { instance_id: "self", last_heartbeat: "2026-08-29T12:00:00.000Z" },
+        { instance_id: "peer", last_heartbeat: "2026-08-29T12:00:00.000Z" },
+      ],
+      600,
+    );
     expect(status.stale).toBe(0);
     expect(status.livePeers.map((peer) => peer.instance_id)).toEqual(["peer"]);
   });
 
   test("reports category recency separately from cumulative diagnostic counts", () => {
-    const root = candidateRoot();
+    const root = sharedCandidateRoot;
     expect(writeProducerDiagnosticV3(root, "command_emit_rejected", {})).toBeDefined();
     const health = collectEventLedgerHealthV3(root);
     if (health.state !== "live") throw new Error("expected live health");
@@ -197,10 +195,6 @@ function candidateRoot(): string {
   writeFileSync(manifestPath, `${canonicalJsonV3(manifest)}\n`, { mode: 0o600 });
   expect(repairEventV3ControlPair(root).state).toBe("candidate");
   return root;
-}
-
-function parsed(values: Partial<ParsedPayload>): ParsedPayload {
-  return { raw: {}, ...values };
 }
 
 function temporaryRoot(): string {

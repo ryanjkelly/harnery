@@ -628,7 +628,7 @@ describe.skipIf(!descriptorPathsAvailable)("verification-gated fast-forward inte
         },
         acceptedUnknowns: ["network_not_attested"],
       }),
-    ).rejects.toThrow(/cannot parse|invalid JSON/);
+    ).rejects.toThrow(/invalid durable history JSON/);
   });
 
   test("rejects a work acceptance superseded after integration planning", async () => {

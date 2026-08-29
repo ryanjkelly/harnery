@@ -884,17 +884,25 @@ describe("agent-hook V3 hard cut", () => {
       });
       expect(released.status).toBe(0);
 
-      const diagnostics = readFileSync(join(root, ".harnery", "debug", "agent-hook.ndjson"), "utf8")
+      const diagnostics = readFileSync(
+        join(root, ".harnery", "logs", "agent-hook-debug", "active.jsonl"),
+        "utf8",
+      )
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as Record<string, unknown>);
       expect(diagnostics.at(-1)).toMatchObject({
-        skipped: "stop-remediation-cap-exhausted",
-        blocked_rule: "stop-hook.rule_2_3",
-        blocked_count: DEFAULT_STOP_REMEDIATION_CAP + 1,
-        session_id: owner,
+        event: "agent_hook.diagnostic",
+        fields: {
+          skipped: "stop-remediation-cap-exhausted",
+          blocked_rule: "stop-hook.rule_2_3",
+          blocked_count: DEFAULT_STOP_REMEDIATION_CAP + 1,
+          session_id: owner,
+        },
       });
-      expect(diagnostics.at(-1)?.remediation_cycle_anchor).toMatch(/^tid_/);
+      expect(
+        (diagnostics.at(-1)?.fields as Record<string, unknown>)?.remediation_cycle_anchor,
+      ).toMatch(/^tid_/);
     } finally {
       clearRemediationCount(owner);
     }
