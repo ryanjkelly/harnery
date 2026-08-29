@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizePolicy } from "../policy/index.ts";
+import { closeProcessLoggers } from "../storage/logger.ts";
 import { acceptWorkItem, createWorkItem, readWorkItem } from "../work/index.ts";
 import {
+  appendGovernorServiceDiagnostic,
   configureGovernorService,
+  governorServiceLogPath,
   readGovernorServiceConfig,
   readGovernorServiceRuntime,
   readGovernorServiceStatus,
@@ -14,8 +17,12 @@ import {
 import { createGovernor, readGovernor } from "./state.ts";
 
 const roots: string[] = [];
+const originalSharedLogs = process.env.HARNERY_SHARED_LOGS;
 
-afterEach(() => {
+afterEach(async () => {
+  await closeProcessLoggers();
+  if (originalSharedLogs === undefined) delete process.env.HARNERY_SHARED_LOGS;
+  else process.env.HARNERY_SHARED_LOGS = originalSharedLogs;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -234,6 +241,7 @@ describe("governor background service", () => {
   });
 
   test("writes heartbeat, audit, and terminal status around a foreground service sweep", async () => {
+    delete process.env.HARNERY_SHARED_LOGS;
     const { root, goalId } = fixture();
     configureGovernorService({
       coordRoot: root,
@@ -252,8 +260,31 @@ describe("governor background service", () => {
       stale: false,
       record: { state: "stopped", sweep_count: 1 },
     });
-    const events = readFileSync(join(root, ".harnery", "governor-service", "events.jsonl"), "utf8");
+    const eventsPath = join(root, ".harnery", "logs", "governor-service", "active.jsonl");
+    expect(governorServiceLogPath(root)).toBe(eventsPath);
+    const events = readFileSync(eventsPath, "utf8");
     expect(events).toContain('"event":"service.started"');
     expect(events).toContain('"event":"service.stopped"');
+    expect(events.endsWith("\n")).toBeTrue();
+    expect(existsSync(join(root, ".harnery", "governor-service", "events.jsonl"))).toBeFalse();
+    expect(existsSync(join(root, ".harnery", "governor-service", "service.log"))).toBeFalse();
+  });
+
+  test("uses the legacy event stream only when shared logging is rolled back", async () => {
+    process.env.HARNERY_SHARED_LOGS = "0";
+    const { root } = fixture();
+    expect(appendGovernorServiceDiagnostic(root, { event: "service.started", goals: 1 })).toBe(
+      "legacy",
+    );
+    await closeProcessLoggers();
+    expect(
+      readFileSync(join(root, ".harnery", "governor-service", "events.jsonl"), "utf8"),
+    ).toContain('"event":"service.started"');
+    expect(governorServiceLogPath(root)).toBe(
+      join(root, ".harnery", "governor-service", "service.log"),
+    );
+    expect(
+      existsSync(join(root, ".harnery", "logs", "governor-service", "active.jsonl")),
+    ).toBeFalse();
   });
 });

@@ -110,6 +110,15 @@ describe("source-owned storage descriptors", () => {
     );
   });
 
+  test("activates only the cut-over service writers without activating retention", () => {
+    for (const familyId of ["semantic-service-log", "governor-service-log", "presence-relay-log"]) {
+      const family = catalog.require(familyId);
+      expect(family.policy.writes, familyId).toBe("active");
+      expect(family.policy.retention.status, familyId).toBe("proposed");
+      expect(family.provider.maintenance, familyId).toBe("storage");
+    }
+  });
+
   test("registers the inbox and metrics sidecar with their private owner contracts", () => {
     const inbox = catalog.require("coord-message-inbox");
     expect(inbox.durability).toBe("crash-safe");

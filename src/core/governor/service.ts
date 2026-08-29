@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
-  appendFileSync,
   chmodSync,
   closeSync,
   existsSync,
@@ -16,7 +15,10 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { coordEnv } from "../../lib/env.ts";
 import { type NormalizedPolicy, normalizePolicy, type PolicyIsolation } from "../policy/index.ts";
+import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+import { RotatingTextSink } from "../storage/process-log.ts";
 import type { RunWorkItemInput } from "../work/index.ts";
 import { type GovernorRunReport, type GovernorStopReason, runGovernor } from "./runner.ts";
 import { type GovernorRecord, readGovernor } from "./state.ts";
@@ -260,18 +262,19 @@ export async function spawnGovernorService(coordRootRaw: string): Promise<Govern
     throw new Error(`governor service is already running under pid ${current.record?.pid}`);
   }
   mkdirSync(serviceDir(coordRoot), { recursive: true, mode: 0o700 });
-  const logFd = openSync(serviceLogPath(coordRoot), "a", 0o600);
-  chmodSync(serviceLogPath(coordRoot), 0o600);
+  const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
+  const logFd = sharedLogs ? undefined : openSync(serviceLogPath(coordRoot), "a", 0o600);
+  if (logFd !== undefined) chmodSync(serviceLogPath(coordRoot), 0o600);
   const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
   if (!existsSync(harnBin)) {
-    closeSync(logFd);
+    if (logFd !== undefined) closeSync(logFd);
     throw new Error(`cannot find harn executable at ${harnBin}`);
   }
   let spawnError: Error | undefined;
   const child = spawn(harnBin, ["governor", "service", "daemon"], {
     cwd: coordRoot,
     detached: true,
-    stdio: ["ignore", logFd, logFd],
+    stdio: logFd === undefined ? ["ignore", "ignore", "ignore"] : ["ignore", logFd, logFd],
     env: {
       ...process.env,
       HARNERY_COORD_ROOT_OVERRIDE: coordRoot,
@@ -281,7 +284,7 @@ export async function spawnGovernorService(coordRootRaw: string): Promise<Govern
   child.once("error", (error) => {
     spawnError = error;
   });
-  closeSync(logFd);
+  if (logFd !== undefined) closeSync(logFd);
   child.unref();
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -291,7 +294,7 @@ export async function spawnGovernorService(coordRootRaw: string): Promise<Govern
     if (status.running && status.record?.pid === child.pid) return status;
     if (child.exitCode !== null) break;
   }
-  throw new Error(`governor service failed to start; inspect ${serviceLogPath(coordRoot)}`);
+  throw new Error(`governor service failed to start; inspect ${governorServiceLogPath(coordRoot)}`);
 }
 
 export function requestGovernorServiceStop(coordRootRaw: string): GovernorServiceStatus {
@@ -396,7 +399,7 @@ export async function runGovernorServiceSweep(
         stop_reason: report.stop_reason,
         next_wake_at: runtime.goals[goalId]?.next_wake_at,
       });
-      appendServiceEvent(coordRoot, {
+      appendGovernorServiceDiagnostic(coordRoot, {
         event: "goal.tick",
         goal_id: goalId,
         stop_reason: report.stop_reason,
@@ -437,7 +440,7 @@ export async function runGovernorServiceSweep(
         reason: message,
         next_wake_at: nextWakeAt,
       });
-      appendServiceEvent(coordRoot, {
+      appendGovernorServiceDiagnostic(coordRoot, {
         event: "goal.error",
         goal_id: goalId,
         error: message,
@@ -486,7 +489,7 @@ export async function runGovernorServiceDaemon(
   process.on("SIGTERM", requestStop);
   status.state = "running";
   writeStatus();
-  appendServiceEvent(coordRoot, {
+  appendGovernorServiceDiagnostic(coordRoot, {
     event: "service.started",
     pid: process.pid,
     goals: config.goal_ids,
@@ -528,7 +531,7 @@ export async function runGovernorServiceDaemon(
         status.last_error = boundedError((error as Error).message);
         status.next_wake_at = new Date(Date.now() + config.error_backoff_max_ms).toISOString();
         writeStatus();
-        appendServiceEvent(coordRoot, {
+        appendGovernorServiceDiagnostic(coordRoot, {
           event: "service.sweep_error",
           error: status.last_error,
         });
@@ -550,19 +553,26 @@ export async function runGovernorServiceDaemon(
     status.active_goal_id = undefined;
     status.stopped_at = new Date().toISOString();
     writeStatus();
-    appendServiceEvent(coordRoot, {
+    appendGovernorServiceDiagnostic(coordRoot, {
       event: "service.stopped",
       pid: process.pid,
       sweeps: status.sweep_count,
     });
     rmSync(serviceStopPath(coordRoot), { force: true });
-    release();
+    try {
+      await closeProcessLoggers();
+    } finally {
+      release();
+    }
   }
   return status;
 }
 
 export function governorServiceLogPath(coordRoot: string): string {
-  return serviceLogPath(resolve(coordRoot));
+  const root = resolve(coordRoot);
+  return coordEnv("SHARED_LOGS") === "0"
+    ? serviceLogPath(root)
+    : join(root, ".harnery", "logs", "governor-service", "active.jsonl");
 }
 
 function runtimeForConfig(
@@ -804,15 +814,32 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-function appendServiceEvent(coordRoot: string, data: Record<string, unknown>): void {
+export function appendGovernorServiceDiagnostic(
+  coordRoot: string,
+  data: Record<string, unknown>,
+): "shared" | "legacy" {
+  if (coordEnv("SHARED_LOGS") !== "0") {
+    try {
+      const event = typeof data.event === "string" ? data.event : "service.event";
+      const fields = { ...data };
+      delete fields.event;
+      const logger = processLogger(coordRoot, "governor-service");
+      if (event.includes("error")) logger.error(event, legacyLogFields(fields));
+      else logger.info(event, legacyLogFields(fields));
+      return "shared";
+    } catch {
+      // Bootstrap failures retain the legacy service event stream as the fallback.
+    }
+  }
+  appendGovernorServiceLegacyEvent(coordRoot, data);
+  return "legacy";
+}
+
+function appendGovernorServiceLegacyEvent(coordRoot: string, data: Record<string, unknown>): void {
   const path = serviceEventsPath(coordRoot);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  appendFileSync(
-    path,
-    `${JSON.stringify({ schema_version: 1, ts: new Date().toISOString(), ...data })}\n`,
-    { encoding: "utf8", mode: 0o600 },
-  );
-  chmodSync(path, 0o600);
+  const sink = new RotatingTextSink({ path, max_bytes: MAX_FILE_BYTES });
+  sink.append(`${JSON.stringify({ schema_version: 1, ts: new Date().toISOString(), ...data })}\n`);
+  sink.close();
 }
 
 function renderSweepLog(report: GovernorServiceSweepReport): string | undefined {

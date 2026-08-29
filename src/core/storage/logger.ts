@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { resolve } from "node:path";
 import { BoundedLogBuffer } from "./buffer.ts";
 import { createStorageCatalog, type HarneryStorageCatalog } from "./catalog.ts";
 import type {
@@ -233,7 +234,7 @@ class LoggerRuntime implements HarneryLoggerRuntime {
       pipeline.buffer.enqueue({
         value: { record, encoded },
         bytes: encoded.byteLength,
-        high_priority: level === "error" || level === "fatal",
+        high_priority: level === "warn" || level === "error" || level === "fatal",
       });
     } catch {
       pipeline.metrics.failure("encoding");
@@ -446,19 +447,31 @@ export function legacyLogFields(value: Record<string, unknown>): HarneryLogField
 }
 
 const PROCESS_RUNTIMES = new Map<string, HarneryLoggerRuntime>();
+
+const PROCESS_LOGGER_BINDINGS = {
+  "agent-hook": "agent-hook-debug-log",
+  "agent-coord": "agent-coord-debug-log",
+  "semantic-service": "semantic-service-log",
+  "governor-service": "governor-service-log",
+  "presence-relay": "presence-relay-log",
+} as const;
+
+export type HarneryProcessLoggerComponent = keyof typeof PROCESS_LOGGER_BINDINGS;
+
 export function processLogger(
   coordRoot: string,
-  componentId: "agent-hook" | "agent-coord",
+  componentId: HarneryProcessLoggerComponent,
 ): HarneryLogger {
-  let runtime = PROCESS_RUNTIMES.get(coordRoot);
+  const root = resolve(coordRoot);
+  let runtime = PROCESS_RUNTIMES.get(root);
   if (!runtime) {
-    const bindings = [
-      { component_id: "agent-hook", family_id: "agent-hook-debug-log" },
-      { component_id: "agent-coord", family_id: "agent-coord-debug-log" },
-    ] as const;
-    const catalog = createStorageCatalog({ coord_root: coordRoot }, { logger_bindings: bindings });
+    const bindings = Object.entries(PROCESS_LOGGER_BINDINGS).map(([component_id, family_id]) => ({
+      component_id,
+      family_id,
+    }));
+    const catalog = createStorageCatalog({ coord_root: root }, { logger_bindings: bindings });
     runtime = createFileLoggerRuntime({ catalog, bindings, strict_levels: false });
-    PROCESS_RUNTIMES.set(coordRoot, runtime);
+    PROCESS_RUNTIMES.set(root, runtime);
   }
   return runtime.logger(componentId);
 }

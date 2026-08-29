@@ -24,6 +24,7 @@
 
 import { spawn } from "node:child_process";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -34,9 +35,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { coordEnv } from "../../lib/env.ts";
 import { resolveMachineLabel } from "../../lib/machine.ts";
 import { presenceRelayUrl } from "../config.ts";
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
+import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+import { RotatingTextSink } from "../storage/process-log.ts";
 import { buildPresenceBlob, type PresenceBlob } from "./blob.ts";
 import { originUrl, rootCommitSha, sanitizeRefComponent } from "./git.ts";
 import {
@@ -127,13 +131,15 @@ export function ensureRelayDaemon(coordRoot: string): void {
     if (!existsSync(harnBin)) return;
 
     mkdirSync(presenceDir(coordRoot), { recursive: true });
-    const log = openSync(logFilePath(coordRoot), "a");
+    const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
+    const log = sharedLogs ? undefined : openSync(logFilePath(coordRoot), "a");
     const child = spawn(harnBin, ["presence", "relay-daemon"], {
       cwd: coordRoot,
       detached: true,
-      stdio: ["ignore", log, log],
+      stdio: log === undefined ? ["ignore", "ignore", "ignore"] : ["ignore", log, log],
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
     });
+    if (log !== undefined) closeSync(log);
     child.unref();
   } catch {
     /* best-effort */
@@ -144,17 +150,32 @@ export function ensureRelayDaemon(coordRoot: string): void {
 export async function runRelayDaemon(coordRoot: string): Promise<number> {
   const url = presenceRelayUrl(coordRoot);
   if (!url) {
-    console.error("relay-daemon: no relay configured (presence.relay)");
+    const message = "relay-daemon: no relay configured (presence.relay)";
+    console.error(message);
+    if (coordEnv("SHARED_LOGS") !== "0") {
+      appendPresenceRelayDiagnostic(coordRoot, "relay.configuration_error", { message });
+    }
+    await closeProcessLoggers();
     return 2;
   }
   if (typeof WebSocket === "undefined") {
-    console.error("relay-daemon: no global WebSocket in this runtime (need Bun or Node >= 21)");
+    const message = "relay-daemon: no global WebSocket in this runtime (need Bun or Node >= 21)";
+    console.error(message);
+    if (coordEnv("SHARED_LOGS") !== "0") {
+      appendPresenceRelayDiagnostic(coordRoot, "relay.runtime_error", { message });
+    }
+    await closeProcessLoggers();
     return 2;
   }
   const sha = rootCommitSha(coordRoot);
   const origin = originUrl(coordRoot);
   if (!sha || !origin) {
-    console.error("relay-daemon: repo has no commits or no origin remote");
+    const message = "relay-daemon: repo has no commits or no origin remote";
+    console.error(message);
+    if (coordEnv("SHARED_LOGS") !== "0") {
+      appendPresenceRelayDiagnostic(coordRoot, "relay.repository_error", { message });
+    }
+    await closeProcessLoggers();
     return 2;
   }
 
@@ -184,6 +205,9 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
 
   const log = (msg: string) => {
     console.log(`[${new Date().toISOString()}] ${msg}`);
+    if (coordEnv("SHARED_LOGS") !== "0") {
+      appendPresenceRelayDiagnostic(coordRoot, "relay.lifecycle", { message: msg });
+    }
   };
 
   const publishNow = async (force = false): Promise<void> => {
@@ -286,7 +310,8 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
       } catch {
         /* ignore */
       }
-      process.exit(0);
+      void closeProcessLoggers().finally(() => process.exit(0));
+      return;
     }
     // Idle machine (no live sessions for a while) → exit; hooks restart us.
     if (idleSince && Date.now() - idleSince > IDLE_EXIT_MS) {
@@ -299,12 +324,35 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
       } catch {
         /* ignore */
       }
-      process.exit(0);
+      void closeProcessLoggers().finally(() => process.exit(0));
     }
   }, KEEPALIVE_MS);
 
   // Never resolves in normal operation; exits happen above.
   return await new Promise<number>(() => {});
+}
+
+export function appendPresenceRelayDiagnostic(
+  coordRoot: string,
+  event: string,
+  fields: Record<string, unknown> = {},
+): "shared" | "legacy" {
+  if (coordEnv("SHARED_LOGS") !== "0") {
+    try {
+      const logger = processLogger(coordRoot, "presence-relay");
+      if (event.includes("error")) logger.error(event, legacyLogFields(fields));
+      else logger.info(event, legacyLogFields(fields));
+      return "shared";
+    } catch {
+      // Bootstrap failures retain a bounded text file for process diagnostics.
+    }
+  }
+  const sink = new RotatingTextSink({ path: logFilePath(coordRoot), max_bytes: 512 * 1_024 });
+  sink.append(
+    `${JSON.stringify({ schema_version: 1, ts: new Date().toISOString(), event, ...fields })}\n`,
+  );
+  sink.close();
+  return "legacy";
 }
 
 /** Daemon status for `presence peers`/doctor surfaces. */

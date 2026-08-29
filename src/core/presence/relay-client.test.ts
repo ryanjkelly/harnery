@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRelayServer } from "../../commands/relay.ts";
+import { closeProcessLoggers } from "../storage/logger.ts";
 import { readRemoteMachines } from "./index.ts";
-import { relayDaemonStatus } from "./relay-client.ts";
+import { appendPresenceRelayDiagnostic, relayDaemonStatus } from "./relay-client.ts";
 import { computeSenderId, deriveRoomCredentials, encryptPayload } from "./relay-protocol.ts";
 
 /**
@@ -30,11 +31,13 @@ beforeEach(() => {
   mkdirSync(join(root, ".harnery"), { recursive: true });
   savedEnv.HARNERY_MACHINE = process.env.HARNERY_MACHINE;
   savedEnv.HARNERY_PRESENCE = process.env.HARNERY_PRESENCE;
+  savedEnv.HARNERY_SHARED_LOGS = process.env.HARNERY_SHARED_LOGS;
   process.env.HARNERY_PRESENCE = "1";
   process.env.HARNERY_MACHINE = "machine-local";
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await closeProcessLoggers();
   for (const [k, v] of Object.entries(savedEnv)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -179,5 +182,31 @@ describe("relayDaemonStatus", () => {
       JSON.stringify({ pid: 999999, url: "ws://x", started_at: new Date().toISOString() }),
     );
     expect(relayDaemonStatus(root).running).toBe(false);
+  });
+
+  test("writes one shared diagnostic path by default and one legacy path on rollback", async () => {
+    delete process.env.HARNERY_SHARED_LOGS;
+    expect(appendPresenceRelayDiagnostic(root, "relay.lifecycle", { message: "connected" })).toBe(
+      "shared",
+    );
+    await closeProcessLoggers();
+    const sharedPath = join(root, ".harnery", "logs", "presence-relay", "active.jsonl");
+    const sharedLog = readFileSync(sharedPath, "utf8");
+    expect(sharedLog).toContain('"event":"relay.lifecycle"');
+    expect(sharedLog.endsWith("\n")).toBeTrue();
+    expect(existsSync(join(root, ".harnery", "presence", "relay-daemon.log"))).toBeFalse();
+
+    const rollbackRoot = join(base, "rollback-repo");
+    mkdirSync(rollbackRoot, { recursive: true });
+    process.env.HARNERY_SHARED_LOGS = "0";
+    expect(
+      appendPresenceRelayDiagnostic(rollbackRoot, "relay.lifecycle", { message: "connected" }),
+    ).toBe("legacy");
+    expect(
+      readFileSync(join(rollbackRoot, ".harnery", "presence", "relay-daemon.log"), "utf8"),
+    ).toContain('"event":"relay.lifecycle"');
+    expect(
+      existsSync(join(rollbackRoot, ".harnery", "logs", "presence-relay", "active.jsonl")),
+    ).toBeFalse();
   });
 });

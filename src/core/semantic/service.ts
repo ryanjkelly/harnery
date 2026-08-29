@@ -16,13 +16,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { coordEnv } from "../../lib/env.ts";
 import {
   type ReadLedgerV3SinceResult,
   readEventV3ControlState,
   readLedgerV3Since,
 } from "../events/v3/index.ts";
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
+import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import type { SemanticHarness } from "./contract.ts";
 import { runSemanticOnce, type SemanticOnceReport } from "./once.ts";
 import { semanticPendingPassDue } from "./scheduler.ts";
@@ -119,11 +121,12 @@ export async function spawnSemanticService(
   }
   const paths = semanticPaths(coordRoot);
   mkdirSync(paths.root, { recursive: true, mode: 0o700 });
-  const logFd = openSync(paths.log, "a", 0o600);
-  chmodSync(paths.log, 0o600);
+  const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
+  const logFd = sharedLogs ? undefined : openSync(paths.log, "a", 0o600);
+  if (logFd !== undefined) chmodSync(paths.log, 0o600);
   const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
   if (!existsSync(harnBin)) {
-    closeSync(logFd);
+    if (logFd !== undefined) closeSync(logFd);
     throw new Error(`cannot find harn executable at ${harnBin}`);
   }
   const args = ["semantic", "service", "daemon", "--root", coordRoot];
@@ -134,7 +137,7 @@ export async function spawnSemanticService(
   const child = spawn(harnBin, args, {
     cwd: coordRoot,
     detached: true,
-    stdio: ["ignore", logFd, logFd],
+    stdio: logFd === undefined ? ["ignore", "ignore", "ignore"] : ["ignore", logFd, logFd],
     env: {
       ...process.env,
       HARNERY_COORD_ROOT_OVERRIDE: coordRoot,
@@ -144,7 +147,7 @@ export async function spawnSemanticService(
   child.once("error", (error) => {
     spawnError = error;
   });
-  closeSync(logFd);
+  if (logFd !== undefined) closeSync(logFd);
   child.unref();
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -154,7 +157,10 @@ export async function spawnSemanticService(
     if (status.running && status.record?.pid === child.pid) return status;
     if (child.exitCode !== null) break;
   }
-  throw new Error(`semantic service failed to start; inspect ${paths.log}`);
+  const diagnosticPath = sharedLogs
+    ? join(coordRoot, ".harnery", "logs", "semantic-service", "active.jsonl")
+    : paths.log;
+  throw new Error(`semantic service failed to start; inspect ${diagnosticPath}`);
 }
 
 /**
@@ -269,7 +275,7 @@ export async function runSemanticServiceDaemon(
   process.on("SIGTERM", requestStop);
   status.state = "running";
   writeStatus();
-  appendSemanticServiceLog(coordRoot, { event: "service_started" });
+  appendSemanticServiceDiagnostic(coordRoot, { event: "service_started" });
   const heartbeat = setInterval(() => {
     try {
       writeStatus();
@@ -348,7 +354,7 @@ export async function runSemanticServiceDaemon(
             semantic_readings: semanticSoakReadings(coordRoot, report.outcomes),
           };
           if (report.model_calls > 0 || report.cache_hits > 0 || logEntry.unavailable > 0) {
-            appendSemanticServiceLog(coordRoot, logEntry);
+            appendSemanticServiceDiagnostic(coordRoot, logEntry);
           }
         }
       } catch (error) {
@@ -357,7 +363,7 @@ export async function runSemanticServiceDaemon(
           status.last_error_code !== lastLoggedErrorCode ||
           sweepAt.getTime() - lastLoggedErrorAt >= REPEATED_ERROR_LOG_INTERVAL_MS
         ) {
-          appendSemanticServiceLog(coordRoot, {
+          appendSemanticServiceDiagnostic(coordRoot, {
             event: "sweep_error",
             reason_code: status.last_error_code,
           });
@@ -380,14 +386,18 @@ export async function runSemanticServiceDaemon(
     status.state = "stopped";
     status.stopped_at = now().toISOString();
     writeStatus();
-    appendSemanticServiceLog(coordRoot, {
+    appendSemanticServiceDiagnostic(coordRoot, {
       event: "service_stopped",
       sweeps: status.sweep_count,
       passes: status.pass_count,
       model_calls: status.model_calls,
       usage: status.process_usage,
     });
-    release();
+    try {
+      await closeProcessLoggers();
+    } finally {
+      release();
+    }
   }
   return status;
 }
@@ -557,7 +567,28 @@ async function waitForLedgerWake(path: string, milliseconds: number): Promise<vo
   });
 }
 
-function appendSemanticServiceLog(coordRoot: string, entry: Record<string, unknown>): void {
+export function appendSemanticServiceDiagnostic(
+  coordRoot: string,
+  entry: Record<string, unknown>,
+): "shared" | "legacy" {
+  if (coordEnv("SHARED_LOGS") !== "0") {
+    try {
+      const event = typeof entry.event === "string" ? entry.event : "service_event";
+      const fields = { ...entry };
+      delete fields.event;
+      const logger = processLogger(coordRoot, "semantic-service");
+      if (event.includes("error")) logger.error(event, legacyLogFields(fields));
+      else logger.info(event, legacyLogFields(fields));
+      return "shared";
+    } catch {
+      // Bootstrap failures retain the bounded legacy writer as the process fallback.
+    }
+  }
+  appendSemanticServiceLegacyLog(coordRoot, entry);
+  return "legacy";
+}
+
+function appendSemanticServiceLegacyLog(coordRoot: string, entry: Record<string, unknown>): void {
   const path = semanticPaths(coordRoot).log;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   appendFileSync(

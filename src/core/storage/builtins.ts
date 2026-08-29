@@ -282,7 +282,6 @@ function logFamilies(): HarneryStorageFamily[] {
         "semantic-service",
         30,
         128 * MIB,
-        true,
       ),
       (context) => [exact(context, ".harnery/semantic/v2/service.log", "file")],
     ),
@@ -293,7 +292,6 @@ function logFamilies(): HarneryStorageFamily[] {
         "governor-service",
         30,
         128 * MIB,
-        true,
       ),
       (context) => [
         exact(context, ".harnery/governor-service/service.log", "file"),
@@ -301,14 +299,7 @@ function logFamilies(): HarneryStorageFamily[] {
       ],
     ),
     withCurrentRoots(
-      operationalFamily(
-        "presence-relay-log",
-        "presence relay",
-        "presence-relay",
-        14,
-        64 * MIB,
-        true,
-      ),
+      operationalFamily("presence-relay-log", "presence relay", "presence-relay", 14, 64 * MIB),
       (context) => [exact(context, ".harnery/presence/relay-daemon.log", "file")],
     ),
     withCurrentRoots(
