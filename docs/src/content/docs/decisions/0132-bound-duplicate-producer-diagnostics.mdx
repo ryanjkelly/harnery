@@ -1,0 +1,107 @@
+---
+title: "ADR 0132: bound duplicate producer diagnostics"
+description: Bound repeated V3 producer-diagnostic files while preserving the logical count and evidence for each UTC day.
+sidebar:
+  order: 132
+---
+
+**Date:** 2026-08-29
+**Status:** Accepted
+
+## Context
+
+The V3 diagnostics spool preserves every signal that could not become a
+ledger event. One owner-only JSON file per emission is useful for rare faults,
+but a producer defect can emit the same diagnostic thousands of times in one
+day. One live fault produced more than 19,000 identical
+`command_emit_unjoinable` files. The spool has no cleanup or compaction path,
+so every repetition became a permanent inode.
+
+The diagnostic readers need both the physical files and the logical rate. The
+`doctor` command reads recent `mid_flight_onboarding` records for a 48-hour
+warning. `agents health` reports category counts and recent pressure. A bound
+must reduce file creation without making an active fault look healthy or
+discarding the evidence needed to understand it.
+
+## Alternatives considered
+
+- Delete or age out old diagnostic files. An accepted diagnostic may not
+  disappear silently, and deletion does not stop the creation rate.
+- Drop duplicate emissions after a threshold. Losing the count and time range
+  makes an active fault look healthy and destroys evidence needed for
+  attribution.
+- Rate-limit inside the emitting process only. Hook processes are short-lived,
+  so a per-process limit resets constantly and bounds nothing.
+- Append duplicates to one shared summary log without a lease. Concurrent
+  producers could interleave partial writes, which would make the result
+  unreliable.
+
+## Decision
+
+The gate identifies a diagnostic by its sanitized category, reason, and
+instance, then applies a UTC-day window.
+
+While a key is below the 32-exemplar bound, the gate admits the loose write and
+creates no mitigation state. The writer appends the first 16 hexadecimal
+characters of the key's SHA-256 digest to the loose filename before `.json`.
+The next gate call counts matching digest-suffixed filenames in the loose
+diagnostics directory and reads the timestamp from each filename's order key.
+Files written before this mitigation have no suffix and are not counted. A
+healthy key therefore gets no summary file, lease directory, or summaries
+subtree.
+
+At or above the bound, the gate coalesces the emission into one deterministic
+summary for the key and UTC day. A short per-key lease serializes the
+read-update-publish operation. The summary stores the number of loose
+exemplars observed when coalescing began, the summarized count, first and last
+times, represented bytes, up to four content fingerprints, bounded scalar
+metadata, and hourly rate buckets. One summary covers one UTC day and has at
+most 24 hourly buckets. A consumer window wider than one day reads summaries
+from multiple UTC-day files. The summary is published through an owner-only
+temporary file and atomic rename. Creation is durable, and later updates are
+periodically made durable.
+
+When a diagnostic is coalesced, `writeProducerDiagnosticV3` returns the
+summary path. A loose write returns its loose path. Both outcomes therefore
+identify a durable record, while a true write failure remains undefined.
+
+The filename count is intentionally lock-free. Concurrent writers can each
+observe the bound before the other writer's file appears, so a small number of
+extra loose exemplars may cross the threshold. This is an approximate flood
+stop, not an exact quota.
+
+The gate fails open. If counting, lease acquisition, summary reading, or
+publication fails, the emission is admitted as a loose diagnostic. The gate
+then makes a best-effort O_APPEND write of one JSON line to the size-capped,
+append-only `mitigation-health.ndjson` file. This health log is nonrecursive,
+so a failure in the mitigation never produces another diagnostic or blocks the
+producer path. Readers aggregate the log into fail-open totals, stages, the
+last observed time, and whether the cap was reached. The health log is a
+signal, not exact accounting, and can undercount when storage is unavailable.
+
+`agents health` reports logical occurrences from loose files plus summarized
+occurrences, while showing physical loose and summary file counts separately.
+Its recent windows use the summary hour buckets. A bucket is included only
+when its entire hour falls within the requested window, so a boundary bucket
+is conservatively excluded. `doctor` adds summarized occurrences to its
+Codex mid-flight warning. The kill switch
+`HARNERY_V3_DIAGNOSTIC_SUMMARIES=0` disables the gate and leaves the original
+loose-write behavior in place.
+
+Existing loose files are never moved, rewritten, deleted, or reclassified.
+Loose-file readers continue to skip the sibling summaries subtree. Summary
+content stores byte counts and fingerprints rather than raw diagnostic bodies.
+
+## Result
+
+Repeated identical diagnostics now keep their category, reason, exact logical
+count, time range, bounded examples, and approved metadata while physical file
+growth is bounded per key and UTC day. Below the bound, ordinary traffic adds
+no mitigation state. At the bound, per-key serialization protects summary
+updates, and the writer exposes the summary path to callers. Fail-open writes
+preserve the original diagnostic and leave an append-only health signal.
+
+Registration of this storage family in the ADR 0129 storage catalog and
+registration in the ADR 0131 support-pack protocol are follow-up work. Those
+registrations land when ADR 0129 and ADR 0131 are implemented. This change does
+not claim either registration or support-pack compliance yet.

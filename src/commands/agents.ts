@@ -82,6 +82,10 @@ import { readEventV3ControlState } from "../core/events/v3/control.ts";
 import { projectCoordinationViewV3 } from "../core/events/v3/coordination-view.ts";
 import { liveInstanceIdV3 } from "../core/events/v3/live-routing.ts";
 import {
+  countSummarizedSinceV3,
+  listDiagnosticSummariesV3,
+} from "../core/events/v3/producers/diagnostic-summaries.ts";
+import {
   listHookIntakeGroupsV3,
   listHookIntakeRecordsV3,
 } from "../core/events/v3/producers/intake.ts";
@@ -3045,12 +3049,21 @@ export type EventLedgerHealthV3 =
         groups: Array<{ adapter: string; session_hash: string; count: number }>;
       };
       diagnostics_spool: {
+        /** Logical occurrences: loose files plus coalesced summary counts. */
         total: number;
+        /** Physical loose diagnostic files. */
+        loose_total: number;
+        /** Occurrences coalesced into summaries instead of loose files. */
+        summarized_total: number;
+        /** Physical summary files in `diagnostic-summaries/`. */
+        summary_files: number;
         last_24h: number;
         last_1h: number;
         latest_at: string | null;
         by_category: Record<string, { total: number; last_24h: number }>;
         recent_by_category: Record<string, { last_1h: number; latest_at: string | null }>;
+        /** Times the summary gate failed open (loose write proceeded). */
+        mitigation_fail_open: number;
       };
       span_pressure: Array<{ instance_id: string; generation_id: string; span_count: number }>;
       collection_errors: string[];
@@ -3190,6 +3203,47 @@ export function collectEventLedgerHealthV3(root: string, nowMs = Date.now()): Ev
     collectionErrors.push(`diagnostics spool unreadable: ${errorText(error)}`);
   }
 
+  // 4b) Coalesced diagnostic summaries: occurrences the producer bounded into
+  // `diagnostic-summaries/` instead of loose files. Counted into the logical
+  // totals so mitigation can never make an active fault look healthy; the
+  // physical loose file count stays visible separately.
+  let summarizedTotal = 0;
+  let summaryFiles = 0;
+  let mitigationFailOpen = 0;
+  try {
+    const listing = listDiagnosticSummariesV3(root);
+    summaryFiles = listing.file_count;
+    mitigationFailOpen = listing.mitigation_health?.fail_open_count ?? 0;
+    if (listing.unreadable_count > 0) {
+      collectionErrors.push(`${listing.unreadable_count} diagnostic summary file(s) unreadable`);
+    }
+    const dayAgoMs = nowMs - 24 * 60 * 60 * 1000;
+    const hourAgoMs = nowMs - 60 * 60 * 1000;
+    for (const summary of listing.summaries) {
+      summarizedTotal += summary.summarized_count;
+      const entry = byCategory[summary.category] ?? { total: 0, last_24h: 0 };
+      const recent = recentByCategory[summary.category] ?? { last_1h: 0, latest_at: null };
+      byCategory[summary.category] = entry;
+      recentByCategory[summary.category] = recent;
+      entry.total += summary.summarized_count;
+      const day = countSummarizedSinceV3([summary], dayAgoMs, undefined, nowMs);
+      const hour = countSummarizedSinceV3([summary], hourAgoMs, undefined, nowMs);
+      entry.last_24h += day;
+      diagnostics24h += day;
+      recent.last_1h += hour;
+      diagnostics1h += hour;
+      const lastMs = summary.last_summarized_at ? Date.parse(summary.last_summarized_at) : NaN;
+      if (Number.isFinite(lastMs)) {
+        latestDiagnosticMs = Math.max(latestDiagnosticMs, lastMs);
+        if (!recent.latest_at || lastMs > Date.parse(recent.latest_at)) {
+          recent.latest_at = new Date(lastMs).toISOString();
+        }
+      }
+    }
+  } catch (error) {
+    collectionErrors.push(`diagnostic summaries unreadable: ${errorText(error)}`);
+  }
+
   return {
     state: "live",
     mode: control.state,
@@ -3200,7 +3254,10 @@ export function collectEventLedgerHealthV3(root: string, nowMs = Date.now()): Ev
     pending_finalizations: pending,
     intake_spool: { total: intakeTotal, groups: intakeGroups },
     diagnostics_spool: {
-      total: diagnosticsTotal,
+      total: diagnosticsTotal + summarizedTotal,
+      loose_total: diagnosticsTotal,
+      summarized_total: summarizedTotal,
+      summary_files: summaryFiles,
       last_24h: diagnostics24h,
       last_1h: diagnostics1h,
       latest_at: Number.isFinite(latestDiagnosticMs)
@@ -3208,6 +3265,7 @@ export function collectEventLedgerHealthV3(root: string, nowMs = Date.now()): Ev
         : null,
       by_category: byCategory,
       recent_by_category: recentByCategory,
+      mitigation_fail_open: mitigationFailOpen,
     },
     span_pressure: spanPressure,
     collection_errors: collectionErrors,
@@ -4091,7 +4149,7 @@ function renderHealthBox(report: HealthReport): void {
       `open spans ${ledger.open_spans.total}${orphanGenerations > 0 ? ` (${orphanGenerations} gen turn-closed)` : ""}`,
       `pending ends ${ledger.pending_finalizations.length}${pendingAges ? ` (${pendingAges})` : ""}`,
       `intake ${ledger.intake_spool.total}`,
-      `diagnostics ${ledger.diagnostics_spool.total} (${ledger.diagnostics_spool.last_1h} in 1h / ${ledger.diagnostics_spool.last_24h} in 24h)`,
+      `diagnostics ${ledger.diagnostics_spool.total}${ledger.diagnostics_spool.summarized_total > 0 ? ` (${ledger.diagnostics_spool.loose_total} loose + ${ledger.diagnostics_spool.summarized_total} summarized)` : ""} (${ledger.diagnostics_spool.last_1h} in 1h / ${ledger.diagnostics_spool.last_24h} in 24h)`,
     ].join(" · ");
   }
 

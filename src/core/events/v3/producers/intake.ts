@@ -18,6 +18,10 @@ import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import type { EventV3WriteMode } from "../control.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../writer.ts";
+import {
+  type DiagnosticContentFingerprint,
+  gateProducerDiagnosticV3,
+} from "./diagnostic-summaries.ts";
 import type { HookSignalV3 } from "./hook.ts";
 import type { TurnRitualEvidenceV3 } from "./hook-base.ts";
 
@@ -292,6 +296,13 @@ function validTurnRitual(value: TurnRitualEvidenceV3 | undefined): boolean {
  * are reduced to byte counts and digests so the diagnostics spool never holds
  * prompt, tool input, or tool output bodies (invariant: delivered evidence is
  * never silently destroyed, and never re-exposed either).
+ *
+ * Identical emissions are bounded per (category, reason, instance) key and
+ * UTC day: past the loose-exemplar limit the emission is coalesced into the
+ * key's summary file. Returns the path of the durable record either way (the
+ * loose file when admitted, the summary file when coalesced); `undefined`
+ * means nothing durable was written. The gate is fail-open, so a mitigation
+ * failure still produces the loose file.
  */
 export function writeProducerDiagnosticV3(
   coordRoot: string,
@@ -300,13 +311,26 @@ export function writeProducerDiagnosticV3(
 ): string | undefined {
   try {
     const safeCategory = category.replace(/[^a-z0-9_-]/gi, "_").slice(0, 64);
+    const redacted = redactDiagnosticRecord(record);
+    const { content_fingerprint: fingerprint, ...metadata } = redacted;
+    const decision = gateProducerDiagnosticV3(coordRoot, {
+      category: safeCategory,
+      reason: typeof record.reason === "string" ? record.reason : undefined,
+      instanceId: typeof record.instance_id === "string" ? record.instance_id : undefined,
+      fingerprint: fingerprint as DiagnosticContentFingerprint,
+      metadata: metadata as Record<string, string | number | boolean | null>,
+    });
+    if (!decision.admit) return decision.summary_path;
     const root = diagnosticsRoot(coordRoot);
     ensureOwnerOnlyDirectory(root);
-    const path = join(root, `${safeCategory}-${intakeOrderKey()}.json`);
+    const path = join(
+      root,
+      `${safeCategory}-${intakeOrderKey()}${decision.loose_name_suffix}.json`,
+    );
     const contents = `${JSON.stringify({
       recorded_at: new Date().toISOString(),
       category: safeCategory,
-      ...redactDiagnosticRecord(record),
+      ...redacted,
     })}\n`;
     writeOwnerOnlyFileDurably(path, contents);
     return path;

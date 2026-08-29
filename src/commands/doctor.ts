@@ -19,6 +19,10 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { BUILTIN_ADAPTER_IDS } from "../core/adapters/index.ts";
 import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
+import {
+  countSummarizedSinceV3,
+  listDiagnosticSummariesV3,
+} from "../core/events/v3/producers/diagnostic-summaries.ts";
 import { ADAPTER_SPECS, type AdapterId } from "../core/hooks/adapter/events.ts";
 import { loadAdapterWiring, summarizeAdapterWiring } from "../core/hooks/adapter/wiring.ts";
 import {
@@ -194,9 +198,24 @@ export function countRecentCodexMidFlightOnboardings(
   nowMs = Date.now(),
   windowMs = CODEX_MID_FLIGHT_HISTORY_WINDOW_MS,
 ): number {
-  const directory = path.join(coordRoot, ".harnery", "ledgers", "v3", "diagnostics");
-  if (!existsSync(directory)) return 0;
+  // Occurrences past the producer's loose-exemplar bound live in summary
+  // files instead of loose diagnostics; count them too so the mitigation
+  // cannot hide an active Codex identity drop from this warning.
   let count = 0;
+  try {
+    const listing = listDiagnosticSummariesV3(coordRoot);
+    count += countSummarizedSinceV3(
+      listing.summaries,
+      nowMs - windowMs,
+      (summary) =>
+        summary.category === "mid_flight_onboarding" && summary.metadata.adapter === "codex",
+      nowMs,
+    );
+  } catch {
+    // Summary reads are best-effort; loose diagnostics below still count.
+  }
+  const directory = path.join(coordRoot, ".harnery", "ledgers", "v3", "diagnostics");
+  if (!existsSync(directory)) return count;
   for (const name of readdirSync(directory)) {
     if (!name.startsWith("mid_flight_onboarding-") || !name.endsWith(".json")) continue;
     try {
