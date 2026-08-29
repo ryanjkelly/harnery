@@ -11,6 +11,24 @@ import { appendFileSync, existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
+import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+
+function sharedDiagnostic(
+  root: string,
+  event: string,
+  fields: Record<string, unknown>,
+  error?: unknown,
+): boolean {
+  if (coordEnv("SHARED_LOGS") === "0") return false;
+  try {
+    const logger = processLogger(root, "agent-coord");
+    if (error === undefined) logger.debug(event, legacyLogFields(fields));
+    else logger.error(event, legacyLogFields(fields), error);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function findCoordRoot(start: string): string | null {
   // HARNERY_COORD_ROOT_OVERRIDE: the bash side's test-mode escape hatch. agent-coord
@@ -39,8 +57,6 @@ async function readStdin(): Promise<string> {
 }
 
 async function logNoop(root: string, subcommand: string, argv: string[]): Promise<void> {
-  const logPath = join(root, ".harnery", "debug", "agent-coord.ndjson");
-  await mkdir(dirname(logPath), { recursive: true });
   const entry = {
     ts: new Date().toISOString(),
     note: "called, no-op",
@@ -50,6 +66,9 @@ async function logNoop(root: string, subcommand: string, argv: string[]): Promis
     pid: process.pid,
     ppid: process.ppid,
   };
+  if (sharedDiagnostic(root, "agent_coord.noop", entry)) return;
+  const logPath = join(root, ".harnery", "debug", "agent-coord.ndjson");
+  await mkdir(dirname(logPath), { recursive: true });
   await appendFile(logPath, `${JSON.stringify(entry)}\n`, "utf8");
 }
 
@@ -63,8 +82,6 @@ async function logNoop(root: string, subcommand: string, argv: string[]): Promis
  */
 async function handleVerdict(root: string): Promise<number> {
   const raw = await readStdin();
-  const logPath = join(root, ".harnery", "debug", "agent-coord-verdict.ndjson");
-  await mkdir(dirname(logPath), { recursive: true });
 
   let parsed: { rule?: string } & Record<string, unknown> = {};
   let parseErr: string | null = null;
@@ -109,15 +126,16 @@ async function handleVerdict(root: string): Promise<number> {
     };
   }
 
-  await appendFile(
-    logPath,
-    `${JSON.stringify({
-      ts: new Date().toISOString(),
-      request_preview: raw.slice(0, 500),
-      verdict,
-    })}\n`,
-    "utf8",
-  );
+  const diagnostic = { request_preview: raw.slice(0, 500), verdict };
+  if (!sharedDiagnostic(root, "agent_coord.verdict", diagnostic)) {
+    const logPath = join(root, ".harnery", "debug", "agent-coord-verdict.ndjson");
+    await mkdir(dirname(logPath), { recursive: true });
+    await appendFile(
+      logPath,
+      `${JSON.stringify({ ts: new Date().toISOString(), ...diagnostic })}\n`,
+      "utf8",
+    );
+  }
 
   process.stdout.write(`${JSON.stringify(verdict)}\n`);
   return 0;
@@ -883,12 +901,15 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
       });
       // Forensics channel shared with the stdin `verdict` path.
       try {
-        const logPath = join(root, ".harnery", "debug", "agent-coord-verdict.ndjson");
-        await mkdir(dirname(logPath), { recursive: true });
-        await appendFile(
-          logPath,
-          `${JSON.stringify({ ts: new Date().toISOString(), via: "git-hook", staged, verdict: result })}\n`,
-        );
+        const diagnostic = { via: "git-hook", staged, verdict: result };
+        if (!sharedDiagnostic(root, "agent_coord.git_hook_verdict", diagnostic)) {
+          const logPath = join(root, ".harnery", "debug", "agent-coord-verdict.ndjson");
+          await mkdir(dirname(logPath), { recursive: true });
+          await appendFile(
+            logPath,
+            `${JSON.stringify({ ts: new Date().toISOString(), ...diagnostic })}\n`,
+          );
+        }
       } catch {
         /* diagnostics never break a verdict */
       }
@@ -1041,19 +1062,25 @@ async function main(): Promise<number> {
 }
 
 main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
+  .then(async (code) => {
+    await closeProcessLoggers();
+    process.exit(code);
+  })
+  .catch(async (err) => {
     try {
       const root = findCoordRoot(process.cwd());
       if (root) {
-        const path = join(root, ".harnery", "debug", "agent-coord.errors.ndjson");
-        appendFileSync(
-          path,
-          `${JSON.stringify({ ts: new Date().toISOString(), error: String(err) })}\n`,
-        );
+        if (!sharedDiagnostic(root, "agent_coord.error", {}, err)) {
+          const path = join(root, ".harnery", "debug", "agent-coord.errors.ndjson");
+          appendFileSync(
+            path,
+            `${JSON.stringify({ ts: new Date().toISOString(), error: String(err) })}\n`,
+          );
+        }
       }
     } catch {
       /* swallow */
     }
+    await closeProcessLoggers();
     process.exit(0);
   });

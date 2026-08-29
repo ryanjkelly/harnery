@@ -66,6 +66,7 @@ import {
 } from "../events/v3/live-routing.ts";
 import { captureSpanClockV3 } from "../events/v3/span-state.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
+import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
 import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
 import {
@@ -165,6 +166,14 @@ function childEnv(coordRoot: string): NodeJS.ProcessEnv {
 }
 
 function appendDebug(coordRoot: string, entry: Record<string, unknown>): void {
+  if (coordEnv("SHARED_LOGS") !== "0") {
+    try {
+      processLogger(coordRoot, "agent-hook").debug("agent_hook.diagnostic", legacyLogFields(entry));
+      return;
+    } catch {
+      /* fall through to the rollback writer */
+    }
+  }
   const path = join(coordRoot, ".harnery", "debug", "agent-hook.ndjson");
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -176,6 +185,18 @@ function appendDebug(coordRoot: string, entry: Record<string, unknown>): void {
 
 function logError(coordRoot: string | null, err: unknown, context: Record<string, unknown>): void {
   if (!coordRoot) return;
+  if (coordEnv("SHARED_LOGS") !== "0") {
+    try {
+      processLogger(coordRoot, "agent-hook").error(
+        "agent_hook.error",
+        legacyLogFields(context),
+        err,
+      );
+      return;
+    } catch {
+      /* fall through to the rollback writer */
+    }
+  }
   const path = join(coordRoot, ".harnery", "debug", "agent-hook.errors.ndjson");
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -1929,11 +1950,15 @@ function completeRecoveryInjection(
 }
 
 main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
+  .then(async (code) => {
+    await closeProcessLoggers();
+    process.exit(code);
+  })
+  .catch(async (err) => {
     logError(findCoordRoot(process.cwd()), err, {
       argv: process.argv.slice(2),
       pid: process.pid,
     });
+    await closeProcessLoggers();
     process.exit(0);
   });
