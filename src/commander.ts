@@ -199,6 +199,8 @@ export interface HarneryProgramContext {
    * hosts cannot replace or weaken Harnery descriptors at runtime.
    */
   storage?: import("./core/storage/contract.ts").HarneryHostStorageRegistration;
+  /** Maintenance implementations registered at construction time by storage owners. */
+  storageMaintenanceProviders?: readonly import("./core/storage/maintenance.ts").HarneryMaintenanceProvider[];
   /**
    * Default Host header for `tunnel up` when `--vhost` is omitted: a literal
    * host, or a resolver evaluated at start time (e.g. read a dev stack's

@@ -9,6 +9,16 @@ import type {
 } from "../core/storage/contract.ts";
 import { storageHealth } from "../core/storage/health.ts";
 import { filterStorageInventory, inventoryStorage } from "../core/storage/inventory.ts";
+import {
+  DEFAULT_MAINTENANCE_BUDGET,
+  executeStorageMaintenance,
+  HARNERY_MAINTENANCE_PRESSURE_SCHEMA,
+  HarneryMaintenanceError,
+  type HarneryStoragePressureSummary,
+  listMaintenanceTransactions,
+  planStorageMaintenance,
+  readMaintenanceTransaction,
+} from "../core/storage/maintenance.ts";
 
 const STORAGE_CLASSES = new Set<HarneryStorageClass>([
   "canonical-authority",
@@ -27,6 +37,19 @@ interface InventoryOptions {
 }
 
 interface HealthOptions {
+  json?: boolean;
+}
+
+interface MaintainOptions {
+  family?: string;
+  budget?: string;
+  transaction?: string;
+  yes?: boolean;
+  json?: boolean;
+}
+
+interface StatusOptions {
+  transaction?: string;
   json?: boolean;
 }
 
@@ -91,6 +114,79 @@ export function registerStorageCommand(
         }
       });
     });
+
+  storage
+    .command("maintain")
+    .description("Plan bounded maintenance, or execute one exact transaction")
+    .option("--family <id>", "Limit a new plan to one registered family")
+    .option("--budget <duration>", "Wall-time budget such as 500ms, 5s, or 1m")
+    .option("--dry-run", "Plan without mutating source storage", true)
+    .option("--transaction <id>", "Execute one previously planned exact transaction")
+    .option("--yes", "Confirm execution of the exact transaction")
+    .option("--json", "Emit the versioned transaction schema")
+    .action(async (options: MaintainOptions) => {
+      await run(emit, async () => {
+        const catalog = catalogFor(context);
+        const providers = context?.storageMaintenanceProviders ?? [];
+        const transaction = options.transaction
+          ? await executeStorageMaintenance(catalog, providers, options.transaction, {
+              yes: options.yes === true,
+              allow_destructive: false,
+            })
+          : await planStorageMaintenance(catalog, providers, await pressureFor(catalog), {
+              ...(options.family ? { family_id: options.family } : {}),
+              budget: {
+                ...DEFAULT_MAINTENANCE_BUDGET,
+                max_duration_ms: parseDuration(options.budget),
+              },
+              persist: true,
+            });
+        if (options.json) {
+          emit.config({ format: "json" });
+          emit.data(transaction);
+        } else {
+          emit.rows([
+            {
+              transaction_id: transaction.transaction_id,
+              state: transaction.state,
+              dry_run: transaction.dry_run,
+              actions: transaction.actions.length,
+              files: transaction.actions.reduce((sum, action) => sum + action.files, 0),
+              bytes: transaction.actions.reduce((sum, action) => sum + action.bytes, 0),
+              reasons: transaction.reason_codes.join(",") || "none",
+            },
+          ]);
+        }
+      });
+    });
+
+  storage
+    .command("status")
+    .description("Inspect maintenance transactions without changing storage")
+    .option("--transaction <id>", "Show one exact transaction")
+    .option("--json", "Emit versioned transaction records")
+    .action(async (options: StatusOptions) => {
+      await run(emit, async () => {
+        const catalog = catalogFor(context);
+        const transactions = options.transaction
+          ? [readMaintenanceTransaction(catalog.context.coord_root, options.transaction)]
+          : listMaintenanceTransactions(catalog.context.coord_root);
+        if (options.json) {
+          emit.config({ format: "json" });
+          emit.data(transactions);
+        } else {
+          emit.rows(
+            transactions.map((transaction) => ({
+              transaction_id: transaction.transaction_id,
+              state: transaction.state,
+              created_at: transaction.created_at,
+              actions: transaction.actions.length,
+              reasons: transaction.reason_codes.join(",") || "none",
+            })),
+          );
+        }
+      });
+    });
 }
 
 function catalogFor(context?: HarneryProgramContext) {
@@ -112,6 +208,39 @@ function parseStorageClass(value: string | undefined): HarneryStorageClass | und
     throw new StorageCommandError("unknown_storage_class", `unknown storage class: ${value}`);
   }
   return value as HarneryStorageClass;
+}
+
+async function pressureFor(
+  catalog: ReturnType<typeof createStorageCatalog>,
+): Promise<HarneryStoragePressureSummary> {
+  const inventory = await inventoryStorage(catalog);
+  return {
+    schema: HARNERY_MAINTENANCE_PRESSURE_SCHEMA,
+    captured_at: inventory.captured_at,
+    families: inventory.families.map((family) => ({
+      family_id: family.family_id,
+      logical_bytes:
+        family.totals.logical_bytes.state === "observed" ? family.totals.logical_bytes.value : 0,
+      regular_files:
+        family.totals.regular_files.state === "observed" ? family.totals.regular_files.value : 0,
+      needs_maintenance: family.maintenance.state === "eligible",
+      observed_at: inventory.captured_at,
+    })),
+  };
+}
+
+function parseDuration(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_MAINTENANCE_BUDGET.max_duration_ms;
+  const match = /^(\d+)(ms|s|m)$/.exec(value);
+  if (!match)
+    throw new StorageCommandError("invalid_maintenance_budget", `invalid duration: ${value}`);
+  const amount = Number(match[1]);
+  const multiplier = match[2] === "ms" ? 1 : match[2] === "s" ? 1_000 : 60_000;
+  const result = amount * multiplier;
+  if (!Number.isSafeInteger(result) || result <= 0 || result > 60 * 60 * 1_000) {
+    throw new StorageCommandError("invalid_maintenance_budget", `invalid duration: ${value}`);
+  }
+  return result;
 }
 
 function inventoryRows(report: HarneryStorageInventoryReport): Record<string, unknown>[] {
@@ -147,7 +276,10 @@ async function run(emit: EmitContext, action: () => Promise<void>): Promise<void
     await action();
   } catch (error) {
     emit.error({
-      code: error instanceof StorageCommandError ? error.code : "storage_inspection_failed",
+      code:
+        error instanceof StorageCommandError || error instanceof HarneryMaintenanceError
+          ? error.code
+          : "storage_inspection_failed",
       message: error instanceof Error ? error.message : String(error),
     });
     emit.setExitCode(1);

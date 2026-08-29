@@ -8,6 +8,7 @@ import type {
   HarneryStorageFamily,
   HarneryStorageInventoryReport,
 } from "../core/storage/contract.ts";
+import type { HarneryMaintenanceProvider } from "../core/storage/maintenance.ts";
 
 const roots: string[] = [];
 
@@ -22,6 +23,8 @@ describe("storage command", () => {
     expect(storage?.commands.map((command) => command.name()).sort()).toEqual([
       "health",
       "inventory",
+      "maintain",
+      "status",
     ]);
   }, 10_000);
 
@@ -103,6 +106,41 @@ describe("storage command", () => {
     ]);
     expect(output.exitCodes).toEqual([1, 1]);
   });
+
+  test("plans and executes only an exact confirmed maintenance transaction", async () => {
+    const root = fixture();
+    mkdirSync(join(root, ".host", "maintained"), { recursive: true });
+    writeFileSync(join(root, ".host", "maintained", "one.jsonl"), "one\n");
+    let applied = 0;
+    const output = captureEmit();
+    const program = createHarneryProgram({
+      emit: output.emit,
+      context: {
+        repoRoot: root,
+        storage: { families: [maintainedHostFamily()] },
+        storageMaintenanceProviders: [maintenanceProvider(() => (applied += 1))],
+      },
+    });
+    await program.parseAsync(["storage", "maintain", "--family", "host-maintained", "--json"], {
+      from: "user",
+    });
+    const planned = output.data[0] as { transaction_id: string; state: string; actions: unknown[] };
+    expect(planned).toMatchObject({ state: "planned" });
+    expect(planned.actions).toHaveLength(1);
+    await program.parseAsync(
+      ["storage", "maintain", "--transaction", planned.transaction_id, "--yes", "--json"],
+      { from: "user" },
+    );
+    expect(output.data[1]).toMatchObject({ state: "committed" });
+    expect(applied).toBe(1);
+
+    const status = captureEmit();
+    await createHarneryProgram({ emit: status.emit, context: { repoRoot: root } }).parseAsync(
+      ["storage", "status", "--transaction", planned.transaction_id, "--json"],
+      { from: "user" },
+    );
+    expect(status.data[0]).toMatchObject([{ transaction_id: planned.transaction_id }]);
+  });
 });
 
 function fixture(): string {
@@ -129,6 +167,56 @@ function hostFamily(): HarneryStorageFamily {
       ...source.provider,
       provider_id: "host-history-provider",
       inventory: "filesystem",
+    },
+  };
+}
+
+function maintainedHostFamily(): HarneryStorageFamily {
+  const source = harneryStorageFamilies().find(({ id }) => id === "storage-maintenance-run-log")!;
+  return {
+    ...source,
+    id: "host-maintained",
+    owner: "fixture host",
+    roots: (context) => [
+      {
+        path: join(context.coord_root, ".host", "maintained"),
+        kind: "directory",
+        match: "subtree",
+        ownership: "host",
+      },
+    ],
+    policy: {
+      ...source.policy,
+      policy_version: "host-maintained-v1",
+      retention: { ...source.policy.retention, status: "active" },
+    },
+    provider: {
+      ...source.provider,
+      provider_id: "host-maintained-provider",
+      maintenance: "storage",
+    },
+  };
+}
+
+function maintenanceProvider(onApply: () => void): HarneryMaintenanceProvider {
+  return {
+    family_id: "host-maintained",
+    plan: () => ({
+      actions: [
+        {
+          action_id: "compact-one",
+          family_id: "host-maintained",
+          kind: "compact",
+          target_ref: "one",
+          files: 1,
+          bytes: 4,
+          destructive: false,
+        },
+      ],
+    }),
+    apply: () => {
+      onApply();
+      return { outcome: "applied" };
     },
   };
 }
