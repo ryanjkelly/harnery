@@ -1,0 +1,109 @@
+---
+title: "ADR 0134: user-controlled log storage budgets"
+description: Keep log-family ownership in source while allowing bounded user overrides and exact, manifest-safe retention transactions.
+sidebar:
+  order: 134
+---
+
+**Date:** 2026-08-29
+**Status:** Accepted
+
+## Context
+
+ADR 0129 made Harnery's storage catalog source-owned so configuration cannot
+reclassify canonical authority or recovery state as disposable storage. ADR
+0130 gave operational and debug logs a shared segmented format and required
+retention to stay at the family boundary. The built-in catalog now carries
+proposed byte and age budgets for those families, but users cannot adapt the
+budgets to a project that needs a longer diagnostic window or has less local
+storage.
+
+A safe override cannot replace a family descriptor, change its roots, or turn
+storage pressure into rejected writes. It also cannot let a deletion plan
+survive a configuration or manifest change between preview and confirmation.
+Existing segment manifests bind to a source-owned `policy_version`, so changing
+that field whenever a user changes a limit would make readable history appear
+incompatible.
+
+## Alternatives considered
+
+- Keep all retention values source-only. This is simple, but it forces projects
+  with different evidence windows and disk budgets to patch Harnery or accept
+  unsuitable defaults.
+- Add environment-variable limits. Hooks, services, and operator commands can
+  run with different environments. A destructive policy assembled that way is
+  hard to inspect and can change across processes in one project.
+- Make a byte limit a writer quota. The active segment cannot always fit below
+  a newly lowered limit, and refusing current evidence under disk pressure is
+  worse than reporting temporary overshoot.
+- Let the generic maintenance engine delete any action after `--yes`. That
+  broadens authority for unrelated storage providers and makes a log-retention
+  feature a general deletion capability.
+- Derive `policy_version` from the effective user settings. Existing records
+  and manifests require exact source policy versions, so this would make a
+  harmless configuration edit break historical reads.
+
+## Decision
+
+Harnery exposes a `logs.storage` object in the user-global and project JSONC
+configuration files. It accepts class overrides for `operational-log` and
+`debug-log`, plus exact registered-family overrides. Only `max_bytes` and
+`max_age_days` are configurable. Roots, storage class, provider, privacy,
+durability, record bounds, and writer behavior remain source-owned.
+
+Configuration is merged by JSON path. Resolution starts with the built-in
+family value, applies the merged class value, then applies the merged exact
+family value. A project value replaces a user-global value only at the same
+path. Exact-family settings remain more specific than class settings regardless
+of which layer supplied them. `max_bytes` accepts 10 MiB through 1 TiB, and
+`max_age_days` accepts 1 through 3,650.
+
+Retention configuration fails closed. Invalid values, unknown classes, and
+unknown project family identifiers disable log-retention planning and execution
+with a diagnostic. A user-global family identifier absent from the current host
+catalog remains dormant with a diagnostic because another host may register it.
+There are no environment or mutating CLI overrides in this version.
+
+An effective log policy has a deterministic
+`effective_policy_fingerprint` separate from `policy_version`. Every retention
+transaction records both values, the manifest generation, and exact file
+evidence. Execution refuses a transaction when configuration, policy, manifest,
+path identity, byte count, sequence, or digest changed after planning.
+
+`max_bytes` is a soft managed-partition budget. Managed bytes include the
+active segment, compressed sealed segments, manifests, metrics, and other known
+regular control files under the registered shared-segment partition. Legacy,
+external, text-sink, and unmanifested compatibility bytes are reported
+separately and never cause eligible segments to be over-pruned. Writers keep
+accepting valid records while a family is over budget.
+
+A sealed segment is retention-eligible when it exceeds `max_age_days` or when
+removing it is necessary to satisfy `max_bytes`. The provider selects oldest
+eligible segments deterministically. It never selects the active file, current
+manifest, required recovery breadcrumbs, unknown siblings, symlinks, ambiguous
+hard links, legacy roots, external roots, or canonical and recovery families.
+Only a family registered with the shared manifest-backed log capability can use
+this provider.
+
+Segment sequence numbers remain monotonic for the family's lifetime. The
+manifest records an explicit expired-history boundary so readers, followers,
+validation, and recovery distinguish intentional retention gaps from
+corruption. Historical manifest snapshots keep only the recovery evidence
+required by the current manifest contract.
+
+Maintenance remains dry-run-first. Mutation requires the exact persisted
+transaction, `--yes`, and structured-log provider authorization. Under the
+family lease, execution revalidates the plan, atomically publishes the reduced
+manifest, unlinks the exact source, then persists an immutable receipt. Replay
+finishes only this frozen sequence and fails closed on an impossible missing
+source under the old manifest. SessionStart maintenance remains planning-only;
+automatic pruning needs a separate decision.
+
+## Result
+
+Projects can retain logs for longer or use smaller local budgets without
+forking Harnery's catalog. Operators can see the effective value and its origin,
+preview the exact sealed segments selected, and confirm one unchanged
+transaction. Canonical Event Ledger data, recovery state, durable product
+history, raw process logs, legacy files, and unknown storage remain outside the
+provider's authority.
