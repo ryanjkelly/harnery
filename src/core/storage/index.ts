@@ -10,3 +10,4 @@ export * from "./maintenance-providers.ts";
 export * from "./policy.ts";
 export * from "./query.ts";
 export * from "./receipts.ts";
+export * from "./sink-graph.ts";
