@@ -1,0 +1,368 @@
+.effectsLayer {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+  isolation: isolate;
+}
+
+.effectRoot {
+  --fx-tone: 34 211 238;
+  --fx-tone-2: 168 85 247;
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  transform: translateZ(0);
+}
+
+.pingFlight {
+  animation: codec-fx-flight 4.2s cubic-bezier(0.22, 0.04, 0.18, 1) both;
+}
+
+.pingCore {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(
+    circle,
+    #fff 0 16%,
+    rgb(207 250 254) 26%,
+    rgb(34 211 238) 52%,
+    rgb(168 85 247 / 0.66) 68%,
+    transparent 76%
+  );
+  box-shadow:
+    0 0 22px 9px rgb(56 189 248 / 0.94),
+    0 0 58px 20px rgb(168 85 247 / 0.54);
+  filter: saturate(1.45);
+}
+
+.pingCore::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 50%;
+  width: 148px;
+  height: 18px;
+  border-radius: 999px 0 0 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(168 85 247 / 0.08),
+    rgb(168 85 247 / 0.56),
+    rgb(103 232 249 / 0.96),
+    #fff
+  );
+  filter: blur(3px);
+  transform: translateY(-50%) rotate(var(--fx-angle, 0rad));
+  transform-origin: right center;
+}
+
+.pingCore::after {
+  content: "";
+  position: absolute;
+  inset: -12px;
+  border: 3px solid rgb(165 243 252 / 0.86);
+  border-radius: 999px;
+  box-shadow:
+    0 0 20px rgb(56 189 248 / 0.88),
+    inset 0 0 18px rgb(168 85 247 / 0.52);
+}
+
+.pingLabel,
+.effectLabel {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  border: 1px solid rgb(var(--fx-tone) / 0.72);
+  border-radius: 999px;
+  color: white;
+  background: rgb(8 15 31 / 0.92);
+  box-shadow: 0 0 20px rgb(var(--fx-tone) / 0.5);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.pingLabel {
+  top: -2rem;
+  padding: 0.24rem 0.42rem;
+  transform: translateX(-50%);
+}
+
+.impact {
+  --fx-tone: 103 232 249;
+  width: 112px;
+  height: 112px;
+  border: 4px solid rgb(207 250 254 / 0.96);
+  border-radius: 999px;
+  background: radial-gradient(circle, white 0 4%, rgb(103 232 249 / 0.88) 8%, transparent 42%);
+  box-shadow:
+    0 0 32px 14px rgb(56 189 248 / 0.86),
+    0 0 90px 30px rgb(168 85 247 / 0.62);
+  animation: codec-fx-impact 1.65s cubic-bezier(0.16, 0.8, 0.2, 1) both;
+}
+
+.impact::before,
+.impact::after {
+  content: "";
+  position: absolute;
+  border-radius: inherit;
+}
+
+.impact::before {
+  inset: -34px;
+  border: 5px solid rgb(103 232 249 / 0.72);
+  box-shadow: 0 0 36px rgb(56 189 248 / 0.84);
+}
+
+.impact::after {
+  inset: -58px;
+  background: repeating-conic-gradient(
+    from 0deg,
+    transparent 0deg 12deg,
+    rgb(165 243 252 / 0.92) 13deg 15deg,
+    transparent 16deg 30deg
+  );
+  mask: radial-gradient(circle, transparent 0 47%, #000 49% 54%, transparent 56%);
+}
+
+.impact .effectLabel {
+  top: 50%;
+  padding: 0.36rem 0.54rem;
+  transform: translate(-50%, -50%);
+  color: rgb(8 47 73);
+  background: white;
+}
+
+.targetEffect {
+  width: min(var(--fx-card-width), 34rem);
+  height: min(var(--fx-card-height), 24rem);
+  transform: translate(-50%, -50%);
+}
+
+.targetEffect .ring {
+  position: absolute;
+  inset: 10%;
+  border: 2px solid rgb(var(--fx-tone) / 0.85);
+  border-radius: 28%;
+  box-shadow:
+    0 0 28px rgb(var(--fx-tone) / 0.72),
+    inset 0 0 32px rgb(var(--fx-tone-2) / 0.24);
+  animation: codec-fx-ring 1.8s cubic-bezier(0.16, 0.8, 0.2, 1) both;
+}
+
+.targetEffect .effectLabel {
+  top: 12%;
+  padding: 0.28rem 0.5rem;
+  transform: translate(-50%, -50%);
+  animation: codec-fx-label 1.8s ease-out both;
+}
+
+.particle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 5px;
+  height: 14px;
+  place-items: center;
+  border-radius: 999px;
+  color: white;
+  background: rgb(var(--fx-tone));
+  box-shadow: 0 0 12px 4px rgb(var(--fx-tone) / 0.72);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.7rem;
+  font-weight: 950;
+  animation-delay: var(--fx-delay);
+  transform-origin: center;
+}
+
+.energy {
+  --fx-tone: 34 211 238;
+  --fx-tone-2: 168 85 247;
+}
+
+.energy .particle {
+  animation: codec-fx-energy 1.7s cubic-bezier(0.16, 0.8, 0.2, 1) both;
+}
+
+.powerUp {
+  --fx-tone: 250 204 21;
+  --fx-tone-2: 249 115 22;
+}
+
+.powerUp .ring {
+  border-radius: 999px;
+  animation-duration: 2.35s;
+}
+
+.beam {
+  position: absolute;
+  top: -10%;
+  bottom: -10%;
+  left: 50%;
+  width: 28%;
+  transform: translateX(-50%);
+  background: linear-gradient(90deg, transparent, rgb(254 240 138 / 0.55), transparent);
+  filter: blur(8px);
+  animation: codec-fx-beam 2.35s ease-out both;
+}
+
+.powerUp .particle {
+  animation: codec-fx-power-up 2.2s cubic-bezier(0.12, 0.68, 0.18, 1) both;
+}
+
+.healing {
+  --fx-tone: 52 211 153;
+  --fx-tone-2: 16 185 129;
+}
+
+.healing .particle {
+  width: 10px;
+  height: 10px;
+  color: rgb(236 253 245);
+  background: rgb(52 211 153 / 0.8);
+  animation: codec-fx-healing 2.45s cubic-bezier(0.16, 0.8, 0.2, 1) both;
+}
+
+@keyframes codec-fx-flight {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.25);
+  }
+  10% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1.45);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+  72% {
+    opacity: 1;
+    transform: translate(calc(var(--fx-x) * 0.68), calc(var(--fx-y) * 0.68)) scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(var(--fx-x), var(--fx-y)) scale(1.65);
+  }
+}
+
+@keyframes codec-fx-impact {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.16) rotate(-12deg);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.22) rotate(0deg);
+  }
+  36% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(0.88) rotate(3deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.7) rotate(12deg);
+  }
+}
+
+@keyframes codec-fx-ring {
+  0% {
+    opacity: 0;
+    transform: scale(0.38) rotate(-8deg);
+  }
+  24% {
+    opacity: 1;
+    transform: scale(1.05) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.3) rotate(5deg);
+  }
+}
+
+@keyframes codec-fx-label {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0.6rem) scale(0.9);
+  }
+  20%,
+  68% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes codec-fx-energy {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--fx-angle)) translateX(var(--fx-distance)) scale(0.2);
+  }
+  26% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(calc(var(--fx-angle) + 160deg)) translateX(12px) scale(1.35);
+  }
+}
+
+@keyframes codec-fx-beam {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) scaleX(0.18);
+  }
+  20%,
+  58% {
+    opacity: 1;
+    transform: translateX(-50%) scaleX(1);
+  }
+}
+
+@keyframes codec-fx-power-up {
+  0% {
+    opacity: 0;
+    transform: translate(var(--fx-drift), 90px) scaleY(0.4);
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(var(--fx-drift) * -0.35), -115px) scaleY(1.8);
+  }
+}
+
+@keyframes codec-fx-healing {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--fx-angle)) translateX(var(--fx-distance)) scale(0.2);
+  }
+  24%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(calc(var(--fx-angle) + 240deg)) translateX(8px) translateY(-72px) scale(1.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .effectsLayer {
+    display: none;
+  }
+}
+

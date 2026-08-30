@@ -15,6 +15,11 @@ import {
   DEBUG_PRESENCES,
   DEBUG_TELEMETRY_STATES,
 } from "@/lib/codec/debug-scene";
+import {
+  CODEC_EFFECT_KINDS,
+  type CodecEffectKind,
+  type CodecEffectPreview,
+} from "@/lib/codec/effects/contracts";
 import { CodecView } from "./CodecView";
 import codecStyles from "./codec.module.css";
 import styles from "./codecDebug.module.css";
@@ -41,10 +46,11 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
   const [count, setCount] = useState(Math.min(8, maximum));
   const [states, setStates] = useState(() => initialStates(agents));
   const [selectedId, setSelectedId] = useState(agents[0]?.id ?? "");
-  const [pingFrom, setPingFrom] = useState(agents[0]?.id ?? "");
-  const [pingTo, setPingTo] = useState(agents[1]?.id ?? agents[0]?.id ?? "");
-  const [pingSequence, setPingSequence] = useState(0);
-  const [autoPing, setAutoPing] = useState(false);
+  const [effectKind, setEffectKind] = useState<CodecEffectKind>("ping");
+  const [effectFrom, setEffectFrom] = useState(agents[0]?.id ?? "");
+  const [effectTarget, setEffectTarget] = useState(agents[1]?.id ?? agents[0]?.id ?? "");
+  const [effectSequence, setEffectSequence] = useState(0);
+  const [autoEffect, setAutoEffect] = useState(false);
   const [ambience, setAmbience] = useState<CodecScene["team_ambience"]["value"]>("busy");
   const [showRelationships, setShowRelationships] = useState(true);
   const [showRemoteAgents, setShowRemoteAgents] = useState(true);
@@ -60,17 +66,17 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
   useEffect(() => {
     const first = visibleAgents[0]?.id ?? "";
     if (!visibleIds.has(selectedId)) setSelectedId(first);
-    if (!visibleIds.has(pingFrom)) setPingFrom(first);
-    if (!visibleIds.has(pingTo) || pingTo === pingFrom) {
-      setPingTo(visibleAgents.find((agent) => agent.id !== pingFrom)?.id ?? first);
+    if (!visibleIds.has(effectFrom)) setEffectFrom(first);
+    if (!visibleIds.has(effectTarget) || (effectKind === "ping" && effectTarget === effectFrom)) {
+      setEffectTarget(visibleAgents.find((agent) => agent.id !== effectFrom)?.id ?? first);
     }
-  }, [pingFrom, pingTo, selectedId, visibleAgents, visibleIds]);
+  }, [effectFrom, effectKind, effectTarget, selectedId, visibleAgents, visibleIds]);
 
   useEffect(() => {
-    if (!autoPing || visibleAgents.length < 2) return;
-    const timer = window.setInterval(() => setPingSequence((value) => value + 1), 6_500);
+    if (!autoEffect || visibleAgents.length === 0) return;
+    const timer = window.setInterval(() => setEffectSequence((value) => value + 1), 6_500);
     return () => window.clearInterval(timer);
-  }, [autoPing, visibleAgents.length]);
+  }, [autoEffect, visibleAgents.length]);
 
   const scene = useMemo(
     () =>
@@ -80,21 +86,19 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
         ambience,
         showRelationships,
         showRemoteAgents,
-        ...(pingSequence > 0
-          ? { ping: { sequence: pingSequence, fromId: pingFrom, toId: pingTo } }
-          : {}),
       }),
-    [
-      ambience,
-      pingFrom,
-      pingSequence,
-      pingTo,
-      showRelationships,
-      showRemoteAgents,
-      states,
-      visibleAgents,
-    ],
+    [ambience, showRelationships, showRemoteAgents, states, visibleAgents],
   );
+
+  const effectPreview: CodecEffectPreview | undefined =
+    effectSequence > 0 && effectTarget
+      ? {
+          sequence: effectSequence,
+          kind: effectKind,
+          targetInstanceId: effectTarget,
+          ...(effectKind === "ping" && effectFrom ? { sourceInstanceId: effectFrom } : {}),
+        }
+      : undefined;
 
   function setCardState<K extends keyof CodecDebugCardState>(
     key: K,
@@ -111,10 +115,11 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
     setStates(initialStates(agents));
     setCount(Math.min(8, maximum));
     setSelectedId(agents[0]?.id ?? "");
-    setPingFrom(agents[0]?.id ?? "");
-    setPingTo(agents[1]?.id ?? agents[0]?.id ?? "");
-    setPingSequence(0);
-    setAutoPing(false);
+    setEffectKind("ping");
+    setEffectFrom(agents[0]?.id ?? "");
+    setEffectTarget(agents[1]?.id ?? agents[0]?.id ?? "");
+    setEffectSequence(0);
+    setAutoEffect(false);
     setAmbience("busy");
     setShowRelationships(true);
     setShowRemoteAgents(true);
@@ -143,7 +148,11 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
     });
   }
 
-  const pingDisabled = visibleAgents.length < 2 || !pingFrom || !pingTo || pingFrom === pingTo;
+  const effectDisabled =
+    visibleAgents.length === 0 ||
+    !effectTarget ||
+    (effectKind === "ping" &&
+      (visibleAgents.length < 2 || !effectFrom || effectFrom === effectTarget));
 
   return (
     <>
@@ -228,13 +237,29 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
           </fieldset>
 
           <fieldset className={styles.controlGroup} disabled={visibleAgents.length === 0}>
-            <legend>Ping animation</legend>
+            <legend>Animation engine</legend>
+            <label>
+              Effect
+              <select
+                aria-label="Codec effect"
+                data-codec-effect-kind
+                value={effectKind}
+                onChange={(event) => setEffectKind(event.target.value as CodecEffectKind)}
+              >
+                {CODEC_EFFECT_KINDS.map((kind) => (
+                  <option value={kind} key={kind}>
+                    {kind}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label>
               From
               <select
-                aria-label="Ping source"
-                value={pingFrom}
-                onChange={(event) => setPingFrom(event.target.value)}
+                aria-label="Effect source"
+                disabled={effectKind !== "ping"}
+                value={effectFrom}
+                onChange={(event) => setEffectFrom(event.target.value)}
               >
                 {visibleAgents.map((agent) => (
                   <option value={agent.id} key={agent.id}>
@@ -244,11 +269,11 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
               </select>
             </label>
             <label>
-              To
+              Target
               <select
-                aria-label="Ping target"
-                value={pingTo}
-                onChange={(event) => setPingTo(event.target.value)}
+                aria-label="Effect target"
+                value={effectTarget}
+                onChange={(event) => setEffectTarget(event.target.value)}
               >
                 {visibleAgents.map((agent) => (
                   <option value={agent.id} key={agent.id}>
@@ -260,23 +285,26 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
             <button
               className={styles.primaryButton}
               type="button"
-              data-codec-trigger-ping
-              disabled={pingDisabled}
-              onClick={() => setPingSequence((value) => value + 1)}
+              data-codec-trigger-effect
+              data-codec-trigger-ping={effectKind === "ping" ? "true" : undefined}
+              disabled={effectDisabled}
+              onClick={() => setEffectSequence((value) => value + 1)}
             >
-              Trigger ping
+              Trigger {effectKind}
             </button>
             <label className={styles.checkLabel}>
               <input
                 type="checkbox"
-                checked={autoPing}
-                disabled={pingDisabled}
-                onChange={(event) => setAutoPing(event.target.checked)}
+                checked={autoEffect}
+                disabled={effectDisabled}
+                onChange={(event) => setAutoEffect(event.target.checked)}
               />
               Repeat every 6.5 seconds
             </label>
             <p className={styles.controlHint} aria-live="polite">
-              {pingSequence > 0 ? `Ping cue ${pingSequence} emitted.` : "No ping cue emitted yet."}
+              {effectSequence > 0
+                ? `${effectKind} cue ${effectSequence} emitted.`
+                : "No effect cue emitted yet."}
             </p>
           </fieldset>
 
@@ -421,7 +449,7 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
       </details>
 
       <div className={codecStyles.codecStage} data-codec-debug-stage>
-        <CodecView initialScene={scene} mode="debug" />
+        <CodecView initialScene={scene} mode="debug" effectPreview={effectPreview} />
       </div>
     </>
   );

@@ -1,0 +1,91 @@
+---
+title: "ADR 0143: run Codec effects through a bounded browser runtime"
+description: Keep short-lived Codec animation recipes truthful, accessible, and independent from coordination authority.
+sidebar:
+  order: 143
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+Codec already used animation for message pings, attention, activity, and
+relationship flow. The message effect lived inside the main React component as
+imperative DOM construction and timers. Adding more effects there would mix
+scene ingestion, card state, geometry, scheduling, and visual recipes in one
+component. It would also make event storms, stale snapshots, hidden tabs, and
+reduced-motion behavior harder to govern consistently.
+
+Effects are presentation, not coordination evidence. They may emphasize a
+change that the current and previous sanitized scenes prove, but they must not
+invent agent health, progress, intent, or success. The underlying text and card
+state must remain complete when an effect is skipped.
+
+## Alternatives considered
+
+- Add each effect directly to `CodecView`. This keeps the first effect local,
+  but every new recipe repeats timers, DOM cleanup, motion checks, endpoint
+  lookup, and concurrency rules.
+- Add a general React motion dependency. Component transitions are useful, but
+  a package would still leave Codec responsible for coordinating short-lived
+  particles between live DOM anchors. It would not remove the scene-delta or
+  effect-budget layer.
+- Render effects in Canvas or WebGL. Those systems can handle far more
+  particles than Codec needs. They would add a second coordinate and rendering
+  system while making inspection and deterministic browser tests harder.
+- Send animation commands through the Codec scene API. That would turn a
+  presentation recipe into a transport contract and couple the server to one
+  visual treatment. Snapshots could also replay old spectacle.
+
+## Decision
+
+Add a browser-only Codec FX runtime under
+[`web/lib/codec/effects/`](../../../../../web/lib/codec/effects/). The runtime
+accepts typed, deterministic effect cues and renders them into one fixed,
+pointer-free layer owned by
+[`CodecEffectsLayer.tsx`](../../../../../web/components/codec/CodecEffectsLayer.tsx).
+Recipes use CSS transforms, opacity, gradients, and bounded DOM particles. No
+new dependency or transport field is required.
+
+Derive live cues by comparing the previous sanitized scene with the next one:
+
+| Proven change | Effect |
+| --- | --- |
+| New `message` transient | point-to-point ping |
+| New successful recent action, or activity resumes as `working` | energy |
+| Presence returns to `online`, or a dependency-completed transient arrives | power-up |
+| Telemetry moves from `degraded` to `healthy`, or lifecycle moves from `blocked` to `active` | healing |
+
+Snapshot hydration and polling recovery update the scene without animation.
+Cue ids are deduplicated, each card holds at most one active effect, and the
+runtime caps concurrent effects at six on desktop and two on mobile. Higher
+priority cues enter the budget first. Hidden tabs cancel visual work.
+
+Every effect keeps a card-level label and an `aria-live` announcement. Under
+`prefers-reduced-motion`, Codec renders only the finite static card highlight
+and label. The scene remains the source of truth whether an effect runs,
+collapses to its static equivalent, or is dropped by the visual budget.
+
+The synthetic Codec debug console drives every recipe through the same runtime.
+It is the inspection and browser-test surface for effect geometry, cleanup,
+mobile limits, and reduced motion.
+
+## Result
+
+The existing ping now uses the shared runtime. Energy, power-up, and healing
+are the first reusable effect pack. A new recipe needs a typed cue, derivation
+rule, bounded visual recipe, and debug control. It does not need a scene
+transport change or another timer system inside `CodecView`.
+
+### Scope and promotion
+
+- **Owner:** Codec dashboard presentation.
+- **Tradeoff:** a small local runtime is easier to govern than a general motion
+  dependency or a second graphics stack at the current particle scale.
+- **Evidence:** the existing ping required endpoint geometry, timers, cleanup,
+  deduplication, reduced motion, and snapshot rules that every future effect
+  would otherwise repeat.
+- **Promotion:** do not make this the default animation policy for other
+  Harnery pages without a second independent surface showing the same anchored,
+  transient-effect requirements.

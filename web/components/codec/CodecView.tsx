@@ -23,6 +23,7 @@ import {
   ExternalLink,
   FolderOpen,
   Hammer,
+  HeartPulse,
   Maximize2,
   Minimize2,
   Network,
@@ -35,9 +36,11 @@ import {
   Pencil,
   Play,
   Search,
+  Sparkles,
   TestTube,
   TriangleAlert,
   Wrench,
+  Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
@@ -54,6 +57,13 @@ import {
   type CodecScene,
   type CodecSemanticServiceStatus,
 } from "@/lib/codec/contracts";
+import type {
+  CodecEffectEndpoint,
+  CodecEffectEndpointMap,
+  CodecEffectPreview,
+  CodecEffectRuntimeHandle,
+} from "@/lib/codec/effects/contracts";
+import { deriveCodecEffects, effectForPreview } from "@/lib/codec/effects/derive";
 import { codecFeedHealth } from "@/lib/codec/feed-health";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
 import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
@@ -65,6 +75,7 @@ import {
 } from "@/lib/codec/semantic-usage";
 import { summarizeCodecTeam } from "@/lib/codec/team-summary";
 import { useLiveSignal } from "@/lib/useLiveSignal";
+import { CodecEffectsLayer } from "./CodecEffectsLayer";
 import { CodecRuntimeStrip } from "./CodecRuntimeStrip";
 import styles from "./codec.module.css";
 
@@ -93,24 +104,21 @@ const TEAM_PANEL_STORAGE_KEY = "harnery.codec.team-panel";
 const BALANCED_ROW_MIN_VIEWPORT_HEIGHT_REM = 56;
 const BALANCED_ROW_CARD_TARGET_WIDTH_REM = 27;
 const BALANCED_ROW_GRID_GAP_REM = 1;
-const PING_TRAVEL_MS = 4_200;
-const PING_ENDPOINT_HOLD_MS = 6_200;
-
-interface PingEndpoint {
-  role: "source" | "destination";
-  peerName: string;
-  phase: "sending" | "incoming" | "impact";
-}
-
 interface CodecViewProps {
   initialScene: CodecScene;
   mode?: "live" | "replay" | "debug";
   replayPhases?: CodecReplayPhase[];
+  effectPreview?: CodecEffectPreview;
 }
 
-export function CodecView({ initialScene, mode = "live", replayPhases = [] }: CodecViewProps) {
+export function CodecView({
+  initialScene,
+  mode = "live",
+  replayPhases = [],
+  effectPreview,
+}: CodecViewProps) {
   const [scene, setScene] = useState<CodecScene>(initialScene);
-  const [pingEndpoints, setPingEndpoints] = useState<Record<string, PingEndpoint>>({});
+  const [effectEndpoints, setEffectEndpoints] = useState<CodecEffectEndpointMap>({});
   const [announcement, setAnnouncement] = useState("");
   const [lastSignalAt, setLastSignalAt] = useState(initialScene.generated_at);
   const [feedFault, setFeedFault] = useState(false);
@@ -123,30 +131,20 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   const [fullscreenAvailable, setFullscreenAvailable] = useState(false);
   const [mobileLayout, setMobileLayout] = useState(false);
   const [balancedRows, setBalancedRows] = useState(false);
+  const arenaRef = useRef<HTMLDivElement | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
+  const effectsRef = useRef<CodecEffectRuntimeHandle | null>(null);
+  const sceneRef = useRef(initialScene);
   const replayHydrated = useRef(false);
   const debugHydrated = useRef(false);
   // The server-rendered scene counts as a snapshot: its cues never animate.
   const seenCues = useRef<Set<string>>(new Set(initialScene.transients.map((t) => t.cue_id)));
-  const pingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => {
     setClockNow(Date.now());
     const timer = setInterval(() => setClockNow(Date.now()), 1_000);
     return () => clearInterval(timer);
   }, []);
-
-  useEffect(
-    () => () => {
-      for (const timer of pingTimers.current.values()) clearTimeout(timer);
-      document
-        .querySelectorAll("[data-codec-ping-particle], [data-codec-ping-impact]")
-        .forEach((node) => {
-          node.remove();
-        });
-    },
-    [],
-  );
 
   useEffect(() => {
     const query = window.matchMedia("(max-width: 720px)");
@@ -206,156 +204,36 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
     }
   }, []);
 
-  const animatePing = useCallback((fromId: string, toId: string, next: CodecScene) => {
-    const nameOf = (id: string) =>
-      next.panels.find((p) => p.instance_id === id)?.identity.display_name ?? "unknown";
-    const fromName = nameOf(fromId);
-    const toName = nameOf(toId);
-    setAnnouncement(`agent-${fromName} pinged agent-${toName}`);
-
-    const armEndpoint = (id: string, endpoint: PingEndpoint) => {
-      setPingEndpoints((current) => ({ ...current, [id]: endpoint }));
-      const prior = pingTimers.current.get(id);
-      if (prior) clearTimeout(prior);
-      pingTimers.current.set(
-        id,
-        setTimeout(() => {
-          setPingEndpoints((current) => {
-            const { [id]: _gone, ...rest } = current;
-            return rest;
-          });
-          pingTimers.current.delete(id);
-        }, PING_ENDPOINT_HOLD_MS),
-      );
-    };
-
-    // Both endpoints remain named and highlighted for the complete trip. With
-    // reduced motion these become the full, static equivalent of the effect.
-    armEndpoint(fromId, { role: "source", peerName: toName, phase: "sending" });
-    armEndpoint(toId, { role: "destination", peerName: fromName, phase: "incoming" });
-
-    // Traveling particle, motion-gated.
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setPingEndpoints((current) => ({
-        ...current,
-        [toId]: { role: "destination", peerName: fromName, phase: "impact" },
-      }));
-      return;
+  const ingestScene = useCallback((next: CodecScene, animate: boolean) => {
+    const effects = animate
+      ? deriveCodecEffects(sceneRef.current, next, { seenTransientIds: seenCues.current })
+      : [];
+    for (const cue of next.transients) seenCues.current.add(cue.cue_id);
+    if (seenCues.current.size > 500) {
+      seenCues.current = new Set([...seenCues.current].slice(-250));
     }
-    const grid = gridRef.current;
-    if (!grid) return;
-    const fromEl = grid.querySelector(`[data-instance="${CSS.escape(fromId)}"]`);
-    const toEl = grid.querySelector(`[data-instance="${CSS.escape(toId)}"]`);
-    if (!fromEl || !toEl) return;
-    const a = fromEl.getBoundingClientRect();
-    const b = toEl.getBoundingClientRect();
-    const edgeAnchor = (rect: DOMRect, toward: DOMRect) => {
-      const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
-      const towardX = toward.left + toward.width / 2;
-      const towardY = toward.top + toward.height / 2;
-      const vectorX = towardX - centerX;
-      const vectorY = towardY - centerY;
-      const inset = 10;
-      const xScale =
-        Math.abs(vectorX) > 0 ? (rect.width / 2 - inset) / Math.abs(vectorX) : Infinity;
-      const yScale =
-        Math.abs(vectorY) > 0 ? (rect.height / 2 - inset) / Math.abs(vectorY) : Infinity;
-      const scale = Math.min(xScale, yScale);
-      return { x: centerX + vectorX * scale, y: centerY + vectorY * scale };
-    };
-    const start = edgeAnchor(a, b);
-    const end = edgeAnchor(b, a);
-    const dot = document.createElement("div");
-    dot.className = styles.pingDot ?? "";
-    dot.setAttribute("aria-hidden", "true");
-    dot.dataset.codecPingParticle = "true";
-    dot.dataset.fromInstance = fromId;
-    dot.dataset.toInstance = toId;
-    const deltaX = end.x - start.x;
-    const deltaY = end.y - start.y;
-    dot.style.left = `${start.x - 20}px`;
-    dot.style.top = `${start.y - 20}px`;
-    dot.style.setProperty("--ping-angle", `${Math.atan2(deltaY, deltaX)}rad`);
-    const signalLabel = document.createElement("span");
-    signalLabel.className = styles.pingDotLabel ?? "";
-    signalLabel.textContent = "PING";
-    dot.appendChild(signalLabel);
-    document.body.appendChild(dot);
-    const travel = dot.animate(
-      [
-        { transform: "translate(0, 0) scale(0.25)", opacity: 0 },
-        { transform: "translate(0, 0) scale(1.45)", opacity: 1, offset: 0.1 },
-        { transform: "translate(0, 0) scale(1)", opacity: 1, offset: 0.18 },
-        {
-          transform: `translate(${deltaX * 0.2}px, ${deltaY * 0.2}px) scale(1.12)`,
-          opacity: 1,
-          offset: 0.36,
-        },
-        {
-          transform: `translate(${deltaX * 0.68}px, ${deltaY * 0.68}px) scale(1)`,
-          opacity: 1,
-          offset: 0.72,
-        },
-        {
-          transform: `translate(${deltaX}px, ${deltaY}px) scale(1.65)`,
-          opacity: 1,
-        },
-      ],
-      { duration: PING_TRAVEL_MS, easing: "cubic-bezier(0.22, 0.04, 0.18, 1)" },
-    );
-    travel.onfinish = () => {
-      dot.remove();
-      setPingEndpoints((current) => ({
-        ...current,
-        [toId]: { role: "destination", peerName: fromName, phase: "impact" },
-      }));
-
-      const impact = document.createElement("div");
-      impact.className = styles.pingImpact ?? "";
-      impact.setAttribute("aria-hidden", "true");
-      impact.dataset.codecPingImpact = "true";
-      impact.dataset.fromInstance = fromId;
-      impact.dataset.toInstance = toId;
-      impact.style.left = `${end.x - 56}px`;
-      impact.style.top = `${end.y - 56}px`;
-      const impactLabel = document.createElement("span");
-      impactLabel.className = styles.pingImpactLabel ?? "";
-      impactLabel.textContent = "RECEIVED";
-      impact.appendChild(impactLabel);
-      document.body.appendChild(impact);
-      impact.addEventListener("animationend", () => impact.remove(), { once: true });
-      window.setTimeout(() => impact.remove(), 1_800);
-    };
-    travel.oncancel = () => dot.remove();
+    sceneRef.current = next;
+    setScene(next);
+    setLastSignalAt(new Date().toISOString());
+    setFeedFault(false);
+    if (effects.length > 0) effectsRef.current?.playMany(effects, next);
   }, []);
 
-  const ingestScene = useCallback(
-    (next: CodecScene, animate: boolean) => {
-      for (const cue of next.transients) {
-        if (seenCues.current.has(cue.cue_id)) continue;
-        seenCues.current.add(cue.cue_id);
-        if (animate && cue.kind === "message" && cue.from_instance_id && cue.to_instance_id) {
-          const sourceDegraded = next.panels.find(
-            (panel) => panel.instance_id === cue.from_instance_id,
-          )?.telemetry?.value;
-          const targetDegraded = next.panels.find(
-            (panel) => panel.instance_id === cue.to_instance_id,
-          )?.telemetry?.value;
-          if (sourceDegraded !== "degraded" && targetDegraded !== "degraded") {
-            animatePing(cue.from_instance_id, cue.to_instance_id, next);
-          }
-        }
-      }
-      if (seenCues.current.size > 500) {
-        seenCues.current = new Set([...seenCues.current].slice(-250));
-      }
-      setScene(next);
-      setLastSignalAt(new Date().toISOString());
-      setFeedFault(false);
+  const handleEffectEndpoint = useCallback(
+    (instanceId: string, endpoint: CodecEffectEndpoint | null) => {
+      setEffectEndpoints((current) => {
+        if (endpoint) return { ...current, [instanceId]: endpoint };
+        const { [instanceId]: _removed, ...rest } = current;
+        return rest;
+      });
     },
-    [animatePing],
+    [],
   );
+
+  useEffect(() => {
+    if (!effectPreview || effectPreview.sequence <= 0) return;
+    effectsRef.current?.play(effectForPreview(effectPreview), sceneRef.current);
+  }, [effectPreview]);
 
   const parseScene = (ev: MessageEvent): CodecScene | null => {
     try {
@@ -479,6 +357,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
 
   return (
     <div
+      ref={arenaRef}
       data-codec-scene
       data-remote-panel={remotePanelOpen ? "open" : "closed"}
       data-team-panel={teamPanelOpen ? "open" : "closed"}
@@ -495,6 +374,12 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
       }
       className={cn(styles.codecArena, AMBIENCE_CLASS[scene.team_ambience.value])}
     >
+      <CodecEffectsLayer
+        ref={effectsRef}
+        anchorRootRef={arenaRef}
+        onEndpointChange={handleEffectEndpoint}
+        onAnnouncement={setAnnouncement}
+      />
       <p aria-live="polite" className="sr-only">
         {announcement}
       </p>
@@ -635,7 +520,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
           scene={scene}
           panels={panels}
           parentNameFor={parentNameFor}
-          pingEndpoints={pingEndpoints}
+          effectEndpoints={effectEndpoints}
         />
       ) : (
         <>
@@ -663,7 +548,7 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
                   key={panel.instance_id}
                   panel={panel}
                   parentName={parentNameFor(panel)}
-                  ping={pingEndpoints[panel.instance_id]}
+                  effect={effectEndpoints[panel.instance_id]}
                   balancedRowStart={
                     balancedRows && panels.length % 2 === 1 && index === balancedColumnCount
                   }
@@ -677,22 +562,32 @@ export function CodecView({ initialScene, mode = "live", replayPhases = [] }: Co
   );
 }
 
-function PingEndpointCue({ ping }: { ping: PingEndpoint }) {
-  const source = ping.role === "source";
+function EffectEndpointCue({ effect }: { effect: CodecEffectEndpoint }) {
+  const source = effect.role === "source";
+  const Icon =
+    effect.kind === "ping"
+      ? Network
+      : effect.kind === "healing"
+        ? HeartPulse
+        : effect.kind === "power-up"
+          ? Zap
+          : Sparkles;
   return (
     <div
-      data-codec-ping-endpoint
-      data-role={ping.role}
+      data-codec-effect-endpoint
+      data-effect-kind={effect.kind}
+      data-role={effect.role}
       className={cn(
         styles.pingEndpointCue,
         source ? styles.pingEndpointSource : styles.pingEndpointDestination,
+        effect.kind === "energy" && styles.effectEndpointEnergy,
+        effect.kind === "power-up" && styles.effectEndpointPowerUp,
+        effect.kind === "healing" && styles.effectEndpointHealing,
       )}
     >
-      <Network aria-hidden />
-      <span>
-        {source ? "Pinging" : ping.phase === "impact" ? "Received from" : "Incoming from"}
-      </span>
-      <AgentChip name={ping.peerName} prefix="" />
+      <Icon aria-hidden />
+      <span>{effect.label}</span>
+      {effect.peerName && <AgentChip name={effect.peerName} prefix="" />}
     </div>
   );
 }
@@ -701,12 +596,12 @@ function MobileCodecDeck({
   scene,
   panels,
   parentNameFor,
-  pingEndpoints,
+  effectEndpoints,
 }: {
   scene: CodecScene;
   panels: CodecPanelScene[];
   parentNameFor: (panel: CodecPanelScene) => string | undefined;
-  pingEndpoints: Record<string, PingEndpoint>;
+  effectEndpoints: CodecEffectEndpointMap;
 }) {
   const summary = summarizeCodecTeam(scene);
   const working = panels.filter((panel) => panel.activity.value === "working").length;
@@ -778,7 +673,7 @@ function MobileCodecDeck({
             key={panel.instance_id}
             panel={panel}
             parentName={parentNameFor(panel)}
-            ping={pingEndpoints[panel.instance_id]}
+            effect={effectEndpoints[panel.instance_id]}
             position={index + 1}
             total={panels.length}
           />
@@ -791,13 +686,13 @@ function MobileCodecDeck({
 function MobileCodecPanel({
   panel,
   parentName,
-  ping,
+  effect,
   position,
   total,
 }: {
   panel: CodecPanelScene;
   parentName?: string;
-  ping?: PingEndpoint;
+  effect?: CodecEffectEndpoint;
   position: number;
   total: number;
 }) {
@@ -809,25 +704,32 @@ function MobileCodecPanel({
       id={`mobile-agent-${panel.instance_id}`}
       aria-label={`Agent ${panel.identity.display_name}, card ${position} of ${total}`}
       data-instance={panel.instance_id}
+      data-codec-effect-anchor={panel.instance_id}
       data-codec-mobile-card
-      data-ping-arrival={ping?.role === "destination" ? "active" : "idle"}
-      data-ping-role={ping?.role ?? "idle"}
-      data-ping-phase={ping?.phase ?? "idle"}
+      data-effect-kind={effect?.kind ?? "idle"}
+      data-effect-role={effect?.role ?? "idle"}
+      data-effect-phase={effect?.phase ?? "idle"}
+      data-ping-arrival={effect?.kind === "ping" && effect.role === "target" ? "active" : "idle"}
+      data-ping-role={effect?.kind === "ping" ? effect.role : "idle"}
+      data-ping-phase={effect?.kind === "ping" ? effect.phase : "idle"}
       data-activity={panel.activity.value}
       data-attention={panel.attention.value}
       className={cn(
         styles.mobileCodecCard,
         panelPalette(panel.identity.display_name),
         ATTENTION_RING[panel.attention.value],
-        ping?.role === "source" && styles.pingSource,
-        ping?.role === "destination" && styles.pingDestination,
-        ping?.phase === "impact" && styles.pingDestinationImpact,
-        !ping && styles.pingIdle,
+        effect?.kind === "ping" && effect.role === "source" && styles.pingSource,
+        effect?.kind === "ping" && effect.role === "target" && styles.pingDestination,
+        effect?.kind === "ping" && effect.phase === "impact" && styles.pingDestinationImpact,
+        effect?.kind === "energy" && styles.effectEnergy,
+        effect?.kind === "power-up" && styles.effectPowerUp,
+        effect?.kind === "healing" && styles.effectHealing,
+        !effect && styles.pingIdle,
         offline && styles.panelOffline,
         unknownPresence && styles.panelStale,
       )}
     >
-      {ping && <PingEndpointCue ping={ping} />}
+      {effect && <EffectEndpointCue effect={effect} />}
       <header className={styles.mobileCardHeader}>
         <div>
           <p className={styles.mobileCardOrdinal}>
@@ -1247,12 +1149,12 @@ function panelPalette(name: string): string | undefined {
 function CodecPanel({
   panel,
   parentName,
-  ping,
+  effect,
   balancedRowStart,
 }: {
   panel: CodecPanelScene;
   parentName?: string;
-  ping?: PingEndpoint;
+  effect?: CodecEffectEndpoint;
   balancedRowStart: boolean;
 }) {
   const offline = panel.presence.value === "offline";
@@ -1262,10 +1164,14 @@ function CodecPanel({
     <section
       aria-label={`Agent ${panel.identity.display_name}`}
       data-instance={panel.instance_id}
+      data-codec-effect-anchor={panel.instance_id}
       data-codec-card
-      data-ping-arrival={ping?.role === "destination" ? "active" : "idle"}
-      data-ping-role={ping?.role ?? "idle"}
-      data-ping-phase={ping?.phase ?? "idle"}
+      data-effect-kind={effect?.kind ?? "idle"}
+      data-effect-role={effect?.role ?? "idle"}
+      data-effect-phase={effect?.phase ?? "idle"}
+      data-ping-arrival={effect?.kind === "ping" && effect.role === "target" ? "active" : "idle"}
+      data-ping-role={effect?.kind === "ping" ? effect.role : "idle"}
+      data-ping-phase={effect?.kind === "ping" ? effect.phase : "idle"}
       data-balanced-row-start={balancedRowStart ? "true" : undefined}
       data-activity={panel.activity.value}
       data-attention={panel.attention.value}
@@ -1278,15 +1184,18 @@ function CodecPanel({
         panel.friction && "ring-1 ring-amber-400/50",
         panel.attention.value === "error" && styles.errorFlash,
         panel.attention.value === "completion" && styles.completionBurst,
-        ping?.role === "source" && styles.pingSource,
-        ping?.role === "destination" && styles.pingDestination,
-        ping?.phase === "impact" && styles.pingDestinationImpact,
-        !ping && styles.pingIdle,
+        effect?.kind === "ping" && effect.role === "source" && styles.pingSource,
+        effect?.kind === "ping" && effect.role === "target" && styles.pingDestination,
+        effect?.kind === "ping" && effect.phase === "impact" && styles.pingDestinationImpact,
+        effect?.kind === "energy" && styles.effectEnergy,
+        effect?.kind === "power-up" && styles.effectPowerUp,
+        effect?.kind === "healing" && styles.effectHealing,
+        !effect && styles.pingIdle,
         offline && styles.panelOffline,
         unknownPresence && styles.panelStale,
       )}
     >
-      {ping && <PingEndpointCue ping={ping} />}
+      {effect && <EffectEndpointCue effect={effect} />}
       <div className={styles.portraitColumn}>
         <PortraitSurface panel={panel} />
       </div>

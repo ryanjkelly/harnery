@@ -2179,6 +2179,63 @@
     0 8px 30px rgb(56 189 248 / 0.34);
 }
 
+.effectEndpointEnergy {
+  color: rgb(236 254 255);
+  background: rgb(8 47 73 / 0.95);
+  box-shadow:
+    0 0 0 2px rgb(34 211 238 / 0.38),
+    0 8px 30px rgb(168 85 247 / 0.3);
+}
+
+.effectEndpointPowerUp {
+  color: rgb(254 249 195);
+  background: rgb(66 32 6 / 0.95);
+  box-shadow:
+    0 0 0 2px rgb(250 204 21 / 0.42),
+    0 8px 30px rgb(249 115 22 / 0.32);
+}
+
+.effectEndpointHealing {
+  color: rgb(236 253 245);
+  background: rgb(6 78 59 / 0.95);
+  box-shadow:
+    0 0 0 2px rgb(52 211 153 / 0.42),
+    0 8px 30px rgb(16 185 129 / 0.32);
+}
+
+.effectEnergy,
+.effectPowerUp,
+.effectHealing {
+  outline-offset: 5px;
+}
+
+.effectEnergy {
+  outline: 3px solid rgb(34 211 238 / 0.82);
+  box-shadow:
+    0 0 0 4px rgb(168 85 247 / 0.16),
+    0 0 52px 14px rgb(34 211 238 / 0.3),
+    0 20px 60px rgb(0 0 0 / 0.42),
+    inset 0 0 42px rgb(34 211 238 / 0.09);
+}
+
+.effectPowerUp {
+  outline: 4px solid rgb(250 204 21 / 0.92);
+  box-shadow:
+    0 0 0 7px rgb(249 115 22 / 0.2),
+    0 0 66px 18px rgb(250 204 21 / 0.42),
+    0 20px 60px rgb(0 0 0 / 0.42),
+    inset 0 0 48px rgb(250 204 21 / 0.13);
+}
+
+.effectHealing {
+  outline: 4px solid rgb(52 211 153 / 0.92);
+  box-shadow:
+    0 0 0 8px rgb(16 185 129 / 0.2),
+    0 0 68px 20px rgb(52 211 153 / 0.42),
+    0 20px 60px rgb(0 0 0 / 0.42),
+    inset 0 0 52px rgb(52 211 153 / 0.14);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .pingSource {
     animation: codec-ping-source 6.2s ease-out both;
@@ -2198,6 +2255,18 @@
 
   .pingEndpointDestination svg {
     animation: codec-ping-icon-receive 1.2s ease-in-out infinite;
+  }
+
+  .effectEnergy {
+    animation: codec-effect-energy-card 2.1s ease-out both;
+  }
+
+  .effectPowerUp {
+    animation: codec-effect-power-card 2.8s cubic-bezier(0.16, 0.8, 0.2, 1) both;
+  }
+
+  .effectHealing {
+    animation: codec-effect-healing-card 3s ease-out both;
   }
 
   @keyframes codec-ping-source {
@@ -2300,6 +2369,51 @@
       opacity: 1;
     }
   }
+
+  @keyframes codec-effect-energy-card {
+    0% {
+      outline-color: rgb(34 211 238 / 0);
+      filter: brightness(1);
+    }
+    24% {
+      outline-color: rgb(165 243 252 / 1);
+      filter: brightness(1.12);
+    }
+    100% {
+      outline-color: rgb(34 211 238 / 0.2);
+      filter: brightness(1);
+    }
+  }
+
+  @keyframes codec-effect-power-card {
+    0% {
+      outline-color: rgb(250 204 21 / 0);
+      transform: translateY(4px) scale(0.99);
+    }
+    28% {
+      outline-color: rgb(254 240 138 / 1);
+      transform: translateY(-2px) scale(1.012);
+    }
+    100% {
+      outline-color: rgb(250 204 21 / 0.22);
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes codec-effect-healing-card {
+    0% {
+      outline-color: rgb(52 211 153 / 0);
+      filter: saturate(0.72);
+    }
+    32% {
+      outline-color: rgb(167 243 208 / 1);
+      filter: saturate(1.2) brightness(1.1);
+    }
+    100% {
+      outline-color: rgb(52 211 153 / 0.22);
+      filter: saturate(1);
+    }
+  }
 }
 
 /* Completion is an expiring attention channel, so its burst is deliberately
@@ -2309,156 +2423,6 @@
     0 0 0 1px rgb(52 211 153 / 0.45),
     0 20px 60px rgb(0 0 0 / 0.36),
     inset 0 1px 0 rgb(255 255 255 / 0.06);
-}
-
-/* Traveling message particle (created imperatively, motion-gated in JS). */
-.pingDot {
-  position: fixed;
-  z-index: 100;
-  width: 40px;
-  height: 40px;
-  border-radius: 999px;
-  pointer-events: none;
-  background: radial-gradient(
-    circle,
-    #fff 0 16%,
-    rgb(207 250 254) 26%,
-    rgb(34 211 238) 52%,
-    rgb(168 85 247 / 0.66) 68%,
-    transparent 76%
-  );
-  box-shadow:
-    0 0 22px 9px rgb(56 189 248 / 0.94),
-    0 0 58px 20px rgb(168 85 247 / 0.54);
-  filter: saturate(1.45);
-}
-
-.pingDot::before {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: 50%;
-  width: 148px;
-  height: 18px;
-  border-radius: 999px 0 0 999px;
-  opacity: 0.9;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgb(168 85 247 / 0.08),
-    rgb(168 85 247 / 0.56),
-    rgb(103 232 249 / 0.96),
-    #fff
-  );
-  filter: blur(3px);
-  transform: translateY(-50%) rotate(var(--ping-angle, 0rad));
-  transform-origin: right center;
-}
-
-.pingDot::after {
-  content: "";
-  position: absolute;
-  inset: -12px;
-  border: 3px solid rgb(165 243 252 / 0.86);
-  border-radius: 999px;
-  box-shadow:
-    0 0 20px rgb(56 189 248 / 0.88),
-    inset 0 0 18px rgb(168 85 247 / 0.52);
-}
-
-.pingDotLabel {
-  position: absolute;
-  top: -2rem;
-  left: 50%;
-  padding: 0.24rem 0.42rem;
-  transform: translateX(-50%);
-  border: 1px solid rgb(165 243 252 / 0.72);
-  border-radius: 999px;
-  color: white;
-  background: rgb(8 47 73 / 0.9);
-  box-shadow: 0 0 20px rgb(56 189 248 / 0.62);
-  font-family: var(--font-mono), monospace;
-  font-size: 0.64rem;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  line-height: 1;
-}
-
-.pingImpact {
-  position: fixed;
-  z-index: 99;
-  width: 112px;
-  height: 112px;
-  pointer-events: none;
-  border: 4px solid rgb(207 250 254 / 0.96);
-  border-radius: 999px;
-  background: radial-gradient(circle, white 0 4%, rgb(103 232 249 / 0.88) 8%, transparent 42%);
-  box-shadow:
-    0 0 32px 14px rgb(56 189 248 / 0.86),
-    0 0 90px 30px rgb(168 85 247 / 0.62);
-  animation: codec-ping-impact 1.65s cubic-bezier(0.16, 0.8, 0.2, 1) both;
-}
-
-.pingImpact::before,
-.pingImpact::after {
-  content: "";
-  position: absolute;
-  border-radius: inherit;
-}
-
-.pingImpact::before {
-  inset: -34px;
-  border: 5px solid rgb(103 232 249 / 0.72);
-  box-shadow: 0 0 36px rgb(56 189 248 / 0.84);
-}
-
-.pingImpact::after {
-  inset: -58px;
-  background: repeating-conic-gradient(
-    from 0deg,
-    transparent 0deg 12deg,
-    rgb(165 243 252 / 0.92) 13deg 15deg,
-    transparent 16deg 30deg
-  );
-  mask: radial-gradient(circle, transparent 0 47%, #000 49% 54%, transparent 56%);
-}
-
-.pingImpactLabel {
-  position: absolute;
-  z-index: 2;
-  top: 50%;
-  left: 50%;
-  padding: 0.36rem 0.54rem;
-  transform: translate(-50%, -50%);
-  border: 1px solid white;
-  border-radius: 999px;
-  color: rgb(8 47 73);
-  background: white;
-  box-shadow: 0 0 24px rgb(255 255 255 / 0.9);
-  font-family: var(--font-mono), monospace;
-  font-size: 0.68rem;
-  font-weight: 950;
-  letter-spacing: 0.08em;
-  line-height: 1;
-}
-
-@keyframes codec-ping-impact {
-  0% {
-    transform: scale(0.16) rotate(-12deg);
-    opacity: 0;
-  }
-  12% {
-    transform: scale(1.22) rotate(0deg);
-    opacity: 1;
-  }
-  36% {
-    transform: scale(0.88) rotate(3deg);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(2.7) rotate(12deg);
-    opacity: 0;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
