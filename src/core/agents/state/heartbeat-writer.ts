@@ -119,12 +119,20 @@ export function setAssignedNameCache(
   name: string,
   kind: "session" | "subagent" | "transient" = "session",
 ): Heartbeat | null {
-  const heartbeat = readHeartbeat(coordRoot, instanceId);
-  if (!heartbeat) return null;
-  heartbeat.name = name;
-  heartbeat.kind = heartbeat.kind ?? kind;
-  atomicWrite(heartbeatPath(coordRoot, instanceId), JSON.stringify(heartbeat, null, 2));
-  return heartbeat;
+  return mutate(coordRoot, instanceId, (heartbeat) => {
+    const suggestedSessionName = heartbeat.suggested_session_name?.replace(
+      /^(\[DONE\]\s+)?Agent unknown( - .+)$/,
+      `$1Agent ${name}$2`,
+    );
+    return {
+      ...heartbeat,
+      name,
+      kind: heartbeat.kind ?? kind,
+      ...(suggestedSessionName && suggestedSessionName !== heartbeat.suggested_session_name
+        ? { suggested_session_name: suggestedSessionName }
+        : {}),
+    };
+  });
 }
 
 /**

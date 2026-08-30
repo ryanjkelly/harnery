@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -76,7 +76,7 @@ function makeSandbox(): string {
   return root;
 }
 
-function makeMidFlightSandbox(): string {
+function makeMidFlightSandbox(materializeHeartbeat = true): string {
   const root = mkdtempSync(path.join(os.tmpdir(), "harn-lifecycle-mid-flight-"));
   sandboxes.push(root);
   const git = (args: string[]) => spawnSync("git", args, { cwd: root, stdio: "ignore" });
@@ -103,8 +103,10 @@ function makeMidFlightSandbox(): string {
     adapter: "codex",
     instanceId: OWNER,
   });
-  const hb = ensureLiveCoordinationHeartbeat(root, OWNER, OWNER, "codex", "gpt-5.6");
-  if (!hb) throw new Error("expected mid-flight heartbeat");
+  if (materializeHeartbeat) {
+    const hb = ensureLiveCoordinationHeartbeat(root, OWNER, OWNER, "codex", "gpt-5.6");
+    if (!hb) throw new Error("expected mid-flight heartbeat");
+  }
   return root;
 }
 
@@ -115,6 +117,27 @@ function harn(root: string, args: string[]): RunResult {
     env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
   });
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status };
+}
+
+function harnAsync(root: string, args: string[]): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("bash", [HARN, ...args], {
+      cwd: root,
+      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (status) => {
+      resolve({
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        status,
+      });
+    });
+  });
 }
 
 function heartbeat(root: string): Record<string, unknown> {
@@ -160,6 +183,30 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       session_name_retry: false,
       suggested_session_name: "Agent Anna - Recovered focus",
     });
+    expect(heartbeat(root)).toMatchObject({
+      name: "Anna",
+      task: "Recovered focus",
+      suggested_session_name: "Agent Anna - Recovered focus",
+    });
+  });
+
+  test("overlapping first set-task calls name a mid-flight session before its heartbeat exists", async () => {
+    const root = makeMidFlightSandbox(false);
+    expect(existsSync(path.join(root, ".harnery", "active", `${OWNER}.json`))).toBeFalse();
+
+    const args = ["agents", "set-task", "Recovered focus", "--session-id", OWNER];
+    const results = await Promise.all([harnAsync(root, args), harnAsync(root, args)]);
+
+    for (const result of results) {
+      if (result.status !== 0) {
+        throw new Error(`overlapping set-task failed:\n${result.stdout}\n${result.stderr}`);
+      }
+      expect(outputObject(result)).toMatchObject({
+        name: "Anna",
+        suggested_session_name: "Agent Anna - Recovered focus",
+      });
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("Agent unknown");
+    }
     expect(heartbeat(root)).toMatchObject({
       name: "Anna",
       task: "Recovered focus",

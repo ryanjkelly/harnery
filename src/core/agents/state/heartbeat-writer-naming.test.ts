@@ -12,6 +12,7 @@ import { join } from "node:path";
 import {
   buildSuggestedName,
   readHeartbeat,
+  setAssignedNameCache,
   setTask,
   stampSessionNameSeen,
 } from "./heartbeat-writer.ts";
@@ -105,6 +106,20 @@ describe("setTask session naming", () => {
     seed({ name: undefined });
     const hb = setTask(root, "self", "Auth refactor");
     expect(hb?.suggested_session_name).toBe("Agent unknown - Auth refactor");
+  });
+
+  test("late name assignment repairs a pending unknown title", () => {
+    seed({
+      name: undefined,
+      suggested_session_name: "Agent unknown - Auth refactor",
+      session_name_seen_for: "Agent unknown - Auth refactor",
+    });
+
+    const hb = setAssignedNameCache(root, "self", "Maya");
+
+    expect(hb?.name).toBe("Maya");
+    expect(hb?.suggested_session_name).toBe("Agent Maya - Auth refactor");
+    expect(hb?.session_name_seen_for).toBe("Agent unknown - Auth refactor");
   });
 });
 

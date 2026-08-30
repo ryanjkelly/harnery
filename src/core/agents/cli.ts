@@ -7,11 +7,14 @@
  * handlers; Phase 4 flips the default so `harn agents …` shims through here.
  */
 
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 
 function sharedDiagnostic(
   root: string,
@@ -169,6 +172,64 @@ function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "cod
   return "claude-code";
 }
 
+const coordinationRetryCell = new Int32Array(new SharedArrayBuffer(4));
+const COORDINATION_RETRY_ATTEMPTS = 240;
+const COORDINATION_RETRY_DELAY_MS = 25;
+
+function isRetryableCoordinationContention(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes(
+      "lease event-v3-coordination-producer is held by a live or unexpired owner",
+    )
+  );
+}
+
+function waitForCoordinationLease(): void {
+  Atomics.wait(coordinationRetryCell, 0, 0, COORDINATION_RETRY_DELAY_MS);
+}
+
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+// The V3 producer lease begins after its caller has materialized and read the
+// disposable heartbeat. Serialize that larger registration boundary per owner
+// so overlapping first declarations cannot both derive state from an unnamed,
+// missing heartbeat and then strand a conflicting authority transaction.
+function acquireSetTaskLease(root: string, owner: string) {
+  const leasePath = join(root, ".harnery", "private", "agent-set-task-leases", `${owner}.lease`);
+  const authoritySha256 = createHash("sha256")
+    .update(resolve(root))
+    .update("\0")
+    .update(owner)
+    .digest("hex");
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return acquireNoClobberLease({
+        path: leasePath,
+        scope: "agent-set-task",
+        authoritySha256,
+        staleAfterMs: 5_000,
+        validateStaleOwner: (leaseOwner) =>
+          leaseOwner.host === hostname() && !pidIsAlive(leaseOwner.pid),
+      });
+    } catch (error) {
+      const busy =
+        error instanceof Error &&
+        error.message.includes("lease agent-set-task is held by a live or unexpired owner");
+      if (!busy || attempt >= COORDINATION_RETRY_ATTEMPTS - 1) throw error;
+      waitForCoordinationLease();
+    }
+  }
+}
+
 async function handleStateAction(root: string, action: string, rest: string[]): Promise<number> {
   const writer = await import("./state/heartbeat-writer.ts");
   const [owner, ...args] = rest;
@@ -180,53 +241,91 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
   switch (action) {
     case "set-task": {
       const task = args.join(" ");
-      let before = writer.readHeartbeat(root, owner);
-      const humanFacing =
-        before?.kind !== "subagent" && before?.kind !== "transient" && !before?.workflow_run_id;
-      // A mid-flight-onboarded generation can exist before SessionStart's
-      // assign-name step ran. Repair that private display metadata before the
-      // first non-empty task mints its operator-facing title. assignName is the
-      // same durable, idempotent pool path used by normal SessionStart.
-      if (task && before && humanFacing && !before.name?.trim()) {
-        const { assignName } = await import("./state/names.ts");
-        const name = assignName(root, owner, "session");
-        before = writer.setAssignedNameCache(root, owner, name, "session");
-        if (!before) {
+      let setTaskLease: ReturnType<typeof acquireSetTaskLease>;
+      try {
+        setTaskLease = acquireSetTaskLease(root, owner);
+      } catch (error) {
+        process.stderr.write(
+          `agent-coord set-task: registration lease refused (${error instanceof Error ? error.message : String(error)})\n`,
+        );
+        return 1;
+      }
+      try {
+        let before = writer.readHeartbeat(root, owner);
+        const humanFacing =
+          before?.kind !== "subagent" && before?.kind !== "transient" && !before?.workflow_run_id;
+        // A mid-flight-onboarded generation can exist before SessionStart's
+        // assign-name step ran. Repair that private display metadata before the
+        // first non-empty task mints its operator-facing title. assignName is the
+        // same durable, idempotent pool path used by normal SessionStart.
+        if (task && before && humanFacing && !before.name?.trim()) {
+          const { assignName } = await import("./state/names.ts");
+          const name = assignName(root, owner, "session");
+          before = writer.setAssignedNameCache(root, owner, name, "session");
+          if (!before) {
+            process.stderr.write(
+              `agent-coord set-task: could not restore assigned name for ${owner}\n`,
+            );
+            return 1;
+          }
+        }
+        let hb: ReturnType<typeof writer.setTask>;
+        try {
+          const { recordLiveTaskChangeV3 } = await import("./live-authority-v3.ts");
+          for (let attempt = 0; ; attempt += 1) {
+            try {
+              recordLiveTaskChangeV3({
+                coordRoot: root,
+                owner,
+                nativeSessionId: before?.session_id ?? owner,
+                adapter: adapterFromPlatform(before?.platform),
+                task,
+              });
+              break;
+            } catch (error) {
+              if (
+                !isRetryableCoordinationContention(error) ||
+                attempt >= COORDINATION_RETRY_ATTEMPTS - 1
+              ) {
+                throw error;
+              }
+              waitForCoordinationLease();
+            }
+          }
+          hb = writer.readHeartbeat(root, owner);
+          const currentHumanFacing =
+            hb?.kind !== "subagent" && hb?.kind !== "transient" && !hb?.workflow_run_id;
+          if (
+            task &&
+            hb &&
+            currentHumanFacing &&
+            (!hb.name?.trim() || /^Agent unknown - /.test(hb.suggested_session_name ?? ""))
+          ) {
+            const { assignName } = await import("./state/names.ts");
+            const name = hb.name?.trim() || assignName(root, owner, "session");
+            hb = writer.setAssignedNameCache(root, owner, name, "session");
+          }
+        } catch (error) {
           process.stderr.write(
-            `agent-coord set-task: could not restore assigned name for ${owner}\n`,
+            `agent-coord set-task: V3 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
           );
           return 1;
         }
-      }
-      let hb: ReturnType<typeof writer.setTask>;
-      try {
-        const { recordLiveTaskChangeV3 } = await import("./live-authority-v3.ts");
-        recordLiveTaskChangeV3({
-          coordRoot: root,
-          owner,
-          nativeSessionId: before?.session_id ?? owner,
-          adapter: adapterFromPlatform(before?.platform),
-          task,
-        });
-        hb = writer.readHeartbeat(root, owner);
-      } catch (error) {
-        process.stderr.write(
-          `agent-coord set-task: V3 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
+        if (!hb) {
+          // Name the RESOLVED root: when a nested .harnery/ shadows the real
+          // coordination home, the full path is what makes that diagnosable.
+          process.stderr.write(
+            `agent-coord set-task: no heartbeat at ${root}/.harnery/active/${owner}.json\n`,
+          );
+          return 1;
+        }
+        process.stdout.write(
+          `${JSON.stringify({ instance_id: owner, task: hb.task ?? null, cleared: !task })}\n`,
         );
-        return 1;
+        return 0;
+      } finally {
+        setTaskLease.release();
       }
-      if (!hb) {
-        // Name the RESOLVED root: when a nested .harnery/ shadows the real
-        // coordination home, the full path is what makes that diagnosable.
-        process.stderr.write(
-          `agent-coord set-task: no heartbeat at ${root}/.harnery/active/${owner}.json\n`,
-        );
-        return 1;
-      }
-      process.stdout.write(
-        `${JSON.stringify({ instance_id: owner, task: hb.task ?? null, cleared: !task })}\n`,
-      );
-      return 0;
     }
     case "release-claim": {
       const path = args[0];
