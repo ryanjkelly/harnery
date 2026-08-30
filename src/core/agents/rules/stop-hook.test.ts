@@ -97,6 +97,30 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
   });
 
+  test("reports every missing end-of-turn signal in one verdict", () => {
+    const base = [turnStarted(0), event("tool.requested", 1)];
+
+    // Status, acknowledgement and task all missing: one block, all three named.
+    const allMissing = verdict("claude-code", [...base, turnCompleted(5, ritual(false))]);
+    expect(allMissing).toMatchObject({ allow: false, rule: "stop-hook.rule_1_3" });
+    expect(allMissing.reason).toContain("End-of-turn rule (1/3)");
+    expect(allMissing.reason).toContain("End-of-turn rule (2/3)");
+    expect(allMissing.reason).toContain("End-of-turn rule (3/3)");
+    expect(allMissing.reason).toContain("Repair ALL of them");
+
+    // Acknowledgement and task missing: the verdict keeps the first rule id.
+    const two = verdict("claude-code", [...base, status(2), turnCompleted(5, ritual(false))]);
+    expect(two).toMatchObject({ allow: false, rule: "stop-hook.rule_2_3" });
+    expect(two.reason).toContain("End-of-turn rule (2/3)");
+    expect(two.reason).toContain("End-of-turn rule (3/3)");
+
+    // A lone failure keeps its original single-rule wording.
+    const one = verdict("claude-code", [...base, status(2), turnCompleted(5, ritual(true))]);
+    expect(one).toMatchObject({ allow: false, rule: "stop-hook.rule_3_3" });
+    expect(one.reason).toContain("End-of-turn rule (3/3)");
+    expect(one.reason).not.toContain("Repair ALL of them");
+  });
+
   test("Cursor uses the inline status event and does not require reply-text evidence", () => {
     expect(
       verdict("cursor", [

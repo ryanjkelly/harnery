@@ -183,11 +183,14 @@ export function evaluateStopHookV3Events(
     };
   }
 
-  if (!requiredStatusChecked) {
-    return withCycleAnchor(rule13Block(coordRoot, req.session_id), cycleAnchor);
-  }
-  if (!ackPresent) return withCycleAnchor(ackBlock(), cycleAnchor);
-  if (!taskSet) return withCycleAnchor(rule33Block(coordRoot, req.session_id), cycleAnchor);
+  // Collect EVERY missing signal before returning. Reporting them one at a
+  // time made each additional missing signal cost a whole continuation, and
+  // every continuation forks a fresh hook process: on a busy multi-agent host
+  // the ritual's own enforcement became part of the hook load it polices.
+  const pending: VerdictResult[] = [];
+  if (!requiredStatusChecked) pending.push(rule13Block(coordRoot, req.session_id));
+  if (!ackPresent) pending.push(ackBlock());
+  if (!taskSet) pending.push(rule33Block(coordRoot, req.session_id));
 
   // Claude Code can prove session-name presentation from assistant-only text.
   // Cursor cannot expose that text and Codex returned observe-only above.
@@ -200,9 +203,12 @@ export function evaluateStopHookV3Events(
       !naming.some(({ present }) => present) &&
       !sessionNameSeenStamped(coordRoot, req.instance_id)
     ) {
-      return withCycleAnchor(sessionNameBlock(coordRoot, req.instance_id), cycleAnchor);
+      pending.push(sessionNameBlock(coordRoot, req.instance_id));
     }
   }
+
+  const blocked = mergeStopBlocks(pending);
+  if (blocked) return withCycleAnchor(blocked, cycleAnchor);
 
   return { allow: true, exit_code: 0, rule: "stop-hook.pass" };
 }
@@ -340,6 +346,33 @@ function evidenceUnavailable(reason: string): VerdictResult {
  */
 function sessionIdSuffix(sessionId?: string): string {
   return sessionId ? ` --session-id ${sessionId}` : "";
+}
+
+/**
+ * Fold every failing end-of-turn signal into ONE verdict.
+ *
+ * The verdict keeps the first failure's rule id, so the `blocked_rule`
+ * telemetry and the adapter's `rule=` stderr contract are unchanged; the
+ * reason enumerates the rest so a single continuation can repair all of them.
+ * Cursor maps the acknowledgement onto rule 1/3, so identical rules dedupe.
+ */
+function mergeStopBlocks(blocks: VerdictResult[]): VerdictResult | undefined {
+  let primary: VerdictResult | undefined;
+  const seen = new Set<string>();
+  const reasons: string[] = [];
+  for (const block of blocks) {
+    if (seen.has(block.rule)) continue;
+    seen.add(block.rule);
+    if (!primary) primary = block;
+    if (block.reason) reasons.push(block.reason);
+  }
+  if (!primary) return undefined;
+  if (reasons.length < 2) return primary;
+  const numbered = reasons.map((reason, index) => `${index + 1}. ${reason}`).join("\n");
+  return {
+    ...primary,
+    reason: `End-of-turn ritual: ${reasons.length} signals are missing from this turn. Repair ALL of them in this continuation, then stop.\n${numbered}`,
+  };
 }
 
 function rule13Block(coordRoot?: string, sessionId?: string): VerdictResult {
