@@ -94,9 +94,36 @@ and a live session that re-publishes stale producer state after rotation is
 re-onboarded into a fresh generation while the successor ledger stays
 complete.
 
-Two known residuals. Ready rows spooled with deferred drain in the final
+Three known residuals. Ready rows spooled with deferred drain in the final
 moments before rotation are archived undrained; their bytes are preserved in
 the archived spool, and rotation drains the spool first to keep that window
 small. Archived epochs accumulate under `.harnery/ledgers/v3-archives/` and
 are not yet retention-managed; that belongs with the storage budgets of ADR
 0134 as a follow-up.
+
+The third residual was found on a multi-agent host hours after rotation began
+firing, and it follows from re-onboarding rather than from the archive.
+Rotation ends every live generation at once, so every session mints a fresh
+generation and attestation in one burst while unrelated authority writes
+continue. That is the condition required by a known append-ordering defect, in
+which an event carrying an attestation can be committed before the event that
+mints it, because a drain orders frames by their declared causes and an
+attestation dependency is not one of them. The reader validates attestations in
+file order, so such a pair reports `unresolved_attestation` and the control
+boundary fails closed for every session until the ordering resolves. Rotation
+neither introduces that defect nor changes drain ordering: the epoch tag is
+appended after the row digest in the ready filename, so the spool sort prefix
+is unchanged, and the replaced-epoch quarantine preserves list order. What
+rotation changes is how often the triggering condition arises, from rare epoch
+replacement to every threshold crossing.
+
+Two consequences are worth knowing. Diagnosis is unreliable from a single
+sample, because the torn-tail repair path can truncate and re-commit a frame,
+so the control boundary can read valid and invalid in consecutive reads while
+coordination keeps working; sample repeatedly before concluding either way. And
+while an authority reads invalid, rotation correctly refuses to fire, since it
+replaces only a valid active epoch, so a persistent integrity failure also
+suspends the growth bound until the authority is recovered. The durable fix is
+the writer-side ordering invariant rather than a change to rotation. Raising
+the threshold reduces exposure as a side effect, and ADR 0138 removes most of
+the per-read cost that motivated a low threshold in the first place.
