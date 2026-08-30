@@ -65,7 +65,7 @@ describe("event ledger V3 active-control witness", () => {
     expect(activeControlWitnessMatchesV3(root, control)).toBeTrue();
   });
 
-  test("refuses to advance across a schema-valid append with unresolved attestation", () => {
+  test("holds a schema-valid append with an unresolved attestation behind the witness", () => {
     const root = activeRoot();
     const route = resolveLiveEventLedgerRouteV3(root);
     if (route.state !== "v3") throw new Error("expected V3 route");
@@ -101,15 +101,11 @@ describe("event ledger V3 active-control witness", () => {
     invalid.time.clock_id = clockIdV3();
     invalid.producer.sequence += 1;
     invalid.attestation_id = attestationIdV3();
-    expect(writeEventV3(root, invalid).state).toBe("committed");
+    expect(writeEventV3(root, invalid).state).toBe("ready");
 
-    expect(readLedgerV3(root).diagnostics.map(({ code }) => code)).toContain(
-      "unresolved_attestation",
-    );
-    expect(readEventV3ControlState(root)).toEqual({
-      state: "invalid",
-      reason: "ledger_integrity_failure",
-    });
+    expect(readLedgerV3(root)).toMatchObject({ complete: true, diagnostics: [] });
+    expect(readEventV3ControlState(root).state).toBe("active");
+    expect(activeControlWitnessMatchesV3(root, activeControl(root))).toBeTrue();
   });
 
   test("repairs a stale crash-gap witness only after a full valid read", () => {

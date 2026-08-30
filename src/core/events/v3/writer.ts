@@ -26,6 +26,10 @@ import type { EventV3 } from "./contract.ts";
 import { genesisIdFromManifestV3, liveGenesisIdV3 } from "./control.ts";
 import { advanceControlWitnessV3, readAdvanceableControlWitnessV3 } from "./control-witness.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
+import {
+  type EventV3AppendValidationCheckpointV3,
+  readEventV3AppendValidationCheckpointV3,
+} from "./reader.ts";
 import { assertEventV3 } from "./validate.ts";
 
 const MAX_LINE_BYTES = 16 * 1024;
@@ -178,9 +182,12 @@ export function drainReadyEventsUnderLeaseV3(
   paths: ReturnType<typeof eventV3Paths>,
   options: WriteEventV3Options = {},
 ): number {
-  const priorWitness = readAdvanceableControlWitnessV3(paths.coordRoot);
+  let priorWitness = readAdvanceableControlWitnessV3(paths.coordRoot);
   if (repairUnterminatedActiveFrame(paths.active)) {
     options.onStep?.("active_tail_repaired");
+    // The repair can remove IDs that the old witness considered committed.
+    // Never use that stale checkpoint to release a dependent ready row.
+    priorWitness = undefined;
   }
   requeueCommittedReceipts(paths.spool);
   const readyNames = readdirSync(paths.spool)
@@ -189,6 +196,8 @@ export function drainReadyEventsUnderLeaseV3(
   if (readyNames.length === 0) return 0;
   const drainableNames = quarantineReplacedEpochRows(paths, readyNames);
   if (drainableNames.length === 0) return 0;
+  const checkpoint =
+    priorWitness?.checkpoint ?? readEventV3AppendValidationCheckpointV3(paths.coordRoot);
   const readyRows = causallyOrderedReadyRows(
     drainableNames.map((readyName) => {
       const readyPath = join(paths.spool, readyName);
@@ -200,7 +209,9 @@ export function drainReadyEventsUnderLeaseV3(
         event: JSON.parse(row) as EventV3,
       };
     }),
+    checkpoint?.genesis_id ? checkpoint : undefined,
   );
+  if (readyRows.length === 0) return 0;
   const activeFd = openSync(paths.active, "a", 0o600);
   let committed = 0;
   try {
@@ -240,11 +251,51 @@ interface ReadyEventRowV3 {
 }
 
 /**
- * Keep the spool's deterministic filename order except where a ready event
- * names another ready event as a cause. Those dependencies are committed
- * first; a cycle stays in the WAL and never poisons the active authority.
+ * Keep the spool's deterministic filename order except where an event depends
+ * on an uncommitted cause or attestation declaration. The authenticated
+ * checkpoint proves what the active authority already contains; rows whose
+ * prerequisite has not reached either the authority or this ready batch stay
+ * in the WAL. This covers the cross-process window where a dependent row is
+ * published before the row that mints its attestation.
  */
-function causallyOrderedReadyRows(rows: ReadyEventRowV3[]): ReadyEventRowV3[] {
+function causallyOrderedReadyRows(
+  rows: ReadyEventRowV3[],
+  checkpoint?: EventV3AppendValidationCheckpointV3,
+): ReadyEventRowV3[] {
+  // Bare writer fixtures and pre-genesis bootstrap rows have no semantic
+  // authority to consult. Preserve the original within-batch causal ordering;
+  // once a genesis exists, the validated checkpoint becomes the writer fence.
+  if (!checkpoint) return causallyOrderedReadyRowsWithinBatch(rows);
+
+  const pending = new Map(rows.map((row) => [row.event.event_id, row]));
+  const ordered: ReadyEventRowV3[] = [];
+  const committedEventIds = new Set(checkpoint.seen_event_ids);
+  const committedAttestationIds = new Set(checkpoint.attestation_ids);
+  while (pending.size > 0) {
+    const next = rows.find(({ event }) => {
+      const causes = (event.links as { caused_by: string[] }).caused_by;
+      return (
+        pending.has(event.event_id) &&
+        causes.every((eventId) => committedEventIds.has(eventId)) &&
+        attestationPrerequisitesV3(event).every((attestationId) =>
+          committedAttestationIds.has(attestationId),
+        )
+      );
+    });
+    if (!next) break;
+    pending.delete(next.event.event_id);
+    ordered.push(next);
+    committedEventIds.add(next.event.event_id);
+    const minted = mintedAttestationV3(next.event);
+    if (minted) committedAttestationIds.add(minted);
+  }
+  if (pending.size > 0 && dependenciesResolveInsidePendingV3(pending, committedEventIds)) {
+    throw new Error("ready V3 events contain a causal dependency cycle");
+  }
+  return ordered;
+}
+
+function causallyOrderedReadyRowsWithinBatch(rows: ReadyEventRowV3[]): ReadyEventRowV3[] {
   const pending = new Map(rows.map((row) => [row.event.event_id, row]));
   const ordered: ReadyEventRowV3[] = [];
   while (pending.size > 0) {
@@ -257,6 +308,42 @@ function causallyOrderedReadyRows(rows: ReadyEventRowV3[]): ReadyEventRowV3[] {
     ordered.push(next);
   }
   return ordered;
+}
+
+function mintedAttestationV3(event: EventV3): string | undefined {
+  return event.event_type === "session.started" ||
+    event.event_type === "session.attestation_changed"
+    ? event.attestation_id
+    : undefined;
+}
+
+function attestationPrerequisitesV3(event: EventV3): string[] {
+  if (event.event_type === "session.started") return [];
+  if (event.event_type === "session.attestation_changed") {
+    return [event.payload.prior_attestation_id];
+  }
+  return event.attestation_id ? [event.attestation_id] : [];
+}
+
+function dependenciesResolveInsidePendingV3(
+  pending: Map<string, ReadyEventRowV3>,
+  committedEventIds: Set<string>,
+): boolean {
+  const pendingAttestations = new Set(
+    [...pending.values()]
+      .map(({ event }) => mintedAttestationV3(event))
+      .filter((value): value is string => value !== undefined),
+  );
+  return [...pending.values()].every(({ event }) => {
+    const causes = (event.links as { caused_by: string[] }).caused_by;
+    const causesStayInside = causes.every(
+      (eventId) => committedEventIds.has(eventId) || pending.has(eventId),
+    );
+    const attestationsStayInside = attestationPrerequisitesV3(event).every((attestationId) =>
+      pendingAttestations.has(attestationId),
+    );
+    return causesStayInside && attestationsStayInside;
+  });
 }
 
 /**

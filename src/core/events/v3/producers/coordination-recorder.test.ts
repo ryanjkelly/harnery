@@ -31,7 +31,7 @@ import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
 import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths } from "../writer.ts";
 import { recordCoordinationAuthorityV3 } from "./coordination-recorder.ts";
-import { recordHookSignalV3 } from "./recorder.ts";
+import { readHookProducerStateV3, recordHookSignalV3 } from "./recorder.ts";
 
 const roots: string[] = [];
 
@@ -532,6 +532,98 @@ describe("event ledger V3 persistent coordination recorder", () => {
     expect(events.map((event) => event.producer.sequence)).toEqual([1, 2]);
     expect(events[0]?.attestation_id).not.toBe(change.attestation_id);
     expect(events[1]?.attestation_id).toBe(change.attestation_id);
+  });
+
+  test("holds a coordination event until its concurrently minted attestation is durable", () => {
+    const root = startedRoot();
+    recordHookSignalV3({
+      coordRoot: root,
+      mode: "candidate",
+      signal: "user-prompt-submit",
+      payload: parsed({ session_id: "native-session", turn_id: "t1" }),
+      adapter: "claude-code",
+      instance_id: "inst_operator",
+      producer_id: "prd_hook",
+      build_id: "build_fixture",
+      platform: "linux",
+    });
+
+    let authorityState = sha256V3("task-empty");
+    let racedEventId: string | undefined;
+    let racedAttestationId: string | undefined;
+    let dependentWasHeld = false;
+    const result = recordHookSignalV3({
+      coordRoot: root,
+      mode: "candidate",
+      signal: "pre-tool-use",
+      payload: parsed({
+        session_id: "native-session",
+        tool_use_id: "call-race",
+        tool_name: "Bash",
+        effort: "high",
+      }),
+      adapter: "claude-code",
+      instance_id: "inst_operator",
+      producer_id: "prd_hook",
+      build_id: "build_fixture",
+      platform: "linux",
+      writerOptions: {
+        onStep: (step) => {
+          if (step !== "ready_temp_flushed" || racedEventId) return;
+          const hook = readHookProducerStateV3(root, "claude-code", "native-session");
+          if (hook?.pending?.event.event_type !== "session.attestation_changed") return;
+
+          const raced = recordCoordinationAuthorityV3({
+            coordRoot: root,
+            mode: "candidate",
+            signal: "task-changed",
+            observation: {
+              native_observation_id: "task-during-attestation-publication",
+              state: "set",
+              task: "Task during attestation publication",
+            },
+            adapter: "claude-code",
+            native_actor_session_id: "native-session",
+            actor_instance_id: "inst_operator",
+            subject_instance_id: "inst_worker",
+            producer_id: "prd_coord",
+            build_id: "build_fixture",
+            platform: "linux",
+            expected_prior_state_digest: sha256V3("task-empty"),
+            desired_state_digest: sha256V3("task-set"),
+            reconciler: {
+              readStateDigest: () => authorityState,
+              apply: () => {
+                authorityState = sha256V3("task-set");
+              },
+            },
+          });
+          expect(raced.state).toBe("recorded");
+          if (raced.state !== "recorded") return;
+          racedEventId = raced.event.event_id;
+          racedAttestationId = raced.event.attestation_id;
+          dependentWasHeld = !readFileSync(eventV3Paths(root).active, "utf8").includes(
+            racedEventId,
+          );
+        },
+      },
+    });
+    expect(result.state).toBe("recorded");
+    expect(racedEventId).toBeDefined();
+    expect(dependentWasHeld).toBeTrue();
+
+    const ledger = readLedgerV3(root);
+    expect(ledger.complete).toBeTrue();
+    expect(ledger.diagnostics).toEqual([]);
+    const events = ledger.events.map(({ event }) => event);
+    const mintIndex = events.findIndex(
+      (event) =>
+        event.event_type === "session.attestation_changed" &&
+        event.attestation_id === racedAttestationId,
+    );
+    const dependentIndex = events.findIndex((event) => event.event_id === racedEventId);
+    expect(mintIndex).toBeGreaterThanOrEqual(0);
+    expect(dependentIndex).toBeGreaterThan(mintIndex);
   });
 });
 

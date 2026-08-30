@@ -94,15 +94,14 @@ and a live session that re-publishes stale producer state after rotation is
 re-onboarded into a fresh generation while the successor ledger stays
 complete.
 
-Three known residuals. Ready rows spooled with deferred drain in the final
-moments before rotation are archived undrained; their bytes are preserved in
-the archived spool, and rotation drains the spool first to keep that window
-small. Archived epochs accumulate under `.harnery/ledgers/v3-archives/` and
-are not yet retention-managed; that belongs with the storage budgets of ADR
-0134 as a follow-up.
+Two storage follow-ups remain. Ready rows spooled with deferred drain in the
+final moments before rotation are archived undrained; their bytes are preserved
+in the archived spool, and rotation drains the spool first to keep that window
+small. Archived epochs accumulate under `.harnery/ledgers/v3-archives/` and are
+not yet retention-managed; that belongs with the storage budgets of ADR 0134.
 
-The third residual was found on a multi-agent host hours after rotation began
-firing, and it follows from re-onboarding rather than from the archive.
+Rotation also exposed a writer race on a multi-agent host. It came from
+re-onboarding, not the archive.
 Rotation ends every live generation at once, so every session mints a fresh
 generation and attestation in one burst while unrelated authority writes
 continue. That is the condition required by a known append-ordering defect, in
@@ -117,13 +116,25 @@ is unchanged, and the replaced-epoch quarantine preserves list order. What
 rotation changes is how often the triggering condition arises, from rare epoch
 replacement to every threshold crossing.
 
+The writer now closes that race under the append lease. It reads the validated
+checkpoint for the active authority and drains a ready row only after every
+causal parent and required attestation is committed or ordered earlier in the
+same batch. A dependent row that arrives before its attestation declaration
+stays in the WAL. Once the declaration appears, one drain appends the
+declaration first and the dependent second. A torn-tail repair discards the old
+checkpoint before ordering, so the writer cannot treat a truncated declaration
+as committed. The regression enters through the same filesystem boundary: a
+coordination event arrives while the attestation row is flushed but not yet
+renamed. It stays held, then drains behind the declaration. The final ledger is
+complete and has no diagnostics.
+
 Two consequences are worth knowing. Diagnosis is unreliable from a single
 sample, because the torn-tail repair path can truncate and re-commit a frame,
 so the control boundary can read valid and invalid in consecutive reads while
 coordination keeps working; sample repeatedly before concluding either way. And
 while an authority reads invalid, rotation correctly refuses to fire, since it
 replaces only a valid active epoch, so a persistent integrity failure also
-suspends the growth bound until the authority is recovered. The durable fix is
-the writer-side ordering invariant rather than a change to rotation. Raising
-the threshold reduces exposure as a side effect, and ADR 0138 removes most of
-the per-read cost that motivated a low threshold in the first place.
+suspends the growth bound until the authority is recovered. The repair belongs
+to the writer-side ordering invariant rather than rotation. Raising the
+threshold only reduces exposure, and ADR 0138 removes most of the per-read cost
+that motivated a low threshold in the first place.
