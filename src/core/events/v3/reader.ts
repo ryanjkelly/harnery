@@ -186,7 +186,7 @@ export function digestEventV3AuthorityDirectoryV3(root: string): `sha256:${strin
   return `sha256:${createHash("sha256").update(canonicalJsonV3(files)).digest("hex")}`;
 }
 
-interface PendingAdvance {
+export interface PendingAdvance {
   event_id: string;
   next_schema_digest: string;
   position: LedgerFrameV3["position"];
@@ -230,7 +230,25 @@ interface LedgerStorageVersionV3 {
 
 export interface EventV3AuthorityStorageVersionV3 {
   fingerprint: `sha256:${string}`;
+  stable_fingerprint: `sha256:${string}`;
   active_bytes: number;
+}
+
+export interface EventV3AppendValidationCheckpointV3 {
+  format: "harnery-event-v3-append-validation-checkpoint";
+  format_version: 1;
+  reader_build: string;
+  accepted_schema_digests: string[];
+  seen_event_ids: string[];
+  producer_sequences: Array<[string, number]>;
+  attestation_ids: string[];
+  clocks: Array<[string, number, string?]>;
+  event_count: number;
+  genesis_id?: string;
+  active_schema_digest?: string;
+  pending?: PendingAdvance;
+  active_segment_ordinal: number;
+  validated_active_bytes: number;
 }
 
 interface LedgerValidationStateV3 {
@@ -243,6 +261,7 @@ interface LedgerValidationStateV3 {
   producer_sequences: Map<string, number>;
   attestations: Set<string>;
   clocks: Map<string, { observed_at_ms: number; monotonic_ns?: bigint }>;
+  event_count: number;
   first_position?: LedgerFrameV3["position"];
   genesis_id?: string;
   active_schema_digest?: string;
@@ -262,6 +281,8 @@ const ledgerReadCacheV3 = new Map<string, CachedLedgerReadV3>();
 export const EVENT_V3_LEDGER_RELATIVE_ROOT = ".harnery/ledgers/v3" as const;
 export const EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH =
   `${EVENT_V3_LEDGER_RELATIVE_ROOT}/control-state-witness.json` as const;
+export const EVENT_V3_CONTROL_CHECKPOINT_RELATIVE_PATH =
+  `${EVENT_V3_LEDGER_RELATIVE_ROOT}/control-state-validation.json` as const;
 
 export function eventV3Paths(coordRoot: string) {
   const root = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT);
@@ -283,6 +304,11 @@ export function eventV3ControlWitnessPathV3(coordRoot: string): string {
   return join(eventV3Paths(coordRoot).root, "control-state-witness.json");
 }
 
+/** Stable auxiliary validator-checkpoint target owned by the control witness. */
+export function eventV3ControlCheckpointPathV3(coordRoot: string): string {
+  return join(eventV3Paths(coordRoot).root, "control-state-validation.json");
+}
+
 /**
  * Content-independent identity for the complete filesystem authority.
  *
@@ -297,8 +323,102 @@ export function eventV3AuthorityStorageVersionV3(
   const storage = ledgerStorageVersionV3(coordRoot);
   return {
     fingerprint: sha256V3(storage.fingerprint),
+    stable_fingerprint: sha256V3(storage.stable_fingerprint),
     active_bytes: storage.active?.size ?? 0,
   };
+}
+
+/** Serialize the validator tail produced by the current complete cached read. */
+export function readEventV3AppendValidationCheckpointV3(
+  coordRoot: string,
+): EventV3AppendValidationCheckpointV3 | undefined {
+  const options: ReadLedgerV3Options = {};
+  const result = readLedgerV3(coordRoot, options);
+  if (!result.complete) return undefined;
+  const cached = ledgerReadCacheV3.get(ledgerReadCacheKeyV3(coordRoot, options));
+  if (!cached?.active || !cached.result.complete) return undefined;
+  return checkpointFromValidationStateV3(cached.validation_state, cached.active);
+}
+
+/**
+ * Validate only the bytes appended after an authenticated checkpoint.
+ * Unsupported or semantically invalid transitions return undefined so the
+ * control reader falls back to a complete canonical validation.
+ */
+export function advanceEventV3AppendValidationCheckpointV3(
+  coordRoot: string,
+  checkpoint: EventV3AppendValidationCheckpointV3,
+): EventV3AppendValidationCheckpointV3 | undefined {
+  const parsed = parseEventV3AppendValidationCheckpointV3(checkpoint);
+  if (!parsed) return undefined;
+  const storage = ledgerStorageVersionV3(coordRoot);
+  if (!storage.active || storage.active.size <= parsed.validated_active_bytes) return undefined;
+  const appended = readActiveRangeV3(
+    storage.active.path,
+    parsed.validated_active_bytes,
+    storage.active.size,
+    parsed.active_segment_ordinal,
+  );
+  if (!appended || appended.diagnostics.length > 0) return undefined;
+  const state = validationStateFromCheckpointV3(parsed);
+  validateLedgerFramesIntoStateV3(appended.frames, state);
+  if (state.diagnostics.length > 0) return undefined;
+  return checkpointFromValidationStateV3(state, {
+    bytes: storage.active.size,
+    path: storage.active.path,
+    segment_ordinal: parsed.active_segment_ordinal,
+  });
+}
+
+/** Parse an untrusted persisted checkpoint without weakening the writer fence. */
+export function parseEventV3AppendValidationCheckpointV3(
+  value: unknown,
+): EventV3AppendValidationCheckpointV3 | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const checkpoint = value as Partial<EventV3AppendValidationCheckpointV3>;
+  if (
+    checkpoint.format !== "harnery-event-v3-append-validation-checkpoint" ||
+    checkpoint.format_version !== 1 ||
+    typeof checkpoint.reader_build !== "string" ||
+    !Array.isArray(checkpoint.accepted_schema_digests) ||
+    !checkpoint.accepted_schema_digests.every((item) => typeof item === "string") ||
+    !Array.isArray(checkpoint.seen_event_ids) ||
+    !checkpoint.seen_event_ids.every((item) => typeof item === "string") ||
+    !Array.isArray(checkpoint.producer_sequences) ||
+    !checkpoint.producer_sequences.every(
+      (item) =>
+        Array.isArray(item) &&
+        item.length === 2 &&
+        typeof item[0] === "string" &&
+        Number.isSafeInteger(item[1]) &&
+        item[1] > 0,
+    ) ||
+    !Array.isArray(checkpoint.attestation_ids) ||
+    !checkpoint.attestation_ids.every((item) => typeof item === "string") ||
+    !Array.isArray(checkpoint.clocks) ||
+    !checkpoint.clocks.every(
+      (item) =>
+        Array.isArray(item) &&
+        (item.length === 2 || item.length === 3) &&
+        typeof item[0] === "string" &&
+        typeof item[1] === "number" &&
+        Number.isFinite(item[1]) &&
+        (item[2] === undefined || (typeof item[2] === "string" && /^\d+$/.test(item[2]))),
+    ) ||
+    !Number.isSafeInteger(checkpoint.event_count) ||
+    (checkpoint.event_count ?? -1) < 0 ||
+    !Number.isSafeInteger(checkpoint.active_segment_ordinal) ||
+    (checkpoint.active_segment_ordinal ?? 0) < 1 ||
+    !Number.isSafeInteger(checkpoint.validated_active_bytes) ||
+    (checkpoint.validated_active_bytes ?? -1) < 0 ||
+    (checkpoint.genesis_id !== undefined && typeof checkpoint.genesis_id !== "string") ||
+    (checkpoint.active_schema_digest !== undefined &&
+      typeof checkpoint.active_schema_digest !== "string") ||
+    !validPendingAdvanceV3(checkpoint.pending)
+  ) {
+    return undefined;
+  }
+  return checkpoint as EventV3AppendValidationCheckpointV3;
 }
 
 /** Read the complete V3 ledger through catalog-bound filesystem discovery. */
@@ -414,6 +534,7 @@ function validateLedgerFramesV3(
     producer_sequences: new Map(),
     attestations: new Set(),
     clocks: new Map(),
+    event_count: 0,
   };
   validateLedgerFramesIntoStateV3(frames, state);
   return { result: finishLedgerValidationV3(state, options, ledgerFramesBytesV3(frames)), state };
@@ -486,7 +607,7 @@ function validateLedgerFramesIntoStateV3(
         diagnostics.push(diagnostic("multiple_genesis", frame, shape.event_id));
         continue;
       }
-      if (events.length !== 0)
+      if (state.event_count !== 0)
         diagnostics.push(diagnostic("genesis_not_first", frame, shape.event_id));
       const payload = shape.payload;
       state.genesis_id = string(payload.genesis_id);
@@ -554,6 +675,7 @@ function validateLedgerFramesIntoStateV3(
     }
 
     events.push({ event, position: frame.position });
+    state.event_count += 1;
   }
 }
 
@@ -844,6 +966,95 @@ function isolateValidationStateV3(state: LedgerValidationStateV3): LedgerValidat
     events: [...state.events],
     advances: [...state.advances],
   };
+}
+
+function checkpointFromValidationStateV3(
+  state: LedgerValidationStateV3,
+  active: NonNullable<DiscoveredFramesV3["active"]>,
+): EventV3AppendValidationCheckpointV3 {
+  return {
+    format: "harnery-event-v3-append-validation-checkpoint",
+    format_version: 1,
+    reader_build: state.reader_build,
+    accepted_schema_digests: [...state.accepted].sort(),
+    seen_event_ids: [...state.seen_ids.keys()].sort(),
+    producer_sequences: [...state.producer_sequences.entries()].sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+    attestation_ids: [...state.attestations].sort(),
+    clocks: [...state.clocks.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([clockId, clock]): [string, number, string?] =>
+        clock.monotonic_ns !== undefined
+          ? [clockId, clock.observed_at_ms, clock.monotonic_ns.toString()]
+          : [clockId, clock.observed_at_ms],
+      ),
+    event_count: state.event_count,
+    ...(state.genesis_id ? { genesis_id: state.genesis_id } : {}),
+    ...(state.active_schema_digest ? { active_schema_digest: state.active_schema_digest } : {}),
+    ...(state.pending
+      ? {
+          pending: {
+            ...state.pending,
+            position: { ...state.pending.position },
+          },
+        }
+      : {}),
+    active_segment_ordinal: active.segment_ordinal,
+    validated_active_bytes: active.bytes,
+  };
+}
+
+function validationStateFromCheckpointV3(
+  checkpoint: EventV3AppendValidationCheckpointV3,
+): LedgerValidationStateV3 {
+  return {
+    diagnostics: [],
+    events: [],
+    advances: [],
+    accepted: new Set(checkpoint.accepted_schema_digests),
+    reader_build: checkpoint.reader_build,
+    seen_ids: new Map(checkpoint.seen_event_ids.map((eventId) => [eventId, ""])),
+    producer_sequences: new Map(checkpoint.producer_sequences),
+    attestations: new Set(checkpoint.attestation_ids),
+    clocks: new Map(
+      checkpoint.clocks.map(([clockId, observedAtMs, monotonicNs]) => [
+        clockId,
+        {
+          observed_at_ms: observedAtMs,
+          ...(monotonicNs !== undefined ? { monotonic_ns: BigInt(monotonicNs) } : {}),
+        },
+      ]),
+    ),
+    event_count: checkpoint.event_count,
+    ...(checkpoint.genesis_id ? { genesis_id: checkpoint.genesis_id } : {}),
+    ...(checkpoint.active_schema_digest
+      ? { active_schema_digest: checkpoint.active_schema_digest }
+      : {}),
+    ...(checkpoint.pending
+      ? {
+          pending: {
+            ...checkpoint.pending,
+            position: { ...checkpoint.pending.position },
+          },
+        }
+      : {}),
+  };
+}
+
+function validPendingAdvanceV3(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const pending = value as Partial<PendingAdvance>;
+  return (
+    typeof pending.event_id === "string" &&
+    typeof pending.next_schema_digest === "string" &&
+    Boolean(pending.position) &&
+    Number.isSafeInteger(pending.position?.segment_ordinal) &&
+    Number.isSafeInteger(pending.position?.byte_offset) &&
+    (pending.position?.segment_ordinal ?? 0) > 0 &&
+    (pending.position?.byte_offset ?? -1) >= 0
+  );
 }
 
 function readActiveRangeV3(

@@ -51,6 +51,11 @@ describe("source-owned storage descriptors", () => {
         .familiesForPath(join(root, ".harnery", "ledgers", "v3", "control-state-witness.json"))
         .map((family) => family.id),
     ).toEqual(["event-v3-support-active"]);
+    expect(
+      catalog
+        .familiesForPath(join(root, ".harnery", "ledgers", "v3", "control-state-validation.json"))
+        .map((family) => family.id),
+    ).toEqual(["event-v3-support-active"]);
     expect(catalog.require("legacy-canonical-ledgers").id).not.toBe(canonical.id);
     for (const directory of ["diagnostic-summaries", "intake", "authority-recoveries"]) {
       const path = join(root, ".harnery", "ledgers", "v3", directory, "fixture.json");

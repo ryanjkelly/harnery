@@ -15,13 +15,18 @@ import { canonicalJsonV3, type FingerprintV3, fingerprintV3, sha256V3 } from "./
 import type { ActivationManifestV3, CandidateGenesisManifestV3 } from "./control.ts";
 import { fingerprintContextV3 } from "./fingerprint-keys.ts";
 import {
+  advanceEventV3AppendValidationCheckpointV3,
+  EVENT_V3_CONTROL_CHECKPOINT_RELATIVE_PATH,
   EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH,
+  type EventV3AppendValidationCheckpointV3,
   type EventV3AuthorityStorageVersionV3,
   eventV3AuthorityStorageVersionV3,
+  eventV3ControlCheckpointPathV3,
   eventV3ControlWitnessPathV3,
+  parseEventV3AppendValidationCheckpointV3,
 } from "./reader.ts";
 
-export { EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH };
+export { EVENT_V3_CONTROL_CHECKPOINT_RELATIVE_PATH, EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH };
 
 interface EventV3ControlWitnessPayload {
   format: "harnery-event-v3-control-witness";
@@ -36,6 +41,7 @@ interface EventV3ControlWitnessPayload {
   privacy_key_epoch: `pep_${string}`;
   root_id: `root_${string}`;
   storage: EventV3AuthorityStorageVersionV3;
+  checkpoint_digest: `sha256:${string}`;
 }
 
 interface EventV3ControlWitness {
@@ -58,7 +64,7 @@ export function activeControlWitnessMatchesV3(
     const before = eventV3AuthorityStorageVersionV3(coordRoot);
     const witness = readAuthenticatedWitnessV3(coordRoot);
     if (!witness) return false;
-    const expected = witnessPayloadV3(binding, before);
+    const expected = witnessPayloadV3(binding, before, witness.payload.checkpoint_digest);
     if (canonicalJsonV3(witness.payload) !== canonicalJsonV3(expected)) return false;
     const after = eventV3AuthorityStorageVersionV3(coordRoot);
     return sameStorageVersion(before, after);
@@ -75,11 +81,16 @@ export function publishActiveControlWitnessV3(
   coordRoot: string,
   binding: ActiveControlWitnessBindingV3,
   validatedStorage: EventV3AuthorityStorageVersionV3,
+  checkpoint: EventV3AppendValidationCheckpointV3,
 ): boolean {
   try {
     const current = eventV3AuthorityStorageVersionV3(coordRoot);
     if (!sameStorageVersion(validatedStorage, current)) return false;
-    return publishWitnessV3(coordRoot, witnessPayloadV3(binding, current));
+    return publishWitnessV3(
+      coordRoot,
+      witnessPayloadV3(binding, current, checkpointDigestV3(checkpoint)),
+      checkpoint,
+    );
   } catch {
     return false;
   }
@@ -89,14 +100,20 @@ export function publishActiveControlWitnessV3(
  * Capture a previously authenticated witness before the append lease mutates storage.
  * The returned payload is safe to advance only while the caller continues to hold that lease.
  */
-export function readAdvanceableControlWitnessV3(
-  coordRoot: string,
-): EventV3ControlWitnessPayload | undefined {
+export function readAdvanceableControlWitnessV3(coordRoot: string):
+  | {
+      payload: EventV3ControlWitnessPayload;
+      checkpoint: EventV3AppendValidationCheckpointV3;
+    }
+  | undefined {
   try {
     const storage = eventV3AuthorityStorageVersionV3(coordRoot);
     const witness = readAuthenticatedWitnessV3(coordRoot);
     if (!witness || !sameStorageVersion(witness.payload.storage, storage)) return undefined;
-    return witness.payload;
+    const checkpoint = readAuthenticatedCheckpointV3(coordRoot, witness.payload.checkpoint_digest);
+    return checkpoint && checkpoint.validated_active_bytes === storage.active_bytes
+      ? { payload: witness.payload, checkpoint }
+      : undefined;
   } catch {
     return undefined;
   }
@@ -105,15 +122,34 @@ export function readAdvanceableControlWitnessV3(
 /** Advance a lease-held witness after durable appends without changing writer success semantics. */
 export function advanceControlWitnessV3(
   coordRoot: string,
-  prior: EventV3ControlWitnessPayload,
+  prior: {
+    payload: EventV3ControlWitnessPayload;
+    checkpoint: EventV3AppendValidationCheckpointV3;
+  },
   currentGenesisId: string | undefined,
 ): boolean {
   try {
-    if (currentGenesisId !== prior.genesis_id) return false;
-    return publishWitnessV3(coordRoot, {
-      ...prior,
-      storage: eventV3AuthorityStorageVersionV3(coordRoot),
-    });
+    if (currentGenesisId !== prior.payload.genesis_id) return false;
+    const storageBeforeValidation = eventV3AuthorityStorageVersionV3(coordRoot);
+    const checkpoint = advanceEventV3AppendValidationCheckpointV3(coordRoot, prior.checkpoint);
+    if (!checkpoint) return false;
+    const storage = eventV3AuthorityStorageVersionV3(coordRoot);
+    if (
+      storageBeforeValidation.fingerprint !== storage.fingerprint ||
+      prior.payload.storage.stable_fingerprint !== storage.stable_fingerprint ||
+      checkpoint.validated_active_bytes !== storage.active_bytes
+    ) {
+      return false;
+    }
+    return publishWitnessV3(
+      coordRoot,
+      {
+        ...prior.payload,
+        storage,
+        checkpoint_digest: checkpointDigestV3(checkpoint),
+      },
+      checkpoint,
+    );
   } catch {
     return false;
   }
@@ -122,6 +158,7 @@ export function advanceControlWitnessV3(
 function witnessPayloadV3(
   binding: ActiveControlWitnessBindingV3,
   storage: EventV3AuthorityStorageVersionV3,
+  checkpointDigest: `sha256:${string}`,
 ): EventV3ControlWitnessPayload {
   const scope = binding.genesis.event.scope as { root_id: `root_${string}` };
   return {
@@ -137,6 +174,7 @@ function witnessPayloadV3(
     privacy_key_epoch: binding.genesis.profile.privacy_key_epoch,
     root_id: scope.root_id,
     storage,
+    checkpoint_digest: checkpointDigest,
   };
 }
 
@@ -153,17 +191,25 @@ function readAuthenticatedWitnessV3(coordRoot: string): EventV3ControlWitness | 
     : undefined;
 }
 
-function publishWitnessV3(coordRoot: string, payload: EventV3ControlWitnessPayload): boolean {
+function publishWitnessV3(
+  coordRoot: string,
+  payload: EventV3ControlWitnessPayload,
+  checkpoint: EventV3AppendValidationCheckpointV3,
+): boolean {
+  if (!publishCanonicalFileV3(eventV3ControlCheckpointPathV3(coordRoot), checkpoint)) return false;
   const witness: EventV3ControlWitness = {
     payload,
     authentication: authenticatePayloadV3(coordRoot, payload),
   };
-  const path = eventV3ControlWitnessPathV3(coordRoot);
+  return publishCanonicalFileV3(eventV3ControlWitnessPathV3(coordRoot), witness);
+}
+
+function publishCanonicalFileV3(path: string, value: unknown): boolean {
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
     fd = openSync(temporary, "wx", 0o600);
-    writeFileSync(fd, `${canonicalJsonV3(witness)}\n`, "utf8");
+    writeFileSync(fd, `${canonicalJsonV3(value)}\n`, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
@@ -175,6 +221,29 @@ function publishWitnessV3(coordRoot: string, payload: EventV3ControlWitnessPaylo
     if (fd !== undefined) closeSync(fd);
     if (existsSync(temporary)) unlinkSync(temporary);
   }
+}
+
+function readAuthenticatedCheckpointV3(
+  coordRoot: string,
+  expectedDigest: `sha256:${string}`,
+): EventV3AppendValidationCheckpointV3 | undefined {
+  try {
+    const raw = readFileSync(eventV3ControlCheckpointPathV3(coordRoot), "utf8");
+    const value: unknown = JSON.parse(raw);
+    if (
+      `${canonicalJsonV3(value)}\n` !== raw ||
+      sha256V3(canonicalJsonV3(value)) !== expectedDigest
+    ) {
+      return undefined;
+    }
+    return parseEventV3AppendValidationCheckpointV3(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function checkpointDigestV3(checkpoint: EventV3AppendValidationCheckpointV3): `sha256:${string}` {
+  return sha256V3(canonicalJsonV3(checkpoint));
 }
 
 function authenticatePayloadV3(
@@ -201,6 +270,7 @@ function parseWitnessV3(value: unknown): EventV3ControlWitness {
     "activation_id",
     "activation_manifest_digest",
     "candidate_manifest_digest",
+    "checkpoint_digest",
     "format",
     "format_version",
     "genesis_event_id",
@@ -214,7 +284,7 @@ function parseWitnessV3(value: unknown): EventV3ControlWitness {
     throw new Error("control witness payload shape is invalid");
   }
   const storage = object(payload.storage);
-  if (Object.keys(storage).sort().join("\0") !== "active_bytes\0fingerprint") {
+  if (Object.keys(storage).sort().join("\0") !== "active_bytes\0fingerprint\0stable_fingerprint") {
     throw new Error("control witness storage shape is invalid");
   }
   if (
@@ -227,9 +297,11 @@ function parseWitnessV3(value: unknown): EventV3ControlWitness {
     !digest(payload.genesis_manifest_digest) ||
     !digest(payload.activation_manifest_digest) ||
     !digest(payload.candidate_manifest_digest) ||
+    !digest(payload.checkpoint_digest) ||
     !token(payload.privacy_key_epoch, "pep_") ||
     !token(payload.root_id, "root_") ||
     !digest(storage.fingerprint) ||
+    !digest(storage.stable_fingerprint) ||
     !Number.isSafeInteger(storage.active_bytes) ||
     (storage.active_bytes as number) < 0
   ) {

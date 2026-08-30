@@ -23,7 +23,10 @@ import {
   EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH,
 } from "./control-witness.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
+import { attestationIdV3, clockIdV3, eventIdV3 } from "./ids.ts";
 import { recordLiveHookSignalV3, resolveLiveEventLedgerRouteV3 } from "./live-routing.ts";
+import { readLedgerV3 } from "./reader.ts";
+import { writeEventV3 } from "./writer.ts";
 
 const roots: string[] = [];
 
@@ -60,6 +63,53 @@ describe("event ledger V3 active-control witness", () => {
     const control = activeControl(root);
     expect(readFileSync(witnessPath(root), "utf8")).not.toBe(before);
     expect(activeControlWitnessMatchesV3(root, control)).toBeTrue();
+  });
+
+  test("refuses to advance across a schema-valid append with unresolved attestation", () => {
+    const root = activeRoot();
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "session-start",
+        adapter: "codex",
+        instanceId: "agent-InvalidAppend",
+        payload: { session_id: "invalid-append-session", raw: {} },
+      }).state,
+    ).toBe("recorded");
+    const requested = recordLiveHookSignalV3({
+      coordRoot: root,
+      route,
+      eventName: "pre-tool-use",
+      adapter: "codex",
+      instanceId: "agent-InvalidAppend",
+      payload: {
+        session_id: "invalid-append-session",
+        turn_id: "invalid-append-turn",
+        tool_use_id: "invalid-append-tool",
+        tool_name: "Read",
+        raw: {},
+      },
+    });
+    expect(requested.state).toBe("recorded");
+    if (requested.state !== "recorded") throw new Error("expected a recorded tool request");
+
+    const invalid = structuredClone(requested.event) as EventV3;
+    invalid.event_id = eventIdV3();
+    invalid.time.clock_id = clockIdV3();
+    invalid.producer.sequence += 1;
+    invalid.attestation_id = attestationIdV3();
+    expect(writeEventV3(root, invalid).state).toBe("committed");
+
+    expect(readLedgerV3(root).diagnostics.map(({ code }) => code)).toContain(
+      "unresolved_attestation",
+    );
+    expect(readEventV3ControlState(root)).toEqual({
+      state: "invalid",
+      reason: "ledger_integrity_failure",
+    });
   });
 
   test("repairs a stale crash-gap witness only after a full valid read", () => {

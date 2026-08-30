@@ -71,12 +71,23 @@ fingerprint before and after the check. Any failure runs the unchanged full
 reader. A complete active result may replace the witness only when the
 storage fingerprint still matches the one captured before validation.
 
-The append lease reads and authenticates the current witness before changing
-the active file. After durable canonical appends, it advances the storage
-binding and publishes the replacement atomically. A crash after the append
-but before witness publication leaves a stale witness. The next control read
-then performs one full validation and repairs the witness. Witness work is an
-optimization: its failure never changes the writer's durability result.
+The witness also binds the digest of
+`.harnery/ledgers/v3/control-state-validation.json`. This second file carries
+only the incremental validator tail: accepted schemas, seen event ids,
+producer sequences, attestation ids, clock state, the active schema boundary,
+and the validated active-file offset. It contains no event bodies and is
+registered as repairable support state, not canonical authority.
+
+The append lease reads and authenticates both files before changing the active
+file. After durable canonical appends, the canonical reader validates only the
+new byte range against the checkpoint. The writer advances the storage binding
+and publishes a new checkpoint and witness only when that suffix is
+semantically valid. A schema-valid event with an unresolved attestation,
+producer gap, missing causal parent, clock regression, or incompatible schema
+therefore leaves the witness stale. The next control read runs the full reader
+and fails closed. A crash after the append but before publication has the same
+safe outcome. Witness work is an optimization: its failure never changes the
+writer's durability result.
 
 Candidate, repairable, closed, and invalid states keep the full read. The
 fast path only returns `active`. A corrupt append, same-size rewrite, sealed
@@ -103,8 +114,12 @@ answers only the control-plane question.
 ## Result
 
 The regression suite covers witness publication and lease-held advancement,
-the crash gap, forged witness recovery, and immediate failure on all four
-tamper classes. Existing cursor tests continue to exercise
+the crash gap, forged witness recovery, a schema-valid append with an
+unresolved attestation, and immediate failure on all four tamper classes. The
+unresolved-attestation case was added after live verification exposed that a
+storage-only writer advance could authenticate a semantically invalid suffix;
+the persisted validator checkpoint replaced that blind advance. Existing
+cursor tests continue to exercise
 `readLedgerV3Since` unchanged. A separate authority test proves that a
 recorder-proven same generation does not touch ledger storage, while the
 existing epoch-handoff test still restores task, claim, and lifecycle state
@@ -113,7 +128,8 @@ after a real generation change.
 A fresh-process `agent-hook pre-tool-use` benchmark used a 31,460,387-byte
 valid epoch of unique events, Bun 1.3.3, concurrency 1, and six interleaved
 trials per mode. Removing the witness before each baseline trial forced the
-old complete validation. The median fell from 1.14 seconds and 328,956 KiB
-maximum resident set size to 0.22 seconds and 82,432 KiB with the witness.
-That is an 81% wall-time reduction and a 75% resident-memory reduction near
+old complete validation. The median fell from 1.16 seconds and 354,700 KiB
+maximum resident set size to 0.195 seconds and 84,322 KiB with the witness and
+semantic checkpoint. That is an 83% wall-time reduction and a 76%
+resident-memory reduction near
 the 32 MiB rotation threshold.

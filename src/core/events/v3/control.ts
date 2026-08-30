@@ -9,6 +9,7 @@ import { activationIdV3, eventIdV3, genesisIdV3 } from "./ids.ts";
 import {
   eventV3AuthorityStorageVersionV3,
   type ReadLedgerV3Result,
+  readEventV3AppendValidationCheckpointV3,
   readLedgerV3,
 } from "./reader.ts";
 import { validateEventV3 } from "./validate.ts";
@@ -321,7 +322,10 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
     activation,
     candidate_manifest_digest: candidateDigest,
   };
-  publishActiveControlWitnessV3(coordRoot, active, storageBeforeValidation);
+  const checkpoint = readEventV3AppendValidationCheckpointV3(coordRoot);
+  if (checkpoint) {
+    publishActiveControlWitnessV3(coordRoot, active, storageBeforeValidation, checkpoint);
+  }
   return active;
 }
 
