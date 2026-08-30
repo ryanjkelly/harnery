@@ -45,7 +45,7 @@ describe("event V3 canonical reader boundary", () => {
       "src/core/storage/builtins.ts",
       [
         'exact(context, ".harnery/ledgers/v3/active.ndjson", "file"),',
-        'subtree(context, ".harnery/ledgers/v3/diagnostics"),',
+        'subtree(context, ".harnery/ledgers/v3/diagnostics", OWNER_PROTOCOL_LINKS),',
         'partition(context, ".harnery/ledgers/v3-archives", "canonical", [',
         'roots: (context) => [subtree(context, ".harnery/ledgers/v3-recoveries")],',
       ].join("\n"),
