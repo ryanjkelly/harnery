@@ -3,6 +3,7 @@ import {
   Clapperboard,
   FileText,
   FolderTree,
+  HardDrive,
   Image,
   LayoutDashboard,
   type LucideIcon,
@@ -108,6 +109,13 @@ export const APP_ROUTES: readonly AppRoute[] = [
     group: "library",
     icon: Image,
     keywords: ["gallery", "screenshots", "produced", "thumbnails"],
+  },
+  {
+    href: "/storage",
+    label: "Storage",
+    group: "library",
+    icon: HardDrive,
+    keywords: ["disk", "files", "footprint", "inventory", "health", "logs", "retention"],
   },
   {
     href: "/codec",

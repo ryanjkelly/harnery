@@ -1,0 +1,87 @@
+---
+title: "ADR 0135: storage footprint dashboard"
+description: Render Harnery's complete storage inventory and effective log budgets from the canonical read-only storage APIs.
+sidebar:
+  order: 135
+---
+
+**Date:** 2026-08-29
+**Status:** Accepted
+
+## Context
+
+ADR 0129 made Harnery's file and storage catalog source-owned. ADR 0134 added
+effective log budgets, pressure, provenance, and exact maintenance transactions.
+The CLI can emit the complete inventory and health schemas, but operators lack
+one visual surface for answering how much space Harnery uses, which families
+own it, what remains unmanaged, and whether any limit or safety boundary needs
+attention.
+
+The dashboard already reads coordination state directly from Harnery's server
+modules. A storage page must preserve the inventory's metadata-only privacy
+contract, show unknown and delegated states honestly, remain useful on narrow
+screens, and retain native browser Find across every family and root.
+
+## Alternatives considered
+
+- Run the inventory directly inside the Next.js Node process. On a measured
+  checkout with 193,924 files and 25.5 GB under management, the scan took 87
+  seconds and crossed the dashboard's memory restart threshold. The same
+  canonical scan in Harnery's Bun CLI took 24.6 seconds without restarting the
+  server.
+- Re-scan `.harnery/` inside the page. A second scanner would drift from the
+  catalog's ownership, symlink, hard-link, external-root, and privacy rules.
+- Show only totals and exceptions. That is concise, but it cannot answer which
+  files, families, policies, roots, or limits account for the footprint.
+- Virtualize the family and root lists. The current catalog is small enough to
+  render directly, and virtualization would break native browser Find unless a
+  complete in-app replacement shipped with it.
+- Add pruning controls beside the report. Storage mutation has a separate
+  dry-run transaction and confirmation contract. Mixing it into a new
+  observability page would broaden the page's authority and test surface.
+
+## Decision
+
+Add a dynamic, server-rendered `/storage` page to the standalone dashboard.
+`web/lib/storage-reader.ts` runs the canonical `harn storage inventory --json`
+path in one bounded Bun child process, validates its stable schema, and projects
+`storageHealth()` from that report. It also constructs the same catalog for
+descriptor metadata and diagnostics. It does not read file bodies or implement
+its own filesystem traversal.
+
+A complete inventory can include hundreds of thousands of files. The child has
+a two-minute timeout and a 16 MiB output ceiling. The reader shares one
+in-process snapshot for five minutes and coalesces concurrent requests onto one
+scan. The route has a loading boundary for the first scan. The capture time
+stays visible, so the page never implies that a cached snapshot is live to the
+millisecond.
+
+The page renders:
+
+- complete filesystem and scope totals;
+- catalog family and storage-class counts;
+- health, issues, diagnostics, dormant overrides, and reason codes;
+- per-class footprint and health rollups;
+- every registered family, provider, policy version, state, maintenance
+  eligibility, file count, logical bytes, allocated bytes, and root count;
+- every registered root's aggregate label, ownership, state, totals, and
+  reasons; and
+- effective log limits, provenance, managed and unmanaged usage, pressure, and
+  retention enforcement.
+
+All family and root rows stay in the DOM. Desktop layouts use fixed-column
+tables. Narrow screens show the same records as stacked cards, which keeps
+identifiers and status values readable without page overflow. The route is
+registered once in the shared navigation and command-palette route catalog.
+
+The page is read-only. It does not plan or execute maintenance, expose deletion
+buttons, or read stored record bodies. Operators continue to use the exact
+dry-run-first CLI transaction for maintenance.
+
+## Result
+
+Operators can inspect Harnery's complete local footprint and effective log
+budgets from one page without weakening storage ownership or deletion safety.
+The page and CLI share the same reason-coded inventory, so unknown, delegated,
+unmanaged, or unsafe storage cannot be presented as healthy by a separate UI
+interpretation.
