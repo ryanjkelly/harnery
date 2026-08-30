@@ -65,7 +65,18 @@ export function extractSemanticJson(text: string): unknown {
   try {
     return JSON.parse(trimmed);
   } catch {
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+    const fenceStart = trimmed.indexOf("```");
+    let bodyStart = fenceStart + 3;
+    if (fenceStart >= 0 && trimmed.slice(bodyStart, bodyStart + 4).toLowerCase() === "json") {
+      bodyStart += 4;
+    }
+    while (fenceStart >= 0 && bodyStart < trimmed.length) {
+      const code = trimmed.charCodeAt(bodyStart);
+      if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) break;
+      bodyStart += 1;
+    }
+    const fenceEnd = fenceStart >= 0 ? trimmed.indexOf("```", bodyStart) : -1;
+    const fenced = fenceEnd >= 0 ? trimmed.slice(bodyStart, fenceEnd) : undefined;
     if (fenced) {
       try {
         return JSON.parse(fenced.trim());
