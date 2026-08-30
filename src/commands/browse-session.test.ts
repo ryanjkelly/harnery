@@ -24,7 +24,9 @@ describe("browse-session command", () => {
       "wait",
       "close",
     ]);
-    expect(session?.commands.every((command) => command.description().trim().length > 0)).toBe(true);
+    expect(session?.commands.every((command) => command.description().trim().length > 0)).toBe(
+      true,
+    );
     expect(program.commands.find((command) => command.name() === "browse")?.options).toContainEqual(
       expect.objectContaining({ long: "--control-file" }),
     );
