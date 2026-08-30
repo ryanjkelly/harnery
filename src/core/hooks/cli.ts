@@ -44,7 +44,6 @@ import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-w
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
-import { autoCleanArtifacts } from "../artifacts/index.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
 import {
   checkpointContext,
@@ -67,10 +66,6 @@ import {
 import { captureSpanClockV3 } from "../events/v3/span-state.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
-import {
-  createAutomaticMaintenanceComposition,
-  runAutomaticMaintenancePass,
-} from "../storage/maintenance-providers.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
 import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
 import {
@@ -962,6 +957,12 @@ async function main(): Promise<number> {
     // session-start additionalContext inside emitSessionStartSystemMessage.
     if (adapter === "claude-code") journalJanitor(coordRoot);
     imageJanitor(coordRoot);
+    // Session start is the only caller of the artifact janitor and the storage
+    // maintenance pass, so both load here instead of on every tool call.
+    const { autoCleanArtifacts } = await import("../artifacts/index.ts");
+    const { createAutomaticMaintenanceComposition, runAutomaticMaintenancePass } = await import(
+      "../storage/maintenance-providers.ts"
+    );
     // Effect: throttled daily sweep of expired artifact workspaces (guarded,
     // managed-expired only; see autoCleanArtifacts). Best-effort like every
     // janitor here: a failure logs and never blocks session start.
