@@ -7,6 +7,7 @@ import {
   Image,
   LayoutDashboard,
   type LucideIcon,
+  MonitorCog,
   Radio,
   Scale,
   ScrollText,
@@ -46,6 +47,13 @@ export const APP_ROUTES: readonly AppRoute[] = [
     group: "activity",
     icon: Radio,
     keywords: ["session", "commands", "stream", "intent", "shell"],
+  },
+  {
+    href: "/resources",
+    label: "Resources",
+    group: "activity",
+    icon: MonitorCog,
+    keywords: ["htop", "cpu", "memory", "processes", "load", "observer", "performance"],
   },
   {
     href: "/events",

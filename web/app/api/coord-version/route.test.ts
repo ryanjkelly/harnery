@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -46,6 +46,15 @@ describe("coord-version live refresh", () => {
       agentId: "agent",
       adapter: "codex",
     });
+    const after = (await GET().json()) as { v: string };
+    expect(after.v).not.toBe(before.v);
+  });
+
+  test("a resource snapshot changes the polling signal", async () => {
+    const before = (await GET().json()) as { v: string };
+    const resourceDir = path.join(root, ".harnery", "resources");
+    mkdirSync(resourceDir, { recursive: true });
+    writeFileSync(path.join(resourceDir, "snapshot.json"), '{"schema_version":1}\n');
     const after = (await GET().json()) as { v: string };
     expect(after.v).not.toBe(before.v);
   });

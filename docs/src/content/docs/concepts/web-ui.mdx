@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-`harn web up` boots a Next.js dashboard that reads `.harnery/` directly from disk. There's no daemon, no server-side database, and no API key to manage. The intended audience is the operator sitting in front of the monorepo.
+`harn web up` boots a Next.js dashboard that reads `.harnery/` directly from disk. There is no server-side database or API key to manage. Core coordination remains daemonless. The dashboard may start optional local services, including the resource observer, for features that need stable sampling between requests. The intended audience is the operator sitting in front of the monorepo.
 
 ## What you see
 

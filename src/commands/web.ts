@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
+import { ensureResourceServiceRunning } from "../core/resources/service.ts";
 import { ensureSemanticServiceRunning } from "../core/semantic/service.ts";
 import { processLogDestination } from "../core/storage/process-log.ts";
 import {
@@ -106,6 +107,18 @@ async function startSemanticServiceWithWeb(coordRoot: string, emit: EmitContext)
   if (result.state === "inactive") emit.log("semantic reader · waiting for active V3", "info");
   if (result.state === "unavailable") {
     emit.log(`semantic reader · unavailable (${result.error ?? "startup failed"})`, "warn");
+  }
+}
+
+async function startResourceServiceWithWeb(coordRoot: string, emit: EmitContext): Promise<void> {
+  const result = await ensureResourceServiceRunning(coordRoot);
+  if (result.state === "started") emit.log("resource observer · started automatically", "info");
+  if (result.state === "running") emit.log("resource observer · already running", "info");
+  if (result.state === "unsupported") {
+    emit.log(`resource observer · unsupported (${result.error})`, "warn");
+  }
+  if (result.state === "unavailable") {
+    emit.log(`resource observer · unavailable (${result.error})`, "warn");
   }
 }
 
@@ -233,6 +246,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
 
       if (!(await requireAvailablePort(emit, port))) return;
 
+      await startResourceServiceWithWeb(coordRoot, emit);
       await startSemanticServiceWithWeb(coordRoot, emit);
 
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
@@ -326,6 +340,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         return;
       }
       if (!(await requireAvailablePort(emit, port))) return;
+      await startResourceServiceWithWeb(coordRoot, emit);
       await startSemanticServiceWithWeb(coordRoot, emit);
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       const nodeOptions = nodeOptionsWithWebDiagnostics(root, heapMb);

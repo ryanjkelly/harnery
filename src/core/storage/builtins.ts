@@ -35,6 +35,7 @@ const LOG_PARTITIONS = [
   "agent-operational",
   "web-performance",
   "semantic-service",
+  "resource-observer",
   "governor-service",
   "presence-relay",
   "tunnel-process",
@@ -304,6 +305,13 @@ function logFamilies(): HarneryStorageFamily[] {
       ),
       (context) => [exact(context, ".harnery/semantic/v2/service.log", "file")],
     ),
+    operationalFamily(
+      "resource-observer-log",
+      "resource observer",
+      "resource-observer",
+      14,
+      64 * MIB,
+    ),
     withCurrentRoots(
       operationalFamily(
         "governor-service-log",
@@ -461,6 +469,21 @@ function cacheFamilies(): HarneryStorageFamily[] {
       provider: filesystemProvider(
         "semantic-cache-provider",
         "canonical events and source documents",
+      ),
+    }),
+    family({
+      id: "resource-observer-cache",
+      owner: "resource observer",
+      storage_class: "repairable-cache",
+      roots: (context) => [subtree(context, ".harnery/resources")],
+      format: "json",
+      durability: "reconstructable",
+      writer_model: "object-owned",
+      policy: cachePolicy("resource-observer-cache-v1", "local process and machine samples"),
+      consumers: ["resource observer", "dashboard", "storage inventory", "storage health"],
+      provider: filesystemProvider(
+        "resource-observer-cache-provider",
+        "local process and machine samples",
       ),
     }),
     family({

@@ -15,7 +15,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
+import { coordRoot, councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +45,7 @@ export function GET(): Response {
     `events:${statSig(eventsPath())}`,
     `councils:${dirSig(councilsDir())}`,
     `journal:${dirSig(journalDir())}`,
+    `resources:${statSig(path.join(coordRoot(), ".harnery", "resources", "snapshot.json"))}`,
   ].join("|");
   const v = createHash("sha1").update(raw).digest("hex").slice(0, 16);
   return Response.json({ v }, { headers: { "Cache-Control": "no-store" } });

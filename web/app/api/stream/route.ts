@@ -11,7 +11,7 @@
 
 import { existsSync, type FSWatcher, statSync, watch } from "node:fs";
 import path from "node:path";
-import { councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
+import { coordRoot, councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -102,7 +102,9 @@ export function GET(): Response {
       // poll in /api/live-events; cheap (one stat() every 2s) and fires only on
       // actual growth, so idle streams cost nothing.
       const eventsForPoll = eventsPath();
+      const resourceSnapshot = path.join(coordRoot(), ".harnery", "resources", "snapshot.json");
       let lastEventsSize = -1;
+      let lastResourceSignature = "-";
       try {
         lastEventsSize = statSync(eventsForPoll).size;
       } catch {
@@ -117,6 +119,16 @@ export function GET(): Response {
           }
         } catch {
           // file vanished mid-stream; a recreated file will grow again
+        }
+        try {
+          const stat = statSync(resourceSnapshot);
+          const signature = `${Math.floor(stat.mtimeMs)}:${stat.size}`;
+          if (lastResourceSignature !== "-" && signature !== lastResourceSignature) {
+            fireRefresh("resources");
+          }
+          lastResourceSignature = signature;
+        } catch {
+          lastResourceSignature = "-";
         }
       }, FILESIZE_POLL_MS);
 

@@ -117,6 +117,11 @@ recorder without changing the log schema:
 Restart the webserver after changing a recorder setting. Diagnostics begin on
 the first request handled by the restarted process.
 
+Dashboard startup also ensures the optional local [resource observer](/cli/resources/)
+is running on supported machines. The observer supplies the `/resources` page
+with process CPU deltas and agent process-tree attribution. A failed observer
+launch is logged as a warning and never prevents the dashboard from starting.
+
 ## First-run fetch (npm installs)
 
 The npm package omits the dashboard to keep the CLI lean. When `web/` is absent (a plain `npm i -g harnery`), the first `harn web up` fetches it:

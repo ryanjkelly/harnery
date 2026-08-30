@@ -510,6 +510,12 @@ function harneryCommandBundles({
         (await import("./commands/semantic.ts")).registerSemanticCommand(program, emit, context),
     ),
     lazy(
+      "resources",
+      "Observe local CPU and memory pressure by agent and process tree",
+      async (program) =>
+        (await import("./commands/resources.ts")).registerResourcesCommand(program, emit, context),
+    ),
+    lazy(
       "storage",
       "Inspect registered Harnery storage without reading file bodies",
       async (program) =>

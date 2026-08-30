@@ -103,6 +103,8 @@ describe("source-owned storage descriptors", () => {
       [".harnery/logs/web-performance.jsonl", "web-performance-log"],
       [".harnery/logs/web-performance.jsonl.1", "web-performance-log"],
       [".harnery/semantic/v2/service.log", "semantic-service-log"],
+      [".harnery/logs/resource-observer/active.jsonl", "resource-observer-log"],
+      [".harnery/resources/snapshot.json", "resource-observer-cache"],
       [".harnery/governor-service/service.log", "governor-service-log"],
       [".harnery/governor-service/events.jsonl", "governor-service-log"],
       [".harnery/presence/relay-daemon.log", "presence-relay-log"],
@@ -148,7 +150,12 @@ describe("source-owned storage descriptors", () => {
   });
 
   test("keeps write activation separate from active retention budgets", () => {
-    for (const familyId of ["semantic-service-log", "governor-service-log", "presence-relay-log"]) {
+    for (const familyId of [
+      "semantic-service-log",
+      "resource-observer-log",
+      "governor-service-log",
+      "presence-relay-log",
+    ]) {
       const family = catalog.require(familyId);
       expect(family.policy.writes, familyId).toBe("active");
       expect(family.policy.retention.status, familyId).toBe("active");

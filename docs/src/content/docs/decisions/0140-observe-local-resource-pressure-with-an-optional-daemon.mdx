@@ -1,0 +1,109 @@
+---
+title: "ADR 0140: observe local resource pressure with an optional daemon"
+description: Sample machine and process resource use without making coordination depend on a resident service.
+sidebar:
+  order: 140
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+Harnery can report which agents are active, what they are doing, and how the
+dashboard itself behaves under load. It cannot show whether several agent
+sessions, hook processes, browser workers, build tools, or Harnery services are
+competing for CPU and memory on the same machine. Operators have to leave the
+dashboard, inspect a system process monitor, and manually match process trees
+back to agent sessions.
+
+Resource use is a sampled signal. A process ID can be recycled, lifetime CPU
+totals do not describe current pressure, and a process may be visible even when
+Harnery cannot prove which agent owns it. A useful view must preserve those
+limits rather than turn missing attribution into a confident guess.
+
+Core coordination is intentionally daemonless. Hooks and agent commands must
+continue to work when no monitor is running, when process sampling is
+unsupported, or when a sample fails.
+
+## Alternatives considered
+
+- Read the process table inside every dashboard request. This makes page latency
+  depend on operating-system probes, loses CPU deltas between samples, and
+  repeats the same work for every viewer.
+- Add resource fields to agent heartbeats. An agent can report its own process,
+  but it cannot observe the complete descendant tree or unrelated processes
+  competing for the same machine. Hook memory problems may also happen outside
+  the long-lived agent process.
+- Write samples into Event Ledger V3. Resource samples arrive far more often
+  than coordination transitions and are disposable diagnostics. Treating them
+  as canonical events would inflate the ledger and give a read-only observer
+  authority it does not need.
+- Depend on a broad system-information package. That can expand native-platform
+  coverage, but the first supported sampler needs only procfs and a portable
+  `ps` fallback. A large dependency is not justified until a tested native
+  Windows sampler is part of the contract.
+- Show only processes Harnery can attribute. That hides the exact runaway hook,
+  build, or browser process an operator needs to find when ancestry evidence is
+  incomplete.
+
+## Decision
+
+Add an optional per-coordination-root resource observer. The public command is
+`harn resources service start|status|stop`; `harn resources snapshot` performs
+one read without starting the service. Dashboard startup ensures the observer
+is running on supported machines, but a launch failure remains a reported
+diagnostic and never blocks the dashboard or coordination.
+
+The daemon samples at a bounded interval and publishes one atomic
+`.harnery/resources/snapshot.json`. It also writes a small rotated diagnostic
+history through Harnery's shared log catalog. It does not write Event Ledger V3
+or mutate agent state.
+
+A process sample carries PID, parent PID, process-start identity when available,
+state, executable basename, a bounded redacted command excerpt, current CPU,
+resident memory, and age. CPU is calculated from two samples. Process identity
+uses PID plus start identity so a recycled PID cannot inherit the previous
+process's delta or ownership.
+
+Attribution walks the sampled parent chain to a live, start-token-validated
+entry in `.harnery/pid-map/`. A matching row attributes the process tree to one
+local Harnery instance. Known observer, dashboard, and Harnery service roots may
+be labeled as services. Anything else remains `unattributed`; the observer does
+not infer ownership from command text. The snapshot includes attributed trees
+and any unmatched process above the configured CPU or memory visibility floor.
+
+The snapshot also includes machine CPU pressure, load averages, total and
+available memory, swap, process counts, sample duration, collector overhead,
+support state, and freshness. Every dimension can be `null` or carry an
+unsupported reason. Linux and WSL procfs are the first supported sampler. Other
+platforms report an explicit unsupported state until a tested native sampler
+ships. A WSL observer describes its Linux namespace, not arbitrary Windows host
+processes.
+
+The service uses the same readiness contract as Harnery's existing detached
+services: a singleton lease, process-start validation, stale-owner recovery,
+durable stop request, heartbeat, graceful shutdown, and a bounded wait before
+`start` reports success. One failed sample preserves the last good snapshot and
+records a rate-limited reason code.
+
+Add a dynamic `/resources` dashboard page. It uses Harnery's shared live signal,
+shows observer status and snapshot age, leads with machine CPU and memory
+pressure, groups totals by agent or service, and renders a CPU- and memory-sorted
+process view with an explicit unattributed group. Desktop uses a dense table;
+mobile uses complete compact rows. Every row stays in the DOM so browser Find
+continues to work. The first release is read-only and provides no kill, pause,
+renice, or restart controls.
+
+## Result
+
+Operators can see which active agent trees and local tools are consuming CPU and
+memory from the same Harnery dashboard that reports coordination state. The
+observer provides the stable sampling interval and ancestry evidence that a
+request-time page cannot, while core coordination remains independent of every
+observer file and process.
+
+Unsupported fields, stale snapshots, recycled PIDs, and unattributed expensive
+processes remain visible as such. Later releases can add native Windows, GPU,
+I/O, cgroup, or historical-chart support without changing the first release's
+read-only authority boundary.
