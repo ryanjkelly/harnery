@@ -13,6 +13,7 @@ import { loadOrCreateFingerprintKeyStoreV3 } from "../core/events/v3/fingerprint
 import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
 import { writeProducerDiagnosticV3 } from "../core/events/v3/producers/intake.ts";
 import {
+  classifyHeartbeatCacheIssue,
   collectActiveAgentHealth,
   collectEventLedgerHealthV3,
   collectStatusPeerHealth,
@@ -31,6 +32,33 @@ afterAll(() => {
 });
 
 describe("agent health follow-up diagnostics", () => {
+  test("labels old valid heartbeats as stale rather than epoch-aged", () => {
+    const now = Date.parse("2026-08-30T12:00:00.000Z");
+    const oneDay = 24 * 60 * 60 * 1000;
+
+    expect(
+      classifyHeartbeatCacheIssue(
+        { name: "Old", last_heartbeat: "2026-08-29T11:59:59.000Z" },
+        now,
+        oneDay,
+      ),
+    ).toBe("stale-age");
+    expect(
+      classifyHeartbeatCacheIssue(
+        { name: "Fresh", last_heartbeat: "2026-08-30T11:59:59.000Z" },
+        now,
+        oneDay,
+      ),
+    ).toBeNull();
+    expect(
+      classifyHeartbeatCacheIssue(
+        { name: "Broken", last_heartbeat: "not-a-timestamp" },
+        now,
+        oneDay,
+      ),
+    ).toBe("invalid-heartbeat");
+  });
+
   test("uses V3 generations instead of stale heartbeat caches for active health", () => {
     const root = sharedCandidateRoot;
     const now = Date.parse("2026-08-29T12:00:00.000Z");

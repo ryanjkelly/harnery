@@ -3019,9 +3019,9 @@ interface HealthReport {
     lines: number;
     cursor_backlog: number;
   };
-  // Heartbeats present in active/ but broken: no name, unparseable, or an
-  // absurd (epoch-ish) last_heartbeat. These are the `agent-unknown` peer-table
-  // ghosts; a positive count means dead files the sweep isn't catching.
+  // Heartbeat cache files present in active/ but stale or malformed. These are
+  // files the sweep is not catching; a parseable old heartbeat is stale, not
+  // evidence of an epoch-like or corrupt timestamp.
   zombies: {
     count: number;
     samples: string[];
@@ -3843,6 +3843,22 @@ export function collectActiveAgentHealth(
   };
 }
 
+export type HeartbeatCacheIssue = "no-name" | "invalid-heartbeat" | "stale-age";
+
+/** Classify a parseable heartbeat cache file without conflating age with corruption. */
+export function classifyHeartbeatCacheIssue(
+  heartbeat: Pick<Heartbeat, "name" | "last_heartbeat">,
+  nowMs: number,
+  staleAgeMs: number,
+): HeartbeatCacheIssue | null {
+  if (!heartbeat.name || heartbeat.name === "unknown") return "no-name";
+  const lastHeartbeatMs = heartbeat.last_heartbeat
+    ? Date.parse(heartbeat.last_heartbeat)
+    : Number.NaN;
+  if (!Number.isFinite(lastHeartbeatMs)) return "invalid-heartbeat";
+  return nowMs - lastHeartbeatMs > staleAgeMs ? "stale-age" : null;
+}
+
 function runHealth(opts: { since: string; json?: boolean }): void {
   if (opts.json) emit.config({ format: "json" });
 
@@ -3927,12 +3943,12 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     .map(([agent, count]) => ({ agent, count }));
 
   const activeAgents = collectActiveAgentHealth(root, nowMs);
-  // Zombies: files in active/ that are broken: unparseable, nameless, or an
-  // absurd (epoch-ish) last_heartbeat. These show as `agent-unknown` ghosts and
-  // mean dead files the sweep isn't reaping.
+  // Heartbeat cache issues: files in active/ that are unparseable, nameless,
+  // invalidly timestamped, or stale. Old parseable timestamps are ordinary
+  // staleness, not evidence of epoch-like timestamp corruption.
   let zombieCount = 0;
   const zombieSamples: string[] = [];
-  const ABSURD_AGE_MS = 24 * 60 * 60 * 1000; // > 1 day = clearly not a live, self-healing agent
+  const STALE_HEARTBEAT_AGE_MS = 24 * 60 * 60 * 1000;
   if (existsSync(activeDir)) {
     for (const file of readdirSync(activeDir)) {
       if (!file.endsWith(".json")) continue;
@@ -3949,15 +3965,11 @@ function runHealth(opts: { since: string; json?: boolean }): void {
           zombieSamples.push(`${idFromFile.slice(0, 12)} (unparseable/no-id)`);
         continue;
       }
-      const lastHbMs = hb.last_heartbeat ? Date.parse(hb.last_heartbeat) : Number.NaN;
-      const ageMs = Number.isFinite(lastHbMs) ? nowMs - lastHbMs : Number.POSITIVE_INFINITY;
-      // Zombie heuristics on a parseable heartbeat: no name, or an age so large
-      // it can only be a broken/epoch timestamp (a real agent would have healed).
-      if (!hb.name || hb.name === "unknown" || ageMs > ABSURD_AGE_MS) {
+      const cacheIssue = classifyHeartbeatCacheIssue(hb, nowMs, STALE_HEARTBEAT_AGE_MS);
+      if (cacheIssue) {
         zombieCount++;
         if (zombieSamples.length < 5) {
-          const why = !hb.name || hb.name === "unknown" ? "no-name" : "epoch-age";
-          zombieSamples.push(`${idFromFile.slice(0, 12)} (${why})`);
+          zombieSamples.push(`${idFromFile.slice(0, 12)} (${cacheIssue})`);
         }
       }
     }
@@ -4021,7 +4033,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   }
   if (zombieCount > 0) {
     anomalies.push(
-      `${zombieCount} zombie heartbeat(s) in active/ (${zombieSamples.join(", ")}); broken files the sweep isn't reaping`,
+      `${zombieCount} heartbeat cache issue(s) in active/ (${zombieSamples.join(", ")}); stale or malformed files the sweep isn't reaping`,
     );
   }
   if (stopRemediation.total > 0) {
@@ -4198,7 +4210,7 @@ function renderHealthBox(report: HealthReport): void {
     ["stream", streamStr],
     ["event ledger", ledgerStr],
     [
-      "zombies",
+      "cache issues",
       report.zombies.count === 0
         ? "0"
         : `${report.zombies.count} (${report.zombies.samples.join(", ")})`,
