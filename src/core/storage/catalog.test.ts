@@ -145,6 +145,31 @@ describe("storage catalog", () => {
     ).toThrow("overlapping storage roots");
   });
 
+  test("rejects link handling on roots that cannot own descendants", () => {
+    const family = hostFamily("host-exact", ".host/exact");
+    expect(() =>
+      createStorageCatalog(
+        { coord_root: ROOT },
+        {
+          families: [
+            {
+              ...family,
+              roots: (context) => [
+                {
+                  path: join(context.coord_root, ".host/exact"),
+                  kind: "directory",
+                  match: "exact",
+                  ownership: "host",
+                  link_handling: { symbolic_links: "skip", hard_links: "allow" },
+                },
+              ],
+            },
+          ],
+        },
+      ),
+    ).toThrow("resolved an invalid root");
+  });
+
   test("rejects differently labeled provider partitions with overlapping globs", () => {
     const provider = {
       provider_id: "host-partition-provider",

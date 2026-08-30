@@ -196,12 +196,22 @@ function validateProvider(family: HarneryStorageFamily): void {
 }
 
 function validateRoot(root: HarneryStorageRoot, family: HarneryStorageFamily): HarneryStorageRoot {
+  const linkHandling = root?.link_handling;
   if (
     !root ||
     !isAbsolute(root.path) ||
     !new Set(["file", "directory"]).has(root.kind) ||
     !new Set(["exact", "subtree", "pattern", "provider-partition"]).has(root.match) ||
-    (root.ownership !== undefined && !new Set(["harnery", "host", "external"]).has(root.ownership))
+    (root.ownership !== undefined &&
+      !new Set(["harnery", "host", "external"]).has(root.ownership)) ||
+    (linkHandling !== undefined &&
+      (!linkHandling ||
+        typeof linkHandling !== "object" ||
+        Array.isArray(linkHandling) ||
+        root.kind !== "directory" ||
+        root.match === "exact" ||
+        !new Set(["reject", "skip"]).has(linkHandling.symbolic_links) ||
+        !new Set(["flag", "allow"]).has(linkHandling.hard_links)))
   ) {
     throw new HarneryStorageCatalogError(
       `storage family ${family.id} resolved an invalid root: ${root?.path ?? "(missing)"}`,

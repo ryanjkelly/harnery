@@ -54,6 +54,23 @@ export interface StorageFootprintReport {
   };
 }
 
+export interface StorageHealthSummary {
+  healthy: number;
+  degraded: number;
+  unknown: number;
+  needsAttention: number;
+}
+
+/** Unknown measurements stay visible without being promoted into the action queue. */
+export function summarizeStorageHealth(
+  families: readonly StorageFamilyView[],
+): StorageHealthSummary {
+  const healthy = families.filter(({ health }) => health.status === "healthy").length;
+  const degraded = families.filter(({ health }) => health.status === "degraded").length;
+  const unknown = families.length - healthy - degraded;
+  return { healthy, degraded, unknown, needsAttention: degraded };
+}
+
 const STORAGE_CLASS_ORDER: readonly HarneryStorageClass[] = [
   "canonical-authority",
   "recovery-state",

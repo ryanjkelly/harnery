@@ -60,6 +60,30 @@ describe("source-owned storage descriptors", () => {
     }
   });
 
+  test("declares owner-protocol and managed-content link handling", () => {
+    const support = catalog.require("event-v3-support-active");
+    const appendLease = support.resolved_roots.find((candidate) =>
+      candidate.path.endsWith("/ledgers/v3/append-lease"),
+    );
+    expect(appendLease).toMatchObject({ kind: "directory", match: "exact" });
+    expect(
+      support.resolved_roots
+        .filter((candidate) => candidate.match === "subtree")
+        .every((candidate) => candidate.link_handling?.hard_links === "allow"),
+    ).toBeTrue();
+    expect(catalog.require("event-v3-support-archives").resolved_roots[0]).toMatchObject({
+      link_handling: { symbolic_links: "reject", hard_links: "allow" },
+    });
+    expect(
+      catalog.familiesForPath(
+        join(root, ".harnery", "ledgers", "v3-archives", "epoch", "append-lease", "current"),
+      ),
+    ).toContainEqual(expect.objectContaining({ id: "event-v3-support-archives" }));
+    expect(catalog.require("managed-artifacts").resolved_roots[0]).toMatchObject({
+      link_handling: { symbolic_links: "skip", hard_links: "allow" },
+    });
+  });
+
   test("maps every current logical log and legacy path to exactly one family", () => {
     const paths = [
       [".harnery/debug/agent-hook.ndjson", "agent-hook-debug-log"],

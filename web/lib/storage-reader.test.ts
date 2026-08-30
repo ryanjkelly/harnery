@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStorageCatalog } from "../../src/core/storage/catalog";
 import { inventoryStorage } from "../../src/core/storage/inventory";
-import { clearStorageFootprintCache, readStorageFootprint } from "./storage-reader";
+import {
+  clearStorageFootprintCache,
+  readStorageFootprint,
+  summarizeStorageHealth,
+} from "./storage-reader";
 
 const roots: string[] = [];
 
@@ -43,6 +47,10 @@ describe("storage footprint reader", () => {
     expect(
       report.families.find(({ inventory }) => inventory.family_id === "active-agent-projection"),
     ).toMatchObject({ inventory: { state: "present" } });
+    const summary = summarizeStorageHealth(report.families);
+    expect(summary.unknown).toBeGreaterThan(0);
+    expect(summary.needsAttention).toBe(summary.degraded);
+    expect(summary.needsAttention).toBe(0);
 
     const cached = await readStorageFootprint(root, { inventoryReader });
     expect(cached).toBe(report);

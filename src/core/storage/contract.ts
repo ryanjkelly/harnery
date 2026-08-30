@@ -79,6 +79,11 @@ export interface HarneryStorageRoot {
   partition?: string;
   include?: readonly string[];
   ownership?: "harnery" | "host" | "external";
+  /** Descendant link types the owning family deliberately stores. Omitted means fail closed. */
+  link_handling?: {
+    symbolic_links: "reject" | "skip";
+    hard_links: "flag" | "allow";
+  };
 }
 
 export interface HarneryStorageBudget {

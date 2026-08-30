@@ -1,0 +1,75 @@
+---
+title: "ADR 0136: declared link handling in storage roots"
+description: Let storage owners declare safe descendant link handling without weakening the inventory scanner's default boundary.
+sidebar:
+  order: 136
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+The metadata-only storage inventory treated every symbolic link and hard link
+as a health failure. That default is correct for storage with no stronger
+contract, but several owners deliberately use links. Event Ledger V3 publishes
+files and leases with hard links. Managed artifact workspaces may contain
+symbolic links that their lifecycle owner keeps without traversing, as well as
+hard-linked payloads.
+
+The first dashboard projection combined these expected structures with dormant
+and delegated families in one attention count. It also declared the Event
+Ledger V3 `append-lease` root as a file even though the lease protocol owns it
+as a directory. A healthy checkout could therefore appear degraded while its
+logical data remained intact.
+
+## Alternatives considered
+
+- Downgrade every link finding to unknown. This would hide an undeclared link
+  in canonical or host-owned storage and weaken the catalog's fail-closed
+  default.
+- Follow symbolic links when their targets remain below a registered root.
+  This adds race and escape cases to a scanner whose privacy contract needs
+  metadata only. The owning artifact service does not need traversal to keep a
+  linked entry.
+- Special-case built-in family IDs in the scanner. That fixes today's catalog
+  but gives host registrations no way to state the same invariant and couples
+  generic traversal to specific owners.
+- Mark physical allocation unavailable whenever a file has multiple names.
+  Device and inode identity already provide enough information to count the
+  observed blocks once. Link count is still useful as a safety signal when the
+  owner did not declare it.
+
+## Decision
+
+Add optional `link_handling` metadata to non-exact directory roots. Its
+`symbolic_links` value is `reject` or `skip`; its `hard_links` value is `flag`
+or `allow`. Omission keeps the existing `reject` and `flag` behavior.
+
+`inventoryStorage()` never follows a symbolic link. A declared `skip` merely
+omits that entry without creating a health issue. A declared `allow` accepts a
+hard-linked regular file without adding `hard_link_ambiguous`. The scanner
+deduplicates allocated bytes by device and inode in filesystem, family, and
+root totals while continuing to count every regular path and its logical size.
+Undeclared hard links remain reason-coded and make storage maintenance
+ineligible.
+
+The built-in catalog declares owner-protocol hard links for active and archived
+Event Ledger V3 support roots. Managed artifacts declare symbolic-link skips
+and hard-link allowance. The `append-lease` exact root is corrected to a
+directory.
+
+The dashboard's attention count now includes only degraded families. A global
+inventory issue without a degraded registered family makes aggregate health
+unknown rather than healthy or degraded. Unknown, dormant, delegated, and
+unregistered measurements remain visible in the overall status, issue panel,
+class summaries, and technical inventory.
+
+## Result
+
+Expected lease and artifact structures no longer produce degraded health or
+erase the measured physical total. Unexpected links still fail closed, and no
+symbolic-link target is traversed. The dashboard separates an actionable
+degraded result from incomplete or intentionally delegated measurement. A
+catalog-completeness gap remains explicit as unknown until each missing owner
+registers its storage.

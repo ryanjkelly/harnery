@@ -35,7 +35,7 @@ import {
   storageTermHelp,
 } from "@/lib/storage-display";
 import type { StorageClassSummary, StorageFamilyView } from "@/lib/storage-reader";
-import { readStorageFootprint } from "@/lib/storage-reader";
+import { readStorageFootprint, summarizeStorageHealth } from "@/lib/storage-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -92,13 +92,7 @@ export default async function StoragePage() {
     .filter(({ bytes }) => bytes > 0)
     .sort((a, b) => b.bytes - a.bytes)
     .slice(0, 6);
-  const healthyFamilies = report.families.filter(
-    ({ health }) => health.status === "healthy",
-  ).length;
-  const degradedFamilies = report.families.filter(
-    ({ health }) => health.status === "degraded",
-  ).length;
-  const unknownFamilies = report.families.length - healthyFamilies - degradedFamilies;
+  const familyHealth = summarizeStorageHealth(report.families);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -187,18 +181,18 @@ export default async function StoragePage() {
             <SignalCard
               icon={<ShieldCheck aria-hidden />}
               label="Healthy families"
-              value={healthyFamilies.toLocaleString()}
-              detail={`of ${report.families.length} catalog families`}
+              value={familyHealth.healthy.toLocaleString()}
+              detail={`of ${report.families.length} · ${familyHealth.unknown} unknown`}
               tone="success"
               help="Families whose inventory completed without a reported health problem."
             />
             <SignalCard
               icon={<TriangleAlert aria-hidden />}
               label="Needs attention"
-              value={(degradedFamilies + unknownFamilies).toLocaleString()}
-              detail={`${degradedFamilies} degraded · ${unknownFamilies} unknown`}
-              tone="warning"
-              help="Families whose measurement is degraded or unknown. This is a review queue, not a data-loss count."
+              value={familyHealth.needsAttention.toLocaleString()}
+              detail={`${familyHealth.degraded} degraded`}
+              tone={familyHealth.needsAttention > 0 ? "warning" : "success"}
+              help="Families with an actionable degraded health result. Unknown measurements remain visible in the inventory but do not enter this queue."
             />
             <SignalCard
               icon={<Boxes aria-hidden />}
@@ -267,7 +261,8 @@ export default async function StoragePage() {
                       <Term term="Registered families" />
                     </h3>
                     <p className="text-xs text-muted-foreground">
-                      {healthyFamilies} healthy, {degradedFamilies + unknownFamilies} to review
+                      {familyHealth.healthy} healthy, {familyHealth.degraded + familyHealth.unknown}{" "}
+                      to review
                     </p>
                   </div>
                 </div>

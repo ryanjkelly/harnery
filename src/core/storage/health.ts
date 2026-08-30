@@ -11,7 +11,6 @@ const DEGRADED_REASONS = new Set<string>([
   "special_file_rejected",
   "symlink_rejected",
   "unreadable_path",
-  "unregistered_path",
   "wrong_root_type",
 ]);
 
@@ -27,7 +26,7 @@ export function storageHealth(
     issueReasons.some((reason) => DEGRADED_REASONS.has(reason)) ||
     families.some((family) => family.status === "degraded")
       ? "degraded"
-      : families.some((family) => family.status === "unknown")
+      : issueReasons.length > 0 || families.some((family) => family.status === "unknown")
         ? "unknown"
         : "healthy";
   return {

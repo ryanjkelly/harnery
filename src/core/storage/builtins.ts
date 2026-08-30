@@ -22,6 +22,15 @@ const PRIVATE_FORBIDDEN_FIELDS = [
   "secret",
 ] as const;
 
+const OWNER_PROTOCOL_LINKS = {
+  symbolic_links: "reject",
+  hard_links: "allow",
+} as const;
+const MANAGED_CONTENT_LINKS = {
+  symbolic_links: "skip",
+  hard_links: "allow",
+} as const;
+
 const LOG_PARTITIONS = [
   "agent-operational",
   "web-performance",
@@ -112,15 +121,15 @@ function eventFamilies(): HarneryStorageFamily[] {
       owner: "Event Ledger V3 producer recovery",
       storage_class: "recovery-state",
       roots: (context) => [
-        subtree(context, ".harnery/ledgers/v3/diagnostics"),
-        subtree(context, ".harnery/ledgers/v3/diagnostic-summaries"),
-        subtree(context, ".harnery/ledgers/v3/private-producers"),
-        subtree(context, ".harnery/ledgers/v3/authority-outbox"),
-        subtree(context, ".harnery/ledgers/v3/authority-recoveries"),
-        subtree(context, ".harnery/ledgers/v3/intake"),
-        subtree(context, ".harnery/ledgers/v3/spool"),
-        subtree(context, ".harnery/ledgers/v3/quarantine"),
-        exact(context, ".harnery/ledgers/v3/append-lease", "file"),
+        subtree(context, ".harnery/ledgers/v3/diagnostics", OWNER_PROTOCOL_LINKS),
+        subtree(context, ".harnery/ledgers/v3/diagnostic-summaries", OWNER_PROTOCOL_LINKS),
+        subtree(context, ".harnery/ledgers/v3/private-producers", OWNER_PROTOCOL_LINKS),
+        subtree(context, ".harnery/ledgers/v3/authority-outbox", OWNER_PROTOCOL_LINKS),
+        subtree(context, ".harnery/ledgers/v3/authority-recoveries", OWNER_PROTOCOL_LINKS),
+        subtree(context, ".harnery/ledgers/v3/intake", OWNER_PROTOCOL_LINKS),
+        subtree(context, ".harnery/ledgers/v3/spool", OWNER_PROTOCOL_LINKS),
+        subtree(context, ".harnery/ledgers/v3/quarantine", OWNER_PROTOCOL_LINKS),
+        exact(context, ".harnery/ledgers/v3/append-lease", "directory"),
       ],
       format: "files",
       durability: "crash-safe",
@@ -134,17 +143,24 @@ function eventFamilies(): HarneryStorageFamily[] {
       owner: "Event Ledger V3 producer recovery",
       storage_class: "recovery-state",
       roots: (context) => [
-        partition(context, ".harnery/ledgers/v3-archives", "support", [
-          "*/diagnostics/**",
-          "*/diagnostic-summaries/**",
-          "*/private-producers/**",
-          "*/authority-outbox/**",
-          "*/authority-recoveries/**",
-          "*/intake/**",
-          "*/spool/**",
-          "*/quarantine/**",
-          "*/append-lease",
-        ]),
+        partition(
+          context,
+          ".harnery/ledgers/v3-archives",
+          "support",
+          [
+            "*/diagnostics/**",
+            "*/diagnostic-summaries/**",
+            "*/private-producers/**",
+            "*/authority-outbox/**",
+            "*/authority-recoveries/**",
+            "*/intake/**",
+            "*/spool/**",
+            "*/quarantine/**",
+            "*/append-lease",
+            "*/append-lease/**",
+          ],
+          OWNER_PROTOCOL_LINKS,
+        ),
       ],
       format: "files",
       durability: "immutable",
@@ -470,7 +486,7 @@ function artifactFamilies(): HarneryStorageFamily[] {
       id: "managed-artifacts",
       owner: "artifact service",
       storage_class: "managed-artifact",
-      roots: (context) => [subtree(context, ".harnery/artifacts")],
+      roots: (context) => [subtree(context, ".harnery/artifacts", MANAGED_CONTENT_LINKS)],
       format: "files",
       durability: "crash-safe",
       writer_model: "object-owned",
@@ -620,12 +636,17 @@ function exact(
   return { path: storagePath(context, relativePath), kind, match: "exact", ownership: "harnery" };
 }
 
-function subtree(context: HarneryStorageContext, relativePath: string): HarneryStorageRoot {
+function subtree(
+  context: HarneryStorageContext,
+  relativePath: string,
+  linkHandling?: HarneryStorageRoot["link_handling"],
+): HarneryStorageRoot {
   return {
     path: storagePath(context, relativePath),
     kind: "directory",
     match: "subtree",
     ownership: "harnery",
+    ...(linkHandling ? { link_handling: linkHandling } : {}),
   };
 }
 
@@ -661,6 +682,7 @@ function partition(
     `${partitionName}/segments/**`,
     `${partitionName}/manifests/**`,
   ],
+  linkHandling?: HarneryStorageRoot["link_handling"],
 ): HarneryStorageRoot {
   return {
     path: storagePath(context, relativePath),
@@ -669,6 +691,7 @@ function partition(
     partition: partitionName,
     include,
     ownership: "harnery",
+    ...(linkHandling ? { link_handling: linkHandling } : {}),
   };
 }
 

@@ -45,6 +45,7 @@ interface MutableTotals {
   logical_bytes: number;
   allocated_bytes: number;
   allocated_available: boolean;
+  allocated_identities: Set<string>;
 }
 
 interface RootAccumulator {
@@ -177,7 +178,13 @@ export function filterStorageInventory(
 }
 
 function emptyTotals(): MutableTotals {
-  return { regular_files: 0, logical_bytes: 0, allocated_bytes: 0, allocated_available: true };
+  return {
+    regular_files: 0,
+    logical_bytes: 0,
+    allocated_bytes: 0,
+    allocated_available: true,
+    allocated_identities: new Set(),
+  };
 }
 
 async function inspectRegisteredRoots(state: ScanState): Promise<void> {
@@ -438,7 +445,9 @@ async function scanEntry(
     return undefined;
   }
   if (child.isSymbolicLink()) {
-    recordPathIssue(state, path.logical, "symlink_rejected", completeCoordinationRoot);
+    if (!allowsSymbolicLinkSkip(state, path.logical)) {
+      recordPathIssue(state, path.logical, "symlink_rejected", completeCoordinationRoot);
+    }
   } else if (child.isDirectory()) {
     return { ...path, expectedIdentity: fileIdentity(child) };
   } else if (child.isFile()) {
@@ -499,20 +508,22 @@ async function recordRegularFile(
   }
   const matches = filesystemMatches(state, logicalPath);
   if (!completeCoordinationRoot && matches.length === 0) return;
-  const hardLinkAmbiguous = metadata.nlink > 1;
+  const hardLinkAmbiguous = metadata.nlink > 1 && !allowsHardLink(state, logicalPath);
   if (hardLinkAmbiguous) recordIssue(state, "hard_link_ambiguous");
-  const allocatedCandidate = hardLinkAmbiguous ? undefined : state.allocatedBytes(metadata);
+  const allocatedCandidate = state.allocatedBytes(metadata);
   const allocated =
     allocatedCandidate !== undefined &&
     Number.isSafeInteger(allocatedCandidate) &&
     allocatedCandidate >= 0
       ? allocatedCandidate
       : undefined;
-  addFile(state.totals, metadata.size, allocated);
+  const allocationIdentity = metadata.nlink > 1 ? fileIdentity(metadata) : undefined;
+  addFile(state.totals, metadata.size, allocated, allocationIdentity);
   addFile(
     completeCoordinationRoot ? state.coordinationRootTotals : state.externalRootTotals,
     metadata.size,
     allocated,
+    allocationIdentity,
   );
   if (allocated === undefined) recordIssue(state, "allocated_bytes_unavailable");
   if (matches.length === 0) {
@@ -532,9 +543,9 @@ async function recordRegularFile(
     family.reasons.add("overlapping_registration");
     return;
   }
-  addFile(family.totals, metadata.size, allocated);
+  addFile(family.totals, metadata.size, allocated, allocationIdentity);
   family.roots[roots[0]!.index]!.matched = true;
-  addFile(family.roots[roots[0]!.index]!.totals, metadata.size, allocated);
+  addFile(family.roots[roots[0]!.index]!.totals, metadata.size, allocated, allocationIdentity);
   if (hardLinkAmbiguous) {
     family.reasons.add("hard_link_ambiguous");
     family.roots[roots[0]!.index]!.reasons.add("hard_link_ambiguous");
@@ -592,12 +603,41 @@ function filesystemMatches(state: ScanState, path: string): FamilyAccumulator[] 
     .map((family) => state.families.get(family.id)!);
 }
 
-function addFile(totals: MutableTotals, logicalBytes: number, allocated: number | undefined): void {
+function addFile(
+  totals: MutableTotals,
+  logicalBytes: number,
+  allocated: number | undefined,
+  allocationIdentity: FileIdentity | undefined,
+): void {
   totals.regular_files += 1;
   totals.logical_bytes += logicalBytes;
   if (allocated === undefined || !Number.isSafeInteger(allocated) || allocated < 0) {
     totals.allocated_available = false;
-  } else totals.allocated_bytes += allocated;
+  } else {
+    const key = allocationIdentity
+      ? `${allocationIdentity.dev}:${allocationIdentity.ino}`
+      : undefined;
+    if (key === undefined || !totals.allocated_identities.has(key)) {
+      if (key !== undefined) totals.allocated_identities.add(key);
+      totals.allocated_bytes += allocated;
+    }
+  }
+}
+
+function allowsSymbolicLinkSkip(state: ScanState, path: string): boolean {
+  return matchingRoot(state, path)?.root.link_handling?.symbolic_links === "skip";
+}
+
+function allowsHardLink(state: ScanState, path: string): boolean {
+  return matchingRoot(state, path)?.root.link_handling?.hard_links === "allow";
+}
+
+function matchingRoot(state: ScanState, path: string): RootAccumulator | undefined {
+  const families = filesystemMatches(state, path);
+  if (families.length !== 1) return undefined;
+  const roots = families[0]!.roots.filter(({ root }) => rootMatches(root, path));
+  if (roots.length !== 1) return undefined;
+  return roots[0]!;
 }
 
 function allocatedBytes(stats: Stats): number | undefined {

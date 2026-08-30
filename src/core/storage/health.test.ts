@@ -32,14 +32,14 @@ describe("storage health", () => {
     });
   });
 
-  test("degrades on unregistered files while keeping reason codes stable", async () => {
+  test("keeps unregistered files unknown while preserving their issue", async () => {
     const root = fixture();
     mkdirSync(join(root, ".harnery"));
     writeFileSync(join(root, ".harnery", "unknown.bin"), "unknown");
     const report = storageHealth(
       await inventoryStorage(createStorageCatalog({ coord_root: root })),
     );
-    expect(report.status).toBe("degraded");
+    expect(report.status).toBe("unknown");
     expect(report.reason_codes).toContain("unregistered_path");
     expect(report.issues).toContainEqual({
       reason_code: "unregistered_path",

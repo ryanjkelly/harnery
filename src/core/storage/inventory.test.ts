@@ -107,6 +107,47 @@ describe("storage inventory", () => {
     });
   });
 
+  test("skips declared artifact symlinks and accounts owner-protocol hard links once", async () => {
+    const root = fixture();
+    const artifacts = join(root, ".harnery", "artifacts", "one");
+    mkdirSync(artifacts, { recursive: true });
+    const artifact = join(artifacts, "first.bin");
+    writeFileSync(artifact, "shared");
+    linkSync(artifact, join(artifacts, "second.bin"));
+    const outside = fixture();
+    writeFileSync(join(outside, "outside.bin"), "outside");
+    symlinkSync(outside, join(artifacts, "workspace-link"), "dir");
+
+    const outbox = join(root, ".harnery", "ledgers", "v3", "authority-outbox");
+    mkdirSync(outbox, { recursive: true });
+    const temporary = join(outbox, "tx_fixture.ready.json.tmp-1-fixture");
+    writeFileSync(temporary, "transaction");
+    linkSync(temporary, join(outbox, "tx_fixture.ready.json"));
+    mkdirSync(join(root, ".harnery", "ledgers", "v3", "append-lease"));
+
+    const report = await inventoryStorage(createStorageCatalog({ coord_root: root }), {
+      allocatedBytes: () => 4096,
+    });
+    expect(report.issues.some(({ reason_code }) => reason_code === "symlink_rejected")).toBeFalse();
+    expect(
+      report.issues.some(({ reason_code }) => reason_code === "hard_link_ambiguous"),
+    ).toBeFalse();
+    expect(family(report, "managed-artifacts")).toMatchObject({
+      state: "present",
+      reason_codes: [],
+      totals: {
+        regular_files: { state: "observed", value: 2 },
+        logical_bytes: { state: "observed", value: 12 },
+        allocated_bytes: { state: "observed", value: 4096 },
+      },
+    });
+    expect(family(report, "event-v3-support-active").reason_codes).not.toContain("wrong_root_type");
+    expect(family(report, "event-v3-support-active").totals.allocated_bytes).toMatchObject({
+      state: "observed",
+      value: 4096,
+    });
+  });
+
   test("filters stable family rows without changing complete filesystem totals", async () => {
     const root = fixture();
     mkdirSync(join(root, ".harnery"));
@@ -252,18 +293,20 @@ describe("storage inventory", () => {
     });
   });
 
-  test("marks hard-link allocation ambiguous and maintenance-ineligible", async () => {
+  test("flags undeclared hard links but accounts their allocation once", async () => {
     const root = fixture();
     const work = join(root, ".harnery", "work");
     mkdirSync(work, { recursive: true });
     const first = join(work, "first.json");
     writeFileSync(first, "shared");
     linkSync(first, join(work, "second.json"));
-    const report = await inventoryStorage(createStorageCatalog({ coord_root: root }));
+    const report = await inventoryStorage(createStorageCatalog({ coord_root: root }), {
+      allocatedBytes: () => 4096,
+    });
     expect(report.filesystem_totals.allocated_bytes).toEqual({
-      state: "unavailable",
+      state: "observed",
       unit: "bytes",
-      reason_code: "allocated_bytes_unavailable",
+      value: 4096,
     });
     expect(report.issues).toContainEqual({
       reason_code: "hard_link_ambiguous",
@@ -271,7 +314,8 @@ describe("storage inventory", () => {
       maintenance_eligible: false,
     });
     expect(family(report, "work-item-history")).toMatchObject({
-      reason_codes: ["allocated_bytes_unavailable", "hard_link_ambiguous"],
+      reason_codes: ["hard_link_ambiguous"],
+      totals: { allocated_bytes: { state: "observed", value: 4096 } },
       maintenance: { state: "ineligible" },
     });
   });
