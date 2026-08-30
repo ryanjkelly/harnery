@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Command } from "commander";
-import { createHarneryProgram, registerHarneryLogStorageCommands } from "../../src/commander.ts";
+import {
+  createHarneryProgram,
+  loadLazyCommand,
+  registerHarneryLogStorageCommands,
+} from "../../src/commander.ts";
 import {
   appendDurableHistoryRecord,
   createInMemoryLoggerRuntime,
@@ -18,8 +22,10 @@ describe("createHarneryProgram", () => {
     expect(program.name()).toBe("acme");
   });
 
-  test("uses the known binName in construction-time command help", () => {
+  test("uses the known binName in command help", async () => {
     const program = createHarneryProgram({ binName: "acme" });
+    await loadLazyCommand(program, "browse");
+    await loadLazyCommand(program, "agents");
     const command = (name: string) => program.commands.find((entry) => entry.name() === name);
 
     expect(command("outline")?.description()).toContain("`acme toc`");
@@ -66,16 +72,16 @@ describe("createHarneryProgram", () => {
     expect(names.has("storage")).toBeTrue();
   });
 
-  test("mounts log storage commands below a host-owned namespace", () => {
+  test("mounts log storage commands below a host-owned namespace", async () => {
     const host = new Command();
     const namespace = host.command("harnery");
-    expect(registerHarneryLogStorageCommands(namespace)).toBe(namespace);
+    expect(await registerHarneryLogStorageCommands(namespace)).toBe(namespace);
     expect(namespace.commands.map((command) => command.name()).sort()).toEqual(["logs", "storage"]);
   });
 
-  test("mounts only the selected log storage command below a host namespace", () => {
+  test("mounts only the selected log storage command below a host namespace", async () => {
     const namespace = new Command().command("harnery");
-    registerHarneryLogStorageCommands(namespace, { commands: ["logs"] });
+    await registerHarneryLogStorageCommands(namespace, { commands: ["logs"] });
     expect(namespace.commands.map((command) => command.name())).toEqual(["logs"]);
   });
 

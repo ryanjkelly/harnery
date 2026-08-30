@@ -2,12 +2,13 @@
  * `createHarneryProgram` is the composition point.
  *
  * harn (this package's CLI) calls this with `binName: 'harn'`.
- * Consumer CLIs call this with their own binName, then `.addCommand()`
- * their domain-specific subcommands and `parseAsync()`.
+ * Consumer CLIs call this with their own binName, register their
+ * domain-specific subcommands, and then use `parseAsync()`.
  *
- * The returned Commander program is harnery's full command tree. Adding
- * a command with the same name on the consumer side overrides it, which is
- * useful for project-specific overlays but uncommon.
+ * The returned Commander program initially contains lightweight top-level
+ * metadata. `parseAsync()` materializes only the selected implementation.
+ * Consumers that inspect the complete nested tree must first call
+ * `loadAllLazyCommands(program)`.
  *
  * Future commands wire in via `registerXxxCommand(program)` calls below.
  * Each subdirectory under src/commands/ exports its `register…` function
@@ -18,55 +19,21 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { registerAdapterCommand } from "./commands/adapter.ts";
-import { registerAgentsCommand, registerCouncilCommands } from "./commands/agents.ts";
-import { registerArtifactsCommand } from "./commands/artifacts.ts";
-import { registerBackupCommand } from "./commands/backup.ts";
-import { registerBrowseCommand } from "./commands/browse.ts";
-import { registerBrowseAiCommand } from "./commands/browse-ai.ts";
-import { registerBrowseSessionCommand } from "./commands/browse-session.ts";
-import { registerCallersCommand } from "./commands/callers.ts";
-import { registerCheckpointCommand } from "./commands/checkpoint.ts";
-import { registerClaudeDesktopCommand } from "./commands/claude-desktop.ts";
-import { registerCompletionCommand } from "./commands/completion.ts";
-import { registerConfigGetCommand } from "./commands/config-get.ts";
-import { registerConversationsCommand } from "./commands/conversations.ts";
-import { registerCookiesCommand } from "./commands/cookies.ts";
-import { registerDecisionCommand } from "./commands/decision.ts";
-import { registerDeinitCommand } from "./commands/deinit.ts";
-import { registerDevtoolsCommand } from "./commands/devtools.ts";
-import { registerDocsCommand } from "./commands/docs.ts";
-import { registerDoctorCommand } from "./commands/doctor.ts";
-import { registerEditBatchCommand } from "./commands/edit-batch.ts";
-import { registerEmlCommand } from "./commands/eml.ts";
-import { registerEnvCommand } from "./commands/env.ts";
-import { registerEventsCommand } from "./commands/events.ts";
-import { registerFetchCommand } from "./commands/fetch.ts";
-import { registerFileHistoryCommand } from "./commands/file-history.ts";
-import { registerFilesCommand } from "./commands/files.ts";
-import { registerGovernorCommand } from "./commands/governor.ts";
-import { registerGrepCommand } from "./commands/grep.ts";
-import { registerInboxCommand } from "./commands/inbox.ts";
-import { registerInitCommand } from "./commands/init.ts";
-import { registerInstructionsCommand } from "./commands/instructions.ts";
-import { registerJournalCommand } from "./commands/journal.ts";
-import { registerLedgerV3Command } from "./commands/ledger-v3.ts";
-import { registerLogsCommand } from "./commands/logs.ts";
-import { registerMessagesCommand } from "./commands/messages.ts";
-import { registerOutlineCommand } from "./commands/outline.ts";
-import { registerPolicyCommand } from "./commands/policy.ts";
-import { registerPresenceCommand } from "./commands/presence.ts";
-import { registerReadCommand } from "./commands/read.ts";
-import { registerRelayCommand } from "./commands/relay.ts";
-import { registerSemanticCommand } from "./commands/semantic.ts";
-import { registerStorageCommand } from "./commands/storage.ts";
-import { registerSyncCommand } from "./commands/sync.ts";
-import { registerSectionCommand, registerTocCommand } from "./commands/toc.ts";
-import { registerTokensCommand } from "./commands/tokens.ts";
-import { registerTunnelCommand } from "./commands/tunnel.ts";
-import { registerWebCommand } from "./commands/web.ts";
-import { registerWorkCommand } from "./commands/work.ts";
-import { registerWorkflowCommand } from "./commands/workflow.ts";
+import {
+  type LazyCommandBundle,
+  type LazyCommandDefinition,
+  loadAllLazyCommands,
+  registerLazyCommandBundles,
+} from "./lazy-commands.ts";
+
+export {
+  type LazyCommandBundle,
+  type LazyCommandDefinition,
+  loadAllLazyCommands,
+  loadLazyCommand,
+  onLazyCommandLoaded,
+  registerLazyCommandBundles,
+} from "./lazy-commands.ts";
 
 export interface HarneryContextOpts {
   /**
@@ -162,6 +129,10 @@ export interface HarneryProgramContext {
    * reports `skipped` rather than a false pass.
    */
   critiqueProvider?: import("./lib/browser/critique.ts").CritiqueProvider;
+  /** Load a host vision provider only when browse critique is requested. */
+  critiqueProviderLoader?: () => Promise<
+    import("./lib/browser/critique.ts").CritiqueProvider | undefined
+  >;
   /**
    * Shell-completion provider-key lookup. Consumers wire this to a function
    * mapping (commandPath, option/positional) to a provider key, so that
@@ -283,14 +254,20 @@ export interface HarneryLogStorageCommandOptions
   commands?: readonly ("storage" | "logs")[];
 }
 
-export function registerHarneryLogStorageCommands(
+export async function registerHarneryLogStorageCommands(
   parent: Command,
   options: HarneryLogStorageCommandOptions = {},
-): Command {
+): Promise<Command> {
   const emit = options.emit ?? defaultEmit;
   const commands = new Set(options.commands ?? ["storage", "logs"]);
-  if (commands.has("storage")) registerStorageCommand(parent, emit, options.context);
-  if (commands.has("logs")) registerLogsCommand(parent, emit, options.context);
+  if (commands.has("storage")) {
+    const { registerStorageCommand } = await import("./commands/storage.ts");
+    registerStorageCommand(parent, emit, options.context);
+  }
+  if (commands.has("logs")) {
+    const { registerLogsCommand } = await import("./commands/logs.ts");
+    registerLogsCommand(parent, emit, options.context);
+  }
   return parent;
 }
 
@@ -298,84 +275,411 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   const program = new Command();
   const emit = opts.emit ?? defaultEmit;
   const skip = new Set(opts.skipCommands ?? []);
-  const include = (name: string) => !skip.has(name);
+  const binName = opts.binName ?? "harn";
 
   program
-    .name(opts.binName ?? "harn")
+    .name(binName)
     .description("Multi-agent coordination + adapter adapters + portable CLI utilities.")
     .version(readVersion());
 
-  registerTokensCommand(program, emit);
-  registerEmlCommand(program, emit);
-  registerEnvCommand(program, emit, opts.context);
-  registerPresenceCommand(program, emit);
-  registerRelayCommand(program, emit);
-  registerConfigGetCommand(program, emit);
-  registerFileHistoryCommand(program, emit);
-  registerOutlineCommand(program, emit, opts.binName ?? "harn");
-  registerTocCommand(program, emit);
-  registerSectionCommand(program, emit);
-  registerCallersCommand(program, emit, opts.context);
-  registerEditBatchCommand(program, emit);
-  registerGrepCommand(program, emit, opts.context);
-  registerAdapterCommand(program, emit);
-  registerPolicyCommand(program, emit);
-  registerCookiesCommand(program, emit);
-  registerFetchCommand(program, emit, opts.context);
-  registerFilesCommand(program, emit, opts.context);
-  registerReadCommand(program, emit, opts.binName ?? "harn");
-  registerBrowseCommand(program, emit, opts.context, opts.binName ?? "harn");
-  registerBrowseSessionCommand(program, emit);
-  registerBrowseAiCommand(program, emit);
-  registerCompletionCommand(program, emit, opts.context);
-  registerCheckpointCommand(program, emit, opts.context);
-  registerJournalCommand(program, emit);
-  registerLedgerV3Command(program, emit, opts.context);
-  registerSemanticCommand(program, emit, opts.context);
-  if (include("storage") && include("logs")) {
-    registerHarneryLogStorageCommands(program, { emit, context: opts.context });
-  } else {
-    if (include("storage")) registerStorageCommand(program, emit, opts.context);
-    if (include("logs")) registerLogsCommand(program, emit, opts.context);
-  }
-  if (include("inbox")) registerInboxCommand(program, emit, opts.context?.coordinationInbox);
-  if (include("messages")) registerMessagesCommand(program, emit, opts.context?.coordinationInbox);
-  if (include("conversations")) {
-    registerConversationsCommand(
-      program,
-      emit,
-      opts.context?.conversations?.catalog,
-      opts.context?.conversations
-        ? {
-            project_scope_id: opts.context.conversations.projectScopeId,
-            ...(opts.context.conversations.records
-              ? { records: opts.context.conversations.records }
-              : {}),
-          }
-        : undefined,
-    );
-  }
-  registerEventsCommand(program, emit, opts.context);
-  registerArtifactsCommand(program, emit, opts.context);
-  registerDecisionCommand(program, emit);
-  registerDevtoolsCommand(program, emit);
-  registerTunnelCommand(program, emit, opts.context);
-  registerDocsCommand(program, emit, opts.context);
-  registerAgentsCommand(program, emit, opts.context, opts.binName ?? "harn");
-  registerCouncilCommands(program);
-  registerDoctorCommand(program, emit);
-  registerInstructionsCommand(program, emit);
-  registerInitCommand(program, emit, opts.binName);
-  registerDeinitCommand(program, emit, opts.binName);
-  registerBackupCommand(program, emit);
-  registerClaudeDesktopCommand(program, emit, opts.context);
-  registerSyncCommand(program, emit);
-  registerWorkflowCommand(program, emit);
-  registerWorkCommand(program, emit);
-  registerGovernorCommand(program, emit);
-  if (include("web")) registerWebCommand(program, emit);
+  const bundles = harneryCommandBundles({ emit, context: opts.context, binName }).filter((bundle) =>
+    bundle.commands.every((command) => !skip.has(commandName(command.command))),
+  );
+  registerLazyCommandBundles(program, bundles);
 
   return program;
+}
+
+interface CommandBundleContext {
+  emit: EmitContext;
+  context: HarneryProgramContext | undefined;
+  binName: string;
+}
+
+function lazy(
+  command: string,
+  description: string,
+  load: LazyCommandBundle["load"],
+  options: Omit<LazyCommandDefinition, "command" | "description"> = {},
+): LazyCommandBundle {
+  return { commands: [{ command, description, ...options }], load };
+}
+
+function harneryCommandBundles({
+  emit,
+  context,
+  binName,
+}: CommandBundleContext): LazyCommandBundle[] {
+  return [
+    lazy(
+      "tokens <files...>",
+      "Count tokens in text/markdown files (offline, uses o200k_base as Claude proxy)",
+      async (program) =>
+        (await import("./commands/tokens.ts")).registerTokensCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "eml <file>",
+      "Parse a Gmail .eml file into a clean chronological markdown thread",
+      async (program) => (await import("./commands/eml.ts")).registerEmlCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "env [section]",
+      "Show environment status (runtimes, docker, git; hosts can add sections)",
+      async (program) =>
+        (await import("./commands/env.ts")).registerEnvCommand(program, emit, context),
+    ),
+    lazy(
+      "presence",
+      "Presence: mobile/office state (get/set/clear/detect) + cross-machine session presence (publish/fetch/peers)",
+      async (program) =>
+        (await import("./commands/presence.ts")).registerPresenceCommand(program, emit),
+    ),
+    lazy(
+      "relay",
+      "Self-host the presence relay (see also relay/worker/ for the Cloudflare host)",
+      async (program) => (await import("./commands/relay.ts")).registerRelayCommand(program, emit),
+    ),
+    lazy(
+      "config-get <file> <key>",
+      "Extract a single value from a JSON/YAML config file by dotted-path. Bracket notation supported: `config-get tsconfig.json compilerOptions.paths`.",
+      async (program) =>
+        (await import("./commands/config-get.ts")).registerConfigGetCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "file-history <path>",
+      "Concise per-file git history: summary stats + N most-recent commits with line impact.",
+      async (program) =>
+        (await import("./commands/file-history.ts")).registerFileHistoryCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "outline <file>",
+      `Print the structural skeleton of a code file (imports + top-level decls + line numbers). Supports TS/JS/TSX/JSX (AST), PHP/Python (regex). Use \`${binName} toc\` for markdown.`,
+      async (program) =>
+        (await import("./commands/outline.ts")).registerOutlineCommand(program, emit, binName),
+      { hasOptions: true },
+    ),
+    lazy(
+      "toc <file>",
+      "Print the markdown header outline (level + text + line number).",
+      async (program) => (await import("./commands/toc.ts")).registerTocCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "section <file> <header...>",
+      "Extract one section from a markdown file by header substring (case-insensitive by default). Joins multi-word args into one query string.",
+      async (program) => (await import("./commands/toc.ts")).registerSectionCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "callers <symbol>",
+      "Find references to a symbol across the monorepo with kind classification (call / import / type / decl / ref). Heuristic: filters out declarations + single-line comments by default; opt back in with --include-decl / --include-comments.",
+      async (program) =>
+        (await import("./commands/callers.ts")).registerCallersCommand(program, emit, context),
+      { hasOptions: true },
+    ),
+    lazy(
+      "edit-batch <old> <new> <files...>",
+      "Coordinated find/replace across N files (literal by default; --regex for pattern). Atomic per-file. Use --dry-run to preview.",
+      async (program) =>
+        (await import("./commands/edit-batch.ts")).registerEditBatchCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "grep <pattern> [paths...]",
+      "Monorepo-aware code search (ripgrep when available, GNU grep fallback). Skips dist/.next/node_modules/.git/... by default. Use --repo, --all-repos, --lang for scoping; --and/--without for file-level composition. Regex by default; -F for literal.",
+      async (program) =>
+        (await import("./commands/grep.ts")).registerGrepCommand(program, emit, context),
+      { hasOptions: true },
+    ),
+    lazy(
+      "adapter",
+      "Inspect registered adapter capabilities and run their conformance bench.",
+      async (program) =>
+        (await import("./commands/adapter.ts")).registerAdapterCommand(program, emit),
+    ),
+    lazy("policy", "Inspect host-enforced workflow policy documents.", async (program) =>
+      (await import("./commands/policy.ts")).registerPolicyCommand(program, emit),
+    ),
+    lazy(
+      "cookies",
+      "Manage the shared browser cookie store (default: ~/.cache/harnery/cookies.json). Format is CDP-native (compatible with Playwright/agent-browser).",
+      async (program) =>
+        (await import("./commands/cookies.ts")).registerCookiesCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "fetch <url>",
+      `HTTP GET (or --method) with cookie-jar attach + persist. Default jar is ~/.cache/harnery/cookies.json (shared with ${binName} cookies / ${binName} browse).`,
+      async (program) =>
+        (await import("./commands/fetch.ts")).registerFetchCommand(program, emit, context),
+      { hasOptions: true },
+    ),
+    lazy("files", "Mint browser links for files served by the local dashboard", async (program) =>
+      (await import("./commands/files.ts")).registerFilesCommand(program, emit, context),
+    ),
+    lazy(
+      "read [html-file]",
+      `Extract clean readable markdown from HTML. Reads from file or stdin (use '-'). Pair with \`${binName} fetch\` or \`${binName} browse\` for scrape-to-markdown.`,
+      async (program) =>
+        (await import("./commands/read.ts")).registerReadCommand(program, emit, binName),
+      { hasOptions: true },
+    ),
+    lazy(
+      "browse <url>",
+      "Headless Chromium with persistent profile + cookie jar. Default writes a trio of files (last.png, last.html, last.json) for the LLM iteration loop; --snapshot/--html/--json switch to stdout-print mode.",
+      async (program) =>
+        (await import("./commands/browse.ts")).registerBrowseCommand(
+          program,
+          emit,
+          context,
+          binName,
+        ),
+      { hasOptions: true },
+    ),
+    lazy(
+      "browse-session",
+      "Control an opted-in headed browse session through an owner-only descriptor",
+      async (program) =>
+        (await import("./commands/browse-session.ts")).registerBrowseSessionCommand(program, emit),
+    ),
+    lazy(
+      "browse-ai <url>",
+      `agent-browser (Vercel Labs) wrapper: accessibility-tree snapshots with element refs (@e1, @e2) for LLM consumption. Daemon-mode: successive calls reuse the same browser instance. Sister to ${binName} browse (Playwright).`,
+      async (program) =>
+        (await import("./commands/browse-ai.ts")).registerBrowseAiCommand(program, emit),
+      { hasOptions: true },
+    ),
+    {
+      commands: [
+        {
+          command: "completion",
+          description:
+            "Shell tab-completion. Emit a script per shell or install to the standard location.",
+        },
+        {
+          command: "__complete <provider> [partial]",
+          description: "Internal: dynamic-value completion callback for the shell",
+          hidden: true,
+        },
+        {
+          command: "__complete-line <cword> [words...]",
+          description: "Internal: full-line completion callback for the dynamic shell shim",
+          hidden: true,
+        },
+      ],
+      load: async (program) => {
+        await loadAllLazyCommands(program);
+        (await import("./commands/completion.ts")).registerCompletionCommand(
+          program,
+          emit,
+          context,
+        );
+      },
+    },
+    lazy(
+      "checkpoint",
+      "Durable context-continuity capsules: create one, show the latest, or report continuity phase.",
+      async (program) =>
+        (await import("./commands/checkpoint.ts")).registerCheckpointCommand(
+          program,
+          emit,
+          context,
+        ),
+      { hasOptions: true },
+    ),
+    lazy(
+      "journal",
+      "Per-agent markdown journal: append-only timestamped entries. Survives in-session compaction, archived at session end, pruned after 7 days.",
+      async (program) =>
+        (await import("./commands/journal.ts")).registerJournalCommand(program, emit),
+    ),
+    lazy(
+      "ledger-v3",
+      "Inspect or initialize the universal event-ledger V3 epoch",
+      async (program) =>
+        (await import("./commands/ledger-v3.ts")).registerLedgerV3Command(program, emit, context),
+    ),
+    lazy(
+      "semantic",
+      "Build and inspect evidence-cited semantic readings of active V3 generations",
+      async (program) =>
+        (await import("./commands/semantic.ts")).registerSemanticCommand(program, emit, context),
+    ),
+    lazy(
+      "storage",
+      "Inspect registered Harnery storage without reading file bodies",
+      async (program) =>
+        (await import("./commands/storage.ts")).registerStorageCommand(program, emit, context),
+    ),
+    lazy("logs", "List and query bounded Harnery log families", async (program) =>
+      (await import("./commands/logs.ts")).registerLogsCommand(program, emit, context),
+    ),
+    lazy("inbox", "Inspect private coordination inbox state", async (program) =>
+      (await import("./commands/inbox.ts")).registerInboxCommand(
+        program,
+        emit,
+        context?.coordinationInbox,
+      ),
+    ),
+    lazy(
+      "messages",
+      "Queue a durable coordination message; dry-run unless --yes",
+      async (program) =>
+        (await import("./commands/messages.ts")).registerMessagesCommand(
+          program,
+          emit,
+          context?.coordinationInbox,
+        ),
+      { hasOptions: true },
+    ),
+    lazy("conversations", "Query conversation evidence", async (program) => {
+      const { registerConversationsCommand } = await import("./commands/conversations.ts");
+      registerConversationsCommand(
+        program,
+        emit,
+        context?.conversations?.catalog,
+        context?.conversations
+          ? {
+              project_scope_id: context.conversations.projectScopeId,
+              ...(context.conversations.records ? { records: context.conversations.records } : {}),
+            }
+          : undefined,
+      );
+    }),
+    lazy("events", "Inspect the canonical event ledger", async (program) =>
+      (await import("./commands/events.ts")).registerEventsCommand(program, emit, context),
+    ),
+    lazy(
+      "artifacts",
+      "Manage repository-local working artifacts under .harnery/artifacts/",
+      async (program) =>
+        (await import("./commands/artifacts.ts")).registerArtifactsCommand(program, emit, context),
+      { aliases: ["artifact"] },
+    ),
+    lazy(
+      "decision",
+      "Decision docket: file a decision an agent would otherwise escalate, deliberate it, resolve with cited evidence, review async.",
+      async (program) =>
+        (await import("./commands/decision.ts")).registerDecisionCommand(program, emit),
+      { aliases: ["decisions"] },
+    ),
+    lazy(
+      "devtools",
+      "Local status of the AI coding agents (Claude Code, Codex, Cursor)",
+      async (program) =>
+        (await import("./commands/devtools.ts")).registerDevtoolsCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "tunnel",
+      "Provider-backed tunnel(s) in front of a local upstream (default upstream: 127.0.0.1:8001). Run several at once with --name <instance>.",
+      async (program) =>
+        (await import("./commands/tunnel.ts")).registerTunnelCommand(program, emit, context),
+    ),
+    lazy(
+      "docs",
+      "Documentation tooling: freshness report, metadata, lint, sweep, index",
+      async (program) =>
+        (await import("./commands/docs.ts")).registerDocsCommand(program, emit, context),
+      { hasOptions: true },
+    ),
+    lazy(
+      "agents",
+      "The live agent sessions in this project: who is running now, what they hold, and their coordination state (whoami / list / status / health).",
+      async (program) =>
+        (await import("./commands/agents.ts")).registerAgentsCommand(
+          program,
+          emit,
+          context,
+          binName,
+        ),
+    ),
+    lazy(
+      "council",
+      "Multi-agent deliberation: convene a temporary group around an objective, run N rounds of contribution, emit a transcript.",
+      async (program) => (await import("./commands/agents.ts")).registerCouncilCommands(program),
+    ),
+    lazy(
+      "doctor",
+      "Verify the runtime + optional deps harnery commands expect. Exits 0 unless a required dep (Node, git) is missing.",
+      async (program) =>
+        (await import("./commands/doctor.ts")).registerDoctorCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "instructions",
+      "Inspect and version the repo-authored instruction bundle loaded by each adapter.",
+      async (program) =>
+        (await import("./commands/instructions.ts")).registerInstructionsCommand(program, emit),
+    ),
+    lazy(
+      "init",
+      "Bootstrap harnery in this project: create .harnery/, wire the adapter hooks, and inject the agent-facing instructions block + skills (idempotent; safe to re-run). Use --dry-run to preview, --check to report drift without writing (exit 0 fresh / 2 drift / 1 error).",
+      async (program) =>
+        (await import("./commands/init.ts")).registerInitCommand(program, emit, binName),
+      { hasOptions: true },
+    ),
+    lazy(
+      "deinit",
+      "Reverse `harn init`: remove harnery's hook entries from the adapter settings file (keeps any others). Pass --purge-state to also delete the .harnery/ coord root (on a terminal it asks first). Idempotent; use --dry-run to preview.",
+      async (program) =>
+        (await import("./commands/deinit.ts")).registerDeinitCommand(program, emit, binName),
+      { hasOptions: true },
+    ),
+    lazy(
+      "backup",
+      "restic-backed snapshots of .harnery/ (multi-machine recovery insurance)",
+      async (program) =>
+        (await import("./commands/backup.ts")).registerBackupCommand(program, emit),
+    ),
+    lazy(
+      "claude-desktop",
+      "Claude desktop-app session index: list and mirror sessions across accounts",
+      async (program) =>
+        (await import("./commands/claude-desktop.ts")).registerClaudeDesktopCommand(
+          program,
+          emit,
+          context,
+        ),
+    ),
+    lazy(
+      "sync",
+      "Cross-machine sync of curated .harnery/ subset (identities, archived journals, council manifests) via rclone. Google Drive is the expected remote; any rclone backend works.",
+      async (program) => (await import("./commands/sync.ts")).registerSyncCommand(program, emit),
+    ),
+    {
+      commands: [
+        {
+          command: "run",
+          description:
+            "Execute one bounded, schema-gated multi-subagent script. Subagents spawn as headless adapter-CLI subprocesses, born coordination-registered.",
+        },
+        { command: "approval", description: "Inspect and resolve durable run-policy approvals." },
+      ],
+      load: async (program) =>
+        (await import("./commands/workflow.ts")).registerWorkflowCommand(program, emit),
+    },
+    lazy("work", "Track durable objectives across bounded workflow attempts.", async (program) =>
+      (await import("./commands/work.ts")).registerWorkCommand(program, emit),
+    ),
+    lazy(
+      "governor",
+      "Run a bounded specialist team over a durable-work dependency graph.",
+      async (program) =>
+        (await import("./commands/governor.ts")).registerGovernorCommand(program, emit),
+    ),
+    lazy("web", "Standalone read-only dashboard for harnery's coord state", async (program) =>
+      (await import("./commands/web.ts")).registerWebCommand(program, emit),
+    ),
+  ];
+}
+
+function commandName(signature: string): string {
+  return signature.trim().split(/\s/, 1)[0] ?? signature;
 }
 
 function readVersion(): string {

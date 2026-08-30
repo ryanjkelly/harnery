@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { createHarneryProgram, type EmitContext } from "../../src/commander.ts";
+import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../../src/commander.ts";
 import { HarneryConversationCatalog } from "../../src/core/conversations/catalog.ts";
 import type { HarneryConversationProvider } from "../../src/core/conversations/contract.ts";
 import type { HarneryInboxLimits } from "../../src/core/inbox/contract.ts";
@@ -60,9 +60,9 @@ describe("logging framework command smoke", () => {
     ]) {
       expect(await invoke(dependencies, argv), argv.join(" ")).toBe(0);
     }
-    capture.help.push(renderHelp(dependencies, ["ledger-v3", "verify-support"]));
-    capture.help.push(renderHelp(dependencies, ["ledger-v3", "support-plan"]));
-    capture.help.push(renderHelp(dependencies, ["storage", "maintain"]));
+    capture.help.push(await renderHelp(dependencies, ["ledger-v3", "verify-support"]));
+    capture.help.push(await renderHelp(dependencies, ["ledger-v3", "support-plan"]));
+    capture.help.push(await renderHelp(dependencies, ["storage", "maintain"]));
 
     expect(filesystemSnapshot(readRoot)).toEqual(beforeReads);
     expect(existsSync(inboxPath(readRoot, "recipient"))).toBeFalse();
@@ -228,8 +228,9 @@ async function invoke(dependencies: CommandDependencies, argv: string[]): Promis
   return capture.exitCodes.length > exitsBefore ? (capture.exitCodes.at(-1) ?? 1) : 0;
 }
 
-function renderHelp(dependencies: CommandDependencies, path: string[]): string {
+async function renderHelp(dependencies: CommandDependencies, path: string[]): Promise<string> {
   let command = createProgram(dependencies);
+  await loadLazyCommand(command, path[0] ?? "");
   for (const name of path) {
     const child = command.commands.find((candidate) => candidate.name() === name);
     if (!child) throw new Error(`missing command help surface: ${path.join(" ")}`);

@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Readable } from "node:stream";
-import { createHarneryProgram } from "../commander.ts";
+import { createHarneryProgram, loadLazyCommand } from "../commander.ts";
 import { parseLocatorOptions, readFillValue } from "./browse-session.ts";
 
 describe("browse-session command", () => {
-  test("registers the complete version-1 command surface", () => {
+  test("registers the complete version-1 command surface", async () => {
     const program = createHarneryProgram();
+    await loadLazyCommand(program, "browse-session");
+    await loadLazyCommand(program, "browse");
     const session = program.commands.find((command) => command.name() === "browse-session");
     expect(session).toBeDefined();
     expect(session?.commands.map((command) => command.name())).toEqual([

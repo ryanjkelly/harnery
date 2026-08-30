@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { createHarneryProgram, type EmitContext } from "../commander.ts";
+import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 import { createGovernor } from "../core/governor/index.ts";
 import {
   cancelWorkItem,
@@ -25,8 +25,9 @@ afterEach(() => {
 });
 
 describe("work command", () => {
-  test("registers the complete durable-work surface", () => {
+  test("registers the complete durable-work surface", async () => {
     const program = createHarneryProgram();
+    await loadLazyCommand(program, "work");
     const command = program.commands.find((candidate) => candidate.name() === "work");
     expect(command).toBeDefined();
     expect(command?.commands.map((candidate) => candidate.name())).toEqual([
@@ -42,8 +43,9 @@ describe("work command", () => {
     ]);
   });
 
-  test("run and retry both accept a workspace root, so isolation is reachable", () => {
+  test("run and retry both accept a workspace root, so isolation is reachable", async () => {
     const program = createHarneryProgram();
+    await loadLazyCommand(program, "work");
     const work = program.commands.find((candidate) => candidate.name() === "work");
     // Both entry points into an attempt must offer it. `retry` starting a fresh
     // attempt without a root would silently drop back to shared after a blocked

@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { createHarneryProgram } from "../commander.ts";
+import { createHarneryProgram, loadLazyCommand } from "../commander.ts";
 import { normalizePolicy, policyDigest } from "../core/policy/index.ts";
 import { renderPolicy } from "./policy.ts";
 
 describe("policy command", () => {
-  test("is registered in the composed command tree", () => {
+  test("is registered in the composed command tree", async () => {
     const program = createHarneryProgram();
+    await loadLazyCommand(program, "policy");
     const command = program.commands.find((candidate) => candidate.name() === "policy");
     expect(command).toBeDefined();
     expect(command?.commands.map((candidate) => candidate.name())).toEqual(["check"]);

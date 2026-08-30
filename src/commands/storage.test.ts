@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHarneryProgram, type EmitContext } from "../commander.ts";
+import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 import { harneryStorageFamilies } from "../core/storage/builtins.ts";
 import type {
   HarneryStorageFamily,
@@ -17,8 +17,10 @@ afterEach(() => {
 });
 
 describe("storage command", () => {
-  test("is registered with inventory and health subcommands", () => {
-    const storage = createHarneryProgram().commands.find((command) => command.name() === "storage");
+  test("is registered with inventory and health subcommands", async () => {
+    const program = createHarneryProgram();
+    await loadLazyCommand(program, "storage");
+    const storage = program.commands.find((command) => command.name() === "storage");
     expect(storage).toBeDefined();
     expect(storage?.commands.map((command) => command.name()).sort()).toEqual([
       "health",

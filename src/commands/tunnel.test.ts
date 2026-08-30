@@ -5,12 +5,13 @@ import type { AddressInfo } from "node:net";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHarneryProgram } from "../commander.ts";
+import { createHarneryProgram, loadLazyCommand } from "../commander.ts";
 import type { TunnelState } from "../lib/tunnel/state.ts";
 import { reloadOne, tunnelLogDestinations } from "./tunnel.ts";
 
-function tunnelCommand() {
+async function tunnelCommand() {
   const program = createHarneryProgram();
+  await loadLazyCommand(program, "tunnel");
   return program.commands.find((candidate) => candidate.name() === "tunnel");
 }
 
@@ -43,13 +44,13 @@ function livePid(): { pid: number; kill: () => void } {
 }
 
 describe("tunnel command registration", () => {
-  test("exposes reload alongside the rest of the lifecycle", () => {
-    const names = tunnelCommand()?.commands.map((c) => c.name());
+  test("exposes reload alongside the rest of the lifecycle", async () => {
+    const names = (await tunnelCommand())?.commands.map((c) => c.name());
     expect(names).toContain("reload");
   });
 
-  test("reload takes --name and --all", () => {
-    const reload = tunnelCommand()?.commands.find((c) => c.name() === "reload");
+  test("reload takes --name and --all", async () => {
+    const reload = (await tunnelCommand())?.commands.find((c) => c.name() === "reload");
     const flags = reload?.options.map((o) => o.long);
     expect(flags).toContain("--name");
     expect(flags).toContain("--all");

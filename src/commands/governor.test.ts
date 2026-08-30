@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createHarneryProgram, type EmitContext } from "../commander.ts";
+import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 import { createGovernor, runGovernor } from "../core/governor/index.ts";
 import { createWorkItem } from "../core/work/index.ts";
 
@@ -40,8 +40,9 @@ function captureEmit(): { emit: EmitContext; text: () => string } {
 }
 
 describe("governor command", () => {
-  test("registers the durable goal lifecycle", () => {
+  test("registers the durable goal lifecycle", async () => {
     const program = createHarneryProgram();
+    await loadLazyCommand(program, "governor");
     const command = program.commands.find((candidate) => candidate.name() === "governor");
     expect(command).toBeDefined();
     expect(command?.commands.map((candidate) => candidate.name())).toEqual([

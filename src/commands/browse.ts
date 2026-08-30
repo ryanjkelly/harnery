@@ -933,12 +933,10 @@ async function runBrowse(
     let critiqueTiles: CritiqueTile[] | undefined;
     let critiqueFullPage: Buffer | undefined;
     if (opts.checkCritique !== undefined) {
+      const critiqueProvider =
+        context?.critiqueProvider ?? (await context?.critiqueProviderLoader?.());
       const rubric = opts.checkCritiqueRubric ?? DEFAULT_CRITIQUE_RUBRIC;
-      const captured = await captureCritiqueTiles(
-        browser,
-        opts,
-        context?.critiqueProvider?.tileBudgetPx,
-      );
+      const captured = await captureCritiqueTiles(browser, opts, critiqueProvider?.tileBudgetPx);
       critiqueTiles = captured.tiles;
       critiqueFullPage = captured.fullPage;
       let tilesToReview = captured.tiles;
@@ -985,7 +983,7 @@ async function runBrowse(
         url: navResult.url,
         rubric,
         tiles: tilesToReview,
-        provider: context?.critiqueProvider,
+        provider: critiqueProvider,
       });
     }
     // Persist the QA baseline AFTER critique so a passing run's verdicts ride

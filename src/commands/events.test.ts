@@ -8,7 +8,7 @@ import {
   fixtureObject,
 } from "../../tests/helpers/event-v3.ts";
 import type { EmitContext } from "../commander.ts";
-import { createHarneryProgram } from "../commander.ts";
+import { createHarneryProgram, loadLazyCommand } from "../commander.ts";
 import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
 
 const roots: string[] = [];
@@ -18,10 +18,10 @@ afterEach(() => {
 });
 
 describe("events latency command", () => {
-  test("registers read-only V3 latency views", () => {
-    const command = createHarneryProgram().commands.find(
-      (candidate) => candidate.name() === "events",
-    );
+  test("registers read-only V3 latency views", async () => {
+    const program = createHarneryProgram();
+    await loadLazyCommand(program, "events");
+    const command = program.commands.find((candidate) => candidate.name() === "events");
     expect(command?.commands.map((candidate) => candidate.name())).toEqual(["latency"]);
     expect(command?.commands[0]?.options.map(({ long }) => long)).toEqual([
       "--root",

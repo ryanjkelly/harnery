@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHarneryProgram, type EmitContext } from "../commander.ts";
+import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 
 const roots: string[] = [];
 
@@ -11,10 +11,10 @@ afterEach(() => {
 });
 
 describe("ledger-v3 command", () => {
-  test("registers explicit authority, support-pack, and sealed-history tools", () => {
-    const command = createHarneryProgram().commands.find(
-      (candidate) => candidate.name() === "ledger-v3",
-    );
+  test("registers explicit authority, support-pack, and sealed-history tools", async () => {
+    const program = createHarneryProgram();
+    await loadLazyCommand(program, "ledger-v3");
+    const command = program.commands.find((candidate) => candidate.name() === "ledger-v3");
     expect(command?.commands.map((candidate) => candidate.name())).toEqual([
       "status",
       "initialize",

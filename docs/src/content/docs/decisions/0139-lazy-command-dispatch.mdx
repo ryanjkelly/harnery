@@ -1,0 +1,84 @@
+---
+title: "ADR 0139: lazy command dispatch"
+description: Keep top-level CLI metadata resident, then load only the selected command implementation before async parsing.
+sidebar:
+  order: 139
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+`createHarneryProgram` imported every command module before Commander could
+inspect the requested command. A root help invocation therefore paid for the
+same coordination, browser, workflow, and storage implementations as an
+invocation that used them. On one development host, `harn --help` took a
+0.65-second median and peaked near 327 MB of resident memory. Importing the
+program module alone reproduced almost the entire cost.
+
+Host CLIs composed Harnery with their own eager command registrars, multiplying
+the same problem. The overhead affected short read-only commands most because
+program construction cost more than their useful work.
+
+## Alternatives
+
+**Keep eager registration and rely on runtime module caching.** Rejected. Each
+CLI invocation is a fresh process, so the cache disappears after every call.
+
+**Maintain a separate lightweight executable for frequent commands.**
+Rejected. It would split one command contract across two dispatchers and make
+help, completion, global options, and host composition harder to keep aligned.
+
+**Parse the command name before constructing Commander.** Rejected. A second
+parser would need to reproduce Commander's handling of global options, aliases,
+the `help <command>` form, and parse origins. Drift between the pre-parser and
+Commander would create command-specific failures.
+
+**Generate one independently bundled executable per command.** Deferred. It
+could reduce the remaining implementation cost, but it adds release and
+installation complexity that is not justified while dynamic module loading
+removes most of the shared startup cost.
+
+## Decision
+
+The program registers lightweight placeholders containing only each top-level
+signature, description, aliases, visibility, and whether root help should show
+an options marker. `parseAsync()` identifies the selected top-level command,
+replaces only that placeholder with its concrete registrar, preserves its
+original position, and then delegates parsing to Commander.
+
+Command bundles support registrars that own more than one top-level command.
+Loading is transactional: if a registrar throws or fails to register its
+declared command, the implementation is removed and the placeholders are
+restored. Hosts can attach post-load hooks without importing the selected
+implementation early.
+
+Whole-tree consumers are explicit exceptions. Completion generation and
+command discovery call `loadAllLazyCommands(program)` before they inspect
+nested commands. Direct programmatic inspection can use the same helper, while
+targeted tests and host integrations can use `loadLazyCommand(program, name)`.
+Synchronous `parse()` refuses an unloaded command and directs callers to
+`parseAsync()` rather than starting an asynchronous import that it cannot
+await.
+
+## Result
+
+On the same development host, the median `harn --help` invocation fell from
+0.65 seconds and 327 MB to 0.03 seconds and 55 MB. Importing
+`src/commander.ts` alone fell from 0.65 seconds and 332 MB to 0.02 seconds and
+47 MB. A composed host CLI also adopted command metadata and dynamic
+registrars; its root help and a frequent read-only coordination command both
+became materially cheaper.
+
+Regression tests prove that root help loads no implementation, selected async
+dispatch loads only its bundle, aliases dispatch correctly, full-tree loading
+preserves order, and failed loaders restore their placeholders. The published
+package build is also exercised through Node so source-only dynamic-import
+behavior cannot mask an invalid compiled path.
+
+The command metadata now exists beside, rather than inside, each registrar.
+Changing a top-level signature, description, alias, or visibility therefore
+requires changing its placeholder metadata in the same commit. Nested command
+metadata remains owned only by the implementation because it is visible after
+the top-level command loads or after explicit whole-tree materialization.
