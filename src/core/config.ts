@@ -24,9 +24,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { coordEnv } from "../lib/env.ts";
 import { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
+import { resolveEventLedgerRotateActiveBytesV3 } from "./events/v3/rotation-config.ts";
 import { findCoordRoot } from "./hooks/resolve/coord-root.ts";
 
 export { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
+export { DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES } from "./events/v3/rotation-config.ts";
 
 /** The standalone CLI's bin name: the resolution floor when nothing else is set. */
 export const DEFAULT_BIN_NAME = "harn";
@@ -605,9 +607,6 @@ export function coordFreshnessSeconds(coordRoot?: string | null): number {
   return DEFAULT_FRESHNESS_SECS;
 }
 
-/** Default active-segment size that triggers automatic V3 epoch rotation. */
-export const DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES = 32 * 1024 * 1024;
-
 /**
  * Active-segment byte size at which the V3 event ledger rotates to a fresh
  * epoch. Every reader validates the complete epoch, so an unbounded active
@@ -619,17 +618,8 @@ export const DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES = 32 * 1024 * 1024;
  * `0` (or a negative value) disables automatic rotation.
  */
 export function eventLedgerRotateActiveBytes(coordRoot?: string | null): number {
-  const env = coordEnv("EVENT_V3_ROTATE_ACTIVE_BYTES");
-  if (env !== undefined) {
-    const n = Number.parseInt(env, 10);
-    if (Number.isFinite(n)) return n;
-  }
   const root = coordRoot ?? findCoordRoot();
-  if (root) {
-    const value = readConfig(root).events?.rotate_active_bytes;
-    if (typeof value === "number" && Number.isSafeInteger(value)) return value;
-  }
-  return DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES;
+  return resolveEventLedgerRotateActiveBytesV3(root);
 }
 
 function parseWebPort(value: unknown, source: string): number {

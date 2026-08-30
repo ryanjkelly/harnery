@@ -14,7 +14,6 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { eventLedgerRotateActiveBytes } from "../../config.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
@@ -31,6 +30,7 @@ import {
 import { repairEventV3ControlPair } from "./control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "./fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
+import { resolveEventLedgerRotateActiveBytesV3 } from "./rotation-config.ts";
 import { currentHarneryRuntimeBuild, liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
 import { drainReadyEventsV3 } from "./writer.ts";
 
@@ -159,15 +159,15 @@ export interface RotateOversizedEventLedgerV3Result {
  * and the writer's epoch fence keeps in-flight producers of the old epoch
  * from ever committing into the new one. Only a currently valid, active
  * ledger rotates; integrity failures stay closed for the explicit recovery
- * command. The threshold comes from `eventLedgerRotateActiveBytes` unless the
- * caller pins one; a non-positive threshold disables rotation.
+ * command. The threshold comes from the isolated Event V3 config resolver
+ * unless the caller pins one; a non-positive threshold disables rotation.
  */
 export function rotateOversizedEventLedgerV3(
   coordRoot: string,
   options: { thresholdBytes?: number } = {},
 ): RotateOversizedEventLedgerV3Result {
   const root = resolve(coordRoot);
-  const threshold = options.thresholdBytes ?? eventLedgerRotateActiveBytes(root);
+  const threshold = options.thresholdBytes ?? resolveEventLedgerRotateActiveBytesV3(root);
   const activePath = join(root, ".harnery", "ledgers", "v3", "active.ndjson");
   const measure = () => {
     try {
