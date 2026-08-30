@@ -188,6 +188,10 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       task: "Recovered focus",
       suggested_session_name: "Agent Anna - Recovered focus",
     });
+    expect(
+      existsSync(path.join(root, ".harnery", "active", ".set-task-leases", `${OWNER}.lease`)),
+    ).toBeTrue();
+    expect(existsSync(path.join(root, ".harnery", "private", "agent-set-task-leases"))).toBeFalse();
   });
 
   test("overlapping first set-task calls name a mid-flight session before its heartbeat exists", async () => {

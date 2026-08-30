@@ -204,7 +204,7 @@ function pidIsAlive(pid: number): boolean {
 // so overlapping first declarations cannot both derive state from an unnamed,
 // missing heartbeat and then strand a conflicting authority transaction.
 function acquireSetTaskLease(root: string, owner: string) {
-  const leasePath = join(root, ".harnery", "private", "agent-set-task-leases", `${owner}.lease`);
+  const leasePath = join(root, ".harnery", "active", ".set-task-leases", `${owner}.lease`);
   const authoritySha256 = createHash("sha256")
     .update(resolve(root))
     .update("\0")
