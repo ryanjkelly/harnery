@@ -69,7 +69,7 @@ describe("live V3 ledger routing", () => {
   test("repairs a candidate packet and records through the canonical route", () => {
     const root = candidateRoot("claude-code");
     const route = resolveLiveEventLedgerRouteV3(root);
-    expect(route).toEqual({ state: "v3", mode: "candidate", build_id: "build_fixture" });
+    expect(route).toMatchObject({ state: "v3", mode: "candidate", build_id: "build_fixture" });
     if (route.state !== "v3") throw new Error("expected V3 route");
 
     const result = recordLiveHookSignalV3({
@@ -113,7 +113,7 @@ describe("live V3 ledger routing", () => {
     });
     expect(existsSync(activePath)).toBeFalse();
 
-    expect(resolveLiveEventLedgerRouteV3(root)).toEqual({
+    expect(resolveLiveEventLedgerRouteV3(root)).toMatchObject({
       state: "v3",
       mode: "candidate",
       build_id: "build_fixture",
@@ -349,7 +349,7 @@ describe("live V3 ledger routing", () => {
       reason: "v3_not_initialized",
     });
     renameSync(parked, current);
-    expect(resolveLiveEventLedgerRouteV3(root)).toEqual({
+    expect(resolveLiveEventLedgerRouteV3(root)).toMatchObject({
       state: "v3",
       mode: "candidate",
       build_id: "build_fixture",

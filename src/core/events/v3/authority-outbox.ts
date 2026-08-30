@@ -14,8 +14,14 @@ import { join } from "node:path";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
+import { liveGenesisIdV3 } from "./control.ts";
 import { assertEventV3 } from "./validate.ts";
 import { ensureEventV3Layout, eventV3Paths, writeEventV3 } from "./writer.ts";
+
+export interface AuthorityEpochFenceV3 {
+  /** Genesis id of the epoch the transaction's event was produced for. */
+  expectedGenesisId?: `gex_${string}`;
+}
 
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const INSTANCE_PATTERN = /^inst_[a-zA-Z0-9._-]{1,128}$/;
@@ -146,9 +152,13 @@ export function buildAuthorityTransactionV3(
 export function publishAuthorityTransactionV3(
   coordRoot: string,
   transaction: AuthorityTransactionV3,
+  fence: AuthorityEpochFenceV3 = {},
 ): AuthorityTransactionV3 {
   validateTransaction(transaction);
   const paths = ensureEventV3Layout(coordRoot);
+  if (fence.expectedGenesisId && liveGenesisIdV3(coordRoot) !== fence.expectedGenesisId) {
+    throw new Error("authority transaction epoch was replaced before publication");
+  }
   const readyPath = authorityReadyPath(paths.authorityOutbox, transaction.transaction_id);
   const serialized = `${canonicalJsonV3(transaction)}\n`;
   if (existsSync(readyPath)) {
@@ -173,6 +183,7 @@ export function reconcileAuthorityTransactionV3(
   coordRoot: string,
   transactionId: string,
   reconciler: AuthorityReconcilerV3,
+  fence: AuthorityEpochFenceV3 = {},
 ): AuthorityReceiptV3 {
   assertTransactionId(transactionId);
   const paths = ensureEventV3Layout(coordRoot);
@@ -191,7 +202,12 @@ export function reconcileAuthorityTransactionV3(
   }
   const event = JSON.parse(transaction.event_row) as unknown;
   assertEventV3(event);
-  writeEventV3(coordRoot, event);
+  const durability = writeEventV3(coordRoot, event, {
+    ...(fence.expectedGenesisId ? { expectedGenesisId: fence.expectedGenesisId } : {}),
+  });
+  if (durability.state === "epoch_replaced") {
+    throw new Error("authority transaction epoch was replaced before its event committed");
+  }
   const receipt: AuthorityReceiptV3 = {
     format: "harnery-event-v3-authority-receipt",
     format_version: 1,

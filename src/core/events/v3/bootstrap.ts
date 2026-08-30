@@ -9,10 +9,12 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { eventLedgerRotateActiveBytes } from "../../config.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
@@ -30,6 +32,7 @@ import { repairEventV3ControlPair } from "./control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "./fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { currentHarneryRuntimeBuild, liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
+import { drainReadyEventsV3 } from "./writer.ts";
 
 export interface InitializeEventLedgerV3Input {
   coordRoot: string;
@@ -131,6 +134,86 @@ export function refreshIncompatibleEventLedgerV3(
     });
     return {
       state: "refreshed",
+      ...(initialized.archived_epoch ? { archived_epoch: initialized.archived_epoch } : {}),
+      control: initialized.control,
+    };
+  });
+}
+
+export interface RotateOversizedEventLedgerV3Result {
+  state: "rotated" | "not_oversized" | "not_active" | "disabled";
+  active_bytes: number;
+  threshold_bytes: number;
+  archived_epoch?: string;
+  control?: Extract<EventV3ControlState, { state: "active" }>;
+}
+
+/**
+ * Archive a valid oversized epoch intact and start a fresh one.
+ *
+ * Every canonical read validates the complete epoch, and hook producers are
+ * one-shot processes, so an unbounded active segment makes every hook's cold
+ * read scale with all history. Rotation bounds that cost: the replaced epoch
+ * (events, spool, producer states, manifests) moves whole into the V3
+ * archive, live sessions re-onboard into the new epoch on their next signal,
+ * and the writer's epoch fence keeps in-flight producers of the old epoch
+ * from ever committing into the new one. Only a currently valid, active
+ * ledger rotates; integrity failures stay closed for the explicit recovery
+ * command. The threshold comes from `eventLedgerRotateActiveBytes` unless the
+ * caller pins one; a non-positive threshold disables rotation.
+ */
+export function rotateOversizedEventLedgerV3(
+  coordRoot: string,
+  options: { thresholdBytes?: number } = {},
+): RotateOversizedEventLedgerV3Result {
+  const root = resolve(coordRoot);
+  const threshold = options.thresholdBytes ?? eventLedgerRotateActiveBytes(root);
+  const activePath = join(root, ".harnery", "ledgers", "v3", "active.ndjson");
+  const measure = () => {
+    try {
+      return statSync(activePath).size;
+    } catch {
+      return 0;
+    }
+  };
+  if (threshold <= 0) {
+    return { state: "disabled", active_bytes: measure(), threshold_bytes: threshold };
+  }
+  if (measure() < threshold) {
+    return { state: "not_oversized", active_bytes: measure(), threshold_bytes: threshold };
+  }
+  return withBootstrapLease(root, () => {
+    const activeBytes = measure();
+    if (activeBytes < threshold) {
+      return { state: "not_oversized", active_bytes: activeBytes, threshold_bytes: threshold };
+    }
+    const current = readEventV3ControlState(root);
+    if (current.state !== "active") {
+      return { state: "not_active", active_bytes: activeBytes, threshold_bytes: threshold };
+    }
+    // Flush durable ready rows into the epoch they were produced for, so the
+    // archive carries them committed instead of stranded in its spool.
+    try {
+      drainReadyEventsV3(root);
+    } catch {
+      // A busy append lease only leaves rows in the archived spool; rotation
+      // itself stays safe.
+    }
+    const configPath = join(root, ".harnery", "config.jsonc");
+    const initialized = initializeEventLedgerV3Locked({
+      coordRoot: root,
+      harneryBuild: currentHarneryRuntimeBuild(),
+      hostBuild: repositoryBuild(root),
+      configDigest: sha256V3(
+        existsSync(configPath) ? readFileSync(configPath) : Buffer.from("{}\n"),
+      ),
+      approvalRecordId: "harnery-runtime-v3-size-rotation",
+      forceNewEpoch: true,
+    });
+    return {
+      state: "rotated",
+      active_bytes: activeBytes,
+      threshold_bytes: threshold,
       ...(initialized.archived_epoch ? { archived_epoch: initialized.archived_epoch } : {}),
       control: initialized.control,
     };

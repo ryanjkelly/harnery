@@ -23,6 +23,7 @@ import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
+import { genesisIdFromManifestV3, liveGenesisIdV3 } from "./control.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { assertEventV3 } from "./validate.ts";
 
@@ -34,7 +35,7 @@ export const EVENT_V3_LEDGER_RELATIVE_ROOT = ".harnery/ledgers/v3" as const;
 export type EventV3DurabilityState = "committed" | "ready";
 
 export interface WriteEventV3Result {
-  state: EventV3DurabilityState;
+  state: EventV3DurabilityState | "epoch_replaced";
   event_id: string;
   row_digest: `sha256:${string}`;
   ready_path?: string;
@@ -50,6 +51,16 @@ export interface WriteEventV3Options {
    * the option exists for matched harness-cost experiments.
    */
   deferDrain?: boolean;
+  /**
+   * Epoch fence: the genesis id of the epoch this event was produced for.
+   * An event carries per-epoch authority (producer boot sequences start at 1
+   * and every causal link must resolve inside its own epoch), so committing
+   * it into a replaced epoch would poison the new authority. When set, the
+   * write refuses with `epoch_replaced` if the live genesis no longer
+   * matches, the spooled ready row is tagged with the id, and the drain
+   * quarantines any tagged row whose epoch has been replaced underneath it.
+   */
+  expectedGenesisId?: `gex_${string}`;
   now?: () => number;
   onStep?: (step: EventV3WriteStep, eventId?: string) => void;
 }
@@ -86,7 +97,11 @@ export function writeEventV3(
   }
   const paths = ensureEventV3Layout(coordRoot);
   const rowDigest = sha256V3(row);
-  const readyName = `${String(event.producer.sequence).padStart(16, "0")}-${event.event_id}-${rowDigest.slice(7)}.ready`;
+  if (options.expectedGenesisId && liveGenesisIdV3(coordRoot) !== options.expectedGenesisId) {
+    return { state: "epoch_replaced", event_id: event.event_id, row_digest: rowDigest };
+  }
+  const epochTag = options.expectedGenesisId ? `-${options.expectedGenesisId}` : "";
+  const readyName = `${String(event.producer.sequence).padStart(16, "0")}-${event.event_id}-${rowDigest.slice(7)}${epochTag}.ready`;
   const readyPath = join(paths.spool, readyName);
   writeReadyRecord(paths.spool, readyPath, row, event.event_id, options.onStep);
 
@@ -110,14 +125,18 @@ export function writeEventV3(
       diagnostic_code: "wal_drain_failed",
     };
   }
-  return existsSync(readyPath)
-    ? {
-        state: "ready",
-        event_id: event.event_id,
-        row_digest: rowDigest,
-        ready_path: readyPath,
-      }
-    : { state: "committed", event_id: event.event_id, row_digest: rowDigest };
+  if (existsSync(readyPath)) {
+    return {
+      state: "ready",
+      event_id: event.event_id,
+      row_digest: rowDigest,
+      ready_path: readyPath,
+    };
+  }
+  if (existsSync(`${readyPath.slice(0, -".ready".length)}.epoch-replaced`)) {
+    return { state: "epoch_replaced", event_id: event.event_id, row_digest: rowDigest };
+  }
+  return { state: "committed", event_id: event.event_id, row_digest: rowDigest };
 }
 
 /** Drain every durable ready record under the fenced append lease. */
@@ -166,8 +185,10 @@ export function drainReadyEventsUnderLeaseV3(
     .filter((name) => name.endsWith(".ready"))
     .sort();
   if (readyNames.length === 0) return 0;
+  const drainableNames = quarantineReplacedEpochRows(paths, readyNames);
+  if (drainableNames.length === 0) return 0;
   const readyRows = causallyOrderedReadyRows(
-    readyNames.map((readyName) => {
+    drainableNames.map((readyName) => {
       const readyPath = join(paths.spool, readyName);
       const row = readAndValidateReadyRow(readyPath);
       return {
@@ -376,6 +397,39 @@ function repairUnterminatedActiveFrame(activePath: string): boolean {
 function eventIdFromReadyName(name: string): string | undefined {
   const match = name.match(/^\d{16}-(evt_[0-9a-f-]{36})-/);
   return match?.[1];
+}
+
+function epochTagFromReadyName(name: string): `gex_${string}` | undefined {
+  const match = name.match(/-(gex_[0-9a-f-]{36})\.ready$/);
+  return match ? (match[1] as `gex_${string}`) : undefined;
+}
+
+/**
+ * Move every ready row tagged with a replaced epoch out of the drainable
+ * spool. A tagged row was produced for exactly one epoch; committing it into
+ * a successor would break that epoch's boot-sequence and causal-link
+ * authority, so the row is preserved beside the spool as `.epoch-replaced`
+ * evidence instead of ever reaching the active file.
+ */
+function quarantineReplacedEpochRows(
+  paths: ReturnType<typeof eventV3Paths>,
+  readyNames: string[],
+): string[] {
+  if (!readyNames.some((name) => epochTagFromReadyName(name) !== undefined)) return readyNames;
+  const liveGenesisId = genesisIdFromManifestV3(join(paths.root, "genesis.json"));
+  const drainable: string[] = [];
+  for (const name of readyNames) {
+    const tag = epochTagFromReadyName(name);
+    if (tag === undefined || tag === liveGenesisId) {
+      drainable.push(name);
+      continue;
+    }
+    const readyPath = join(paths.spool, name);
+    const quarantinePath = `${readyPath.slice(0, -".ready".length)}.epoch-replaced`;
+    renameSync(readyPath, quarantinePath);
+    fsyncParentDirectory(quarantinePath);
+  }
+  return drainable;
 }
 
 function readFileTail(fd: number, buffer: Buffer, position: number): number {

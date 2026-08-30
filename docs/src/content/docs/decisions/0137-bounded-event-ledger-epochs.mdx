@@ -1,0 +1,102 @@
+---
+title: "ADR 0137: bounded event-ledger epochs"
+description: Rotate an oversized valid V3 epoch into the archive automatically, and fence every writer to the epoch its event was produced for.
+sidebar:
+  order: 137
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+The V3 event ledger is an append-only authority: every canonical read
+re-validates the complete epoch, including canonical serialization, digests,
+producer boot sequences, and causal links (ADR 0080). ADR 0082 made repeated
+reads inside one process cheap, but hook producers are one-shot processes.
+Each hook invocation therefore pays a full cold read of all recorded history,
+twice per tool call per agent, and nothing bounds the active segment's growth.
+
+On one busy multi-agent host the active segment reached 176 MB and 95,000
+events within three days of its genesis. A single hook process then peaked
+above 1 GiB of resident memory and spent about seven seconds validating
+history before recording one event. With several agents running concurrently,
+the hook fan-out alone exhausted the machine's memory budget. Measurements
+attributed nearly all of the cost to per-event canonicalization, hashing, and
+schema validation of historical frames, not to runtime startup.
+
+## Alternatives
+
+**Persist the incremental read cache across processes.** Rejected. The cached
+snapshot includes every parsed event, so a durable cache is the ledger again
+in a second format, with its own integrity problem. It would speed up reads
+without bounding memory.
+
+**Seal segments under the existing catalog without replacing the epoch.**
+Rejected. The canonical reader verifies every sealed segment's bytes and
+digest on each read, so sealing changes the file layout but not the cost
+curve. Cold reads would still scale with all history.
+
+**A resident daemon that serves projections to hooks.** Deferred. It could
+amortize the read once per machine, but it adds a availability and trust
+boundary that hooks currently do not have, and it still needs a growth bound
+underneath it.
+
+**Reduce event volume.** Insufficient alone. Smaller payloads slow the growth
+rate; they do not bound it, and validation cost scales with event count as
+well as bytes.
+
+## Decision
+
+Two mechanisms, shipped together because the second makes the first safe.
+
+**Automatic size rotation.** The shared route boundary
+(`resolveLiveEventLedgerRouteV3`) rotates a valid, active epoch once
+`active.ndjson` reaches a threshold: default 32 MiB, configurable via
+`events.rotate_active_bytes` in `.harnery/config.jsonc` or the
+`HARNERY_EVENT_V3_ROTATE_ACTIVE_BYTES` environment variable, disabled by a
+non-positive value. Rotation runs under the bootstrap lease, re-checks size
+and control state inside the lock, drains the durable ready spool into the
+epoch that produced it, then archives the entire `ledgers/v3` directory
+(events, spool, producer states, manifests) unmodified into
+`.harnery/ledgers/v3-archives/` and activates a fresh genesis, the same
+mechanics the runtime-incompatibility refresh already used. Only a currently
+valid ledger rotates; integrity failures stay closed for the explicit
+recovery command. Live sessions re-onboard into the successor epoch on their
+next signal through the existing mid-flight onboarding path (ADR 0078).
+Rotation failure never blocks recording; the oversized epoch keeps serving.
+
+**Epoch fence on writes.** An event's authority is epoch-local: producer boot
+sequences must start at 1 and every causal link must resolve inside its own
+epoch, so an event built against one epoch and committed into its successor
+poisons the successor's integrity. Producers now stamp the genesis id they
+were built against. The writer refuses a fenced write once the live genesis
+differs (`epoch_replaced`), tags spooled ready rows with their epoch, and the
+drain quarantines any tagged row whose epoch was replaced underneath it
+(preserved beside the spool as `.epoch-replaced`, never appended). Producer
+state carries the same stamp (`epoch_genesis_id`), and no consumer adopts a
+state from another epoch; a state that predates the field is treated the same
+way. `LiveEventLedgerRouteV3` exposes `genesis_id` so derived writers (image
+artifacts, finalization observations) fence against the epoch their source
+event was recorded in, and the authority outbox accepts an explicit fence for
+transaction publication and reconciliation.
+
+## Result
+
+A rotation on the 176 MB production epoch archived it intact and brought the
+next hook's cold read back to a fresh epoch of a few kilobytes. Regression
+tests cover: rotation archives byte-identical history and leaves a complete
+successor; the spool drains into the epoch that produced it; a fenced write
+for a replaced epoch is refused with nothing spooled; a tagged ready row
+landing in the successor's spool is quarantined, not committed; route
+resolution rotates at the configured threshold and honors the disable value;
+and a live session that re-publishes stale producer state after rotation is
+re-onboarded into a fresh generation while the successor ledger stays
+complete.
+
+Two known residuals. Ready rows spooled with deferred drain in the final
+moments before rotation are archived undrained; their bytes are preserved in
+the archived spool, and rotation drains the spool first to keep that window
+small. Archived epochs accumulate under `.harnery/ledgers/v3-archives/` and
+are not yet retention-managed; that belongs with the storage budgets of ADR
+0134 as a follow-up.

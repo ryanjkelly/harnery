@@ -1,6 +1,6 @@
 import type { Adapter } from "../../adapter.ts";
 import type { ParsedPayload } from "../../hooks/adapter/parse.ts";
-import { refreshIncompatibleEventLedgerV3 } from "./bootstrap.ts";
+import { refreshIncompatibleEventLedgerV3, rotateOversizedEventLedgerV3 } from "./bootstrap.ts";
 import type { EventV3 } from "./contract.ts";
 import { readEventV3ControlState } from "./control.ts";
 import { repairEventV3ControlPair } from "./control-writer.ts";
@@ -52,6 +52,17 @@ export function resolveLiveEventLedgerRouteV3(coordRoot: string): LiveEventLedge
         state: "blocked",
         reason: `runtime_refresh_failed:${error instanceof Error ? error.message : String(error)}`,
       };
+    }
+  }
+  if (control.state === "active") {
+    // Bound the epoch every producer must re-validate: an oversized active
+    // segment rotates into the archive here, on the shared route boundary.
+    // Rotation failure never blocks recording; the current epoch stays live.
+    try {
+      const rotated = rotateOversizedEventLedgerV3(coordRoot);
+      if (rotated.state === "rotated" && rotated.control) control = rotated.control;
+    } catch {
+      // The oversized epoch keeps serving; the next route resolution retries.
     }
   }
   return liveEventLedgerRouteFromControlV3(control);

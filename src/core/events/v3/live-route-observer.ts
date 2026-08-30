@@ -9,7 +9,13 @@ import {
 import { liveEventV3BuildId } from "./runtime-identity.ts";
 
 export type LiveEventLedgerRouteV3 =
-  | { state: "v3"; mode: EventV3WriteMode; build_id: `build_${string}` }
+  | {
+      state: "v3";
+      mode: EventV3WriteMode;
+      build_id: `build_${string}`;
+      /** Genesis id of the epoch this route was resolved against: the epoch fence for derived writes. */
+      genesis_id: `gex_${string}`;
+    }
   | { state: "blocked"; reason: string };
 
 /**
@@ -36,7 +42,12 @@ export function liveEventLedgerRouteFromControlV3(
   if (!control.genesis.profile.producer_build_ids.includes(buildId)) {
     return { state: "blocked", reason: "live_producer_build_not_approved" };
   }
-  return { state: "v3", mode: control.state, build_id: buildId };
+  return {
+    state: "v3",
+    mode: control.state,
+    build_id: buildId,
+    genesis_id: control.genesis.event.payload.genesis_id as `gex_${string}`,
+  };
 }
 
 export function runtimeCapabilityProfileCurrentV3(

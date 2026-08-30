@@ -148,6 +148,9 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
 
   const rootId = control.genesis.event.scope.root_id as `root_${string}`;
   const epochId = control.genesis.profile.privacy_key_epoch;
+  const epochFence = {
+    expectedGenesisId: control.genesis.event.payload.genesis_id as `gex_${string}`,
+  };
   const rootContext = fingerprintContextV3(input.coordRoot, rootId, undefined, epochId);
   const producerSource = normalizeNativeIdV3(
     rootContext,
@@ -198,11 +201,12 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
         // still refuses rather than guessing at a conflicting mutation.
         const stale = state.pending;
         try {
-          publishAuthorityTransactionV3(input.coordRoot, stale.transaction);
+          publishAuthorityTransactionV3(input.coordRoot, stale.transaction, epochFence);
           reconcileAuthorityTransactionV3(
             input.coordRoot,
             stale.transaction.transaction_id,
             input.reconciler,
+            epochFence,
           );
         } catch {
           return {
@@ -221,11 +225,12 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
         publishCoordinationState(path, state);
       } else {
         const pending = state.pending;
-        publishAuthorityTransactionV3(input.coordRoot, pending.transaction);
+        publishAuthorityTransactionV3(input.coordRoot, pending.transaction, epochFence);
         const receipt = reconcileAuthorityTransactionV3(
           input.coordRoot,
           pending.transaction.transaction_id,
           input.reconciler,
+          epochFence,
         );
         const event = eventFromTransaction(pending.transaction);
         applyCoordinationEvent(state, pending.source_id, pending.transaction, event);
@@ -325,11 +330,12 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
     if (input.signal === "wait-ended" && waitId) delete state.open_waits[waitId];
     state.pending = { source_id: sourceId, transaction };
     publishCoordinationState(path, state);
-    publishAuthorityTransactionV3(input.coordRoot, transaction);
+    publishAuthorityTransactionV3(input.coordRoot, transaction, epochFence);
     const receipt = reconcileAuthorityTransactionV3(
       input.coordRoot,
       transaction.transaction_id,
       input.reconciler,
+      epochFence,
     );
     applyCoordinationEvent(state, sourceId, transaction, normalized.event);
     state.pending = undefined;

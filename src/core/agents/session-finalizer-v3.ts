@@ -690,7 +690,10 @@ function ensureRequest(
   };
   const observation = buildObservationEvent(coordRoot, record, request, input);
   request.observation_event_id = observation.event_id as `evt_${string}`;
-  writeEventV3(coordRoot, observation);
+  const durability = writeEventV3(coordRoot, observation, {
+    expectedGenesisId: input.route.genesis_id,
+  });
+  if (durability.state === "epoch_replaced") return null;
   writeRequest(coordRoot, request, true);
   return request;
 }

@@ -209,6 +209,26 @@ export function validateActivationManifestV3(
  * Resolve the session/evidence gate from exact control-file and ledger-event pairs.
  * This function never repairs or creates state. Any ambiguity keeps the gate closed.
  */
+/**
+ * The live epoch's genesis id from the immutable manifest, or undefined when
+ * no valid genesis is published. This is the cheap epoch-identity read the
+ * writer fence uses: one small canonical file, never the event history.
+ */
+export function liveGenesisIdV3(coordRoot: string): `gex_${string}` | undefined {
+  return genesisIdFromManifestV3(join(coordRoot, EVENT_V3_GENESIS_MANIFEST));
+}
+
+/** Same read for a caller that already holds the manifest path (the writer's drain). */
+export function genesisIdFromManifestV3(genesisPath: string): `gex_${string}` | undefined {
+  if (!existsSync(genesisPath)) return undefined;
+  const genesis = readGenesisManifest(genesisPath);
+  if (!genesis.ok) return undefined;
+  const genesisId = genesis.value.event.payload.genesis_id;
+  return typeof genesisId === "string" && genesisId.startsWith("gex_")
+    ? (genesisId as `gex_${string}`)
+    : undefined;
+}
+
 export function readEventV3ControlState(coordRoot: string): EventV3ControlState {
   const genesisPath = join(coordRoot, EVENT_V3_GENESIS_MANIFEST);
   const activationPath = join(coordRoot, EVENT_V3_ACTIVATION_MANIFEST);

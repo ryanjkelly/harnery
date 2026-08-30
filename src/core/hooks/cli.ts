@@ -868,7 +868,7 @@ async function main(): Promise<number> {
 
   if (v3Result?.state === "recorded" && capturedImages.length > 0) {
     try {
-      recordImageArtifactsV3(coordRoot, v3Result.event, capturedImages);
+      recordImageArtifactsV3(coordRoot, v3Result.event, capturedImages, ledgerRoute.genesis_id);
     } catch (err) {
       logError(coordRoot, err, { phase: "image-artifact-observation" });
     }

@@ -195,7 +195,12 @@ export function recordLiveCoordinationObservationV3(
       break;
     }
   }
-  writeEventV3(input.coordRoot, event);
+  const durability = writeEventV3(input.coordRoot, event, {
+    expectedGenesisId: control.genesis.event.payload.genesis_id as `gex_${string}`,
+  });
+  if (durability.state === "epoch_replaced") {
+    throw new LiveCoordinationAuthorityV3Error("epoch_replaced");
+  }
   return { state: "recorded", event };
 }
 

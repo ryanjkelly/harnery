@@ -187,6 +187,14 @@ export interface HookProducerStateV3 {
   capability_profile: `cap_${string}`;
   cursor_mode?: CursorExecutionModeV3;
   privacy_epoch_id: `pep_${string}`;
+  /**
+   * Genesis id of the ledger epoch this producer's boot chain lives in. The
+   * fingerprint key epoch survives ledger rotation, so this is the field that
+   * keeps a state file from being adopted across an epoch boundary (its
+   * sequences and causal links only validate inside their own epoch). A state
+   * without it predates the field and is never adopted.
+   */
+  epoch_genesis_id?: `gex_${string}`;
   boot_id: `boot_${string}`;
   clock_id: `clk_${string}`;
   next_sequence: number;
@@ -624,8 +632,23 @@ function processHookSignalLocked(
       : control.activation.event.event_id;
   const rootFingerprintContext = fingerprintContextV3(input.coordRoot, rootId, undefined, epochId);
   const sessionId = `sid_${sessionHash.slice(4)}` as `sid_${string}`;
+  const genesisId = control.genesis.event.payload.genesis_id as `gex_${string}`;
+  // Every write below carries the epoch fence: an event produced for this
+  // epoch is refused (or quarantined from the spool) once the epoch has been
+  // replaced, instead of poisoning the successor's authority.
+  input = {
+    ...input,
+    writerOptions: { ...input.writerOptions, expectedGenesisId: genesisId },
+  };
   try {
     let state = existsSync(path) ? readProducerState(path) : undefined;
+    if (state && state.epoch_genesis_id !== genesisId) {
+      // A producer state from a replaced epoch (or one that predates the
+      // field) is never adopted: its boot sequences and causal links only
+      // validate inside the epoch that recorded them. The session re-onboards
+      // below exactly as it does after an automatic epoch refresh.
+      state = undefined;
+    }
     if (
       state &&
       (state.adapter !== input.adapter ||
@@ -651,7 +674,7 @@ function processHookSignalLocked(
       const pendingSource = state.pending.source_id;
       const incomingSource = sourceIdForSignal(input, rootFingerprintContext);
       const pendingEvent = state.pending.event;
-      const durability = writeEventV3(input.coordRoot, pendingEvent);
+      const durability = writeEventV3(input.coordRoot, pendingEvent, input.writerOptions);
       applyCommittedEvent(state, pendingEvent);
       state.pending = undefined;
       publishProducerState(path, state);
@@ -671,7 +694,13 @@ function processHookSignalLocked(
       ) {
         return { state: "missing_session_start" };
       }
-      state = newProducerState(input, sessionId, epochId, boundaryEventId as `evt_${string}`);
+      state = newProducerState(
+        input,
+        sessionId,
+        epochId,
+        boundaryEventId as `evt_${string}`,
+        genesisId,
+      );
     } else if (!state || state.terminal) {
       // Mid-flight onboarding (ADR 0078): a live session with no producer
       // state in this epoch (fresh epoch, lost session-start hook) opens a
@@ -698,7 +727,13 @@ function processHookSignalLocked(
         });
         return { state: "missing_session_start" };
       }
-      state = newProducerState(input, sessionId, epochId, boundaryEventId as `evt_${string}`);
+      state = newProducerState(
+        input,
+        sessionId,
+        epochId,
+        boundaryEventId as `evt_${string}`,
+        genesisId,
+      );
       const cursorPromptBootstrap = isCursorPromptBootstrap(input);
       const onboarding = buildMidFlightSessionStart(input, state, rootId, cursorPromptBootstrap);
       commitEventLocked(input, state, path, onboarding);
@@ -2918,6 +2953,13 @@ export function recordApprovedSessionEndV3(
   if (control.state !== input.mode) {
     return { state: "gate_closed", reason: control.state };
   }
+  input = {
+    ...input,
+    writerOptions: {
+      ...input.writerOptions,
+      expectedGenesisId: control.genesis.event.payload.genesis_id as `gex_${string}`,
+    },
+  };
   const matches = listHookProducerStateRecordsV3(input.coordRoot, { includeTerminal: true }).filter(
     ({ state }) =>
       state.instance_id === input.instance_id && state.generation_id === input.generation_id,
@@ -3079,6 +3121,13 @@ export function salvageOpenSpansV3(input: SalvageOpenSpansV3Input): SalvageOpenS
   if (control.state !== input.mode) {
     return { state: "gate_closed", reason: control.state };
   }
+  input = {
+    ...input,
+    writerOptions: {
+      ...input.writerOptions,
+      expectedGenesisId: control.genesis.event.payload.genesis_id as `gex_${string}`,
+    },
+  };
   const matches = listHookProducerStateRecordsV3(input.coordRoot).filter(
     ({ state }) =>
       state.instance_id === input.instance_id && state.generation_id === input.generation_id,
@@ -3187,6 +3236,9 @@ export function listHookProducerStateRecordsV3(
     )) {
       const path = join(directory, name);
       const state = readProducerState(path);
+      // Skip authorities left behind by a replaced epoch: their sequences and
+      // causal links belong to the archived ledger, not this one.
+      if (state.epoch_genesis_id !== control.genesis.event.payload.genesis_id) continue;
       if (!options.includeTerminal && state.terminal) continue;
       records.push({ path, modified_at_ms: lstatSync(path).mtimeMs, state });
     }
@@ -3243,7 +3295,10 @@ export function readHookProducerStateV3(
   );
   const sessionHash = normalizeNativeIdV3(context, `${adapter}.session`, nativeSessionId);
   const path = producerStatePath(coordRoot, adapter, sessionHash);
-  return existsSync(path) ? readProducerState(path) : undefined;
+  if (!existsSync(path)) return undefined;
+  const state = readProducerState(path);
+  // A state left behind by a replaced epoch is not this epoch's authority.
+  return state.epoch_genesis_id === control.genesis.event.payload.genesis_id ? state : undefined;
 }
 
 export interface ReconcilePendingRuntimeContextV3Input {
@@ -3293,6 +3348,11 @@ export function reconcilePendingRuntimeContextV3(
   if (!lease) return { state: "busy" };
   try {
     const state = readProducerState(path);
+    if (state.epoch_genesis_id !== control.genesis.event.payload.genesis_id) {
+      // The pending contexts belong to a replaced epoch; its archive already
+      // holds everything this producer durably recorded.
+      return { state: "missing" };
+    }
     if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) {
       return { state: "not_pending" };
     }
@@ -3315,7 +3375,10 @@ export function reconcilePendingRuntimeContextV3(
         platform: input.platform,
         observed_at: new Date().toISOString(),
         runtimeTelemetryOptions: input.runtimeTelemetryOptions,
-        writerOptions: input.writerOptions,
+        writerOptions: {
+          ...input.writerOptions,
+          expectedGenesisId: control.genesis.event.payload.genesis_id as `gex_${string}`,
+        },
       },
       state,
       path,
@@ -3364,6 +3427,7 @@ export function readHookProducerStateByInstanceV3(
       /^hid_[a-f0-9]{64}\.json$/.test(entry),
     )) {
       const state = readProducerState(join(directory, name));
+      if (state.epoch_genesis_id !== control.genesis.event.payload.genesis_id) continue;
       if (state.instance_id === instanceId && !state.terminal) matches.push(state);
     }
   }
@@ -3395,6 +3459,7 @@ function newProducerState(
   sessionId: `sid_${string}`,
   epochId: `pep_${string}`,
   boundaryEventId: `evt_${string}`,
+  genesisId: `gex_${string}`,
 ): HookProducerStateV3 {
   const bootId = `boot_${randomUUID()}` as const;
   return {
@@ -3408,6 +3473,7 @@ function newProducerState(
     capability_profile: adapterCapabilityProfileDigestV3(input.adapter),
     cursor_mode: input.adapter === "cursor" ? (input.payload.cursor_mode ?? "unknown") : undefined,
     privacy_epoch_id: epochId,
+    epoch_genesis_id: genesisId,
     boot_id: bootId,
     clock_id: clockIdV3(),
     next_sequence: 1,
@@ -3839,6 +3905,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "current_turn_span",
     "cursor_mode",
     "delegations",
+    "epoch_genesis_id",
     "format",
     "format_version",
     "generation_id",
@@ -3883,6 +3950,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     !/^att_[0-9a-f-]{36}$/.test(state.attestation_id) ||
     !/^cap_[a-f0-9]{64}$/.test(state.capability_profile) ||
     !/^pep_[a-zA-Z0-9._-]+$/.test(state.privacy_epoch_id) ||
+    (state.epoch_genesis_id !== undefined && !/^gex_[0-9a-f-]{36}$/.test(state.epoch_genesis_id)) ||
     !/^boot_[a-zA-Z0-9._-]+$/.test(state.boot_id) ||
     !/^clk_[0-9a-f-]{36}$/.test(state.clock_id) ||
     !Number.isSafeInteger(state.next_sequence) ||

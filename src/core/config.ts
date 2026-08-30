@@ -130,6 +130,13 @@ interface HarneryConfig {
   /** Strictly validated structured-log storage overrides. */
   logs?: { storage?: unknown };
   /**
+   * Universal event-ledger V3 tunables. `rotate_active_bytes` is the active
+   * segment size at which the epoch is archived and replaced automatically
+   * (default 32 MiB; `0` disables rotation). Read via
+   * `eventLedgerRotateActiveBytes()`.
+   */
+  events?: { rotate_active_bytes?: number };
+  /**
    * Managed working-artifact defaults. `default_retention_days` is the
    * create-time TTL when the caller does not pass `artifacts create --days`.
    */
@@ -596,6 +603,33 @@ export function coordFreshnessSeconds(coordRoot?: string | null): number {
   const root = coordRoot ?? findCoordRoot();
   if (root) return posIntOr(readConfig(root).coord?.freshness_seconds, DEFAULT_FRESHNESS_SECS);
   return DEFAULT_FRESHNESS_SECS;
+}
+
+/** Default active-segment size that triggers automatic V3 epoch rotation. */
+export const DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Active-segment byte size at which the V3 event ledger rotates to a fresh
+ * epoch. Every reader validates the complete epoch, so an unbounded active
+ * segment makes each cold read (one per hook process) scale with all history.
+ * Precedence:
+ *   1. `HARNERY_EVENT_V3_ROTATE_ACTIVE_BYTES` env
+ *   2. `.harnery/config.jsonc` `events.rotate_active_bytes`
+ *   3. 33554432 (32 MiB)
+ * `0` (or a negative value) disables automatic rotation.
+ */
+export function eventLedgerRotateActiveBytes(coordRoot?: string | null): number {
+  const env = coordEnv("EVENT_V3_ROTATE_ACTIVE_BYTES");
+  if (env !== undefined) {
+    const n = Number.parseInt(env, 10);
+    if (Number.isFinite(n)) return n;
+  }
+  const root = coordRoot ?? findCoordRoot();
+  if (root) {
+    const value = readConfig(root).events?.rotate_active_bytes;
+    if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+  }
+  return DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES;
 }
 
 function parseWebPort(value: unknown, source: string): number {

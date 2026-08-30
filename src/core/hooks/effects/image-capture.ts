@@ -94,10 +94,13 @@ export function recordImageArtifactsV3(
   coordRoot: string,
   sourceEvent: EventV3,
   artifacts: readonly CapturedImageArtifact[],
+  expectedGenesisId?: `gex_${string}`,
 ): void {
   if (!("generation_id" in sourceEvent.scope) || !sourceEvent.attestation_id) return;
   for (const artifact of artifacts) {
-    writeEventV3(coordRoot, buildImageArtifactEventV3(sourceEvent, artifact));
+    writeEventV3(coordRoot, buildImageArtifactEventV3(sourceEvent, artifact), {
+      ...(expectedGenesisId ? { expectedGenesisId } : {}),
+    });
   }
 }
 
