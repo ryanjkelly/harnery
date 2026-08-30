@@ -2,6 +2,8 @@ import { createStorageCatalog } from "../../src/core/storage/catalog";
 import { HARNERY_STRUCTURED_LOG_PROVIDER_ID } from "../../src/core/storage/contract";
 import type { HarneryLogRecordV1 } from "../../src/core/storage/jsonl";
 import { readRecentActiveLogs } from "../../src/core/storage/query";
+import { SUPERVISOR_LOG_FEED_SCHEMA_VERSION } from "../../src/core/supervisor/contract";
+import { readSupervisorLogFeed } from "../../src/core/supervisor/storage";
 import { coordRoot } from "./coord-reader";
 
 export interface LogFlowLane {
@@ -25,6 +27,22 @@ const MAX_BYTES_PER_FAMILY = 256 * 1024;
 
 /** Read every managed structured-log family independently so one bad lane cannot blank the view. */
 export function readLogFlowSnapshot(root = coordRoot()): LogFlowSnapshot {
+  const supervised = readSupervisorLogFeed(root);
+  if (supervised?.schema_version === SUPERVISOR_LOG_FEED_SCHEMA_VERSION) {
+    return {
+      capturedAt: supervised.captured_at,
+      lanes: supervised.lanes.map((lane) => ({
+        familyId: lane.family_id,
+        owner: lane.owner,
+        storageClass: lane.storage_class,
+        records: lane.records,
+        truncated: lane.truncated,
+        error: lane.error ?? null,
+      })),
+      totalRecords: supervised.total_records,
+      unavailableFamilies: supervised.unavailable_families,
+    };
+  }
   const catalog = createStorageCatalog({ coord_root: root, project_root: root });
   const lanes: LogFlowLane[] = [];
   for (const family of catalog.families) {

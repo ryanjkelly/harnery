@@ -132,6 +132,11 @@
       "types": "./dist/core/semantic/index.d.ts",
       "import": "./dist/core/semantic/index.js"
     },
+    "./core/supervisor": {
+      "bun": "./src/core/supervisor/index.ts",
+      "types": "./dist/core/supervisor/index.d.ts",
+      "import": "./dist/core/supervisor/index.js"
+    },
     "./core/governor/plans": {
       "bun": "./src/core/governor/plan-read.ts",
       "types": "./dist/core/governor/plan-read.d.ts",

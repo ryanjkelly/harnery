@@ -6,9 +6,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
-import { ensureResourceServiceRunning } from "../core/resources/service.ts";
 import { ensureSemanticServiceRunning } from "../core/semantic/service.ts";
 import { processLogDestination } from "../core/storage/process-log.ts";
+import { ensureSupervisorRunning } from "../core/supervisor/service.ts";
+import {
+  registerSupervisorConsumer,
+  unregisterSupervisorConsumer,
+} from "../core/supervisor/services.ts";
 import {
   parsePerformanceWindow,
   readWebPerformanceReport,
@@ -110,15 +114,13 @@ async function startSemanticServiceWithWeb(coordRoot: string, emit: EmitContext)
   }
 }
 
-async function startResourceServiceWithWeb(coordRoot: string, emit: EmitContext): Promise<void> {
-  const result = await ensureResourceServiceRunning(coordRoot);
-  if (result.state === "started") emit.log("resource observer · started automatically", "info");
-  if (result.state === "running") emit.log("resource observer · already running", "info");
-  if (result.state === "unsupported") {
-    emit.log(`resource observer · unsupported (${result.error})`, "warn");
-  }
+async function startSupervisorWithWeb(coordRoot: string, emit: EmitContext): Promise<void> {
+  registerSupervisorConsumer(coordRoot, { id: "dashboard" });
+  const result = await ensureSupervisorRunning(coordRoot);
+  if (result.state === "started") emit.log("local supervisor · started automatically", "info");
+  if (result.state === "running") emit.log("local supervisor · already running", "info");
   if (result.state === "unavailable") {
-    emit.log(`resource observer · unavailable (${result.error})`, "warn");
+    emit.log(`local supervisor · unavailable (${result.error})`, "warn");
   }
 }
 
@@ -246,7 +248,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
 
       if (!(await requireAvailablePort(emit, port))) return;
 
-      await startResourceServiceWithWeb(coordRoot, emit);
+      await startSupervisorWithWeb(coordRoot, emit);
       await startSemanticServiceWithWeb(coordRoot, emit);
 
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
@@ -278,6 +280,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       process.on("SIGTERM", () => cleanup("SIGTERM"));
 
       child.on("exit", (code, sig) => {
+        unregisterSupervisorConsumer(coordRoot, "dashboard");
         if (sig) {
           emit.log(`web exited on ${sig}`, "info");
         } else if (code !== 0) {
@@ -340,7 +343,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         return;
       }
       if (!(await requireAvailablePort(emit, port))) return;
-      await startResourceServiceWithWeb(coordRoot, emit);
+      await startSupervisorWithWeb(coordRoot, emit);
       await startSemanticServiceWithWeb(coordRoot, emit);
       const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       const nodeOptions = nodeOptionsWithWebDiagnostics(root, heapMb);
@@ -370,6 +373,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       process.on("SIGTERM", () => cleanup("SIGTERM"));
 
       child.on("exit", (code) => {
+        unregisterSupervisorConsumer(coordRoot, "dashboard");
         process.exitCode = code ?? 0;
       });
     });

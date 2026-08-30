@@ -1,12 +1,14 @@
 "use client";
 
 import { Bug, CircleAlert, Pause, Play, Radio, RotateCcw, Search } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LogFlowSnapshot } from "@/lib/log-flow-reader";
+import { useLiveSignal } from "@/lib/useLiveSignal";
 import type { HarneryLogLevel } from "../../../src/core/storage/contract";
 import type { HarneryLogRecordV1 } from "../../../src/core/storage/jsonl";
 
 const WINDOW_MS = 120_000;
+const MAX_MARKERS_PER_LANE = 12;
 const LEVELS: readonly HarneryLogLevel[] = ["trace", "debug", "info", "warn", "error", "fatal"];
 const HUES = [196, 264, 154, 42, 328, 14, 182, 232, 286, 102, 350, 58, 216];
 
@@ -22,32 +24,38 @@ export function LogFlow({ initialSnapshot }: { initialSnapshot: LogFlowSnapshot 
   const known = useRef(new Set(recordKeys(initialSnapshot)));
   const [arrivals, setArrivals] = useState(0);
 
-  useEffect(() => {
-    if (paused) return;
-    let cancelled = false;
-    const refresh = async () => {
-      if (document.visibilityState !== "visible") return;
-      try {
-        const response = await fetch("/api/log-flow", { cache: "no-store" });
-        if (!response.ok) return;
-        const nextSnapshot = (await response.json()) as LogFlowSnapshot;
-        if (cancelled) return;
-        const keys = recordKeys(nextSnapshot);
-        const next = keys.filter((key) => !known.current.has(key));
-        for (const key of keys) known.current.add(key);
-        setSnapshot(nextSnapshot);
-        if (next.length > 0) setArrivals(next.length);
-      } catch {
-        // Keep the last good frame. A later bounded poll can recover.
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(refresh, 2_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
+  const refresh = useCallback(async () => {
+    if (paused || document.visibilityState !== "visible") return;
+    try {
+      const response = await fetch("/api/log-flow", { cache: "no-store" });
+      if (!response.ok) return;
+      const nextSnapshot = (await response.json()) as LogFlowSnapshot;
+      const keys = recordKeys(nextSnapshot);
+      const next = keys.filter((key) => !known.current.has(key));
+      for (const key of keys) known.current.add(key);
+      setSnapshot(nextSnapshot);
+      if (next.length > 0) setArrivals(next.length);
+    } catch {
+      // Keep the last good frame. The shared live signal can recover.
+    }
   }, [paused]);
+  const liveEvents = useMemo(
+    () => ({
+      hello: () => void refresh(),
+      ping: () => {},
+      refresh: () => void refresh(),
+    }),
+    [refresh],
+  );
+  useLiveSignal({
+    streamUrl: "/api/stream",
+    versionUrl: "/api/log-flow/version",
+    events: liveEvents,
+    onFallbackChange: () => void refresh(),
+    pollMs: 2_000,
+    enabled: !paused,
+    fetchOnFallbackStart: true,
+  });
 
   useEffect(() => {
     if (paused) return;
@@ -65,18 +73,22 @@ export function LogFlow({ initialSnapshot }: { initialSnapshot: LogFlowSnapshot 
     const threshold = LEVELS.indexOf(minimumLevel);
     const needle = query.trim().toLowerCase();
     const clock = paused ? frozenAt : now;
-    return snapshot.lanes.map((lane, index) => ({
-      ...lane,
-      hue: HUES[index % HUES.length]!,
-      records: lane.records.filter((record) => {
+    return snapshot.lanes.map((lane, index) => {
+      const records = lane.records.filter((record) => {
         if (LEVELS.indexOf(record.level) < threshold) return false;
         if (clock - Date.parse(record.emitted_at) > WINDOW_MS) return false;
         if (!needle) return true;
         return `${record.event} ${record.component_id} ${record.family_id}`
           .toLowerCase()
           .includes(needle);
-      }),
-    }));
+      });
+      return {
+        ...lane,
+        hue: HUES[index % HUES.length]!,
+        recordCount: records.length,
+        records: compactMarkers(records),
+      };
+    });
   }, [snapshot, minimumLevel, query, paused, frozenAt, now]);
 
   const togglePause = () => {
@@ -162,7 +174,10 @@ export function LogFlow({ initialSnapshot }: { initialSnapshot: LogFlowSnapshot 
                     {lane.storageClass === "debug-log" ? (
                       <Bug className="size-2.5" aria-hidden />
                     ) : null}
-                    {lane.records.length} visible
+                    {lane.recordCount} visible
+                    {lane.recordCount > lane.records.length
+                      ? ` · ${lane.records.length} points`
+                      : null}
                   </div>
                 </div>
               </div>
@@ -275,11 +290,29 @@ function EventMarker({
           animationPlayState: paused ? "paused" : "running",
         } as React.CSSProperties
       }
-      title={`${record.level.toUpperCase()} · ${record.event}`}
     >
       <span className="log-flow-event-glyph" aria-hidden />
     </button>
   );
+}
+
+export function compactMarkers(records: readonly HarneryLogRecordV1[]): HarneryLogRecordV1[] {
+  const minimumGapMs = WINDOW_MS / (MAX_MARKERS_PER_LANE - 1);
+  const newestFirst = [...records].sort(
+    (left, right) => Date.parse(right.emitted_at) - Date.parse(left.emitted_at),
+  );
+  const selected: HarneryLogRecordV1[] = [];
+  for (const record of newestFirst) {
+    const emittedAt = Date.parse(record.emitted_at);
+    if (
+      selected.every(
+        (candidate) => Math.abs(Date.parse(candidate.emitted_at) - emittedAt) >= minimumGapMs,
+      )
+    ) {
+      selected.push(record);
+    }
+  }
+  return selected.sort((left, right) => Date.parse(left.emitted_at) - Date.parse(right.emitted_at));
 }
 
 function Detail({ title, value }: { title: string; value: unknown }) {

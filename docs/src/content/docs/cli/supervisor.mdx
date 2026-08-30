@@ -1,0 +1,85 @@
+---
+title: supervisor
+description: Run the optional local diagnostic supervisor.
+---
+
+`harn supervisor` runs one bounded, read-only diagnostic process per
+coordination root. Core coordination, hooks, and Event Ledger V3 do not depend
+on it.
+
+```bash
+harn supervisor start
+harn supervisor status
+harn supervisor stop
+```
+
+## What it observes
+
+The supervisor runs several inexpensive collectors behind one process:
+
+- machine and process CPU, memory, swap, age, and proven agent ownership;
+- semantic reader, presence relay, governor, dashboard, and supervisor health;
+- active hook processes whose agent ownership and exact entrypoint are both
+  proven;
+- a 15-minute pressure history with 90 ten-second points;
+- opened and resolved local anomalies with compact surrounding evidence; and
+- incremental structured-log records for the live dashboard.
+
+The log collector seeds a bounded recent window when it starts. After that it
+uses each structured-log family's follow cursor and reads only complete appended
+records. A malformed family remains isolated from every healthy family.
+
+## Lifecycle
+
+`harn web up` and `harn web start` register the dashboard process as a consumer
+and ensure the supervisor is running. A demand-started supervisor exits after
+two minutes with no live dashboard consumer and no attributed agent process.
+Hooks or a later dashboard start can launch it again.
+
+An explicit start uses the same demand behavior by default:
+
+```bash
+harn supervisor start --idle-exit-ms 120000
+```
+
+Use `--keep-alive` when an operator deliberately wants continuous local
+history without active agents or a dashboard:
+
+```bash
+harn supervisor start --keep-alive
+```
+
+The collection interval accepts 500 through 60,000 milliseconds and defaults
+to 2,000 milliseconds. The idle exit accepts 5,000 milliseconds through 24
+hours. `start` waits for a live heartbeat, and `stop` writes a durable request
+before signaling the exact same-host supervisor process.
+
+## Bounded storage
+
+Current projections live under `.harnery/supervisor/`:
+
+```text
+.harnery/supervisor/
+├── service.json
+├── snapshot.json
+├── history.json
+├── anomalies.json
+├── log-feed.json
+└── consumers/
+```
+
+The resource snapshot remains under `.harnery/resources/snapshot.json` so the
+daemon-free `harn resources snapshot` and dashboard share one contract. All
+supervisor files are reconstructable caches. They do not enter Event Ledger V3.
+
+History keeps 90 points. Anomaly history keeps 100 opened or resolved
+transitions. Live logs keep at most 100 records per registered family and use
+fixed read budgets. Atomic private JSON writes prevent dashboard readers from
+seeing partial frames.
+
+## Authority boundary
+
+The supervisor may observe, correlate, cache, and report. It may signal only
+its own process during an explicit stop. It cannot kill or renice another
+process, restart a service, call a model, execute governor work, write Event
+Ledger V3, or mutate agent lifecycle state.

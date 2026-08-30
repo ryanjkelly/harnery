@@ -1,6 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ResourceServiceStatusRecord, ResourceSnapshot } from "./contract.ts";
+
+export { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 
 export interface ResourcePaths {
   root: string;
@@ -19,18 +21,6 @@ export function resourcePaths(coordRootRaw: string): ResourcePaths {
     stop: join(root, "stop.json"),
     snapshot: join(root, "snapshot.json"),
   };
-}
-
-export function writePrivateJsonAtomic(path: string, value: unknown): void {
-  mkdirSync(resolve(path, ".."), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.tmp.${process.pid}.${Date.now()}`;
-  writeFileSync(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
-  try {
-    chmodSync(temporary, 0o600);
-  } catch {
-    // Windows does not expose POSIX modes. The atomic write still applies.
-  }
-  renameSync(temporary, path);
 }
 
 export function readResourceSnapshot(coordRoot: string): ResourceSnapshot | undefined {

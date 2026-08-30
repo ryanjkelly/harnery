@@ -9,9 +9,6 @@ PID-map row. Expensive processes that cannot be attributed remain visible.
 
 ```bash
 harn resources snapshot
-harn resources service start
-harn resources service status
-harn resources service stop
 ```
 
 ## Snapshot
@@ -21,8 +18,8 @@ observer. It reports memory, load, process RSS, process age, and ownership
 immediately. Current CPU needs two samples, so a one-shot response reports CPU
 as `null`.
 
-The detached observer samples repeatedly and writes one atomic current snapshot
-under `.harnery/resources/`. Its process table contains:
+The optional [local supervisor](./supervisor/) samples repeatedly and writes one
+atomic current snapshot under `.harnery/resources/`. Its process table contains:
 
 - PID, parent PID, state, executable name, and process-start identity;
 - current CPU calculated from consecutive samples;
@@ -34,23 +31,9 @@ The observer shows every attributed process tree. An unmatched process enters
 the snapshot when it crosses the CPU or memory visibility floor. The result is
 bounded to the highest-impact processes.
 
-## Service lifecycle
-
-The observer is one process per coordination root. `service start` waits until
-the child publishes a live status record. A singleton lease includes process
-start identity, so a recycled PID cannot keep a stale lease alive. `service
-stop` writes a durable stop request and asks a same-host observer to exit.
-
-```bash
-harn resources service start --interval-ms 2000
-harn resources service status
-harn resources service stop
-```
-
-The sampling interval accepts 500 through 60,000 milliseconds and defaults to
-2,000 milliseconds. The dashboard starts the observer automatically on a
-supported machine. A startup or sampling failure never blocks coordination or
-the dashboard.
+The sampling interval defaults to 2,000 milliseconds. The dashboard starts the
+supervisor automatically. A startup or sampling failure never blocks
+coordination or the dashboard.
 
 ## Platform support
 
@@ -58,6 +41,6 @@ Linux and WSL procfs are supported. A WSL observer reports the Linux namespace;
 it does not claim to see unrelated Windows host processes. Other native
 platforms return an explicit unsupported state until a tested sampler ships.
 
-The first release does not report GPU use, process I/O, sockets, file
+The current sampler does not report GPU use, process I/O, sockets, file
 descriptors, or cgroup limits. It does not provide kill, restart, renice, or
 pause controls.

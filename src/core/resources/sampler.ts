@@ -43,7 +43,7 @@ interface ResourceSamplerOptions {
   nowMs?: number;
   clockTicks?: number;
   pageSize?: number;
-  observerPid?: number;
+  service?: { pid: number; id: string };
   unattributedCpuFloor?: number;
   unattributedRssFloor?: number;
   maxProcesses?: number;
@@ -92,7 +92,6 @@ export function sampleResources(
   const intervalMs = previous ? Math.max(0, nowMs - previous.sampled_at_ms) : null;
   const totalTickDelta = previous ? Math.max(0, cpu.total - previous.cpu_total_ticks) : 0;
   const logicalCpus = Math.max(1, cpus().length);
-  const observerPid = options.observerPid ?? process.pid;
   const processes = readings.map((reading): ResourceProcessSample => {
     const identity = `${reading.pid}:${reading.startTicks}`;
     processTicks.set(identity, reading.ticks);
@@ -104,8 +103,8 @@ export function sampleResources(
         ? null
         : round1((processDelta / totalTickDelta) * logicalCpus * 100);
     const ownership =
-      reading.pid === observerPid
-        ? { kind: "service" as const, id: "resource-observer", rootPid: observerPid }
+      options.service && reading.pid === options.service.pid
+        ? { kind: "service" as const, id: options.service.id, rootPid: options.service.pid }
         : resolveOwnership(reading.pid, byPid, anchors);
     return {
       pid: reading.pid,

@@ -102,7 +102,7 @@ export function GET(): Response {
       // poll in /api/live-events; cheap (one stat() every 2s) and fires only on
       // actual growth, so idle streams cost nothing.
       const eventsForPoll = eventsPath();
-      const resourceSnapshot = path.join(coordRoot(), ".harnery", "resources", "snapshot.json");
+      const supervisorSnapshot = path.join(coordRoot(), ".harnery", "supervisor", "snapshot.json");
       let lastEventsSize = -1;
       let lastResourceSignature = "-";
       try {
@@ -121,10 +121,10 @@ export function GET(): Response {
           // file vanished mid-stream; a recreated file will grow again
         }
         try {
-          const stat = statSync(resourceSnapshot);
+          const stat = statSync(supervisorSnapshot);
           const signature = `${Math.floor(stat.mtimeMs)}:${stat.size}`;
           if (lastResourceSignature !== "-" && signature !== lastResourceSignature) {
-            fireRefresh("resources");
+            fireRefresh("supervisor");
           }
           lastResourceSignature = signature;
         } catch {

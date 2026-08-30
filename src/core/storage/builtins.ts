@@ -36,6 +36,7 @@ const LOG_PARTITIONS = [
   "web-performance",
   "semantic-service",
   "resource-observer",
+  "supervisor",
   "governor-service",
   "presence-relay",
   "tunnel-process",
@@ -312,6 +313,7 @@ function logFamilies(): HarneryStorageFamily[] {
       14,
       64 * MIB,
     ),
+    operationalFamily("supervisor-log", "local supervisor", "supervisor", 14, 64 * MIB),
     withCurrentRoots(
       operationalFamily(
         "governor-service-log",
@@ -484,6 +486,24 @@ function cacheFamilies(): HarneryStorageFamily[] {
       provider: filesystemProvider(
         "resource-observer-cache-provider",
         "local process and machine samples",
+      ),
+    }),
+    family({
+      id: "supervisor-cache",
+      owner: "local supervisor",
+      storage_class: "repairable-cache",
+      roots: (context) => [subtree(context, ".harnery/supervisor")],
+      format: "json",
+      durability: "reconstructable",
+      writer_model: "object-owned",
+      policy: cachePolicy(
+        "supervisor-cache-v1",
+        "local resources, service health, log cursors, and anomaly projections",
+      ),
+      consumers: ["local supervisor", "dashboard", "storage inventory", "storage health"],
+      provider: filesystemProvider(
+        "supervisor-cache-provider",
+        "bounded local diagnostic observations",
       ),
     }),
     family({

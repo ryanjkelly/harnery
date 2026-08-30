@@ -1,19 +1,19 @@
 import {
   RESOURCE_SNAPSHOT_SCHEMA_VERSION,
-  type ResourceServiceStatus,
   type ResourceSnapshot,
 } from "../../src/core/resources/contract";
-import { readResourceServiceStatus } from "../../src/core/resources/service-status";
 import { readResourceSnapshot } from "../../src/core/resources/storage";
+import type { SupervisorStatus } from "../../src/core/supervisor/contract";
+import { readSupervisorStatus } from "../../src/core/supervisor/status";
 
 export interface ResourceDashboardReport {
-  service: ResourceServiceStatus;
+  service: SupervisorStatus;
   snapshot?: ResourceSnapshot;
   freshness_ms: number | null;
 }
 
 export function readResourceDashboard(root: string, nowMs = Date.now()): ResourceDashboardReport {
-  const service = readResourceServiceStatus(root, nowMs);
+  const service = readSupervisorStatus(root, nowMs);
   const snapshot = readResourceSnapshot(root);
   const valid =
     snapshot?.schema_version === RESOURCE_SNAPSHOT_SCHEMA_VERSION ? snapshot : undefined;

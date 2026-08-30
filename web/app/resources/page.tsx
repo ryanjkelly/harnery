@@ -1,4 +1,14 @@
-import { Activity, Cpu, Gauge, MemoryStick, ServerCog } from "lucide-react";
+import {
+  Activity,
+  CircleAlert,
+  Cpu,
+  Gauge,
+  HeartPulse,
+  History,
+  MemoryStick,
+  ServerCog,
+  Workflow,
+} from "lucide-react";
 import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
@@ -12,6 +22,12 @@ import {
 } from "@/lib/agent-summary";
 import { coordRoot, readAgents, readInstanceIdentities } from "@/lib/coord-reader";
 import { readResourceDashboard } from "@/lib/resource-reader";
+import { readSupervisorDashboard } from "@/lib/supervisor-reader";
+import type {
+  ObservedServiceHealth,
+  SupervisorAnomalyTransition,
+  SupervisorHistoryPoint,
+} from "../../../src/core/supervisor/contract";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -20,6 +36,7 @@ export const metadata = { title: "Resources · Harnery" };
 export default function ResourcesPage() {
   const root = coordRoot();
   const report = readResourceDashboard(root);
+  const supervisor = readSupervisorDashboard(root);
   const snapshot = report.snapshot;
   const agents = readAgents();
   const identities = readInstanceIdentities();
@@ -77,8 +94,8 @@ export default function ResourcesPage() {
                 <CardTitle className="text-base">Waiting for the resource observer</CardTitle>
               </CardHeader>
               <CardContent className="text-sm text-muted-foreground">
-                The dashboard starts the observer automatically on supported machines. Service
-                status: {report.service.record?.state ?? "not started"}.
+                The dashboard starts the local supervisor automatically. Service status:{" "}
+                {report.service.record?.state ?? "not started"}.
               </CardContent>
             </Card>
           ) : (
@@ -125,6 +142,128 @@ export default function ResourcesPage() {
                 />
               </section>
 
+              <section aria-labelledby="supervisor-heading" className="mb-6">
+                <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <HeartPulse className="size-5 text-sky-500" aria-hidden />
+                      <h2 id="supervisor-heading" className="text-lg font-semibold">
+                        Local supervisor
+                      </h2>
+                    </div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Service health, hook activity, recent pressure, and bounded anomaly evidence.
+                    </p>
+                  </div>
+                  {supervisor.snapshot ? (
+                    <div className="text-xs text-muted-foreground">
+                      {`${formatMs(supervisor.snapshot.collector_duration_ms)} total collection · ${supervisor.snapshot.log_record_count} live log records`}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr]">
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="flex items-center gap-2 text-sm">
+                        <ServerCog className="size-4 text-sky-500" aria-hidden /> Service health
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {(supervisor.snapshot?.services ?? []).map((service) => (
+                          <ServiceHealthRow key={service.id} service={service} />
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="flex items-center gap-2 text-sm">
+                        <History className="size-4 text-violet-500" aria-hidden /> 15-minute
+                        pressure
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <MiniHistoryChart points={supervisor.history?.points ?? []} />
+                    </CardContent>
+                  </Card>
+                </div>
+              </section>
+
+              {(supervisor.anomalies?.active.length ?? 0) > 0 ? (
+                <section aria-labelledby="anomalies-heading" className="mb-6">
+                  <div className="mb-3 flex items-center gap-2">
+                    <CircleAlert className="size-5 text-amber-500" aria-hidden />
+                    <h2 id="anomalies-heading" className="text-lg font-semibold">
+                      Active anomalies
+                    </h2>
+                  </div>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {supervisor.anomalies?.active.map((anomaly) => (
+                      <AnomalyCard key={anomaly.id} anomaly={anomaly} />
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {(supervisor.snapshot?.hooks.length ?? 0) > 0 ? (
+                <section aria-labelledby="hooks-heading" className="mb-6">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Workflow className="size-5 text-emerald-500" aria-hidden />
+                    <h2 id="hooks-heading" className="text-lg font-semibold">
+                      Active hooks
+                    </h2>
+                  </div>
+                  <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
+                    <table className="min-w-[760px] w-full text-sm">
+                      <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
+                        <tr>
+                          <Th>Owner</Th>
+                          <Th align="right">PID</Th>
+                          <Th align="right">Age</Th>
+                          <Th align="right">CPU</Th>
+                          <Th align="right">Memory</Th>
+                          <Th>Command</Th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {supervisor.snapshot?.hooks.map((hook) => (
+                          <tr key={hook.pid} className="align-top hover:bg-muted/30">
+                            <Td>
+                              <Owner
+                                kind="agent"
+                                id={hook.owner_id}
+                                instanceToName={instanceToName}
+                              />
+                            </Td>
+                            <Td align="right" mono>
+                              {hook.pid}
+                            </Td>
+                            <Td align="right" mono>
+                              {formatAge(hook.age_seconds)}
+                            </Td>
+                            <Td align="right" mono>
+                              {formatPercent(hook.cpu_percent)}
+                            </Td>
+                            <Td align="right" mono>
+                              {formatBytes(hook.rss_bytes)}
+                            </Td>
+                            <Td
+                              mono
+                              className="max-w-[420px] break-all text-xs text-muted-foreground"
+                            >
+                              {hook.command}
+                            </Td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+
               <section aria-labelledby="groups-heading" className="mb-6">
                 <div className="mb-3 flex items-center gap-2">
                   <ServerCog className="size-5 text-sky-500" aria-hidden />
@@ -134,11 +273,11 @@ export default function ResourcesPage() {
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   {snapshot.groups.map((group) => (
-                    <Card key={`${group.kind}:${group.id}`}>
+                    <Card key={`${group.kind}:${group.id}`} className="min-w-0">
                       <CardContent className="p-4">
-                        <div className="flex items-start justify-between gap-3">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0">
-                            <div className="truncate font-medium">
+                            <div className="break-all font-medium sm:truncate">
                               <Owner
                                 kind={group.kind}
                                 id={group.id}
@@ -181,7 +320,8 @@ export default function ResourcesPage() {
                     </p>
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    Observer overhead {formatMs(snapshot.collector_cpu_ms)} CPU per sample
+                    Supervisor resource overhead {formatMs(snapshot.collector_cpu_ms)} CPU per
+                    sample
                   </div>
                 </div>
                 <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
@@ -321,9 +461,123 @@ function MetricCard({
 function ObserverBadge({ running, stale }: { running: boolean; stale: boolean }) {
   return (
     <Badge variant={running ? "success" : stale ? "warning" : "secondary"}>
-      observer {running ? "running" : stale ? "stale" : "stopped"}
+      supervisor {running ? "running" : stale ? "stale" : "stopped"}
     </Badge>
   );
+}
+
+function ServiceHealthRow({ service }: { service: ObservedServiceHealth }) {
+  const variant =
+    service.state === "running" ? "success" : service.state === "stale" ? "warning" : "secondary";
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2">
+      <div className="min-w-0">
+        <div className="truncate font-mono text-xs font-medium">{service.id}</div>
+        <div className="mt-0.5 text-[10px] text-muted-foreground">
+          {service.pid ? `PID ${service.pid}` : (service.reason ?? "No live process")}
+        </div>
+      </div>
+      <Badge variant={variant}>{service.state}</Badge>
+    </div>
+  );
+}
+
+function MiniHistoryChart({ points }: { points: readonly SupervisorHistoryPoint[] }) {
+  if (points.length < 2) {
+    return (
+      <div className="flex h-28 items-center justify-center text-xs text-muted-foreground">
+        Building bounded history
+      </div>
+    );
+  }
+  const cpu = chartPoints(points.map((point) => point.machine.cpu_percent));
+  const memory = chartPoints(points.map((point) => point.machine.memory_percent));
+  const latest = points[points.length - 1]!;
+  return (
+    <div>
+      <svg
+        viewBox="0 0 100 36"
+        role="img"
+        aria-label="CPU and memory history"
+        className="h-24 w-full overflow-visible"
+      >
+        <path
+          d="M0 9H100 M0 18H100 M0 27H100"
+          className="stroke-border"
+          strokeWidth="0.35"
+          fill="none"
+        />
+        {cpu ? (
+          <polyline
+            points={cpu}
+            fill="none"
+            stroke="rgb(14 165 233)"
+            strokeWidth="1.2"
+            vectorEffect="non-scaling-stroke"
+          />
+        ) : null}
+        {memory ? (
+          <polyline
+            points={memory}
+            fill="none"
+            stroke="rgb(168 85 247)"
+            strokeWidth="1.2"
+            vectorEffect="non-scaling-stroke"
+          />
+        ) : null}
+      </svg>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-muted-foreground">
+        <span>
+          <span className="mr-1 inline-block size-2 rounded-full bg-sky-500" />
+          CPU {formatPercent(latest.machine.cpu_percent)}
+        </span>
+        <span>
+          <span className="mr-1 inline-block size-2 rounded-full bg-violet-500" />
+          Memory {formatPercent(latest.machine.memory_percent)}
+        </span>
+        <span>{points.length} bounded points</span>
+      </div>
+    </div>
+  );
+}
+
+function AnomalyCard({ anomaly }: { anomaly: SupervisorAnomalyTransition }) {
+  const variant = anomaly.severity === "critical" ? "destructive" : "warning";
+  return (
+    <Card
+      className={
+        anomaly.severity === "critical"
+          ? "border-red-500/30 bg-red-500/5"
+          : "border-amber-500/30 bg-amber-500/5"
+      }
+    >
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="font-mono text-xs font-semibold">{anomaly.kind}</div>
+            <p className="mt-1 text-sm text-muted-foreground">{anomaly.evidence.summary}</p>
+          </div>
+          <Badge variant={variant}>{anomaly.severity}</Badge>
+        </div>
+        <div className="mt-3 text-[10px] text-muted-foreground">
+          Opened <FormattedDateTime iso={anomaly.opened_at} kind="datetime" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function chartPoints(values: readonly (number | null)[]): string | null {
+  const present = values.filter((value): value is number => value !== null);
+  if (present.length < 2) return null;
+  const lastIndex = Math.max(1, values.length - 1);
+  return values
+    .map((value, index) => {
+      if (value === null) return null;
+      return `${((index / lastIndex) * 100).toFixed(2)},${(34 - Math.max(0, Math.min(100, value)) * 0.32).toFixed(2)}`;
+    })
+    .filter((value): value is string => value !== null)
+    .join(" ");
 }
 
 function SupportBadge({ state }: { state: string }) {

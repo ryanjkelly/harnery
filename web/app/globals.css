@@ -403,7 +403,7 @@ pre.scratch {
 .log-flow-level-badge.log-flow-warn { background: rgb(245 158 11 / 0.14); color: #d97706; }
 .log-flow-level-badge.log-flow-error, .log-flow-level-badge.log-flow-fatal { background: rgb(244 63 94 / 0.14); color: #e11d48; }
 
-@keyframes log-flow-travel { from { left: calc(100% - 12px); } to { left: 12px; } }
+@keyframes log-flow-travel { from { left: calc(100% - 13px); } to { left: 13px; } }
 @keyframes log-flow-pop { 0% { scale: 0.2; filter: brightness(2); } 45% { scale: 2.2; } 100% { scale: 1; filter: brightness(1); } }
 @keyframes log-flow-scan { 0%, 100% { top: 2%; opacity: 0.25; } 50% { top: 80%; opacity: 1; } }
 

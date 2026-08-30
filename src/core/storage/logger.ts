@@ -518,6 +518,7 @@ const PROCESS_LOGGER_BINDINGS = {
   "agent-coord": "agent-coord-debug-log",
   "semantic-service": "semantic-service-log",
   "resource-observer": "resource-observer-log",
+  supervisor: "supervisor-log",
   "governor-service": "governor-service-log",
   "presence-relay": "presence-relay-log",
 } as const;

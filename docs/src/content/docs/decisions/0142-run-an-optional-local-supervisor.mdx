@@ -1,0 +1,100 @@
+---
+title: "ADR 0142: run an optional local supervisor"
+description: Consolidate cheap local observation, bounded diagnostic history, and dashboard delivery without giving the service coordination authority.
+sidebar:
+  order: 142
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+Harnery has several local signals that are inexpensive to collect but expensive
+or inaccurate when every dashboard request collects them independently. The
+resource observer already samples process trees. Service heartbeats, hook
+process health, structured-log growth, and short resource history need the same
+outside view. Separate resident processes for each observation would duplicate
+lifecycle, storage, and sampling work.
+
+Core coordination is intentionally daemonless. Agent hooks, Event Ledger V3,
+and CLI coordination must continue when every optional service is stopped. A
+diagnostic process must also remain bounded enough that it cannot become the
+resource problem it is meant to explain.
+
+## Alternatives considered
+
+- Keep one daemon per signal. This preserves narrow ownership, but repeats
+  leases, heartbeats, process startup, filesystem scans, and dashboard delivery.
+- Collect everything inside dashboard requests. This couples page latency to
+  process and log probes, loses deltas between requests, and repeats work for
+  each viewer.
+- Write observations to Event Ledger V3. High-frequency diagnostics are
+  disposable projections, not coordination authority. Putting them in the
+  canonical ledger would inflate history and blur ownership.
+- Make the supervisor an automatic repair service. Killing processes,
+  restarting workers, or mutating agent state would give a fallible observer
+  operational authority before its evidence and policy contracts are mature.
+- Use a local metrics database. A database adds migration, locking, and
+  retention machinery that is not justified for a short diagnostic window.
+
+## Decision
+
+Replace the resource-specific resident service with an optional,
+per-coordination-root local supervisor. `harn supervisor start|status|stop`
+owns one singleton process. `harn resources snapshot` remains a daemon-free
+one-shot command, and core coordination never reads supervisor state as an
+authority source.
+
+The supervisor runs independent collectors behind one bounded loop:
+
+- The resource collector preserves the existing process and machine snapshot
+  contract under `.harnery/resources/snapshot.json`.
+- The service collector projects liveness for the semantic reader, presence
+  relay, governor, dashboard consumers, and the supervisor itself.
+- The hook collector labels only processes whose Harnery ownership was already
+  proven by PID ancestry and whose executable matches an exact hook entrypoint.
+  Command text never establishes agent ownership.
+- The log collector seeds a bounded recent window, then uses structured-log
+  follow cursors to read only complete appended records. A malformed family is
+  isolated from every healthy family.
+- The history collector writes one point every 10 seconds and keeps 90 points,
+  yielding a 15-minute window. It stores machine totals and group aggregates,
+  not complete process command lines.
+- The anomaly collector keeps at most 100 opened or resolved transitions. It
+  evaluates machine pressure, swap pressure, service staleness, hook age,
+  process and group memory, owner process counts, collector overhead, and
+  memory growth from the bounded history. Each opening preserves compact
+  resource, service, hook, history, and recent-log evidence.
+
+Supervisor caches use atomic private JSON files beneath
+`.harnery/supervisor/`. Every list and byte count has a fixed maximum. The
+dashboard reads these projections and uses Harnery's shared live signal with
+poll fallback; it does not start a second log polling loop.
+
+Dashboard startup registers a process-start-validated consumer and ensures the
+supervisor is running. A demand-started supervisor exits after a two-minute
+grace period with no live dashboard consumer and no attributed agent process.
+An explicit `harn supervisor start --keep-alive` remains resident until stopped.
+
+The supervisor may observe, correlate, cache, and report. It may signal only
+its own process during an explicit stop. It cannot kill or renice other
+processes, restart services, call a model, execute governor work, write Event
+Ledger V3, or mutate agent lifecycle state.
+
+## Result
+
+Harnery now uses one bounded process for local diagnostics instead of a
+resource-only observer plus repeated dashboard scans. The dashboard can show
+current pressure, recent growth, stale services, long-running hooks, and the
+structured events around an anomaly. The supervisor remains optional and
+read-only.
+
+The earlier resource-only observer measured about 32 MiB resident memory. The
+first expanded supervisor implementation reached 221 MiB because the service
+health collector imported the semantic and governor engines. That design was
+rejected. Reading their bounded status files directly brought the running
+supervisor to about 80 MiB resident memory, with 7.2 milliseconds of total
+collector work every two seconds on a 16-logical-CPU WSL host. The resource
+sample itself took 4.3 milliseconds. The loop reports its own collector duration
+so regressions remain visible.

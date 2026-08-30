@@ -57,7 +57,7 @@ describe("resource sampler", () => {
       nowMs: 1_000,
       clockTicks: 100,
       pageSize: 4_096,
-      observerPid: 999,
+      service: { pid: 999, id: "supervisor" },
       unattributedRssFloor: 0,
     });
     expect(first.snapshot.machine.cpu_percent).toBeNull();
@@ -67,7 +67,7 @@ describe("resource sampler", () => {
       nowMs: 3_000,
       clockTicks: 100,
       pageSize: 4_096,
-      observerPid: 999,
+      service: { pid: 999, id: "supervisor" },
       unattributedRssFloor: 0,
     });
     expect(second.snapshot.machine.cpu_percent).toBe(75);
