@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStorageCatalog } from "./catalog.ts";
 import { encodeLogRecord, type HarneryLogRecordV1 } from "./jsonl.ts";
-import { queryLogs, readLogFollow, rotationFollowCursor } from "./query.ts";
+import { queryLogs, readLogFollow, readRecentActiveLogs, rotationFollowCursor } from "./query.ts";
 import {
   FileSegmentSink,
   HarneryLogLeaseError,
@@ -30,6 +30,25 @@ afterEach(() => {
 });
 
 describe("shared log segments and query", () => {
+  test("reads only the newest bounded records from the active segment", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-recent-logs-"));
+    roots.push(root);
+    const family = createStorageCatalog({ coord_root: root }).require("agent-hook-debug-log");
+    const directory = join(root, ".harnery", "logs", "agent-hook-debug");
+    const sink = new FileSegmentSink({ directory, family });
+    await sink.append([
+      record(family, 1, "first"),
+      record(family, 2, "second"),
+      record(family, 3, "third"),
+      record(family, 4, "fourth"),
+    ]);
+
+    const recent = readRecentActiveLogs(family, { max_records: 2, max_bytes: 100_000 });
+    expect(recent.records.map((item) => item.event)).toEqual(["third", "fourth"]);
+    expect(recent.truncated).toBeTrue();
+    expect(recent.bytes_examined).toBeGreaterThan(0);
+  });
+
   test("rotates through a sealed manifest and queries with global budgets", async () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-segments-"));
     roots.push(root);

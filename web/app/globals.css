@@ -293,3 +293,121 @@ pre.scratch {
     opacity: 0.55;
   }
 }
+
+@media (max-width: 639px) {
+  .log-flow-stage { margin-inline-end: 8px; }
+}
+
+/* Live structured-log flow. Events use DOM buttons rather than canvas so
+ * every visible point remains focusable and inspectable. */
+.log-flow-control {
+  @apply inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40;
+}
+
+.log-flow-control svg { @apply size-3.5; }
+
+.log-flow-stage {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
+  border-radius: 1rem;
+  background:
+    radial-gradient(circle at 100% 50%, rgb(34 211 238 / 0.12), transparent 30%),
+    linear-gradient(135deg, color-mix(in oklab, var(--card) 96%, rgb(14 165 233 / 0.08)), var(--card));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 20px 70px rgb(2 132 199 / 0.08);
+}
+
+.log-flow-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.45;
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--border) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--border) 28%, transparent) 1px, transparent 1px);
+  background-size: 8% 100%, 100% 28px;
+  mask-image: linear-gradient(to right, transparent, black 12%, black 95%);
+}
+
+.log-flow-ingest {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: 4px;
+  background: linear-gradient(to bottom, transparent, rgb(34 211 238 / 0.9), transparent);
+  box-shadow: 0 0 24px 5px rgb(34 211 238 / 0.3);
+}
+
+.log-flow-ingest span {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 10px;
+  height: 18%;
+  border-radius: 999px;
+  background: white;
+  filter: blur(1px);
+  box-shadow: 0 0 16px rgb(34 211 238);
+  animation: log-flow-scan 2.8s ease-in-out infinite;
+}
+
+.log-flow-lane { @apply grid gap-2 sm:grid-cols-[200px_1fr] sm:items-center; }
+.log-flow-label { @apply flex min-w-0 items-center gap-2 rounded-lg border border-border/40 bg-background/55 px-2.5 py-2 backdrop-blur; }
+.log-flow-family-dot { width: 7px; height: 28px; border-radius: 999px; flex: none; background: hsl(var(--lane-hue) 82% 60%); box-shadow: 0 0 14px hsl(var(--lane-hue) 82% 60% / 0.65); }
+.log-flow-track { @apply relative h-12 overflow-hidden rounded-lg border border-border/45 bg-background/35; }
+.log-flow-beam { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: linear-gradient(to right, transparent, hsl(var(--lane-hue) 82% 60% / 0.26) 10%, hsl(var(--lane-hue) 82% 60% / 0.56) 90%, transparent); }
+
+.log-flow-event {
+  --marker: hsl(var(--lane-hue) 84% 60%);
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  margin-left: -12px;
+  margin-top: -12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  animation: log-flow-travel var(--flow-duration) linear var(--flow-delay) both;
+}
+.log-flow-event-glyph {
+  position: absolute;
+  pointer-events: none;
+  left: 50%;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  translate: -50% -50%;
+  border: 1px solid color-mix(in oklab, var(--marker) 70%, white);
+  border-radius: 999px;
+  background: var(--marker);
+  box-shadow: 0 0 10px var(--marker);
+  transition: scale 120ms ease, filter 120ms ease;
+}
+.log-flow-event:hover, .log-flow-event:focus-visible { z-index: 5; outline: 2px solid var(--foreground); outline-offset: -1px; }
+.log-flow-event:hover .log-flow-event-glyph, .log-flow-event:focus-visible .log-flow-event-glyph { scale: 1.65; filter: brightness(1.25); }
+.log-flow-event.log-flow-warn { --marker: #f59e0b; }
+.log-flow-event.log-flow-warn .log-flow-event-glyph { border-radius: 2px; rotate: 45deg; }
+.log-flow-event.log-flow-error, .log-flow-event.log-flow-fatal { --marker: #f43f5e; }
+.log-flow-event.log-flow-error .log-flow-event-glyph, .log-flow-event.log-flow-fatal .log-flow-event-glyph { border-radius: 2px; box-shadow: 0 0 15px var(--marker), 0 0 28px rgb(244 63 94 / 0.35); }
+.log-flow-event.log-flow-debug .log-flow-event-glyph { width: 8px; height: 8px; opacity: 0.78; }
+.log-flow-event.log-flow-trace .log-flow-event-glyph { width: 6px; height: 6px; opacity: 0.6; }
+.log-flow-event.is-new { animation: log-flow-travel var(--flow-duration) linear var(--flow-delay) both, log-flow-pop 650ms ease-out; }
+
+.log-flow-key { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); }
+.log-flow-key.log-flow-warn { border-radius: 1px; rotate: 45deg; background: #f59e0b; }
+.log-flow-key.log-flow-error, .log-flow-key.log-flow-fatal { border-radius: 1px; background: #f43f5e; box-shadow: 0 0 6px #f43f5e; }
+.log-flow-key.log-flow-debug { opacity: 0.7; }
+.log-flow-key.log-flow-trace { width: 5px; height: 5px; opacity: 0.55; }
+.log-flow-level-badge { @apply rounded px-1.5 py-0.5 text-[10px] font-bold uppercase; background: var(--muted); color: var(--muted-foreground); }
+.log-flow-level-badge.log-flow-warn { background: rgb(245 158 11 / 0.14); color: #d97706; }
+.log-flow-level-badge.log-flow-error, .log-flow-level-badge.log-flow-fatal { background: rgb(244 63 94 / 0.14); color: #e11d48; }
+
+@keyframes log-flow-travel { from { left: calc(100% - 12px); } to { left: 12px; } }
+@keyframes log-flow-pop { 0% { scale: 0.2; filter: brightness(2); } 45% { scale: 2.2; } 100% { scale: 1; filter: brightness(1); } }
+@keyframes log-flow-scan { 0%, 100% { top: 2%; opacity: 0.25; } 50% { top: 80%; opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .log-flow-event { animation: none; }
+  .log-flow-ingest span { animation: none; top: 41%; opacity: 0.65; }
+}

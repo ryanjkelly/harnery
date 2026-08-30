@@ -42,6 +42,12 @@ export interface HarneryLogFollowCursor {
   active_offset: number;
 }
 
+export interface HarneryRecentActiveLogResult {
+  records: readonly HarneryLogRecordV1[];
+  bytes_examined: number;
+  truncated: boolean;
+}
+
 const LEVELS: readonly HarneryLogLevel[] = ["trace", "debug", "info", "warn", "error", "fatal"];
 const MAX_UNBOUNDED_RECORD_BYTES = 1024 * 1024;
 const STREAM_CHUNK_BYTES = 64 * 1024;
@@ -107,6 +113,58 @@ export function rotationFollowCursor(
     manifest_sequence: manifest.next_sequence - 1,
     active_offset: existsSync(active) ? regularFileStat(active).size : 0,
   };
+}
+
+/**
+ * Read the newest complete records from one family's active segment without
+ * walking sealed history. Dashboard-style live views need a cheap bounded
+ * snapshot; the full `queryLogs` surface remains the historical query path.
+ */
+export function readRecentActiveLogs(
+  family: HarneryRegisteredStorageFamily,
+  options: { max_records: number; max_bytes: number },
+): HarneryRecentActiveLogResult {
+  if (
+    !Number.isSafeInteger(options.max_records) ||
+    options.max_records <= 0 ||
+    !Number.isSafeInteger(options.max_bytes) ||
+    options.max_bytes <= 0
+  ) {
+    throw new Error("recent log read requires positive budgets");
+  }
+  const active = join(familyLogDirectory(family), "active.jsonl");
+  if (!existsSync(active)) return { records: [], bytes_examined: 0, truncated: false };
+
+  const opened = openRegularNoFollow(active);
+  try {
+    const size = fstatSync(opened.fd).size;
+    const start = Math.max(0, size - options.max_bytes);
+    const length = size - start;
+    if (length === 0) return { records: [], bytes_examined: 0, truncated: false };
+    const buffer = Buffer.allocUnsafe(length);
+    let consumed = 0;
+    while (consumed < length) {
+      const count = readSync(opened.fd, buffer, consumed, length - consumed, start + consumed);
+      if (count === 0) break;
+      consumed += count;
+    }
+    assertOpenFileIdentity(active, opened.fd, opened.parent);
+    const text = buffer.subarray(0, consumed).toString("utf8");
+    let lines = text.split("\n");
+    // A bounded tail can begin in the middle of a record. The active writer
+    // can also leave a not-yet-complete final record while this snapshot reads.
+    if (start > 0) lines = lines.slice(1);
+    if (!text.endsWith("\n")) lines = lines.slice(0, -1);
+    const records = lines.filter((line) => line.trim()).map(parseLogRecord);
+    const truncated = start > 0 || records.length > options.max_records;
+    return {
+      records: records.slice(-options.max_records),
+      bytes_examined: consumed,
+      truncated,
+    };
+  } finally {
+    closeSync(opened.fd);
+  }
 }
 
 export async function readLogFollow(

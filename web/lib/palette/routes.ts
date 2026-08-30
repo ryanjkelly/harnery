@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   type LucideIcon,
   MonitorCog,
+  Orbit,
   Radio,
   Scale,
   ScrollText,
@@ -54,6 +55,13 @@ export const APP_ROUTES: readonly AppRoute[] = [
     group: "activity",
     icon: MonitorCog,
     keywords: ["htop", "cpu", "memory", "processes", "load", "observer", "performance"],
+  },
+  {
+    href: "/logs",
+    label: "Logs",
+    group: "activity",
+    icon: Orbit,
+    keywords: ["logging", "flow", "structured", "severity", "families", "motion"],
   },
   {
     href: "/events",

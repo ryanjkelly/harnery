@@ -1,0 +1,78 @@
+---
+title: "ADR 0141: visualize live structured logs as bounded lanes"
+description: Project the shared log catalog into an inspectable moving dashboard without creating another logging path.
+sidebar:
+  order: 141
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+Harnery's structured logging framework already has a catalog, retention rules,
+rotation, bounded queries, and follow cursors. The command line exposes all of
+it, but it is still hard to tell what the logger is doing right now. Finding an
+active family, a sudden burst, or a cluster of warnings requires repeated
+queries and a lot of JSON reading.
+
+The dashboard already uses a horizontal timeline for coordination events. The
+log view should look related without blurring the logger's separate authority
+and privacy boundaries. It must not copy records into Event Ledger V3 or invent
+a second writer. One old or malformed family also must not blank the whole
+page.
+
+## Alternatives considered
+
+- Put structured logs into the existing Events table. Event Ledger V3 is
+  canonical coordination history; operational and debug logs are bounded,
+  disposable diagnostics with different retention and schema contracts.
+- Draw one undifferentiated particle field. It would look active, but it would
+  hide which family produced an event and make bursts difficult to diagnose.
+- Render the flow in a canvas. Canvas handles very large particle counts, but
+  individual records would not remain focusable, searchable, or inspectable.
+- Rerun a historical log query on every refresh. That repeatedly walks sealed
+  history and makes dashboard cost grow with retention instead of current
+  activity.
+- Fail the page when one family cannot be decoded. That turns a local migration
+  or legacy-schema problem into a system-wide observability outage.
+
+## Decision
+
+Add a dynamic `/logs` dashboard route backed by the existing storage catalog.
+Every managed structured-log family gets one horizontal lane. New records enter
+at the right edge and travel left across a fixed two-minute window. Family color
+identifies the source; marker shape, size, and glow identify severity. Operators
+can pause the clock, set a minimum severity, filter event names, and select any
+visible marker to inspect its bounded context, fields, and sanitized error.
+
+Use DOM buttons for markers rather than canvas particles. The record cap is
+small enough for DOM rendering, and the resulting events keep keyboard focus,
+accessible names, hover details, and direct inspection. Motion stops when the
+operator pauses and collapses to static time positions under
+`prefers-reduced-motion`.
+
+Add a bounded active-segment tail reader to the storage query module. It reads
+at most 256 KiB and 160 complete records per family from the newest end of the
+active JSONL segment. It does not scan sealed history and does not change the
+historical `logs query` contract. Reads retain the storage framework's
+no-symlink and open-file identity checks.
+
+Read families independently. A missing, malformed, or legacy-schema active
+segment produces an unavailable lane with its reason while healthy lanes keep
+moving. A route-local JSON endpoint serves the same bounded snapshot every two
+seconds while the page is visible and unpaused. Log growth does not enter the
+global dashboard refresh bus, so a busy family cannot make unrelated pages
+rerender.
+
+## Result
+
+The page shows quiet families, bursts, debug traffic, and warning clusters as
+they happen. It remains a read-only projection of the catalog and records that
+the CLI already uses.
+
+Dashboard work stays bounded by current active segments and registered family
+count, not total retained history. A broken lane remains visible as a local
+problem. Future work can add rotation-aware incremental delivery or historical
+zoom without changing the lane model or merging logs into coordination
+authority.

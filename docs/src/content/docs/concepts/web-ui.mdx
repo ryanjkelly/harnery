@@ -14,6 +14,7 @@ sidebar:
 - **Councils (`/councils` + `/councils/<id>`)**: active / closed / archived council manifests with members, rounds, and per-round contributions rendered inline.
 - **Workflows (`/workflows` + `/workflows/<run-id>`)**: live and terminal workflow runs, proof packets, policy decisions, and validated workspace allocation, verification, integration, conflict, and cleanup state.
 - **Events (`/events`)**: validated V3 rows with type-filter chips and per-instance drill-through.
+- **Logs (`/logs`)**: a moving two-minute view of every registered structured-log family, with severity filters, pause controls, and record details.
 
 ## Realtime
 
@@ -24,6 +25,10 @@ caches, councils, journals, and the active V3 segment, then debounces a 250 ms
 burst. A two-second file-size poll backs up filesystem notifications because a
 directory watch can miss an append to an existing file on Linux and WSL. The
 poll fires only on actual growth.
+
+The Logs page uses its own bounded `/api/log-flow` snapshot every two seconds
+while the tab is visible and the flow is not paused. Log traffic stays off the
+global refresh stream, so a busy family does not rerender unrelated pages.
 
 If the connection drops, the client backs off exponentially (1 s → 30 s) and reconnects.
 
