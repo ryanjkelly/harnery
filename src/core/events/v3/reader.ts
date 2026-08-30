@@ -228,6 +228,11 @@ interface LedgerStorageVersionV3 {
   };
 }
 
+export interface EventV3AuthorityStorageVersionV3 {
+  fingerprint: `sha256:${string}`;
+  active_bytes: number;
+}
+
 interface LedgerValidationStateV3 {
   diagnostics: LedgerDiagnosticV3[];
   events: PositionedEventV3[];
@@ -255,6 +260,8 @@ const MAX_CACHED_LEDGER_READS = 4;
 const ledgerReadCacheV3 = new Map<string, CachedLedgerReadV3>();
 
 export const EVENT_V3_LEDGER_RELATIVE_ROOT = ".harnery/ledgers/v3" as const;
+export const EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH =
+  `${EVENT_V3_LEDGER_RELATIVE_ROOT}/control-state-witness.json` as const;
 
 export function eventV3Paths(coordRoot: string) {
   const root = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT);
@@ -269,6 +276,29 @@ export function eventV3Paths(coordRoot: string) {
 /** Stable file target for change notification only; reads still go through readLedgerV3. */
 export function eventV3ActiveWatchPath(coordRoot: string): string {
   return eventV3Paths(coordRoot).active;
+}
+
+/** Stable auxiliary control-cache target; canonical event reads remain inside this module. */
+export function eventV3ControlWitnessPathV3(coordRoot: string): string {
+  return join(eventV3Paths(coordRoot).root, "control-state-witness.json");
+}
+
+/**
+ * Content-independent identity for the complete filesystem authority.
+ *
+ * The control witness authenticates this value after a complete validation.
+ * Any append, rewrite, inode replacement, catalog change, sealed-segment
+ * change, or recovery-record change produces a different fingerprint and
+ * sends the control reader back through the canonical full validation path.
+ */
+export function eventV3AuthorityStorageVersionV3(
+  coordRoot: string,
+): EventV3AuthorityStorageVersionV3 {
+  const storage = ledgerStorageVersionV3(coordRoot);
+  return {
+    fingerprint: sha256V3(storage.fingerprint),
+    active_bytes: storage.active?.size ?? 0,
+  };
 }
 
 /** Read the complete V3 ledger through catalog-bound filesystem discovery. */

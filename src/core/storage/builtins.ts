@@ -130,6 +130,7 @@ function eventFamilies(): HarneryStorageFamily[] {
         subtree(context, ".harnery/ledgers/v3/spool", OWNER_PROTOCOL_LINKS),
         subtree(context, ".harnery/ledgers/v3/quarantine", OWNER_PROTOCOL_LINKS),
         exact(context, ".harnery/ledgers/v3/append-lease", "directory"),
+        exact(context, ".harnery/ledgers/v3/control-state-witness.json", "file"),
       ],
       format: "files",
       durability: "crash-safe",

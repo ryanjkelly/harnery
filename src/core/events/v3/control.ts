@@ -3,9 +3,14 @@ import { join } from "node:path";
 import { buildEventV3 } from "./builder.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
+import { activeControlWitnessMatchesV3, publishActiveControlWitnessV3 } from "./control-witness.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { activationIdV3, eventIdV3, genesisIdV3 } from "./ids.ts";
-import { type ReadLedgerV3Result, readLedgerV3 } from "./reader.ts";
+import {
+  eventV3AuthorityStorageVersionV3,
+  type ReadLedgerV3Result,
+  readLedgerV3,
+} from "./reader.ts";
 import { validateEventV3 } from "./validate.ts";
 
 export const EVENT_V3_GENESIS_MANIFEST = ".harnery/ledgers/v3/genesis.json" as const;
@@ -251,6 +256,25 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
   if (!genesisResult.ok) return { state: "invalid", reason: genesisResult.reason };
   const genesis = genesisResult.value;
   const candidateDigest = candidateManifestDigestV3(genesis);
+  const activationForWitness = hasActivation
+    ? readActivationManifest(activationPath, genesis, candidateDigest)
+    : undefined;
+  if (
+    activationForWitness?.ok &&
+    activeControlWitnessMatchesV3(coordRoot, {
+      genesis,
+      activation: activationForWitness.value,
+      candidate_manifest_digest: candidateDigest,
+    })
+  ) {
+    return {
+      state: "active",
+      genesis,
+      activation: activationForWitness.value,
+      candidate_manifest_digest: candidateDigest,
+    };
+  }
+  const storageBeforeValidation = eventV3AuthorityStorageVersionV3(coordRoot);
   const ledger = readControlLedger(coordRoot);
   if (!ledger.complete) {
     return { state: "invalid", reason: "ledger_integrity_failure" };
@@ -272,7 +296,8 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
     return { state: "candidate", genesis, candidate_manifest_digest: candidateDigest };
   }
 
-  const activationResult = readActivationManifest(activationPath, genesis, candidateDigest);
+  const activationResult =
+    activationForWitness ?? readActivationManifest(activationPath, genesis, candidateDigest);
   if (!activationResult.ok) return { state: "invalid", reason: activationResult.reason };
   const activation = activationResult.value;
   const activationPair = exactEventPair(
@@ -290,12 +315,14 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
       activation,
     };
   }
-  return {
+  const active: Extract<EventV3ControlState, { state: "active" }> = {
     state: "active",
     genesis,
     activation,
     candidate_manifest_digest: candidateDigest,
   };
+  publishActiveControlWitnessV3(coordRoot, active, storageBeforeValidation);
+  return active;
 }
 
 export function eventV3WriteGateOpen(coordRoot: string, mode: EventV3WriteMode): boolean {

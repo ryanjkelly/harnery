@@ -1,0 +1,119 @@
+---
+title: "ADR 0138: authenticated active-control witness"
+description: Answer the active V3 control question from a signed storage witness, while retaining full validation for every mismatch and non-active state.
+sidebar:
+  order: 138
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+`readEventV3ControlState` decides whether an epoch is closed, repairable,
+candidate, active, or invalid. An active answer used to require
+`readLedgerV3`, which parses and validates every event in the epoch. Hooks run
+as fresh processes, so ADR 0082's process-local incremental cache cannot
+amortize that first read. ADR 0137 capped the cost with 32 MiB rotations, but
+each epoch still produced a latency and memory sawtooth as it grew toward the
+threshold.
+
+The expensive read caught four storage changes that the control gate must not
+miss: a corrupt append, a same-size rewrite, a changed sealed segment, and a
+replaced active inode. A faster answer therefore needed a durable proof of a
+previous complete validation, not a freshness window or an unchecked cache.
+
+The hook path also requested the full coordination projection for three facts
+it already held: an unambiguous session id from the hook payload, whether the
+recorder stayed in the heartbeat cache's generation, and the pending session
+name stored in that generation-bound cache. A fast control read alone would
+leave that second scan in place.
+
+## Alternatives
+
+**Trust file size and modification time.** Rejected. Those fields notice an
+append but do not authenticate the expected storage state or bind it to the
+immutable control pair. A copied or edited sidecar could silently bless the
+wrong epoch.
+
+**Persist the complete parsed ledger snapshot.** Rejected for the same reason
+as ADR 0137. It duplicates the authority in a second large format, carries
+the same integrity problem, and preserves the memory growth this change is
+meant to remove.
+
+**Add a running digest to every event row.** Deferred. A row-level chain can
+pin a validated prefix without relying on file metadata, but it changes the
+event schema and recovery contract and requires a new epoch. The current
+storage fingerprint already distinguishes every tamper class in the ADR 0082
+test set. Authenticating that fingerprint gives the control plane the needed
+proof without changing event rows.
+
+**Trust disposable heartbeat files for every hook decision.** Rejected. They
+are rebuildable caches, not standalone authority. The shortcut is limited to
+facts whose generation the recorder has just proven. Epoch changes and child
+identity tie-breaking still use the canonical projection.
+
+## Decision
+
+An active epoch carries
+`.harnery/ledgers/v3/control-state-witness.json`. The witness binds the exact
+genesis and activation manifests, their control event ids, the genesis id,
+the privacy-key epoch, the root id, and a digest of the canonical reader's
+complete storage fingerprint. That fingerprint covers catalog metadata, the
+active file's stable identity and mutable timestamps, sealed segments and
+manifests, and committed recovery records.
+
+The witness is canonical JSON authenticated with the epoch's existing
+root-scoped HMAC key under the `control-state-witness` domain. The control
+reader accepts the fast path only after it validates both manifests, verifies
+the HMAC, matches the complete payload, and observes the same storage
+fingerprint before and after the check. Any failure runs the unchanged full
+reader. A complete active result may replace the witness only when the
+storage fingerprint still matches the one captured before validation.
+
+The append lease reads and authenticates the current witness before changing
+the active file. After durable canonical appends, it advances the storage
+binding and publishes the replacement atomically. A crash after the append
+but before witness publication leaves a stale witness. The next control read
+then performs one full validation and repairs the witness. Witness work is an
+optimization: its failure never changes the writer's durability result.
+
+Candidate, repairable, closed, and invalid states keep the full read. The
+fast path only returns `active`. A corrupt append, same-size rewrite, sealed
+segment change, or active inode replacement changes the authenticated storage
+fingerprint and triggers full validation immediately. A forged witness fails
+HMAC verification and follows the same path. None of the ADR 0082 tamper
+classes move to delayed detection. An actor able to rewrite the ledger,
+witness, private key store, and filesystem identity metadata together is a
+full authority-root compromise and was not protected by the prior full reader
+either.
+
+The hook hot path uses two further proofs without reading the full
+coordination projection. A payload containing a session id and no competing
+child id resolves directly to that session. After recording, the emitted
+event's generation id proves whether the prior heartbeat cache is still in
+the same generation; a match skips epoch restoration and allows the hook to
+read its pending session-name latch from that cache. A mismatch keeps the
+existing full projection and restoration behavior.
+
+`readLedgerV3` and `readLedgerV3Since` retain their contracts. Consumers that
+need event history still validate and receive event history; the witness
+answers only the control-plane question.
+
+## Result
+
+The regression suite covers witness publication and lease-held advancement,
+the crash gap, forged witness recovery, and immediate failure on all four
+tamper classes. Existing cursor tests continue to exercise
+`readLedgerV3Since` unchanged. A separate authority test proves that a
+recorder-proven same generation does not touch ledger storage, while the
+existing epoch-handoff test still restores task, claim, and lifecycle state
+after a real generation change.
+
+A fresh-process `agent-hook pre-tool-use` benchmark used a 31,460,387-byte
+valid epoch of unique events, Bun 1.3.3, concurrency 1, and six interleaved
+trials per mode. Removing the witness before each baseline trial forced the
+old complete validation. The median fell from 1.14 seconds and 328,956 KiB
+maximum resident set size to 0.22 seconds and 82,432 KiB with the witness.
+That is an 81% wall-time reduction and a 75% resident-memory reduction near
+the 32 MiB rotation threshold.

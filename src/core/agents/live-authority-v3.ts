@@ -312,6 +312,7 @@ export function restoreLiveCoordinationStateAfterEpochV3(input: {
   nativeSessionId: string;
   adapter: Adapter;
   prior: Heartbeat | null;
+  currentGenerationId?: `gen_${string}`;
 }): RestoredLiveCoordinationStateV3 {
   const unchanged: RestoredLiveCoordinationStateV3 = {
     state: "unchanged",
@@ -325,6 +326,12 @@ export function restoreLiveCoordinationStateAfterEpochV3(input: {
     prior.session_id !== input.nativeSessionId &&
     prior.native_session_id !== input.nativeSessionId
   ) {
+    return unchanged;
+  }
+  // The recorder just committed this hook under the named generation. When
+  // it is the cache's generation, no epoch replacement occurred and the
+  // expensive complete coordination projection cannot change the answer.
+  if (input.currentGenerationId && prior.v3_generation_id === input.currentGenerationId) {
     return unchanged;
   }
   const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(input.coordRoot));

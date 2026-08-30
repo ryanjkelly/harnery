@@ -45,6 +45,10 @@ export function resolveOwner(opts: {
     };
     const childId = value("subagent_id") ?? value("agent_id");
     const sessionId = value("session_id") ?? value("conversation_id");
+    // A payload with one unambiguous session identity needs no projection
+    // lookup. Live-authority tie-breaking matters only when the adapter also
+    // supplies a child candidate that could be stale or belong to the parent.
+    if (sessionId && !childId) return { instance_id: sessionId, source: "payload" };
     const child = childId ? readLiveCoordinationRow(opts.coordRoot, childId) : null;
     const session = sessionId ? readLiveCoordinationRow(opts.coordRoot, sessionId) : null;
 

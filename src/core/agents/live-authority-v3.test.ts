@@ -50,6 +50,7 @@ import {
 import { recordLiveCoordinationObservationV3 } from "./live-observation-v3.ts";
 import { renderPromptContext } from "./render/prompt-context.ts";
 import { renderSessionContext } from "./render/session-context.ts";
+import type { Heartbeat } from "./state/heartbeat-reader.ts";
 import { readHeartbeat } from "./state/heartbeat-writer.ts";
 import { readLiveCoordinationRows } from "./state/live-coordination-view.ts";
 import {
@@ -431,6 +432,30 @@ describe("live V3 coordination", () => {
         nativeSessionId: "native-session",
         adapter: "claude-code",
         prior,
+      }),
+    ).toEqual({ state: "unchanged", task: false, claims: 0, lifecycle: false });
+  });
+
+  test("accepts a recorder-proven same generation without projecting full history", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-live-authority-fast-path-"));
+    roots.push(root);
+    const generationId = "gen_00000000-0000-7000-8000-000000000001" as const;
+    const prior: Heartbeat = {
+      instance_id: "operator",
+      session_id: "native-session",
+      last_heartbeat: "2026-08-30T10:00:00.000Z",
+      files_touched: [],
+      v3_generation_id: generationId,
+    };
+
+    expect(
+      restoreLiveCoordinationStateAfterEpochV3({
+        coordRoot: root,
+        owner: "operator",
+        nativeSessionId: "native-session",
+        adapter: "claude-code",
+        prior,
+        currentGenerationId: generationId,
       }),
     ).toEqual({ state: "unchanged", task: false, claims: 0, lifecycle: false });
   });

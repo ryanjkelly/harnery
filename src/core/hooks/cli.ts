@@ -40,6 +40,7 @@ import {
   sessionNameDisplayRecoveryInstruction,
   toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
+import type { Heartbeat } from "../agents/state/heartbeat-reader.ts";
 import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
@@ -811,6 +812,10 @@ async function main(): Promise<number> {
     ...(turnRitual ? { turn_ritual: turnRitual } : {}),
     ...(deferV3Drain ? { defer_drain: true } : {}),
   });
+  const recordedGenerationId =
+    v3Result && "event" in v3Result && "generation_id" in v3Result.event.scope
+      ? (v3Result.event.scope.generation_id as `gen_${string}`)
+      : undefined;
   if (v3Result?.state === "recorded" || v3Result?.state === "already_started") {
     try {
       restoreLiveCoordinationStateAfterEpochV3({
@@ -819,6 +824,7 @@ async function main(): Promise<number> {
         nativeSessionId: sessionId,
         adapter,
         prior: priorCoordination,
+        currentGenerationId: recordedGenerationId,
       });
     } catch (error) {
       logError(coordRoot, error, { phase: "epoch-coordination-restore" });
@@ -1276,6 +1282,7 @@ async function main(): Promise<number> {
         owner.instance_id,
         adapter,
         payload,
+        generationBoundHeartbeat(readHeartbeat(coordRoot, owner.instance_id), recordedGenerationId),
       );
       if (!displayAllowed) return 0;
     } catch (err) {
@@ -1399,8 +1406,9 @@ async function enforcePendingSessionNameDisplay(
   instanceId: string,
   adapter: Adapter,
   payload: ParsedPayload | null,
+  coordination: Heartbeat | null,
 ): Promise<boolean> {
-  const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, instanceId));
+  const name = sessionNameDisplayPending(coordination);
   if (!name) return true;
 
   const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
@@ -1442,6 +1450,13 @@ async function enforcePendingSessionNameDisplay(
   const { emitDeny } = await import("./adapter/output.ts");
   emitDeny(adapter, sessionNameDisplayRecoveryInstruction(name, resolveBinName(coordRoot)));
   return false;
+}
+
+function generationBoundHeartbeat(
+  heartbeat: Heartbeat | null,
+  generationId: `gen_${string}` | undefined,
+): Heartbeat | null {
+  return generationId && heartbeat?.v3_generation_id === generationId ? heartbeat : null;
 }
 
 async function runPreToolUseGuard(

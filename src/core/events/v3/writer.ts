@@ -24,6 +24,7 @@ import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
 import { genesisIdFromManifestV3, liveGenesisIdV3 } from "./control.ts";
+import { advanceControlWitnessV3, readAdvanceableControlWitnessV3 } from "./control-witness.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { assertEventV3 } from "./validate.ts";
 
@@ -177,6 +178,7 @@ export function drainReadyEventsUnderLeaseV3(
   paths: ReturnType<typeof eventV3Paths>,
   options: WriteEventV3Options = {},
 ): number {
+  const priorWitness = readAdvanceableControlWitnessV3(paths.coordRoot);
   if (repairUnterminatedActiveFrame(paths.active)) {
     options.onStep?.("active_tail_repaired");
   }
@@ -219,6 +221,13 @@ export function drainReadyEventsUnderLeaseV3(
     }
   } finally {
     closeSync(activeFd);
+  }
+  if (committed > 0 && priorWitness) {
+    advanceControlWitnessV3(
+      paths.coordRoot,
+      priorWitness,
+      genesisIdFromManifestV3(join(paths.root, "genesis.json")),
+    );
   }
   return committed;
 }
@@ -276,8 +285,10 @@ function requeueCommittedReceipts(spool: string): void {
 }
 
 export function eventV3Paths(coordRoot: string) {
-  const root = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT);
+  const resolvedCoordRoot = resolve(coordRoot);
+  const root = join(resolvedCoordRoot, EVENT_V3_LEDGER_RELATIVE_ROOT);
   return {
+    coordRoot: resolvedCoordRoot,
     root,
     active: join(root, "active.ndjson"),
     catalog: join(root, "catalog.json"),
