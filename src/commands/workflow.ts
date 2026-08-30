@@ -7,8 +7,8 @@ import {
   createBuiltinAdapterRegistry,
   probeBinaryVersion,
 } from "../core/adapters/index.ts";
+import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
-import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
 import type { WorkflowApproval, WorkflowApprovalStatus } from "../core/workflow/approvals.ts";
@@ -132,7 +132,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option("--approval-to <address>", "Address durable ASK requests (default: operator)")
     .option("--json", "Emit the full RunReport as JSON")
     .action(async (script: string, opts: WorkflowRunOpts) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({
           code: "no_coord_root",
@@ -263,7 +263,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .description("Resume a parked workflow after its durable approval has been resolved.")
     .option("--json", "Emit the full RunReport or parked result as JSON")
     .action(async (runId: string, opts: { json?: boolean }) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({
           code: "no_coord_root",
@@ -345,7 +345,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .description("Show validated allocation, verification, integration, and cleanup state.")
     .option("--json", "Emit the validated workspace status as JSON")
     .action(async (runId: string, opts: { json?: boolean }) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({
           code: "no_coord_root",
@@ -374,7 +374,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .description("List validated isolated and shared-compatibility workspace decisions.")
     .option("--json", "Emit workspace inspections as JSON")
     .action(async (opts: { json?: boolean }) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({
           code: "no_coord_root",
@@ -433,7 +433,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option("--approval-to <address>", "Address a durable policy ASK request")
     .option("--json", "Emit the durable integration plan as JSON")
     .action(async (runId: string, opts: WorkflowIntegrationPrepareOpts) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({
           code: "no_coord_root",
@@ -521,7 +521,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option("--yes", "Confirm the target-branch mutation")
     .option("--json", "Emit the durable integration receipt as JSON")
     .action(async (runId: string, opts: WorkflowConfirmedMutationOpts) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({
           code: "no_coord_root",
@@ -565,7 +565,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option("--yes", "Confirm the worktree and provider-branch removal attempt")
     .option("--json", "Emit the cleanup attempt or receipt as JSON")
     .action(async (runId: string, opts: WorkflowConfirmedMutationOpts) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({
           code: "no_coord_root",
@@ -616,7 +616,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option("--discard", "Throw the uncommitted work away instead of salvaging it")
     .option("--json", "Emit the reclaim preparation and cleanup result as JSON")
     .action(async (runId: string, opts: WorkflowReclaimOpts) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({
           code: "no_coord_root",
@@ -687,7 +687,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option("--status <status>", "Filter: pending | approved | denied")
     .option("--json", "Emit approval records as JSON")
     .action(async (opts: WorkflowApprovalListOpts) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({ code: "no_coord_root", message: "no .harnery/ coordination root found" });
         process.exit(1);
@@ -725,7 +725,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .description("Show one durable workflow approval.")
     .option("--json", "Emit the approval record as JSON")
     .action(async (approvalId: string, opts: { json?: boolean }) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({ code: "no_coord_root", message: "no .harnery/ coordination root found" });
         process.exit(1);
@@ -755,7 +755,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       .option("--reason <text>", "Bounded decision reason")
       .option("--json", "Emit the resolved approval as JSON")
       .action(async (approvalId: string, opts: WorkflowApprovalDecisionOpts) => {
-        const coordRoot = findCoordRoot();
+        const coordRoot = resolveCoordRoot();
         if (!coordRoot) {
           emit.error({ code: "no_coord_root", message: "no .harnery/ coordination root found" });
           process.exit(1);
@@ -798,7 +798,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .description("Show the bounded proof packet for a completed workflow run.")
     .option("--json", "Emit the stored proof packet as JSON")
     .action(async (runId: string, opts: WorkflowProofOpts) => {
-      const coordRoot = findCoordRoot();
+      const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
         emit.error({
           code: "no_coord_root",

@@ -24,6 +24,7 @@ import { coordEnv } from "../../lib/env.ts";
 import { buildInstructionBundle } from "../../lib/instructions/bundle.ts";
 import type { Adapter } from "../adapter.ts";
 import { coordBinPath } from "../agents/coord-bin.ts";
+import { resolveCoordRoot } from "../agents/coord-client.ts";
 import {
   type ClaimFinalizationDecision,
   type ClaimFinalizationDescriptor,
@@ -100,7 +101,6 @@ import {
 import { toolInputHash, toolTargetHash } from "./events/input-hash.ts";
 import { canonicalize } from "./guard-path.ts";
 import { adapterPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
-import { findCoordRoot } from "./resolve/coord-root.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
 import {
@@ -610,7 +610,7 @@ async function main(): Promise<number> {
   // `--adapter cursor` dispatch of the same payload carries the session.
   if (shouldSkipHookAdapter(adapter, raw)) {
     if (coordEnv("AGENT_COORD_OFF") !== "1") {
-      const coordRoot = findCoordRoot(process.cwd());
+      const coordRoot = resolveCoordRoot(process.cwd());
       if (coordRoot) {
         appendDebug(coordRoot, {
           ts: new Date().toISOString(),
@@ -635,7 +635,7 @@ async function main(): Promise<number> {
   if (adapter === "claude-code" && eventName) {
     const s = soundForEvent(eventName);
     if (s) {
-      const repoRoot = findCoordRoot(process.cwd());
+      const repoRoot = resolveCoordRoot(process.cwd());
       if (repoRoot) {
         let sid = "";
         let stopContinuation = false;
@@ -666,7 +666,7 @@ async function main(): Promise<number> {
   // bypass during incident triage.
   if (coordEnv("AGENT_COORD_OFF") === "1") return 0;
 
-  const coordRoot = findCoordRoot(process.cwd());
+  const coordRoot = resolveCoordRoot(process.cwd());
   if (!coordRoot) return 0;
   if (eventName === "runtime-context-retry") {
     return runRuntimeContextRetryWorker(coordRoot, adapter, extra);
@@ -1991,7 +1991,7 @@ main()
     process.exit(code);
   })
   .catch(async (err) => {
-    logError(findCoordRoot(process.cwd()), err, {
+    logError(resolveCoordRoot(process.cwd()), err, {
       argv: process.argv.slice(2),
       pid: process.pid,
     });

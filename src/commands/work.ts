@@ -6,9 +6,9 @@ import {
   createBuiltinAdapterRegistry,
   probeBinaryVersion,
 } from "../core/adapters/index.ts";
+import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
 import { findCompletedMissionGoverning, reopenGovernorMission } from "../core/governor/index.ts";
-import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
 import {
@@ -467,7 +467,7 @@ export function renderAttemptBudget(record: WorkRecord): string {
 }
 
 function withWorkRoot(emit: EmitContext, fn: (coordRoot: string) => void): void {
-  const coordRoot = findCoordRoot();
+  const coordRoot = resolveCoordRoot();
   if (!coordRoot) {
     emit.error({
       code: "no_coord_root",
@@ -488,7 +488,7 @@ async function withWorkRootAsync(
   emit: EmitContext,
   fn: (coordRoot: string) => Promise<void>,
 ): Promise<void> {
-  const coordRoot = findCoordRoot();
+  const coordRoot = resolveCoordRoot();
   if (!coordRoot) {
     emit.error({
       code: "no_coord_root",

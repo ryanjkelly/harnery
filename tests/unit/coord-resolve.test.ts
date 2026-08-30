@@ -43,7 +43,7 @@ const SESSION_ID_ENV_KEYS = [
   "CODEX_THREAD_ID",
 ] as const;
 
-describe("findCoordRoot (hooks-side)", () => {
+describe("findCoordRoot (path-only)", () => {
   let root: string;
   let nested: string;
   const savedProjectDir = process.env.CLAUDE_PROJECT_DIR;
