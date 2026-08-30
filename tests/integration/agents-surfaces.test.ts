@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -92,6 +100,15 @@ function harn(root: string, args: string[], extraEnv: Record<string, string> = {
   });
 }
 
+function failingCoordBinDir(root: string): string {
+  const binDir = path.join(root, "failing-bin");
+  mkdirSync(binDir, { recursive: true });
+  const binary = path.join(binDir, "agent-coord");
+  writeFileSync(binary, "#!/bin/sh\nprintf 'forced emit failure\\n' >&2\nexit 73\n", "utf8");
+  chmodSync(binary, 0o755);
+  return binDir;
+}
+
 function json(result: ReturnType<typeof harn>): Record<string, unknown> {
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
   return JSON.parse(result.stdout) as Record<string, unknown>;
@@ -147,6 +164,18 @@ describe("harn agents state surfaces", () => {
     },
     { timeout: 15_000 },
   );
+
+  test("end-turn status fails without printing its box when the observation cannot be recorded", () => {
+    const root = makeSandbox();
+    const result = harn(root, ["agents", "status", "--end-turn", "--session-id", OWNER], {
+      HARNERY_BIN_DIR: failingCoordBinDir(root),
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("status_event_failed");
+    expect(`${result.stdout}\n${result.stderr}`).toContain("no status box was issued");
+    expect(result.stdout).toBe("");
+  });
 
   test("trace folds durable activity and lifecycle and renders their events", () => {
     const root = makeSandbox();

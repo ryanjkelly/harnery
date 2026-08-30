@@ -2281,7 +2281,7 @@ function runStatus(opts: {
     }
   }
 
-  emitEventV3({
+  const statusEmitted = emitEventV3({
     owner: myOwner,
     session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb.platform),
@@ -2290,6 +2290,16 @@ function runStatus(opts: {
       status: opts.endTurn ? "end_turn_checked" : opts.json ? "json_checked" : "box_checked",
     },
   });
+  // The closing box is a success artifact. Never print it when the exact
+  // evidence enforced by the Stop hook did not reach the ledger.
+  if (opts.endTurn && !statusEmitted) {
+    emit.error({
+      code: "status_event_failed",
+      message: `the end-of-turn status event could not be recorded; no status box was issued; rerun \`${resolveBinName(root)} agents status --end-turn\``,
+    });
+    process.exitCode = 1;
+    return;
+  }
 
   let sessionEnd:
     | { state: "queued" | "already_requested"; request_id: string }

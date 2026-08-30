@@ -78,6 +78,11 @@ before V3. Cursor remediation remains monotonic, so running one missing command
 does not discard evidence from the turn it repairs. Codex continues to record
 the observations without risking a destructive continuation.
 
+`agents status --end-turn` now checks that its `end_turn_checked` observation
+reached the ledger before printing the status box. If the append fails, the
+command exits nonzero, prints no box, and tells the agent to retry. Report-only
+status calls still soft-fail because their observations do not gate the turn.
+
 The ledger now makes ritual overhead auditable without storing reply content.
 Tool, command, and turn economics can be compared with the coordination events
 that caused extra work, including remediation turns.
