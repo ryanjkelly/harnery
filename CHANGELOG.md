@@ -1,5 +1,129 @@
 # Changelog
 
+## 0.36.0
+
+### Minor Changes
+
+- 66275fd: Add segmented durable histories, crash-safe private coordination inboxes, and bounded conversation archive, query, context, and dry-run lifecycle surfaces.
+- 92d4be4: Add `harn init --instructions-only` to refresh managed `AGENTS.md` regions and
+  Harnery-owned skills without changing adapter hooks, managed Git hooks,
+  configuration defaults, or Event Ledger V3 state.
+- 441870d: Add deterministic Event Ledger V3 support packs, logical authority readers, exact-transaction shadow migration controls, and sealed legacy V1 inventory and gzip canaries with replacement disabled.
+- 2088e25: Add user-controlled soft storage budgets, pressure reporting, and exact manual retention for manifest-backed operational and debug logs.
+- 7ead96a: Add bounded operational logging, rotating shared segments, query and export commands, storm controls, metrics, and guarded agent diagnostic producer cutovers.
+- f247e48: Add a source-owned storage catalog, validated host registrations, inactive lifecycle policies, and read-only inventory and health commands.
+- 97a9469: Add budgeted storage-maintenance planning, exact-target execution, immutable receipts, automatic claim-first slices, and receipt consolidation with dry-run defaults and fail-closed destructive-action controls.
+- d1934a6: Expired artifact workspaces are now swept automatically. The first session start of each day runs the same guarded deletion as `artifacts clean --yes` (only `managed-expired` entries, each re-classified immediately before removal; unmanaged and legacy directories are never touched), throttled by a stamp file at `.harnery/artifacts-auto-clean.json` that also records the last run's result. Retention previously depended on someone remembering a manual command, so expired workspaces accumulated indefinitely on busy hosts. Disable with `artifacts.auto_clean: false` in `.harnery/config.jsonc` or `HARNERY_ARTIFACT_AUTO_CLEAN=0`.
+- 6ecc4df: Bound V3 event-ledger epochs with automatic size rotation and an epoch fence on writes.
+
+  Every canonical read validates the complete epoch, and hook producers are one-shot processes, so an unbounded active segment made each hook's cold read scale with all recorded history (memory and latency grew without limit). The route boundary now rotates a valid active epoch into `.harnery/ledgers/v3-archives/` once `active.ndjson` reaches a threshold (default 32 MiB; `events.rotate_active_bytes` in `.harnery/config.jsonc` or `HARNERY_EVENT_V3_ROTATE_ACTIVE_BYTES` override it, `0` disables). The replaced epoch archives whole and unmodified; live sessions re-onboard into the successor on their next signal.
+
+  Because producer boot sequences must start at 1 and causal links must resolve inside their own epoch, writers gained an epoch fence: producers stamp events and producer state with the genesis id they were built against, the writer refuses (`epoch_replaced`) or quarantines (`.epoch-replaced` beside the spool) anything produced for a replaced epoch, and stale producer state is never adopted across an epoch boundary. `LiveEventLedgerRouteV3` now carries `genesis_id`, and `publishAuthorityTransactionV3` / `reconcileAuthorityTransactionV3` accept an optional epoch fence.
+
+- 2c3a3df: Add bounded dashboard request and event-loop diagnostics plus `harn web performance` summaries.
+- 4bd9294: Record exact Codex context tokens, inferred Claude model-window measurements, and Cursor's first-party percentage in canonical V3 context observations without fabricating token counts.
+- 14f9c11: `init` now excludes the `.harnery/` coord root from editor indexing: it appends a managed entry to `.cursorindexingignore` and merges `"files.watcherExclude": {"**/.harnery/**": true}` into `.vscode/settings.json` (creating either file when absent, and leaving a settings file it cannot merge safely untouched with a manual-step notice). `deinit` reverses exactly the managed pieces. Git-aware tools already skipped runtime state via `.harnery/.gitignore`, but Cursor's codebase indexer and the VS Code/Cursor file watcher do not read gitignore, so a busy coord root (tens of thousands of ledger events plus working artifacts) turned editor startup into an indexing storm on session-heavy hosts.
+- 4e09fbe: Load only the selected CLI command implementation during async dispatch while
+  keeping root help, aliases, command order, completion, and whole-tree discovery
+  available through lightweight metadata and explicit materialization helpers.
+- 9d8db8e: Add bounded semantic-reader soak reports for recent outcomes, controlled phase
+  and expression frequency, cue stability, rapid reversals, and token usage.
+- a48beef: Add `harn files url <path>` to mint port-aware local links for HTML pages and other repo files, and teach generated agent instructions to use it.
+- 46324e1: Add a bounded local review queue for labeling accepted semantic meaning, phase,
+  expression, portrait usefulness, and state transitions from Codec.
+- a018cd5: Add a project-owned `instructions.promptReminder` that Harnery injects on every
+  supported prompt without duplicating native adapter reminders or persisting the
+  host text in coordination state.
+- 887bc00: Let agents repair their current V3-backed coordination cache with `harn agents heal` and no identity flags.
+- dcb0778: Add provenance-labelled token receipts and bounded usage aggregates to the
+  Semantic Expression V2 readers, CLI status, and Codec. Native harness counts
+  remain separate from visible-payload estimates, while missing legacy or failed
+  call usage stays explicitly unreported.
+- 97c29c1: Authenticate active V3 control state without replaying the complete epoch in every hook process.
+
+  Active epochs now carry a root-key-authenticated witness bound to the immutable control pair, the reader's complete storage fingerprint, and a repairable semantic validator checkpoint. Matching witnesses answer the active control question without loading event history. The canonical writer validates each appended suffix against the checkpoint before advancing the witness. Any invalid append, rewrite, segment change, inode replacement, forged witness, or crash gap falls back to canonical full validation, and valid crash gaps repair the witness automatically.
+
+  Ordinary hooks also reuse the recorder-proven generation for payload owner resolution, epoch-restoration checks, and the generation-bound session-name cache. A 30 MiB fresh-process `pre-tool-use` benchmark fell from a 1.16-second median and 354,700 KiB maximum RSS to 0.195 seconds and 84,322 KiB.
+
+- 1ec02fe: Add cached repository views to documentation lint and metadata validation so
+  pre-commit checks validate the exact Git index without reading unrelated
+  working-tree edits.
+
+### Patch Changes
+
+- 9625e0a: Record fresh Claude and Cursor context evidence in Event Ledger V3 during
+  active turns, including exact Cursor pre-compaction token counts.
+- 84c1694: Hold ready Event V3 rows until their causal parents and attestation declarations are committed. This prevents concurrent re-onboarding from appending a dependent event before the event that mints its attestation.
+- a9852da: Report every missing end-of-turn signal in one Stop verdict instead of one per continuation.
+
+  The Stop rule returned on its first failing check, so a turn that was missing the status observation, the pasted status box, and the task declaration cost three separate continuations to repair. Each continuation forks a fresh hook process, so on a busy multi-agent host the ritual's own enforcement added to the hook load it polices. The verdict now collects every failing signal, keeps the first failure's rule id so `blocked_rule` telemetry and the adapter's `rule=` stderr contract are unchanged, and enumerates the rest in the reason so a single continuation repairs all of them.
+
+- c531f97: Bound duplicate V3 producer-diagnostic file creation. While a key is below 32
+  loose exemplars for a UTC day, the writer adds a key digest suffix to each
+  loose filename and the gate counts those names from the directory. No summary
+  or lease state is created below the bound. At or above the bound, a short
+  per-key lease protects one summary for that key and day. The summary preserves
+  the logical count, first and last times, represented bytes, hourly buckets for
+  that UTC day, bounded exemplar digests, and approved metadata. Concurrent
+  writers may admit a few extra exemplars because the flood stop is approximate,
+  not an exact quota.
+
+  Coalesced writes return the summary path. Mitigation failures fail open to a
+  loose write and append a best-effort health record to the size-capped,
+  append-only `mitigation-health.ndjson` log. Existing loose diagnostics are
+  never moved, rewritten, deleted, or reclassified. `agents health` and `doctor`
+  report logical occurrences from loose files plus summaries, with physical
+  counts shown separately. `HARNERY_V3_DIAGNOSTIC_SUMMARIES=0` disables the gate.
+
+  Storage-catalog and support-pack registration will be added when ADR 0129 and
+  ADR 0131 are implemented. This patch does not claim those registrations.
+
+- 454805f: Retry the bounded Codex terminal-row lookup for up to 250 ms at Stop so a just-flushed context row is not missed.
+- cb4e370: Stop Cursor session-name loops by recording exact title blocks from
+  `afterAgentResponse` and by treating later `preToolUse` narration as unavailable
+  rather than proof that the earlier title response was missing.
+- 1dcbe90: Reuse immutable coordination projections so dashboard readers do not repeatedly reduce the complete event history during one render.
+- acd6608: Fix Claude Code Stop remediation so recovered tool turns share ritual evidence without changing whether the original turn used tools. Reuse the strict assistant-text status-box scanner at Stop time, repair the whole ritual in one retry message, and retain cap-exhaustion diagnostics.
+- 98cc676: Keep Event V3 rotation configuration inside the vendorable ledger runtime so embedded writers retain the epoch fence.
+- b77176f: Give every pending semantic generation rolling-hour coverage before repeat reads, raise the hard ceiling to 120 calls, and slow priority refreshes to two minutes.
+- 18b7832: Describe every `harn browse-session` action in nested help and composed command indexes.
+- 6b0d276: Discover unstaged and untracked Markdown in `docs metadata sync` write mode so the documented edit, sync, and stage workflow updates timestamps on the first run.
+- 395db05: Fail `agents status --end-turn` and withhold its status box when the required
+  `coord.status_observed` event cannot be recorded, so agents can retry the
+  command instead of losing a turn to the Stop hook.
+- 7b0f40a: Prevent Codec scene refreshes from blocking the dashboard by projecting a bounded incremental event tail and sharing one scene builder across browser tabs.
+- d34b9fc: Parse fenced semantic-reader JSON with a bounded linear scan instead of a backtracking regular expression.
+- c772fb8: Correct Event Ledger V3 lease inventory, account for hard-linked file allocation once, let storage owners declare safe descendant link handling, and classify unmatched paths as unknown instead of degraded.
+- 23d4b3e: Let `harn agents heal` establish one derived V3 generation for a validated current Claude Code, Codex, or Cursor session when its authoritative generation is missing, while refusing explicit, ambiguous, mismatched, or terminal targets.
+- c22947d: Repair disposable coordination caches by rematerializing them from Event Ledger V3 even when their generation markers look current.
+- b208b19: Keep the active Event Ledger V3 epoch when a Harnery update changes only the producer build, so live sessions remain authoritative across ordinary upgrades.
+- f4d25c8: Keep Codec and dashboard ledger observation read-only while preserving automatic epoch repair for commands and event producers.
+- 50fdf41: Describe old heartbeat cache files as stale instead of implying their timestamps are corrupt.
+- 38abe36: Load the artifact janitor and the storage maintenance pass at session start instead of on every hook invocation.
+
+  Both are called only inside the `session.started` branch, so importing them eagerly made every `pre-tool-use` and `post-tool-use` process load them too. Measured effect on a real hook invocation against an isolated epoch: about 1 MB of the 77 MB resident floor, with no change in wall time. The remaining floor is the V3 recorder and its contract layer, which the hook genuinely needs in order to record an event.
+
+- 19820f8: Separate path-only coordination-root discovery from session-aware authority resolution so configuration consumers no longer load the event recorder and V3 contract graph.
+- fb6f18c: Bind semantic citations to the request's exact event IDs, report privacy-safe invalid-output categories, and pace routine generation reads at five-minute intervals while keeping urgent reads responsive.
+- cfd568f: Preserve content-encoded response bytes in `harn fetch --output` so the saved body remains consistent with its HTTP headers.
+- 932b84e: Keep binary and non-UTF-8 downloads intact when `harn fetch --output` writes them to disk.
+- 209de0b: Preserve lifecycle-reopen provenance until the next real prompt and avoid reporting expected pre-prompt commands as unjoinable.
+- 6fad815: Add an operator-approved recovery mode that quarantines one irreconcilable prepared coordination transaction without writing its abandoned event to the ledger.
+- 51ff8b8: Reconcile Codex context usage after the synchronous Stop hook releases the
+  harness, so completed pathless turns produce exact V3 observations without
+  waiting for another hook.
+- 8f86e3f: Recover pool names for mid-flight Codex sessions before their first task title,
+  report recent bridge drops in `doctor`, and give unnamed status and Codec rows
+  distinct short instance-id labels.
+- 2614026: Serialize overlapping first-task registration so mid-flight sessions receive their pool name before Harnery returns a title, and repair any pending `Agent unknown` title when the real name arrives.
+- 0b4ee9e: Repair schema-incompatible runtime epochs at the next live boundary and keep
+  bridged session coordination state through the handoff.
+- 9cbd418: Restore cross-machine presence publication and relay-daemon startup after the
+  V3 hook cutover, using the canonical V3 coordination projection.
+- b425d18: Record exact, turn-matched Codex context usage in Event Ledger V3 during long
+  active turns, with bounded sampling cadence and source-witness deduplication.
+- 33c4c4d: Skip semantic service passes when every matured pending generation is still inside its per-generation call cooldown, while preserving the pass that records deferred work at the hourly cap.
+
 ## 0.35.0
 
 ### Minor Changes
