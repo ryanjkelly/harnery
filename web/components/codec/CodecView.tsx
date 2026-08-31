@@ -362,6 +362,7 @@ export function CodecView({
       data-remote-panel={remotePanelOpen ? "open" : "closed"}
       data-team-panel={teamPanelOpen ? "open" : "closed"}
       data-fullscreen={fullscreen ? "true" : "false"}
+      data-balanced-rows={balancedRows ? "true" : "false"}
       data-codec-layout={mobileLayout ? "mobile" : "desktop"}
       data-codec-feed-state={
         mode === "replay"

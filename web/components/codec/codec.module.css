@@ -148,6 +148,12 @@
     "cards";
 }
 
+.codecArena[data-balanced-rows="true"] {
+  height: calc(100dvh - 1.3rem);
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .codecArena::before {
   content: "";
   position: absolute;
@@ -735,6 +741,9 @@
   --codec-grid-track-min: 0px;
   --codec-card-span: 2;
   --codec-balanced-row-start: 2;
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
 }
 
 .panelGrid > * {
@@ -750,6 +759,11 @@
   grid-area: cards;
   align-self: center;
   min-width: 0;
+}
+
+.codecArena[data-balanced-rows="true"] .cardStage {
+  align-self: stretch;
+  min-height: 0;
 }
 
 .codecPanel {
@@ -1118,6 +1132,24 @@
   z-index: 1;
   min-width: 0;
   padding: 1rem;
+}
+
+:where(.panelGrid[data-balanced-rows="true"])
+  :is(
+    .codecPanel,
+    .portraitColumn,
+    .portraitTooltipTrigger,
+    .portraitTooltipSurface,
+    .portraitFrame,
+    .portraitImage,
+    .portraitFallback
+  ) {
+  min-height: 0;
+}
+
+:where(.panelGrid[data-balanced-rows="true"]) .panelBody {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .panelName {
