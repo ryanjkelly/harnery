@@ -4,12 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
-import { FILES_ORIGIN_HOST, mintLocalFileUrl, registerFilesCommand } from "./files.ts";
+import { coordRootId } from "../lib/coord-root-id.ts";
+import {
+  FILES_ORIGIN_HOST,
+  mintLocalFileUrl,
+  registerFilesCommand,
+  verifyDashboardRoot,
+} from "./files.ts";
 
 const roots: string[] = [];
+const servers: Array<ReturnType<typeof Bun.serve>> = [];
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const server of servers.splice(0)) server.stop(true);
 });
 
 function fixture(): string {
@@ -19,6 +27,22 @@ function fixture(): string {
   writeFileSync(join(root, "docs", "page name.html"), "<h1>hello</h1>");
   writeFileSync(join(root, "docs", "notes.md"), "# Notes\n");
   return root;
+}
+
+function serveRootIdentity(root: string): number {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(req) {
+      if (new URL(req.url).pathname !== "/api/coord-root") {
+        return new Response("not found", { status: 404 });
+      }
+      return Response.json({ root_id: coordRootId(root) });
+    },
+  });
+  servers.push(server);
+  if (server.port === undefined) throw new Error("test identity server did not bind a port");
+  return server.port;
 }
 
 describe("mintLocalFileUrl", () => {
@@ -80,6 +104,69 @@ describe("mintLocalFileUrl", () => {
 });
 
 describe("files url command", () => {
+  test("verifies the running dashboard serves the same coord root", async () => {
+    const root = fixture();
+    const port = serveRootIdentity(root);
+    const output = captureEmit();
+    const program = createHarneryProgram({
+      emit: output.emit,
+      context: { repoRoot: root },
+      skipCommands: ["web"],
+    });
+
+    await program.parseAsync(["files", "url", "docs/notes.md", "--port", String(port)], {
+      from: "user",
+    });
+
+    expect(output.text).toEqual([`http://localhost:${port}/files?path=docs%2Fnotes.md\n`]);
+    expect(output.errors).toEqual([]);
+  });
+
+  test("refuses a URL when the port serves a different coord root", async () => {
+    const root = fixture();
+    const otherRoot = fixture();
+    const port = serveRootIdentity(otherRoot);
+    const output = captureEmit();
+    const program = createHarneryProgram({
+      emit: output.emit,
+      context: { repoRoot: root },
+      skipCommands: ["web"],
+    });
+
+    await program.parseAsync(["files", "url", "docs/notes.md", "--port", String(port)], {
+      from: "user",
+    });
+
+    expect(output.text).toEqual([]);
+    expect(output.errors).toEqual([
+      {
+        code: "dashboard_root_mismatch",
+        message: `dashboard at http://localhost:${port} serves a different repository`,
+        hint: "Stop that dashboard and start this repository's dashboard, then retry.",
+      },
+    ]);
+    expect(output.exitCodes).toEqual([1]);
+  });
+
+  test("reports an unreachable dashboard before handing out a URL", async () => {
+    const root = fixture();
+    await expect(
+      verifyDashboardRoot(root, 4276, async () => {
+        throw new Error("connection refused");
+      }),
+    ).rejects.toMatchObject({ code: "dashboard_unreachable" });
+  });
+
+  test("rejects an identity response without a root id", async () => {
+    const root = fixture();
+    await expect(
+      verifyDashboardRoot(root, 4277, async () => Response.json({})),
+    ).rejects.toMatchObject({
+      code: "dashboard_identity_unavailable",
+      message: expect.stringContaining("invalid repository identity"),
+    });
+  });
+
   test("survives a host replacing the web command and uses the configured port", async () => {
     const root = fixture();
     mkdirSync(join(root, ".harnery"));
@@ -92,7 +179,9 @@ describe("files url command", () => {
       skipCommands: ["web"],
     });
     expect(program.commands.some((command) => command.name() === "web")).toBe(false);
-    await program.parseAsync(["files", "url", "docs/page name.html"], { from: "user" });
+    await program.parseAsync(["files", "url", "docs/page name.html", "--no-verify"], {
+      from: "user",
+    });
 
     expect(output.text).toEqual(["http://harnery-files.localhost:5100/docs/page%20name.html\n"]);
     expect(output.errors).toEqual([]);

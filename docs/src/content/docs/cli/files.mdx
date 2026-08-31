@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```
-harn files url <path> [--port 4276] [--coord-root <dir>] [--raw | --viewer]
+harn files url <path> [--port 4276] [--coord-root <dir>] [--raw | --viewer] [--no-verify]
 ```
 
 Mint the browser URL for an existing file under the dashboard's coord root:
@@ -26,8 +26,16 @@ override that choice.
 
 `url` accepts a repo-relative path or an absolute path inside the coord root.
 It resolves symlinks, refuses directories and files outside the root, and
-prints one URL to stdout. It does not start the dashboard or bypass the file
-server's deny rules. The [dashboard](/cli/web/) must already be running.
+prints one URL to stdout. Before printing, it verifies that the dashboard on the
+selected port serves the same canonical repository root. If the dashboard is
+stopped, lacks the identity endpoint, or serves another repository, the command
+reports the cause and leaves stdout empty.
+
+The check compares opaque SHA-256 digests; the dashboard does not return its
+absolute filesystem path. Use `--no-verify` only when you intentionally need to
+construct a URL while the dashboard is unavailable. The command does not start
+the dashboard or bypass the file server's deny rules. The
+[dashboard](/cli/web/) must already be running for the printed URL to work.
 
 Port resolution matches `harn web up`: `--port`, then `HARNERY_WEB_PORT`, then
 `.harnery/config.jsonc` `web.port`, then `4276`. Pass `--coord-root` when the

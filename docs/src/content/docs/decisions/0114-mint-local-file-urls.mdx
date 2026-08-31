@@ -45,8 +45,12 @@ The default mode is extension-aware:
   `http://localhost:<port>/files?path=<encoded-repo-path>`.
 
 `--raw` and `--viewer` override the default. `--port` and `--coord-root` match
-the dashboard's web settings. The command prints only the URL to stdout, which
-keeps it suitable for chat replies and shell composition.
+the dashboard's web settings. Before printing, the command fetches
+`/api/coord-root` from the selected dashboard and compares its opaque digest
+with the canonical coord root. It refuses the URL if the dashboard cannot prove
+that it serves the same repository. `--no-verify` lets callers construct a URL
+without that check. The command prints only the URL to stdout, which keeps it
+suitable for chat replies and shell composition.
 
 The managed agent instruction block tells agents to call the command whenever
 they hand an operator a local file link. It also says that localhost links are
@@ -57,3 +61,10 @@ only useful when the operator shares the machine.
 The CLI, documentation, and agent instructions now share one URL contract. The
 web client's server-side fallback also uses the canonical default port `4276`
 instead of the retired `9000` value.
+
+On 2026-08-30, two links minted from one host repository opened against a
+dashboard rooted in another checkout. Both the viewer and isolated files origin
+reported that valid top-level paths were ambiguous. The URL command had proved
+the file existed under its own coord root but had not checked the process on the
+configured port. It now compares repository identities before printing and does
+not send an absolute path over HTTP. A failed check leaves stdout empty.
