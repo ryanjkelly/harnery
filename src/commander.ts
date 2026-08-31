@@ -519,6 +519,17 @@ function harneryCommandBundles({
       (await import("./commands/supervisor.ts")).registerSupervisorCommand(program, emit, context),
     ),
     lazy(
+      "diagnostics",
+      "Inspect, capture, and replay bounded local diagnostic findings",
+      async (program) =>
+        (await import("./commands/diagnostics.ts")).registerDiagnosticsCommand(
+          program,
+          emit,
+          context,
+        ),
+      { hasOptions: true },
+    ),
+    lazy(
       "storage",
       "Inspect registered Harnery storage without reading file bodies",
       async (program) =>

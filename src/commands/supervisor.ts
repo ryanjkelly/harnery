@@ -8,7 +8,7 @@ import {
 } from "../core/supervisor/service.ts";
 import { readSupervisorStatus } from "../core/supervisor/status.ts";
 import {
-  readSupervisorAnomalies,
+  readSupervisorFindings,
   readSupervisorHistory,
   readSupervisorLogFeed,
   readSupervisorSnapshot,
@@ -66,7 +66,7 @@ export function registerSupervisorCommand(
           service: readSupervisorStatus(root),
           snapshot: readSupervisorSnapshot(root),
           history: readSupervisorHistory(root),
-          anomalies: readSupervisorAnomalies(root),
+          findings: readSupervisorFindings(root),
           log_feed: readSupervisorLogFeed(root),
         });
       } catch (error) {

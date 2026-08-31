@@ -1,0 +1,71 @@
+---
+title: diagnostics
+description: Capture and replay sanitized local diagnostic bundles.
+---
+
+`harn diagnostics` lists current findings and turns a bounded set of local
+supervisor inputs into a frozen, portable bundle. Use it to inspect a finding
+now, preserve it for later, or check whether a finding-engine change reproduces
+the same result.
+
+```bash
+harn diagnostics list
+harn diagnostics show <artifact-ref>
+harn diagnostics capture [--finding <id> | --from <timestamp> --to <timestamp>]
+harn diagnostics replay <artifact-ref>
+```
+
+`list` returns active and recently resolved findings together with saved
+diagnostic bundles. A stopped or idle supervisor produces an explicit
+unsupported capability instead of an error. `show` resolves an exact finding ID
+first, then an exact managed bundle reference.
+
+Without a selector, `capture` records the most recent 15 minutes. `--finding`
+uses that finding's opened and last-observed timestamps. `--from` and `--to`
+must appear together and accept ISO timestamps. `--days` overrides the managed
+artifact retention period for one capture.
+
+## Bundle contents
+
+Each capture creates and then releases a managed artifact. It contains this
+fixed file set:
+
+```text
+diagnostic-manifest.json
+inputs/observations.json
+inputs/thresholds.json
+expected.json
+summary.json
+```
+
+The managed artifact manifest sits beside these files. The diagnostic manifest
+records file sizes and SHA-256 digests, the exact source capabilities, the
+engine version, and a digest of the captured thresholds. The machine ID is a
+pseudonymous hash. It is stable for one configured machine label, but the label
+itself is not stored.
+
+Capture sanitizes data before calculating a digest or writing a file. It removes
+credential-shaped values, home-directory paths, prompts, transcripts, tool
+payloads, and environment blocks. Missing or unreadable sources stay visible as
+unsupported or error capabilities instead of disappearing from the result.
+
+## Validation and replay
+
+`show` validates the bundle before returning its manifest and summary. The
+reader accepts only a managed artifact inside the repository's artifact root.
+It rejects symlinks, non-regular files, path escapes, extra files, oversized
+payloads, unknown manifest fields, unsupported schemas, and digest mismatches.
+
+`replay` reads only the frozen observations and frozen thresholds. It does not
+read the current supervisor cache, resource sampler, event ledger, or process
+table. The pure finding evaluator rebuilds findings, timelines, and explanations,
+then compares their canonical digest with `expected.json`. A missing captured
+source produces a deterministic degraded capability; it does not trigger a live
+fallback.
+
+The output uses versioned JSON envelopes. `replay.matched` is `true` only when
+the rebuilt output matches the frozen expected output exactly.
+
+Diagnostic bundles are local support artifacts, not durable records. A bundle
+that needs permanent retention must move into a tracked project location before
+its managed retention expires.

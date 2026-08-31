@@ -22,7 +22,7 @@ The supervisor runs several inexpensive collectors behind one process:
 - active hook processes whose agent ownership and exact entrypoint are both
   proven;
 - a 15-minute pressure history with 90 ten-second points;
-- opened and resolved local anomalies with compact surrounding evidence; and
+- opened and resolved source-agnostic findings with compact referenced evidence; and
 - incremental structured-log records for the live dashboard.
 
 The log collector seeds a bounded recent window when it starts. After that it
@@ -63,7 +63,9 @@ Current projections live under `.harnery/supervisor/`:
 ├── service.json
 ├── snapshot.json
 ├── history.json
-├── anomalies.json
+├── findings.json
+├── timelines/
+├── explanations/
 ├── log-feed.json
 └── consumers/
 ```
@@ -72,8 +74,9 @@ The resource snapshot remains under `.harnery/resources/snapshot.json` so the
 daemon-free `harn resources snapshot` and dashboard share one contract. All
 supervisor files are reconstructable caches. They do not enter Event Ledger V3.
 
-History keeps 90 points. Anomaly history keeps 100 opened or resolved
-transitions. Live logs keep at most 100 records per registered family and use
+History keeps 90 points. Finding history keeps 100 opened or resolved
+transitions. Timelines, explanations, and evidence arrays have fixed entry
+limits. Live logs keep at most 100 records per registered family and use
 fixed read budgets. Atomic private JSON writes prevent dashboard readers from
 seeing partial frames.
 

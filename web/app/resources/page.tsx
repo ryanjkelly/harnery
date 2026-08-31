@@ -25,7 +25,7 @@ import { readResourceDashboard } from "@/lib/resource-reader";
 import { readSupervisorDashboard } from "@/lib/supervisor-reader";
 import type {
   ObservedServiceHealth,
-  SupervisorAnomalyTransition,
+  SupervisorFinding,
   SupervisorHistoryPoint,
 } from "../../../src/core/supervisor/contract";
 
@@ -152,7 +152,7 @@ export default function ResourcesPage() {
                       </h2>
                     </div>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Service health, hook activity, recent pressure, and bounded anomaly evidence.
+                      Service health, hook activity, recent pressure, and bounded finding evidence.
                     </p>
                   </div>
                   {supervisor.snapshot ? (
@@ -192,17 +192,17 @@ export default function ResourcesPage() {
                 </div>
               </section>
 
-              {(supervisor.anomalies?.active.length ?? 0) > 0 ? (
-                <section aria-labelledby="anomalies-heading" className="mb-6">
+              {(supervisor.findings?.active.length ?? 0) > 0 ? (
+                <section aria-labelledby="findings-heading" className="mb-6">
                   <div className="mb-3 flex items-center gap-2">
                     <CircleAlert className="size-5 text-amber-500" aria-hidden />
-                    <h2 id="anomalies-heading" className="text-lg font-semibold">
-                      Active anomalies
+                    <h2 id="findings-heading" className="text-lg font-semibold">
+                      Active findings
                     </h2>
                   </div>
                   <div className="grid gap-3 lg:grid-cols-2">
-                    {supervisor.anomalies?.active.map((anomaly) => (
-                      <AnomalyCard key={anomaly.id} anomaly={anomaly} />
+                    {supervisor.findings?.active.map((finding) => (
+                      <FindingCard key={finding.id} finding={finding} />
                     ))}
                   </div>
                 </section>
@@ -541,12 +541,12 @@ function MiniHistoryChart({ points }: { points: readonly SupervisorHistoryPoint[
   );
 }
 
-function AnomalyCard({ anomaly }: { anomaly: SupervisorAnomalyTransition }) {
-  const variant = anomaly.severity === "critical" ? "destructive" : "warning";
+function FindingCard({ finding }: { finding: SupervisorFinding }) {
+  const variant = finding.severity === "critical" ? "destructive" : "warning";
   return (
     <Card
       className={
-        anomaly.severity === "critical"
+        finding.severity === "critical"
           ? "border-red-500/30 bg-red-500/5"
           : "border-amber-500/30 bg-amber-500/5"
       }
@@ -554,13 +554,13 @@ function AnomalyCard({ anomaly }: { anomaly: SupervisorAnomalyTransition }) {
       <CardContent className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="font-mono text-xs font-semibold">{anomaly.kind}</div>
-            <p className="mt-1 text-sm text-muted-foreground">{anomaly.evidence.summary}</p>
+            <div className="font-mono text-xs font-semibold">{finding.finding_kind}</div>
+            <p className="mt-1 text-sm text-muted-foreground">{finding.summary}</p>
           </div>
-          <Badge variant={variant}>{anomaly.severity}</Badge>
+          <Badge variant={variant}>{finding.severity}</Badge>
         </div>
         <div className="mt-3 text-[10px] text-muted-foreground">
-          Opened <FormattedDateTime iso={anomaly.opened_at} kind="datetime" />
+          Opened <FormattedDateTime iso={finding.opened_at} kind="datetime" />
         </div>
       </CardContent>
     </Card>

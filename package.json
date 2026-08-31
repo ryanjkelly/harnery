@@ -137,6 +137,11 @@
       "types": "./dist/core/supervisor/index.d.ts",
       "import": "./dist/core/supervisor/index.js"
     },
+    "./core/diagnostics": {
+      "bun": "./src/core/diagnostics/index.ts",
+      "types": "./dist/core/diagnostics/index.d.ts",
+      "import": "./dist/core/diagnostics/index.js"
+    },
     "./core/governor/plans": {
       "bun": "./src/core/governor/plan-read.ts",
       "types": "./dist/core/governor/plan-read.d.ts",
@@ -235,6 +240,7 @@
     "check:portability": "bun run scripts/check-portability.ts",
     "check:public-surface": "bun run scripts/check-public-surface.ts",
     "check:layering": "bun run scripts/check-layering.ts",
+    "probe:supervisor-budget": "bun run scripts/probe-supervisor-budget.ts",
     "lint:fix": "bun x @biomejs/biome check --write src",
     "format": "bun x @biomejs/biome format --write src",
     "test": "bun run scripts/test.mjs",

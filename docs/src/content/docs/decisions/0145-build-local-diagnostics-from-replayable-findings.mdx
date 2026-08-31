@@ -1,0 +1,131 @@
+---
+title: "ADR 0145: build local diagnostics from replayable findings"
+description: Correlate bounded local evidence without changing source authority, then capture the same sanitized inputs for offline replay.
+sidebar:
+  order: 145
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+The optional supervisor can identify resource pressure, stale services,
+long-running hooks, collector overhead, and short-window memory growth. It also
+keeps bounded resource history and recent structured logs. These projections
+show that something changed, but an operator still has to join them with
+coordination activity and explain the sequence by hand.
+
+The current anomaly contract is tied to a closed set of resource-oriented
+kinds. Its transition IDs are random, so deleting and rebuilding disposable
+supervisor state changes the identity of the same incident. Compact evidence
+is useful while the supervisor is running, but it cannot be reopened as a
+complete incident or used as a repeatable regression fixture.
+
+The diagnostic layer must not become a second source of authority. Resource
+samples, services, hooks, structured logs, and Event Ledger V3 each keep their
+existing ownership and retention rules. The supervisor remains optional,
+bounded, read-only, and irrelevant to coordination correctness.
+
+## Alternatives considered
+
+- Keep the resource-specific anomaly union and add separate incident types for
+  coordination health. This would split the dashboard, capture path, and
+  explanation engine by source even though they need the same lifecycle.
+- Copy correlated evidence into Event Ledger V3. Disposable resource and log
+  projections are not coordination facts. Copying them would expand canonical
+  history and blur authority.
+- Capture only rendered reports. A report helps a person, but it cannot replay
+  the inputs that opened a finding or prove that a later engine returns the
+  same identity.
+- Read live supervisor files when a saved incident is opened. That would mix
+  captured evidence with current machine state and make offline replay
+  nondeterministic.
+- Adopt a local metrics database or hosted tracing system. Either choice adds
+  storage, lifecycle, privacy, and network dependencies before the local
+  contracts require them.
+- Let diagnostics restart or throttle work. Finding quality and thresholds are
+  not mature enough to grant process or coordination authority.
+
+## Decision
+
+Replace supervisor anomalies with versioned, source-agnostic findings. A
+finding carries namespaced source and finding kinds, explicit scope, severity,
+state, stable source references, bounded evidence, and capability states.
+Resource and coordination conditions use the same base contract without
+pretending their evidence has the same authority.
+
+Derive each finding ID from a canonical tuple containing the finding contract
+version, source kind, finding kind, scope, primary stable source reference, and
+opening transition time. The fingerprint uses the same tuple without the
+opening time so an active condition can be matched. Explanation rank, excerpts,
+cache order, and rebuild time never affect identity.
+
+Store references to canonical coordination evidence rather than copying event
+payloads. A reference that can no longer be resolved stays visible with an
+`expired` capability. Unsupported, malformed, redacted, and failed sources are
+also explicit. One broken source cannot remove findings derived from healthy
+sources.
+
+Build two bounded projections from each finding:
+
+- A timeline orders opening, observations, related transitions, capability
+  changes, missing evidence, and resolution. Entries use stable source
+  references and report omitted counts.
+- An explanation separates observed facts, related evidence, possible
+  explanations, evidence against a hypothesis, and missing capabilities.
+  Timing alone is never presented as proof of cause.
+
+Add `harn diagnostics list|show|capture|replay` and a `/diagnostics` dashboard.
+The live view reads supervisor findings. A captured view reuses the same
+presentation contract but is clearly labeled as frozen evidence.
+
+Capture writes one managed diagnostic artifact. The artifact contains a fixed,
+versioned file set with sanitized replay inputs, expected findings and
+explanations, a human summary, and a manifest. The manifest records:
+
+- a pseudonymous machine identifier rather than a hostname;
+- producer and schema versions;
+- the captured threshold values and digest;
+- source and collector capability states;
+- stable finding and source identities;
+- omission and sanitization counts; and
+- byte counts and SHA-256 hashes for every file.
+
+Sanitize data before hashing or writing. Diagnostic bundles exclude prompts,
+transcripts, environments, unrestricted command output, and complete tool or
+event payloads. Write fixed inner paths atomically with private permissions,
+then reread and validate the complete artifact before releasing it. Opening a
+bundle rejects symlinks, non-regular files, path escapes, unknown schemas,
+oversized content, and digest mismatches.
+
+Replay uses only captured thresholds and captured inputs. It never reads live
+supervisor state. It recomputes findings, timelines, and explanations, then
+compares deterministic identities and output digests with the expected file.
+
+Make observer overhead a tested contract. A two-reference probe runs the same
+synthetic workload in isolated baseline and candidate worktrees. It checks
+absolute ceilings for resident memory, startup, cycle work, and cache bytes
+before applying a bounded relative-regression limit. A missing baseline is a
+failure rather than a candidate-only pass.
+
+## Result
+
+The same incident keeps its identity when disposable supervisor state is
+rebuilt. Operators can inspect one ordered account of measured facts, related
+activity, possible explanations, and missing evidence without merging source
+authority.
+
+Captured incidents remain useful after the supervisor stops. They can be
+reopened by the CLI or dashboard and replayed as fixed regression inputs. The
+fixed manifest and validation boundary make the artifact portable without
+turning the general file viewer into a trust boundary.
+
+The supervisor still observes and reports only. It cannot kill or renice
+processes, restart services, call a model, write canonical coordination events,
+or mutate lifecycle state. Cross-host ingestion and agent self-throttling need
+separate decisions after the local evidence contracts have production use.
+
+The first bundle schema and finding contract are pre-1.0 alpha surfaces. A
+contract change cuts over every in-repository consumer in the same release
+instead of preserving a legacy anomaly reader.

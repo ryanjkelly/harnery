@@ -546,7 +546,7 @@ export function registerAgentsCommand(
     .command("health")
     .description(
       "One-screen coord-layer health rollup: heal events, council activity, " +
-        "zombie detection, and anomalies. Designed for " +
+        "zombie detection, and findings. Designed for " +
         "daily glance + dashboard ingestion. Reads .harnery/.",
     )
     .option("--since <window>", "Window (Nh | Nd). Default: 24h.", "24h")
@@ -3038,7 +3038,7 @@ interface HealthReport {
     latest_at: string | null;
     sessions: string[];
   };
-  anomalies: string[];
+  findings: string[];
 }
 
 /** Open-span soft watermark per producer state. The producer-state reader
@@ -3985,11 +3985,11 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     }
   }
 
-  // Anomaly detection.
-  const anomalies: string[] = [];
+  // Finding detection.
+  const findings: string[] = [];
   for (const { agent, count } of healTopAgents) {
     if (count >= 5) {
-      anomalies.push(
+      findings.push(
         `${agent} self-healed ${count}x in ${opts.since}; possible idle-prune loop or PID instability`,
       );
     }
@@ -4000,7 +4000,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       activeAgents.source === "event-ledger-v3"
         ? "lifecycle reconciliation may be delayed"
         : "heal mechanism may not be firing";
-    anomalies.push(
+    findings.push(
       `${activeAgents.stale} active ${noun}(s) without activity for ${Math.floor(freshnessCutoffSecs() / 60)}min; ${action}`,
     );
   }
@@ -4009,30 +4009,30 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     (schema) => schema !== expectedSchema,
   );
   if (unexpectedSchemas.length > 0) {
-    anomalies.push(
+    findings.push(
       `Unexpected active-agent schema versions in use: ${unexpectedSchemas.join(", ")} (expected ${expectedSchema})`,
     );
   }
-  // Only recent hook failures are active anomalies. Historical rows remain in
+  // Only recent hook failures are active findings. Historical rows remain in
   // the report with exact error signatures and their latest timestamp.
   if (hookErrors.last1h > 0) {
     const top = hookErrors.recentTopErrors[0];
     const detail = top ? `: top '${top.error.slice(0, 80)}' x${top.count} (${top.phase})` : "";
-    anomalies.push(`agent-hook errored ${hookErrors.last1h}x in the last hour${detail}`);
+    findings.push(`agent-hook errored ${hookErrors.last1h}x in the last hour${detail}`);
   }
   if (stream.cursor_backlog > 500) {
-    anomalies.push(
+    findings.push(
       `projection cursor is ${stream.cursor_backlog} events behind; drain lagging (stop projection may be failing)`,
     );
   }
-  // Raw V3 stream size is not an anomaly; catalog rotation bounds readers.
+  // Raw V3 stream size is not a finding; catalog rotation bounds readers.
   if ((sweptByReason.unparseable ?? 0) > 0) {
-    anomalies.push(
+    findings.push(
       `${sweptByReason.unparseable} heartbeat(s) swept as unparseable in ${opts.since}; possible corruption or a non-atomic writer`,
     );
   }
   if (zombieCount > 0) {
-    anomalies.push(
+    findings.push(
       `${zombieCount} heartbeat cache issue(s) in active/ (${zombieSamples.join(", ")}); stale or malformed files the sweep isn't reaping`,
     );
   }
@@ -4041,7 +4041,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       stopRemediation.sessions.length > 0
         ? ` (sessions: ${stopRemediation.sessions.map((s) => s.slice(0, 8)).join(", ")})`
         : "";
-    anomalies.push(
+    findings.push(
       `stop-hook remediation cap exhausted ${stopRemediation.total}x in ${opts.since}${who}; these sessions ended turns without the end-of-turn ritual — check why their evidence never lands`,
     );
   }
@@ -4056,17 +4056,17 @@ function runHealth(opts: { since: string; json?: boolean }): void {
         (sum, generation) => sum + generation.span_count,
         0,
       );
-      anomalies.push(
+      findings.push(
         `${orphanSpans} open tool span(s) across ${orphanGenerations.length} generation(s) with no open turn; orphaned spans block clean session end`,
       );
     }
     for (const pressure of eventLedger.span_pressure) {
-      anomalies.push(
+      findings.push(
         `${pressure.instance_id} (${pressure.generation_id}) holds ${pressure.span_count} open spans (soft watermark ${SPAN_PRESSURE_SOFT_WATERMARK}; the reader's 256-span cap makes the state unreadable)`,
       );
     }
     for (const collectionError of eventLedger.collection_errors) {
-      anomalies.push(`event-ledger health: ${collectionError}`);
+      findings.push(`event-ledger health: ${collectionError}`);
     }
   }
 
@@ -4118,7 +4118,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       latest_at: stopRemediation.latestAt,
       sessions: stopRemediation.sessions,
     },
-    anomalies,
+    findings,
   };
 
   if (opts.json) {
@@ -4216,7 +4216,7 @@ function renderHealthBox(report: HealthReport): void {
         : `${report.zombies.count} (${report.zombies.samples.join(", ")})`,
     ],
     ["councils", councilParts.join(", ")],
-    ["anomalies", report.anomalies.length === 0 ? "(clean)" : `${report.anomalies.length} flagged`],
+    ["findings", report.findings.length === 0 ? "(clean)" : `${report.findings.length} flagged`],
   ];
 
   const localTime = formatLocalTime(new Date(report.generated_at));
@@ -4224,9 +4224,9 @@ function renderHealthBox(report: HealthReport): void {
 
   process.stdout.write(`${formatBox(title, rows)}\n`); // lint-ok-emission: chat-paste path; mirrors runStatus's direct write so the box surfaces in both TTY + harn-session-teed contexts
 
-  if (report.anomalies.length > 0) {
+  if (report.findings.length > 0) {
     process.stdout.write("\n"); // lint-ok-emission: same chat-paste path
-    for (const a of report.anomalies) {
+    for (const a of report.findings) {
       process.stdout.write(`  ! ${a}\n`); // lint-ok-emission: same
     }
   }

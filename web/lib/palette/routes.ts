@@ -12,6 +12,7 @@ import {
   Radio,
   Scale,
   ScrollText,
+  Stethoscope,
   Target,
   Users,
   Workflow,
@@ -55,6 +56,13 @@ export const APP_ROUTES: readonly AppRoute[] = [
     group: "activity",
     icon: MonitorCog,
     keywords: ["htop", "cpu", "memory", "processes", "load", "observer", "performance"],
+  },
+  {
+    href: "/diagnostics",
+    label: "Diagnostics",
+    group: "activity",
+    icon: Stethoscope,
+    keywords: ["incident", "finding", "timeline", "explanation", "bundle", "evidence", "replay"],
   },
   {
     href: "/logs",

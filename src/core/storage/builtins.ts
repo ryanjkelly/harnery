@@ -498,7 +498,7 @@ function cacheFamilies(): HarneryStorageFamily[] {
       writer_model: "object-owned",
       policy: cachePolicy(
         "supervisor-cache-v1",
-        "local resources, service health, log cursors, and anomaly projections",
+        "local resources, service health, log cursors, and finding projections",
       ),
       consumers: ["local supervisor", "dashboard", "storage inventory", "storage health"],
       provider: filesystemProvider(

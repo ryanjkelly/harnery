@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   unlinkSync,
@@ -13,6 +14,7 @@ import {
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { collectCoordinationHealthSnapshot } from "../agents/health.ts";
 import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
 import type { ResourceSamplerState } from "../resources/contract.ts";
 import { sampleResources } from "../resources/sampler.ts";
@@ -21,7 +23,6 @@ import { readResourceServiceStatus } from "../resources/service-status.ts";
 import { resourcePaths } from "../resources/storage.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
-import { updateSupervisorAnomalies } from "./anomalies.ts";
 import {
   SUPERVISOR_SNAPSHOT_SCHEMA_VERSION,
   SUPERVISOR_STATUS_SCHEMA_VERSION,
@@ -29,12 +30,15 @@ import {
   type SupervisorSnapshot,
   type SupervisorStatus,
 } from "./contract.ts";
+import { explainSupervisorFinding } from "./explanations.ts";
+import { updateSupervisorFindings } from "./findings.ts";
 import { updateSupervisorHistory } from "./history.ts";
 import { collectHookHealth } from "./hooks.ts";
 import { SupervisorLogCollector } from "./log-feed.ts";
 import { collectServiceHealth } from "./services.ts";
 import { readSupervisorStatus } from "./status.ts";
-import { readSupervisorAnomalies, readSupervisorHistory, supervisorPaths } from "./storage.ts";
+import { readSupervisorFindings, readSupervisorHistory, supervisorPaths } from "./storage.ts";
+import { buildSupervisorTimeline } from "./timeline.ts";
 
 export const SUPERVISOR_DEFAULT_INTERVAL_MS = 2_000;
 export const SUPERVISOR_DEFAULT_IDLE_EXIT_MS = 2 * 60_000;
@@ -187,7 +191,8 @@ export async function runSupervisor(
   let stopping = false;
   let previousResource: ResourceSamplerState | undefined;
   let history = readSupervisorHistory(coordRoot);
-  let anomalies = readSupervisorAnomalies(coordRoot);
+  let findings = readSupervisorFindings(coordRoot);
+  let coordination = collectCoordinationHealthSnapshot(coordRoot, now());
   const logs = new SupervisorLogCollector(coordRoot);
   const writeStatus = () => {
     status.heartbeat_at = now().toISOString();
@@ -224,16 +229,54 @@ export async function runSupervisor(
         const historyResult = updateSupervisorHistory(history, resource.snapshot);
         history = historyResult.history;
         if (historyResult.changed) writePrivateJsonAtomic(paths.history, history);
-        anomalies = updateSupervisorAnomalies({
-          previous: anomalies,
+        if (historyResult.changed)
+          coordination = collectCoordinationHealthSnapshot(coordRoot, now());
+        writePrivateJsonAtomic(paths.coordination_health, coordination);
+        const priorActiveFindingIds = new Set(findings?.active.map((finding) => finding.id) ?? []);
+        const priorTransitionKeys = new Set(
+          findings?.transitions.map((finding) => `${finding.id}:${finding.state}`) ?? [],
+        );
+        findings = updateSupervisorFindings({
+          previous: findings,
           resource: resource.snapshot,
           services: serviceHealth.services,
           hooks,
           history,
           logFeed,
+          coordination,
           now: now(),
         });
-        writePrivateJsonAtomic(paths.anomalies, anomalies);
+        writePrivateJsonAtomic(paths.findings, findings);
+        mkdirSync(paths.timelines, { recursive: true, mode: 0o700 });
+        mkdirSync(paths.explanations, { recursive: true, mode: 0o700 });
+        const projectionUpdates = [
+          ...findings.active.filter((finding) => !priorActiveFindingIds.has(finding.id)),
+          ...findings.transitions.filter(
+            (finding) => !priorTransitionKeys.has(`${finding.id}:${finding.state}`),
+          ),
+        ];
+        for (const finding of projectionUpdates) {
+          const relatedSources = coordination.recent_events.filter((source) => {
+            const delta = Math.abs(
+              Date.parse(source.observed_at) - Date.parse(finding.observed_at),
+            );
+            return Number.isFinite(delta) && delta <= 5 * 60_000;
+          });
+          writePrivateJsonAtomic(
+            resolve(paths.timelines, `${finding.id}.json`),
+            buildSupervisorTimeline(finding, relatedSources),
+          );
+          writePrivateJsonAtomic(
+            resolve(paths.explanations, `${finding.id}.json`),
+            explainSupervisorFinding(finding),
+          );
+        }
+        const retainedFindingIds = new Set([
+          ...findings.active.map((finding) => finding.id),
+          ...findings.transitions.map((finding) => finding.id),
+        ]);
+        pruneProjectionDirectory(paths.timelines, retainedFindingIds);
+        pruneProjectionDirectory(paths.explanations, retainedFindingIds);
         const attributedAgentCount = resource.snapshot.groups.filter(
           (group) => group.kind === "agent",
         ).length;
@@ -248,7 +291,7 @@ export async function runSupervisor(
           resource_sample_duration_ms: resource.snapshot.sample_duration_ms,
           services: serviceHealth.services,
           hooks,
-          active_anomaly_count: anomalies.active.length,
+          active_finding_count: findings.active.length,
           history_point_count: history.points.length,
           log_record_count: logFeed.total_records,
           live_consumer_count: serviceHealth.consumers.length,
@@ -266,7 +309,7 @@ export async function runSupervisor(
           visible_processes: resource.snapshot.visible_process_count,
           services: serviceHealth.services.length,
           hooks: hooks.length,
-          anomalies: anomalies.active.length,
+          findings: findings.active.length,
           log_records: logFeed.total_records,
         });
         if (
@@ -339,6 +382,17 @@ function acquireLease(coordRoot: string, now: Date): SupervisorLease {
     }
   }
   throw new Error("local supervisor could not acquire its singleton lease");
+}
+
+function pruneProjectionDirectory(
+  directory: string,
+  retainedFindingIds: ReadonlySet<string>,
+): void {
+  for (const file of readdirSync(directory)) {
+    if (!file.endsWith(".json")) continue;
+    const findingId = file.slice(0, -5);
+    if (!retainedFindingIds.has(findingId)) rmSync(resolve(directory, file), { force: true });
+  }
 }
 
 function releaseLease(path: string, nonce: string): void {

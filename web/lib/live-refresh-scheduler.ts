@@ -18,7 +18,7 @@ export interface LiveRefreshScheduler {
 export const HEAVY_REFRESH_INTERVAL_MS = 120_000;
 export const LIGHT_REFRESH_INTERVAL_MS = 30_000;
 
-const SELF_LIVE_ROUTES = ["/codec", "/images", "/live", "/resources"];
+const SELF_LIVE_ROUTES = ["/codec", "/diagnostics", "/images", "/live", "/resources"];
 const HEAVY_ROUTES = [
   "/agents",
   "/councils",

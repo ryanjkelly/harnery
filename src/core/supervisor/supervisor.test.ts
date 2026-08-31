@@ -1,15 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResourceSnapshot } from "../resources/contract.ts";
-import { updateSupervisorAnomalies } from "./anomalies.ts";
 import {
   SUPERVISOR_LOG_FEED_SCHEMA_VERSION,
   SUPERVISOR_STATUS_SCHEMA_VERSION,
   type SupervisorLogFeed,
   type SupervisorServiceStatusRecord,
 } from "./contract.ts";
+import { explainSupervisorFinding } from "./explanations.ts";
+import { updateSupervisorFindings } from "./findings.ts";
 import { updateSupervisorHistory } from "./history.ts";
 import { collectHookHealth, exactHookEntrypoint } from "./hooks.ts";
 import { runSupervisor } from "./service.ts";
@@ -18,6 +19,8 @@ import {
   registerSupervisorConsumer,
   unregisterSupervisorConsumer,
 } from "./services.ts";
+import { buildSupervisorTimeline } from "./timeline.ts";
+import { supervisorPaths } from "./storage.ts";
 
 const roots: string[] = [];
 
@@ -76,11 +79,11 @@ describe("local supervisor collectors", () => {
     ]);
   });
 
-  test("opens and resolves bounded anomaly transitions", () => {
+  test("opens and resolves bounded deterministic findings", () => {
     const pressured = resourceAt(Date.now());
     pressured.machine.memory_percent = 90;
     const history = updateSupervisorHistory(undefined, pressured).history;
-    const first = updateSupervisorAnomalies({
+    const first = updateSupervisorFindings({
       resource: pressured,
       services: [],
       hooks: [],
@@ -88,10 +91,21 @@ describe("local supervisor collectors", () => {
       logFeed: emptyFeed(),
       now: new Date(pressured.sampled_at),
     });
-    expect(first.active.some((entry) => entry.kind === "machine-memory")).toBe(true);
+    const active = first.active.find((entry) => entry.finding_kind === "machine.memory-pressure");
+    expect(active).toBeDefined();
+    if (!active) throw new Error("expected machine memory finding");
+    const rebuilt = updateSupervisorFindings({
+      resource: pressured,
+      services: [],
+      hooks: [],
+      history,
+      logFeed: emptyFeed(),
+      now: new Date(pressured.sampled_at),
+    });
+    expect(rebuilt.active[0]?.id).toBe(active.id);
     const recovered = resourceAt(Date.parse(pressured.sampled_at) + 10_000);
     recovered.machine.memory_percent = 20;
-    const second = updateSupervisorAnomalies({
+    const second = updateSupervisorFindings({
       previous: first,
       resource: recovered,
       services: [],
@@ -100,13 +114,108 @@ describe("local supervisor collectors", () => {
       logFeed: emptyFeed(),
       now: new Date(recovered.sampled_at),
     });
-    expect(second.active.some((entry) => entry.kind === "machine-memory")).toBe(false);
+    expect(second.active.some((entry) => entry.finding_kind === "machine.memory-pressure")).toBe(
+      false,
+    );
     expect(
       second.transitions.some(
-        (entry) => entry.kind === "machine-memory" && entry.state === "resolved",
+        (entry) => entry.finding_kind === "machine.memory-pressure" && entry.state === "resolved",
       ),
     ).toBe(true);
+    const pressuredAgain = resourceAt(Date.parse(recovered.sampled_at) + 10_000);
+    pressuredAgain.machine.memory_percent = 91;
+    const reopened = updateSupervisorFindings({
+      previous: second,
+      resource: pressuredAgain,
+      services: [],
+      hooks: [],
+      history: updateSupervisorHistory(history, pressuredAgain).history,
+      logFeed: emptyFeed(),
+      now: new Date(pressuredAgain.sampled_at),
+    });
+    const reopenedFinding = reopened.active.find(
+      (entry) => entry.finding_kind === "machine.memory-pressure",
+    );
+    expect(reopenedFinding?.fingerprint).toBe(active.fingerprint);
+    expect(reopenedFinding?.id).not.toBe(active.id);
     expect(second.transitions.length).toBeLessThanOrEqual(100);
+  });
+
+  test("replays the frozen memory-growth scenario with stable identity", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "../../../tests/fixtures/diagnostics/source-scenarios.json"),
+        "utf8",
+      ),
+    ) as {
+      scenarios: Array<{
+        id: string;
+        resources?: Array<{ observed_at: string; group_id: string; rss_bytes: number }>;
+        expected: { finding_kind?: string };
+      }>;
+    };
+    const scenario = fixture.scenarios.find((entry) => entry.id === "cache-rebuild-identity");
+    expect(scenario?.resources).toHaveLength(2);
+    const [baseline, current] = scenario!.resources!;
+    const firstResource = resourceAt(Date.parse(baseline!.observed_at));
+    firstResource.groups = [resourceGroup(baseline!.group_id, baseline!.rss_bytes)];
+    const firstHistory = updateSupervisorHistory(undefined, firstResource).history;
+    const currentResource = resourceAt(Date.parse(current!.observed_at));
+    currentResource.groups = [resourceGroup(current!.group_id, current!.rss_bytes)];
+    const history = updateSupervisorHistory(firstHistory, currentResource).history;
+    const input = {
+      resource: currentResource,
+      services: [],
+      hooks: [],
+      history,
+      logFeed: emptyFeed(),
+      now: new Date(current!.observed_at),
+    };
+    const first = updateSupervisorFindings(input);
+    const rebuilt = updateSupervisorFindings(input);
+    const finding = first.active.find((entry) => entry.finding_kind === "resource.memory-growth");
+    expect(finding).toBeDefined();
+    expect(rebuilt.active.find((entry) => entry.fingerprint === finding!.fingerprint)?.id).toBe(
+      finding?.id,
+    );
+  });
+
+  test("separates observed, related, possible, and degraded-capability evidence", () => {
+    const resource = resourceAt(Date.parse("2026-08-30T12:05:00.000Z"));
+    resource.machine.memory_percent = 90;
+    const finding = updateSupervisorFindings({
+      resource,
+      services: [],
+      hooks: [],
+      history: updateSupervisorHistory(undefined, resource).history,
+      logFeed: emptyFeed(),
+      now: new Date(resource.sampled_at),
+    }).active.find((entry) => entry.finding_kind === "machine.memory-pressure");
+    expect(finding).toBeDefined();
+    if (!finding) throw new Error("expected memory finding");
+    const degraded = {
+      source_kind: "resource.process-io",
+      state: "unsupported" as const,
+      reason_code: "platform-sampler-unavailable",
+    };
+    const withCapability = { ...finding, capabilities: [...finding.capabilities, degraded] };
+    const relatedSource = {
+      id: "v3:evt_17",
+      source_kind: "coordination.v3",
+      source_id: "event-warning-17",
+      record_id: "evt_17",
+      observed_at: resource.sampled_at,
+      capability: "supported" as const,
+    };
+    const timeline = buildSupervisorTimeline(withCapability, [relatedSource]);
+    expect(timeline.entries.some((entry) => entry.relation === "observed")).toBe(true);
+    expect(timeline.entries.some((entry) => entry.relation === "related")).toBe(true);
+    expect(timeline.entries.some((entry) => entry.relation === "capability")).toBe(true);
+    expect(JSON.stringify(timeline)).not.toContain("payload");
+    const explanation = explainSupervisorFinding(withCapability);
+    expect(explanation.observed.length).toBeGreaterThan(0);
+    expect(explanation.possible.length).toBeGreaterThan(0);
+    expect(explanation.missing_capabilities).toContainEqual(degraded);
   });
 
   test("keeps only process-start-validated dashboard consumers", () => {
@@ -138,6 +247,11 @@ describe("local supervisor collectors", () => {
     expect(Date.parse(result.stopped_at ?? "")).toBeGreaterThanOrEqual(
       Date.parse(result.started_at) + 5_000,
     );
+    const coordination = JSON.parse(
+      readFileSync(supervisorPaths(root).coordination_health, "utf8"),
+    ) as { capability?: { source_kind?: string }; recent_events?: unknown[] };
+    expect(coordination.capability?.source_kind).toBe("coordination.v3");
+    expect(Array.isArray(coordination.recent_events)).toBe(true);
   });
 });
 
@@ -196,5 +310,16 @@ function emptyFeed(): SupervisorLogFeed {
     lanes: [],
     total_records: 0,
     unavailable_families: 0,
+  };
+}
+
+function resourceGroup(id: string, rssBytes: number): ResourceSnapshot["groups"][number] {
+  return {
+    kind: "agent",
+    id,
+    process_count: 1,
+    cpu_percent: 1,
+    rss_bytes: rssBytes,
+    root_pids: [42],
   };
 }

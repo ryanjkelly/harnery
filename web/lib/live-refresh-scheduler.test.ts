@@ -48,6 +48,8 @@ describe("live refresh route policy", () => {
   test("self-live pages never request a global server render", () => {
     expect(liveRefreshIntervalMs("/images")).toBeNull();
     expect(liveRefreshIntervalMs("/codec/review")).toBeNull();
+    expect(liveRefreshIntervalMs("/diagnostics")).toBeNull();
+    expect(liveRefreshIntervalMs("/diagnostics/bundles/bundle_123")).toBeNull();
     expect(liveRefreshIntervalMs("/live")).toBeNull();
   });
 

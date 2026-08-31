@@ -1,12 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { CoordinationHealthSnapshot } from "../agents/health.ts";
 import type {
-  SupervisorAnomalies,
   SupervisorConsumerRecord,
+  SupervisorFindingExplanation,
+  SupervisorFindings,
   SupervisorHistory,
   SupervisorLogFeed,
   SupervisorServiceStatusRecord,
   SupervisorSnapshot,
+  SupervisorTimeline,
 } from "./contract.ts";
 
 export interface SupervisorPaths {
@@ -16,7 +19,10 @@ export interface SupervisorPaths {
   stop: string;
   snapshot: string;
   history: string;
-  anomalies: string;
+  findings: string;
+  timelines: string;
+  explanations: string;
+  coordination_health: string;
   log_feed: string;
   consumers: string;
 }
@@ -30,7 +36,10 @@ export function supervisorPaths(coordRootRaw: string): SupervisorPaths {
     stop: join(root, "stop.json"),
     snapshot: join(root, "snapshot.json"),
     history: join(root, "history.json"),
-    anomalies: join(root, "anomalies.json"),
+    findings: join(root, "findings.json"),
+    timelines: join(root, "timelines"),
+    explanations: join(root, "explanations"),
+    coordination_health: join(root, "coordination-health.json"),
     log_feed: join(root, "log-feed.json"),
     consumers: join(root, "consumers"),
   };
@@ -54,8 +63,32 @@ export function readSupervisorHistory(coordRoot: string): SupervisorHistory | un
   return readJson<SupervisorHistory>(supervisorPaths(coordRoot).history);
 }
 
-export function readSupervisorAnomalies(coordRoot: string): SupervisorAnomalies | undefined {
-  return readJson<SupervisorAnomalies>(supervisorPaths(coordRoot).anomalies);
+export function readSupervisorFindings(coordRoot: string): SupervisorFindings | undefined {
+  return readJson<SupervisorFindings>(supervisorPaths(coordRoot).findings);
+}
+
+export function readSupervisorTimeline(
+  coordRoot: string,
+  findingId: string,
+): SupervisorTimeline | undefined {
+  return readJson<SupervisorTimeline>(
+    join(supervisorPaths(coordRoot).timelines, `${safeId(findingId)}.json`),
+  );
+}
+
+export function readSupervisorExplanation(
+  coordRoot: string,
+  findingId: string,
+): SupervisorFindingExplanation | undefined {
+  return readJson<SupervisorFindingExplanation>(
+    join(supervisorPaths(coordRoot).explanations, `${safeId(findingId)}.json`),
+  );
+}
+
+export function readCoordinationHealthSnapshot(
+  coordRoot: string,
+): CoordinationHealthSnapshot | undefined {
+  return readJson<CoordinationHealthSnapshot>(supervisorPaths(coordRoot).coordination_health);
 }
 
 export function readSupervisorLogFeed(coordRoot: string): SupervisorLogFeed | undefined {

@@ -1,12 +1,35 @@
-import type { ResourceProcessGroup, ResourceSnapshot } from "../resources/contract.ts";
+import type { ResourceProcessGroup } from "../resources/contract.ts";
 import type { HarneryLogRecordV1 } from "../storage/jsonl.ts";
 
 export const SUPERVISOR_STATUS_SCHEMA_VERSION = 1 as const;
-export const SUPERVISOR_SNAPSHOT_SCHEMA_VERSION = 1 as const;
+export const SUPERVISOR_SNAPSHOT_SCHEMA_VERSION = 2 as const;
 export const SUPERVISOR_HISTORY_SCHEMA_VERSION = 1 as const;
-export const SUPERVISOR_ANOMALY_SCHEMA_VERSION = 1 as const;
+export const SUPERVISOR_FINDING_SCHEMA_VERSION = 1 as const;
+export const SUPERVISOR_TIMELINE_SCHEMA_VERSION = 1 as const;
+export const SUPERVISOR_EXPLANATION_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_LOG_FEED_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_CONSUMER_SCHEMA_VERSION = 1 as const;
+
+export const SUPERVISOR_DIAGNOSTIC_LIMITS = {
+  max_findings: 100,
+  max_active_findings: 32,
+  max_evidence_per_finding: 32,
+  max_timeline_entries: 160,
+  max_explanation_items: 24,
+  max_capabilities: 16,
+  max_bundle_files: 32,
+  max_bundle_bytes: 8 * 1_024 * 1_024,
+  max_summary_chars: 500,
+  max_excerpt_chars: 2_000,
+} as const;
+
+export const SUPERVISOR_RESOURCE_BUDGET = {
+  max_rss_bytes: 128 * 1_024 * 1_024,
+  max_cycle_duration_ms: 50,
+  max_startup_duration_ms: 2_000,
+  max_cache_bytes: 8 * 1_024 * 1_024,
+  max_regression_ratio: 1.2,
+} as const;
 
 export type SupervisorProcessState = "starting" | "running" | "stopping" | "stopped" | "error";
 
@@ -88,51 +111,117 @@ export interface SupervisorHistory {
   points: readonly SupervisorHistoryPoint[];
 }
 
-export type SupervisorAnomalySeverity = "info" | "warning" | "critical";
-export type SupervisorAnomalyState = "opened" | "resolved";
+export type SupervisorCapabilityState =
+  | "supported"
+  | "partial"
+  | "unsupported"
+  | "error"
+  | "expired"
+  | "malformed"
+  | "redacted";
+export type SupervisorFindingSeverity = "info" | "warning" | "critical";
+export type SupervisorFindingState = "opened" | "resolved";
 
-export interface SupervisorAnomalyEvidence {
-  summary: string;
-  observed_value?: number;
-  threshold?: number;
-  unit?: "percent" | "bytes" | "milliseconds" | "seconds" | "processes";
-  resource?: Pick<
-    ResourceSnapshot,
-    "sampled_at" | "machine" | "groups" | "collector_cpu_ms" | "sample_duration_ms"
-  >;
-  services?: readonly ObservedServiceHealth[];
-  hooks?: readonly ObservedHookHealth[];
-  history?: readonly SupervisorHistoryPoint[];
-  recent_logs?: readonly HarneryLogRecordV1[];
+export interface SupervisorCapability {
+  source_kind: string;
+  state: SupervisorCapabilityState;
+  reason_code?: string;
+  detail?: string;
 }
 
-export interface SupervisorAnomalyTransition {
+export interface SupervisorSourceReference {
+  id: string;
+  source_kind: string;
+  source_id: string;
+  observed_at: string;
+  record_id?: string;
+  sequence?: number;
+  schema_version?: number;
+  capability: SupervisorCapabilityState;
+}
+
+export interface SupervisorFindingEvidence {
+  id: string;
+  source: SupervisorSourceReference;
+  summary: string;
+  observed_value?: number;
+  unit?: "percent" | "bytes" | "milliseconds" | "seconds" | "processes" | "count";
+}
+
+export interface SupervisorFinding {
+  schema_version: typeof SUPERVISOR_FINDING_SCHEMA_VERSION;
   id: string;
   fingerprint: string;
-  kind:
-    | "machine-cpu"
-    | "machine-memory"
-    | "machine-swap"
-    | "collector-overhead"
-    | "service-stale"
-    | "hook-long-running"
-    | "process-memory"
-    | "group-memory"
-    | "owner-process-count"
-    | "memory-growth";
-  severity: SupervisorAnomalySeverity;
-  state: SupervisorAnomalyState;
+  source_kind: string;
+  finding_kind: string;
+  severity: SupervisorFindingSeverity;
+  state: SupervisorFindingState;
+  scope_kind: string;
+  scope_id: string;
+  summary: string;
   opened_at: string;
   observed_at: string;
   resolved_at?: string;
-  evidence: SupervisorAnomalyEvidence;
+  primary_source: SupervisorSourceReference;
+  evidence: readonly SupervisorFindingEvidence[];
+  capabilities: readonly SupervisorCapability[];
 }
 
-export interface SupervisorAnomalies {
-  schema_version: typeof SUPERVISOR_ANOMALY_SCHEMA_VERSION;
-  max_transitions: number;
-  active: readonly SupervisorAnomalyTransition[];
-  transitions: readonly SupervisorAnomalyTransition[];
+export interface SupervisorFindings {
+  schema_version: typeof SUPERVISOR_FINDING_SCHEMA_VERSION;
+  max_findings: number;
+  active: readonly SupervisorFinding[];
+  transitions: readonly SupervisorFinding[];
+}
+
+export type SupervisorTimelineRelation =
+  | "opened"
+  | "observed"
+  | "related"
+  | "resolved"
+  | "capability"
+  | "missing";
+
+export interface SupervisorTimelineEntry {
+  id: string;
+  occurred_at: string;
+  relation: SupervisorTimelineRelation;
+  summary: string;
+  source: SupervisorSourceReference;
+  evidence_id?: string;
+}
+
+export interface SupervisorTimeline {
+  schema_version: typeof SUPERVISOR_TIMELINE_SCHEMA_VERSION;
+  finding_id: string;
+  start_at: string;
+  end_at: string;
+  max_entries: number;
+  omitted_entries: number;
+  entries: readonly SupervisorTimelineEntry[];
+  capabilities: readonly SupervisorCapability[];
+}
+
+export interface SupervisorExplanationStatement {
+  id: string;
+  code: string;
+  summary: string;
+  evidence_ids: readonly string[];
+}
+
+export interface SupervisorPossibleExplanation extends SupervisorExplanationStatement {
+  confidence: "low" | "medium" | "high";
+  evidence_against_ids: readonly string[];
+}
+
+export interface SupervisorFindingExplanation {
+  schema_version: typeof SUPERVISOR_EXPLANATION_SCHEMA_VERSION;
+  finding_id: string;
+  generated_at: string;
+  observed: readonly SupervisorExplanationStatement[];
+  related: readonly SupervisorExplanationStatement[];
+  possible: readonly SupervisorPossibleExplanation[];
+  missing_capabilities: readonly SupervisorCapability[];
 }
 
 export interface SupervisorLogLane {
@@ -161,7 +250,7 @@ export interface SupervisorSnapshot {
   resource_sample_duration_ms: number;
   services: readonly ObservedServiceHealth[];
   hooks: readonly ObservedHookHealth[];
-  active_anomaly_count: number;
+  active_finding_count: number;
   history_point_count: number;
   log_record_count: number;
   live_consumer_count: number;
