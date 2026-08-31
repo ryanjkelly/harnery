@@ -40,6 +40,9 @@ describe("diagnostic advice", () => {
       fan_out_recommendation: "use-caution",
       contributing_finding_count: 1,
     });
+    expect(elevated.reasons[0]?.summary).toBe(
+      "1 active warning finding indicates elevated pressure.",
+    );
 
     const critical = buildDiagnosticAdvice({
       findings: [finding("warning", "warning"), finding("critical", "critical")],

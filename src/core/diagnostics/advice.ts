@@ -91,14 +91,14 @@ function reasonsFor(
   if (critical.length) {
     reasons.push({
       code: "critical_findings_active",
-      summary: `${critical.length} active critical finding${critical.length === 1 ? "" : "s"} require attention.`,
+      summary: `${critical.length} active critical finding${critical.length === 1 ? "" : "s"} ${critical.length === 1 ? "requires" : "require"} attention.`,
       finding_ids: boundedIds(critical),
     });
   }
   if (warning.length) {
     reasons.push({
       code: "warning_findings_active",
-      summary: `${warning.length} active warning finding${warning.length === 1 ? "" : "s"} indicate elevated pressure.`,
+      summary: `${warning.length} active warning finding${warning.length === 1 ? "" : "s"} ${warning.length === 1 ? "indicates" : "indicate"} elevated pressure.`,
       finding_ids: boundedIds(warning),
     });
   }
