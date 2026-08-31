@@ -9,6 +9,7 @@ import type {
   SupervisorFindingExplanation,
   SupervisorFindings,
   SupervisorHistory,
+  SupervisorActivitySnapshot,
   SupervisorLogFeed,
   SupervisorSnapshot,
   SupervisorTimeline,
@@ -81,6 +82,10 @@ export function replayDiagnosticInputs(
     observations,
     "coordination.health",
   );
+  const activity = optionalSource<SupervisorActivitySnapshot>(
+    observations,
+    "supervisor.activity",
+  );
   const currentProjection = optionalSource<SupervisorFindings>(observations, "supervisor.findings");
   const observedAt =
     currentProjection?.active[0]?.observed_at ??
@@ -93,6 +98,7 @@ export function replayDiagnosticInputs(
     history,
     logFeed,
     coordination,
+    activity,
     now: new Date(observedAt),
   });
   const findings = filterFindings(evaluated, observations.selection);

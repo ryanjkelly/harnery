@@ -24,6 +24,7 @@ import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import {
   SUPERVISOR_DIAGNOSTIC_LIMITS,
   SUPERVISOR_EXPLANATION_SCHEMA_VERSION,
+  SUPERVISOR_FINDING_POLICY,
   SUPERVISOR_FINDING_SCHEMA_VERSION,
   SUPERVISOR_RESOURCE_BUDGET,
   SUPERVISOR_TIMELINE_SCHEMA_VERSION,
@@ -62,6 +63,7 @@ const SOURCE_SPECS = [
   ["supervisor.snapshot", ".harnery/supervisor/snapshot.json"],
   ["supervisor.history", ".harnery/supervisor/history.json"],
   ["supervisor.findings", ".harnery/supervisor/findings.json"],
+  ["supervisor.activity", ".harnery/supervisor/activity.json"],
   ["supervisor.timelines", ".harnery/supervisor/timelines"],
   ["supervisor.explanations", ".harnery/supervisor/explanations"],
   ["supervisor.log-feed", ".harnery/supervisor/log-feed.json"],
@@ -120,6 +122,7 @@ export function captureDiagnosticBundle(
     schema_version: DIAGNOSTIC_INPUT_SCHEMA_VERSION,
     values: {
       diagnostic_limits: SUPERVISOR_DIAGNOSTIC_LIMITS,
+      finding_policy: SUPERVISOR_FINDING_POLICY,
       resource_budget: SUPERVISOR_RESOURCE_BUDGET,
     },
   };

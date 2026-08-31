@@ -5,10 +5,10 @@ import type {
   SupervisorTimeline,
 } from "../supervisor/contract.ts";
 
-export const DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 1 as const;
+export const DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 2 as const;
 export const DIAGNOSTIC_COMMAND_SCHEMA_VERSION = 1 as const;
-export const DIAGNOSTIC_INPUT_SCHEMA_VERSION = 1 as const;
-export const DIAGNOSTIC_EXPECTED_SCHEMA_VERSION = 1 as const;
+export const DIAGNOSTIC_INPUT_SCHEMA_VERSION = 2 as const;
+export const DIAGNOSTIC_EXPECTED_SCHEMA_VERSION = 2 as const;
 export const DIAGNOSTIC_SUMMARY_SCHEMA_VERSION = 1 as const;
 
 export const DIAGNOSTIC_BUNDLE_FILES = [

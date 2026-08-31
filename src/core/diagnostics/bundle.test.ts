@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { ARTIFACT_MANIFEST } from "../artifacts/index.ts";
 import { RESOURCE_SNAPSHOT_SCHEMA_VERSION } from "../resources/contract.ts";
 import {
+  SUPERVISOR_ACTIVITY_SCHEMA_VERSION,
   SUPERVISOR_FINDING_SCHEMA_VERSION,
   SUPERVISOR_HISTORY_SCHEMA_VERSION,
   SUPERVISOR_LOG_FEED_SCHEMA_VERSION,
@@ -53,7 +54,7 @@ describe("diagnostic bundles", () => {
     writeSource(root, "supervisor/timelines/credential-shaped.json", fixture);
     writeSource(root, "supervisor/explanations/source-scenarios.json", scenarios);
     writeSource(root, "supervisor/findings.json", {
-      schema_version: 1,
+      schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
       active: [],
       transitions: [],
     });
@@ -67,6 +68,9 @@ describe("diagnostic bundles", () => {
     });
 
     expect(captured.summary.machine_id_kind).toBe("pseudonymous");
+    expect(
+      captured.manifest.sources.find((source) => source.source_kind === "supervisor.activity"),
+    ).toMatchObject({ capability: "supported", entry_count: 1 });
     expect(captured.summary.sanitized_value_count).toBeGreaterThanOrEqual(9);
     expect(captured.manifest.files.map((file) => file.path).sort()).toEqual([
       "expected.json",
@@ -306,6 +310,31 @@ function writeReplaySources(root: string, sampledAt: string): void {
     total_records: 0,
     unavailable_families: 0,
   });
+  writeSource(root, "supervisor/activity.json", {
+    schema_version: SUPERVISOR_ACTIVITY_SCHEMA_VERSION,
+    observed_at: sampledAt,
+    max_entries: 64,
+    omitted_entry_count: 0,
+    capability: { source_kind: "coordination.activity-projection", state: "supported" },
+    entries: [
+      {
+        scope_kind: "agent",
+        scope_id: "agent-a",
+        session_id: "session-agent-a",
+        declared_activity: "working",
+        task_state: "active",
+        observed_at: sampledAt,
+        source: {
+          id: "source-activity-agent-a",
+          source_kind: "coordination.activity-projection",
+          source_id: "inst_agent-a:gen_test",
+          observed_at: sampledAt,
+          schema_version: SUPERVISOR_ACTIVITY_SCHEMA_VERSION,
+          capability: "supported",
+        },
+      },
+    ],
+  });
 }
 
 function diagnosticFinding(id: string) {
@@ -314,6 +343,7 @@ function diagnosticFinding(id: string) {
     source_kind: "resource.snapshot",
     source_id: "agent-a",
     observed_at: "2026-08-30T12:05:00.000Z",
+    occurrence_count: 1,
     schema_version: 1,
     capability: "supported" as const,
   };
