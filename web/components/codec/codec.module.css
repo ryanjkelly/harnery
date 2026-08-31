@@ -2270,11 +2270,11 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .pingSource {
-    animation: codec-ping-source 3.8s ease-out both;
+    animation: codec-ping-source 5.2s ease-out both;
   }
 
   .pingDestination {
-    animation: codec-ping-destination-wait 3.8s ease-in-out both;
+    animation: codec-ping-destination-wait 5.2s ease-in-out both;
   }
 
   .pingDestinationImpact {

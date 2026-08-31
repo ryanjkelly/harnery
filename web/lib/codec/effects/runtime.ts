@@ -35,10 +35,11 @@ export interface CodecEffectRuntimeOptions {
   maxConcurrent: () => number;
 }
 
-const PING_TRAVEL_MS = 1_800;
+const PING_TRAVEL_MS = 3_400;
 const PING_IMPACT_MS = 1_100;
+const PING_POSITION_STOPS = [13, 29, 45, 61, 77, 91, 98] as const;
 const ENDPOINT_HOLD_MS: Record<CodecEffectKind, number> = {
-  ping: 3_800,
+  ping: 5_200,
   energy: 2_800,
   "power-up": 3_200,
   healing: 3_400,
@@ -454,6 +455,11 @@ function setPingGeometry(node: HTMLElement, geometry: PingGeometry): void {
   node.style.setProperty("--fx-y", `${geometry.delta.y}px`);
   node.style.setProperty("--fx-mid-x", `${geometry.midpoint.x}px`);
   node.style.setProperty("--fx-mid-y", `${geometry.midpoint.y}px`);
+  for (const percentage of PING_POSITION_STOPS) {
+    const fraction = percentage / 100;
+    node.style.setProperty(`--fx-x-${percentage}`, `${geometry.delta.x * fraction}px`);
+    node.style.setProperty(`--fx-y-${percentage}`, `${geometry.delta.y * fraction}px`);
+  }
   node.style.setProperty("--fx-angle", `${geometry.angle}rad`);
   node.style.setProperty("--fx-distance", `${geometry.distance}px`);
 }

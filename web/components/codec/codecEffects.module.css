@@ -30,7 +30,7 @@
     rgb(168 85 247 / 0.48)
   );
   box-shadow: 0 0 12px 2px rgb(56 189 248 / 0.34);
-  animation: codec-fx-path 1.8s linear both;
+  animation: codec-fx-path 3.4s linear both;
 }
 
 .pingPath::before,
@@ -60,7 +60,7 @@
   border-radius: 999px;
   background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.9), transparent);
   filter: blur(1px);
-  animation: codec-fx-path-scan 1.8s linear both;
+  animation: codec-fx-path-scan 3.4s linear both;
 }
 
 .pingLaunch {
@@ -96,7 +96,7 @@
 }
 
 .pingFlight {
-  animation: codec-fx-flight 1.8s linear both;
+  animation: codec-fx-flight 3.4s linear both;
 }
 
 .pingCore {
@@ -379,37 +379,41 @@
     opacity: 0;
     transform: translate(0, 0) scale(0.3);
   }
-  6% {
+  8% {
     opacity: 1;
     transform: translate(0, 0) scale(0.86);
   }
-  14% {
+  16% {
     opacity: 1;
     transform: translate(0, 0) scale(1.08);
   }
-  22% {
+  28% {
     opacity: 1;
-    transform: translate(calc(var(--fx-x) * 0.12), calc(var(--fx-y) * 0.12)) scale(1.04);
+    transform: translate(var(--fx-x-13), var(--fx-y-13)) scale(1.04);
   }
-  38% {
+  40% {
     opacity: 1;
-    transform: translate(calc(var(--fx-x) * 0.34), calc(var(--fx-y) * 0.34)) scale(1);
+    transform: translate(var(--fx-x-29), var(--fx-y-29)) scale(1);
   }
-  54% {
+  52% {
     opacity: 1;
-    transform: translate(var(--fx-mid-x), var(--fx-mid-y)) scale(1);
+    transform: translate(var(--fx-x-45), var(--fx-y-45)) scale(1);
   }
-  70% {
+  64% {
     opacity: 1;
-    transform: translate(calc(var(--fx-x) * 0.72), calc(var(--fx-y) * 0.72)) scale(0.98);
+    transform: translate(var(--fx-x-61), var(--fx-y-61)) scale(0.98);
   }
-  84% {
+  76% {
     opacity: 1;
-    transform: translate(calc(var(--fx-x) * 0.9), calc(var(--fx-y) * 0.9)) scale(0.92);
+    transform: translate(var(--fx-x-77), var(--fx-y-77)) scale(0.94);
+  }
+  86% {
+    opacity: 1;
+    transform: translate(var(--fx-x-91), var(--fx-y-91)) scale(0.9);
   }
   94% {
     opacity: 1;
-    transform: translate(calc(var(--fx-x) * 0.98), calc(var(--fx-y) * 0.98)) scale(0.82);
+    transform: translate(var(--fx-x-98), var(--fx-y-98)) scale(0.82);
   }
   100% {
     opacity: 0.85;

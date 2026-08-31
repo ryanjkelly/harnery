@@ -79,12 +79,14 @@ rule, bounded visual recipe, and debug control. It does not need a scene
 transport change or another timer system inside `CodecView`.
 
 The ping recipe uses each card's visual center as its point-to-point anchor. A
-short source lock and route trace run before a 1.8-second signal flight. CSS
+short source lock and route trace run before a 3.4-second signal flight. CSS
 applies easing separately between each pair of keyframes. An ease-out curve
 therefore made the old packet burst forward, stall, then jump. That read as
 teleporting. The packet now follows the straight guide with linear positional
-timing. A 1.1-second energy burst begins at the target center where the packet
-ends.
+timing. JavaScript writes each intermediate pixel coordinate to the effect node
+so the motion does not depend on CSS multiplication inside `calc()`, which some
+browsers skip. A 1.1-second energy burst begins at the target center where the
+packet ends.
 
 The runtime remeasures the source, route, packet, and target together. It uses
 the same refresh path for scroll and resize events and limits the work to one
