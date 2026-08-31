@@ -106,4 +106,41 @@ describe("Codec layout director", () => {
       expect(changed.geometryKey).not.toBe(base.geometryKey);
     }
   });
+
+  test.each([
+    {
+      name: "three cards in the mobile lab preset",
+      input: { panelCount: 3, viewportWidth: 390, viewportHeight: 844, stageWidth: 360 },
+      expected: { composition: "mobile-deck", rows: 3, columns: 1 },
+    },
+    {
+      name: "four cards in the tablet lab preset",
+      input: { panelCount: 4, viewportWidth: 900, viewportHeight: 900, stageWidth: 870 },
+      expected: { composition: "featured", rows: 2, columns: 2 },
+    },
+    {
+      name: "five cards in the short desktop lab preset",
+      input: { panelCount: 5, viewportWidth: 1_600, viewportHeight: 760, stageWidth: 1_200 },
+      expected: { composition: "dense", rows: 3, columns: 2 },
+    },
+    {
+      name: "six cards in the tall desktop lab preset",
+      input: { panelCount: 6, viewportWidth: 1_920, viewportHeight: 960, stageWidth: 1_328 },
+      expected: { composition: "balanced-two-row", rows: 2, columns: 3 },
+    },
+    {
+      name: "eight cards on the tall desktop canvas with side panels closed",
+      input: {
+        panelCount: 8,
+        viewportWidth: 1_920,
+        viewportHeight: 960,
+        stageWidth: 1_776,
+        remotePanelOpen: false,
+        teamPanelOpen: false,
+      },
+      expected: { composition: "balanced-two-row", rows: 2, columns: 4 },
+    },
+  ])("pins $name", ({ input, expected }) => {
+    expect(layout(input)).toMatchObject(expected);
+  });
 });

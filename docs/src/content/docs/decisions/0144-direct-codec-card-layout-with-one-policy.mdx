@@ -86,6 +86,19 @@ extend past the browser bottom even when both rows fit the Codec arena. Use an
 unwrapped Codec or replay route for viewport-height assertions; use the debug
 lab for controlled card counts and effect interactions.
 
+The debug lab now shows the director's result without requiring an operator to
+inspect data attributes. Its Browser, Mobile `390 × 844`, Tablet `900 × 900`,
+Short desktop `1600 × 760`, and Tall desktop `1920 × 960` presets supply input
+geometry; they do not choose a composition. The readout shows the composition,
+row and column counts, card-height policy, and body-overflow policy. Card-count
+shortcuts include the `3`, `4`, `5`, `6`, and `8` card boundaries from the test
+matrix.
+
+Fixed presets render at 1:1. The frame scrolls when its canvas is wider than the
+browser. Scaling would make the visible pixels disagree with the stage width
+passed to `deriveCodecLayout()`. The Browser preset remains fluid and uses the
+actual window dimensions.
+
 ### Scope and promotion
 
 - **Owner:** Codec dashboard presentation.

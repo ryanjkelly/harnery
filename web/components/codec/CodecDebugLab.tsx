@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import type { CodecScene } from "@/lib/codec/contracts";
 import {
   buildCodecDebugScene,
@@ -20,7 +20,8 @@ import {
   type CodecEffectKind,
   type CodecEffectPreview,
 } from "@/lib/codec/effects/contracts";
-import { CodecView } from "./CodecView";
+import type { CodecLayout } from "@/lib/codec/layout";
+import { CodecView, type CodecViewportOverride } from "./CodecView";
 import codecStyles from "./codec.module.css";
 import styles from "./codecDebug.module.css";
 
@@ -33,6 +34,39 @@ const AMBIENCES: readonly CodecScene["team_ambience"]["value"][] = [
   "busy",
   "alert",
   "unknown",
+];
+
+type CodecLayoutPresetId = "live" | "mobile" | "tablet" | "desktop-short" | "desktop-tall";
+
+interface CodecLayoutPreset {
+  id: CodecLayoutPresetId;
+  label: string;
+  detail: string;
+  viewport?: CodecViewportOverride;
+}
+
+const BROWSER_LAYOUT_PRESET: CodecLayoutPreset = {
+  id: "live",
+  label: "Browser",
+  detail: "live size",
+};
+
+const LAYOUT_PRESETS: readonly CodecLayoutPreset[] = [
+  BROWSER_LAYOUT_PRESET,
+  { id: "mobile", label: "Mobile", detail: "390 × 844", viewport: { width: 390, height: 844 } },
+  { id: "tablet", label: "Tablet", detail: "900 × 900", viewport: { width: 900, height: 900 } },
+  {
+    id: "desktop-short",
+    label: "Short desktop",
+    detail: "1600 × 760",
+    viewport: { width: 1_600, height: 760 },
+  },
+  {
+    id: "desktop-tall",
+    label: "Tall desktop",
+    detail: "1920 × 960",
+    viewport: { width: 1_920, height: 960 },
+  },
 ];
 
 function initialStates(agents: CodecDebugAgent[]): Record<string, CodecDebugCardState> {
@@ -56,6 +90,8 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
   const [showRemoteAgents, setShowRemoteAgents] = useState(true);
   const [randomization, setRandomization] = useState(0);
   const [controlsOpen, setControlsOpen] = useState(true);
+  const [layoutPresetId, setLayoutPresetId] = useState<CodecLayoutPresetId>("live");
+  const [layoutSnapshot, setLayoutSnapshot] = useState<CodecLayout | null>(null);
 
   const visibleAgents = agents.slice(0, count);
   const visibleIds = useMemo(
@@ -63,6 +99,17 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
     [visibleAgents],
   );
   const selectedState = states[selectedId];
+  const layoutPreset =
+    LAYOUT_PRESETS.find((preset) => preset.id === layoutPresetId) ?? BROWSER_LAYOUT_PRESET;
+  const simulatedViewport = layoutPreset.viewport;
+  const viewportStyle = simulatedViewport
+    ? ({
+        width: `${simulatedViewport.width}px`,
+        height: `${simulatedViewport.height}px`,
+        "--codec-debug-viewport-width": `${simulatedViewport.width}px`,
+        "--codec-debug-viewport-height": `${simulatedViewport.height}px`,
+      } as CSSProperties)
+    : undefined;
 
   useEffect(() => {
     const first = visibleAgents[0]?.id ?? "";
@@ -133,6 +180,8 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
     setShowRelationships(true);
     setShowRemoteAgents(true);
     setRandomization(0);
+    setLayoutPresetId("live");
+    setLayoutSnapshot(null);
   }
 
   function randomizeVisibleCards() {
@@ -218,7 +267,7 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
                   />
                 </label>
                 <div className={styles.presetRow}>
-                  {[1, 4, 8, 16, 32, maximum]
+                  {[1, 3, 4, 5, 6, 8, 16, 32, maximum]
                     .filter(
                       (value, index, values) => value <= maximum && values.indexOf(value) === index,
                     )
@@ -263,9 +312,38 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
                 </label>
               </fieldset>
 
-              <fieldset className={styles.controlGroup} disabled={visibleAgents.length === 0}>
+              <fieldset className={styles.controlGroup}>
                 <legend>
                   <span className={styles.legendIndex}>02</span>
+                  Layout lab
+                </legend>
+                <div className={styles.viewportPresetGrid}>
+                  {LAYOUT_PRESETS.map((preset) => (
+                    <button
+                      type="button"
+                      key={preset.id}
+                      data-codec-layout-preset-button={preset.id}
+                      aria-pressed={layoutPresetId === preset.id}
+                      onClick={() => {
+                        setLayoutPresetId(preset.id);
+                        setLayoutSnapshot(null);
+                      }}
+                    >
+                      <span>{preset.label}</span>
+                      <small>{preset.detail}</small>
+                    </button>
+                  ))}
+                </div>
+                <p className={styles.controlHint}>
+                  {simulatedViewport
+                    ? "The preview uses a 1:1 viewport canvas. Scroll the frame when it is wider than the browser."
+                    : "The preview follows the current browser and available stage size."}
+                </p>
+              </fieldset>
+
+              <fieldset className={styles.controlGroup} disabled={visibleAgents.length === 0}>
+                <legend>
+                  <span className={styles.legendIndex}>03</span>
                   Animation engine
                 </legend>
                 <label>
@@ -340,7 +418,7 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
 
               <fieldset className={styles.controlGroup} disabled={!selectedState}>
                 <legend>
-                  <span className={styles.legendIndex}>03</span>
+                  <span className={styles.legendIndex}>04</span>
                   Individual card
                 </legend>
                 <label>
@@ -475,7 +553,7 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
 
               <fieldset className={styles.controlGroup}>
                 <legend>
-                  <span className={styles.legendIndex}>04</span>
+                  <span className={styles.legendIndex}>05</span>
                   Utilities
                 </legend>
                 <button type="button" data-codec-randomize onClick={randomizeVisibleCards}>
@@ -502,20 +580,47 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
         <header className={styles.previewHeader} data-codec-preview-status>
           <div>
             <p className={styles.previewEyebrow}>Live preview</p>
-            <h2 data-codec-preview-title>Scene output</h2>
+            <h2 data-codec-preview-title>Scene output · {layoutPreset.label}</h2>
           </div>
-          <div className={styles.previewMeta} role="status" aria-label="Preview state">
+          <div
+            className={styles.previewMeta}
+            role="status"
+            aria-label="Preview state"
+            data-codec-layout-readout
+          >
             <span className={styles.renderState}>
               <i aria-hidden />
               Rendering
             </span>
             <span>{count} agents</span>
-            <span>{ambience} ambience</span>
+            <span data-codec-layout-composition>
+              {layoutSnapshot?.composition ?? "measuring layout"}
+            </span>
+            <span data-codec-layout-grid>
+              {layoutSnapshot
+                ? `${layoutSnapshot.rows} rows × ${layoutSnapshot.columns} columns`
+                : "—"}
+            </span>
+            <span data-codec-layout-card-height>{layoutSnapshot?.cardHeight ?? "—"}</span>
+            <span data-codec-layout-overflow>{layoutSnapshot?.bodyOverflow ?? "—"} overflow</span>
           </div>
         </header>
-        <div className={styles.stageFrame}>
-          <div className={codecStyles.codecStage} data-codec-debug-stage>
-            <CodecView initialScene={scene} mode="debug" effectPreview={effectPreview} />
+        <div className={styles.stageFrame} data-codec-layout-frame>
+          <div
+            className={styles.viewportCanvas}
+            data-codec-layout-preset={layoutPreset.id}
+            data-simulated={simulatedViewport ? "true" : "false"}
+            style={viewportStyle}
+          >
+            <div className={codecStyles.codecStage} data-codec-debug-stage>
+              <CodecView
+                initialScene={scene}
+                mode="debug"
+                effectPreview={effectPreview}
+                viewportOverride={simulatedViewport}
+                onLayoutChange={setLayoutSnapshot}
+              />
+            </div>
           </div>
         </div>
       </section>

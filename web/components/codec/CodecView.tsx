@@ -102,11 +102,19 @@ const AMBIENCE_CLASS: Record<string, string | undefined> = {
 
 const REMOTE_PANEL_STORAGE_KEY = "harnery.codec.remote-panel";
 const TEAM_PANEL_STORAGE_KEY = "harnery.codec.team-panel";
+
+export interface CodecViewportOverride {
+  width: number;
+  height: number;
+}
+
 interface CodecViewProps {
   initialScene: CodecScene;
   mode?: CodecViewMode;
   replayPhases?: CodecReplayPhase[];
   effectPreview?: CodecEffectPreview;
+  viewportOverride?: CodecViewportOverride;
+  onLayoutChange?: (layout: CodecLayout) => void;
 }
 
 export function CodecView({
@@ -114,6 +122,8 @@ export function CodecView({
   mode = "live",
   replayPhases = [],
   effectPreview,
+  viewportOverride,
+  onLayoutChange,
 }: CodecViewProps) {
   const [scene, setScene] = useState<CodecScene>(initialScene);
   const [effectEndpoints, setEffectEndpoints] = useState<CodecEffectEndpointMap>({});
@@ -130,8 +140,8 @@ export function CodecView({
   const [layout, setLayout] = useState<CodecLayout>(() =>
     deriveCodecLayout({
       panelCount: initialScene.panels.length,
-      viewportWidth: 1_200,
-      viewportHeight: 0,
+      viewportWidth: viewportOverride?.width ?? 1_200,
+      viewportHeight: viewportOverride?.height ?? 0,
       stageWidth: 0,
       rootFontSize: 16,
       remotePanelOpen: true,
@@ -324,8 +334,8 @@ export function CodecView({
           : (gridRef.current?.clientWidth ?? arenaRef.current?.clientWidth ?? 0);
       const next = deriveCodecLayout({
         panelCount: panels.length,
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
+        viewportWidth: viewportOverride?.width ?? window.innerWidth,
+        viewportHeight: viewportOverride?.height ?? window.innerHeight,
         stageWidth,
         rootFontSize: rem,
         remotePanelOpen,
@@ -347,7 +357,20 @@ export function CodecView({
       observer?.disconnect();
       window.removeEventListener("resize", syncLayout);
     };
-  }, [fullscreen, layout.composition, mode, panels.length, remotePanelOpen, teamPanelOpen]);
+  }, [
+    fullscreen,
+    layout.composition,
+    mode,
+    panels.length,
+    remotePanelOpen,
+    teamPanelOpen,
+    viewportOverride?.height,
+    viewportOverride?.width,
+  ]);
+
+  useEffect(() => {
+    onLayoutChange?.(layout);
+  }, [layout, onLayoutChange]);
 
   useEffect(() => {
     if (layout.geometryKey.length === 0) return;
