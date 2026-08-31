@@ -4043,7 +4043,9 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   }
   if (cacheIssueCount > 0) {
     findings.push(
-      `${cacheIssueCount} heartbeat cache issue(s) in active/ (${cacheIssueSamples.join(", ")}); stale or malformed files the sweep isn't reaping`,
+      `${cacheIssueCount} heartbeat cache issue(s) in active/ (${cacheIssueSamples.join(", ")}); ` +
+        "rows the last sweep deliberately kept (malformed but mtime-fresh, or neither audit " +
+        "write could persist), or that aged past the freshness cutoff since it ran",
     );
   }
   if (stopRemediation.total > 0) {
