@@ -65,6 +65,7 @@ import type {
 } from "@/lib/codec/effects/contracts";
 import { deriveCodecEffects, effectForPreview } from "@/lib/codec/effects/derive";
 import { codecFeedHealth } from "@/lib/codec/feed-health";
+import { type CodecLayout, type CodecViewMode, deriveCodecLayout } from "@/lib/codec/layout";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
 import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
 import { codecSemanticBriefLines } from "@/lib/codec/semantic-brief";
@@ -101,12 +102,9 @@ const AMBIENCE_CLASS: Record<string, string | undefined> = {
 
 const REMOTE_PANEL_STORAGE_KEY = "harnery.codec.remote-panel";
 const TEAM_PANEL_STORAGE_KEY = "harnery.codec.team-panel";
-const BALANCED_ROW_MIN_VIEWPORT_HEIGHT_REM = 56;
-const BALANCED_ROW_CARD_TARGET_WIDTH_REM = 27;
-const BALANCED_ROW_GRID_GAP_REM = 1;
 interface CodecViewProps {
   initialScene: CodecScene;
-  mode?: "live" | "replay" | "debug";
+  mode?: CodecViewMode;
   replayPhases?: CodecReplayPhase[];
   effectPreview?: CodecEffectPreview;
 }
@@ -129,8 +127,19 @@ export function CodecView({
   const [showTeamPanel, setShowTeamPanel] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenAvailable, setFullscreenAvailable] = useState(false);
-  const [mobileLayout, setMobileLayout] = useState(false);
-  const [balancedRows, setBalancedRows] = useState(false);
+  const [layout, setLayout] = useState<CodecLayout>(() =>
+    deriveCodecLayout({
+      panelCount: initialScene.panels.length,
+      viewportWidth: 1_200,
+      viewportHeight: 0,
+      stageWidth: 0,
+      rootFontSize: 16,
+      remotePanelOpen: true,
+      teamPanelOpen: true,
+      fullscreen: false,
+      mode,
+    }),
+  );
   const arenaRef = useRef<HTMLDivElement | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const effectsRef = useRef<CodecEffectRuntimeHandle | null>(null);
@@ -144,14 +153,6 @@ export function CodecView({
     setClockNow(Date.now());
     const timer = setInterval(() => setClockNow(Date.now()), 1_000);
     return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    const query = window.matchMedia("(max-width: 720px)");
-    const syncLayout = () => setMobileLayout(query.matches);
-    syncLayout();
-    query.addEventListener("change", syncLayout);
-    return () => query.removeEventListener("change", syncLayout);
   }, []);
 
   useEffect(() => {
@@ -310,38 +311,49 @@ export function CodecView({
   const stale = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "unknown"));
   const ended = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "offline"));
   const panels = [...current, ...stale, ...ended];
-  const balancedColumnCount = Math.ceil(panels.length / 2);
+  const remotePanelOpen = showRemotePanel && scene.remote_machines.length > 0;
+  const teamPanelOpen = showTeamPanel && panels.length > 0;
 
   useEffect(() => {
-    const stage = gridRef.current;
-    if (!stage || mobileLayout || panels.length < 3) {
-      setBalancedRows(false);
-      return;
-    }
-
-    const syncBalancedRows = () => {
+    const syncLayout = () => {
       const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
       const rem = Number.isFinite(rootFontSize) ? rootFontSize : 16;
-      const requiredWidth =
-        balancedColumnCount * BALANCED_ROW_CARD_TARGET_WIDTH_REM * rem +
-        Math.max(0, balancedColumnCount - 1) * BALANCED_ROW_GRID_GAP_REM * rem;
-      const hasRoom =
-        window.innerWidth >= 1_200 &&
-        window.innerHeight >= BALANCED_ROW_MIN_VIEWPORT_HEIGHT_REM * rem &&
-        stage.clientWidth >= requiredWidth;
-      setBalancedRows((currentValue) => (currentValue === hasRoom ? currentValue : hasRoom));
+      const stageWidth =
+        layout.composition === "mobile-deck"
+          ? (arenaRef.current?.clientWidth ?? 0)
+          : (gridRef.current?.clientWidth ?? arenaRef.current?.clientWidth ?? 0);
+      const next = deriveCodecLayout({
+        panelCount: panels.length,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        stageWidth,
+        rootFontSize: rem,
+        remotePanelOpen,
+        teamPanelOpen,
+        fullscreen,
+        mode,
+      });
+      setLayout((currentLayout) =>
+        currentLayout.geometryKey === next.geometryKey ? currentLayout : next,
+      );
     };
 
-    syncBalancedRows();
-    const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(syncBalancedRows);
-    observer?.observe(stage);
-    window.addEventListener("resize", syncBalancedRows);
+    syncLayout();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(syncLayout);
+    if (arenaRef.current) observer?.observe(arenaRef.current);
+    if (gridRef.current) observer?.observe(gridRef.current);
+    window.addEventListener("resize", syncLayout);
     return () => {
       observer?.disconnect();
-      window.removeEventListener("resize", syncBalancedRows);
+      window.removeEventListener("resize", syncLayout);
     };
-  }, [balancedColumnCount, mobileLayout, panels.length]);
+  }, [fullscreen, layout.composition, mode, panels.length, remotePanelOpen, teamPanelOpen]);
+
+  useEffect(() => {
+    if (layout.geometryKey.length === 0) return;
+    const frame = requestAnimationFrame(() => effectsRef.current?.refreshLayout());
+    return () => cancelAnimationFrame(frame);
+  }, [layout.geometryKey]);
 
   const feedHealth =
     mode === "live" && clockNow !== null
@@ -352,8 +364,8 @@ export function CodecView({
       ? scene.panels.find((p) => p.instance_id === panel.parent_instance_id?.value)?.identity
           .display_name
       : undefined;
-  const remotePanelOpen = showRemotePanel && scene.remote_machines.length > 0;
-  const teamPanelOpen = showTeamPanel && panels.length > 0;
+  const mobileLayout = layout.composition === "mobile-deck";
+  const balancedTwoRows = layout.composition === "balanced-two-row";
 
   return (
     <div
@@ -362,8 +374,10 @@ export function CodecView({
       data-remote-panel={remotePanelOpen ? "open" : "closed"}
       data-team-panel={teamPanelOpen ? "open" : "closed"}
       data-fullscreen={fullscreen ? "true" : "false"}
-      data-balanced-rows={balancedRows ? "true" : "false"}
-      data-codec-layout={mobileLayout ? "mobile" : "desktop"}
+      data-codec-composition={layout.composition}
+      data-codec-layout={layout.viewport}
+      data-codec-layout-rows={layout.rows}
+      data-codec-layout-columns={layout.columns}
       data-codec-feed-state={
         mode === "replay"
           ? "replay"
@@ -532,14 +546,17 @@ export function CodecView({
             <div
               data-codec-grid
               data-panel-count={panels.length}
-              data-panel-density={panels.length <= 4 ? "featured" : "dense"}
-              data-balanced-rows={balancedRows ? "true" : "false"}
-              data-balanced-columns={panels.length >= 3 ? balancedColumnCount : undefined}
+              data-codec-composition={layout.composition}
+              data-codec-centering={layout.centering}
+              data-codec-card-height={layout.cardHeight}
+              data-codec-body-overflow={layout.bodyOverflow}
+              data-codec-layout-rows={layout.rows}
+              data-codec-layout-columns={layout.columns}
               className={styles.panelGrid}
               style={
-                panels.length >= 3
+                balancedTwoRows
                   ? ({
-                      "--codec-balanced-track-count": balancedColumnCount * 2,
+                      "--codec-balanced-track-count": layout.columns * 2,
                     } as CSSProperties)
                   : undefined
               }
@@ -550,9 +567,7 @@ export function CodecView({
                   panel={panel}
                   parentName={parentNameFor(panel)}
                   effect={effectEndpoints[panel.instance_id]}
-                  balancedRowStart={
-                    balancedRows && panels.length % 2 === 1 && index === balancedColumnCount
-                  }
+                  balancedRowStart={layout.centering === "last-row" && index === layout.columns}
                 />
               ))}
             </div>

@@ -35,5 +35,6 @@ export type CodecEffectEndpointMap = Record<string, CodecEffectEndpoint>;
 export interface CodecEffectRuntimeHandle {
   play(cue: CodecEffectCue, scene: CodecScene): boolean;
   playMany(cues: readonly CodecEffectCue[], scene: CodecScene): number;
+  refreshLayout(): void;
   cancelAll(): void;
 }

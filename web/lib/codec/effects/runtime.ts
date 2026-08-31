@@ -53,6 +53,7 @@ export function createCodecEffectRuntime(
   const budget = new CodecEffectBudget({ maxConcurrent: options.maxConcurrent(), seenLimit: 500 });
   const effectNodes = new Map<string, Set<HTMLElement>>();
   const effectTimers = new Map<string, Set<ReturnType<typeof setTimeout>>>();
+  const effectLayoutRefreshers = new Map<string, Set<() => void>>();
   const endpointTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const activeEndpoints = new Set<string>();
 
@@ -71,6 +72,12 @@ export function createCodecEffectRuntime(
     effectNodes.set(effectId, nodes);
   };
 
+  const rememberLayoutRefresher = (effectId: string, refresher: () => void): void => {
+    const refreshers = effectLayoutRefreshers.get(effectId) ?? new Set<() => void>();
+    refreshers.add(refresher);
+    effectLayoutRefreshers.set(effectId, refreshers);
+  };
+
   const later = (effectId: string, delay: number, fn: () => void): void => {
     const timer = setTimeout(() => {
       effectTimers.get(effectId)?.delete(timer);
@@ -84,6 +91,7 @@ export function createCodecEffectRuntime(
   const removeEffectNodes = (effectId: string): void => {
     for (const node of effectNodes.get(effectId) ?? []) node.remove();
     effectNodes.delete(effectId);
+    effectLayoutRefreshers.delete(effectId);
   };
 
   const finish = (effectId: string): void => {
@@ -153,8 +161,6 @@ export function createCodecEffectRuntime(
       return;
     }
 
-    const start = edgeAnchor(sourceRect, targetRect);
-    const end = edgeAnchor(targetRect, sourceRect);
     const flight = element(
       options.layer,
       "div",
@@ -162,20 +168,39 @@ export function createCodecEffectRuntime(
     );
     flight.dataset.codecEffect = cue.id;
     flight.dataset.effectKind = "ping";
-    flight.style.left = `${start.x}px`;
-    flight.style.top = `${start.y}px`;
-    flight.style.setProperty("--fx-x", `${end.x - start.x}px`);
-    flight.style.setProperty("--fx-y", `${end.y - start.y}px`);
-    flight.style.setProperty("--fx-angle", `${Math.atan2(end.y - start.y, end.x - start.x)}rad`);
+    let end = edgeAnchor(targetRect, sourceRect);
+    const refreshFlight = () => {
+      const currentSource = resolveAnchor(sourceId);
+      const currentTarget = resolveAnchor(cue.targetInstanceId);
+      if (!currentSource || !currentTarget) return;
+      const currentSourceRect = currentSource.getBoundingClientRect();
+      const currentTargetRect = currentTarget.getBoundingClientRect();
+      if (
+        !rectVisible(currentSourceRect, options.layer.ownerDocument.defaultView) ||
+        !rectVisible(currentTargetRect, options.layer.ownerDocument.defaultView)
+      ) {
+        return;
+      }
+      const start = edgeAnchor(currentSourceRect, currentTargetRect);
+      end = edgeAnchor(currentTargetRect, currentSourceRect);
+      flight.style.left = `${start.x}px`;
+      flight.style.top = `${start.y}px`;
+      flight.style.setProperty("--fx-x", `${end.x - start.x}px`);
+      flight.style.setProperty("--fx-y", `${end.y - start.y}px`);
+      flight.style.setProperty("--fx-angle", `${Math.atan2(end.y - start.y, end.x - start.x)}rad`);
+    };
+    refreshFlight();
     const core = element(flight, "span", options.classes.pingCore);
     const label = element(core, "span", options.classes.pingLabel);
     label.textContent = "PING";
     options.layer.appendChild(flight);
     rememberNode(cue.id, flight);
+    rememberLayoutRefresher(cue.id, refreshFlight);
 
     later(cue.id, PING_TRAVEL_MS, () => {
       flight.remove();
       effectNodes.get(cue.id)?.delete(flight);
+      effectLayoutRefreshers.delete(cue.id);
       armEndpoint(
         cue.targetInstanceId,
         {
@@ -188,7 +213,19 @@ export function createCodecEffectRuntime(
         PING_IMPACT_MS + 700,
       );
       const impact = createImpact(options, cue, end.x, end.y, "RECEIVED");
+      const refreshImpact = () => {
+        const currentSource = resolveAnchor(sourceId);
+        const currentTarget = resolveAnchor(cue.targetInstanceId);
+        if (!currentSource || !currentTarget) return;
+        const currentEnd = edgeAnchor(
+          currentTarget.getBoundingClientRect(),
+          currentSource.getBoundingClientRect(),
+        );
+        impact.style.left = `${currentEnd.x}px`;
+        impact.style.top = `${currentEnd.y}px`;
+      };
       rememberNode(cue.id, impact);
+      rememberLayoutRefresher(cue.id, refreshImpact);
       later(cue.id, PING_IMPACT_MS, () => finish(cue.id));
     });
   };
@@ -212,8 +249,6 @@ export function createCodecEffectRuntime(
       later(cue.id, ENDPOINT_HOLD_MS[cue.kind], () => finish(cue.id));
       return;
     }
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
     const root = element(
       options.layer,
       "div",
@@ -221,10 +256,17 @@ export function createCodecEffectRuntime(
     );
     root.dataset.codecEffect = cue.id;
     root.dataset.effectKind = cue.kind;
-    root.style.left = `${centerX}px`;
-    root.style.top = `${centerY}px`;
-    root.style.setProperty("--fx-card-width", `${Math.min(rect.width, 560)}px`);
-    root.style.setProperty("--fx-card-height", `${Math.min(rect.height, 420)}px`);
+    const refreshTarget = () => {
+      const currentAnchor = resolveAnchor(cue.targetInstanceId);
+      if (!currentAnchor) return;
+      const currentRect = currentAnchor.getBoundingClientRect();
+      if (!rectVisible(currentRect, options.layer.ownerDocument.defaultView)) return;
+      root.style.left = `${currentRect.left + currentRect.width / 2}px`;
+      root.style.top = `${currentRect.top + currentRect.height / 2}px`;
+      root.style.setProperty("--fx-card-width", `${Math.min(currentRect.width, 560)}px`);
+      root.style.setProperty("--fx-card-height", `${Math.min(currentRect.height, 420)}px`);
+    };
+    refreshTarget();
     element(root, "span", options.classes.ring);
     if (cue.kind === "power-up") element(root, "span", options.classes.beam);
     const label = element(root, "span", options.classes.label);
@@ -232,6 +274,7 @@ export function createCodecEffectRuntime(
     addParticles(root, options.classes.particle, cue);
     options.layer.appendChild(root);
     rememberNode(cue.id, root);
+    rememberLayoutRefresher(cue.id, refreshTarget);
     later(cue.id, TARGET_EFFECT_MS[cue.kind], () => finish(cue.id));
   };
 
@@ -248,10 +291,16 @@ export function createCodecEffectRuntime(
         .sort((a, b) => b.priority - a.priority)
         .reduce((count, cue) => count + (this.play(cue, scene) ? 1 : 0), 0);
     },
+    refreshLayout() {
+      for (const refreshers of effectLayoutRefreshers.values()) {
+        for (const refresh of refreshers) refresh();
+      }
+    },
     cancelAll() {
       for (const effectId of effectNodes.keys()) removeEffectNodes(effectId);
       for (const timers of effectTimers.values()) for (const timer of timers) clearTimeout(timer);
       effectTimers.clear();
+      effectLayoutRefreshers.clear();
       for (const timer of endpointTimers.values()) clearTimeout(timer);
       endpointTimers.clear();
       for (const instanceId of activeEndpoints) options.onEndpointChange(instanceId, null);

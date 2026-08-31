@@ -1,0 +1,98 @@
+---
+title: "ADR 0144: direct Codec card layout with one policy"
+description: Keep Codec composition choices deterministic while CSS performs the layout and effects only follow geometry changes.
+sidebar:
+  order: 144
+---
+
+**Date:** 2026-08-30
+**Status:** Accepted
+
+## Context
+
+`CodecView` chose its mobile composition with a media query and its tall
+two-row composition with a separate `balancedRows` state. CSS made more choices
+from panel-count and density attributes. This split let React select two rows
+without giving the arena a matching height contract, so the second row could
+start below an otherwise tall viewport.
+
+Codec layout now depends on panel count, the viewport, available card-stage
+width, side-panel visibility, fullscreen state, and live, replay, or debug
+mode. The effects runtime also measures card anchors. It needs to hear about
+geometry changes, but it must not choose the composition.
+
+## Alternatives considered
+
+- Keep adding React booleans and matching CSS selectors. This preserves small
+  local changes, but it leaves the decision spread across two systems and does
+  not produce a complete policy that tests can exercise.
+- Move the policy entirely into container queries. CSS can respond to stage
+  width, but the layout also needs a testable panel-count contract and a signal
+  for the browser effects runtime after geometry changes.
+- Measure every card and position it in JavaScript. This would duplicate CSS
+  Grid, make content drive placement, and add resize feedback loops.
+- Build a reusable dashboard layout engine. Codec is the only owner with this
+  exact card, stage, and effect contract. A shared engine would freeze an API
+  before another surface proves that it needs one.
+
+## Decision
+
+Add the pure `deriveCodecLayout()` policy in
+[`web/lib/codec/layout.ts`](../../../../../web/lib/codec/layout.ts). It accepts
+panel count, viewport dimensions, card-stage width, root font size, side-panel
+visibility, fullscreen state, and Codec mode. It returns one named composition
+plus its rows, columns, card-height policy, centering, body-overflow policy, and
+a geometry key.
+
+The first compositions are `empty`, `mobile-deck`, `featured`,
+`balanced-two-row`, and `dense`. CSS Grid still places the cards. React exposes
+the policy result through data attributes and supplies only the balanced track
+count that CSS needs. The director never reads individual card content or
+returns pixel positions.
+
+`balanced-two-row` applies when all of these facts are true:
+
+- at least three cards are present;
+- the viewport is at least `1200px` wide and `56rem` tall;
+- the stage can fit `ceil(panelCount / 2)` cards at the `27rem` target width,
+  including the `1rem` gaps.
+
+That composition gives the arena two bounded rows. Each card body may scroll
+inside its row, so both rows remain visible instead of making the document
+taller.
+
+The layout result's geometry key also changes for stage and viewport geometry,
+side panels, fullscreen, and mode. `CodecView` calls `refreshLayout()` on the
+effects runtime after React commits that change. The runtime remeasures active
+ping and target-effect anchors. It follows the selected layout but has no API
+for changing it.
+
+## Result
+
+Table-driven tests cover the viewport and card-count boundaries, including the
+exact balanced height and width thresholds. They also pin card-height,
+centering, overflow, and geometry-key behavior. The previous `balancedRows`
+state and density selector are gone, while the mobile deck and existing CSS
+compositions keep their rendering roles.
+
+Browser checks at `2837x1321` put the second row's bottom edge at `1310.578px`
+on the unwrapped replay surface. A second check triggered a live ping and then
+closed the coordination panel. The runtime remeasured the active flight and
+moved its left anchor from `1374.61px` to `1584.5px` without changing the
+`balanced-two-row` composition.
+
+The debug lab renders Codec below its own header, so its embedded preview can
+extend past the browser bottom even when both rows fit the Codec arena. Use an
+unwrapped Codec or replay route for viewport-height assertions; use the debug
+lab for controlled card counts and effect interactions.
+
+### Scope and promotion
+
+- **Owner:** Codec dashboard presentation.
+- **Tradeoff:** one small policy makes composition choices testable without
+  replacing CSS Grid or turning card content into layout input.
+- **Evidence:** the split React and CSS decision let a selected second row fall
+  below the viewport, and active effects already depend on the card geometry
+  that layout changes.
+- **Promotion:** keep this local to Codec until a second dashboard needs the
+  same named-composition contract and the same post-layout effect handoff.

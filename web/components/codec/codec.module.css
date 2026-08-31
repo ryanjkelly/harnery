@@ -148,7 +148,7 @@
     "cards";
 }
 
-.codecArena[data-balanced-rows="true"] {
+.codecArena[data-codec-composition="balanced-two-row"] {
   height: calc(100dvh - 1.3rem);
   min-height: 0;
   grid-template-rows: auto minmax(0, 1fr);
@@ -727,7 +727,7 @@
   align-items: stretch;
 }
 
-.panelGrid[data-panel-density="featured"]:not([data-balanced-rows="true"]) {
+.panelGrid[data-codec-composition="featured"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -736,7 +736,7 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
-.panelGrid[data-balanced-rows="true"] {
+.panelGrid[data-codec-composition="balanced-two-row"] {
   --codec-grid-repeat: var(--codec-balanced-track-count);
   --codec-grid-track-min: 0px;
   --codec-card-span: 2;
@@ -761,7 +761,7 @@
   min-width: 0;
 }
 
-.codecArena[data-balanced-rows="true"] .cardStage {
+.codecArena[data-codec-composition="balanced-two-row"] .cardStage {
   align-self: stretch;
   min-height: 0;
 }
@@ -1134,7 +1134,7 @@
   padding: 1rem;
 }
 
-:where(.panelGrid[data-balanced-rows="true"])
+:where(.panelGrid[data-codec-composition="balanced-two-row"])
   :is(
     .codecPanel,
     .portraitColumn,
@@ -1147,7 +1147,7 @@
   min-height: 0;
 }
 
-:where(.panelGrid[data-balanced-rows="true"]) .panelBody {
+:where(.panelGrid[data-codec-composition="balanced-two-row"]) .panelBody {
   min-height: 0;
   overflow-y: auto;
 }
@@ -3038,9 +3038,8 @@
   }
 
   .panelGrid,
-  .panelGrid[data-panel-density="featured"],
-  .panelGrid[data-panel-count="3"],
-  .panelGrid[data-panel-count="5"] {
+  .panelGrid[data-codec-composition="featured"],
+  .panelGrid[data-codec-composition="dense"] {
     width: 100%;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3050,7 +3049,7 @@
     grid-column: auto;
   }
 
-  .panelGrid:is([data-panel-count="3"], [data-panel-count="5"]) > :last-child {
+  .panelGrid[data-codec-centering="last-card"] > :last-child {
     width: calc((100% - 1rem) / 2);
     grid-column: 1 / -1;
     justify-self: center;

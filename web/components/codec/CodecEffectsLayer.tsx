@@ -69,6 +69,7 @@ export const CodecEffectsLayer = forwardRef<CodecEffectRuntimeHandle, CodecEffec
       () => ({
         play: (cue, scene) => runtimeRef.current?.play(cue, scene) ?? false,
         playMany: (cues, scene) => runtimeRef.current?.playMany(cues, scene) ?? 0,
+        refreshLayout: () => runtimeRef.current?.refreshLayout(),
         cancelAll: () => runtimeRef.current?.cancelAll(),
       }),
       [],
