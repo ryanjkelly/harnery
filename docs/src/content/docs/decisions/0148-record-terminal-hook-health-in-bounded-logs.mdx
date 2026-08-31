@@ -1,0 +1,87 @@
+---
+title: "ADR 0148: record terminal hook health in bounded logs"
+description: Preserve sanitized hook timing, internal outcomes, retry identity, and memory samples without changing adapter behavior.
+sidebar:
+  order: 148
+---
+
+**Date:** 2026-08-31
+**Status:** Accepted
+
+## Context
+
+The local supervisor can identify a currently running `agent-hook` process
+after PID ancestry proves its owner. It reports the process's age, CPU, and
+resident memory, and opens a finding when the process remains alive too long.
+That evidence disappears after exit.
+
+Turn completion events carry a bounded harness aggregate with total hook time,
+hook count, and the slowest hook. The aggregate cannot show an individual
+hook's internal failure, retry role, or memory at completion.
+
+The executable deliberately returns zero after caught failures so telemetry
+cannot break the host adapter. Its operating-system exit code is therefore not
+a truthful health outcome. Hook health needs an explicit internal result and a
+clear statement of which evidence remains unavailable.
+
+## Alternatives considered
+
+- Add a new Event Ledger V3 event for each hook completion. Runtime health is
+  operational evidence, not coordination authority, so this would enlarge the
+  canonical event contract without improving replay truth.
+- Add a dedicated hook-health history store. The structured log framework
+  already owns bounded retention, rotation, privacy validation, and log reads.
+- Poll every short-lived hook process to estimate peak memory. The polling rate
+  required to catch brief processes would cost more than the observation is
+  worth.
+- Use exit code zero as success. That would hide the caught failures the hook
+  contract intentionally converts into a safe adapter exit.
+
+## Decision
+
+Each observable `agent-hook` invocation writes one best-effort terminal record
+named `agent_hook.completed` to the existing `agent-hook-debug-log` family. The
+record contains only bounded identifiers and scalar measurements: hook name,
+adapter, attributed owner when known, completed/skipped/degraded/faulted
+outcome, skipped reason, internal error count and phase names, V3 recorder
+state, duration, retry-worker identity, payload byte count, process id, and RSS
+at start and completion.
+
+The record excludes raw payloads, commands, working directories, prompts, tool
+inputs, outputs, and error messages. Recording failure is swallowed and cannot
+change the executable's existing zero-exit behavior.
+
+The optional local supervisor derives a disposable schema-1 hook-health
+projection from bounded recent structured-log records. It keeps capped recent
+receipts and per-adapter, per-hook aggregates. The projection reports its
+capability as partial when source records are truncated or unavailable.
+
+Live hook processes and completed hook receipts remain separate evidence.
+Completed RSS is a point sample of the hook process, not a peak measurement of
+its process tree and not proof of a memory leak. Adapter-native nonzero exit
+status remains unsupported because the in-process hook contract does not expose
+one.
+
+The supervisor may open deterministic findings for an internally degraded or
+faulted completion, a completed invocation of at least 30 seconds, a completed
+RSS sample of at least 512 MiB, or three retry-worker receipts inside five
+minutes. These findings are observational. They never kill, restart, throttle,
+delay, or reprioritize a hook or agent.
+
+The resource dashboard shows completed hook aggregates beside current live
+hook processes. Existing diagnostics capture carries hook findings without a
+second diagnostics store or bundle contract.
+
+## Result
+
+Pending implementation.
+
+## Scope and promotion
+
+This decision belongs to Harnery's hook adapter, bounded log framework, local
+supervisor, and resource dashboard. It does not grant remediation authority or
+establish a general-purpose tracing contract.
+
+Automatic hook action requires a separate decision supported by representative
+frozen incidents, explicit host ownership, fail-safe behavior, and a rollback
+path.
