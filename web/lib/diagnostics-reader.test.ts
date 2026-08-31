@@ -107,6 +107,7 @@ function fixtureFinding(): SupervisorFinding {
     summary: "Machine memory is under pressure.",
     opened_at: "2026-08-30T20:00:00.000Z",
     observed_at: "2026-08-30T20:01:00.000Z",
+    occurrence_count: 1,
     primary_source: {
       id: "src_memory",
       source_kind: "resource.snapshot",

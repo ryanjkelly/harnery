@@ -151,6 +151,9 @@ export function DiagnosticsDashboard({
                           <SeverityBadge severity={finding.severity} />
                           <StateBadge state={finding.state} />
                           <Badge variant="outline">{humanizeKind(finding.source_kind)}</Badge>
+                          {finding.occurrence_count > 1 ? (
+                            <Badge variant="secondary">×{finding.occurrence_count}</Badge>
+                          ) : null}
                         </div>
                         <p className="mt-2 text-sm font-medium leading-snug">
                           {preventRunt(finding.summary)}
@@ -258,6 +261,24 @@ function FindingDetail({
               mono={finding.scope_kind !== "agent" && finding.scope_kind !== "unattributed"}
             />
             <Fact label="Finding ID" value={finding.id} mono />
+            <Fact label="Occurrences" value={finding.occurrence_count.toLocaleString()} />
+            {finding.peak_observed_value !== undefined ? (
+              <Fact
+                label="Peak"
+                value={formatEvidenceValue(finding.peak_observed_value, finding.peak_unit)}
+              />
+            ) : null}
+            {finding.attribution ? (
+              <Fact label="Owner" value={<FindingOwner finding={finding} />} />
+            ) : null}
+            {finding.workload_context ? (
+              <Fact
+                label="Workload context"
+                value={`${humanizeKind(finding.workload_context.relationship)} · ${humanizeKind(
+                  finding.workload_context.declared_activity,
+                )} · ${humanizeKind(finding.workload_context.task_state)}`}
+              />
+            ) : null}
           </dl>
           {mode === "live" ? (
             <div className="mt-2 rounded-lg border border-border/60 bg-muted/30 p-3">
@@ -572,6 +593,39 @@ function Fact({ label, value, mono = false }: { label: string; value: ReactNode;
       <dd className={`mt-1 break-all ${mono ? "font-mono" : ""}`}>{value}</dd>
     </div>
   );
+}
+
+function FindingOwner({ finding }: { finding: SupervisorFinding }) {
+  const attribution = finding.attribution;
+  if (!attribution || attribution.state === "unattributed") {
+    return <span>Unattributed · no validated process anchor</span>;
+  }
+  if (attribution.owner_kind === "agent" && attribution.owner_id) {
+    return <AgentChip name={attribution.owner_id} />;
+  }
+  return <span>{`${attribution.owner_kind ?? "owner"}:${attribution.owner_id ?? "unknown"}`}</span>;
+}
+
+function formatEvidenceValue(
+  value: number,
+  unit: SupervisorFinding["peak_unit"],
+): string {
+  if (unit === "bytes") return formatBytes(value);
+  if (unit === "percent") return `${value.toLocaleString()}%`;
+  if (unit === "milliseconds") return `${value.toLocaleString()} ms`;
+  if (unit === "seconds") return `${value.toLocaleString()} s`;
+  return `${value.toLocaleString()}${unit ? ` ${unit}` : ""}`;
+}
+
+function formatBytes(value: number): string {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1_024 && index < units.length - 1) {
+    amount /= 1_024;
+    index += 1;
+  }
+  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
 }
 
 function preventRunt(value: string): string {

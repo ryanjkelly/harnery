@@ -20,6 +20,27 @@ const finding: SupervisorFinding = {
   summary: "Machine memory is under pressure.",
   opened_at: "2026-08-30T20:00:00.000Z",
   observed_at: "2026-08-30T20:01:00.000Z",
+  occurrence_count: 3,
+  peak_observed_value: 91,
+  peak_observed_at: "2026-08-30T20:01:00.000Z",
+  peak_unit: "percent",
+  attribution: {
+    state: "unattributed",
+    reason_code: "no-validated-process-anchor",
+  },
+  workload_context: {
+    relationship: "unexpected-idle-growth",
+    declared_activity: "idle",
+    task_state: "active",
+    observed_at: "2026-08-30T20:01:00.000Z",
+    source: {
+      id: "src_activity",
+      source_kind: "coordination.activity-projection",
+      source_id: "inst_agent:gen_test",
+      observed_at: "2026-08-30T20:01:00.000Z",
+      capability: "supported",
+    },
+  },
   primary_source: {
     id: "src_memory",
     source_kind: "resource.snapshot",
@@ -98,6 +119,10 @@ describe("DiagnosticsDashboard", () => {
     expect(html).toContain("Hypotheses, not causes");
     expect(html).toContain("unsupported");
     expect(html).toContain("harn diagnostics capture --finding find_memory");
+    expect(html).toContain("Occurrences");
+    expect(html).toContain("91%");
+    expect(html).toContain("Unattributed · no validated process anchor");
+    expect(html).toContain("unexpected idle growth · idle · active");
   });
 
   test("labels frozen evidence and omits the live capture handoff", () => {
@@ -110,7 +135,7 @@ describe("DiagnosticsDashboard", () => {
           capabilities: [],
           capturedAt: finding.observed_at,
           bundle: {
-            schema_version: 1,
+            schema_version: 2,
             artifact_id: "artifact_bundle",
             captured_at: finding.observed_at,
             machine_id: "machine_hash",

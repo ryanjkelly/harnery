@@ -557,14 +557,34 @@ function FindingCard({ finding }: { finding: SupervisorFinding }) {
             <div className="font-mono text-xs font-semibold">{finding.finding_kind}</div>
             <p className="mt-1 text-sm text-muted-foreground">{finding.summary}</p>
           </div>
-          <Badge variant={variant}>{finding.severity}</Badge>
+          <div className="flex flex-wrap justify-end gap-1">
+            {finding.occurrence_count > 1 ? (
+              <Badge variant="secondary">×{finding.occurrence_count}</Badge>
+            ) : null}
+            <Badge variant={variant}>{finding.severity}</Badge>
+          </div>
         </div>
+        {finding.attribution || finding.workload_context ? (
+          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-foreground/75">
+            {finding.attribution ? <span>{findingOwnerLabel(finding)}</span> : null}
+            {finding.workload_context ? (
+              <span>{finding.workload_context.relationship.replaceAll("-", " ")}</span>
+            ) : null}
+          </div>
+        ) : null}
         <div className="mt-3 text-[10px] text-muted-foreground">
           Opened <FormattedDateTime iso={finding.opened_at} kind="datetime" />
         </div>
       </CardContent>
     </Card>
   );
+}
+
+function findingOwnerLabel(finding: SupervisorFinding): string {
+  if (!finding.attribution || finding.attribution.state === "unattributed") {
+    return "Unattributed process";
+  }
+  return `${finding.attribution.owner_kind}:${finding.attribution.owner_id}`;
 }
 
 function chartPoints(values: readonly (number | null)[]): string | null {
