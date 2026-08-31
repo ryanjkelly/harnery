@@ -48,13 +48,14 @@ import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
 import { endOfTurnStatusCommand, hostPromptReminder, resolveBinName } from "../../config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
+import { drainMailbox, formatMailboxDelivery } from "../mailbox.ts";
 import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
 import {
   readLiveCoordinationRow,
   readLiveCoordinationRows,
 } from "../state/live-coordination-view.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
-import { formatPendingCouncils } from "./session-context.ts";
+import { formatPendingCouncils, recordDeliveredMessages } from "./session-context.ts";
 
 interface HeartbeatRow {
   instance_id?: string;
@@ -122,17 +123,33 @@ export function renderPromptContext(opts: PromptContextOpts): string {
   } = opts;
   const sections: string[] = [];
 
-  // 1. Peer table with hash dedup.
+  // The hook route does not pass --name, so resolve it from the heartbeat.
+  // Every name-addressed section below (messages, councils) is silently
+  // skipped without it.
+  const resolvedName = agentName ?? readLiveCoordinationRow(coordRoot, instanceId)?.name;
+
+  // 1. Peer messages. Drained first and never deduped: a message is delivered
+  // exactly once, and it is the one section here that carries new information
+  // from another agent rather than a reminder.
+  if (resolvedName) {
+    const delivered = drainMailbox(coordRoot, resolvedName);
+    if (delivered.length > 0) {
+      recordDeliveredMessages(instanceId, delivered);
+      sections.push(formatMailboxDelivery(coordRoot, delivered));
+    }
+  }
+
+  // 2. Peer table with hash dedup.
   const peerTable = computePeerTableIfChanged(coordRoot, instanceId, sessionId);
   if (peerTable) sections.push(peerTable);
 
-  // 2. Council pending with hash dedup.
-  if (agentName) {
-    const councilMsg = computeCouncilPendingIfChanged(coordRoot, instanceId, agentName);
+  // 3. Council pending with hash dedup.
+  if (resolvedName) {
+    const councilMsg = computeCouncilPendingIfChanged(coordRoot, instanceId, resolvedName);
     if (councilMsg) sections.push(councilMsg);
   }
 
-  // 3. First-session naming for every adapter, plus unset/stale-task reminders
+  // 4. First-session naming for every adapter, plus unset/stale-task reminders
   // for Cursor/Codex. One state machine avoids a second generic "task unset"
   // reminder immediately after the first-session reminder has been deduped.
   if (sessionNameNudge || taskNudge) {
@@ -143,7 +160,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (nudgeMsg) sections.push(nudgeMsg);
   }
 
-  // 4. A supported adapter gets the host reminder on every prompt. The text is
+  // 5. A supported adapter gets the host reminder on every prompt. The text is
   // intentionally not hash-deduped or persisted into runtime state: freshness
   // is the feature, and the project config remains its only durable copy.
   if (promptReminderEnabled) {
@@ -151,7 +168,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (reminder) sections.push(reminder);
   }
 
-  // 5. Codex gets this on every prompt. It is intentionally not hash-deduped:
+  // 6. Codex gets this on every prompt. It is intentionally not hash-deduped:
   // the reminder must be fresh in the model's context when it writes the reply.
   // Missing it is harmless because Codex Stop enforcement remains observe-only.
   if (statusFooterNudge) {
@@ -159,7 +176,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (statusMsg) sections.push(statusMsg);
   }
 
-  // 6. Adapters whose Stop hook ENFORCES the turn ritual get a fresh reminder
+  // 7. Adapters whose Stop hook ENFORCES the turn ritual get a fresh reminder
   // on every prompt. Reminding before the reply is drafted is far cheaper than
   // the bounce-and-retry the Stop hook otherwise forces: enforcement-only
   // compliance was measured missing on a double-digit share of turns. Not

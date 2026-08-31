@@ -50,6 +50,13 @@ import {
   reopenLiveCoordinationGenerationV3,
 } from "../core/agents/live-authority-v3.ts";
 import {
+  isAddressableName,
+  MailboxCapacityError,
+  type QueueResult,
+  queueMailboxMessage,
+  suggestNames,
+} from "../core/agents/mailbox.ts";
+import {
   listSessionFinalizationRequestsV3,
   observeHostDisappearedV3,
   reconcileSessionFinalizationV3,
@@ -485,9 +492,10 @@ export function registerAgentsCommand(
   cmd
     .command("ping <name> <message...>")
     .description(
-      "Append a 'handoff' entry to a peer agent's journal. Body prefixed with " +
-        "`from agent-<me>:`. Use to leave actionable coordination notes for peers " +
-        "currently holding files you need.",
+      "Send a message to another agent by name. Works whether or not that agent " +
+        "is running: a live peer sees it on their next prompt, and a name with no " +
+        "live session gets it queued until a session of that name next starts. " +
+        "Only an unknown name is refused.",
     )
     .option("--json", "JSON output")
     .action((name: string, message: string[], opts: { json?: boolean }) => {
@@ -546,7 +554,7 @@ export function registerAgentsCommand(
     .command("health")
     .description(
       "One-screen coord-layer health rollup: heal events, council activity, " +
-        "zombie detection, and findings. Designed for " +
+        "heartbeat cache issues, and findings. Designed for " +
         "daily glance + dashboard ingestion. Reads .harnery/.",
     )
     .option("--since <window>", "Window (Nh | Nd). Default: 24h.", "24h")
@@ -3022,7 +3030,7 @@ interface HealthReport {
   // Heartbeat cache files present in active/ but stale or malformed. These are
   // files the sweep is not catching; a parseable old heartbeat is stale, not
   // evidence of an epoch-like or corrupt timestamp.
-  zombies: {
+  heartbeat_cache_issues: {
     count: number;
     samples: string[];
   };
@@ -3946,8 +3954,8 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   // Heartbeat cache issues: files in active/ that are unparseable, nameless,
   // invalidly timestamped, or stale. Old parseable timestamps are ordinary
   // staleness, not evidence of epoch-like timestamp corruption.
-  let zombieCount = 0;
-  const zombieSamples: string[] = [];
+  let cacheIssueCount = 0;
+  const cacheIssueSamples: string[] = [];
   const STALE_HEARTBEAT_AGE_MS = 24 * 60 * 60 * 1000;
   if (existsSync(activeDir)) {
     for (const file of readdirSync(activeDir)) {
@@ -3960,16 +3968,16 @@ function runHealth(opts: { since: string; json?: boolean }): void {
         hb = null;
       }
       if (!hb || typeof hb.instance_id !== "string") {
-        zombieCount++;
-        if (zombieSamples.length < 5)
-          zombieSamples.push(`${idFromFile.slice(0, 12)} (unparseable/no-id)`);
+        cacheIssueCount++;
+        if (cacheIssueSamples.length < 5)
+          cacheIssueSamples.push(`${idFromFile.slice(0, 12)} (unparseable/no-id)`);
         continue;
       }
       const cacheIssue = classifyHeartbeatCacheIssue(hb, nowMs, STALE_HEARTBEAT_AGE_MS);
       if (cacheIssue) {
-        zombieCount++;
-        if (zombieSamples.length < 5) {
-          zombieSamples.push(`${idFromFile.slice(0, 12)} (${cacheIssue})`);
+        cacheIssueCount++;
+        if (cacheIssueSamples.length < 5) {
+          cacheIssueSamples.push(`${idFromFile.slice(0, 12)} (${cacheIssue})`);
         }
       }
     }
@@ -4031,9 +4039,9 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       `${sweptByReason.unparseable} heartbeat(s) swept as unparseable in ${opts.since}; possible corruption or a non-atomic writer`,
     );
   }
-  if (zombieCount > 0) {
+  if (cacheIssueCount > 0) {
     findings.push(
-      `${zombieCount} heartbeat cache issue(s) in active/ (${zombieSamples.join(", ")}); stale or malformed files the sweep isn't reaping`,
+      `${cacheIssueCount} heartbeat cache issue(s) in active/ (${cacheIssueSamples.join(", ")}); stale or malformed files the sweep isn't reaping`,
     );
   }
   if (stopRemediation.total > 0) {
@@ -4111,7 +4119,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       recent_top_errors: hookErrors.recentTopErrors,
     },
     stream,
-    zombies: { count: zombieCount, samples: zombieSamples },
+    heartbeat_cache_issues: { count: cacheIssueCount, samples: cacheIssueSamples },
     event_ledger: eventLedger,
     stop_remediation: {
       total: stopRemediation.total,
@@ -4211,9 +4219,9 @@ function renderHealthBox(report: HealthReport): void {
     ["event ledger", ledgerStr],
     [
       "cache issues",
-      report.zombies.count === 0
+      report.heartbeat_cache_issues.count === 0
         ? "0"
-        : `${report.zombies.count} (${report.zombies.samples.join(", ")})`,
+        : `${report.heartbeat_cache_issues.count} (${report.heartbeat_cache_issues.samples.join(", ")})`,
     ],
     ["councils", councilParts.join(", ")],
     ["findings", report.findings.length === 0 ? "(clean)" : `${report.findings.length} flagged`],
@@ -4660,18 +4668,52 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
     );
     process.exit(1);
   }
+  const coordRoot = monorepoRoot();
   const peerOwner = resolveOwnerByName(name);
-  if (!peerOwner) {
+
+  // A name with no live session is the common case, not an error: the agent it
+  // refers to may have ended minutes ago and may come back under the same name.
+  // Refuse only a name that no agent has ever held, which is a typo — queueing
+  // that would swallow the message silently.
+  if (!peerOwner && coordRoot && !isAddressableName(coordRoot, name)) {
+    const suggestions = suggestNames(coordRoot, name);
     emit.error({
-      code: "no_peer",
-      message: `no live agent named "${name}" (case-insensitive). Run \`${resolveBinName()} agents list\` to see who's active.`,
+      code: "unknown_agent",
+      message:
+        `no agent has ever been named "${name}". ` +
+        (suggestions.length > 0 ? `Did you mean ${suggestions.join(", ")}? ` : "") +
+        `Run \`${resolveBinName()} agents list\` for live sessions.`,
     });
     process.exit(1);
   }
+
   const myHb = readCurrentCoordinationRow(myOwner);
   const fromName = myHb?.name ?? "anonymous";
   const body = `from agent-${fromName}: ${message.trim()}`;
-  const doc = appendEntry(peerOwner, "handoff", body);
+
+  // A live recipient gets the journal entry immediately, so a peer reading
+  // their own journal mid-session sees it without waiting for a prompt. A
+  // dormant recipient has no journal to write to yet; the drain writes it into
+  // whichever session picks the message up.
+  const doc = peerOwner ? appendEntry(peerOwner, "handoff", body) : null;
+
+  let queued: QueueResult;
+  try {
+    queued = queueMailboxMessage({
+      coordRoot: coordRoot ?? process.cwd(),
+      toName: name,
+      fromName,
+      fromInstanceId: myOwner,
+      body: message.trim(),
+      journaled: Boolean(peerOwner),
+    });
+  } catch (error) {
+    if (error instanceof MailboxCapacityError) {
+      emit.error({ code: `mailbox_${error.reason_code}`, message: error.message });
+      process.exit(1);
+    }
+    throw error;
+  }
 
   // Canonical delivery record: sender is the envelope owner, recipient rides
   // in data, so read-only observers can render the communication without
@@ -4683,18 +4725,21 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
     observation: {
       event_type: "coord.message_observed",
       direction: "sent",
-      subject: peerOwner,
+      subject: peerOwner ?? `name:${queued.message.to_name}`,
       body: message.trim(),
     },
   });
 
   const data = {
-    peer: name,
+    peer: queued.message.to_name,
     peer_instance_id: peerOwner,
+    delivery: peerOwner ? ("live" as const) : ("queued" as const),
+    message_id: queued.message.message_id,
+    pending: queued.pending,
     from: fromName,
     body,
-    journal_path: doc.path,
-    journal_bytes: doc.bytes,
+    journal_path: doc?.path ?? null,
+    journal_bytes: doc?.bytes ?? null,
   };
 
   if (opts.json) {
@@ -4703,7 +4748,11 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
     return;
   }
   emit.data(data);
-  emit.text(`pinged agent-${name}: "${truncate(message.trim(), 80)}"\n`);
+  emit.text(
+    peerOwner
+      ? `delivered to agent-${data.peer} (live; they see it on their next prompt): "${truncate(message.trim(), 80)}"\n`
+      : `queued for agent-${data.peer} (no live session; delivered when a session of that name next starts): "${truncate(message.trim(), 80)}"\n`,
+  );
 }
 
 async function runWait(

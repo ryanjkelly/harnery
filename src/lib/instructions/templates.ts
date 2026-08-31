@@ -135,6 +135,12 @@ coordination ledger (\`.harnery/ledgers/v3/\`). Lead a shell command with a
 carries a reason instead of \`(no intent)\`; the [tool-intent
 guide](https://harnery.com/guides/tool-intent/) owns the details.
 
+**Messaging another agent.** \`${b} agents ping <name> "<message>"\` reaches an
+agent by name whether or not they are running: a live agent sees it on their next
+prompt, and a dormant name holds it until a session of that name next starts.
+Send it as your first and only step. Do not check who is live first, and do not
+hunt for somewhere else to leave it. Only a never-used name is refused.
+
 **Journal.** \`${b} journal add <category> "<text>"\` (category = ${journalCats})
 leaves breadcrumbs that survive context compaction;
 \`${b} journal read\` reads yours, \`${b} journal read --name <peer>\` reads a peer's.

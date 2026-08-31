@@ -42,7 +42,7 @@ harn agents identity assume <name-or-id> # continue a durable role in this sessi
 harn agents show <name>         # deep-dive on one peer: registry state + session history
 harn agents trace <name>        # reconstruct one agent's lifecycle from the event ledger
 harn agents watch               # stream peer state changes in real time
-harn agents ping <name> <msg>   # leave a handoff note in a peer's journal
+harn agents ping <name> <msg>   # message an agent by name, live or not
 harn agents wait <name>         # block until a peer releases its files (or exits)
 harn agents release-claim <path> # drop a file claim from your own heartbeat (escape hatch)
 harn agents health              # one-screen coord-layer health rollup
@@ -344,9 +344,19 @@ The coordination-in-motion commands.
 - **`watch`** streams peer state changes live (a file watcher on
   `.harnery/active/`), printing one line per delta: started, ended, activity,
   file claim, task change. `--poll-ms <n>` tunes the debounce (default `200`).
-- **`ping <name> <message...>`** appends a `handoff` entry to a peer's
-  journal, prefixed `from agent-<me>:`. Use it to leave an actionable note
-  for a peer holding a file you need.
+- **`ping <name> <message...>`** sends a message to an agent by name. It does
+  not require the recipient to be running, which is what makes it safe to use
+  as a single step: a live recipient is shown the message on their next prompt,
+  and a name with no live session has the message held in a durable mailbox
+  until a session of that name next starts. Either way the message is recorded
+  in the recipient's journal. The only refusal is a name no agent has ever
+  held, and that error lists the closest known names, so a sender never has to
+  look up who is live before sending or find another place to leave a note.
+
+  Two ceilings keep a mailbox bounded: 4000 bytes per message and 25 pending
+  messages per name. Past either, the send is refused and the error says to
+  write the payload to a managed artifact and send its path instead. Delivered
+  messages are copied to `.harnery/mailbox/delivered/<name>.jsonl` for audit.
 - **`wait <name>`** blocks until a peer releases its files (its `files_touched`
   empties) or exits. Scope it to specific paths with `--file <path>`
   (repeatable), cap it with `--timeout <dur>` (suffix `s`/`m`/`h`/`d`; a bare
