@@ -86,6 +86,11 @@ export interface BrowserOptions {
   jar?: CookieJar | null;
   /** Viewport. Default 1280x800. */
   viewport?: { width: number; height: number };
+  /**
+   * Emulated `prefers-color-scheme` for the context. Unset keeps Playwright's
+   * default (light), byte-identical to prior behavior.
+   */
+  colorScheme?: "light" | "dark";
   /** Default navigation timeout in ms. Default 30000. */
   navigationTimeout?: number;
   /**
@@ -314,6 +319,7 @@ export class Browser {
       this.context = await chromium.launchPersistentContext(this.profileDir, {
         headless: !this.opts.headed,
         viewport: this.opts.viewport ?? { width: 1280, height: 800 },
+        ...(this.opts.colorScheme ? { colorScheme: this.opts.colorScheme } : {}),
         ...(this.opts.launchTimeout !== undefined ? { timeout: this.opts.launchTimeout } : {}),
         ...(this.opts.launchArgs && this.opts.launchArgs.length > 0
           ? { args: this.opts.launchArgs }

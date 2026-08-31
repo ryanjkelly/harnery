@@ -29,6 +29,7 @@ The trio's `<prefix>.html` is a **standalone snapshot**, not a raw DOM dump. Sty
 | `--json` | Print the full JSON envelope to stdout (skips file writes). |
 | `--selector <css>` | Scope `--html` / `--snapshot` to one element. |
 | `--viewport <preset\|WxH>` | `mobile` (390×844), `tablet` (820×1180), `desktop` (1280×800), `hd` (1920×1080), or explicit `1920x1080`. Default `desktop`. |
+| `--color-scheme <scheme>` | Emulate `prefers-color-scheme` for the whole session: `light` \| `dark`. Renders theme-aware pages in that scheme without page-specific toggles. Absent: the browser default (unchanged behavior). |
 | `--network-har <path>` | Record network traffic to a HAR file (finalized on close). |
 
 ### Interaction

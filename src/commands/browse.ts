@@ -117,6 +117,7 @@ interface BrowseOpts {
   store?: string;
   profile?: string;
   viewport?: string;
+  colorScheme?: string;
   waitUntil: string;
   timeout: string;
   json?: boolean;
@@ -274,6 +275,12 @@ export function registerBrowseCommand(
       "--viewport <preset|WxH>",
       "Viewport: mobile (390x844), tablet (820x1180), desktop (1280x800), hd (1920x1080), or explicit '1920x1080'",
       "desktop",
+    )
+    .option(
+      "--color-scheme <scheme>",
+      "Emulate prefers-color-scheme for the whole session: light | dark. " +
+        "Renders theme-aware pages in that scheme without page-specific toggles. " +
+        "Absent = browser default (unchanged behavior).",
     )
     .option("--login", "Headed mode for one-time auth flow (cookies persist in profile)")
     .option(
@@ -734,6 +741,13 @@ async function runBrowse(
       : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-browse" });
   const headed = opts.login || opts.headed;
   const viewport = parseViewport(opts.viewport ?? "desktop");
+  let colorScheme: "light" | "dark" | undefined;
+  if (opts.colorScheme !== undefined) {
+    if (opts.colorScheme !== "light" && opts.colorScheme !== "dark") {
+      throw new Error(`--color-scheme must be light or dark (got: ${opts.colorScheme}).`);
+    }
+    colorScheme = opts.colorScheme;
+  }
   const proxy = opts.proxyFromEnv ? browserProxyFromEnv() : undefined;
   const proxyGate = opts.proxyFromEnv ? browserProxyGateFromEnv() : null;
   if (opts.loginCloseFile && !opts.login) {
@@ -754,6 +768,7 @@ async function runBrowse(
     headed,
     jar,
     viewport,
+    ...(colorScheme ? { colorScheme } : {}),
     navigationTimeout: Number.parseInt(opts.timeout, 10),
     waitUntil: opts.waitUntil as BrowseOpts["waitUntil"] as never,
     recordHarPath: opts.networkHar ? resolve(opts.networkHar) : undefined,
