@@ -32,6 +32,9 @@ export interface QaRunContext {
   theme: "light" | "dark";
   /** Named UI state; `default` for the plain page. */
   state: string;
+  /** Extra browse arguments that render this context (theme forcing beyond
+   * `--color-scheme`, state setup, waits). Argument array by contract. */
+  args?: string[];
 }
 
 /** One deterministic gate: extra browse arguments appended to the context's
@@ -236,6 +239,9 @@ export function validateQaRunJob(value: unknown): QaRunJobValidation {
         }
         if (typeof c?.state !== "string" || c.state.length === 0) {
           errors.push(`contexts[${i}].state is required ("default" for the plain page)`);
+        }
+        if (c?.args !== undefined && !isStringArray(c.args)) {
+          errors.push(`contexts[${i}].args must be an argument array (never a shell string)`);
         }
       });
     }
