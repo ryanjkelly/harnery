@@ -125,6 +125,17 @@ interface TimedExec {
   wallTimeMs: number;
 }
 
+/** One-line tail excerpt of a failed child's output for blockers and
+ * failures, preferring stderr and falling back to stdout (browse prints its
+ * JSON error envelope there). Without this, a blocker like "planner exited 1"
+ * gives the reader nothing to act on. */
+function execErrorExcerpt(res: QaRunExecResult, maxLength = 240): string | undefined {
+  const source = res.stderr.trim().length > 0 ? res.stderr : res.stdout;
+  const flat = source.trim().replace(/\s+/g, " ");
+  if (flat.length === 0) return undefined;
+  return flat.length > maxLength ? `…${flat.slice(-maxLength)}` : flat;
+}
+
 /** Fixed-size promise pool: at most `limit` workers in flight, items claimed
  * in order, results written by index so completion order never matters. */
 async function runPool<T>(
@@ -341,14 +352,22 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     argv: planArgv,
     exit_code: plan.res.exitCode,
     outcome: planUsable ? "passed" : "unknown",
-    failures: plan.res.error ? [plan.res.error] : [],
+    failures: planUsable
+      ? []
+      : [plan.res.error, execErrorExcerpt(plan.res)].filter((entry): entry is string =>
+          Boolean(entry),
+        ),
     artifacts: {},
     wall_time_ms: plan.wallTimeMs,
   });
   if (plan.res.error) {
     blockers.push({ stage: "plan", reason: `planner command did not complete: ${plan.res.error}` });
   } else if (plan.res.exitCode !== 0) {
-    blockers.push({ stage: "plan", reason: `planner exited ${plan.res.exitCode}` });
+    const excerpt = execErrorExcerpt(plan.res);
+    blockers.push({
+      stage: "plan",
+      reason: `planner exited ${plan.res.exitCode}${excerpt ? `: ${excerpt}` : ""}`,
+    });
   } else if (!manifest) {
     blockers.push({
       stage: "plan",
@@ -399,11 +418,13 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       failures.push(...parseGateFailures(readEnvelope(jsonPath)));
     } else {
       outcome = "unknown";
-      const reason = res.error
+      const excerpt = execErrorExcerpt(res);
+      const base = res.error
         ? res.error
         : !existsSync(jsonPath)
           ? `exit code ${res.exitCode ?? "null"}, missing JSON artifact ${jsonPath}`
           : `exit code ${res.exitCode ?? "null"}`;
+      const reason = excerpt ? `${base}: ${excerpt}` : base;
       failures.push(reason);
       blockers.push({
         stage: "gates",
@@ -469,11 +490,13 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       failures.push(...parseGateFailures(readEnvelope(jsonPath)));
     } else {
       outcome = "unknown";
-      const reason = res.error
+      const excerpt = execErrorExcerpt(res);
+      const base = res.error
         ? res.error
         : !existsSync(jsonPath)
           ? `exit code ${res.exitCode ?? "null"}, missing JSON artifact ${jsonPath}`
           : `exit code ${res.exitCode ?? "null"}`;
+      const reason = excerpt ? `${base}: ${excerpt}` : base;
       failures.push(reason);
       blockers.push({
         stage: "interactions",
@@ -538,11 +561,13 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         let commandOutcome: QaRunCommandOutcome["outcome"];
         if (res.error || (res.exitCode !== 0 && res.exitCode !== 2) || !envelope) {
           commandOutcome = "unknown";
-          const reason = res.error
+          const excerpt = execErrorExcerpt(res);
+          const base = res.error
             ? res.error
             : !envelope
               ? `exit code ${res.exitCode ?? "null"}, missing JSON artifact ${jsonPath}`
               : `exit code ${res.exitCode ?? "null"}`;
+          const reason = excerpt ? `${base}: ${excerpt}` : base;
           failures.push(reason);
           blockers.push({
             stage: "critique",
