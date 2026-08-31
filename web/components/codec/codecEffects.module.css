@@ -97,7 +97,6 @@
 
 .pingFlight {
   z-index: 2;
-  animation: codec-fx-flight 3.4s linear both;
 }
 
 .pingCore {
@@ -373,53 +372,6 @@
   100% {
     opacity: 0;
     transform: translateX(calc(var(--fx-distance) - 58px));
-  }
-}
-
-@keyframes codec-fx-flight {
-  0% {
-    opacity: 0;
-    transform: translate(0, 0) scale(0.3);
-  }
-  8% {
-    opacity: 1;
-    transform: translate(0, 0) scale(0.86);
-  }
-  16% {
-    opacity: 1;
-    transform: translate(0, 0) scale(1.08);
-  }
-  28% {
-    opacity: 1;
-    transform: translate(var(--fx-x-13), var(--fx-y-13)) scale(1.04);
-  }
-  40% {
-    opacity: 1;
-    transform: translate(var(--fx-x-29), var(--fx-y-29)) scale(1);
-  }
-  52% {
-    opacity: 1;
-    transform: translate(var(--fx-x-45), var(--fx-y-45)) scale(1);
-  }
-  64% {
-    opacity: 1;
-    transform: translate(var(--fx-x-61), var(--fx-y-61)) scale(0.98);
-  }
-  76% {
-    opacity: 1;
-    transform: translate(var(--fx-x-77), var(--fx-y-77)) scale(0.94);
-  }
-  86% {
-    opacity: 1;
-    transform: translate(var(--fx-x-91), var(--fx-y-91)) scale(1);
-  }
-  94% {
-    opacity: 1;
-    transform: translate(var(--fx-x-98), var(--fx-y-98)) scale(0.96);
-  }
-  100% {
-    opacity: 1;
-    transform: translate(var(--fx-x), var(--fx-y)) scale(0.86);
   }
 }
 

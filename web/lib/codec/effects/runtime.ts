@@ -39,7 +39,6 @@ const PING_TRAVEL_MS = 3_400;
 const PING_MAX_FRAME_DELTA_MS = 64;
 const PING_TRAVEL_FALLBACK_MS = 30_000;
 const PING_IMPACT_MS = 1_100;
-const PING_POSITION_STOPS = [13, 29, 45, 61, 77, 91, 98] as const;
 const ENDPOINT_HOLD_MS: Record<CodecEffectKind, number> = {
   ping: 5_200,
   energy: 2_800,
@@ -223,7 +222,6 @@ export function createCodecEffectRuntime(
       setPingGeometry(flight, geometry);
     };
     refreshFlight();
-    flight.style.animation = "none";
     setPingFlightFrame(flight, measurePingFlightFrame(geometry, 0));
     const core = element(flight, "span", options.classes.pingCore);
     core.dataset.effectVisual = "ping-orb";
@@ -474,7 +472,6 @@ type PingRect = Pick<DOMRect, "left" | "top" | "width" | "height">;
 export interface PingGeometry {
   start: { x: number; y: number };
   end: { x: number; y: number };
-  midpoint: { x: number; y: number };
   delta: { x: number; y: number };
   angle: number;
   distance: number;
@@ -488,18 +485,14 @@ export interface PingFlightFrame {
 }
 
 /** The ping is a relationship between whole cards, so both anchors are their
- * visual centers and the midpoint stays on the straight guide between them. */
+ * visual centers and the flight follows the straight delta between them. */
 export function measurePingGeometry(source: PingRect, target: PingRect): PingGeometry {
   const start = { x: source.left + source.width / 2, y: source.top + source.height / 2 };
   const end = { x: target.left + target.width / 2, y: target.top + target.height / 2 };
   const delta = { x: end.x - start.x, y: end.y - start.y };
   const distance = Math.hypot(delta.x, delta.y);
   const angle = Math.atan2(delta.y, delta.x);
-  const midpoint = {
-    x: delta.x / 2,
-    y: delta.y / 2,
-  };
-  return { start, end, midpoint, delta, angle, distance };
+  return { start, end, delta, angle, distance };
 }
 
 /** Advances by painted frames instead of wall time so a delayed frame cannot
@@ -533,13 +526,6 @@ function setPingGeometry(node: HTMLElement, geometry: PingGeometry): void {
   node.style.top = `${geometry.start.y}px`;
   node.style.setProperty("--fx-x", `${geometry.delta.x}px`);
   node.style.setProperty("--fx-y", `${geometry.delta.y}px`);
-  node.style.setProperty("--fx-mid-x", `${geometry.midpoint.x}px`);
-  node.style.setProperty("--fx-mid-y", `${geometry.midpoint.y}px`);
-  for (const percentage of PING_POSITION_STOPS) {
-    const fraction = percentage / 100;
-    node.style.setProperty(`--fx-x-${percentage}`, `${geometry.delta.x * fraction}px`);
-    node.style.setProperty(`--fx-y-${percentage}`, `${geometry.delta.y * fraction}px`);
-  }
   node.style.setProperty("--fx-angle", `${geometry.angle}rad`);
   node.style.setProperty("--fx-distance", `${geometry.distance}px`);
 }

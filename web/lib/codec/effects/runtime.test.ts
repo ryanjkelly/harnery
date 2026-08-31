@@ -15,17 +15,6 @@ describe("measurePingGeometry", () => {
     expect(geometry.angle).toBeCloseTo(Math.atan2(170, 580));
   });
 
-  test("keeps the midpoint on the straight center-to-center guide", () => {
-    const geometry = measurePingGeometry(
-      { left: 0, top: 0, width: 200, height: 200 },
-      { left: 500, top: 0, width: 200, height: 200 },
-    );
-
-    expect(geometry.start).toEqual({ x: 100, y: 100 });
-    expect(geometry.end).toEqual({ x: 600, y: 100 });
-    expect(geometry.midpoint).toEqual({ x: 250, y: 0 });
-  });
-
   test("keeps zero-distance geometry finite", () => {
     const geometry = measurePingGeometry(
       { left: 10, top: 20, width: 100, height: 80 },
@@ -35,7 +24,6 @@ describe("measurePingGeometry", () => {
     expect(geometry).toMatchObject({
       start: { x: 60, y: 60 },
       end: { x: 60, y: 60 },
-      midpoint: { x: 0, y: 0 },
       delta: { x: 0, y: 0 },
       angle: 0,
       distance: 0,
