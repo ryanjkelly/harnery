@@ -109,6 +109,25 @@ export {
   type QaStylesheetSignature,
 } from "./qa-plan.js";
 export {
+  computeVerdict,
+  contextIdFor,
+  mergeCoverage,
+  QA_RUN_JOB_SCHEMA_VERSION,
+  QA_RUN_RESULT_SCHEMA_VERSION,
+  type QaRunBlocker,
+  type QaRunCheck,
+  type QaRunCommandOutcome,
+  type QaRunContext,
+  type QaRunCritiqueOutcome,
+  type QaRunInteraction,
+  type QaRunJob,
+  type QaRunJobValidation,
+  type QaRunPolicy,
+  type QaRunResult,
+  type QaRunVerdict,
+  validateQaRunJob,
+} from "./qa-run-contracts.js";
+export {
   listQaSnapshotTargets,
   loadQaSnapshot,
   QA_SNAPSHOT_DIR,
