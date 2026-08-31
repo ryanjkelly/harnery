@@ -78,6 +78,17 @@ are the first reusable effect pack. A new recipe needs a typed cue, derivation
 rule, bounded visual recipe, and debug control. It does not need a scene
 transport change or another timer system inside `CodecView`.
 
+The ping recipe treats each card's visual center as its point-to-point anchor.
+A short source lock and route trace lead into a 2.35-second signal flight. A
+1.25-second acknowledgment then lands at the target center. The runtime
+remeasures the source, route, packet, and target together. It uses the same
+refresh path for scroll and resize events and limits it to one animation frame.
+This keeps both endpoints attached while the viewport or Codec composition
+moves. Card labels change from `Pinging` / `Incoming from` to `Sent to` /
+`Received from` at impact. Reduced motion omits the route and packet but keeps
+the same sent-and-received labels. Pure geometry tests pin the exact center
+coordinates, including unequal card sizes and zero-distance input.
+
 ### Scope and promotion
 
 - **Owner:** Codec dashboard presentation.

@@ -9,6 +9,8 @@ import type {
 
 export interface CodecEffectClassNames {
   root: string;
+  pingLaunch: string;
+  pingPath: string;
   pingFlight: string;
   pingCore: string;
   pingLabel: string;
@@ -33,10 +35,10 @@ export interface CodecEffectRuntimeOptions {
   maxConcurrent: () => number;
 }
 
-const PING_TRAVEL_MS = 4_200;
-const PING_IMPACT_MS = 1_650;
+const PING_TRAVEL_MS = 2_350;
+const PING_IMPACT_MS = 1_250;
 const ENDPOINT_HOLD_MS: Record<CodecEffectKind, number> = {
-  ping: 6_200,
+  ping: 4_300,
   energy: 2_800,
   "power-up": 3_200,
   healing: 3_400,
@@ -124,9 +126,16 @@ export function createCodecEffectRuntime(
     }
     const sourceName = nameOf(scene, sourceId);
     const targetName = nameOf(scene, cue.targetInstanceId);
+    const reducedMotion = options.reducedMotion();
     armEndpoint(
       sourceId,
-      { kind: "ping", role: "source", phase: "charge", label: "Pinging", peerName: targetName },
+      {
+        kind: "ping",
+        role: "source",
+        phase: reducedMotion ? "impact" : "charge",
+        label: reducedMotion ? "Sent to" : "Pinging",
+        peerName: targetName,
+      },
       ENDPOINT_HOLD_MS.ping,
     );
     armEndpoint(
@@ -134,13 +143,13 @@ export function createCodecEffectRuntime(
       {
         kind: "ping",
         role: "target",
-        phase: options.reducedMotion() ? "impact" : "incoming",
-        label: options.reducedMotion() ? "Received from" : "Incoming from",
+        phase: reducedMotion ? "impact" : "incoming",
+        label: reducedMotion ? "Received from" : "Incoming from",
         peerName: sourceName,
       },
       ENDPOINT_HOLD_MS.ping,
     );
-    if (options.reducedMotion() || options.layer.ownerDocument.visibilityState === "hidden") {
+    if (reducedMotion || options.layer.ownerDocument.visibilityState === "hidden") {
       later(cue.id, ENDPOINT_HOLD_MS.ping, () => finish(cue.id));
       return;
     }
@@ -161,14 +170,34 @@ export function createCodecEffectRuntime(
       return;
     }
 
+    const path = element(
+      options.layer,
+      "div",
+      `${options.classes.root} ${options.classes.pingPath}`,
+    );
+    const launch = element(
+      options.layer,
+      "div",
+      `${options.classes.root} ${options.classes.pingLaunch}`,
+    );
     const flight = element(
       options.layer,
       "div",
       `${options.classes.root} ${options.classes.pingFlight}`,
     );
-    flight.dataset.codecEffect = cue.id;
-    flight.dataset.effectKind = "ping";
-    let end = edgeAnchor(targetRect, sourceRect);
+    for (const [node, phase] of [
+      [path, "route"],
+      [launch, "launch"],
+      [flight, "flight"],
+    ] as const) {
+      node.dataset.codecEffect = cue.id;
+      node.dataset.effectKind = "ping";
+      node.dataset.effectPhase = phase;
+      node.dataset.sourceInstance = sourceId;
+      node.dataset.targetInstance = cue.targetInstanceId;
+      rememberNode(cue.id, node);
+    }
+    let geometry = measurePingGeometry(sourceRect, targetRect);
     const refreshFlight = () => {
       const currentSource = resolveAnchor(sourceId);
       const currentTarget = resolveAnchor(cue.targetInstanceId);
@@ -181,26 +210,34 @@ export function createCodecEffectRuntime(
       ) {
         return;
       }
-      const start = edgeAnchor(currentSourceRect, currentTargetRect);
-      end = edgeAnchor(currentTargetRect, currentSourceRect);
-      flight.style.left = `${start.x}px`;
-      flight.style.top = `${start.y}px`;
-      flight.style.setProperty("--fx-x", `${end.x - start.x}px`);
-      flight.style.setProperty("--fx-y", `${end.y - start.y}px`);
-      flight.style.setProperty("--fx-angle", `${Math.atan2(end.y - start.y, end.x - start.x)}rad`);
+      geometry = measurePingGeometry(currentSourceRect, currentTargetRect);
+      setPingGeometry(path, geometry);
+      setPingGeometry(launch, geometry);
+      setPingGeometry(flight, geometry);
     };
     refreshFlight();
     const core = element(flight, "span", options.classes.pingCore);
     const label = element(core, "span", options.classes.pingLabel);
     label.textContent = "PING";
-    options.layer.appendChild(flight);
-    rememberNode(cue.id, flight);
     rememberLayoutRefresher(cue.id, refreshFlight);
 
     later(cue.id, PING_TRAVEL_MS, () => {
-      flight.remove();
-      effectNodes.get(cue.id)?.delete(flight);
+      for (const node of [path, launch, flight]) {
+        node.remove();
+        effectNodes.get(cue.id)?.delete(node);
+      }
       effectLayoutRefreshers.delete(cue.id);
+      armEndpoint(
+        sourceId,
+        {
+          kind: "ping",
+          role: "source",
+          phase: "impact",
+          label: "Sent to",
+          peerName: targetName,
+        },
+        PING_IMPACT_MS + 700,
+      );
       armEndpoint(
         cue.targetInstanceId,
         {
@@ -212,15 +249,15 @@ export function createCodecEffectRuntime(
         },
         PING_IMPACT_MS + 700,
       );
-      const impact = createImpact(options, cue, end.x, end.y, "RECEIVED");
+      const impact = createImpact(options, cue, geometry.end.x, geometry.end.y, "RECEIVED");
       const refreshImpact = () => {
         const currentSource = resolveAnchor(sourceId);
         const currentTarget = resolveAnchor(cue.targetInstanceId);
         if (!currentSource || !currentTarget) return;
-        const currentEnd = edgeAnchor(
-          currentTarget.getBoundingClientRect(),
+        const currentEnd = measurePingGeometry(
           currentSource.getBoundingClientRect(),
-        );
+          currentTarget.getBoundingClientRect(),
+        ).end;
         impact.style.left = `${currentEnd.x}px`;
         impact.style.top = `${currentEnd.y}px`;
       };
@@ -384,16 +421,45 @@ function rectVisible(rect: DOMRect, view: Window | null): boolean {
   );
 }
 
-function edgeAnchor(rect: DOMRect, toward: DOMRect): { x: number; y: number } {
-  const centerX = rect.left + rect.width / 2;
-  const centerY = rect.top + rect.height / 2;
-  const vectorX = toward.left + toward.width / 2 - centerX;
-  const vectorY = toward.top + toward.height / 2 - centerY;
-  const inset = 10;
-  const xScale = Math.abs(vectorX) > 0 ? (rect.width / 2 - inset) / Math.abs(vectorX) : Infinity;
-  const yScale = Math.abs(vectorY) > 0 ? (rect.height / 2 - inset) / Math.abs(vectorY) : Infinity;
-  const scale = Math.min(xScale, yScale);
-  return { x: centerX + vectorX * scale, y: centerY + vectorY * scale };
+type PingRect = Pick<DOMRect, "left" | "top" | "width" | "height">;
+
+export interface PingGeometry {
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+  midpoint: { x: number; y: number };
+  delta: { x: number; y: number };
+  angle: number;
+  distance: number;
+}
+
+/** The ping is a relationship between whole cards, so both anchors are their
+ * visual centers. The small perpendicular bow keeps the packet legible over
+ * relationship lines while preserving exact center-to-center endpoints. */
+export function measurePingGeometry(source: PingRect, target: PingRect): PingGeometry {
+  const start = { x: source.left + source.width / 2, y: source.top + source.height / 2 };
+  const end = { x: target.left + target.width / 2, y: target.top + target.height / 2 };
+  const delta = { x: end.x - start.x, y: end.y - start.y };
+  const distance = Math.hypot(delta.x, delta.y);
+  const angle = Math.atan2(delta.y, delta.x);
+  const bow = distance === 0 ? 0 : Math.min(46, Math.max(16, distance * 0.055));
+  const normal =
+    distance === 0 ? { x: 0, y: 0 } : { x: -delta.y / distance, y: delta.x / distance };
+  const midpoint = {
+    x: delta.x / 2 + normal.x * bow,
+    y: delta.y / 2 + normal.y * bow,
+  };
+  return { start, end, midpoint, delta, angle, distance };
+}
+
+function setPingGeometry(node: HTMLElement, geometry: PingGeometry): void {
+  node.style.left = `${geometry.start.x}px`;
+  node.style.top = `${geometry.start.y}px`;
+  node.style.setProperty("--fx-x", `${geometry.delta.x}px`);
+  node.style.setProperty("--fx-y", `${geometry.delta.y}px`);
+  node.style.setProperty("--fx-mid-x", `${geometry.midpoint.x}px`);
+  node.style.setProperty("--fx-mid-y", `${geometry.midpoint.y}px`);
+  node.style.setProperty("--fx-angle", `${geometry.angle}rad`);
+  node.style.setProperty("--fx-distance", `${geometry.distance}px`);
 }
 
 function createImpact(
@@ -406,6 +472,9 @@ function createImpact(
   const impact = element(options.layer, "div", `${options.classes.root} ${options.classes.impact}`);
   impact.dataset.codecEffect = cue.id;
   impact.dataset.effectKind = cue.kind;
+  impact.dataset.effectPhase = "impact";
+  if (cue.sourceInstanceId) impact.dataset.sourceInstance = cue.sourceInstanceId;
+  impact.dataset.targetInstance = cue.targetInstanceId;
   impact.style.left = `${x}px`;
   impact.style.top = `${y}px`;
   const label = element(impact, "span", options.classes.label);

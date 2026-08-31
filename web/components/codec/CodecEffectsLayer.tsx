@@ -33,6 +33,8 @@ export const CodecEffectsLayer = forwardRef<CodecEffectRuntimeHandle, CodecEffec
         anchorRoot,
         classes: {
           root: styles.effectRoot,
+          pingLaunch: styles.pingLaunch,
+          pingPath: styles.pingPath,
           pingFlight: styles.pingFlight,
           pingCore: styles.pingCore,
           pingLabel: styles.pingLabel,
@@ -52,12 +54,25 @@ export const CodecEffectsLayer = forwardRef<CodecEffectRuntimeHandle, CodecEffec
         maxConcurrent: () => (window.innerWidth <= 720 ? 2 : 6),
       });
       runtimeRef.current = runtime;
+      let refreshFrame = 0;
+      const refreshActiveGeometry = () => {
+        if (refreshFrame) return;
+        refreshFrame = window.requestAnimationFrame(() => {
+          refreshFrame = 0;
+          runtime.refreshLayout();
+        });
+      };
       const stopHiddenEffects = () => {
         if (document.visibilityState === "hidden") runtime.cancelAll();
       };
       document.addEventListener("visibilitychange", stopHiddenEffects);
+      window.addEventListener("resize", refreshActiveGeometry);
+      window.addEventListener("scroll", refreshActiveGeometry, true);
       return () => {
         document.removeEventListener("visibilitychange", stopHiddenEffects);
+        window.removeEventListener("resize", refreshActiveGeometry);
+        window.removeEventListener("scroll", refreshActiveGeometry, true);
+        if (refreshFrame) window.cancelAnimationFrame(refreshFrame);
         runtime.cancelAll();
         runtimeRef.current = null;
         layer.remove();
