@@ -57,7 +57,7 @@ describe("resource sampler", () => {
       nowMs: 1_000,
       clockTicks: 100,
       pageSize: 4_096,
-      service: { pid: 999, id: "supervisor" },
+      services: [{ pid: 999, id: "supervisor" }],
       unattributedRssFloor: 0,
     });
     expect(first.snapshot.machine.cpu_percent).toBeNull();
@@ -67,7 +67,7 @@ describe("resource sampler", () => {
       nowMs: 3_000,
       clockTicks: 100,
       pageSize: 4_096,
-      service: { pid: 999, id: "supervisor" },
+      services: [{ pid: 999, id: "supervisor" }],
       unattributedRssFloor: 0,
     });
     expect(second.snapshot.machine.cpu_percent).toBe(75);
@@ -76,11 +76,49 @@ describe("resource sampler", () => {
     expect(second.snapshot.processes[0]?.cpu_percent).toBeGreaterThan(0);
     expect(second.snapshot.processes[0]?.rss_bytes).toBe(40_960);
   });
+
+  test("attributes descendants to the nearest live service anchor", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-resources-service-"));
+    roots.push(root);
+    const procRoot = join(root, "proc");
+    mkdirSync(procRoot, { recursive: true });
+    writeSystemFiles(procRoot, { total: 1_000, idle: 500 });
+    writeProcess(procRoot, { pid: 200, ppid: 1, startTicks: 100, processTicks: 20 });
+    writeProcess(procRoot, { pid: 201, ppid: 200, startTicks: 110, processTicks: 10 });
+    const result = sampleResources(root, undefined, {
+      procRoot,
+      nowMs: 1_000,
+      clockTicks: 100,
+      pageSize: 4_096,
+      services: [{ pid: 200, id: "dashboard" }],
+      unattributedRssFloor: 0,
+    });
+    expect(result.snapshot.processes).toMatchObject([
+      { pid: 200, owner_kind: "service", owner_id: "dashboard", owner_root_pid: 200 },
+      { pid: 201, owner_kind: "service", owner_id: "dashboard", owner_root_pid: 200 },
+    ]);
+    expect(result.snapshot.groups).toMatchObject([
+      { kind: "service", id: "dashboard", process_count: 2, root_pids: [200] },
+    ]);
+  });
 });
 
 function writeProcSnapshot(
   procRoot: string,
   values: { total: number; idle: number; processTicks: number },
+): void {
+  writeSystemFiles(procRoot, values);
+  writeProcess(procRoot, {
+    pid: 123,
+    ppid: 1,
+    startTicks: 100,
+    processTicks: values.processTicks,
+  });
+}
+
+function writeSystemFiles(
+  procRoot: string,
+  values: { total: number; idle: number },
 ): void {
   const system = Math.max(0, values.total - values.idle - 100);
   writeFileSync(join(procRoot, "stat"), `cpu 100 ${system} 0 ${values.idle} 0 0 0 0 0 0\n`);
@@ -89,13 +127,23 @@ function writeProcSnapshot(
     "MemTotal:       1000000 kB\nMemAvailable:    500000 kB\nSwapTotal:       100000 kB\nSwapFree:         75000 kB\n",
   );
   writeFileSync(join(procRoot, "uptime"), "1000.00 0.00\n");
+}
+
+function writeProcess(
+  procRoot: string,
+  values: { pid: number; ppid: number; startTicks: number; processTicks: number },
+): void {
+  mkdirSync(join(procRoot, String(values.pid)), { recursive: true });
   const fields = Array.from({ length: 22 }, () => "0");
   fields[0] = "S";
-  fields[1] = "1";
+  fields[1] = String(values.ppid);
   fields[11] = String(values.processTicks);
   fields[12] = "0";
-  fields[19] = "100";
+  fields[19] = String(values.startTicks);
   fields[21] = "10";
-  writeFileSync(join(procRoot, "123", "stat"), `123 (node worker) ${fields.join(" ")}\n`);
-  writeFileSync(join(procRoot, "123", "cmdline"), "node\0worker.js\0");
+  writeFileSync(
+    join(procRoot, String(values.pid), "stat"),
+    `${values.pid} (node worker) ${fields.join(" ")}\n`,
+  );
+  writeFileSync(join(procRoot, String(values.pid), "cmdline"), "node\0worker.js\0");
 }

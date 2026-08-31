@@ -59,6 +59,7 @@ export function collectServiceHealth(
       pid: supervisor.pid,
       started_at: supervisor.started_at,
       heartbeat_at: supervisor.heartbeat_at,
+      ...(supervisor.state === "error" ? { reason: "supervisor-reported-error" } : {}),
     },
     semantic,
     governor,
@@ -125,16 +126,28 @@ function readDetachedService(
   if (!record || !Number.isSafeInteger(record.pid) || record.pid < 1) {
     return { id, state: "stopped" };
   }
-  if (record.state === "stopped") {
+  if (record.state === "stopping" || record.state === "stopped") {
     return projection(id, "stopped", record);
   }
   if (record.host && record.host !== hostname()) {
     const age = record.heartbeat_at
       ? Date.now() - Date.parse(record.heartbeat_at)
       : Number.POSITIVE_INFINITY;
-    return projection(id, Number.isFinite(age) && age < 120_000 ? "running" : "stale", record);
+    const state = Number.isFinite(age) && age < 120_000 ? "running" : "stale";
+    return projection(
+      id,
+      state,
+      record,
+      state === "stale" ? "remote-heartbeat-expired" : undefined,
+    );
   }
-  return projection(id, pidAlive(record.pid) ? "running" : "stale", record);
+  const state = pidAlive(record.pid) ? "running" : "stale";
+  return projection(
+    id,
+    state,
+    record,
+    state === "stale" ? "recorded-running-process-missing" : undefined,
+  );
 }
 
 function readPresenceRelay(path: string): ObservedServiceHealth {
@@ -142,11 +155,13 @@ function readPresenceRelay(path: string): ObservedServiceHealth {
   if (!record || !Number.isSafeInteger(record.pid) || record.pid < 1) {
     return { id: "presence-relay", state: "stopped" };
   }
+  const running = pidAlive(record.pid);
   return {
     id: "presence-relay",
-    state: pidAlive(record.pid) ? "running" : "stale",
+    state: running ? "running" : "stale",
     pid: record.pid,
     ...(record.started_at ? { started_at: record.started_at } : {}),
+    ...(!running ? { reason: "recorded-running-process-missing" } : {}),
   };
 }
 
@@ -154,6 +169,7 @@ function projection(
   id: "semantic-reader" | "governor",
   state: ObservedServiceHealth["state"],
   record: DetachedServiceRecord,
+  reason?: string,
 ): ObservedServiceHealth {
   return {
     id,
@@ -161,6 +177,7 @@ function projection(
     pid: record.pid,
     ...(record.started_at ? { started_at: record.started_at } : {}),
     ...(record.heartbeat_at ? { heartbeat_at: record.heartbeat_at } : {}),
+    ...(reason ? { reason } : {}),
   };
 }
 

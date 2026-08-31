@@ -1,15 +1,23 @@
 import { createHash } from "node:crypto";
 import type { CoordinationHealthSnapshot } from "../agents/health.ts";
-import type { ResourceProcessGroup, ResourceSnapshot } from "../resources/contract.ts";
+import type {
+  ResourceProcessGroup,
+  ResourceProcessSample,
+  ResourceSnapshot,
+} from "../resources/contract.ts";
 import {
   type ObservedHookHealth,
   type ObservedServiceHealth,
   SUPERVISOR_DIAGNOSTIC_LIMITS,
+  SUPERVISOR_FINDING_POLICY,
   SUPERVISOR_FINDING_SCHEMA_VERSION,
+  type SupervisorActivitySnapshot,
   type SupervisorCapability,
   type SupervisorFinding,
+  type SupervisorFindingAttribution,
   type SupervisorFindingEvidence,
   type SupervisorFindingSeverity,
+  type SupervisorFindingWorkloadContext,
   type SupervisorFindings,
   type SupervisorHistory,
   type SupervisorLogFeed,
@@ -39,6 +47,8 @@ interface Candidate {
   primary_source: SupervisorSourceReference;
   evidence: SupervisorFindingEvidence[];
   capabilities: SupervisorCapability[];
+  attribution?: SupervisorFindingAttribution;
+  workload_context?: SupervisorFindingWorkloadContext;
 }
 
 export interface SupervisorFindingEvaluationInput {
@@ -49,6 +59,7 @@ export interface SupervisorFindingEvaluationInput {
   history: SupervisorHistory;
   logFeed: SupervisorLogFeed;
   coordination?: CoordinationHealthSnapshot;
+  activity?: SupervisorActivitySnapshot;
   now?: Date;
 }
 
@@ -77,13 +88,19 @@ export function updateSupervisorFindings(
   const priorActive = new Map(previous.active.map((entry) => [entry.fingerprint, entry]));
   const current = new Set<string>();
   const active: SupervisorFinding[] = [];
-  const transitions = [...previous.transitions];
+  const transitions = new Map(previous.transitions.map((entry) => [entry.id, entry]));
 
   for (const candidate of candidates) {
     const fingerprint = findingFingerprint(candidate);
     current.add(fingerprint);
-    const prior = priorActive.get(fingerprint);
+    const prior = priorActive.get(fingerprint) ?? recentResolved(previous, fingerprint, observedAt);
     const openedAt = prior?.opened_at ?? candidate.primary_source.observed_at;
+    const occurrenceCount = prior
+      ? prior.state === "resolved"
+        ? prior.occurrence_count + 1
+        : prior.occurrence_count
+      : 1;
+    const peak = peakEvidence(prior, candidate.evidence, observedAt);
     const finding: SupervisorFinding = {
       schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
       id: deterministicId("find", `${fingerprint}\u0000${openedAt}`),
@@ -97,17 +114,21 @@ export function updateSupervisorFindings(
       summary: candidate.summary,
       opened_at: openedAt,
       observed_at: observedAt,
+      occurrence_count: occurrenceCount,
+      ...peak,
+      ...(candidate.attribution ? { attribution: candidate.attribution } : {}),
+      ...(candidate.workload_context ? { workload_context: candidate.workload_context } : {}),
       primary_source: candidate.primary_source,
       evidence: candidate.evidence.slice(0, SUPERVISOR_DIAGNOSTIC_LIMITS.max_evidence_per_finding),
       capabilities: boundCapabilities(candidate.capabilities),
     };
     active.push(finding);
-    if (!prior) transitions.push(finding);
+    transitions.set(finding.id, finding);
   }
 
   for (const prior of priorActive.values()) {
     if (current.has(prior.fingerprint)) continue;
-    transitions.push({
+    transitions.set(prior.id, {
       ...prior,
       state: "resolved",
       observed_at: observedAt,
@@ -119,7 +140,9 @@ export function updateSupervisorFindings(
     schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
     max_findings: SUPERVISOR_DIAGNOSTIC_LIMITS.max_findings,
     active,
-    transitions: transitions.slice(-SUPERVISOR_DIAGNOSTIC_LIMITS.max_findings),
+    transitions: [...transitions.values()]
+      .sort((left, right) => left.observed_at.localeCompare(right.observed_at))
+      .slice(-SUPERVISOR_DIAGNOSTIC_LIMITS.max_findings),
   };
 }
 
@@ -130,6 +153,7 @@ function evaluateCandidates(input: {
   history: SupervisorHistory;
   logFeed: SupervisorLogFeed;
   coordination?: CoordinationHealthSnapshot;
+  activity?: SupervisorActivitySnapshot;
 }): Candidate[] {
   const out: Candidate[] = [];
   const resourceCapability: SupervisorCapability = {
@@ -213,7 +237,7 @@ function evaluateCandidates(input: {
         "warning",
         "service",
         service.id,
-        `${service.id} has stale liveness evidence.`,
+        serviceStaleSummary(service),
         serviceSource,
         undefined,
         undefined,
@@ -252,10 +276,11 @@ function evaluateCandidates(input: {
         "process",
         process.start_id,
         `Process ${process.pid} uses ${process.rss_bytes} resident bytes.`,
-        source,
+        resourceSource(input.resource, resourceCapability.state, process.start_id),
         process.rss_bytes,
         "bytes",
         [resourceCapability],
+        processAttribution(process),
       ),
     );
   for (const group of input.resource.groups
@@ -266,12 +291,13 @@ function evaluateCandidates(input: {
         "group.memory-pressure",
         "critical",
         group.kind,
-        groupKey(group),
+        group.id,
         `${groupLabel(group)} uses ${group.rss_bytes} resident bytes.`,
         source,
         group.rss_bytes,
         "bytes",
         [resourceCapability],
+        groupAttribution(group),
       ),
     );
   for (const group of input.resource.groups
@@ -282,15 +308,18 @@ function evaluateCandidates(input: {
         "group.process-pressure",
         "warning",
         group.kind,
-        groupKey(group),
+        group.id,
         `${groupLabel(group)} owns ${group.process_count} visible processes.`,
         source,
         group.process_count,
         "processes",
         [resourceCapability],
+        groupAttribution(group),
       ),
     );
-  out.push(...memoryGrowthCandidates(input.resource, input.history, resourceCapability));
+  out.push(
+    ...memoryGrowthCandidates(input.resource, input.history, resourceCapability, input.activity),
+  );
 
   if (input.logFeed.unavailable_families > 0) {
     const logCapability: SupervisorCapability = {
@@ -376,6 +405,7 @@ function memoryGrowthCandidates(
   resource: ResourceSnapshot,
   history: SupervisorHistory,
   capability: SupervisorCapability,
+  activity?: SupervisorActivitySnapshot,
 ): Candidate[] {
   const newestAt = Date.parse(resource.sampled_at);
   const baseline = history.points.find(
@@ -394,20 +424,149 @@ function memoryGrowthCandidates(
       )
         return [];
       return [
-        candidate(
+        memoryGrowthCandidate(
+          group,
+          activity,
           "resource.memory-growth",
-          "warning",
-          group.kind,
-          groupKey(group),
           `${groupLabel(group)} grew by ${delta} resident bytes since ${baseline.sampled_at}.`,
           resourceSource(resource, capability.state),
           delta,
-          "bytes",
-          [capability],
+          capability,
         ),
       ];
     })
     .slice(0, 5);
+}
+
+function memoryGrowthCandidate(
+  group: ResourceProcessGroup,
+  activity: SupervisorActivitySnapshot | undefined,
+  findingKind: string,
+  summary: string,
+  source: SupervisorSourceReference,
+  delta: number,
+  resourceCapability: SupervisorCapability,
+): Candidate {
+  const workload = workloadContext(group, activity, source.observed_at);
+  const severity: SupervisorFindingSeverity =
+    workload.context.relationship === "unexpected-idle-growth" ? "critical" : "warning";
+  const result = candidate(
+    findingKind,
+    severity,
+    group.kind,
+    group.id,
+    summary,
+    source,
+    delta,
+    "bytes",
+    [resourceCapability, workload.capability],
+    groupAttribution(group),
+    workload.context,
+  );
+  if (workload.evidence) result.evidence.push(workload.evidence);
+  return result;
+}
+
+function workloadContext(
+  group: ResourceProcessGroup,
+  activity: SupervisorActivitySnapshot | undefined,
+  observedAt: string,
+): {
+  context: SupervisorFindingWorkloadContext;
+  capability: SupervisorCapability;
+  evidence?: SupervisorFindingEvidence;
+} {
+  const capability = activity?.capability ?? {
+    source_kind: "coordination.activity-projection",
+    state: "unsupported" as const,
+    reason_code: "activity-projection-not-captured",
+  };
+  const matched =
+    group.kind === "agent"
+      ? activity?.entries.find((entry) => entry.scope_id === group.id)
+      : undefined;
+  if (!matched) {
+    return {
+      context: {
+        relationship: "unknown",
+        declared_activity: "unknown",
+        task_state: "unknown",
+        observed_at: activity?.observed_at ?? observedAt,
+        source: stableSource(
+          "coordination.activity-projection",
+          group.kind === "agent" ? group.id : "not-applicable",
+          activity?.observed_at ?? observedAt,
+          capability.state,
+          undefined,
+          activity?.schema_version,
+        ),
+      },
+      capability,
+    };
+  }
+  const relationship =
+    matched.declared_activity === "working" && matched.task_state === "active"
+      ? "active-work"
+      : matched.declared_activity === "unknown"
+        ? "unknown"
+        : "unexpected-idle-growth";
+  const summary = `Agent declared ${matched.declared_activity} with task state ${matched.task_state}.`;
+  return {
+    context: {
+      relationship,
+      declared_activity: matched.declared_activity,
+      task_state: matched.task_state,
+      observed_at: matched.observed_at,
+      source: matched.source,
+    },
+    capability,
+    evidence: {
+      id: deterministicId("ev", `${findingKindKey(group)}\u0000${matched.source.id}`),
+      source: matched.source,
+      summary,
+    },
+  };
+}
+
+function findingKindKey(group: ResourceProcessGroup): string {
+  return `resource.memory-growth\u0000${group.kind}\u0000${group.id}`;
+}
+
+function processAttribution(process: ResourceProcessSample): SupervisorFindingAttribution {
+  if (
+    (process.owner_kind === "agent" || process.owner_kind === "service") &&
+    process.owner_id &&
+    process.owner_root_pid !== null
+  ) {
+    return {
+      state: "attributed",
+      owner_kind: process.owner_kind,
+      owner_id: process.owner_id,
+      owner_root_pid: process.owner_root_pid,
+    };
+  }
+  return { state: "unattributed", reason_code: "no-validated-process-anchor" };
+}
+
+function groupAttribution(group: ResourceProcessGroup): SupervisorFindingAttribution {
+  if (group.kind === "agent" || group.kind === "service") {
+    return {
+      state: "attributed",
+      owner_kind: group.kind,
+      owner_id: group.id,
+      ...(group.root_pids[0] !== undefined ? { owner_root_pid: group.root_pids[0] } : {}),
+    };
+  }
+  return { state: "unattributed", reason_code: "no-validated-process-anchor" };
+}
+
+function serviceStaleSummary(service: ObservedServiceHealth): string {
+  if (service.reason === "recorded-running-process-missing")
+    return `${service.id} was recorded running, but its process is no longer present.`;
+  if (service.reason === "remote-heartbeat-expired")
+    return `${service.id} has an expired remote heartbeat.`;
+  if (service.reason === "supervisor-reported-error") return `${service.id} reported an error.`;
+  return `${service.id} has stale liveness evidence.`;
 }
 
 function candidate(
@@ -420,6 +579,8 @@ function candidate(
   observedValue: number | undefined,
   unit: SupervisorFindingEvidence["unit"] | undefined,
   capabilities: SupervisorCapability[],
+  attribution?: SupervisorFindingAttribution,
+  workloadContext?: SupervisorFindingWorkloadContext,
 ): Candidate {
   const evidence: SupervisorFindingEvidence = {
     id: deterministicId("ev", `${findingKind}\u0000${scopeKind}\u0000${scopeId}\u0000${source.id}`),
@@ -438,19 +599,22 @@ function candidate(
     primary_source: source,
     evidence: [evidence],
     capabilities,
+    ...(attribution ? { attribution } : {}),
+    ...(workloadContext ? { workload_context: workloadContext } : {}),
   };
 }
 
 function resourceSource(
   resource: ResourceSnapshot,
   capability: SupervisorSourceReference["capability"],
+  recordId?: string,
 ): SupervisorSourceReference {
   return stableSource(
     "resource.snapshot",
     `${resource.platform}:${resource.namespace}`,
     resource.sampled_at,
     capability,
-    undefined,
+    recordId,
     resource.schema_version,
   );
 }
@@ -475,6 +639,54 @@ function stableSource(
     ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}),
     capability,
   };
+}
+
+function recentResolved(
+  findings: SupervisorFindings,
+  fingerprint: string,
+  observedAt: string,
+): SupervisorFinding | undefined {
+  const observedMs = Date.parse(observedAt);
+  return findings.transitions
+    .filter(
+      (entry) =>
+        entry.fingerprint === fingerprint &&
+        entry.state === "resolved" &&
+        entry.resolved_at !== undefined &&
+        observedMs - Date.parse(entry.resolved_at) >= 0 &&
+        observedMs - Date.parse(entry.resolved_at) <= SUPERVISOR_FINDING_POLICY.episode_gap_ms,
+    )
+    .sort((left, right) => (right.resolved_at ?? "").localeCompare(left.resolved_at ?? ""))[0];
+}
+
+function peakEvidence(
+  prior: SupervisorFinding | undefined,
+  evidence: readonly SupervisorFindingEvidence[],
+  observedAt: string,
+): Pick<SupervisorFinding, "peak_observed_value" | "peak_observed_at" | "peak_unit"> {
+  const current = evidence
+    .filter(
+      (entry): entry is SupervisorFindingEvidence & { observed_value: number } =>
+        entry.observed_value !== undefined,
+    )
+    .sort((left, right) => right.observed_value - left.observed_value)[0];
+  if (
+    prior?.peak_observed_value !== undefined &&
+    (!current || prior.peak_observed_value >= current.observed_value)
+  ) {
+    return {
+      peak_observed_value: prior.peak_observed_value,
+      ...(prior.peak_observed_at ? { peak_observed_at: prior.peak_observed_at } : {}),
+      ...(prior.peak_unit ? { peak_unit: prior.peak_unit } : {}),
+    };
+  }
+  return current
+    ? {
+        peak_observed_value: current.observed_value,
+        peak_observed_at: current.source.observed_at || observedAt,
+        ...(current.unit ? { peak_unit: current.unit } : {}),
+      }
+    : {};
 }
 
 function findingFingerprint(candidate: Candidate): string {

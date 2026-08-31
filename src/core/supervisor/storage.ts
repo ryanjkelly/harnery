@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import type { CoordinationHealthSnapshot } from "../agents/health.ts";
 import type {
   SupervisorConsumerRecord,
+  SupervisorActivitySnapshot,
   SupervisorFindingExplanation,
   SupervisorFindings,
   SupervisorHistory,
@@ -19,6 +20,7 @@ export interface SupervisorPaths {
   stop: string;
   snapshot: string;
   history: string;
+  activity: string;
   findings: string;
   timelines: string;
   explanations: string;
@@ -36,6 +38,7 @@ export function supervisorPaths(coordRootRaw: string): SupervisorPaths {
     stop: join(root, "stop.json"),
     snapshot: join(root, "snapshot.json"),
     history: join(root, "history.json"),
+    activity: join(root, "activity.json"),
     findings: join(root, "findings.json"),
     timelines: join(root, "timelines"),
     explanations: join(root, "explanations"),
@@ -61,6 +64,10 @@ export function readSupervisorSnapshot(coordRoot: string): SupervisorSnapshot | 
 
 export function readSupervisorHistory(coordRoot: string): SupervisorHistory | undefined {
   return readJson<SupervisorHistory>(supervisorPaths(coordRoot).history);
+}
+
+export function readSupervisorActivity(coordRoot: string): SupervisorActivitySnapshot | undefined {
+  return readJson<SupervisorActivitySnapshot>(supervisorPaths(coordRoot).activity);
 }
 
 export function readSupervisorFindings(coordRoot: string): SupervisorFindings | undefined {

@@ -43,7 +43,7 @@ interface ResourceSamplerOptions {
   nowMs?: number;
   clockTicks?: number;
   pageSize?: number;
-  service?: { pid: number; id: string };
+  services?: readonly { pid: number; id: string }[];
   unattributedCpuFloor?: number;
   unattributedRssFloor?: number;
   maxProcesses?: number;
@@ -86,7 +86,7 @@ export function sampleResources(
   const cpu = parseLinuxCpu(readFileSync(join(procRoot, "stat"), "utf8"));
   const memory = parseMeminfo(readFileSync(join(procRoot, "meminfo"), "utf8"));
   const readings = readLinuxProcesses(procRoot, clockTicks, pageSize, uptimeSeconds);
-  const anchors = readPidmapAnchors(coordRoot, readings);
+  const anchors = readOwnershipAnchors(coordRoot, readings, options.services ?? []);
   const byPid = new Map(readings.map((reading) => [reading.pid, reading]));
   const processTicks = new Map<string, number>();
   const intervalMs = previous ? Math.max(0, nowMs - previous.sampled_at_ms) : null;
@@ -102,10 +102,7 @@ export function sampleResources(
       processDelta === undefined || totalTickDelta <= 0
         ? null
         : round1((processDelta / totalTickDelta) * logicalCpus * 100);
-    const ownership =
-      options.service && reading.pid === options.service.pid
-        ? { kind: "service" as const, id: options.service.id, rootPid: options.service.pid }
-        : resolveOwnership(reading.pid, byPid, anchors);
+    const ownership = resolveOwnership(reading.pid, byPid, anchors);
     return {
       pid: reading.pid,
       ppid: reading.ppid,
@@ -288,24 +285,36 @@ function readLinuxProcesses(
   return rows;
 }
 
-function readPidmapAnchors(
+interface OwnershipAnchor {
+  kind: "agent" | "service";
+  id: string;
+}
+
+function readOwnershipAnchors(
   coordRoot: string,
   readings: readonly LinuxProcessReading[],
-): Map<number, string> {
+  services: readonly { pid: number; id: string }[],
+): Map<number, OwnershipAnchor> {
   const byPid = new Set(readings.map((row) => row.pid));
   const directory = join(coordRoot, ".harnery", "pid-map");
-  const anchors = new Map<number, string>();
-  if (!existsSync(directory)) return anchors;
-  for (const entry of readdirSync(directory)) {
-    if (!/^\d+$/.test(entry)) continue;
-    const pid = Number(entry);
-    if (!byPid.has(pid)) continue;
-    try {
-      const row = parsePidmapRow(readFileSync(join(directory, entry), "utf8"));
-      if (!row.instanceId || checkPidToken(pid, row.startToken) === "mismatch") continue;
-      anchors.set(pid, row.instanceId);
-    } catch {
-      // An unreadable or racing row cannot prove ownership.
+  const anchors = new Map<number, OwnershipAnchor>();
+  if (existsSync(directory)) {
+    for (const entry of readdirSync(directory)) {
+      if (!/^\d+$/.test(entry)) continue;
+      const pid = Number(entry);
+      if (!byPid.has(pid)) continue;
+      try {
+        const row = parsePidmapRow(readFileSync(join(directory, entry), "utf8"));
+        if (!row.instanceId || checkPidToken(pid, row.startToken) === "mismatch") continue;
+        anchors.set(pid, { kind: "agent", id: row.instanceId });
+      } catch {
+        // An unreadable or racing row cannot prove ownership.
+      }
+    }
+  }
+  for (const service of services) {
+    if (byPid.has(service.pid) && service.id.trim()) {
+      anchors.set(service.pid, { kind: "service", id: service.id.trim() });
     }
   }
   return anchors;
@@ -314,14 +323,14 @@ function readPidmapAnchors(
 function resolveOwnership(
   pid: number,
   byPid: ReadonlyMap<number, LinuxProcessReading>,
-  anchors: ReadonlyMap<number, string>,
-): { kind: "agent"; id: string; rootPid: number } | undefined {
+  anchors: ReadonlyMap<number, OwnershipAnchor>,
+): { kind: "agent" | "service"; id: string; rootPid: number } | undefined {
   const seen = new Set<number>();
   let cursor = pid;
   for (let hops = 0; hops < 64 && cursor > 0 && !seen.has(cursor); hops++) {
     seen.add(cursor);
     const owner = anchors.get(cursor);
-    if (owner) return { kind: "agent", id: owner, rootPid: cursor };
+    if (owner) return { ...owner, rootPid: cursor };
     cursor = byPid.get(cursor)?.ppid ?? 0;
   }
   return undefined;

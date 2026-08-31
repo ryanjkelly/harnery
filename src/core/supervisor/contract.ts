@@ -4,7 +4,8 @@ import type { HarneryLogRecordV1 } from "../storage/jsonl.ts";
 export const SUPERVISOR_STATUS_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_SNAPSHOT_SCHEMA_VERSION = 2 as const;
 export const SUPERVISOR_HISTORY_SCHEMA_VERSION = 1 as const;
-export const SUPERVISOR_FINDING_SCHEMA_VERSION = 1 as const;
+export const SUPERVISOR_FINDING_SCHEMA_VERSION = 2 as const;
+export const SUPERVISOR_ACTIVITY_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_TIMELINE_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_EXPLANATION_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_LOG_FEED_SCHEMA_VERSION = 1 as const;
@@ -17,10 +18,18 @@ export const SUPERVISOR_DIAGNOSTIC_LIMITS = {
   max_timeline_entries: 160,
   max_explanation_items: 24,
   max_capabilities: 16,
+  max_activity_entries: 64,
   max_bundle_files: 32,
   max_bundle_bytes: 8 * 1_024 * 1_024,
   max_summary_chars: 500,
   max_excerpt_chars: 2_000,
+} as const;
+
+export const SUPERVISOR_FINDING_POLICY = {
+  episode_gap_ms: 5 * 60_000,
+  activity_freshness_ms: 2 * 60_000,
+  max_activity_file_bytes: 64 * 1_024,
+  max_activity_total_bytes: 512 * 1_024,
 } as const;
 
 export const SUPERVISOR_RESOURCE_BUDGET = {
@@ -148,6 +157,22 @@ export interface SupervisorFindingEvidence {
   unit?: "percent" | "bytes" | "milliseconds" | "seconds" | "processes" | "count";
 }
 
+export interface SupervisorFindingAttribution {
+  state: "attributed" | "unattributed";
+  owner_kind?: "agent" | "service";
+  owner_id?: string;
+  owner_root_pid?: number;
+  reason_code?: "no-validated-process-anchor";
+}
+
+export interface SupervisorFindingWorkloadContext {
+  relationship: "active-work" | "unexpected-idle-growth" | "unknown";
+  declared_activity: "working" | "needs_input" | "idle" | "unknown";
+  task_state: "active" | "blocked" | "done" | "unknown";
+  observed_at: string;
+  source: SupervisorSourceReference;
+}
+
 export interface SupervisorFinding {
   schema_version: typeof SUPERVISOR_FINDING_SCHEMA_VERSION;
   id: string;
@@ -162,9 +187,34 @@ export interface SupervisorFinding {
   opened_at: string;
   observed_at: string;
   resolved_at?: string;
+  occurrence_count: number;
+  peak_observed_value?: number;
+  peak_observed_at?: string;
+  peak_unit?: SupervisorFindingEvidence["unit"];
+  attribution?: SupervisorFindingAttribution;
+  workload_context?: SupervisorFindingWorkloadContext;
   primary_source: SupervisorSourceReference;
   evidence: readonly SupervisorFindingEvidence[];
   capabilities: readonly SupervisorCapability[];
+}
+
+export interface SupervisorDeclaredActivity {
+  scope_kind: "agent";
+  scope_id: string;
+  session_id: string;
+  declared_activity: "working" | "needs_input" | "idle" | "unknown";
+  task_state: "active" | "blocked" | "done";
+  observed_at: string;
+  source: SupervisorSourceReference;
+}
+
+export interface SupervisorActivitySnapshot {
+  schema_version: typeof SUPERVISOR_ACTIVITY_SCHEMA_VERSION;
+  observed_at: string;
+  max_entries: number;
+  entries: readonly SupervisorDeclaredActivity[];
+  omitted_entry_count: number;
+  capability: SupervisorCapability;
 }
 
 export interface SupervisorFindings {

@@ -4,8 +4,10 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResourceSnapshot } from "../resources/contract.ts";
 import {
+  SUPERVISOR_ACTIVITY_SCHEMA_VERSION,
   SUPERVISOR_LOG_FEED_SCHEMA_VERSION,
   SUPERVISOR_STATUS_SCHEMA_VERSION,
+  type SupervisorActivitySnapshot,
   type SupervisorLogFeed,
   type SupervisorServiceStatusRecord,
 } from "./contract.ts";
@@ -137,8 +139,91 @@ describe("local supervisor collectors", () => {
       (entry) => entry.finding_kind === "machine.memory-pressure",
     );
     expect(reopenedFinding?.fingerprint).toBe(active.fingerprint);
-    expect(reopenedFinding?.id).not.toBe(active.id);
+    expect(reopenedFinding?.id).toBe(active.id);
+    expect(reopenedFinding?.occurrence_count).toBe(2);
+    expect(reopenedFinding?.peak_observed_value).toBe(91);
+    const afterGap = resourceAt(Date.parse(recovered.sampled_at) + 6 * 60_000);
+    afterGap.machine.memory_percent = 92;
+    const newEpisode = updateSupervisorFindings({
+      previous: second,
+      resource: afterGap,
+      services: [],
+      hooks: [],
+      history: updateSupervisorHistory(history, afterGap).history,
+      logFeed: emptyFeed(),
+      now: new Date(afterGap.sampled_at),
+    }).active.find((entry) => entry.finding_kind === "machine.memory-pressure");
+    expect(newEpisode?.id).not.toBe(active.id);
+    expect(newEpisode?.occurrence_count).toBe(1);
     expect(second.transitions.length).toBeLessThanOrEqual(100);
+  });
+
+  test("adds validated ownership and raises idle memory growth above active work", () => {
+    const baseline = resourceAt(Date.parse("2026-08-30T12:00:00.000Z"));
+    baseline.groups = [resourceGroup("agent-a", 512 * 1_024 ** 2)];
+    const firstHistory = updateSupervisorHistory(undefined, baseline).history;
+    const current = resourceAt(Date.parse("2026-08-30T12:02:00.000Z"));
+    current.groups = [resourceGroup("agent-a", 1_024 * 1_024 ** 2)];
+    const history = updateSupervisorHistory(firstHistory, current).history;
+    const shared = {
+      resource: current,
+      services: [],
+      hooks: [],
+      history,
+      logFeed: emptyFeed(),
+      now: new Date(current.sampled_at),
+    };
+    const active = updateSupervisorFindings({
+      ...shared,
+      activity: activityAt("agent-a", "working", "active", current.sampled_at),
+    }).active.find((entry) => entry.finding_kind === "resource.memory-growth");
+    const idle = updateSupervisorFindings({
+      ...shared,
+      activity: activityAt("agent-a", "idle", "active", current.sampled_at),
+    }).active.find((entry) => entry.finding_kind === "resource.memory-growth");
+    expect(active).toMatchObject({
+      severity: "warning",
+      scope_id: "agent-a",
+      attribution: { state: "attributed", owner_kind: "agent", owner_id: "agent-a" },
+      workload_context: { relationship: "active-work", declared_activity: "working" },
+    });
+    expect(idle).toMatchObject({
+      severity: "critical",
+      workload_context: { relationship: "unexpected-idle-growth", declared_activity: "idle" },
+    });
+    expect(idle?.evidence).toHaveLength(2);
+  });
+
+  test("keeps explicit unattributed evidence on large processes", () => {
+    const resource = resourceAt(Date.parse("2026-08-30T12:00:00.000Z"));
+    resource.processes = [
+      {
+        pid: 70,
+        ppid: 1,
+        start_id: "70:700",
+        state: "S",
+        name: "node",
+        command: "node worker.js",
+        cpu_percent: 1,
+        rss_bytes: 2 * 1_024 ** 3,
+        age_seconds: 300,
+        owner_kind: "unattributed",
+        owner_id: null,
+        owner_root_pid: null,
+      },
+    ];
+    const finding = updateSupervisorFindings({
+      resource,
+      services: [],
+      hooks: [],
+      history: updateSupervisorHistory(undefined, resource).history,
+      logFeed: emptyFeed(),
+      now: new Date(resource.sampled_at),
+    }).active.find((entry) => entry.finding_kind === "process.memory-pressure");
+    expect(finding).toMatchObject({
+      attribution: { state: "unattributed", reason_code: "no-validated-process-anchor" },
+      primary_source: { record_id: "70:700" },
+    });
   });
 
   test("replays the frozen memory-growth scenario with stable identity", () => {
@@ -321,5 +406,39 @@ function resourceGroup(id: string, rssBytes: number): ResourceSnapshot["groups"]
     cpu_percent: 1,
     rss_bytes: rssBytes,
     root_pids: [42],
+  };
+}
+
+function activityAt(
+  id: string,
+  declaredActivity: "working" | "needs_input" | "idle" | "unknown",
+  taskState: "active" | "blocked" | "done",
+  observedAt: string,
+): SupervisorActivitySnapshot {
+  const source = {
+    id: `src-${id}`,
+    source_kind: "coordination.activity-projection",
+    source_id: `inst-${id}:gen-test`,
+    observed_at: observedAt,
+    schema_version: SUPERVISOR_ACTIVITY_SCHEMA_VERSION,
+    capability: "supported" as const,
+  };
+  return {
+    schema_version: SUPERVISOR_ACTIVITY_SCHEMA_VERSION,
+    observed_at: observedAt,
+    max_entries: 64,
+    omitted_entry_count: 0,
+    capability: { source_kind: "coordination.activity-projection", state: "supported" },
+    entries: [
+      {
+        scope_kind: "agent",
+        scope_id: id,
+        session_id: `session-${id}`,
+        declared_activity: declaredActivity,
+        task_state: taskState,
+        observed_at: observedAt,
+        source,
+      },
+    ],
   };
 }

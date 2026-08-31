@@ -30,6 +30,7 @@ import {
   type SupervisorSnapshot,
   type SupervisorStatus,
 } from "./contract.ts";
+import { collectSupervisorActivitySnapshot } from "./activity.ts";
 import { explainSupervisorFinding } from "./explanations.ts";
 import { updateSupervisorFindings } from "./findings.ts";
 import { updateSupervisorHistory } from "./history.ts";
@@ -217,20 +218,29 @@ export async function runSupervisor(
     while (!stopping && !existsSync(paths.stop)) {
       const cycleStarted = performance.now();
       try {
+        const cycleNow = now();
+        const serviceHealth = collectServiceHealth(coordRoot, status);
         const resource = sampleResources(coordRoot, previousResource, {
-          service: { pid: process.pid, id: "supervisor" },
+          services: [
+            { pid: process.pid, id: "supervisor" },
+            ...serviceHealth.consumers.map((consumer) => ({
+              pid: consumer.pid,
+              id: consumer.id,
+            })),
+          ],
         });
         previousResource = resource.state;
         writePrivateJsonAtomic(resourcePaths(coordRoot).snapshot, resource.snapshot);
-        const logFeed = await logs.collect(now());
+        const logFeed = await logs.collect(cycleNow);
         writePrivateJsonAtomic(paths.log_feed, logFeed);
-        const serviceHealth = collectServiceHealth(coordRoot, status);
+        const activity = collectSupervisorActivitySnapshot(coordRoot, cycleNow);
+        writePrivateJsonAtomic(paths.activity, activity);
         const hooks = collectHookHealth(resource.snapshot);
         const historyResult = updateSupervisorHistory(history, resource.snapshot);
         history = historyResult.history;
         if (historyResult.changed) writePrivateJsonAtomic(paths.history, history);
         if (historyResult.changed)
-          coordination = collectCoordinationHealthSnapshot(coordRoot, now());
+          coordination = collectCoordinationHealthSnapshot(coordRoot, cycleNow);
         writePrivateJsonAtomic(paths.coordination_health, coordination);
         const priorActiveFindingIds = new Set(findings?.active.map((finding) => finding.id) ?? []);
         const priorTransitionKeys = new Set(
@@ -244,7 +254,8 @@ export async function runSupervisor(
           history,
           logFeed,
           coordination,
-          now: now(),
+          activity,
+          now: cycleNow,
         });
         writePrivateJsonAtomic(paths.findings, findings);
         mkdirSync(paths.timelines, { recursive: true, mode: 0o700 });
