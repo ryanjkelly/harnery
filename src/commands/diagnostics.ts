@@ -16,7 +16,9 @@ import {
   explainSupervisorFinding,
   readSupervisorExplanation,
   readSupervisorFindings,
+  readSupervisorStatus,
   readSupervisorTimeline,
+  type SupervisorCapability,
   type SupervisorFinding,
 } from "../core/supervisor/index.ts";
 
@@ -38,18 +40,13 @@ export function registerDiagnosticsCommand(
         const report = readSupervisorFindings(repoRoot);
         const findings = mergeFindings(report?.active ?? [], report?.transitions ?? []);
         const bundles = listDiagnosticBundles(repoRoot);
+        const capability = liveFindingsCapability(repoRoot, report !== undefined);
         emit.data({
           schema_version: DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
           kind: "diagnostic_list",
           findings,
           bundles,
-          capability: report
-            ? { source_kind: "supervisor.findings", state: "supported" }
-            : {
-                source_kind: "supervisor.findings",
-                state: "unsupported",
-                reason_code: "source_missing",
-              },
+          capability,
           total_findings: findings.length,
           total_bundles: bundles.length,
         });
@@ -113,19 +110,14 @@ export function registerDiagnosticsCommand(
         }
         const report = readSupervisorFindings(repoRoot);
         const findings = mergeFindings(report?.active ?? [], report?.transitions ?? []);
+        const sourceCapability = liveFindingsCapability(repoRoot, report !== undefined);
         emit.data({
           schema_version: DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
           kind: "diagnostic_advice",
           source: { mode: "live" },
           advice: buildDiagnosticAdvice({
             findings,
-            sourceCapability: report
-              ? { source_kind: "supervisor.findings", state: "supported" }
-              : {
-                  source_kind: "supervisor.findings",
-                  state: "unsupported",
-                  reason_code: "source_missing",
-                },
+            sourceCapability,
             evaluatedAt: new Date().toISOString(),
           }),
         });
@@ -175,6 +167,27 @@ export function registerDiagnosticsCommand(
         });
       });
     });
+}
+
+function liveFindingsCapability(repoRoot: string, reportPresent: boolean): SupervisorCapability {
+  if (!reportPresent) {
+    return {
+      source_kind: "supervisor.findings",
+      state: "unsupported",
+      reason_code: "source_missing",
+    };
+  }
+  const status = readSupervisorStatus(repoRoot);
+  if (status.running) return { source_kind: "supervisor.findings", state: "supported" };
+  return {
+    source_kind: "supervisor.findings",
+    state: "expired",
+    reason_code: status.stale
+      ? "supervisor_status_stale"
+      : status.record
+        ? "supervisor_not_running"
+        : "supervisor_status_missing",
+  };
 }
 
 function findFinding(repoRoot: string, id: string): SupervisorFinding | undefined {

@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { captureDiagnosticBundle } from "../core/diagnostics/index.ts";
+import { SUPERVISOR_FINDING_SCHEMA_VERSION } from "../core/supervisor/contract.ts";
+import { supervisorPaths } from "../core/supervisor/storage.ts";
 import { registerDiagnosticsCommand } from "./diagnostics.ts";
 
 describe("diagnostics command", () => {
@@ -64,6 +66,41 @@ describe("diagnostics command", () => {
           captured_at: "2026-08-31T09:00:00.000Z",
         },
         advice: { pressure: "unknown", observer_only: true },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("marks a lingering findings file expired when the supervisor is not running", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-diagnostics-command-"));
+    try {
+      const paths = supervisorPaths(root);
+      mkdirSync(paths.root, { recursive: true });
+      writeFileSync(
+        paths.findings,
+        `${JSON.stringify({
+          schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
+          active: [],
+          transitions: [],
+        })}\n`,
+      );
+      const captured = capturedEmit();
+      const program = new Command();
+      registerDiagnosticsCommand(program, captured.emit, { repoRoot: root });
+
+      await program.parseAsync(["node", "harn", "diagnostics", "explain", "--json"]);
+
+      expect(captured.payloads[0]).toMatchObject({
+        kind: "diagnostic_advice",
+        advice: {
+          pressure: "unknown",
+          active_finding_count: 0,
+          source_capability: {
+            state: "expired",
+            reason_code: "supervisor_status_missing",
+          },
+        },
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

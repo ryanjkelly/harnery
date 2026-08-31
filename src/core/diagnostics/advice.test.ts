@@ -77,6 +77,29 @@ describe("diagnostic advice", () => {
     expect(advice.reasons.map((reason) => reason.code)).toEqual(["findings_source_unavailable"]);
   });
 
+  test("does not treat findings from an expired projection as current pressure", () => {
+    const advice = buildDiagnosticAdvice({
+      findings: [finding("critical", "critical")],
+      sourceCapability: {
+        source_kind: "supervisor.findings",
+        state: "expired",
+        reason_code: "supervisor_not_running",
+      },
+      evaluatedAt: "2026-08-31T09:00:00.000Z",
+    });
+    expect(advice).toMatchObject({
+      pressure: "unknown",
+      fan_out_recommendation: "unknown",
+      active_finding_count: 0,
+      contributing_finding_count: 0,
+      source_capability: {
+        state: "expired",
+        reason_code: "supervisor_not_running",
+      },
+    });
+    expect(advice.reasons.map((reason) => reason.code)).toEqual(["findings_source_unavailable"]);
+  });
+
   test("bounds contributors after pressure is calculated", () => {
     const findings = Array.from(
       { length: DIAGNOSTIC_ADVICE_LIMITS.max_contributing_findings + 3 },

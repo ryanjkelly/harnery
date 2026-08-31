@@ -17,8 +17,9 @@ harn diagnostics replay <artifact-ref>
 ```
 
 `list` returns active and recently resolved findings together with saved
-diagnostic bundles. A stopped or idle supervisor produces an explicit
-unsupported capability instead of an error. `show` resolves an exact finding ID
+diagnostic bundles. A stopped or idle supervisor produces an explicit expired
+capability instead of presenting its last file as current. A missing findings
+file remains unsupported. `show` resolves an exact finding ID
 first, then an exact managed bundle reference.
 
 ## Pressure advice
@@ -49,6 +50,11 @@ The policy is deterministic:
 | Warnings and no critical finding | `elevated` | `use-caution` |
 | Supported projection with no warning or critical finding | `normal` | `proceed` |
 | Missing or unusable findings projection | `unknown` | `unknown` |
+
+Live advice requires both a findings file and a current supervisor heartbeat.
+If the daemon has exited or its heartbeat is stale, advice is unknown and does
+not count the lingering findings as active. Frozen bundle advice remains an
+explicit historical result tied to the bundle capture time.
 
 Resolved and informational findings do not restrict fan-out. Pressure is
 calculated before the contributing-findings list is bounded, so truncation

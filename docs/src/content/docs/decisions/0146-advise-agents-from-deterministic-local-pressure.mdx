@@ -66,8 +66,11 @@ The contract reports one pressure state and one fan-out recommendation:
 Pressure is calculated before presentation limits are applied. The response
 then carries at most eight severity-ordered contributing findings, stable reason
 codes, omission counts, the source capability, and `observer_only: true`.
-Resolved and informational findings do not restrict fan-out. Known critical
-evidence still wins when another capability is degraded.
+Resolved and informational findings do not restrict fan-out. Live advice uses
+findings only while the supervisor heartbeat says the projection is current.
+A stopped, stale, or missing supervisor status marks a lingering findings file
+as expired, ignores its old findings, and returns unknown instead of presenting
+historical pressure as current.
 
 Add `harn diagnostics explain --json` for the live projection. The same command
 accepts `--bundle <artifact-ref>` and returns advice already frozen in that
@@ -89,6 +92,10 @@ Agents receive one compact, deterministic answer to the question of whether
 local diagnostics constrain new fan-out. A frozen bundle can reproduce both
 the advice and the evidence that produced it. Missing evidence remains unknown
 instead of becoming a false healthy result.
+
+An idle supervisor can leave its last projection on disk without making that
+projection look live. Consumers see the expired capability and may decide
+whether to start or query the observer again.
 
 Repeated related activity remains measurable without flooding the timeline.
 Counts and time bounds preserve the repetition while distinct evidence gets the

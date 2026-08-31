@@ -20,16 +20,16 @@ const SEVERITY_RANK: Readonly<Record<SupervisorFinding["severity"], number>> = {
 };
 
 export function buildDiagnosticAdvice(input: BuildDiagnosticAdviceInput): DiagnosticAdvice {
-  const active = input.findings
-    .filter((finding) => finding.state === "opened")
-    .sort(compareFindings);
+  const sourceAvailable = input.sourceCapability.state === "supported";
+  const active = sourceAvailable
+    ? input.findings.filter((finding) => finding.state === "opened").sort(compareFindings)
+    : [];
   const pressureFindings = active.filter(
     (finding): finding is SupervisorFinding & { severity: "warning" | "critical" } =>
       finding.severity === "warning" || finding.severity === "critical",
   );
   const critical = pressureFindings.filter((finding) => finding.severity === "critical");
   const warning = pressureFindings.filter((finding) => finding.severity === "warning");
-  const sourceAvailable = input.sourceCapability.state === "supported";
   const pressure = critical.length
     ? "critical"
     : warning.length
