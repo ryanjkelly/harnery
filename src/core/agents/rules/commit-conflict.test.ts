@@ -3,6 +3,7 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import { readLiveCoordinationRow } from "../state/live-coordination-view.ts";
 import { evaluateCommit } from "./commit-conflict.ts";
 
 let root: string;
@@ -53,9 +54,47 @@ describe("evaluateCommit on canonical V3 authority", () => {
     expect(result.conflicts[0]?.short_name).toContain("Adelaide");
   });
 
+  test("a blocked committer retains the path so the holder cannot sweep its edits", () => {
+    seedV3Session(root, "self", {
+      name: "Maya",
+      sessionId: "codex-thread-self",
+      adapter: "codex",
+    });
+    seedV3Session(root, "peer", {
+      name: "Adelaide",
+      sessionId: "codex-thread-peer",
+      adapter: "codex",
+      claims: ["docs/shared.md"],
+    });
+
+    expect(
+      evaluateCommit(root, {
+        instance_id: "self",
+        session_id: "codex-thread-self",
+        staged_paths: ["docs/shared.md"],
+      }),
+    ).toMatchObject({
+      allow: false,
+      rule: "commit.conflict",
+    });
+    expect(readLiveCoordinationRow(root, "self")?.files_touched).toContain("docs/shared.md");
+
+    const holderAttempt = evaluateCommit(root, {
+      instance_id: "peer",
+      session_id: "codex-thread-peer",
+      staged_paths: ["docs/shared.md"],
+    });
+    expect(holderAttempt).toMatchObject({ allow: false, rule: "commit.conflict" });
+    expect(holderAttempt.conflicts[0]?.instance_id).toBe("self");
+  });
+
   test("the self-attribution suppression remains explicit", () => {
-    seedV3Session(root, "self", { name: "Maya" });
-    seedV3Session(root, "peer", { name: "Adelaide", claims: ["docs/shared.md"] });
+    seedV3Session(root, "self", { name: "Maya", adapter: "claude-code" });
+    seedV3Session(root, "peer", {
+      name: "Adelaide",
+      adapter: "claude-code",
+      claims: ["docs/shared.md"],
+    });
     expect(commitVerdict(["docs/shared.md"])).toMatchObject({
       allow: true,
       rule: "commit.suppressed",

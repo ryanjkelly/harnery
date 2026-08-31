@@ -25,6 +25,7 @@ import { appendFileSync, existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
 import { resolveOwner } from "../../hooks/resolve/owner.ts";
+import { recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 import { instanceHasLivePid } from "../state/pidmap.ts";
 
@@ -34,6 +35,7 @@ interface PeerHeartbeat {
   name?: string;
   files_touched?: string[];
   last_heartbeat?: string;
+  platform?: string;
 }
 
 interface Conflict {
@@ -190,6 +192,15 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
     };
   }
 
+  // A blocked commit proves this session has work in every staged path, even
+  // when the edit hook never acquired a claim (for example, a shell edit made
+  // just before another session claimed the same file). Keep those paths on
+  // the blocked session's durable claim set. The original holder's later
+  // commit will then see the overlap instead of silently sweeping this
+  // session's working-tree hunks. A successful later commit releases clean
+  // paths through the existing post-commit hook.
+  retainBlockedStagedPaths(coordRoot, me, mySession, req.staged_paths, peers);
+
   return {
     allow: false,
     exit_code: 1,
@@ -202,6 +213,41 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
       "  The following staged paths are currently claimed by other\n" +
       "  active agents:",
   };
+}
+
+function retainBlockedStagedPaths(
+  coordRoot: string,
+  instanceId: string,
+  sessionId: string,
+  stagedPaths: readonly string[],
+  peers: readonly PeerHeartbeat[],
+): void {
+  if (instanceId === "__unattributed__") return;
+  const self = peers.find((peer) => peer.instance_id === instanceId);
+  if (!self) return;
+
+  for (const path of stagedPaths) {
+    try {
+      recordLiveClaimChangeV3({
+        coordRoot,
+        owner: instanceId,
+        nativeSessionId: self.session_id ?? sessionId,
+        adapter: adapterFromPlatform(self.platform),
+        operation: "acquired",
+        path,
+        access: "write",
+      });
+    } catch {
+      // The commit is already blocked. Coordination remains fail-open for
+      // authority-write failures so a damaged cache cannot brick Git.
+    }
+  }
+}
+
+function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
+  if (platform === "cursor") return "cursor";
+  if (platform === "codex") return "codex";
+  return "claude-code";
 }
 
 function findOverlap(
@@ -269,6 +315,18 @@ function isHolderSelfAttributed(
   stagedSet: Set<string>,
   peers: readonly PeerHeartbeat[],
 ): boolean {
+  const holder = peers.find((p) => p.instance_id === holderId);
+
+  // Windows-hosted Codex sessions cross a process boundary into WSL, so they
+  // deliberately have no usable PID anchor. Their canonical V3 session row is
+  // the foreign-identity evidence instead. Treating that row as a transient
+  // self identity would suppress the symmetric claim retained after a blocked
+  // commit and reopen the working-tree sweep this guard is meant to stop.
+  if (holder?.platform === "codex" && holder.session_id) {
+    debugGate(coordRoot, { holder: holderId, gate: "B", reason: "canonical_codex_session" });
+    return false;
+  }
+
   // Gate B (cheaper): live foreign pid-map entry blocks self-attribution.
   if (holderHasLiveForeignPid(coordRoot, holderId)) {
     debugGate(coordRoot, { holder: holderId, gate: "B", reason: "live_pid_anchor" });
@@ -276,7 +334,6 @@ function isHolderSelfAttributed(
   }
 
   // Gate A: every held path is either in the staged set or already clean in HEAD.
-  const holder = peers.find((p) => p.instance_id === holderId);
   if (!holder) {
     debugGate(coordRoot, { holder: holderId, gate: "A", reason: "holder_not_found" });
     return false;
