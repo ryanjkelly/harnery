@@ -1818,6 +1818,10 @@ async function emitUserPromptSubmitSystemMessage(
     // contract up front is far cheaper than the bounce-and-retry the Stop hook
     // otherwise forces. Cursor's beforeSubmitPrompt cannot inject context, so
     // its Stop follow-up remains the supported enforcement channel.
+    // The mailbox drain in prompt-context must know whether this adapter can
+    // receive the context it renders; draining for one that cannot would spend
+    // the messages on discarded output.
+    args.push("--adapter", adapter);
     args.push("--session-name-nudge");
     if (adapter === "cursor" || adapter === "codex") args.push("--task-nudge");
     if (adapter === "codex") args.push("--status-footer-nudge");
@@ -1901,7 +1905,9 @@ async function emitSessionStartSystemMessage(
     // wiring check, council invites).
     spawnSync(agentCoordBin, ["project"], { encoding: "utf8", timeout: 3000 });
     // Opportunistic reconciliation makes normal session starts a failsafe for
-    // archive, idle, cascade, and host lifecycle observations.
+    // archive, idle, cascade, and host lifecycle observations. It also runs the
+    // stale cache sweep, because `reconcile-finalization` dispatches to the
+    // shared reconcileCoordinationV3 composition (ADR 0077).
     spawnSync(agentCoordBin, ["reconcile-finalization"], {
       encoding: "utf8",
       timeout: 5000,

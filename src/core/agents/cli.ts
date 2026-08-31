@@ -708,8 +708,10 @@ async function handleStaleSweep(root: string, _rest: string[]): Promise<number> 
 }
 
 async function handleReconcileFinalization(root: string): Promise<number> {
-  const { reconcileSessionFinalizationV3 } = await import("./session-finalizer-v3.ts");
-  const result = reconcileSessionFinalizationV3(root);
+  // Shares the supervisor composition with `agents reconcile` so session start
+  // sweeps the stale cache in the same pass, as ADR 0077 specified.
+  const { reconcileCoordinationV3 } = await import("./reconcile-coordination-v3.ts");
+  const result = reconcileCoordinationV3(root);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return result.diagnostics.some((item) => item === "ledger_not_authority_safe") ? 2 : 0;
 }
@@ -759,6 +761,7 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
   const instanceId = args.instance;
   const sessionId = args.session ?? instanceId;
   const agentName = args.name;
+  const adapter = args.adapter;
   const sessionNameNudge = args["session-name-nudge"] === "true";
   const taskNudge = args["task-nudge"] === "true";
   const hostPromptReminder = args["host-prompt-reminder"] === "true";
@@ -769,7 +772,7 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
     args["turn-ritual-nudge"] === "true" ? "generic" : args["turn-ritual-nudge"];
   if (!instanceId) {
     process.stderr.write(
-      "agent-coord prompt-context --instance <id> [--session <id>] [--name <agent-name>] [--session-name-nudge] [--task-nudge] [--host-prompt-reminder] [--status-footer-nudge] [--turn-ritual-nudge <adapter>]\n",
+      "agent-coord prompt-context --instance <id> [--session <id>] [--name <agent-name>] [--adapter <id>] [--session-name-nudge] [--task-nudge] [--host-prompt-reminder] [--status-footer-nudge] [--turn-ritual-nudge <adapter>]\n",
     );
     return 2;
   }
@@ -784,6 +787,7 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
     hostPromptReminder,
     statusFooterNudge,
     turnRitualNudge,
+    adapter,
   });
   process.stdout.write(text);
   return 0;

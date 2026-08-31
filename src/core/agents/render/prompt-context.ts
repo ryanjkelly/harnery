@@ -46,7 +46,9 @@ import {
 import { join } from "node:path";
 
 import { coordEnv } from "../../../lib/env.ts";
+import type { Adapter } from "../../adapter.ts";
 import { endOfTurnStatusCommand, hostPromptReminder, resolveBinName } from "../../config.ts";
+import { canReceiveContext } from "../../hooks/adapter/output.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { drainMailbox, formatMailboxDelivery } from "../mailbox.ts";
 import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
@@ -93,6 +95,11 @@ export interface PromptContextOpts {
   /** When true, append the non-deduplicated Codex status-footer reminder.
    * The caller enables this only for human-facing Codex sessions. */
   statusFooterNudge?: boolean;
+  /** Adapter id this prompt is being rendered for. Gates the mailbox drain:
+   * an adapter that cannot receive UserPromptSubmit context must not consume
+   * messages here, or they are removed from the queue and never shown. When
+   * omitted, delivery is attempted (the default route can receive). */
+  adapter?: string;
   /** Adapter id whose Stop hook ENFORCES the end-of-turn ritual (task_set +
    * status check). When set, append a fresh per-prompt reminder of that
    * contract so the model satisfies it before ending the turn instead of
@@ -120,6 +127,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     hostPromptReminder: promptReminderEnabled,
     statusFooterNudge,
     turnRitualNudge,
+    adapter,
   } = opts;
   const sections: string[] = [];
 
@@ -131,7 +139,13 @@ export function renderPromptContext(opts: PromptContextOpts): string {
   // 1. Peer messages. Drained first and never deduped: a message is delivered
   // exactly once, and it is the one section here that carries new information
   // from another agent rather than a reminder.
-  if (resolvedName) {
+  //
+  // Draining is gated on the adapter being able to receive this event's
+  // context. Cursor cannot, so draining there would empty the queue into output
+  // that is discarded; those sessions get their messages at SessionStart, which
+  // Cursor does deliver.
+  const canDeliverHere = !adapter || canReceiveContext(adapter as Adapter, "UserPromptSubmit");
+  if (resolvedName && canDeliverHere) {
     const delivered = drainMailbox(coordRoot, resolvedName);
     if (delivered.length > 0) {
       recordDeliveredMessages(instanceId, delivered);

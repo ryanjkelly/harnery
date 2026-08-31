@@ -200,3 +200,37 @@ describe("formatMailboxDelivery", () => {
     expect(formatMailboxDelivery(root, drainMailbox(root, "Maya"))).toContain("2 messages");
   });
 });
+
+describe("adapter delivery gating", () => {
+  test("an adapter that cannot receive prompt context does not consume messages", async () => {
+    const { renderPromptContext } = await import("./render/prompt-context.ts");
+    queue("Maya", "must survive a cursor prompt");
+
+    // Cursor's prompt hook cannot inject context, so the renderer must leave
+    // the queue intact for SessionStart rather than spending it on output that
+    // is discarded before the model ever sees it.
+    renderPromptContext({
+      coordRoot: root,
+      instanceId: "instance-maya",
+      sessionId: "instance-maya",
+      agentName: "Maya",
+      adapter: "cursor",
+    });
+    expect(peekMailbox(root, "Maya").map((m) => m.body)).toEqual(["must survive a cursor prompt"]);
+  });
+
+  test("an adapter that can receive prompt context delivers and empties the queue", async () => {
+    const { renderPromptContext } = await import("./render/prompt-context.ts");
+    queue("Maya", "delivered on codex");
+
+    const text = renderPromptContext({
+      coordRoot: root,
+      instanceId: "instance-maya",
+      sessionId: "instance-maya",
+      agentName: "Maya",
+      adapter: "codex",
+    });
+    expect(text).toContain("delivered on codex");
+    expect(peekMailbox(root, "Maya")).toEqual([]);
+  });
+});

@@ -31,10 +31,21 @@ export type SystemEvent =
   | "PreToolUse"
   | "PostToolUse";
 
+/**
+ * Whether this adapter can actually receive injected context for an event.
+ * Cursor's beforeSubmitPrompt hook can allow or block a turn but cannot inject
+ * model context, so anything rendered for that event is discarded. A caller
+ * that consumes state to build the text (draining a mailbox, for instance)
+ * must check this first, or the state is spent on output nobody reads.
+ */
+export function canReceiveContext(adapter: Adapter, event: SystemEvent): boolean {
+  return !(adapter === "cursor" && event === "UserPromptSubmit");
+}
+
 /** Emit a context-injection (peer table, wiring check, council pending, …). */
 export function emitContext(adapter: Adapter, event: SystemEvent, text: string): void {
   if (!text || text.length === 0) return;
-  if (adapter === "cursor" && event === "UserPromptSubmit") return;
+  if (!canReceiveContext(adapter, event)) return;
   const json = buildContextJson(adapter, event, text);
   process.stdout.write(`${JSON.stringify(json)}\n`);
 }
