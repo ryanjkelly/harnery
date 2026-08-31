@@ -20,6 +20,26 @@ diagnostic bundles. A stopped or idle supervisor produces an explicit
 unsupported capability instead of an error. `show` resolves an exact finding ID
 first, then an exact managed bundle reference.
 
+## Finding episodes and context
+
+The finding schema groups short reopenings into one incident episode. A finding
+that resolves and returns within five minutes keeps its ID, increments
+`occurrence_count`, and retains the highest observed value. A return after that
+gap opens a new episode with a new ID.
+
+Resource findings carry process ownership only when the sampler can walk the
+process tree to a live service anchor or a start-token-validated agent anchor.
+Anything else stays explicitly unattributed. Agent memory-growth findings also
+carry the most recent bounded activity projection. Growth during declared work
+remains a warning; growth while the agent is idle, waiting for input, blocked,
+or done is critical. Missing or stale activity evidence produces an unknown
+relationship instead of a guessed one.
+
+Service findings state why liveness is stale. The current reasons distinguish a
+missing local process, an expired remote heartbeat, and a service-reported
+error. Findings are still observations. They do not stop processes, restart
+services, or change an agent's lifecycle.
+
 Without a selector, `capture` records the most recent 15 minutes. `--finding`
 uses that finding's opened and last-observed timestamps. `--from` and `--to`
 must appear together and accept ISO timestamps. `--days` overrides the managed
@@ -48,6 +68,8 @@ Capture sanitizes data before calculating a digest or writing a file. It removes
 credential-shaped values, home-directory paths, prompts, transcripts, tool
 payloads, and environment blocks. Missing or unreadable sources stay visible as
 unsupported or error capabilities instead of disappearing from the result.
+The frozen inputs include the bounded activity projection and the finding-policy
+values used for episode gaps and freshness checks.
 
 ## Validation and replay
 
@@ -65,6 +87,10 @@ fallback.
 
 The output uses versioned JSON envelopes. `replay.matched` is `true` only when
 the rebuilt output matches the frozen expected output exactly.
+
+Diagnostic bundle, input, and expected-output schemas are version 2. Harnery is
+pre-1.0, so this is a direct cutover: version 1 bundles are rejected rather than
+read through a compatibility path.
 
 Diagnostic bundles are local support artifacts, not durable records. A bundle
 that needs permanent retention must move into a tracked project location before

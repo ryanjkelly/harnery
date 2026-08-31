@@ -129,3 +129,26 @@ separate decisions after the local evidence contracts have production use.
 The first bundle schema and finding contract are pre-1.0 alpha surfaces. A
 contract change cuts over every in-repository consumer in the same release
 instead of preserving a legacy anomaly reader.
+
+The first signal-quality follow-up shipped the version 2 finding contract.
+Repeated conditions now form episodes: a reopening within five minutes keeps
+the finding ID, increments a recurrence count, and carries the episode's peak
+value. A later reopening starts a new episode. This prevents short threshold
+crossings from creating a stream of nearly identical incidents.
+
+Resource findings now keep validated process ownership. Agent ownership still
+requires a matching process start token; service ownership comes from the live
+supervisor and registered dashboard consumer processes, then extends to their
+nearest descendants. A process without either anchor is recorded as
+unattributed with a reason code.
+
+The supervisor reads agent activity from bounded, generation-bound heartbeat
+caches instead of loading the Event Ledger V3 coordination view. Memory growth
+during active work remains a warning. The same growth while an agent is idle,
+waiting for input, blocked, or done is critical. Missing, stale, malformed, or
+over-budget activity rows remain visible through capability state and never
+become inferred activity.
+
+Diagnostic bundle schema 2 freezes that activity projection and the finding
+policy alongside the resource evidence. Replay uses those frozen inputs. The
+observer-only boundary did not change.
