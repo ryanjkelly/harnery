@@ -62,6 +62,8 @@ interface FakeExecConfig {
   gateExit?: Record<string, number>;
   /** Per-gate hard failure by context id (spawn error / timeout). */
   gateError?: Record<string, string>;
+  /** Per-gate browse envelope fields by context id. */
+  gateEnvelope?: Record<string, Record<string, unknown>>;
   /** Async delay per gate context id, to exercise the pool. */
   gateDelayMs?: Record<string, number>;
   /** Critique envelope written for --check-critique invocations. */
@@ -137,10 +139,13 @@ function makeFakeExec(config: FakeExecConfig): {
       const hardError = config.gateError?.[contextId];
       if (hardError) return { exitCode: null, stdout: "", stderr: "", error: hardError };
       const exitCode = config.gateExit?.[contextId] ?? 0;
+      const gateEnvelope = config.gateEnvelope?.[contextId] ?? {};
       writeFileSync(
         `${outPrefix}.json`,
         JSON.stringify(
-          exitCode === 2 ? { overflow: { hasHorizontalOverflow: true, overflowPx: 42 } } : {},
+          exitCode === 2
+            ? { overflow: { hasHorizontalOverflow: true, overflowPx: 42 }, ...gateEnvelope }
+            : gateEnvelope,
         ),
       );
       return { exitCode, stdout: "", stderr: "" };
@@ -172,6 +177,77 @@ describe("runQaMatrix", () => {
     expect(fake.maxInFlight()).toBeLessThanOrEqual(2);
     // 1 plan + 5 gates, nothing else (visual "none", review mode).
     expect(fake.calls).toHaveLength(6);
+  });
+
+  test("planner deterministic checks always execute and a job can only add gates", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: {
+          deterministic: ["console", "overflow", "truncation", "placeholder"],
+          interaction: [],
+          visual: "none",
+        },
+      }),
+    });
+    const result = await runQaMatrix({
+      job: job({ checks: [{ id: "runts", args: ["--check-runts", "--check-runts-fail"] }] }),
+      outDir: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.verdict).toBe("passed");
+    const gate = fake.calls.find((call) => call.argv.includes("--out"));
+    expect(gate?.argv).toContain("--check-overflow-fail");
+    expect(gate?.argv).toContain("--check-truncation-fail");
+    expect(gate?.argv).toContain("--check-placeholder-fail");
+    expect(gate?.argv).toContain("--check-runts-fail");
+    expect(result.commands[1]?.check_id).toContain("manifest:console");
+    expect(result.commands[1]?.check_id).toContain("runts");
+  });
+
+  test("planner console diagnostics fail the gate before critique", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: ["console"], interaction: [], visual: "full-page" },
+      }),
+      gateEnvelope: {
+        "desktop-light-default": {
+          consoleErrors: [{ type: "error", text: "uncaught fixture error" }],
+          pageErrors: [],
+          failedRequests: [],
+        },
+      },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outDir: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.commands[1]?.failures).toContain("console: uncaught fixture error");
+    expect(fake.calls.some((call) => call.argv.includes("--check-critique"))).toBe(false);
+  });
+
+  test("an unmapped planner deterministic check stops incomplete", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        checks: { deterministic: ["future-check"], interaction: [], visual: "none" },
+      }),
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outDir: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.verdict).toBe("incomplete");
+    expect(fake.calls).toHaveLength(1);
+    expect(result.blockers[0]?.reason).toContain("future-check");
   });
 
   test("an incomplete planner manifest stops the run before any further work", async () => {
@@ -265,9 +341,7 @@ describe("runQaMatrix", () => {
       "desktop-dark-default",
       "hd-dark-default",
     ]);
-    const gateOrder = result.commands
-      .filter((c) => c.check_id === "capture")
-      .map((c) => c.context_id);
+    const gateOrder = result.commands.slice(1).map((c) => c.context_id);
     expect(gateOrder).toEqual([
       "desktop-light-default",
       "mobile-light-default",

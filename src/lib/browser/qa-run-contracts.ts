@@ -82,7 +82,8 @@ export interface QaRunJob {
   mode: "signoff" | "review";
   /** Extra coverage beyond the planner manifest (union, never narrowing). */
   contexts?: QaRunContext[];
-  /** Deterministic gates. Empty/absent = the runner's baseline capture only. */
+  /** Extra deterministic gates. The runner always executes every planner-
+   * required deterministic check; a job can add gates but cannot remove them. */
   checks?: QaRunCheck[];
   interaction_states?: QaRunInteraction[];
   /** Forwarded to the planner as --qa-scope / --qa-states inputs. */

@@ -39,6 +39,17 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_COMMAND_CONCURRENCY = 2;
 const EXEC_MAX_BUFFER = 16 * 1024 * 1024;
 
+/** The planner's deterministic vocabulary is an executable contract, not a
+ * report-only hint. A job may add checks, but these arguments always run for
+ * every manifest context. `console` is enforced from the browse envelope
+ * because browse captures diagnostics without a separate fail flag. */
+const MANIFEST_DETERMINISTIC_ARGS: Readonly<Record<string, readonly string[]>> = {
+  console: [],
+  overflow: ["--check-overflow", "--check-overflow-fail"],
+  truncation: ["--check-truncation", "--check-truncation-fail"],
+  placeholder: ["--check-placeholder", "--check-placeholder-fail"],
+};
+
 export interface QaRunExecOptions {
   /** Hard per-command timeout in milliseconds. */
   timeoutMs: number;
@@ -222,6 +233,37 @@ function parseGateFailures(envelope: Record<string, unknown> | undefined): strin
   return failures;
 }
 
+function diagnosticSummary(entry: unknown): string {
+  if (typeof entry === "string") return entry;
+  if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+    const record = entry as Record<string, unknown>;
+    for (const key of ["text", "message", "errorText", "failure", "url"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.length > 0) return value;
+    }
+  }
+  return JSON.stringify(entry);
+}
+
+/** `console` in the planner contract covers every browser diagnostic that the
+ * browse envelope records. Keep the first three details actionable and name
+ * any remainder without allowing an unbounded page log to bloat the result. */
+function parseConsoleFailures(envelope: Record<string, unknown> | undefined): string[] {
+  if (!envelope) return [];
+  const failures: string[] = [];
+  const groups: Array<[string, unknown]> = [
+    ["console", envelope.consoleErrors],
+    ["page", envelope.pageErrors],
+    ["request", envelope.failedRequests],
+  ];
+  for (const [label, value] of groups) {
+    if (!Array.isArray(value) || value.length === 0) continue;
+    for (const entry of value.slice(0, 3)) failures.push(`${label}: ${diagnosticSummary(entry)}`);
+    if (value.length > 3) failures.push(`${label}: ${value.length - 3} additional failure(s)`);
+  }
+  return failures;
+}
+
 interface EnvelopeCritique {
   tiles?: number;
   provider?: boolean;
@@ -387,6 +429,24 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
 
   // ----------------------------------------------------------------- gates
   contexts = mergeCoverage(manifest, job);
+  const unsupportedDeterministic = manifest.checks.deterministic.filter(
+    (check) => MANIFEST_DETERMINISTIC_ARGS[check] === undefined,
+  );
+  if (unsupportedDeterministic.length > 0) {
+    for (const check of unsupportedDeterministic) {
+      blockers.push({
+        stage: "gates",
+        reason:
+          `planner requires deterministic check "${check}" but qa-run has no executable ` +
+          "mapping for it — coverage cannot be narrowed",
+      });
+    }
+    return finalize();
+  }
+  const manifestGateArgs = manifest.checks.deterministic.flatMap(
+    (check) => MANIFEST_DETERMINISTIC_ARGS[check] ?? [],
+  );
+  const enforceConsole = manifest.checks.deterministic.includes("console");
   const checks = job.checks ?? [];
   const gateOutcomes = new Array<QaRunCommandOutcome>(contexts.length);
   const gatesStart = Date.now();
@@ -395,7 +455,10 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       (check) => check.contexts === undefined || check.contexts.includes(ctx.id),
     );
     const checkId =
-      applicable.length > 0 ? applicable.map((check) => check.id).join("+") : "capture";
+      [
+        ...manifest.checks.deterministic.map((check) => `manifest:${check}`),
+        ...applicable.map((check) => check.id),
+      ].join("+") || "capture";
     const outPrefix = join(outDir, ctx.id);
     const argv = [
       ...browseArgv,
@@ -403,6 +466,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       ...contextRenderArgs(ctx),
       "--out",
       outPrefix,
+      ...manifestGateArgs,
       ...applicable.flatMap((check) => check.args),
     ];
     log(`gate ${ctx.id}: ${checkId}`);
@@ -410,12 +474,19 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     const jsonPath = `${outPrefix}.json`;
     const failures: string[] = [];
     let outcome: QaRunCommandOutcome["outcome"];
+    const envelope = existsSync(jsonPath) ? readEnvelope(jsonPath) : undefined;
+    const consoleFailures = enforceConsole ? parseConsoleFailures(envelope) : [];
     if (!res.error && res.exitCode === 0 && existsSync(jsonPath)) {
-      outcome = "passed";
+      if (consoleFailures.length > 0) {
+        outcome = "failed";
+        failures.push(...consoleFailures);
+      } else {
+        outcome = "passed";
+      }
     } else if (!res.error && res.exitCode === 2 && existsSync(jsonPath)) {
       outcome = "failed";
       failures.push(`exit code 2 (${jsonPath})`);
-      failures.push(...parseGateFailures(readEnvelope(jsonPath)));
+      failures.push(...parseGateFailures(envelope), ...consoleFailures);
     } else {
       outcome = "unknown";
       const excerpt = execErrorExcerpt(res);
