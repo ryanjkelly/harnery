@@ -12,6 +12,7 @@ export interface CodecEffectClassNames {
   pingLaunch: string;
   pingPath: string;
   pingFlight: string;
+  pingStreak: string;
   pingCore: string;
   pingLabel: string;
   impact: string;
@@ -35,7 +36,7 @@ export interface CodecEffectRuntimeOptions {
   maxConcurrent: () => number;
 }
 
-const PING_TRAVEL_MS = 3_400;
+const PING_TRAVEL_MS = 2_850;
 const PING_MAX_FRAME_DELTA_MS = 64;
 const PING_TRAVEL_FALLBACK_MS = 30_000;
 const PING_IMPACT_MS = 1_100;
@@ -223,9 +224,11 @@ export function createCodecEffectRuntime(
     };
     refreshFlight();
     setPingFlightFrame(flight, measurePingFlightFrame(geometry, 0));
+    const streak = element(flight, "span", options.classes.pingStreak);
+    streak.dataset.effectVisual = "ping-warp-streak";
     const core = element(flight, "span", options.classes.pingCore);
     core.dataset.effectVisual = "ping-orb";
-    const label = element(core, "span", options.classes.pingLabel);
+    const label = element(flight, "span", options.classes.pingLabel);
     label.textContent = "PING";
     rememberLayoutRefresher(cue.id, refreshFlight);
 
@@ -481,7 +484,10 @@ export interface PingFlightFrame {
   x: number;
   y: number;
   opacity: number;
-  scale: number;
+  scaleX: number;
+  scaleY: number;
+  trailLength: number;
+  trailOpacity: number;
 }
 
 /** The ping is a relationship between whole cards, so both anchors are their
@@ -502,23 +508,35 @@ export function measurePingFlightFrame(
   rawProgress: number,
 ): PingFlightFrame {
   const progress = Math.min(Math.max(rawProgress, 0), 1);
-  const chargeProgress = Math.min(progress / 0.16, 1);
-  const travelProgress = Math.max((progress - 0.16) / 0.84, 0);
-  const scale =
-    chargeProgress < 0.5
-      ? 0.3 + chargeProgress * 2 * (0.86 - 0.3)
-      : 0.86 + (chargeProgress - 0.5) * 2 * (1.08 - 0.86);
+  const chargeEnd = 0.28;
+  const chargeProgress = Math.min(progress / chargeEnd, 1);
+  const travelProgress = Math.max((progress - chargeEnd) / (1 - chargeEnd), 0);
+  const positionProgress = travelProgress ** 2;
+  const warpIntensity = travelProgress ** 1.35;
+  const chargeScale =
+    chargeProgress < 0.62
+      ? 0.28 + (chargeProgress / 0.62) * (0.94 - 0.28)
+      : 0.94 + ((chargeProgress - 0.62) / 0.38) * (1.12 - 0.94);
+  const flightScale = 1.12 + warpIntensity * (0.84 - 1.12);
   return {
-    x: geometry.delta.x * travelProgress,
-    y: geometry.delta.y * travelProgress,
+    x: geometry.delta.x * positionProgress,
+    y: geometry.delta.y * positionProgress,
     opacity: Math.min(progress / 0.08, 1),
-    scale: travelProgress > 0 ? 1.08 + travelProgress * (0.86 - 1.08) : scale,
+    scaleX: travelProgress > 0 ? flightScale * (1 + warpIntensity * 1.65) : chargeScale,
+    scaleY: travelProgress > 0 ? flightScale * (1 - warpIntensity * 0.28) : chargeScale,
+    trailLength: travelProgress > 0 ? 32 + warpIntensity * 300 : 0,
+    trailOpacity:
+      travelProgress > 0 ? Math.min(travelProgress / 0.22, 1) * (0.42 + warpIntensity * 0.58) : 0,
   };
 }
 
 function setPingFlightFrame(node: HTMLElement, frame: PingFlightFrame): void {
   node.style.opacity = `${frame.opacity}`;
-  node.style.transform = `translate(${frame.x}px, ${frame.y}px) scale(${frame.scale})`;
+  node.style.transform = `translate(${frame.x}px, ${frame.y}px)`;
+  node.style.setProperty("--fx-orb-scale-x", `${frame.scaleX}`);
+  node.style.setProperty("--fx-orb-scale-y", `${frame.scaleY}`);
+  node.style.setProperty("--fx-warp-trail-length", `${frame.trailLength}px`);
+  node.style.setProperty("--fx-warp-trail-opacity", `${frame.trailOpacity}`);
 }
 
 function setPingGeometry(node: HTMLElement, geometry: PingGeometry): void {

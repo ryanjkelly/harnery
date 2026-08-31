@@ -36,6 +36,7 @@ export const CodecEffectsLayer = forwardRef<CodecEffectRuntimeHandle, CodecEffec
           pingLaunch: styles.pingLaunch,
           pingPath: styles.pingPath,
           pingFlight: styles.pingFlight,
+          pingStreak: styles.pingStreak,
           pingCore: styles.pingCore,
           pingLabel: styles.pingLabel,
           impact: styles.impact,

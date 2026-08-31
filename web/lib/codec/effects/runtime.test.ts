@@ -42,21 +42,34 @@ describe("measurePingFlightFrame", () => {
       x: 0,
       y: 0,
       opacity: 0,
-      scale: 0.3,
+      scaleX: 0.28,
+      scaleY: 0.28,
+      trailLength: 0,
+      trailOpacity: 0,
     });
-    expect(measurePingFlightFrame(geometry, 0.16)).toMatchObject({
+    expect(measurePingFlightFrame(geometry, 0.28)).toMatchObject({
       x: 0,
       y: 0,
       opacity: 1,
-      scale: 1.08,
+      scaleX: 1.12,
+      scaleY: 1.12,
+      trailLength: 0,
+      trailOpacity: 0,
     });
   });
 
-  test("moves through the guide instead of jumping between endpoints", () => {
-    const frame = measurePingFlightFrame(geometry, 0.58);
-    expect(frame.x).toBeCloseTo(200);
-    expect(frame.y).toBeCloseTo(150);
-    expect(frame.opacity).toBe(1);
+  test("accelerates through the guide and stretches into a warp streak", () => {
+    const earlyFrame = measurePingFlightFrame(geometry, 0.46);
+    const lateFrame = measurePingFlightFrame(geometry, 0.82);
+
+    expect(earlyFrame.x).toBeCloseTo(25);
+    expect(earlyFrame.y).toBeCloseTo(18.75);
+    expect(lateFrame.x).toBeCloseTo(225);
+    expect(lateFrame.y).toBeCloseTo(168.75);
+    expect(lateFrame.scaleX).toBeGreaterThan(earlyFrame.scaleX);
+    expect(lateFrame.scaleY).toBeLessThan(earlyFrame.scaleY);
+    expect(lateFrame.trailLength).toBeGreaterThan(earlyFrame.trailLength);
+    expect(lateFrame.trailOpacity).toBeGreaterThan(earlyFrame.trailOpacity);
   });
 
   test("lands exactly on the target center", () => {
@@ -64,7 +77,10 @@ describe("measurePingFlightFrame", () => {
       x: 400,
       y: 300,
       opacity: 1,
-      scale: 0.86,
+      scaleX: 2.226,
+      scaleY: 0.6048,
+      trailLength: 332,
+      trailOpacity: 1,
     });
   });
 });

@@ -30,7 +30,7 @@
     rgb(168 85 247 / 0.48)
   );
   box-shadow: 0 0 12px 2px rgb(56 189 248 / 0.34);
-  animation: codec-fx-path 3.4s linear both;
+  animation: codec-fx-path 2.85s linear both;
 }
 
 .pingPath::before,
@@ -60,7 +60,7 @@
   border-radius: 999px;
   background: linear-gradient(90deg, transparent, rgb(207 250 254 / 0.42), transparent);
   filter: blur(1.4px);
-  animation: codec-fx-path-scan 3.4s linear both;
+  animation: codec-fx-path-scan 2.85s cubic-bezier(0.62, 0, 0.98, 0.52) both;
 }
 
 .pingLaunch {
@@ -99,13 +99,61 @@
   z-index: 2;
 }
 
+.pingStreak {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--fx-warp-trail-length, 0px);
+  height: 30px;
+  border-radius: 999px 0 0 999px;
+  opacity: var(--fx-warp-trail-opacity, 0);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(168 85 247 / 0.08) 26%,
+    rgb(103 232 249 / 0.68) 72%,
+    rgb(255 255 255 / 0.98) 100%
+  );
+  box-shadow:
+    0 0 18px 4px rgb(56 189 248 / 0.48),
+    0 0 42px 10px rgb(168 85 247 / 0.26);
+  filter: blur(3px) saturate(1.4);
+  mix-blend-mode: screen;
+  transform: translateY(-50%) rotate(var(--fx-angle, 0rad));
+  transform-origin: right center;
+}
+
+.pingStreak::before,
+.pingStreak::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  border-radius: inherit;
+}
+
+.pingStreak::before {
+  top: 50%;
+  width: 82%;
+  height: 4px;
+  background: linear-gradient(90deg, transparent, rgb(207 250 254 / 0.88), white);
+  box-shadow: 0 0 12px 3px rgb(103 232 249 / 0.82);
+  transform: translateY(-50%);
+}
+
+.pingStreak::after {
+  inset: -18px -4px;
+  background: linear-gradient(90deg, transparent 10%, rgb(34 211 238 / 0.14), white 100%);
+  filter: blur(11px);
+}
+
 .pingCore {
   position: absolute;
   width: 58px;
   height: 58px;
   border: 2px solid rgb(255 255 255 / 0.96);
   border-radius: 999px;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) rotate(var(--fx-angle, 0rad)) scaleX(var(--fx-orb-scale-x, 1))
+    scaleY(var(--fx-orb-scale-y, 1));
   background: radial-gradient(
     circle,
     #fff 0 18%,
@@ -126,7 +174,7 @@
   position: absolute;
   top: 50%;
   right: 50%;
-  width: 176px;
+  width: 116px;
   height: 18px;
   border-radius: 999px 0 0 999px;
   background: linear-gradient(
@@ -137,7 +185,7 @@
     #fff
   );
   filter: blur(2.8px);
-  transform: translateY(-50%) rotate(var(--fx-angle, 0rad));
+  transform: translateY(-50%);
   transform-origin: right center;
 }
 

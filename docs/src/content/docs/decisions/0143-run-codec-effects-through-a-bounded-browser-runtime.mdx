@@ -79,13 +79,14 @@ rule, bounded visual recipe, and debug control. It does not need a scene
 transport change or another timer system inside `CodecView`.
 
 The ping recipe uses each card's visual center as its point-to-point anchor. A
-short source lock and route trace run before a 3.4-second signal flight. The
-runtime advances the packet with `requestAnimationFrame` and caps the time that
-one painted frame may contribute. A delayed frame therefore cannot consume the
-whole trip and jump directly from launch to impact on a dense page. The packet
-follows the straight guide while JavaScript owns its position, opacity, and
-scale. A 1.1-second energy burst begins at the target center where the packet
-ends.
+short source lock and route trace lead into a 2.85-second charge-and-flight
+sequence. The packet holds at the source while it charges, then accelerates
+quadratically along the straight guide. Its core compresses and its wake
+lengthens with the acceleration, creating a readable jump instead of a constant
+glide. The runtime advances the packet with `requestAnimationFrame` and caps the
+time that one painted frame may contribute. A delayed frame therefore cannot
+consume the whole trip and jump directly from launch to impact on a dense page.
+A 1.1-second energy burst begins at the target center where the packet ends.
 
 The runtime remeasures the source, route, packet, and target together. It uses
 the same refresh path for scroll and resize events and limits the work to one
