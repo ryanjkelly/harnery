@@ -35,10 +35,10 @@ export interface CodecEffectRuntimeOptions {
   maxConcurrent: () => number;
 }
 
-const PING_TRAVEL_MS = 2_350;
-const PING_IMPACT_MS = 1_250;
+const PING_TRAVEL_MS = 1_800;
+const PING_IMPACT_MS = 1_100;
 const ENDPOINT_HOLD_MS: Record<CodecEffectKind, number> = {
-  ping: 4_300,
+  ping: 3_800,
   energy: 2_800,
   "power-up": 3_200,
   healing: 3_400,
@@ -433,20 +433,16 @@ export interface PingGeometry {
 }
 
 /** The ping is a relationship between whole cards, so both anchors are their
- * visual centers. The small perpendicular bow keeps the packet legible over
- * relationship lines while preserving exact center-to-center endpoints. */
+ * visual centers and the midpoint stays on the straight guide between them. */
 export function measurePingGeometry(source: PingRect, target: PingRect): PingGeometry {
   const start = { x: source.left + source.width / 2, y: source.top + source.height / 2 };
   const end = { x: target.left + target.width / 2, y: target.top + target.height / 2 };
   const delta = { x: end.x - start.x, y: end.y - start.y };
   const distance = Math.hypot(delta.x, delta.y);
   const angle = Math.atan2(delta.y, delta.x);
-  const bow = distance === 0 ? 0 : Math.min(46, Math.max(16, distance * 0.055));
-  const normal =
-    distance === 0 ? { x: 0, y: 0 } : { x: -delta.y / distance, y: delta.x / distance };
   const midpoint = {
-    x: delta.x / 2 + normal.x * bow,
-    y: delta.y / 2 + normal.y * bow,
+    x: delta.x / 2,
+    y: delta.y / 2,
   };
   return { start, end, midpoint, delta, angle, distance };
 }

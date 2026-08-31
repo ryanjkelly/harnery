@@ -2270,15 +2270,15 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .pingSource {
-    animation: codec-ping-source 4.3s ease-out both;
+    animation: codec-ping-source 3.8s ease-out both;
   }
 
   .pingDestination {
-    animation: codec-ping-destination-wait 4.3s ease-in-out both;
+    animation: codec-ping-destination-wait 3.8s ease-in-out both;
   }
 
   .pingDestinationImpact {
-    animation: codec-ping-destination-impact 1.25s cubic-bezier(0.16, 0.8, 0.2, 1) both;
+    animation: codec-ping-destination-impact 1.1s cubic-bezier(0.12, 0.82, 0.18, 1) both;
   }
 
   .pingEndpointSource svg {
