@@ -62,17 +62,21 @@ describe("DiagnosticsDashboard", () => {
           selectedFinding: finding,
           capabilities: finding.capabilities,
           timeline: {
-            schema_version: 1,
+            schema_version: 2,
             finding_id: finding.id,
             start_at: finding.opened_at,
             end_at: finding.observed_at,
             max_entries: 160,
             omitted_entries: 0,
+            compacted_entries: 0,
             capabilities: [],
             entries: [
               {
                 id: "timeline_memory",
                 occurred_at: finding.observed_at,
+                first_occurred_at: finding.observed_at,
+                last_occurred_at: finding.observed_at,
+                occurrence_count: 1,
                 relation: "observed",
                 summary: "Memory crossed the threshold.",
                 source: finding.primary_source,
@@ -135,7 +139,7 @@ describe("DiagnosticsDashboard", () => {
           capabilities: [],
           capturedAt: finding.observed_at,
           bundle: {
-            schema_version: 2,
+            schema_version: 3,
             artifact_id: "artifact_bundle",
             captured_at: finding.observed_at,
             machine_id: "machine_hash",
