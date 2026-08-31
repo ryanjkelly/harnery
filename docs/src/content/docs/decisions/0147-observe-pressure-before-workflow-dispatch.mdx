@@ -1,0 +1,86 @@
+---
+title: "ADR 0147: observe pressure before workflow dispatch"
+description: Record fresh diagnostic advice at the workflow dispatch boundary without giving the observer control authority.
+sidebar:
+  order: 147
+---
+
+**Date:** 2026-08-31
+**Status:** Accepted
+
+## Context
+
+Harnery can produce deterministic local pressure advice from current supervisor
+findings. Workflow and governor runs do not consume that advice, so a run can
+fan out without recording what the optional observer knew before dispatch.
+
+Turning advice into an automatic limit would be premature. The advice contract
+has replay evidence from one incident, not a representative set of normal,
+elevated, critical, and unavailable decisions. The supervisor is also optional.
+Its absence cannot become a hidden requirement for basic workflow execution.
+
+The observer demand lifecycle matters. A stopped supervisor may leave its last
+projection on disk, but that projection is historical. A useful dispatch record
+must request a fresh cycle without keeping the daemon alive indefinitely.
+
+## Alternatives considered
+
+- Enforce advice at dispatch. This would let limited replay evidence and an
+  optional capability change execution immediately.
+- Read the last projection without starting the supervisor. This can present
+  historical pressure as current.
+- Start observation when every workflow begins. Deterministic and cache-only
+  workflows would pay observer cost without making a dispatch decision.
+- Keep a workflow consumer registered until the run ends. This adds cleanup to
+  every terminal and parked path even though this decision needs one sample.
+- Write the observation only to operational logs. Logs do not carry the
+  immutable proof and resume semantics required for later policy evaluation.
+
+## Decision
+
+Add an opt-in workflow diagnostic-admission mode named `shadow`. The immutable
+run manifest freezes whether shadow mode is enabled. The mode is absent by
+default.
+
+Immediately before the first real child launch, shadow mode registers a
+run-scoped supervisor consumer, demand-starts the supervisor when necessary,
+and waits a bounded time for one cycle newer than the observation request. It
+then reads the same diagnostic advice contract used by the CLI and unregisters
+the consumer in every outcome.
+
+The transcript, terminal workflow proof, and run report record one bounded
+admission observation. It states the trigger, observer lifecycle result,
+freshness result, advice, and `action: none`. A workflow that never reaches a
+real child dispatch records `not-needed` and does not start the supervisor.
+
+Startup, timeout, missing-source, and read failures become explicit unknown
+advice. They do not fail, park, or change the workflow. Normal, elevated,
+critical, and unknown results all preserve the configured concurrency, policy,
+and child launch.
+
+The workflow and governor CLIs expose this mode through
+`--observe-pressure`. Resume uses the mode frozen in the original manifest and
+takes a new observation only if it launches another child.
+
+The alpha workflow manifest and proof schemas cut over directly. Harnery does
+not retain compatibility readers for the prior schema versions.
+
+## Result
+
+Workflow proofs can accumulate real pressure-at-dispatch evidence without
+changing execution. The same records can later be frozen into fixtures and
+used to judge whether any host policy is accurate enough to enable.
+
+The diagnostic layer remains an observer. Dispatch authority stays with the
+workflow host, and this decision adds no automatic limit or remediation path.
+
+## Scope and promotion
+
+This decision belongs to Harnery's workflow engine and optional local
+supervisor. It establishes how to collect evidence at one dispatch boundary,
+not how hosts should enforce resource policy.
+
+Enforcement requires a separate decision supported by representative frozen
+shadow records, an explicit host-owned mapping from advice to action, defined
+unknown-capability behavior, and a rollback path. Shadow evidence alone does
+not grant that authority.
