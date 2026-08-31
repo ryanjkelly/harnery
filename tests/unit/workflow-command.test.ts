@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Command } from "commander";
 import { registerWorkflowCommand } from "../../src/commands/workflow.ts";
@@ -17,7 +17,7 @@ beforeEach(() => {
   writeWorkflowRunManifest({
     coordRoot: root,
     manifest: {
-      schema_version: 1,
+      schema_version: 2,
       run_id: "wf-command",
       name: "command",
       started_at: "2026-07-21T12:00:00.000Z",
@@ -50,6 +50,26 @@ afterEach(() => {
 });
 
 describe("workflow proof command", () => {
+  test("freezes observer-only pressure mode from --observe-pressure", async () => {
+    const script = join(root, "observe.mjs");
+    writeFileSync(script, 'export default () => "no dispatch";\n', "utf8");
+    let captured: unknown;
+    await runCommand(["run", script, "--observe-pressure", "--json"], {
+      text: () => {},
+      data: (value) => {
+        captured = value;
+      },
+      config: () => {},
+      error: (error) => {
+        throw new Error(error.message);
+      },
+    });
+
+    expect(
+      (captured as { diagnosticAdmission?: { state: string; action: string } }).diagnosticAdmission,
+    ).toEqual(expect.objectContaining({ state: "not-needed", action: "none" }));
+  });
+
   test("renders the human proof summary", async () => {
     const output: string[] = [];
     await runCommand(["run", "proof", "wf-command"], {
@@ -96,7 +116,7 @@ async function runCommand(
 
 function sampleProof(): WorkflowProof {
   return {
-    schema_version: 1,
+    schema_version: 2,
     run: {
       id: "wf-command",
       name: "command",

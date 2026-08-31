@@ -74,6 +74,12 @@ used to judge whether any host policy is accurate enough to enable.
 The diagnostic layer remains an observer. Dispatch authority stays with the
 workflow host, and this decision adds no automatic limit or remediation path.
 
+The implementation cuts the run manifest to schema 2 and the workflow proof to
+schema 2. Concurrent first launches share one observation promise, while denied,
+cached, and absent launches do not wake the supervisor. The workflow web view
+shows the sampled pressure, freshness, wait time, and unchanged action alongside
+the terminal proof.
+
 ## Scope and promotion
 
 This decision belongs to Harnery's workflow engine and optional local

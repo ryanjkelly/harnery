@@ -24,6 +24,7 @@ import type {
   SpawnFailureClass,
   WorkflowAgentProof,
   WorkflowAttemptContext,
+  WorkflowDiagnosticAdmissionProof,
   WorkflowEvidenceInput,
   WorkflowEvidenceRecord,
   WorkflowMeta,
@@ -35,7 +36,11 @@ import type {
   WorkflowSandboxProjectionEvidence,
   WorkflowWorkContext,
 } from "./types.ts";
-import { EVIDENCE_KINDS, WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
+import {
+  EVIDENCE_KINDS,
+  WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
+  WORKFLOW_PROOF_SCHEMA_VERSION,
+} from "./types.ts";
 import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 import type {
   WorkspaceAttestation,
@@ -84,6 +89,7 @@ export interface BuildWorkflowProofInput {
   after: RepoSnapshot;
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
+  diagnosticAdmission?: WorkflowDiagnosticAdmissionProof;
   adapterEvidence?: Readonly<Record<string, AdapterEvidenceCapability | undefined>>;
   /** Filesystem policy actually projected into children (ADR 0039). */
   sandboxProjection?: WorkflowSandboxProjectionEvidence;
@@ -299,6 +305,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
     agents,
     evidence: input.evidence,
     policy: input.policy ? buildPolicyProof(input.policy) : undefined,
+    ...(input.diagnosticAdmission ? { diagnostic_admission: input.diagnosticAdmission } : {}),
     execution:
       input.workspaceBinding && input.workspaceAttestation
         ? buildExecutionEvidence(input.status, input.workspaceBinding, input.workspaceAttestation)
@@ -385,6 +392,7 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
       (!proof.run.work_item_id ||
         !proof.run.work_context ||
         !isCanonicalWorkflowAttemptContext(proof.run.attempt_context))) ||
+    !validDiagnosticAdmissionProof(proof.diagnostic_admission) ||
     (proof.execution !== undefined &&
       !isWorkspaceExecutionEvidence(proof.execution, runId, proof.run.status))
   ) {
@@ -408,6 +416,42 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
     throw new Error(`workflow proof at ${path} does not match the frozen execution manifest`);
   }
   return proof;
+}
+
+function validDiagnosticAdmissionProof(
+  value: WorkflowDiagnosticAdmissionProof | undefined,
+): boolean {
+  if (value === undefined) return true;
+  if (
+    value.schema_version !== WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION ||
+    value.mode !== "shadow" ||
+    value.trigger !== "before-first-dispatch" ||
+    value.action !== "none" ||
+    (value.state !== "not-needed" && value.state !== "observed")
+  ) {
+    return false;
+  }
+  if (value.state === "not-needed") {
+    return value.reason_code === "no-dispatch" && value.observation === undefined;
+  }
+  const observation = value.observation;
+  return (
+    value.reason_code === undefined &&
+    observation !== undefined &&
+    validTimestamp(observation.requested_at) &&
+    validTimestamp(observation.observed_at) &&
+    Number.isSafeInteger(observation.wait_ms) &&
+    observation.wait_ms >= 0 &&
+    ["running", "started", "unavailable"].includes(observation.service_state) &&
+    ["fresh", "unavailable"].includes(observation.freshness) &&
+    (observation.sampled_at === undefined || validTimestamp(observation.sampled_at)) &&
+    observation.advice?.schema_version === 1 &&
+    observation.advice.observer_only === true
+  );
+}
+
+function validTimestamp(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
 }
 
 function buildExecutionEvidence(
@@ -456,6 +500,15 @@ export function renderWorkflowProof(proof: WorkflowProof): string {
     lines.push(
       `policy: ${proof.policy.name}; ${proof.policy.summary.allowed} allowed, ` +
         `${proof.policy.summary.denied} denied, ${proof.policy.summary.asked} asked`,
+    );
+  }
+  if (proof.diagnostic_admission) {
+    const observation = proof.diagnostic_admission.observation;
+    lines.push(
+      observation
+        ? `admission: shadow ${observation.advice.pressure}; ` +
+            `${observation.advice.fan_out_recommendation}; action none`
+        : "admission: shadow not needed; no real child dispatch",
     );
   }
   const repo = proof.repository;

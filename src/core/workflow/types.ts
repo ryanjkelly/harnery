@@ -7,6 +7,7 @@
  * Design record: decision 0015 (portable coordination-aware workflows).
  */
 
+import type { DiagnosticAdvice } from "../diagnostics/contract.ts";
 import type {
   DispatchCostEstimator,
   ExternalMutationRequest,
@@ -24,7 +25,8 @@ import type {
   WorkspaceProvider,
 } from "./workspaces/index.ts";
 
-export const WORKFLOW_PROOF_SCHEMA_VERSION = 1 as const;
+export const WORKFLOW_PROOF_SCHEMA_VERSION = 2 as const;
+export const WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION = 1 as const;
 export const WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION = 1 as const;
 export const WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION = 1 as const;
 
@@ -45,6 +47,31 @@ export type EvidenceSource = "workflow" | "engine";
 export type AcceptanceStatus = "satisfied" | "unsatisfied" | "unknown";
 export type WorkflowRunStatus = "succeeded" | "failed";
 export type WorkflowApprovalMode = "deny" | "park";
+
+export interface WorkflowDiagnosticAdmissionConfig {
+  schema_version: typeof WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION;
+  mode: "shadow";
+}
+
+export interface WorkflowDiagnosticAdmissionObservation {
+  requested_at: string;
+  observed_at: string;
+  wait_ms: number;
+  service_state: "running" | "started" | "unavailable";
+  freshness: "fresh" | "unavailable";
+  sampled_at?: string;
+  advice: DiagnosticAdvice;
+}
+
+export interface WorkflowDiagnosticAdmissionProof {
+  schema_version: typeof WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION;
+  mode: "shadow";
+  trigger: "before-first-dispatch";
+  state: "not-needed" | "observed";
+  action: "none";
+  reason_code?: "no-dispatch";
+  observation?: WorkflowDiagnosticAdmissionObservation;
+}
 
 export interface AcceptanceCriterion {
   /** Stable identifier referenced by evidence, for example `tests-pass`. */
@@ -221,6 +248,8 @@ export interface WorkflowProof {
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
   policy?: WorkflowPolicyProof;
+  /** Observer-only local pressure recorded before the first real child dispatch. */
+  diagnostic_admission?: WorkflowDiagnosticAdmissionProof;
   /** Immutable terminal provider evidence for isolated execution. */
   execution?: WorkspaceExecutionEvidence;
   repository: WorkflowRepoEvidence;
@@ -557,6 +586,13 @@ export interface EngineOpts {
   maxAgents?: number;
   /** Concurrent-subagent cap for parallel() (default 4). */
   concurrency?: number;
+  /** Opt-in observer-only pressure sample before the first real child dispatch. */
+  diagnosticAdmission?: WorkflowDiagnosticAdmissionConfig;
+  /** Admission observer override for tests. */
+  observeDiagnosticAdmission?: (
+    coordRoot: string,
+    runId: string,
+  ) => Promise<WorkflowDiagnosticAdmissionObservation>;
   /** Working directory children spawn in (default: coordRoot). */
   cwd?: string;
   /** Progress sink (default: process.stderr). */
@@ -639,6 +675,8 @@ export interface RunReport {
   billing: Array<{ adapter: AdapterName; mode: BillingMode }>;
   /** Policy verdict totals when the host supplied a policy. */
   policy?: WorkflowPolicyProof["summary"];
+  /** Observer-only pressure sample. Never changes dispatch in shadow mode. */
+  diagnosticAdmission?: WorkflowDiagnosticAdmissionProof;
   /** Isolated workspace binding when this run requested a provider capability. */
   workspaceBinding?: WorkspaceBinding;
 }

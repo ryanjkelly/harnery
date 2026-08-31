@@ -62,6 +62,7 @@ interface CreateOpts {
 interface RunOpts {
   adapter?: string;
   cwd?: string;
+  observePressure?: boolean;
   subscriptionOnly?: boolean;
   allowApiBilling?: boolean;
   policy?: string;
@@ -438,6 +439,10 @@ function addServiceOptions(command: Command): Command {
     .option("--error-backoff-max-ms <n>", "Maximum service-error backoff (default 300000)")
     .option("--adapter <name>", "Fallback adapter for agent calls without a specialist")
     .option("--cwd <dir>", "Working directory for child agents")
+    .option(
+      "--observe-pressure",
+      "Record observer-only local pressure before each workflow's first real child dispatch",
+    )
     .option("--subscription-only", "Require stored adapter-login billing")
     .option("--allow-api-billing", "Permit API-key override billing")
     .option("--policy <file>", "Host policy JSON/JSONC")
@@ -596,6 +601,9 @@ function registerRunCommand(
             spawners: registry.spawners(),
             defaultAdapter: opts.adapter,
             cwd: opts.cwd,
+            diagnosticAdmission: opts.observePressure
+              ? { schema_version: 1, mode: "shadow" }
+              : undefined,
             subscriptionOnly:
               opts.subscriptionOnly === true ? true : workflowSubscriptionOnly(coordRoot),
             allowApiBilling: opts.allowApiBilling,

@@ -8,6 +8,7 @@ sidebar:
 ```
 harn run <script> [--adapter <name>] [--resume-from <run-id>]
                            [--subscription-only] [--allow-api-billing]
+                           [--observe-pressure]
                            [--policy <file>] [--isolation <mode>]
                            [--workspace-root <dir>] [--approval-to <address>]
                            [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
@@ -38,6 +39,26 @@ Before making a workflow durable, read [Author reliable
 workflows](/guides/workflow-authoring/). It covers frozen script hashes, the
 five-minute agent timeout, response-schema failure costs, and child sandbox
 verification.
+
+## Optional shadow pressure observation
+
+Pass `--observe-pressure` to record local pressure before the first real child
+dispatch. Harnery registers the run as a short-lived supervisor consumer,
+demand-starts the optional supervisor when necessary, waits for one fresh
+cycle, reads the same advice exposed by `harn diagnostics explain`, and then
+unregisters the consumer.
+
+This mode is observer-only. Normal, elevated, critical, and unknown advice all
+leave dispatch unchanged. Startup, freshness, and read failures become explicit
+unknown advice instead of failing or parking the run. The observer stays asleep
+when every `agent()` call is served from cache or the workflow dispatches no
+children.
+
+The immutable run manifest freezes `{ schema_version: 1, mode: "shadow" }`.
+Parked resume keeps the original choice and takes another sample only if it
+reaches a new real dispatch. The transcript records `diagnostic.admission`; the
+terminal `RunReport` and proof packet carry the same observation with
+`action: "none"`.
 
 Spawn adapters: `claude-code` (default), `codex` (`codex exec
 --output-last-message`), and `cursor` (`cursor-agent -p --output-format json
@@ -577,6 +598,7 @@ mode `0600` and contains:
   text;
 - engine-observed repository snapshots before and after the run;
 - adapter tool-evidence coverage from the adapter capability registry;
+- observer-only shadow admission advice when `--observe-pressure` was enabled;
 - explicit unknowns for missing capability claims, cost, session IDs, and
   incomplete repository drift;
 - a SHA-256 digest of the final transcript.

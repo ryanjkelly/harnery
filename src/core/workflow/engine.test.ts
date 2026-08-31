@@ -14,7 +14,13 @@ import { join } from "node:path";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { runWorkflow } from "./engine.ts";
 import { WORKFLOW_TRANSCRIPT_EVENT_BYTES } from "./transcript.ts";
-import type { Spawner, SpawnRequest, SpawnResult, WorkflowProof } from "./types.ts";
+import type {
+  Spawner,
+  SpawnRequest,
+  SpawnResult,
+  WorkflowDiagnosticAdmissionObservation,
+  WorkflowProof,
+} from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 
 let root: string;
@@ -797,7 +803,7 @@ describe("runWorkflow", () => {
     expect(report.acceptance).toEqual({ satisfied: 1, unsatisfied: 0, unknown: 0, total: 1 });
     expect(statSync(report.proofPath).mode & 0o777).toBe(0o600);
     const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
-    expect(proof.schema_version).toBe(1);
+    expect(proof.schema_version).toBe(2);
     expect(proof.run.status).toBe("succeeded");
     expect(proof.acceptance.criteria[0]?.status).toBe("satisfied");
     expect(proof.evidence[0]?.source).toBe("workflow");
@@ -844,6 +850,79 @@ describe("runWorkflow", () => {
     }
   });
 
+  test("records critical shadow advice before dispatch without changing dispatch", async () => {
+    const script = writeScript(`export default ({ agent }) => agent("do the work")`);
+    let observerFinished = false;
+    let spawnCalls = 0;
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: {
+        "claude-code": async () => {
+          expect(observerFinished).toBe(true);
+          spawnCalls++;
+          return okSpawn("done");
+        },
+      },
+      diagnosticAdmission: { schema_version: 1, mode: "shadow" },
+      observeDiagnosticAdmission: async () => {
+        observerFinished = true;
+        return criticalObservation();
+      },
+      ...quiet,
+    });
+
+    expect(spawnCalls).toBe(1);
+    expect(report.diagnosticAdmission?.action).toBe("none");
+    expect(report.diagnosticAdmission?.observation?.advice.pressure).toBe("critical");
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(proof.diagnostic_admission).toEqual(report.diagnosticAdmission);
+    const manifest = JSON.parse(
+      readFileSync(join(root, ".harnery", "workflows", report.runId, "run.json"), "utf8"),
+    );
+    expect(manifest.schema_version).toBe(2);
+    expect(manifest.execution.diagnostic_admission).toEqual({
+      schema_version: 1,
+      mode: "shadow",
+    });
+    const events = readTranscript();
+    expect(events.findIndex((event) => event.event === "diagnostic.admission")).toBeLessThan(
+      events.findIndex((event) => event.event === "agent.start"),
+    );
+  });
+
+  test("does not observe pressure when every agent call is satisfied from cache", async () => {
+    const script = writeScript(`export default ({ agent }) => agent("stable work")`);
+    const first = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": async () => okSpawn("cached") },
+      ...quiet,
+    });
+    let observations = 0;
+    const second = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": async () => okSpawn("must not spawn") },
+      resumeFrom: first.runId,
+      diagnosticAdmission: { schema_version: 1, mode: "shadow" },
+      observeDiagnosticAdmission: async () => {
+        observations++;
+        return criticalObservation();
+      },
+      ...quiet,
+    });
+
+    expect(second.agentsSpawned).toBe(0);
+    expect(second.agentsCached).toBe(1);
+    expect(observations).toBe(0);
+    expect(second.diagnosticAdmission).toEqual({
+      schema_version: 1,
+      mode: "shadow",
+      trigger: "before-first-dispatch",
+      state: "not-needed",
+      action: "none",
+      reason_code: "no-dispatch",
+    });
+  });
+
   function readTranscript(): Array<Record<string, unknown> & { event: string }> {
     const dir = join(root, ".harnery", "workflows");
     expect(existsSync(dir)).toBe(true);
@@ -854,6 +933,32 @@ describe("runWorkflow", () => {
       .map((l) => JSON.parse(l));
   }
 });
+
+function criticalObservation(): WorkflowDiagnosticAdmissionObservation {
+  const evaluatedAt = "2026-08-31T12:00:00.050Z";
+  return {
+    requested_at: "2026-08-31T12:00:00.000Z",
+    observed_at: evaluatedAt,
+    wait_ms: 50,
+    service_state: "running",
+    freshness: "fresh",
+    sampled_at: evaluatedAt,
+    advice: {
+      schema_version: 1,
+      evaluated_at: evaluatedAt,
+      pressure: "critical",
+      fan_out_recommendation: "avoid-new-fan-out",
+      observer_only: true,
+      summary: "Critical local pressure is active.",
+      source_capability: { source_kind: "supervisor.findings", state: "supported" },
+      active_finding_count: 1,
+      contributing_finding_count: 1,
+      omitted_contributing_finding_count: 0,
+      contributing_findings: [],
+      reasons: [],
+    },
+  };
+}
 
 describe("parseCursorOutput", () => {
   test("json envelope, error envelope, and non-json fallback", async () => {

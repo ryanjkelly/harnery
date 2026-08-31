@@ -29,7 +29,7 @@ describe("workflow run state", () => {
     const path = writeWorkflowRunManifest({
       coordRoot: root,
       manifest: {
-        schema_version: 1,
+        schema_version: 2,
         run_id: "wf-fixture",
         name: "fixture",
         started_at: "2026-07-21T12:00:00.000Z",
@@ -59,7 +59,7 @@ describe("workflow run state", () => {
     const path = writeWorkflowRunManifest({
       coordRoot: root,
       manifest: {
-        schema_version: 1,
+        schema_version: 2,
         run_id: "wf-work-context",
         work_item_id: "work-a",
         work_context: {

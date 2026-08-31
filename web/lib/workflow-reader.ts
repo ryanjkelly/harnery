@@ -396,7 +396,7 @@ function readProof(root: string, runId: string): WorkflowProof | undefined {
   if (!existsSync(path)) return undefined;
   try {
     const proof = JSON.parse(readFileSync(path, "utf8")) as WorkflowProof;
-    return proof.schema_version === 1 && proof.run?.id === runId ? proof : undefined;
+    return proof.schema_version === 2 && proof.run?.id === runId ? proof : undefined;
   } catch {
     return undefined;
   }

@@ -476,6 +476,30 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                 ) : null}
               </div>
             ) : null}
+            {run.proof.diagnostic_admission ? (
+              <div className="mb-4 rounded-md border border-border px-3 py-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Tooltip content="Observer-only local pressure sampled before the first real child dispatch. Shadow mode records advice but never changes dispatch.">
+                    <span className="cursor-help font-medium">Shadow admission</span>
+                  </Tooltip>
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                    {run.proof.diagnostic_admission.observation?.advice.pressure ?? "not needed"}
+                  </span>
+                  <span className="text-xs text-muted-foreground">action none</span>
+                </div>
+                {run.proof.diagnostic_admission.observation ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {run.proof.diagnostic_admission.observation.advice.summary} Freshness:{" "}
+                    {run.proof.diagnostic_admission.observation.freshness}; waited{" "}
+                    {run.proof.diagnostic_admission.observation.wait_ms} ms.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    No real child dispatch needed an observation.
+                  </p>
+                )}
+              </div>
+            ) : null}
             {run.proof.acceptance.criteria.length > 0 ? (
               <ul className="mb-4 space-y-1">
                 {run.proof.acceptance.criteria.map((criterion) => (

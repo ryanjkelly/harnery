@@ -1,3 +1,9 @@
+export {
+  failedWorkflowDiagnosticAdmissionObservation,
+  type ObserveWorkflowDiagnosticAdmissionInput,
+  observeWorkflowDiagnosticAdmission,
+  type WorkflowDiagnosticAdmissionRuntime,
+} from "./admission.ts";
 export type {
   CreateWorkflowApprovalInput,
   ResolveWorkflowApprovalInput,
@@ -72,6 +78,9 @@ export type {
   WorkflowAttemptPriorContext,
   WorkflowAttemptUnresolvedCriterion,
   WorkflowContext,
+  WorkflowDiagnosticAdmissionConfig,
+  WorkflowDiagnosticAdmissionObservation,
+  WorkflowDiagnosticAdmissionProof,
   WorkflowEvidenceInput,
   WorkflowEvidenceRecord,
   WorkflowMeta,
@@ -87,6 +96,7 @@ export type {
 } from "./types.ts";
 export {
   WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION,
+  WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
   WORKFLOW_PROOF_SCHEMA_VERSION,
   WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION,
 } from "./types.ts";

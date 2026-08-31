@@ -35,6 +35,10 @@ import {
   policyDigest,
   summarizePolicyRequest,
 } from "../policy/index.ts";
+import {
+  failedWorkflowDiagnosticAdmissionObservation,
+  observeWorkflowDiagnosticAdmission,
+} from "./admission.ts";
 import { assertWorkflowRunId, createWorkflowApproval } from "./approvals.ts";
 import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
@@ -52,6 +56,7 @@ import {
   acquireWorkflowResumeLease,
   assertWorkflowRunResumable,
   assertWorkflowScriptUnchanged,
+  WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION,
   workflowScriptDigest,
   writeWorkflowRunManifest,
 } from "./run-state.ts";
@@ -71,12 +76,16 @@ import type {
   WorkflowAgentProof,
   WorkflowAttemptContext,
   WorkflowContext,
+  WorkflowDiagnosticAdmissionConfig,
+  WorkflowDiagnosticAdmissionObservation,
+  WorkflowDiagnosticAdmissionProof,
   WorkflowEvidenceRecord,
   WorkflowModule,
   WorkflowProof,
   WorkflowSandboxProjectionEvidence,
   WorkflowWorkContext,
 } from "./types.ts";
+import { WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 import { freezeWorkflowWorkContext } from "./work-context.ts";
 import {
@@ -317,6 +326,11 @@ async function executeWorkflow(
   const approvalAddressee = frozen?.approval_addressee ?? opts.approvalAddressee ?? "operator";
   const subscriptionOnly = frozen?.subscription_only ?? Boolean(opts.subscriptionOnly);
   const allowApiBilling = frozen?.allow_api_billing ?? Boolean(opts.allowApiBilling);
+  const diagnosticAdmissionConfig = frozen?.diagnostic_admission
+    ? normalizeDiagnosticAdmissionConfig(frozen.diagnostic_admission)
+    : resumeState
+      ? undefined
+      : normalizeDiagnosticAdmissionConfig(opts.diagnosticAdmission);
   const startedAt = resumeState?.manifest.started_at ?? new Date().toISOString();
   const t0 = resumeState ? Date.parse(startedAt) : Date.now();
   const scriptSha256 = resumeState?.manifest.script.sha256 ?? workflowScriptDigest(absScript);
@@ -386,6 +400,7 @@ async function executeWorkflow(
         after: resumeState.manifest.repository_before,
         agents: [],
         evidence: [],
+        diagnosticAdmission: initialDiagnosticAdmissionProof(diagnosticAdmissionConfig),
         adapterEvidence: opts.adapterEvidence,
         adapterAttestations: opts.adapterAttestations,
         sandboxProjection: sandboxProjectionEvidence(
@@ -454,7 +469,7 @@ async function executeWorkflow(
     writeWorkflowRunManifest({
       coordRoot: opts.coordRoot,
       manifest: {
-        schema_version: 1,
+        schema_version: WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION,
         run_id: runId,
         work_item_id: opts.workItemId,
         work_context: workContext,
@@ -468,6 +483,7 @@ async function executeWorkflow(
           default_adapter: defaultAdapter,
           max_agents: maxAgents,
           concurrency,
+          diagnostic_admission: diagnosticAdmissionConfig,
           subscription_only: subscriptionOnly,
           allow_api_billing: allowApiBilling,
           approval_mode: approvalMode,
@@ -581,6 +597,8 @@ async function executeWorkflow(
     history?.policyDecisions.map((decision) => [decision.id, decision]),
   );
   const acceptanceIds = new Set(meta.acceptance.map((criterion) => criterion.id));
+  let diagnosticAdmission = initialDiagnosticAdmissionProof(diagnosticAdmissionConfig);
+  let diagnosticAdmissionPromise: Promise<void> | undefined;
 
   const transcript = (event: string, data: Record<string, unknown>): void => {
     appendWorkflowTranscriptEvent(opts.coordRoot, runId, event, { stage: currentStage, ...data });
@@ -599,6 +617,46 @@ async function executeWorkflow(
       result_digest: digestResult(result, resultKind),
       result,
     });
+  };
+
+  const ensureDiagnosticAdmissionObserved = async (): Promise<void> => {
+    if (!diagnosticAdmissionConfig) return;
+    diagnosticAdmissionPromise ??= (async () => {
+      const requestedAt = new Date();
+      let observation: WorkflowDiagnosticAdmissionObservation;
+      try {
+        observation = await (
+          opts.observeDiagnosticAdmission ??
+          ((coordRoot, observationRunId) =>
+            observeWorkflowDiagnosticAdmission({
+              coordRoot,
+              runId: observationRunId,
+            }))
+        )(opts.coordRoot, runId);
+      } catch (error) {
+        observation = failedWorkflowDiagnosticAdmissionObservation(error, requestedAt);
+      }
+      diagnosticAdmission = {
+        schema_version: WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
+        mode: "shadow",
+        trigger: "before-first-dispatch",
+        state: "observed",
+        action: "none",
+        observation,
+      };
+      transcript("diagnostic.admission", {
+        schema_version: diagnosticAdmission.schema_version,
+        mode: diagnosticAdmission.mode,
+        trigger: diagnosticAdmission.trigger,
+        action: diagnosticAdmission.action,
+        observation,
+      });
+      log(
+        `[admission] shadow pressure=${observation.advice.pressure} ` +
+          `recommendation=${observation.advice.fan_out_recommendation}; dispatch unchanged`,
+      );
+    })();
+    await diagnosticAdmissionPromise;
   };
 
   // Bounded concurrency gate shared by every spawn in the run — direct
@@ -936,6 +994,7 @@ async function executeWorkflow(
 
     await acquire();
     try {
+      await ensureDiagnosticAdmissionObserved();
       transcript("agent.start", {
         id,
         label,
@@ -1227,6 +1286,7 @@ async function executeWorkflow(
         after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
+        diagnosticAdmission,
         adapterEvidence: opts.adapterEvidence,
         adapterAttestations: opts.adapterAttestations,
         sandboxProjection: sandboxProjectionEvidence(filesystemPolicy, gitWrite),
@@ -1270,6 +1330,7 @@ async function executeWorkflow(
         mode: subscriptionOnly ? "subscription" : p.mode,
       })),
       policy: proof.policy?.summary,
+      diagnosticAdmission,
       workspaceBinding,
     };
     return report;
@@ -1308,6 +1369,7 @@ async function executeWorkflow(
         after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
+        diagnosticAdmission,
         adapterEvidence: opts.adapterEvidence,
         adapterAttestations: opts.adapterAttestations,
         sandboxProjection: sandboxProjectionEvidence(filesystemPolicy, gitWrite),
@@ -1483,6 +1545,36 @@ function loadRunHistory(path: string): {
 
 function round4(n: number): number {
   return Math.round(n * 10_000) / 10_000;
+}
+
+function normalizeDiagnosticAdmissionConfig(
+  value: WorkflowDiagnosticAdmissionConfig | undefined,
+): WorkflowDiagnosticAdmissionConfig | undefined {
+  if (value === undefined) return undefined;
+  if (
+    value.schema_version !== WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION ||
+    value.mode !== "shadow"
+  ) {
+    throw new Error("diagnosticAdmission must use schema_version 1 and mode shadow");
+  }
+  return {
+    schema_version: WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
+    mode: "shadow",
+  };
+}
+
+function initialDiagnosticAdmissionProof(
+  config: WorkflowDiagnosticAdmissionConfig | undefined,
+): WorkflowDiagnosticAdmissionProof | undefined {
+  if (!config) return undefined;
+  return {
+    schema_version: WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
+    mode: "shadow",
+    trigger: "before-first-dispatch",
+    state: "not-needed",
+    action: "none",
+    reason_code: "no-dispatch",
+  };
 }
 
 function assertAgentCapacity(agentsSpawned: number, maxAgents: number): void {

@@ -28,6 +28,7 @@ import type { WorkspaceProvider } from "../core/workflow/index.ts";
 interface WorkflowRunOpts {
   maxAgents?: string;
   concurrency?: string;
+  observePressure?: boolean;
   cwd?: string;
   adapter?: string;
   resumeFrom?: string;
@@ -98,6 +99,10 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     )
     .option("--max-agents <n>", "Total-agent ceiling for the run (default 50)")
     .option("--concurrency <n>", "Concurrent-subagent cap (default 4)")
+    .option(
+      "--observe-pressure",
+      "Record observer-only local pressure before the first real child dispatch",
+    )
     .option("--cwd <dir>", "Working directory children spawn in (default: coord root)")
     .option(
       "--adapter <name>",
@@ -194,6 +199,9 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           allowApiBilling: opts.allowApiBilling,
           maxAgents: opts.maxAgents ? Number.parseInt(opts.maxAgents, 10) : undefined,
           concurrency: opts.concurrency ? Number.parseInt(opts.concurrency, 10) : undefined,
+          diagnosticAdmission: opts.observePressure
+            ? { schema_version: 1, mode: "shadow" }
+            : undefined,
           cwd: opts.cwd,
           ...adapterProofInputs(
             registry.list().map((adapter) => adapter.profile),

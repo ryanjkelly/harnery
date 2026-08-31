@@ -58,6 +58,7 @@ describe("workflow proof reader", () => {
     expect(run?.proof?.run.objective).toBe("Show proof in the dashboard");
     expect(run?.proof?.acceptance.summary.satisfied).toBe(1);
     expect(run?.proof?.policy?.decisions[0]?.verdict).toBe("allow");
+    expect(run?.proof?.diagnostic_admission?.observation?.advice.pressure).toBe("elevated");
   });
 
   test("uses total retry cost instead of only the final attempt cost", () => {
@@ -357,7 +358,7 @@ function writeSharedManifest(): void {
   writeWorkflowRunManifest({
     coordRoot: root,
     manifest: {
-      schema_version: 1,
+      schema_version: 2,
       run_id: "wf-reader",
       name: "reader",
       started_at: "2026-07-21T12:00:00.000Z",
@@ -381,7 +382,7 @@ function writeSharedManifest(): void {
 
 function sampleProof(): WorkflowProof {
   return {
-    schema_version: 1,
+    schema_version: 2,
     run: {
       id: "wf-reader",
       name: "reader",
@@ -405,6 +406,35 @@ function sampleProof(): WorkflowProof {
     },
     agents: [],
     evidence: [],
+    diagnostic_admission: {
+      schema_version: 1,
+      mode: "shadow",
+      trigger: "before-first-dispatch",
+      state: "observed",
+      action: "none",
+      observation: {
+        requested_at: "2026-07-21T12:00:00.100Z",
+        observed_at: "2026-07-21T12:00:00.150Z",
+        wait_ms: 50,
+        service_state: "running",
+        freshness: "fresh",
+        sampled_at: "2026-07-21T12:00:00.150Z",
+        advice: {
+          schema_version: 1,
+          evaluated_at: "2026-07-21T12:00:00.150Z",
+          pressure: "elevated",
+          fan_out_recommendation: "use-caution",
+          observer_only: true,
+          summary: "Elevated local pressure is active.",
+          source_capability: { source_kind: "supervisor.findings", state: "supported" },
+          active_finding_count: 1,
+          contributing_finding_count: 1,
+          omitted_contributing_finding_count: 0,
+          contributing_findings: [],
+          reasons: [],
+        },
+      },
+    },
     policy: {
       schema_version: 1,
       name: "dashboard policy",

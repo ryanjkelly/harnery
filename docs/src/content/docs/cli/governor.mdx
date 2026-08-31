@@ -339,7 +339,7 @@ replan, cycle, wall-time, and work-attempt bounds still apply.
 
 ```bash
 harn governor tick goal-release --subscription-only
-harn governor run goal-release --subscription-only --policy ./policy.jsonc
+harn governor run goal-release --subscription-only --observe-pressure --policy ./policy.jsonc
 ```
 
 `tick` performs at most one cycle. It is useful for schedulers, tests, and
@@ -361,7 +361,9 @@ governors from driving the same goal concurrently.
 
 Standard workflow host options remain available: `--adapter`, `--cwd`,
 `--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`, and
-`--approval-to`.
+`--approval-to`. Add `--observe-pressure` to either `tick` or `run` to record
+observer-only local pressure before each workflow's first real child dispatch.
+The advice never changes the governor's scheduling or dispatch decision.
 
 ## Background service
 

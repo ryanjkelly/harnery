@@ -26,9 +26,11 @@ import { readJsonRecord, writeImmutableJson } from "./durable-record.ts";
 import { normalizeWorkflowSpecialists } from "./specialists.ts";
 import type {
   WorkflowAttemptContext,
+  WorkflowDiagnosticAdmissionConfig,
   WorkflowSpecialistProfile,
   WorkflowWorkContext,
 } from "./types.ts";
+import { WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION } from "./types.ts";
 import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 import type {
   WorkspaceAllocationRequest,
@@ -41,7 +43,7 @@ import {
   isWorkspaceCompatibilityExecutionEvidence,
 } from "./workspaces/validate.ts";
 
-export const WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION = 1 as const;
+export const WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION = 2 as const;
 
 const MANIFEST_LIMIT_BYTES = 256 * 1024;
 const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
@@ -61,6 +63,7 @@ export interface WorkflowRunManifest {
     default_adapter: string;
     max_agents: number;
     concurrency: number;
+    diagnostic_admission?: WorkflowDiagnosticAdmissionConfig;
     subscription_only: boolean;
     allow_api_billing: boolean;
     approval_mode: "deny" | "park";
@@ -274,6 +277,7 @@ function validExecution(value: WorkflowRunManifest["execution"]): boolean {
     value.default_adapter.length > 0 &&
     positiveSafeInteger(value.max_agents) &&
     positiveSafeInteger(value.concurrency) &&
+    validDiagnosticAdmission(value.diagnostic_admission) &&
     typeof value.subscription_only === "boolean" &&
     typeof value.allow_api_billing === "boolean" &&
     (value.approval_mode === "deny" || value.approval_mode === "park") &&
@@ -289,6 +293,14 @@ function validExecution(value: WorkflowRunManifest["execution"]): boolean {
     !(value.workspace_binding && value.workspace_fallback) &&
     (value.workspace_fallback === undefined ||
       value.workspace_fallback.requested_isolation === value.isolation)
+  );
+}
+
+function validDiagnosticAdmission(value: WorkflowDiagnosticAdmissionConfig | undefined): boolean {
+  return (
+    value === undefined ||
+    (value.schema_version === WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION &&
+      value.mode === "shadow")
   );
 }
 

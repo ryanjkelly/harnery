@@ -126,7 +126,7 @@ describe("workflow proof contract", () => {
     expect(rolled.summary).toEqual({ satisfied: 1, unsatisfied: 1, unknown: 1, total: 3 });
   });
 
-  test("writes, reads, validates, and renders a version-1 proof-only packet", () => {
+  test("writes, reads, validates, and renders a version-2 proof-only packet", () => {
     const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
     const proof = sampleProof();
     writeWorkflowProof(path, proof);
@@ -138,7 +138,7 @@ describe("workflow proof contract", () => {
 
 function sampleProof(): WorkflowProof {
   return {
-    schema_version: 1,
+    schema_version: 2,
     run: {
       id: "wf-test",
       name: "sample",
