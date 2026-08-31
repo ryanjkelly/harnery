@@ -21,6 +21,8 @@ The supervisor runs several inexpensive collectors behind one process:
 - semantic reader, presence relay, governor, dashboard, and supervisor health;
 - active hook processes whose agent ownership and exact entrypoint are both
   proven;
+- bounded terminal hook receipts with internal outcome, duration, retry-worker
+  count, and process RSS point samples;
 - a 15-minute pressure history with 90 ten-second points;
 - opened and resolved source-agnostic findings with compact referenced evidence; and
 - incremental structured-log records for the live dashboard.
@@ -28,6 +30,17 @@ The supervisor runs several inexpensive collectors behind one process:
 The log collector seeds a bounded recent window when it starts. After that it
 uses each structured-log family's follow cursor and reads only complete appended
 records. A malformed family remains isolated from every healthy family.
+
+`agent-hook` always exits zero so telemetry cannot break a host adapter. The
+operating-system exit code is therefore not a health signal. Each observable
+invocation writes one sanitized `agent_hook.completed` record with an internal
+outcome of `completed`, `skipped`, `degraded`, or `faulted`. It excludes raw
+payloads, commands, prompts, tool input and output, paths, and error messages.
+The supervisor keeps at most 50 recent receipts and 40 per-hook aggregates.
+
+Completed hook RSS is a start and completion point sample for the hook process.
+It is not a process-tree peak or proof of a leak. The existing live hook rows
+remain the source for processes that are still running.
 
 ## Lifecycle
 
@@ -67,6 +80,7 @@ Current projections live under `.harnery/supervisor/`:
 ├── timelines/
 ├── explanations/
 ├── log-feed.json
+├── hook-health.json
 └── consumers/
 ```
 
@@ -77,8 +91,15 @@ supervisor files are reconstructable caches. They do not enter Event Ledger V3.
 History keeps 90 points. Finding history keeps 100 opened or resolved
 transitions. Timelines, explanations, and evidence arrays have fixed entry
 limits. Live logs keep at most 100 records per registered family and use
-fixed read budgets. Atomic private JSON writes prevent dashboard readers from
-seeing partial frames.
+fixed read budgets. Hook health reports partial or unavailable capability when
+its bounded log evidence is truncated, malformed, or unreadable. Atomic private
+JSON writes prevent dashboard readers from seeing partial frames.
+
+The completed-hook projection opens findings for degraded or faulted internal
+outcomes, completed invocations lasting at least 30 seconds, completed RSS
+samples of at least 512 MiB, and three retry workers inside five minutes. These
+thresholds only create evidence for inspection. They do not change hook or
+adapter behavior.
 
 ## Authority boundary
 

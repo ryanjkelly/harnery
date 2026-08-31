@@ -23,6 +23,7 @@ import { readResourceServiceStatus } from "../resources/service-status.ts";
 import { resourcePaths } from "../resources/storage.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+import { collectSupervisorActivitySnapshot } from "./activity.ts";
 import {
   SUPERVISOR_SNAPSHOT_SCHEMA_VERSION,
   SUPERVISOR_STATUS_SCHEMA_VERSION,
@@ -30,10 +31,11 @@ import {
   type SupervisorSnapshot,
   type SupervisorStatus,
 } from "./contract.ts";
-import { collectSupervisorActivitySnapshot } from "./activity.ts";
 import { explainSupervisorFinding } from "./explanations.ts";
 import { updateSupervisorFindings } from "./findings.ts";
 import { updateSupervisorHistory } from "./history.ts";
+import { projectHookHealth } from "./hook-health.ts";
+import { writeSupervisorHookHealth } from "./hook-health-storage.ts";
 import { collectHookHealth } from "./hooks.ts";
 import { SupervisorLogCollector } from "./log-feed.ts";
 import { collectServiceHealth } from "./services.ts";
@@ -233,6 +235,8 @@ export async function runSupervisor(
         writePrivateJsonAtomic(resourcePaths(coordRoot).snapshot, resource.snapshot);
         const logFeed = await logs.collect(cycleNow);
         writePrivateJsonAtomic(paths.log_feed, logFeed);
+        const hookHealth = projectHookHealth(logFeed, cycleNow);
+        writeSupervisorHookHealth(coordRoot, hookHealth);
         const activity = collectSupervisorActivitySnapshot(coordRoot, cycleNow);
         writePrivateJsonAtomic(paths.activity, activity);
         const hooks = collectHookHealth(resource.snapshot);
@@ -253,6 +257,7 @@ export async function runSupervisor(
           hooks,
           history,
           logFeed,
+          hookHealth,
           coordination,
           activity,
           now: cycleNow,
@@ -322,6 +327,7 @@ export async function runSupervisor(
           hooks: hooks.length,
           findings: findings.active.length,
           log_records: logFeed.total_records,
+          hook_health_records: hookHealth.source_record_count,
         });
         if (
           !keepAlive &&

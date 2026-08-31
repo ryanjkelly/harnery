@@ -17,12 +17,14 @@ import {
   type SupervisorFindingAttribution,
   type SupervisorFindingEvidence,
   type SupervisorFindingSeverity,
-  type SupervisorFindingWorkloadContext,
   type SupervisorFindings,
+  type SupervisorFindingWorkloadContext,
   type SupervisorHistory,
   type SupervisorLogFeed,
   type SupervisorSourceReference,
 } from "./contract.ts";
+import type { SupervisorHookHealth } from "./hook-health.ts";
+import { evaluateHookHealthAlerts } from "./hook-health-alerts.ts";
 
 const GIB = 1_024 * 1_024 * 1_024;
 const MIB = 1_024 * 1_024;
@@ -58,6 +60,7 @@ export interface SupervisorFindingEvaluationInput {
   hooks: readonly ObservedHookHealth[];
   history: SupervisorHistory;
   logFeed: SupervisorLogFeed;
+  hookHealth?: SupervisorHookHealth;
   coordination?: CoordinationHealthSnapshot;
   activity?: SupervisorActivitySnapshot;
   now?: Date;
@@ -152,6 +155,7 @@ function evaluateCandidates(input: {
   hooks: readonly ObservedHookHealth[];
   history: SupervisorHistory;
   logFeed: SupervisorLogFeed;
+  hookHealth?: SupervisorHookHealth;
   coordination?: CoordinationHealthSnapshot;
   activity?: SupervisorActivitySnapshot;
 }): Candidate[] {
@@ -341,6 +345,52 @@ function evaluateCandidates(input: {
         ),
       ),
     );
+  }
+
+  if (input.hookHealth) {
+    const hookCapability: SupervisorCapability = {
+      source_kind: input.hookHealth.capability.source_kind,
+      state:
+        input.hookHealth.capability.state === "unavailable"
+          ? "error"
+          : input.hookHealth.capability.state,
+      ...(input.hookHealth.capability.reason
+        ? {
+            reason_code: input.hookHealth.capability.reason,
+            detail: input.hookHealth.capability.reason,
+          }
+        : {}),
+    };
+    for (const alert of evaluateHookHealthAlerts(input.hookHealth)) {
+      const alertSource = stableSource(
+        "hook.terminal-log",
+        alert.source.id,
+        alert.source.observed_at,
+        hookCapability.state,
+        alert.source.id,
+        input.hookHealth.schema_version,
+      );
+      out.push(
+        candidate(
+          alert.finding_kind,
+          alert.severity,
+          "hook",
+          alert.scope_id,
+          alert.summary,
+          alertSource,
+          alert.observed_value,
+          alert.unit,
+          [hookCapability],
+          alert.owner_id
+            ? {
+                state: "attributed",
+                owner_kind: "agent",
+                owner_id: alert.owner_id,
+              }
+            : { state: "unattributed", reason_code: "no-validated-process-anchor" },
+        ),
+      );
+    }
   }
 
   if (input.coordination) {

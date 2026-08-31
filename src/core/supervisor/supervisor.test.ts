@@ -14,6 +14,7 @@ import {
 import { explainSupervisorFinding } from "./explanations.ts";
 import { updateSupervisorFindings } from "./findings.ts";
 import { updateSupervisorHistory } from "./history.ts";
+import { readSupervisorHookHealth } from "./hook-health-storage.ts";
 import { collectHookHealth, exactHookEntrypoint } from "./hooks.ts";
 import { runSupervisor } from "./service.ts";
 import {
@@ -337,6 +338,14 @@ describe("local supervisor collectors", () => {
     ) as { capability?: { source_kind?: string }; recent_events?: unknown[] };
     expect(coordination.capability?.source_kind).toBe("coordination.v3.references");
     expect(Array.isArray(coordination.recent_events)).toBe(true);
+    expect(readSupervisorHookHealth(root)).toMatchObject({
+      schema_version: 1,
+      capability: {
+        source_kind: "hook.terminal-log",
+        state: "supported",
+      },
+      source_record_count: 0,
+    });
   });
 });
 

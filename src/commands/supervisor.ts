@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { readSupervisorHookHealth } from "../core/supervisor/hook-health-storage.ts";
 import {
   requestSupervisorStop,
   runSupervisor,
@@ -67,6 +68,7 @@ export function registerSupervisorCommand(
           snapshot: readSupervisorSnapshot(root),
           history: readSupervisorHistory(root),
           findings: readSupervisorFindings(root),
+          hook_health: readSupervisorHookHealth(root),
           log_feed: readSupervisorLogFeed(root),
         });
       } catch (error) {

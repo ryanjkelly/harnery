@@ -28,6 +28,7 @@ import type {
   SupervisorFinding,
   SupervisorHistoryPoint,
 } from "../../../src/core/supervisor/contract";
+import type { HookHealthAggregate } from "../../../src/core/supervisor/hook-health";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -264,6 +265,78 @@ export default function ResourcesPage() {
                 </section>
               ) : null}
 
+              {supervisor.hookHealth ? (
+                <section aria-labelledby="completed-hooks-heading" className="mb-6">
+                  <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Workflow className="size-5 text-violet-500" aria-hidden />
+                        <h2 id="completed-hooks-heading" className="text-lg font-semibold">
+                          Completed hook health
+                        </h2>
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Recent terminal receipts. Memory is the hook process RSS at completion, not
+                        a process-tree peak.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <Badge
+                        variant={
+                          supervisor.hookHealth?.capability.state === "supported"
+                            ? "secondary"
+                            : "warning"
+                        }
+                      >
+                        {supervisor.hookHealth?.capability.state ?? "unavailable"}
+                      </Badge>
+                      <span className="text-muted-foreground">
+                        {supervisor.hookHealth?.summary.invocation_count ?? 0} receipts ·{" "}
+                        {supervisor.hookHealth?.summary.degraded_count ?? 0} degraded ·{" "}
+                        {supervisor.hookHealth?.summary.faulted_count ?? 0} faulted
+                      </span>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
+                    <table className="min-w-[980px] w-full text-sm">
+                      <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
+                        <tr>
+                          <Th>Hook</Th>
+                          <Th>Adapter</Th>
+                          <Th align="right">Runs</Th>
+                          <Th align="right">P50</Th>
+                          <Th align="right">P95</Th>
+                          <Th align="right">Max</Th>
+                          <Th align="right">Max memory</Th>
+                          <Th align="right">Problems</Th>
+                          <Th>Owners</Th>
+                          <Th>Last seen</Th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {supervisor.hookHealth.aggregates.length > 0 ? (
+                          supervisor.hookHealth.aggregates.map((hook) => (
+                            <CompletedHookRow
+                              key={hook.key}
+                              hook={hook}
+                              instanceToName={instanceToName}
+                            />
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={10} className="px-3 py-5 text-center">
+                              <span className="text-sm text-muted-foreground">
+                                No completed hook receipts are visible in the bounded log window.
+                              </span>
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+
               <section aria-labelledby="groups-heading" className="mb-6">
                 <div className="mb-3 flex items-center gap-2">
                   <ServerCog className="size-5 text-sky-500" aria-hidden />
@@ -406,6 +479,56 @@ export default function ResourcesPage() {
         </main>
       </div>
     </AgentChipProvider>
+  );
+}
+
+function CompletedHookRow({
+  hook,
+  instanceToName,
+}: {
+  hook: HookHealthAggregate;
+  instanceToName: Record<string, string>;
+}) {
+  const problems = hook.degraded_count + hook.faulted_count;
+  return (
+    <tr className="align-top hover:bg-muted/30" data-hook-health-key={hook.key}>
+      <Td mono>{hook.hook_name}</Td>
+      <Td>
+        <Badge variant="outline">{hook.adapter}</Badge>
+      </Td>
+      <Td align="right" mono>
+        {hook.invocation_count}
+      </Td>
+      <Td align="right" mono>
+        {formatMs(hook.duration_p50_ms)}
+      </Td>
+      <Td align="right" mono>
+        {formatMs(hook.duration_p95_ms)}
+      </Td>
+      <Td align="right" mono>
+        {formatMs(hook.duration_max_ms)}
+      </Td>
+      <Td align="right" mono>
+        {formatBytes(hook.rss_end_max_bytes)}
+      </Td>
+      <Td align="right">
+        <Badge variant={problems > 0 ? "warning" : "secondary"}>{problems}</Badge>
+      </Td>
+      <Td>
+        <div className="flex max-w-72 flex-wrap gap-1">
+          {hook.owner_ids.length > 0 ? (
+            hook.owner_ids.map((ownerId) => (
+              <Owner key={ownerId} kind="agent" id={ownerId} instanceToName={instanceToName} />
+            ))
+          ) : (
+            <span className="text-xs text-muted-foreground">Unknown</span>
+          )}
+        </div>
+      </Td>
+      <Td>
+        <FormattedDateTime iso={hook.latest_observed_at} kind="timestamp" />
+      </Td>
+    </tr>
   );
 }
 
