@@ -10,6 +10,7 @@
  *
  * Modes:
  *   bun run scripts/check-public-surface.ts
+ *   bun run scripts/check-public-surface.ts --cached
  *   bun run scripts/check-public-surface.ts --message-file <path>
  *   bun run scripts/check-public-surface.ts --git-range <base..head>
  */
@@ -231,6 +232,25 @@ export function scanPublicSurface(root: string): PublicSurfaceViolation[] {
   });
 }
 
+/** Scan the exact file paths and contents in Git's proposed-commit index. */
+export function scanPublicIndex(root: string): PublicSurfaceViolation[] {
+  const paths = git(root, ["ls-files", "--cached", "-z"])
+    .split("\0")
+    .filter((path) => path && isScannableFile(path));
+  return paths.flatMap((path) => {
+    const content = spawnSync("git", ["show", `:${path}`], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (content.status !== 0) return [];
+    return [
+      ...scanPublicText(path, `path ${path}`),
+      ...scanPublicText(content.stdout, path),
+    ];
+  });
+}
+
 function git(root: string, args: string[]): string {
   const result = spawnSync("git", args, {
     cwd: root,
@@ -299,6 +319,7 @@ if (import.meta.main) {
   const args = process.argv.slice(2);
   const messageIndex = args.indexOf("--message-file");
   const rangeIndex = args.indexOf("--git-range");
+  const cached = args.includes("--cached");
   let violations: PublicSurfaceViolation[];
   if (messageIndex !== -1) {
     const path = args[messageIndex + 1];
@@ -308,6 +329,8 @@ if (import.meta.main) {
     const range = args[rangeIndex + 1];
     if (!range) throw new Error("--git-range requires <base..head>");
     violations = scanPublicHistory(process.cwd(), range);
+  } else if (cached) {
+    violations = scanPublicIndex(process.cwd());
   } else {
     violations = scanPublicSurface(args[0] ?? process.cwd());
   }

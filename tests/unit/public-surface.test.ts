@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   scanPublicHistory,
+  scanPublicIndex,
   scanPublicSurface,
   scanPublicText,
 } from "../../scripts/check-public-surface.ts";
@@ -59,6 +60,43 @@ describe("public-surface provenance guard", () => {
         "adr.mdx",
       ),
     ).toEqual([]);
+  });
+
+  test("index mode ignores peer worktree files but blocks the staged snapshot", () => {
+    const repo = mkdtempSync(join(tmpdir(), "harnery-public-index-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+    try {
+      git("init", "-q");
+      git("config", "user.email", "test@example.com");
+      git("config", "user.name", "Test");
+      mkdirSync(join(repo, "docs"));
+      writeFileSync(join(repo, "docs", "tracked.md"), "source-neutral\n");
+      git("add", "docs/tracked.md");
+      git("commit", "-qm", "base");
+
+      writeFileSync(
+        join(repo, "docs", "peer-draft.md"),
+        "This was adapted from an internal prototype.\n",
+      );
+      expect(scanPublicSurface(repo)).toHaveLength(1);
+      expect(scanPublicIndex(repo)).toEqual([]);
+
+      git("add", "docs/peer-draft.md");
+      expect(scanPublicIndex(repo)).toEqual([
+        { scope: "docs/peer-draft.md", line: 1, kind: "provenance_language" },
+      ]);
+
+      git("reset", "-q", "HEAD", "docs/peer-draft.md");
+      writeFileSync(
+        join(repo, "docs", "tracked.md"),
+        "This was adapted from an internal prototype.\n",
+      );
+      expect(scanPublicSurface(repo)).toHaveLength(2);
+      expect(scanPublicIndex(repo)).toEqual([]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   test("outgoing history catches a restricted reference removed by a later commit", () => {

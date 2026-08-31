@@ -20,6 +20,7 @@
  * Run:  bun run scripts/check-portability.ts   (exits 1 on any violation)
  * Test: tests/unit/portability.test.ts asserts zero violations in CI.
  */
+import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 
@@ -64,6 +65,30 @@ export interface Violation {
   text: string;
 }
 
+export type PortabilitySource = "worktree" | "index";
+
+function git(root: string, args: string[]): string {
+  const result = spawnSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new Error((result.stderr || result.stdout || `git ${args[0]} failed`).trim());
+  }
+  return result.stdout;
+}
+
+function isScannableFile(path: string): boolean {
+  const normalized = path.split("\\").join("/");
+  if (SELF.has(normalized)) return false;
+  return SCAN_ROOTS.some(
+    (root) =>
+      normalized === root ||
+      (normalized.startsWith(`${root}/`) && SCAN_EXT.has(extname(normalized))),
+  );
+}
+
 function walk(dir: string, root: string, out: string[]): void {
   let entries: string[];
   try {
@@ -88,8 +113,44 @@ function walk(dir: string, root: string, out: string[]): void {
   }
 }
 
+function scanFiles(files: { path: string; content: string }[]): Violation[] {
+  const violations: Violation[] = [];
+  for (const { path: rel, content } of files) {
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.includes(ALLOW)) continue;
+      for (const { re, label } of DENY) {
+        if (re.test(line)) {
+          violations.push({ file: rel, line: i + 1, label, text: line.trim().slice(0, 120) });
+        }
+      }
+    }
+  }
+  return violations.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+}
+
 /** Scan committable source under `root` for host-specific tokens. */
-export function scanPortability(root: string): Violation[] {
+export function scanPortability(
+  root: string,
+  source: PortabilitySource = "worktree",
+): Violation[] {
+  if (source === "index") {
+    const paths = git(root, ["ls-files", "--cached", "-z"])
+      .split("\0")
+      .filter((path) => path && isScannableFile(path));
+    return scanFiles(
+      paths.flatMap((path) => {
+        const content = spawnSync("git", ["show", `:${path}`], {
+          cwd: root,
+          encoding: "utf8",
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        return content.status === 0 ? [{ path, content: content.stdout }] : [];
+      }),
+    );
+  }
+
   const files: string[] = [];
   for (const r of SCAN_ROOTS) {
     const abs = join(root, r);
@@ -105,34 +166,24 @@ export function scanPortability(root: string): Violation[] {
       walk(abs, root, files);
     }
   }
-
-  const violations: Violation[] = [];
-  for (const abs of files) {
-    const rel = relative(root, abs).split("\\").join("/");
-    if (SELF.has(rel)) continue;
-    let content: string;
-    try {
-      content = readFileSync(abs, "utf8");
-    } catch {
-      continue;
-    }
-    const lines = content.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line.includes(ALLOW)) continue;
-      for (const { re, label } of DENY) {
-        if (re.test(line)) {
-          violations.push({ file: rel, line: i + 1, label, text: line.trim().slice(0, 120) });
-        }
+  return scanFiles(
+    files.flatMap((abs) => {
+      const rel = relative(root, abs).split("\\").join("/");
+      if (!isScannableFile(rel)) return [];
+      try {
+        return [{ path: rel, content: readFileSync(abs, "utf8") }];
+      } catch {
+        return [];
       }
-    }
-  }
-  return violations.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+    }),
+  );
 }
 
 if (import.meta.main) {
-  const root = process.argv[2] ?? process.cwd();
-  const violations = scanPortability(root);
+  const args = process.argv.slice(2);
+  const source: PortabilitySource = args.includes("--cached") ? "index" : "worktree";
+  const root = args.find((arg) => arg !== "--cached") ?? process.cwd();
+  const violations = scanPortability(root, source);
   if (violations.length === 0) {
     console.log("portability: clean — no host-specific tokens in committable source.");
     process.exit(0);
