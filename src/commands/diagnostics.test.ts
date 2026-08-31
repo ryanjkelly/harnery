@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { captureDiagnosticBundle } from "../core/diagnostics/index.ts";
 import { registerDiagnosticsCommand } from "./diagnostics.ts";
 
 describe("diagnostics command", () => {
@@ -11,11 +15,88 @@ describe("diagnostics command", () => {
     expect(command?.commands.map((candidate) => candidate.name())).toEqual([
       "list",
       "show",
+      "explain",
       "capture",
       "replay",
     ]);
   });
+
+  test("reports explicit unknown advice from live and frozen missing sources", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-diagnostics-command-"));
+    try {
+      const live = capturedEmit();
+      const liveProgram = new Command();
+      registerDiagnosticsCommand(liveProgram, live.emit, { repoRoot: root });
+      await liveProgram.parseAsync(["node", "harn", "diagnostics", "explain", "--json"]);
+      expect(live.formats).toEqual(["json"]);
+      expect(live.payloads[0]).toMatchObject({
+        kind: "diagnostic_advice",
+        source: { mode: "live" },
+        advice: {
+          pressure: "unknown",
+          fan_out_recommendation: "unknown",
+          observer_only: true,
+        },
+      });
+
+      const captured = captureDiagnosticBundle(root, {
+        now: new Date("2026-08-31T09:00:00.000Z"),
+        machineLabel: "command-test-machine",
+        engineVersion: "test-build-v1",
+      });
+      const frozen = capturedEmit();
+      const frozenProgram = new Command();
+      registerDiagnosticsCommand(frozenProgram, frozen.emit, { repoRoot: root });
+      await frozenProgram.parseAsync([
+        "node",
+        "harn",
+        "diagnostics",
+        "explain",
+        "--bundle",
+        captured.manifest.artifact_id,
+        "--json",
+      ]);
+      expect(frozen.payloads[0]).toMatchObject({
+        kind: "diagnostic_advice",
+        source: {
+          mode: "frozen",
+          artifact_id: captured.manifest.artifact_id,
+          captured_at: "2026-08-31T09:00:00.000Z",
+        },
+        advice: { pressure: "unknown", observer_only: true },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
+
+function capturedEmit(): {
+  emit: EmitContext;
+  payloads: unknown[];
+  formats: string[];
+} {
+  const payloads: unknown[] = [];
+  const formats: string[] = [];
+  return {
+    payloads,
+    formats,
+    emit: {
+      config: (opts) => {
+        if (opts.format) formats.push(opts.format);
+      },
+      data: (payload) => payloads.push(payload),
+      rows() {},
+      text() {},
+      file() {},
+      error: (error) => {
+        throw error;
+      },
+      log() {},
+      setExitCode() {},
+    },
+  };
+}
 
 function quietEmit(): EmitContext {
   return {

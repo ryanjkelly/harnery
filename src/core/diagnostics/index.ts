@@ -1,3 +1,4 @@
+export * from "./advice.ts";
 export * from "./bundle.ts";
 export * from "./contract.ts";
 export * from "./identity.ts";

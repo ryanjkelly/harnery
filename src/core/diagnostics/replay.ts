@@ -5,11 +5,11 @@ import { RESOURCE_SNAPSHOT_SCHEMA_VERSION } from "../resources/contract.ts";
 import type {
   ObservedHookHealth,
   ObservedServiceHealth,
+  SupervisorActivitySnapshot,
   SupervisorFinding,
   SupervisorFindingExplanation,
   SupervisorFindings,
   SupervisorHistory,
-  SupervisorActivitySnapshot,
   SupervisorLogFeed,
   SupervisorSnapshot,
   SupervisorTimeline,
@@ -22,6 +22,7 @@ import {
 import { explainSupervisorFinding } from "../supervisor/explanations.ts";
 import { updateSupervisorFindings } from "../supervisor/findings.ts";
 import { buildSupervisorTimeline } from "../supervisor/timeline.ts";
+import { buildDiagnosticAdvice } from "./advice.ts";
 import {
   DIAGNOSTIC_EXPECTED_SCHEMA_VERSION,
   type DiagnosticExpected,
@@ -58,6 +59,7 @@ export function deriveCapturedExpected(
     findings,
     findings.map((finding) => diagnosticTimeline(finding, relatedSources)),
     findings.map(explainSupervisorFinding),
+    observations,
   );
 }
 
@@ -81,10 +83,7 @@ export function replayDiagnosticInputs(
     observations,
     "coordination.health",
   );
-  const activity = optionalSource<SupervisorActivitySnapshot>(
-    observations,
-    "supervisor.activity",
-  );
+  const activity = optionalSource<SupervisorActivitySnapshot>(observations, "supervisor.activity");
   const currentProjection = optionalSource<SupervisorFindings>(observations, "supervisor.findings");
   const observedAt =
     currentProjection?.active[0]?.observed_at ??
@@ -113,6 +112,7 @@ export function replayDiagnosticInputs(
     findings,
     findings.map((finding) => diagnosticTimeline(finding, relatedSources)),
     findings.map(explainSupervisorFinding),
+    observations,
   );
 }
 
@@ -135,6 +135,7 @@ function expected(
   findings: readonly SupervisorFinding[],
   timelines: readonly SupervisorTimeline[],
   explanations: readonly SupervisorFindingExplanation[],
+  observations: DiagnosticObservations,
 ): DiagnosticExpected {
   return {
     schema_version: DIAGNOSTIC_EXPECTED_SCHEMA_VERSION,
@@ -147,7 +148,30 @@ function expected(
     explanations: [...explanations].sort((left, right) =>
       left.finding_id.localeCompare(right.finding_id),
     ),
+    advice: buildDiagnosticAdvice({
+      findings,
+      sourceCapability: capturedSourceCapability(observations, "supervisor.findings"),
+      evaluatedAt: observations.captured_at,
+    }),
   };
+}
+
+function capturedSourceCapability(
+  observations: DiagnosticObservations,
+  sourceKind: string,
+): import("../supervisor/contract.ts").SupervisorCapability {
+  const source = observations.sources.find((candidate) => candidate.source_kind === sourceKind);
+  return source
+    ? {
+        source_kind: sourceKind,
+        state: source.capability,
+        reason_code: source.reason_code,
+      }
+    : {
+        source_kind: sourceKind,
+        state: "unsupported",
+        reason_code: "source_missing",
+      };
 }
 
 function findingsProjection(value: unknown): readonly SupervisorFinding[] {

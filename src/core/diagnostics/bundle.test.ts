@@ -126,8 +126,7 @@ describe("diagnostic bundles", () => {
     const resolvedAt = "2026-08-30T12:06:00.000Z";
     const reopenedAt = "2026-08-30T12:07:00.000Z";
     writeReplaySources(root, reopenedAt);
-    const source = (path: string) =>
-      JSON.parse(readFileSync(join(root, ".harnery", path), "utf8"));
+    const source = (path: string) => JSON.parse(readFileSync(join(root, ".harnery", path), "utf8"));
     const baseResource = source("resources/snapshot.json");
     const history = source("supervisor/history.json");
     const logFeed = source("supervisor/log-feed.json");
@@ -433,7 +432,6 @@ function diagnosticFinding(id: string) {
     source_kind: "resource.snapshot",
     source_id: "agent-a",
     observed_at: "2026-08-30T12:05:00.000Z",
-    occurrence_count: 1,
     schema_version: 1,
     capability: "supported" as const,
   };
@@ -450,6 +448,7 @@ function diagnosticFinding(id: string) {
     summary: "Memory use increased within the captured window.",
     opened_at: "2026-08-30T12:00:00.000Z",
     observed_at: "2026-08-30T12:05:00.000Z",
+    occurrence_count: 1,
     primary_source: source,
     evidence: [{ id: "evidence_memory_growth", source, summary: "RSS increased." }],
     capabilities: [{ source_kind: "resource.snapshot", state: "supported" as const }],

@@ -5,11 +5,62 @@ import type {
   SupervisorTimeline,
 } from "../supervisor/contract.ts";
 
-export const DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 2 as const;
+export const DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 3 as const;
 export const DIAGNOSTIC_COMMAND_SCHEMA_VERSION = 1 as const;
 export const DIAGNOSTIC_INPUT_SCHEMA_VERSION = 2 as const;
-export const DIAGNOSTIC_EXPECTED_SCHEMA_VERSION = 2 as const;
+export const DIAGNOSTIC_EXPECTED_SCHEMA_VERSION = 3 as const;
 export const DIAGNOSTIC_SUMMARY_SCHEMA_VERSION = 1 as const;
+export const DIAGNOSTIC_ADVICE_SCHEMA_VERSION = 1 as const;
+
+export const DIAGNOSTIC_ADVICE_LIMITS = {
+  max_contributing_findings: 8,
+  max_reasons: 4,
+} as const;
+
+export type DiagnosticPressure = "normal" | "elevated" | "critical" | "unknown";
+export type DiagnosticFanOutRecommendation =
+  | "proceed"
+  | "use-caution"
+  | "avoid-new-fan-out"
+  | "unknown";
+
+export interface DiagnosticAdviceFinding {
+  finding_id: string;
+  finding_kind: string;
+  severity: "warning" | "critical";
+  summary: string;
+  scope_kind: string;
+  scope_id: string;
+  occurrence_count: number;
+  owner_kind?: "agent" | "service";
+  owner_id?: string;
+  workload_relationship?: "active-work" | "unexpected-idle-growth" | "unknown";
+}
+
+export interface DiagnosticAdviceReason {
+  code:
+    | "critical_findings_active"
+    | "warning_findings_active"
+    | "findings_source_unavailable"
+    | "no_active_pressure_findings";
+  summary: string;
+  finding_ids: readonly string[];
+}
+
+export interface DiagnosticAdvice {
+  schema_version: typeof DIAGNOSTIC_ADVICE_SCHEMA_VERSION;
+  evaluated_at: string;
+  pressure: DiagnosticPressure;
+  fan_out_recommendation: DiagnosticFanOutRecommendation;
+  observer_only: true;
+  summary: string;
+  source_capability: SupervisorCapability;
+  active_finding_count: number;
+  contributing_finding_count: number;
+  omitted_contributing_finding_count: number;
+  contributing_findings: readonly DiagnosticAdviceFinding[];
+  reasons: readonly DiagnosticAdviceReason[];
+}
 
 export const DIAGNOSTIC_BUNDLE_FILES = [
   "diagnostic-manifest.json",
@@ -90,6 +141,7 @@ export interface DiagnosticExpected {
   findings: readonly SupervisorFinding[];
   timelines: readonly SupervisorTimeline[];
   explanations: readonly SupervisorFindingExplanation[];
+  advice: DiagnosticAdvice;
 }
 
 export interface DiagnosticSummary {

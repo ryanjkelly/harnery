@@ -4,6 +4,7 @@ import { monorepoRoot, resolveOwner } from "../core/agents/index.ts";
 import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import type { ArtifactActor } from "../core/artifacts/index.ts";
 import {
+  buildDiagnosticAdvice,
   captureDiagnosticBundle,
   DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
   listDiagnosticBundles,
@@ -83,6 +84,50 @@ export function registerDiagnosticsCommand(
             manifest: bundle.manifest,
             summary: bundle.summary,
           },
+        });
+      });
+    });
+
+  root
+    .command("explain")
+    .description("Report bounded local pressure advice without taking action.")
+    .option("--bundle <artifact-ref>", "Use a frozen diagnostic bundle instead of live state")
+    .option("--json", "Emit structured JSON")
+    .action((opts: { bundle?: string; json?: boolean }) => {
+      run(emit, () => {
+        if (opts.json) emit.config({ format: "json" });
+        const repoRoot = requireRepoRoot(context);
+        if (opts.bundle) {
+          const bundle = showDiagnosticBundle(repoRoot, opts.bundle);
+          emit.data({
+            schema_version: DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
+            kind: "diagnostic_advice",
+            source: {
+              mode: "frozen",
+              artifact_id: bundle.manifest.artifact_id,
+              captured_at: bundle.manifest.captured_at,
+            },
+            advice: bundle.expected.advice,
+          });
+          return;
+        }
+        const report = readSupervisorFindings(repoRoot);
+        const findings = mergeFindings(report?.active ?? [], report?.transitions ?? []);
+        emit.data({
+          schema_version: DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
+          kind: "diagnostic_advice",
+          source: { mode: "live" },
+          advice: buildDiagnosticAdvice({
+            findings,
+            sourceCapability: report
+              ? { source_kind: "supervisor.findings", state: "supported" }
+              : {
+                  source_kind: "supervisor.findings",
+                  state: "unsupported",
+                  reason_code: "source_missing",
+                },
+            evaluatedAt: new Date().toISOString(),
+          }),
         });
       });
     });

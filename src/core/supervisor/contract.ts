@@ -6,7 +6,7 @@ export const SUPERVISOR_SNAPSHOT_SCHEMA_VERSION = 2 as const;
 export const SUPERVISOR_HISTORY_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_FINDING_SCHEMA_VERSION = 2 as const;
 export const SUPERVISOR_ACTIVITY_SCHEMA_VERSION = 1 as const;
-export const SUPERVISOR_TIMELINE_SCHEMA_VERSION = 1 as const;
+export const SUPERVISOR_TIMELINE_SCHEMA_VERSION = 2 as const;
 export const SUPERVISOR_EXPLANATION_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_LOG_FEED_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_CONSUMER_SCHEMA_VERSION = 1 as const;
@@ -235,6 +235,9 @@ export type SupervisorTimelineRelation =
 export interface SupervisorTimelineEntry {
   id: string;
   occurred_at: string;
+  first_occurred_at: string;
+  last_occurred_at: string;
+  occurrence_count: number;
   relation: SupervisorTimelineRelation;
   summary: string;
   source: SupervisorSourceReference;
@@ -248,6 +251,7 @@ export interface SupervisorTimeline {
   end_at: string;
   max_entries: number;
   omitted_entries: number;
+  compacted_entries: number;
   entries: readonly SupervisorTimelineEntry[];
   capabilities: readonly SupervisorCapability[];
 }

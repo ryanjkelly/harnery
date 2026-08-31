@@ -1,0 +1,110 @@
+---
+title: "ADR 0146: advise agents from deterministic local pressure"
+description: Turn active diagnostic findings into replayable fan-out advice while leaving every scheduling and remediation decision with the caller.
+sidebar:
+  order: 146
+---
+
+**Date:** 2026-08-31
+**Status:** Accepted
+
+## Context
+
+Harnery can now correlate local resource and coordination evidence into bounded
+findings. It preserves validated ownership, declared activity, recurrence,
+timelines, explanations, and frozen replay inputs. An agent deciding whether to
+start more concurrent work can read those facts, but it still has to invent a
+severity policy for every turn.
+
+That creates two problems. Different consumers can reach different conclusions
+from the same findings, and their conclusions cannot be reproduced from a
+diagnostic bundle. Treating a missing findings projection as an empty healthy
+projection would also encourage more work precisely when local pressure is
+unknown.
+
+The first live bundles exposed a presentation problem too. A busy coordination
+window can contribute many related events with the same source identity. Each
+row is valid, but repetition can consume the bounded timeline before distinct
+evidence is visible.
+
+Diagnostics still cannot become a scheduler or watchdog. A finding is an
+observation with explicit capability limits. It is not authority to pause,
+deny, restart, signal, or reprioritize work.
+
+## Alternatives considered
+
+- Let each agent interpret `diagnostics list`. This keeps the core smaller, but
+  it creates several unversioned pressure policies and gives replay no expected
+  advice to verify.
+- Let the supervisor refuse new work. This would turn an optional observer into
+  a coordination dependency and give diagnostic thresholds control authority.
+- Ask a model to write the recommendation. The result would add latency, cost,
+  nondeterminism, and another unavailable capability to a decision that can be
+  expressed as a small severity policy.
+- Treat a missing projection as healthy. This is unsafe because absent evidence
+  says nothing about current pressure.
+- Compact repeated events only in the dashboard. The CLI, bundle, replay, and
+  web views would then present different timelines for the same finding.
+- Remove repeated related events. This would hide event volume that may matter
+  during diagnosis.
+
+## Decision
+
+Add a versioned diagnostic advice contract derived by one pure function. It
+accepts bounded findings, the findings-source capability, and an evaluation
+timestamp. Only active findings participate.
+
+The contract reports one pressure state and one fan-out recommendation:
+
+| Active evidence | Pressure | Recommendation |
+|---|---|---|
+| At least one critical finding | `critical` | `avoid-new-fan-out` |
+| No critical finding and at least one warning | `elevated` | `use-caution` |
+| A supported projection with no warning or critical finding | `normal` | `proceed` |
+| No usable findings projection | `unknown` | `unknown` |
+
+Pressure is calculated before presentation limits are applied. The response
+then carries at most eight severity-ordered contributing findings, stable reason
+codes, omission counts, the source capability, and `observer_only: true`.
+Resolved and informational findings do not restrict fan-out. Known critical
+evidence still wins when another capability is degraded.
+
+Add `harn diagnostics explain --json` for the live projection. The same command
+accepts `--bundle <artifact-ref>` and returns advice already frozen in that
+bundle. Diagnostic bundle schema 3 and expected-output schema 3 include advice
+in the replay digest. Replay continues to read only captured inputs.
+
+Cut the timeline contract to schema 2. Related entries with the same source
+kind, source identity, and capability become one cluster. Each entry records an
+occurrence count plus first and last observation times, and the timeline records
+how many rows were compacted. The latest source reference remains available for
+inspection. Distinct source identities are never merged.
+
+The alpha contracts cut over in place. Harnery does not keep readers for bundle
+schema 2, expected-output schema 2, or timeline schema 1.
+
+## Result
+
+Agents receive one compact, deterministic answer to the question of whether
+local diagnostics constrain new fan-out. A frozen bundle can reproduce both
+the advice and the evidence that produced it. Missing evidence remains unknown
+instead of becoming a false healthy result.
+
+Repeated related activity remains measurable without flooding the timeline.
+Counts and time bounds preserve the repetition while distinct evidence gets the
+bounded space.
+
+The caller still decides what to do. This change adds no background loop,
+scheduler write, process signal, lifecycle mutation, automatic throttling, or
+remediation path.
+
+## Scope and promotion
+
+This decision belongs to Harnery diagnostics. It resolves how one optional
+local observer summarizes its own evidence for consumers. It does not establish
+a general scheduling policy for host applications.
+
+Automatic control requires a separate decision with frozen examples showing
+advice quality, explicit host authority, failure behavior when evidence is
+missing, and a rollback path. A second consumer may reuse this advisory
+contract, but reuse alone does not grant enforcement authority.

@@ -32,6 +32,8 @@ import {
   type SupervisorFinding,
 } from "../supervisor/contract.ts";
 import {
+  DIAGNOSTIC_ADVICE_LIMITS,
+  DIAGNOSTIC_ADVICE_SCHEMA_VERSION,
   DIAGNOSTIC_BUNDLE_FILES,
   DIAGNOSTIC_BUNDLE_SCHEMA_VERSION,
   DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
@@ -646,7 +648,15 @@ function validatePayloads(
   assertKeys(thresholds, ["schema_version", "values"], [], "diagnostic thresholds");
   assertKeys(
     expected,
-    ["schema_version", "threshold_digest", "selection", "findings", "timelines", "explanations"],
+    [
+      "schema_version",
+      "threshold_digest",
+      "selection",
+      "findings",
+      "timelines",
+      "explanations",
+      "advice",
+    ],
     [],
     "diagnostic expected output",
   );
@@ -788,6 +798,19 @@ function validateExpectedRecords(expected: ValidatedDiagnosticBundle["expected"]
     )
       throw new Error("diagnostic timeline entries exceed the limit");
     validateCapabilities(timeline.capabilities, "diagnostic timeline capabilities");
+    if (!boundedInteger(timeline.compacted_entries, 0, 50_000))
+      throw new Error("invalid diagnostic timeline compaction count");
+    for (const entry of timeline.entries) {
+      if (
+        !entry ||
+        !validIso(entry.first_occurred_at) ||
+        !validIso(entry.last_occurred_at) ||
+        !boundedInteger(entry.occurrence_count, 1, 50_000) ||
+        Date.parse(entry.first_occurred_at) > Date.parse(entry.last_occurred_at)
+      ) {
+        throw new Error("invalid diagnostic timeline entry cluster");
+      }
+    }
   }
   for (const explanation of expected.explanations) {
     if (
@@ -804,6 +827,100 @@ function validateExpectedRecords(expected: ValidatedDiagnosticBundle["expected"]
     ]) {
       if (!Array.isArray(rows) || rows.length > SUPERVISOR_DIAGNOSTIC_LIMITS.max_explanation_items)
         throw new Error("diagnostic explanation entries exceed the limit");
+    }
+  }
+  validateAdvice(expected.advice);
+}
+
+function validateAdvice(advice: ValidatedDiagnosticBundle["expected"]["advice"]): void {
+  assertKeys(
+    advice,
+    [
+      "schema_version",
+      "evaluated_at",
+      "pressure",
+      "fan_out_recommendation",
+      "observer_only",
+      "summary",
+      "source_capability",
+      "active_finding_count",
+      "contributing_finding_count",
+      "omitted_contributing_finding_count",
+      "contributing_findings",
+      "reasons",
+    ],
+    [],
+    "diagnostic advice",
+  );
+  if (
+    advice.schema_version !== DIAGNOSTIC_ADVICE_SCHEMA_VERSION ||
+    !validIso(advice.evaluated_at) ||
+    !["normal", "elevated", "critical", "unknown"].includes(advice.pressure) ||
+    !["proceed", "use-caution", "avoid-new-fan-out", "unknown"].includes(
+      advice.fan_out_recommendation,
+    ) ||
+    advice.observer_only !== true ||
+    typeof advice.summary !== "string" ||
+    advice.summary.length > SUPERVISOR_DIAGNOSTIC_LIMITS.max_summary_chars
+  ) {
+    throw new Error("invalid diagnostic advice contract");
+  }
+  validateCapabilities([advice.source_capability], "diagnostic advice capability");
+  for (const count of [
+    advice.active_finding_count,
+    advice.contributing_finding_count,
+    advice.omitted_contributing_finding_count,
+  ]) {
+    if (!boundedInteger(count, 0, SUPERVISOR_DIAGNOSTIC_LIMITS.max_findings))
+      throw new Error("invalid diagnostic advice count");
+  }
+  if (
+    !Array.isArray(advice.contributing_findings) ||
+    advice.contributing_findings.length > DIAGNOSTIC_ADVICE_LIMITS.max_contributing_findings ||
+    !Array.isArray(advice.reasons) ||
+    advice.reasons.length > DIAGNOSTIC_ADVICE_LIMITS.max_reasons
+  ) {
+    throw new Error("diagnostic advice entries exceed the limit");
+  }
+  for (const finding of advice.contributing_findings) {
+    assertKeys(
+      finding,
+      [
+        "finding_id",
+        "finding_kind",
+        "severity",
+        "summary",
+        "scope_kind",
+        "scope_id",
+        "occurrence_count",
+      ],
+      ["owner_kind", "owner_id", "workload_relationship"],
+      "diagnostic advice finding",
+    );
+    if (
+      !["warning", "critical"].includes(finding.severity) ||
+      typeof finding.finding_id !== "string" ||
+      typeof finding.summary !== "string" ||
+      !boundedInteger(finding.occurrence_count, 1, 50_000)
+    ) {
+      throw new Error("invalid diagnostic advice finding");
+    }
+  }
+  for (const reason of advice.reasons) {
+    assertKeys(reason, ["code", "summary", "finding_ids"], [], "diagnostic advice reason");
+    if (
+      ![
+        "critical_findings_active",
+        "warning_findings_active",
+        "findings_source_unavailable",
+        "no_active_pressure_findings",
+      ].includes(reason.code) ||
+      typeof reason.summary !== "string" ||
+      !Array.isArray(reason.finding_ids) ||
+      reason.finding_ids.length > DIAGNOSTIC_ADVICE_LIMITS.max_contributing_findings ||
+      reason.finding_ids.some((id: unknown) => typeof id !== "string")
+    ) {
+      throw new Error("invalid diagnostic advice reason");
     }
   }
 }
