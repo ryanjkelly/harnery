@@ -148,7 +148,7 @@ describe("DiagnosticsDashboard", () => {
       />,
     );
 
-    expect(html).toContain("Machine memory is under pressure.");
+    expect(html.replaceAll("\u00a0", " ")).toContain("Machine memory is under pressure.");
     expect(html).toContain("requested finding is unavailable");
     expect(html).not.toContain('aria-current="true"');
   });

@@ -48,7 +48,7 @@ export function DiagnosticsDashboard({
             <h1 className="text-2xl font-semibold tracking-tight">Diagnostics</h1>
             <ModeBadge mode={model.mode} />
           </div>
-          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+          <p className="mt-2 max-w-3xl text-pretty text-sm text-muted-foreground">
             Follow a finding from direct observations through related evidence and clearly labeled
             possible explanations.
           </p>
@@ -121,8 +121,8 @@ export function DiagnosticsDashboard({
         </div>
       </form>
 
-      <div className="grid items-start gap-5 xl:grid-cols-[minmax(280px,0.78fr)_minmax(0,1.5fr)]">
-        <section aria-labelledby="finding-list-heading">
+      <div className="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(280px,0.78fr)_minmax(0,1.5fr)]">
+        <section aria-labelledby="finding-list-heading" className="min-w-0 max-w-full">
           <h2 id="finding-list-heading" className="mb-3 text-lg font-semibold">
             Findings
           </h2>
@@ -152,12 +152,14 @@ export function DiagnosticsDashboard({
                           <StateBadge state={finding.state} />
                           <Badge variant="outline">{humanizeKind(finding.source_kind)}</Badge>
                         </div>
-                        <p className="mt-2 text-sm font-medium leading-snug">{finding.summary}</p>
-                        <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                          <code className="truncate font-mono">
-                            {finding.scope_kind}:{finding.scope_id}
-                          </code>
-                          <FormattedDateTime iso={finding.observed_at} kind="timestamp" />
+                        <p className="mt-2 text-sm font-medium leading-snug">
+                          {preventRunt(finding.summary)}
+                        </p>
+                        <div className="mt-2 grid min-w-0 gap-1 text-[11px] text-foreground/75 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                          <code className="min-w-0 break-all font-mono">{scopeLabel(finding)}</code>
+                          <span className="whitespace-nowrap sm:text-right">
+                            <FormattedDateTime iso={finding.observed_at} kind="timestamp" />
+                          </span>
                         </div>
                       </Link>
                     </li>
@@ -174,7 +176,7 @@ export function DiagnosticsDashboard({
           )}
         </section>
 
-        <section aria-labelledby="finding-detail-heading" className="min-w-0">
+        <section aria-labelledby="finding-detail-heading" className="min-w-0 max-w-full">
           {selected ? (
             <FindingDetail
               finding={selected}
@@ -250,10 +252,10 @@ function FindingDetail({
                 finding.scope_kind === "agent" ? (
                   <AgentChip name={finding.scope_id} />
                 ) : (
-                  `${finding.scope_kind}:${finding.scope_id}`
+                  scopeLabel(finding)
                 )
               }
-              mono={finding.scope_kind !== "agent"}
+              mono={finding.scope_kind !== "agent" && finding.scope_kind !== "unattributed"}
             />
             <Fact label="Finding ID" value={finding.id} mono />
           </dl>
@@ -262,7 +264,7 @@ function FindingDetail({
               <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Preserve this evidence
               </div>
-              <code className="mt-1 block overflow-x-auto whitespace-nowrap font-mono text-xs">
+              <code className="mt-1 block break-all whitespace-pre-wrap font-mono text-xs">
                 {captureCommand}
               </code>
             </div>
@@ -313,17 +315,17 @@ function TimelineView({
                 <span className="absolute -left-[25px] top-1.5 size-2 rounded-full border border-background bg-sky-500 ring-2 ring-sky-500/20" />
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant={relationVariant(entry.relation)}>{entry.relation}</Badge>
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="text-[11px] text-foreground/75">
                     <FormattedDateTime iso={entry.occurred_at} kind="datetime" />
                   </span>
                 </div>
-                <p className="mt-1 text-sm">{entry.summary}</p>
+                <p className="mt-1 text-sm">{preventRunt(entry.summary)}</p>
                 <Link
                   href={sourceHref(
                     entry.source.source_kind,
                     entry.source.record_id ?? entry.source.source_id,
                   )}
-                  className="mt-1 inline-flex break-all font-mono text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2"
+                  className="mt-1 inline-flex break-all font-mono text-[11px] text-foreground/75 underline decoration-dotted underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2"
                 >
                   {entry.source.source_kind} · {entry.source.source_id}
                 </Link>
@@ -570,6 +572,15 @@ function Fact({ label, value, mono = false }: { label: string; value: ReactNode;
       <dd className={`mt-1 break-all ${mono ? "font-mono" : ""}`}>{value}</dd>
     </div>
   );
+}
+
+function preventRunt(value: string): string {
+  return value.replace(/\s+(\S+)$/, "\u00a0$1");
+}
+
+function scopeLabel(finding: SupervisorFinding): string {
+  if (finding.scope_kind === "unattributed") return "Processes without a known owner";
+  return `${finding.scope_kind}:${finding.scope_id}`;
 }
 
 function buildHref(basePath: string, filters: DiagnosticsFilters): string {

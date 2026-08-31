@@ -59,7 +59,11 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
           <nav className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-muted-foreground">
             {nav.map((entry) =>
               entry.type === "sep" ? (
-                <span key={entry.key} aria-hidden className="select-none text-border">
+                <span
+                  key={entry.key}
+                  aria-hidden
+                  className="hidden select-none text-border sm:inline"
+                >
                   ·
                 </span>
               ) : (
