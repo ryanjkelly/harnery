@@ -53,26 +53,26 @@
 }
 
 .pingPath::after {
-  top: -4px;
+  top: -2px;
   left: 0;
-  width: 58px;
-  height: 10px;
+  width: 34px;
+  height: 6px;
   border-radius: 999px;
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.9), transparent);
-  filter: blur(1px);
+  background: linear-gradient(90deg, transparent, rgb(207 250 254 / 0.42), transparent);
+  filter: blur(1.4px);
   animation: codec-fx-path-scan 3.4s linear both;
 }
 
 .pingLaunch {
-  width: 108px;
-  height: 108px;
+  width: 84px;
+  height: 84px;
   border: 1px solid rgb(250 204 21 / 0.52);
   border-radius: 999px;
   background: radial-gradient(circle, rgb(254 240 138 / 0.42), transparent 58%);
   box-shadow:
     0 0 24px rgb(250 204 21 / 0.44),
     inset 0 0 18px rgb(255 255 255 / 0.2);
-  animation: codec-fx-launch 0.58s cubic-bezier(0.16, 0.8, 0.2, 1) both;
+  animation: codec-fx-launch 0.72s cubic-bezier(0.16, 0.8, 0.2, 1) both;
 }
 
 .pingLaunch::before {
@@ -96,14 +96,15 @@
 }
 
 .pingFlight {
+  z-index: 2;
   animation: codec-fx-flight 3.4s linear both;
 }
 
 .pingCore {
   position: absolute;
-  width: 34px;
-  height: 34px;
-  border: 1px solid rgb(255 255 255 / 0.92);
+  width: 58px;
+  height: 58px;
+  border: 2px solid rgb(255 255 255 / 0.96);
   border-radius: 999px;
   transform: translate(-50%, -50%);
   background: radial-gradient(
@@ -115,9 +116,10 @@
     transparent 76%
   );
   box-shadow:
-    0 0 18px 7px rgb(56 189 248 / 0.92),
-    0 0 42px 15px rgb(168 85 247 / 0.48);
-  filter: saturate(1.42);
+    0 0 18px 8px rgb(56 189 248 / 0.96),
+    0 0 46px 18px rgb(168 85 247 / 0.58),
+    inset 0 0 16px rgb(255 255 255 / 0.74);
+  filter: saturate(1.52) contrast(1.06);
 }
 
 .pingCore::before {
@@ -125,8 +127,8 @@
   position: absolute;
   top: 50%;
   right: 50%;
-  width: 142px;
-  height: 12px;
+  width: 176px;
+  height: 18px;
   border-radius: 999px 0 0 999px;
   background: linear-gradient(
     90deg,
@@ -135,7 +137,7 @@
     rgb(103 232 249 / 0.82),
     #fff
   );
-  filter: blur(2.4px);
+  filter: blur(2.8px);
   transform: translateY(-50%) rotate(var(--fx-angle, 0rad));
   transform-origin: right center;
 }
@@ -143,7 +145,7 @@
 .pingCore::after {
   content: "";
   position: absolute;
-  inset: -10px;
+  inset: -12px;
   border: 2px solid rgb(165 243 252 / 0.82);
   border-radius: 999px;
   box-shadow:
@@ -366,7 +368,7 @@
     transform: translateX(0);
   }
   18% {
-    opacity: 1;
+    opacity: 0.26;
   }
   100% {
     opacity: 0;
@@ -409,15 +411,15 @@
   }
   86% {
     opacity: 1;
-    transform: translate(var(--fx-x-91), var(--fx-y-91)) scale(0.9);
+    transform: translate(var(--fx-x-91), var(--fx-y-91)) scale(1);
   }
   94% {
     opacity: 1;
-    transform: translate(var(--fx-x-98), var(--fx-y-98)) scale(0.82);
+    transform: translate(var(--fx-x-98), var(--fx-y-98)) scale(0.96);
   }
   100% {
-    opacity: 0.85;
-    transform: translate(var(--fx-x), var(--fx-y)) scale(0.18);
+    opacity: 1;
+    transform: translate(var(--fx-x), var(--fx-y)) scale(0.86);
   }
 }
 

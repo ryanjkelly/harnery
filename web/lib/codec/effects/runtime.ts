@@ -218,6 +218,7 @@ export function createCodecEffectRuntime(
     };
     refreshFlight();
     const core = element(flight, "span", options.classes.pingCore);
+    core.dataset.effectVisual = "ping-orb";
     const label = element(core, "span", options.classes.pingLabel);
     label.textContent = "PING";
     rememberLayoutRefresher(cue.id, refreshFlight);
