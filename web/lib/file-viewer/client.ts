@@ -84,6 +84,63 @@ export function rawUrl(path: string, opts: { download?: string } = {}): string {
   return url;
 }
 
+const URL_SCHEME = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
+
+/** Resolve a Markdown image destination beside its source document, then
+ * route the resulting repository path through the sandboxed raw-file API.
+ *
+ * Browsers resolve a relative `src` against `/files?path=...`, which loses the
+ * source document's directory and turns `images/frame.png` into the unrelated
+ * dashboard URL `/images/frame.png`. Keep remote/data/blob/protocol-relative
+ * destinations unchanged; react-markdown's normal URL sanitizer remains the
+ * protocol authority. Local traversal may move upward inside the repository,
+ * but never above its root. */
+export function markdownImageUrl(documentPath: string, source: string): string {
+  const value = source.trim();
+  if (
+    value === "" ||
+    value.startsWith("#") ||
+    value.startsWith("?") ||
+    value.startsWith("//") ||
+    URL_SCHEME.test(value) ||
+    value.includes("\\")
+  ) {
+    return source;
+  }
+
+  const hashAt = value.indexOf("#");
+  const beforeHash = hashAt === -1 ? value : value.slice(0, hashAt);
+  const fragment = hashAt === -1 ? "" : value.slice(hashAt);
+  const queryAt = beforeHash.indexOf("?");
+  const encodedPath = queryAt === -1 ? beforeHash : beforeHash.slice(0, queryAt);
+  const sourceQuery = queryAt === -1 ? "" : beforeHash.slice(queryAt + 1);
+
+  let localPath: string;
+  try {
+    localPath = decodeURIComponent(encodedPath);
+  } catch {
+    return source;
+  }
+  if (localPath === "" || localPath.includes("\0")) return source;
+
+  const resolved = localPath.startsWith("/")
+    ? []
+    : documentPath.split("/").slice(0, -1).filter(Boolean);
+  for (const segment of localPath.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (resolved.length === 0) return source;
+      resolved.pop();
+      continue;
+    }
+    resolved.push(segment);
+  }
+  if (resolved.length === 0) return source;
+
+  const queryCarrier = sourceQuery === "" ? "" : `&sourceQuery=${encodeURIComponent(sourceQuery)}`;
+  return `${rawUrl(resolved.join("/"))}${queryCarrier}${fragment}`;
+}
+
 /** Browser-rendered HTML on the current dashboard origin. The path-shaped URL
  * preserves the document directory so relative images, styles, fonts, and
  * media resolve through the same sandboxed render tree. */

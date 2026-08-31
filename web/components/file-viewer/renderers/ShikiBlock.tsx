@@ -34,7 +34,7 @@ export default function ShikiBlock({ code, lang }: { code: string; lang: string 
   }
   return (
     <div
-      className="shiki-host overflow-auto rounded-md border border-border text-[12px] leading-relaxed [&_pre]:m-0 [&_pre]:p-3 [&_pre]:whitespace-pre"
+      className="shiki-host overflow-auto rounded-md border border-border text-[12px] leading-relaxed [&_pre]:m-0 [&_pre]:w-max [&_pre]:min-w-full [&_pre]:p-3 [&_pre]:whitespace-pre"
       // biome-ignore lint/security/noDangerouslySetInnerHtml: Shiki-tokenized escaped HTML, not raw bytes
       dangerouslySetInnerHTML={{ __html: html }}
     />

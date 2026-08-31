@@ -9,10 +9,11 @@
  * dep) to match the dark dashboard theme.
  */
 
-import type { FileText } from "@/lib/file-viewer/types";
 import Markdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { markdownImageUrl } from "@/lib/file-viewer/client";
+import type { FileText } from "@/lib/file-viewer/types";
 import ShikiBlock from "./ShikiBlock";
 
 const PROSE = [
@@ -25,7 +26,7 @@ const PROSE = [
   "[&_a]:text-sky-600 dark:[&_a]:text-sky-400 [&_a]:underline [&_a]:underline-offset-2",
   "[&_ul]:my-2.5 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-2.5 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1",
   "[&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_blockquote]:italic",
-  "[&_:not(pre)>code]:rounded [&_:not(pre)>code]:bg-muted/60 [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-0.5 [&_:not(pre)>code]:font-mono [&_:not(pre)>code]:text-[12px]",
+  "[&_:not(pre)>code]:break-all [&_:not(pre)>code]:rounded [&_:not(pre)>code]:bg-muted/60 [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-0.5 [&_:not(pre)>code]:font-mono [&_:not(pre)>code]:text-[12px]",
   "[&_table]:my-3 [&_table]:w-full [&_table]:border-collapse [&_table]:text-[12px]",
   "[&_th]:border [&_th]:border-border [&_th]:bg-muted/40 [&_th]:px-2 [&_th]:py-1 [&_th]:text-left",
   "[&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_td]:align-top",
@@ -43,6 +44,13 @@ export default function MarkdownRenderer({ file }: { file: FileText }) {
           // Pass-through <pre> so fenced code isn't double-wrapped; ShikiBlock
           // (from the `code` override) supplies its own container.
           pre: ({ children }) => <>{children}</>,
+          img({ src, alt, ...props }) {
+            const resolvedSrc = typeof src === "string" ? markdownImageUrl(file.relPath, src) : src;
+            return (
+              // biome-ignore lint/performance/noImgElement: repository images are already served at their source dimensions by the sandboxed file API
+              <img src={resolvedSrc} alt={alt ?? ""} {...props} />
+            );
+          },
           code({ className, children, ...props }) {
             const match = /language-([\w-]+)/.exec(className ?? "");
             if (match) {

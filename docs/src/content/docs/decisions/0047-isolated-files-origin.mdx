@@ -69,3 +69,14 @@ with no `content-security-policy` sandbox; the same path on `localhost` stays
 `text/plain` + sandbox. Relative assets resolve because the path *is* the URL
 path on the files host. Cookie isolation follows from the host split, not from
 a second server.
+
+On 2026-08-31, the inline Markdown renderer revealed a second asset path bug.
+A destination such as `images/frame.png` appeared inside `/files?path=...`, so
+the browser requested `/images/frame.png` from the dashboard root instead of
+beside the Markdown file. `markdownImageUrl(documentPath, source)` now resolves
+local image destinations against the source document and sends them through
+`/api/file?path=...`. The helper leaves remote and protocol-relative
+destinations to react-markdown's URL policy. Dot segments may move within the
+repository but cannot escape its root. The helper stores a source query in one
+inert encoded parameter, which stops it from smuggling `/api/file` options.
+Unit tests cover the URL rules and the rendered markup.

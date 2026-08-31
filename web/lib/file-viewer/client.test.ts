@@ -8,7 +8,14 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { FILES_ORIGIN_HOST, filesOriginUrl, isFilesOriginHost } from "../files-origin.ts";
-import { isHtmlPreviewPath, rawUrl, renderUrl, sandboxedRenderUrl, viewUrl } from "./client.ts";
+import {
+  isHtmlPreviewPath,
+  markdownImageUrl,
+  rawUrl,
+  renderUrl,
+  sandboxedRenderUrl,
+  viewUrl,
+} from "./client.ts";
 
 describe("rawUrl", () => {
   test("encodes the path so slashes/spaces/specials survive as one param value", () => {
@@ -29,6 +36,48 @@ describe("rawUrl", () => {
   test("omitting download leaves no download param", () => {
     expect(rawUrl("a.ts")).toBe("/api/file?path=a.ts");
     expect(rawUrl("a.ts").includes("download")).toBe(false);
+  });
+});
+
+describe("markdownImageUrl", () => {
+  const document = ".harnery/artifacts/run-1/review/review.md";
+
+  test("resolves sibling and nested images beside the Markdown document", () => {
+    expect(markdownImageUrl(document, "chapter.png")).toBe(
+      "/api/file?path=.harnery%2Fartifacts%2Frun-1%2Freview%2Fchapter.png",
+    );
+    expect(markdownImageUrl(document, "sheets/chapter 1.png")).toBe(
+      "/api/file?path=.harnery%2Fartifacts%2Frun-1%2Freview%2Fsheets%2Fchapter%201.png",
+    );
+  });
+
+  test("normalizes dot segments without allowing traversal above the repository", () => {
+    expect(markdownImageUrl(document, "../shared/frame.png#crop")).toBe(
+      "/api/file?path=.harnery%2Fartifacts%2Frun-1%2Fshared%2Fframe.png#crop",
+    );
+    expect(markdownImageUrl(document, "/assets/logo.png")).toBe("/api/file?path=assets%2Flogo.png");
+    expect(markdownImageUrl("readme.md", "../outside.png")).toBe("../outside.png");
+  });
+
+  test("decodes Markdown URL paths and carries cache-busting queries without smuggling", () => {
+    expect(markdownImageUrl(document, "sheets/frame%201.png?v=2&download=evil#focus")).toBe(
+      "/api/file?path=.harnery%2Fartifacts%2Frun-1%2Freview%2Fsheets%2Fframe%201.png&sourceQuery=v%3D2%26download%3Devil#focus",
+    );
+    expect(markdownImageUrl(document, "sheets/bad%ZZ.png")).toBe("sheets/bad%ZZ.png");
+  });
+
+  test("leaves non-local destinations to react-markdown's URL policy", () => {
+    for (const source of [
+      "https://example.com/frame.png",
+      "data:image/png;base64,AA==",
+      "blob:https://example.com/id",
+      "//cdn.example.com/frame.png",
+      "#poster",
+      "?frame=1",
+      "C:\\frames\\one.png",
+    ]) {
+      expect(markdownImageUrl(document, source)).toBe(source);
+    }
   });
 });
 
