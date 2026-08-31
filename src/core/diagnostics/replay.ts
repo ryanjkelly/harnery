@@ -20,7 +20,7 @@ import {
   SUPERVISOR_SNAPSHOT_SCHEMA_VERSION,
 } from "../supervisor/contract.ts";
 import { explainSupervisorFinding } from "../supervisor/explanations.ts";
-import { evaluateSupervisorFindings } from "../supervisor/findings.ts";
+import { updateSupervisorFindings } from "../supervisor/findings.ts";
 import { buildSupervisorTimeline } from "../supervisor/timeline.ts";
 import {
   DIAGNOSTIC_EXPECTED_SCHEMA_VERSION,
@@ -48,17 +48,16 @@ export function deriveCapturedExpected(
     findingsProjection(sourceValue(observations, "supervisor.findings")),
     selection,
   );
-  const selectedIds = new Set(findings.map((finding) => finding.id));
+  const coordination = sourceValue(observations, "coordination.health") as
+    | CoordinationHealthSnapshot
+    | undefined;
+  const relatedSources = coordination?.recent_events ?? [];
   return expected(
     thresholds,
     selection,
     findings,
-    collectNamedRecords<SupervisorTimeline>(
-      sourceValue(observations, "supervisor.timelines"),
-    ).filter((timeline) => selectedIds.has(timeline.finding_id)),
-    collectNamedRecords<SupervisorFindingExplanation>(
-      sourceValue(observations, "supervisor.explanations"),
-    ).filter((explanation) => selectedIds.has(explanation.finding_id)),
+    findings.map((finding) => diagnosticTimeline(finding, relatedSources)),
+    findings.map(explainSupervisorFinding),
   );
 }
 
@@ -91,7 +90,12 @@ export function replayDiagnosticInputs(
     currentProjection?.active[0]?.observed_at ??
     currentProjection?.transitions.at(-1)?.observed_at ??
     resource.sampled_at;
-  const evaluated = evaluateSupervisorFindings({
+  // The frozen projection supplies lifecycle state only. Candidates, severity,
+  // attribution, workload context, and evidence are all re-evaluated from the
+  // captured source observations. Without this prior state, a replay would
+  // mint fresh IDs and discard recurrence and peak history for open episodes.
+  const evaluated = updateSupervisorFindings({
+    previous: currentProjection,
     resource,
     services: supervisor.services as readonly ObservedServiceHealth[],
     hooks: supervisor.hooks as readonly ObservedHookHealth[],
@@ -101,22 +105,27 @@ export function replayDiagnosticInputs(
     activity,
     now: new Date(observedAt),
   });
-  const findings = filterFindings(evaluated, observations.selection);
+  const findings = filterFindings(findingsProjection(evaluated), observations.selection);
   const relatedSources = coordination?.recent_events ?? [];
   return expected(
     thresholds,
     observations.selection,
     findings,
-    findings.map((finding) =>
-      buildSupervisorTimeline(
-        finding,
-        relatedSources.filter((source) => {
-          const delta = Math.abs(Date.parse(source.observed_at) - Date.parse(finding.observed_at));
-          return Number.isFinite(delta) && delta <= 5 * 60_000;
-        }),
-      ),
-    ),
+    findings.map((finding) => diagnosticTimeline(finding, relatedSources)),
     findings.map(explainSupervisorFinding),
+  );
+}
+
+function diagnosticTimeline(
+  finding: SupervisorFinding,
+  relatedSources: readonly CoordinationHealthSnapshot["recent_events"][number][],
+): SupervisorTimeline {
+  return buildSupervisorTimeline(
+    finding,
+    relatedSources.filter((source) => {
+      const delta = Math.abs(Date.parse(source.observed_at) - Date.parse(finding.observed_at));
+      return Number.isFinite(delta) && delta <= 5 * 60_000;
+    }),
   );
 }
 
@@ -132,8 +141,12 @@ function expected(
     threshold_digest: sha256(canonicalJson(thresholds)),
     selection,
     findings,
-    timelines,
-    explanations,
+    timelines: [...timelines].sort((left, right) =>
+      left.finding_id.localeCompare(right.finding_id),
+    ),
+    explanations: [...explanations].sort((left, right) =>
+      left.finding_id.localeCompare(right.finding_id),
+    ),
   };
 }
 

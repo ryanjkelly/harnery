@@ -19,6 +19,9 @@ import {
   SUPERVISOR_LOG_FEED_SCHEMA_VERSION,
   SUPERVISOR_SNAPSHOT_SCHEMA_VERSION,
 } from "../supervisor/contract.ts";
+import { explainSupervisorFinding } from "../supervisor/explanations.ts";
+import { updateSupervisorFindings } from "../supervisor/findings.ts";
+import { buildSupervisorTimeline } from "../supervisor/timeline.ts";
 import {
   captureDiagnosticBundle,
   readFrozenDiagnosticBundle,
@@ -115,6 +118,93 @@ describe("diagnostic bundles", () => {
     const replay = replayDiagnosticBundle(root, captured.manifest.artifact_id);
     expect(replay.matched).toBeFalse();
     expect(replay.finding_count).toBe(1);
+  });
+
+  test("replays reopened episodes with their recurrence and peak history", () => {
+    const root = repo();
+    const openedAt = "2026-08-30T12:05:00.000Z";
+    const resolvedAt = "2026-08-30T12:06:00.000Z";
+    const reopenedAt = "2026-08-30T12:07:00.000Z";
+    writeReplaySources(root, reopenedAt);
+    const source = (path: string) =>
+      JSON.parse(readFileSync(join(root, ".harnery", path), "utf8"));
+    const baseResource = source("resources/snapshot.json");
+    const history = source("supervisor/history.json");
+    const logFeed = source("supervisor/log-feed.json");
+    const activity = source("supervisor/activity.json");
+    const resourceAt = (sampledAt: string, rssBytes: number) => ({
+      ...baseResource,
+      sampled_at: sampledAt,
+      groups: [
+        {
+          kind: "agent",
+          id: "agent-a",
+          process_count: 1,
+          cpu_percent: 1,
+          rss_bytes: rssBytes,
+          root_pids: [4242],
+        },
+      ],
+      processes: [
+        {
+          pid: 4242,
+          ppid: 1,
+          start_id: "4242:1",
+          state: "S",
+          name: "node",
+          command: "node agent",
+          cpu_percent: 1,
+          rss_bytes: rssBytes,
+          age_seconds: 60,
+          owner_kind: "agent",
+          owner_id: "agent-a",
+          owner_root_pid: 4242,
+        },
+      ],
+      visible_process_count: 1,
+      unattributed_process_count: 0,
+    });
+    const evaluate = (resource: ReturnType<typeof resourceAt>, previous?: unknown) =>
+      updateSupervisorFindings({
+        previous: previous as Parameters<typeof updateSupervisorFindings>[0]["previous"],
+        resource,
+        services: [],
+        hooks: [],
+        history,
+        logFeed,
+        activity,
+        now: new Date(resource.sampled_at),
+      });
+    const opened = evaluate(resourceAt(openedAt, 1_610_612_736));
+    const resolved = evaluate(resourceAt(resolvedAt, 536_870_912), opened);
+    const reopenedResource = resourceAt(reopenedAt, 1_288_490_188);
+    const reopened = evaluate(reopenedResource, resolved);
+    const finding = reopened.active[0]!;
+    expect(finding.occurrence_count).toBe(2);
+    expect(finding.peak_observed_value).toBe(1_610_612_736);
+    writeSource(root, "resources/snapshot.json", reopenedResource);
+    writeSource(root, "supervisor/findings.json", reopened);
+    writeSource(
+      root,
+      `supervisor/timelines/${finding.id}.json`,
+      buildSupervisorTimeline(finding, []),
+    );
+    writeSource(
+      root,
+      `supervisor/explanations/${finding.id}.json`,
+      explainSupervisorFinding(finding),
+    );
+
+    const captured = captureDiagnosticBundle(root, {
+      startAt: openedAt,
+      endAt: reopenedAt,
+      now: new Date(reopenedAt),
+      machineLabel: "machine-a",
+      engineVersion: "test-build-v1",
+    });
+    const replay = replayDiagnosticBundle(root, captured.manifest.artifact_id);
+    expect(replay.matched).toBeTrue();
+    expect(replay.expected_digest).toBe(replay.actual_digest);
   });
 
   test("selects one finding and reproduces it deterministically", () => {
