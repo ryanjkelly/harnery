@@ -19,8 +19,8 @@ import {
   registerSupervisorConsumer,
   unregisterSupervisorConsumer,
 } from "./services.ts";
-import { buildSupervisorTimeline } from "./timeline.ts";
 import { supervisorPaths } from "./storage.ts";
+import { buildSupervisorTimeline } from "./timeline.ts";
 
 const roots: string[] = [];
 
@@ -250,7 +250,7 @@ describe("local supervisor collectors", () => {
     const coordination = JSON.parse(
       readFileSync(supervisorPaths(root).coordination_health, "utf8"),
     ) as { capability?: { source_kind?: string }; recent_events?: unknown[] };
-    expect(coordination.capability?.source_kind).toBe("coordination.v3");
+    expect(coordination.capability?.source_kind).toBe("coordination.v3.references");
     expect(Array.isArray(coordination.recent_events)).toBe(true);
   });
 });
