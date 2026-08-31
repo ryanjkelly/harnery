@@ -11,6 +11,7 @@ the same result.
 ```bash
 harn diagnostics list
 harn diagnostics show <artifact-ref>
+harn diagnostics explain [--bundle <artifact-ref>] [--json]
 harn diagnostics capture [--finding <id> | --from <timestamp> --to <timestamp>]
 harn diagnostics replay <artifact-ref>
 ```
@@ -19,6 +20,43 @@ harn diagnostics replay <artifact-ref>
 diagnostic bundles. A stopped or idle supervisor produces an explicit
 unsupported capability instead of an error. `show` resolves an exact finding ID
 first, then an exact managed bundle reference.
+
+## Pressure advice
+
+`explain` gives an agent or tool one compact answer before it starts more local
+work. The live command reads the current findings projection. `--bundle` reads
+the advice frozen in a validated diagnostic bundle and never falls back to live
+state.
+
+```json
+{
+  "pressure": "critical",
+  "fan_out_recommendation": "avoid-new-fan-out",
+  "observer_only": true
+}
+```
+
+The complete response includes the findings-source capability, active and
+contributing counts, up to eight severity-ordered contributing findings,
+omission counts, and stable reason codes. `--json` selects structured output in
+host CLIs; standalone `harn` already emits JSON.
+
+The policy is deterministic:
+
+| Active evidence | Pressure | Fan-out recommendation |
+|---|---|---|
+| At least one critical finding | `critical` | `avoid-new-fan-out` |
+| Warnings and no critical finding | `elevated` | `use-caution` |
+| Supported projection with no warning or critical finding | `normal` | `proceed` |
+| Missing or unusable findings projection | `unknown` | `unknown` |
+
+Resolved and informational findings do not restrict fan-out. Pressure is
+calculated before the contributing-findings list is bounded, so truncation
+cannot hide a critical result. A degraded source stays explicit and never
+becomes a healthy result.
+
+Advice is not enforcement. Harnery does not pause, deny, start, stop, restart,
+or reprioritize work. The caller decides how to use the recommendation.
 
 ## Finding episodes and context
 
@@ -39,6 +77,12 @@ Service findings state why liveness is stale. The current reasons distinguish a
 missing local process, an expired remote heartbeat, and a service-reported
 error. Findings are still observations. They do not stop processes, restart
 services, or change an agent's lifecycle.
+
+Related timeline events with the same source kind, source identity, and
+capability are stored as one cluster. The entry records its occurrence count,
+first observation, last observation, and latest resolvable source reference.
+The timeline reports a separate compaction count, so repeated activity remains
+measurable without taking the space reserved for distinct evidence.
 
 Without a selector, `capture` records the most recent 15 minutes. `--finding`
 uses that finding's opened and last-observed timestamps. `--from` and `--to`
@@ -80,17 +124,18 @@ payloads, unknown manifest fields, unsupported schemas, and digest mismatches.
 
 `replay` reads only the frozen observations and frozen thresholds. It does not
 read the current supervisor cache, resource sampler, event ledger, or process
-table. The pure finding evaluator rebuilds findings, timelines, and explanations,
-then compares their canonical digest with `expected.json`. A missing captured
-source produces a deterministic degraded capability; it does not trigger a live
-fallback.
+table. The pure finding evaluator rebuilds findings, timelines, explanations,
+and pressure advice, then compares their canonical digest with `expected.json`.
+A missing captured source produces a deterministic degraded capability; it does
+not trigger a live fallback.
 
 The output uses versioned JSON envelopes. `replay.matched` is `true` only when
 the rebuilt output matches the frozen expected output exactly.
 
-Diagnostic bundle, input, and expected-output schemas are version 2. Harnery is
-pre-1.0, so this is a direct cutover: version 1 bundles are rejected rather than
-read through a compatibility path.
+Diagnostic bundle and expected-output schemas are version 3. The input schema
+remains version 2, and the nested timeline schema is version 2. Harnery is
+pre-1.0, so this is a direct cutover: earlier bundle, expected-output, and
+timeline schemas are rejected rather than read through a compatibility path.
 
 Diagnostic bundles are local support artifacts, not durable records. A bundle
 that needs permanent retention must move into a tracked project location before
