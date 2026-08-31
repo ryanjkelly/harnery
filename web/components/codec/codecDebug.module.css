@@ -398,10 +398,6 @@
   .controlGroup {
     padding-inline: 0.7rem;
   }
-
-  .previewPane :global([data-codec-debug-stage]) {
-    min-width: 66rem;
-  }
 }
 
 @media (max-width: 820px) {
