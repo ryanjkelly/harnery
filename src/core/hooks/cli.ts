@@ -100,6 +100,13 @@ import {
 } from "./effects/index.ts";
 import { toolInputHash, toolTargetHash } from "./events/input-hash.ts";
 import { canonicalize } from "./guard-path.ts";
+import {
+  beginHookHealth,
+  type HookHealthState,
+  observeHookDebug,
+  observeHookError,
+  writeHookHealthCompletion,
+} from "./health.ts";
 import { adapterPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
@@ -117,6 +124,8 @@ interface Argv {
   eventName: string | null;
   extra: string[];
 }
+
+let hookHealthState: HookHealthState | undefined;
 
 function parseArgv(argv: string[]): Argv {
   const out: Argv = { eventName: null, extra: [] };
@@ -166,6 +175,7 @@ function childEnv(coordRoot: string): NodeJS.ProcessEnv {
 }
 
 function appendDebug(coordRoot: string, entry: Record<string, unknown>): void {
+  observeHookDebug(hookHealthState, entry);
   if (coordEnv("SHARED_LOGS") !== "0") {
     try {
       processLogger(coordRoot, "agent-hook").debug("agent_hook.diagnostic", legacyLogFields(entry));
@@ -184,6 +194,7 @@ function appendDebug(coordRoot: string, entry: Record<string, unknown>): void {
 }
 
 function logError(coordRoot: string | null, err: unknown, context: Record<string, unknown>): void {
+  observeHookError(hookHealthState, context.phase);
   if (!coordRoot) return;
   if (coordEnv("SHARED_LOGS") !== "0") {
     try {
@@ -597,10 +608,18 @@ function numberField(value: unknown): number | undefined {
 
 async function main(): Promise<number> {
   const hookStartedAt = performance.now();
+  const hookStartedRss = process.memoryUsage().rss;
   const hookClock = captureSpanClockV3();
   const { eventName, extra } = parseArgv(process.argv.slice(2));
   const adapter = detectAdapter(process.argv.slice(2));
   const raw = await readStdin();
+  hookHealthState = beginHookHealth({
+    started_at_ms: hookStartedAt,
+    started_rss_bytes: hookStartedRss,
+    event_name: eventName,
+    adapter,
+    payload_bytes: raw.length,
+  });
 
   // Cursor executes the Claude Code project hooks too on hosts wired for both
   // adapters, piping them its own payload (identifiable by the top-level
@@ -612,6 +631,7 @@ async function main(): Promise<number> {
     if (coordEnv("AGENT_COORD_OFF") !== "1") {
       const coordRoot = resolveCoordRoot(process.cwd());
       if (coordRoot) {
+        hookHealthState.coord_root = coordRoot;
         appendDebug(coordRoot, {
           ts: new Date().toISOString(),
           event_name: eventName,
@@ -668,6 +688,7 @@ async function main(): Promise<number> {
 
   const coordRoot = resolveCoordRoot(process.cwd());
   if (!coordRoot) return 0;
+  hookHealthState.coord_root = coordRoot;
   if (eventName === "runtime-context-retry") {
     return runRuntimeContextRetryWorker(coordRoot, adapter, extra);
   }
@@ -735,6 +756,7 @@ async function main(): Promise<number> {
     });
     return 0;
   }
+  hookHealthState.owner_id = owner.instance_id;
 
   const sessionId = payload?.session_id ?? payload?.conversation_id ?? owner.instance_id;
   const priorCoordination = readHeartbeat(coordRoot, owner.instance_id);
@@ -811,6 +833,9 @@ async function main(): Promise<number> {
     ...(stopRemediation ? { stop_remediation: true } : {}),
     ...(turnRitual ? { turn_ritual: turnRitual } : {}),
     ...(deferV3Drain ? { defer_drain: true } : {}),
+  });
+  observeHookDebug(hookHealthState, {
+    ...(v3Result ? { event_v3_state: v3Result.state } : {}),
   });
   const recordedGenerationId =
     v3Result && "event" in v3Result && "generation_id" in v3Result.event.scope
@@ -1993,6 +2018,11 @@ function completeRecoveryInjection(
 
 main()
   .then(async (code) => {
+    writeHookHealthCompletion(hookHealthState, {
+      finished_at_ms: performance.now(),
+      finished_rss_bytes: process.memoryUsage().rss,
+      pid: process.pid,
+    });
     await closeProcessLoggers();
     process.exit(code);
   })
@@ -2000,6 +2030,13 @@ main()
     logError(resolveCoordRoot(process.cwd()), err, {
       argv: process.argv.slice(2),
       pid: process.pid,
+      phase: "top-level",
+    });
+    writeHookHealthCompletion(hookHealthState, {
+      finished_at_ms: performance.now(),
+      finished_rss_bytes: process.memoryUsage().rss,
+      pid: process.pid,
+      faulted: true,
     });
     await closeProcessLoggers();
     process.exit(0);
