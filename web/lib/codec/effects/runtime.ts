@@ -36,6 +36,8 @@ export interface CodecEffectRuntimeOptions {
 }
 
 const PING_TRAVEL_MS = 3_400;
+const PING_MAX_FRAME_DELTA_MS = 64;
+const PING_TRAVEL_FALLBACK_MS = 30_000;
 const PING_IMPACT_MS = 1_100;
 const PING_POSITION_STOPS = [13, 29, 45, 61, 77, 91, 98] as const;
 const ENDPOINT_HOLD_MS: Record<CodecEffectKind, number> = {
@@ -56,6 +58,7 @@ export function createCodecEffectRuntime(
   const budget = new CodecEffectBudget({ maxConcurrent: options.maxConcurrent(), seenLimit: 500 });
   const effectNodes = new Map<string, Set<HTMLElement>>();
   const effectTimers = new Map<string, Set<ReturnType<typeof setTimeout>>>();
+  const effectAnimationFrames = new Map<string, number>();
   const effectLayoutRefreshers = new Map<string, Set<() => void>>();
   const endpointTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const activeEndpoints = new Set<string>();
@@ -98,6 +101,9 @@ export function createCodecEffectRuntime(
   };
 
   const finish = (effectId: string): void => {
+    const frame = effectAnimationFrames.get(effectId);
+    if (frame !== undefined) options.layer.ownerDocument.defaultView?.cancelAnimationFrame(frame);
+    effectAnimationFrames.delete(effectId);
     removeEffectNodes(effectId);
     for (const timer of effectTimers.get(effectId) ?? []) clearTimeout(timer);
     effectTimers.delete(effectId);
@@ -217,13 +223,23 @@ export function createCodecEffectRuntime(
       setPingGeometry(flight, geometry);
     };
     refreshFlight();
+    flight.style.animation = "none";
+    setPingFlightFrame(flight, measurePingFlightFrame(geometry, 0));
     const core = element(flight, "span", options.classes.pingCore);
     core.dataset.effectVisual = "ping-orb";
     const label = element(core, "span", options.classes.pingLabel);
     label.textContent = "PING";
     rememberLayoutRefresher(cue.id, refreshFlight);
 
-    later(cue.id, PING_TRAVEL_MS, () => {
+    let flightCompleted = false;
+    const completeFlight = () => {
+      if (flightCompleted) return;
+      flightCompleted = true;
+      const activeFrame = effectAnimationFrames.get(cue.id);
+      if (activeFrame !== undefined) {
+        options.layer.ownerDocument.defaultView?.cancelAnimationFrame(activeFrame);
+      }
+      effectAnimationFrames.delete(cue.id);
       for (const node of [path, launch, flight]) {
         node.remove();
         effectNodes.get(cue.id)?.delete(node);
@@ -266,7 +282,33 @@ export function createCodecEffectRuntime(
       rememberNode(cue.id, impact);
       rememberLayoutRefresher(cue.id, refreshImpact);
       later(cue.id, PING_IMPACT_MS, () => finish(cue.id));
-    });
+    };
+    const view = options.layer.ownerDocument.defaultView;
+    if (!view) {
+      completeFlight();
+      return;
+    }
+    let elapsed = 0;
+    let previousFrame: number | null = null;
+    const advanceFlight = (timestamp: number) => {
+      if (flightCompleted) return;
+      if (previousFrame !== null) {
+        elapsed += Math.min(Math.max(timestamp - previousFrame, 0), PING_MAX_FRAME_DELTA_MS);
+      }
+      previousFrame = timestamp;
+      const progress = Math.min(elapsed / PING_TRAVEL_MS, 1);
+      setPingFlightFrame(flight, measurePingFlightFrame(geometry, progress));
+      if (progress >= 1) {
+        completeFlight();
+        return;
+      }
+      effectAnimationFrames.set(cue.id, view.requestAnimationFrame(advanceFlight));
+    };
+    effectAnimationFrames.set(cue.id, view.requestAnimationFrame(advanceFlight));
+    // A frame-based clock prevents a dense debug page from converting one
+    // long dropped frame into a teleport. Keep a distant safety cleanup for a
+    // visible document whose animation frames are suppressed entirely.
+    later(cue.id, PING_TRAVEL_FALLBACK_MS, completeFlight);
   };
 
   const playTargetEffect = (
@@ -336,6 +378,10 @@ export function createCodecEffectRuntime(
       }
     },
     cancelAll() {
+      for (const frame of effectAnimationFrames.values()) {
+        options.layer.ownerDocument.defaultView?.cancelAnimationFrame(frame);
+      }
+      effectAnimationFrames.clear();
       for (const effectId of effectNodes.keys()) removeEffectNodes(effectId);
       for (const timers of effectTimers.values()) for (const timer of timers) clearTimeout(timer);
       effectTimers.clear();
@@ -434,6 +480,13 @@ export interface PingGeometry {
   distance: number;
 }
 
+export interface PingFlightFrame {
+  x: number;
+  y: number;
+  opacity: number;
+  scale: number;
+}
+
 /** The ping is a relationship between whole cards, so both anchors are their
  * visual centers and the midpoint stays on the straight guide between them. */
 export function measurePingGeometry(source: PingRect, target: PingRect): PingGeometry {
@@ -447,6 +500,32 @@ export function measurePingGeometry(source: PingRect, target: PingRect): PingGeo
     y: delta.y / 2,
   };
   return { start, end, midpoint, delta, angle, distance };
+}
+
+/** Advances by painted frames instead of wall time so a delayed frame cannot
+ * skip the projectile from its launch state directly to impact. */
+export function measurePingFlightFrame(
+  geometry: PingGeometry,
+  rawProgress: number,
+): PingFlightFrame {
+  const progress = Math.min(Math.max(rawProgress, 0), 1);
+  const chargeProgress = Math.min(progress / 0.16, 1);
+  const travelProgress = Math.max((progress - 0.16) / 0.84, 0);
+  const scale =
+    chargeProgress < 0.5
+      ? 0.3 + chargeProgress * 2 * (0.86 - 0.3)
+      : 0.86 + (chargeProgress - 0.5) * 2 * (1.08 - 0.86);
+  return {
+    x: geometry.delta.x * travelProgress,
+    y: geometry.delta.y * travelProgress,
+    opacity: Math.min(progress / 0.08, 1),
+    scale: travelProgress > 0 ? 1.08 + travelProgress * (0.86 - 1.08) : scale,
+  };
+}
+
+function setPingFlightFrame(node: HTMLElement, frame: PingFlightFrame): void {
+  node.style.opacity = `${frame.opacity}`;
+  node.style.transform = `translate(${frame.x}px, ${frame.y}px) scale(${frame.scale})`;
 }
 
 function setPingGeometry(node: HTMLElement, geometry: PingGeometry): void {
