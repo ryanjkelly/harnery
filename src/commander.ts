@@ -441,6 +441,12 @@ function harneryCommandBundles({
       { hasOptions: true },
     ),
     lazy(
+      "qa-run <target>",
+      `Run the whole page-QA matrix in one command (planner, deterministic gates per context, interactions, critique, snapshot) via child \`${binName} browse\` processes; writes page-qa-result.json with a fail-closed verdict.`,
+      async (program) => (await import("./commands/qa-run.ts")).registerQaRunCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
       "browse-session",
       "Control an opted-in headed browse session through an owner-only descriptor",
       async (program) =>

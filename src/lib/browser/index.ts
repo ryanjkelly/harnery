@@ -109,6 +109,16 @@ export {
   type QaStylesheetSignature,
 } from "./qa-plan.js";
 export {
+  defaultQaRunExec,
+  QA_RUN_HEADLESS_ONLY_ENV,
+  QA_RUN_RESULT_FILENAME,
+  type QaRunExec,
+  type QaRunExecOptions,
+  type QaRunExecResult,
+  type QaRunMatrixOptions,
+  runQaMatrix,
+} from "./qa-run.js";
+export {
   computeVerdict,
   contextIdFor,
   mergeCoverage,
