@@ -584,7 +584,10 @@ function observeCascades(
     }
     if (
       event.event_type === "lifecycle.sweep_observed" &&
-      event.payload.observation === "stale_sweep"
+      // stale-sweep.ts emits the observation as `stale_heartbeat`; the
+      // finalization request it produces is the one named `stale_sweep`.
+      // Matching the request name here made this branch unreachable.
+      event.payload.observation === "stale_heartbeat"
     ) {
       const record = records.find(
         ({ state }) => !state.terminal && state.instance_id === event.payload.subject_instance_id,

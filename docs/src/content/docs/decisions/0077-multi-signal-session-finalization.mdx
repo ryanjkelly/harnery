@@ -123,3 +123,38 @@ cache row. If neither the event nor the diagnostic can be persisted, the row is
 kept. This does not finalize or resurrect a session: the canonical ledger
 already owns that truth, and the deleted file is only the disposable
 `.harnery/active/` projection.
+
+## Result: the sweep stopped running in the reconcile pass (2026-08-31)
+
+This decision says the stale sweep is discovered during the same reconcile
+pass. The wiring drifted away from that. Both entry points, the public
+`agents reconcile` command and the session-start pass, came to call only
+`reconcileSessionFinalizationV3`. The sweep survived as its own
+`stale-sweep` subcommand that nothing invoked, and the session-start comment
+still claimed it ran.
+
+A second defect hid the first. The finalizer matched
+`lifecycle.sweep_observed` with `observation: "stale_sweep"`, which is the
+name of the finalization request, not of the observation. The sweep emits
+`stale_heartbeat`. From a cold start the branch was unreachable: the
+sweeper's observation never matched, so no `stale_sweep` request was ever
+created, so the derived echo the predicate would have matched never existed.
+Reaping was therefore silently absent while the health rollup kept reporting
+the stale rows it could not clear.
+
+Both are fixed together, because either one alone leaves the pass broken. The
+predicate now matches `stale_heartbeat`, and one shared composition,
+`reconcileCoordinationV3`, runs the sweep before finalization and reports its
+counts. Both entry points call that composition. Creating a request still
+writes a derived observation named after the trigger; no predicate matches
+that echo, so the finalizer cannot feed itself, and an integration test pins
+the whole chain, including that a second pass neither re-sweeps nor
+duplicates the request.
+
+The sweep's own safety contract is unchanged: configured coordination
+freshness for valid rows, an additional stale-mtime gate for malformed or
+missing timestamps, a durable audit record before any deletion, and keeping
+the row when neither audit write succeeds. No dry-run mode or confirmation
+flag was added. `agents reconcile` is the documented mutating supervisor
+pass, and `.harnery/active/` is a disposable projection that heals on the
+owning agent's next tool call.

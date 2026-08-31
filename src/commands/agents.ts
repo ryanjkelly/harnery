@@ -56,6 +56,7 @@ import {
   queueMailboxMessage,
   suggestNames,
 } from "../core/agents/mailbox.ts";
+import { reconcileCoordinationV3 } from "../core/agents/reconcile-coordination-v3.ts";
 import {
   listSessionFinalizationRequestsV3,
   observeHostDisappearedV3,
@@ -442,7 +443,8 @@ export function registerAgentsCommand(
   cmd
     .command("reconcile")
     .description(
-      "Reconcile archive, idle, parent/run completion, stale, superseded, and host lifecycle signals into V3 session finalization.",
+      "Sweep the stale coordination cache, then reconcile archive, idle, parent/run " +
+        "completion, stale, superseded, and host lifecycle signals into V3 session finalization.",
     )
     .option("--watch", "Keep reconciling until interrupted")
     .option("--interval-seconds <n>", "Watch interval in seconds")
@@ -755,7 +757,7 @@ async function runSessionReconcile(opts: {
   }
   let stopped = false;
   do {
-    emit.data(reconcileSessionFinalizationV3(root));
+    emit.data(reconcileCoordinationV3(root));
     if (!opts.watch || stopped) return;
     await new Promise<void>((resolvePromise) => {
       const timer = setTimeout(resolvePromise, interval * 1_000);
