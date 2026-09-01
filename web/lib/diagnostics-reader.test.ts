@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-
+import { captureDiagnosticBundle } from "../../src/core/diagnostics/index";
 import {
   SUPERVISOR_FINDING_SCHEMA_VERSION,
   type SupervisorFinding,
@@ -11,6 +11,7 @@ import {
 import {
   diagnosticsVersion,
   normalizeDiagnosticsQuery,
+  readDiagnosticComparison,
   readFrozenDiagnostics,
   readLiveDiagnostics,
 } from "./diagnostics-reader";
@@ -54,6 +55,33 @@ describe("diagnostics reader", () => {
     expect(() => readFrozenDiagnostics(root, "../supervisor/findings.json")).toThrow(
       "opaque artifact id",
     );
+  });
+
+  test("compares two opaque frozen bundle ids without reading live state", () => {
+    const root = fixtureRoot();
+    const before = captureDiagnosticBundle(root, {
+      now: new Date("2026-09-01T09:00:00.000Z"),
+      machineLabel: "web-test-machine",
+      engineVersion: "test-build",
+    });
+    const after = captureDiagnosticBundle(root, {
+      now: new Date("2026-09-01T09:05:00.000Z"),
+      machineLabel: "web-test-machine",
+      engineVersion: "test-build",
+    });
+
+    const comparison = readDiagnosticComparison(
+      root,
+      before.manifest.artifact_id,
+      after.manifest.artifact_id,
+    );
+
+    expect(comparison.before.artifact_id).toBe(before.manifest.artifact_id);
+    expect(comparison.after.artifact_id).toBe(after.manifest.artifact_id);
+    expect(comparison.observer_only).toBe(true);
+    expect(() =>
+      readDiagnosticComparison(root, "../supervisor/findings.json", after.manifest.artifact_id),
+    ).toThrow("opaque artifact id");
   });
 
   test("version changes when a disposable projection changes", async () => {

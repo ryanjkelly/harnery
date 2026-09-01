@@ -83,6 +83,7 @@ export function DiagnosticsDashboard({
         <ContextLink href="/resources" label="Resources" />
         <ContextLink href="/logs" label="Log flow" />
         <ContextLink href="/events" label="Coordination events" />
+        <ContextLink href="/diagnostics/compare" label="Compare bundles" />
       </nav>
 
       <form
@@ -606,10 +607,7 @@ function FindingOwner({ finding }: { finding: SupervisorFinding }) {
   return <span>{`${attribution.owner_kind ?? "owner"}:${attribution.owner_id ?? "unknown"}`}</span>;
 }
 
-function formatEvidenceValue(
-  value: number,
-  unit: SupervisorFinding["peak_unit"],
-): string {
+function formatEvidenceValue(value: number, unit: SupervisorFinding["peak_unit"]): string {
   if (unit === "bytes") return formatBytes(value);
   if (unit === "percent") return `${value.toLocaleString()}%`;
   if (unit === "milliseconds") return `${value.toLocaleString()} ms`;

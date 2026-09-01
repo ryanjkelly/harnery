@@ -2,6 +2,8 @@ import { statSync } from "node:fs";
 import path from "node:path";
 
 import {
+  compareValidatedDiagnosticBundles,
+  type DiagnosticBundleComparison,
   type DiagnosticBundleManifest,
   readFrozenDiagnosticBundle,
 } from "../../src/core/diagnostics/index";
@@ -123,6 +125,19 @@ export function readFrozenDiagnostics(
     capturedAt: validated.manifest.captured_at,
     bundle: validated.manifest,
   };
+}
+
+export function readDiagnosticComparison(
+  repoRoot: string,
+  beforeArtifactId: string,
+  afterArtifactId: string,
+): DiagnosticBundleComparison {
+  // Both inputs use the opaque frozen reader. Never pass web query values to
+  // the CLI-oriented validator, which also accepts local managed paths.
+  return compareValidatedDiagnosticBundles(
+    readFrozenDiagnosticBundle(repoRoot, beforeArtifactId),
+    readFrozenDiagnosticBundle(repoRoot, afterArtifactId),
+  );
 }
 
 export function diagnosticsVersion(repoRoot: string): string {
