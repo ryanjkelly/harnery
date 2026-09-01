@@ -454,6 +454,13 @@ function harneryCommandBundles({
       { hasOptions: true },
     ),
     lazy(
+      "qa-record <target>",
+      "Record hand-performed page QA as a standard result document: same schema, run identity, stage timings, and freshness guarantees as qa-run, marked evidence_source manual so it can report a defect but never a pass.",
+      async (program) =>
+        (await import("./commands/qa-record.ts")).registerQaRecordCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
       "qa-status [path]",
       "Report a qa-run's live state (queued/launching/running/completed/dead) from its run-status.json, PID liveness, and result document; --wait reconnects to a detached run and exits with its verdict; --queue shows the machine-wide browser-qa admission queue.",
       async (program) =>

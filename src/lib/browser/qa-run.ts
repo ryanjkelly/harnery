@@ -170,16 +170,9 @@ export interface QaRunMatrixOptions {
   admission?: {
     resource: string;
     acquire: (onWait: (message: string) => void) => Promise<() => void>;
-  };
-}
-
-function hostSample(): QaRunHostSample {
-  return {
-    captured_at: new Date().toISOString(),
-    loadavg_1m: loadavg()[0] ?? 0,
-    free_mem_bytes: freemem(),
-    total_mem_bytes: totalmem(),
-    cpu_count: cpus().length,
+    /** Snapshot of the other holders of the resource, sampled alongside host
+     * pressure so an incomplete run names what it was competing with. */
+    holders?: () => Array<{ label: string; pid: number }>;
   };
 }
 
@@ -350,6 +343,21 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   const timeoutMs = job.policy?.command_timeout_ms ?? DEFAULT_COMMAND_TIMEOUT_MS;
   const concurrency = job.policy?.command_concurrency ?? DEFAULT_COMMAND_CONCURRENCY;
 
+  const hostSample = (): QaRunHostSample => {
+    const holders = options.admission?.holders?.() ?? undefined;
+    return {
+      captured_at: new Date().toISOString(),
+      loadavg_1m: loadavg()[0] ?? 0,
+      free_mem_bytes: freemem(),
+      total_mem_bytes: totalmem(),
+      cpu_count: cpus().length,
+      // Exclude this run itself: a holder list that names the sampler tells
+      // the reader nothing about contention.
+      ...(holders ? { competing: holders.filter((holder) => holder.pid !== process.pid) } : {}),
+    };
+  };
+  const stageHostSamples: Partial<Record<QaRunStage, QaRunHostSample>> = {};
+
   const runId = options.runId ?? randomUUID();
   const outDir = join(outParent, `run-${runId}`);
   mkdirSync(outDir, { recursive: true });
@@ -384,6 +392,14 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   };
   const heartbeat = setInterval(writeStatus, STATUS_HEARTBEAT_MS);
   heartbeat.unref();
+
+  /** Enter a stage: record the host pressure it starts under and refresh the
+   * live status document in one place. */
+  const enterStage = (stage: QaRunStage): void => {
+    statusStage = stage;
+    stageHostSamples[stage] = hostSample();
+    writeStatus();
+  };
 
   const revision: Pick<
     QaRunResult["run"],
@@ -479,6 +495,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     }
     const result: QaRunResult = {
       schema_version: QA_RUN_RESULT_SCHEMA_VERSION,
+      evidence_source: "runner",
       run: {
         run_id: runId,
         started_at: startedAtIso,
@@ -487,7 +504,11 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         job_digest: jobDigest,
         out_dir: outDir,
       },
-      host: { start: hostStart, finish: hostSample() },
+      host: {
+        start: hostStart,
+        finish: hostSample(),
+        ...(Object.keys(stageHostSamples).length > 0 ? { stages: stageHostSamples } : {}),
+      },
       last_completed_stage: lastCompletedStage,
       target: job.target,
       ...(revision.tested_revision !== undefined
@@ -560,8 +581,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     ...(job.qa_hints?.states?.length ? ["--qa-states", job.qa_hints.states.join(",")] : []),
   ];
   log(`plan: ${job.target}`);
-  statusStage = "plan";
-  writeStatus();
+  enterStage("plan");
   const planStart = Date.now();
   const plan = await timedExec(planArgv, baseEnv);
   wall.plan = Date.now() - planStart;
@@ -641,8 +661,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   const enforceConsole = manifest.checks.deterministic.includes("console");
   const checks = job.checks ?? [];
   const gateOutcomes = new Array<QaRunCommandOutcome>(contexts.length);
-  statusStage = "gates";
-  writeStatus();
+  enterStage("gates");
   const gatesStart = Date.now();
   await runPool(contexts, concurrency, async (ctx, index) => {
     const applicable = checks.filter(
@@ -715,8 +734,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   commands.push(...gateOutcomes);
 
   // ---------------------------------------------------------- interactions
-  statusStage = "interactions";
-  writeStatus();
+  enterStage("interactions");
   const interactionsStart = Date.now();
   const declaredStates = new Set((job.interaction_states ?? []).map((state) => state.name));
   const manifestStates = [
@@ -790,8 +808,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   const visual = manifest.checks.visual;
   const cleanSoFar =
     blockers.length === 0 && commands.every((command) => command.outcome === "passed");
-  statusStage = "critique";
-  writeStatus();
+  enterStage("critique");
   const critiqueStart = Date.now();
   const savedSnapshots = new Map<string, string>();
   if (cleanSoFar && visual !== "none") {
@@ -928,8 +945,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   // Critique invocations carry --qa-snapshot in signoff mode. When the
   // manifest requires no visual pass (visual === "none"), a passing signoff
   // still needs its baseline persisted, so a dedicated snapshot pass runs.
-  statusStage = "snapshot";
-  writeStatus();
+  enterStage("snapshot");
   const snapshotStart = Date.now();
   if (job.mode === "signoff" && visual === "none" && blockers.length === 0) {
     const stillClean = commands.every((command) => command.outcome === "passed");

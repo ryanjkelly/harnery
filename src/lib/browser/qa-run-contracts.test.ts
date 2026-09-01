@@ -8,6 +8,7 @@ import {
   mergeCoverage,
   QA_RUN_JOB_SCHEMA_VERSION,
   QA_RUN_RESULT_SCHEMA_VERSION,
+  type QaRunBlocker,
   type QaRunCommandOutcome,
   type QaRunCritiqueOutcome,
   type QaRunJob,
@@ -437,5 +438,52 @@ describe("assessQaRunEvidence", () => {
       expect(assessment.fresh).toBe(false);
       expect(assessment.reasons).toEqual(["document is not a result object"]);
     }
+  });
+});
+
+describe("computeVerdict evidence source", () => {
+  const clean = (): {
+    blockers: QaRunBlocker[];
+    commands: QaRunCommandOutcome[];
+    critique: QaRunCritiqueOutcome[];
+    snapshotSaved: boolean;
+  } => ({ blockers: [], commands: [], critique: [], snapshotSaved: true });
+
+  test("manual evidence never reads passed, however clean", () => {
+    expect(computeVerdict({ mode: "review", ...clean(), evidenceSource: "manual" })).toBe(
+      "incomplete",
+    );
+    expect(computeVerdict({ mode: "signoff", ...clean(), evidenceSource: "manual" })).toBe(
+      "incomplete",
+    );
+  });
+
+  test("manual evidence still reports a defect it did find", () => {
+    expect(
+      computeVerdict({
+        mode: "review",
+        blockers: [],
+        commands: [
+          {
+            context_id: "desktop-light-default",
+            check_id: "manual:overflow",
+            argv: ["<manual>"],
+            exit_code: null,
+            outcome: "failed",
+            failures: ["horizontal overflow at 375px"],
+            artifacts: {},
+            wall_time_ms: 0,
+          },
+        ],
+        critique: [],
+        snapshotSaved: false,
+        evidenceSource: "manual",
+      }),
+    ).toBe("failed");
+  });
+
+  test("runner evidence is unaffected by the cap", () => {
+    expect(computeVerdict({ mode: "review", ...clean(), evidenceSource: "runner" })).toBe("passed");
+    expect(computeVerdict({ mode: "review", ...clean() })).toBe("passed");
   });
 });

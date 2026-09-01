@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeJobDigest, type QaRunJob } from "../lib/browser/qa-run-contracts.ts";
+import {
+  computeJobDigest,
+  QA_RUN_RESULT_SCHEMA_VERSION,
+  type QaRunJob,
+} from "../lib/browser/qa-run-contracts.ts";
 import { resolveAndAssess } from "./qa-verify.ts";
 
 const TARGET = "http://localhost:9999/page";
@@ -16,7 +20,7 @@ interface FixtureOverrides {
   top?: Record<string, unknown>;
 }
 
-/** A minimal schema-v2 result document whose identity block points at outDir. */
+/** A minimal current-schema result document whose identity points at outDir. */
 function buildResult(outDir: string, overrides: FixtureOverrides = {}): Record<string, unknown> {
   const run =
     overrides.run === null
@@ -33,7 +37,8 @@ function buildResult(outDir: string, overrides: FixtureOverrides = {}): Record<s
           ...(overrides.run ?? {}),
         };
   return {
-    schema_version: 2,
+    schema_version: QA_RUN_RESULT_SCHEMA_VERSION,
+    evidence_source: "runner",
     ...(run !== undefined ? { run } : {}),
     target: TARGET,
     mode: "review",

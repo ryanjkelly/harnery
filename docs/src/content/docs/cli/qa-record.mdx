@@ -1,0 +1,118 @@
+---
+title: harn qa-record
+description: Record hand-performed page QA as a standard result document, with the same schema, run identity, and timings the matrix runner writes.
+sidebar:
+  order: 28
+---
+
+```
+harn qa-record [options] <target>
+```
+
+Turns page QA that was performed by hand into the same machine-readable artifact [`harn qa-run`](/cli/qa-run/) emits. You supply a JSON evidence document describing the checks you ran, who ran them, and why the runner could not. `qa-record` validates it, then writes `page-qa-result.json` with a full run identity block, host samples, per-check timings, a `latest.json` pointer, and a terminal `run-status.json`, so [`harn qa-verify`](/cli/qa-verify/) and [`harn qa-status`](/cli/qa-status/) treat the record like any other result.
+
+## When to reach for it
+
+Only when the runner cannot run. The usual causes are a host under too much load to drive a browser, a lost bridge between the client and the browser host, or an interaction the runner has no way to perform. In those situations an agent still does the checking, and the output is prose in a chat log: unverifiable, unqueryable, and invisible to anything that gates on QA evidence. `qa-record` gives that work the same shape as a runner result so it lands in the same pipeline.
+
+When the runner is available, use it. A recorded result never reports a pass, so choosing `qa-record` for convenience costs you the ability to prove the page is clean.
+
+## The never-passes rule
+
+A hand-recorded result can prove a defect but never its absence. Nothing re-executable ran, so no consumer can reproduce the observation, and a later reader cannot tell a thorough check from a glance. Two mechanisms enforce this:
+
+- Every record carries a `validate` blocker naming the reason the runner was unavailable.
+- The verdict is computed with `evidence_source` set to `manual`, which caps the outcome at `incomplete`.
+
+A failed check still wins. If you recorded a defect, the verdict is `failed` and the exit code is 2. Otherwise the verdict is `incomplete` and the exit code is 4. Exit code 0 is unreachable by design.
+
+## The evidence document
+
+```json
+{
+  "schema_version": 1,
+  "recorded_by": "agent-Rowan",
+  "reason": "the browser bridge dropped mid-matrix and would not reconnect",
+  "contexts": [
+    { "id": "desktop-light-default", "viewport": "desktop", "theme": "light", "state": "default" }
+  ],
+  "checks": [
+    {
+      "context_id": "desktop-light-default",
+      "check_id": "manual:overflow",
+      "outcome": "passed",
+      "notes": ["no horizontal scrollbar at 1440 wide"],
+      "artifacts": { "png": "desktop-light.png" },
+      "wall_time_ms": 1200
+    }
+  ]
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `schema_version` | yes | Always `1`. |
+| `recorded_by` | yes | The agent or operator who performed the checks. |
+| `reason` | yes | Why the runner could not be used. A record with no stated reason is an assertion, not evidence, and is refused. |
+| `checks` | yes | At least one check. A record with no checks proves nothing about the page. |
+| `checks[].context_id` | yes | The rendering context the check was performed in. |
+| `checks[].check_id` | yes | Stable identifier. Prefix with `manual:` by convention. |
+| `checks[].outcome` | yes | `passed`, `failed`, or `unknown`. |
+| `checks[].notes` | no | What you observed. Carried into the result's `failures` field, which is the contract's only free-text field per check, whatever the outcome. |
+| `checks[].artifacts` | no | `png`, `html`, or `json` paths backing the observation. Relative paths resolve against the directory holding the evidence document. |
+| `checks[].wall_time_ms` | no | How long the check took. Summed into `wall_time_ms.total`; missing values count as zero. |
+| `contexts` | no | Declared contexts. When absent, one context is derived per distinct `context_id`, reading the runner's `viewport-theme-state` naming when the ID follows it. |
+
+Validation is strict and complete: every structural problem, every artifact path, and every secret-bearing field is reported in one pass, and nothing is written to disk until the document is clean.
+
+- **Artifact paths must exist.** A named capture that is not on disk is a validation error, not a warning. An unresolvable path makes the record unverifiable, which is the failure this command exists to remove.
+- **Credentials are refused.** The same credential scan `qa-run` applies to job documents runs over the evidence document. Reference a browser profile or cookie store instead of embedding a secret.
+
+## What gets written
+
+The layout matches a runner invocation exactly, in `<out-dir>/run-<run_id>/`:
+
+| File | Contents |
+| --- | --- |
+| `page-qa-result.json` | The result document, `evidence_source` set to `manual`. |
+| `manual-evidence.json` | A copy of the evidence document. The identity block's `job_digest` is taken over it, so the copy is what makes the digest re-derivable. |
+| `run-status.json` | A terminal status document: state `completed`, no stage, and the verdict. |
+| `../latest.json` | The parent pointer, written temp-then-rename, so `qa-verify .qa-run` resolves the record. |
+
+Inside the result, the runner fields that have no manual equivalent are explicit rather than invented. `qa_plan` is `null`, `last_completed_stage` is `null`, `critique` is empty, `snapshot.saved` is `false`, and every stage bucket in `wall_time_ms` is zero while `total` is the sum of the recorded check times. Each check becomes a command outcome whose `argv` is the marker `["<manual>"]` and whose `exit_code` is `null`, so no reader mistakes it for a command line that can be re-run. The revision is probed from git the same way `qa-run` probes it, and records `unknown` outside a repository.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--evidence <file>` | The evidence document (JSON). Required. |
+| `--mode <mode>` | `signoff` or `review` (default `review`). A manual record never saves a QA snapshot either way. |
+| `--out-dir <parent>` | Parent output directory (default `.qa-run`). Each record writes its own `run-<run_id>/` beneath it. |
+| `--json` | Print the full result JSON to stdout. |
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 1 | Usage error, unreadable evidence file, or a document that failed validation. Every error is printed. |
+| 2 | Verdict `failed`: at least one recorded check found a defect. |
+| 4 | Verdict `incomplete`: nothing failed, but hand-recorded evidence cannot establish a pass. |
+
+There is no exit code 0.
+
+## Examples
+
+```bash
+# Record the checks you performed by hand, into the same workspace qa-run uses
+harn qa-record https://example.com/pricing --evidence manual-qa.json --out-dir .qa-run
+
+# Verify the record like any other result, then read its state
+harn qa-verify .qa-run --max-age 60
+harn qa-status .qa-run
+```
+
+## See also
+
+- [`harn qa-run`](/cli/qa-run/): the matrix runner. Use it whenever it can run.
+- [`harn qa-verify`](/cli/qa-verify/): checks that a result, recorded or executed, is fresh evidence for the invocation you have in mind.
+- [`harn qa-status`](/cli/qa-status/): reports run state from the status document and the result.

@@ -942,3 +942,67 @@ describe("runQaMatrix admission and status artifacts", () => {
     expect(result.wall_time_ms.queue).toBeUndefined();
   });
 });
+
+describe("runQaMatrix schema v3 diagnostics", () => {
+  test("a runner result declares evidence_source runner", async () => {
+    const parent = outDir();
+    const { exec } = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+    });
+    expect(result.evidence_source).toBe("runner");
+    expect(result.schema_version).toBe(3);
+  });
+
+  test("each executed stage records the host pressure it started under", async () => {
+    const parent = outDir();
+    const { exec } = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job({ mode: "signoff" }),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+    });
+    const stages = result.host.stages ?? {};
+    for (const stage of ["plan", "gates", "interactions", "snapshot"] as const) {
+      expect(stages[stage]?.captured_at).toBeString();
+      expect(stages[stage]?.cpu_count).toBeGreaterThan(0);
+    }
+  });
+
+  test("host samples name the competing admission holders, excluding this run", async () => {
+    const parent = outDir();
+    const { exec } = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+      admission: {
+        resource: "browser-qa",
+        acquire: async () => () => {},
+        holders: () => [
+          { label: "peer build", pid: 424242 },
+          { label: "this run", pid: process.pid },
+        ],
+      },
+    });
+    expect(result.host.start.competing).toEqual([{ label: "peer build", pid: 424242 }]);
+    expect(result.host.finish.competing).toEqual([{ label: "peer build", pid: 424242 }]);
+  });
+
+  test("a run without admission records no competing list", async () => {
+    const parent = outDir();
+    const { exec } = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+    });
+    expect(result.host.start.competing).toBeUndefined();
+  });
+});

@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { type Command, Option } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
-import { acquireAdmission } from "../lib/admission.ts";
+import { acquireAdmission, admissionStatus } from "../lib/admission.ts";
 import {
   QA_RUN_JOB_FILENAME,
   QA_RUN_RESULT_FILENAME,
@@ -343,6 +343,11 @@ export function registerQaRunCommand(program: Command, emit: EmitContext): void 
             );
             return handle.release;
           },
+          holders: () =>
+            admissionStatus({ dir, resource: QA_ADMISSION_RESOURCE }).holders.map((holder) => ({
+              label: holder.label,
+              pid: holder.pid,
+            })),
         };
       }
 

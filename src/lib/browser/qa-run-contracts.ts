@@ -21,7 +21,14 @@ import { createHash } from "node:crypto";
 import type { QaContext, QaManifest } from "./qa-plan.js";
 
 export const QA_RUN_JOB_SCHEMA_VERSION = 1 as const;
-export const QA_RUN_RESULT_SCHEMA_VERSION = 2 as const;
+export const QA_RUN_RESULT_SCHEMA_VERSION = 3 as const;
+
+/** How a result's evidence was produced. `runner` means the qa-run matrix
+ * executed the checks itself. `manual` means an operator or agent performed
+ * the checks by hand and recorded them (qa-record); such a result can report
+ * a defect but can never claim a pass, because nothing re-executable proved
+ * the absence of one. */
+export type QaRunEvidenceSource = "runner" | "manual";
 
 /** One rendering context the runner will capture and check. */
 export interface QaRunContext {
@@ -191,20 +198,34 @@ export interface QaRunStatusDocument {
   verdict?: QaRunVerdict;
 }
 
-/** Host-pressure sample. Captured at start and finish so an incomplete run
- * carries the load context that produced it. */
+/** Host-pressure sample. Captured at start, at every stage boundary, and at
+ * finish, so an incomplete run carries the load context that produced it and
+ * names the other heavy jobs it was competing with. */
 export interface QaRunHostSample {
   captured_at: string;
   loadavg_1m: number;
   free_mem_bytes: number;
   total_mem_bytes: number;
   cpu_count: number;
+  /** Other holders of the admission resource at sample time. Present only
+   * when the run queued; an empty array means the run had the host to
+   * itself. This is what turns "it was slow" into "it was slow because these
+   * three jobs held slots". */
+  competing?: Array<{ label: string; pid: number }>;
 }
 
 export interface QaRunResult {
   schema_version: typeof QA_RUN_RESULT_SCHEMA_VERSION;
+  /** Runner-executed or hand-recorded. A manual result never reads passed. */
+  evidence_source: QaRunEvidenceSource;
   run: QaRunIdentity;
-  host: { start: QaRunHostSample; finish: QaRunHostSample };
+  host: {
+    start: QaRunHostSample;
+    finish: QaRunHostSample;
+    /** Sample taken as each stage began, so a stall is attributable to the
+     * stage that was running and the load at that moment. */
+    stages?: Partial<Record<QaRunStage, QaRunHostSample>>;
+  };
   /** Null when the run never completed a stage cleanly (e.g. plan failed). */
   last_completed_stage: QaRunStage | null;
   target: string;
@@ -590,11 +611,16 @@ export function computeVerdict(input: {
   commands: QaRunCommandOutcome[];
   critique: QaRunCritiqueOutcome[];
   snapshotSaved: boolean;
+  /** Defaults to `runner`. `manual` caps the verdict at incomplete. */
+  evidenceSource?: QaRunEvidenceSource;
 }): QaRunVerdict {
   const failed =
     input.commands.some((command) => command.outcome === "failed") ||
     input.critique.some((entry) => entry.outcome === "failed");
   if (failed) return "failed";
+  // Hand-recorded evidence can prove a defect but never its absence: nothing
+  // re-executable ran, so a manual result stops at incomplete by contract.
+  if (input.evidenceSource === "manual") return "incomplete";
   const unknown =
     input.commands.some((command) => command.outcome === "unknown") ||
     input.critique.some((entry) => entry.outcome === "unknown");
