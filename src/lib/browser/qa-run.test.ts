@@ -1,16 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QaManifest } from "./qa-plan.ts";
 import {
   QA_RUN_HEADLESS_ONLY_ENV,
+  QA_RUN_LATEST_FILENAME,
+  QA_RUN_RESULT_FILENAME,
   type QaRunExec,
   type QaRunExecOptions,
   type QaRunExecResult,
   runQaMatrix,
 } from "./qa-run.ts";
-import { QA_RUN_JOB_SCHEMA_VERSION, type QaRunJob } from "./qa-run-contracts.ts";
+import {
+  assessQaRunEvidence,
+  computeJobDigest,
+  QA_RUN_JOB_SCHEMA_VERSION,
+  type QaRunJob,
+} from "./qa-run-contracts.ts";
 
 const BROWSE_ARGV = ["node", "/cli/harn.ts", "browse"];
 
@@ -538,5 +545,298 @@ describe("runQaMatrix", () => {
     expect(snapshotCall).toBeDefined();
     expect(result.snapshot.saved).toBe(true);
     expect(result.verdict).toBe("passed");
+  });
+});
+
+describe("runQaMatrix run identity", () => {
+  test("runId places artifacts and the result under run-<id> and latest.json points at it", async () => {
+    const parent = outDir();
+    const fake = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      runId: "fixed",
+    });
+    const runDir = join(parent, "run-fixed");
+    expect(result.run.run_id).toBe("fixed");
+    expect(result.run.out_dir.endsWith("run-fixed")).toBe(true);
+    expect(existsSync(join(runDir, QA_RUN_RESULT_FILENAME))).toBe(true);
+    // Gate artifacts land inside the run dir, not the parent.
+    expect(existsSync(join(runDir, "desktop-light-default.json"))).toBe(true);
+    expect(existsSync(join(parent, "desktop-light-default.json"))).toBe(false);
+    const latest = JSON.parse(readFileSync(join(parent, QA_RUN_LATEST_FILENAME), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(latest.run_id).toBe("fixed");
+    expect(latest.dir).toBe("run-fixed");
+    expect(latest.result).toBe(join("run-fixed", QA_RUN_RESULT_FILENAME));
+    expect(latest.verdict).toBe(result.verdict);
+    expect(latest.completed_at).toBe(result.run.completed_at);
+  });
+
+  test("two sequential runs keep both run dirs and latest.json points at the second", async () => {
+    const parent = outDir();
+    const first = makeFakeExec({ planManifest: manifest() });
+    await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec: first.exec,
+      runId: "first",
+    });
+    const second = makeFakeExec({ planManifest: manifest() });
+    await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec: second.exec,
+      runId: "second",
+    });
+    expect(existsSync(join(parent, "run-first", QA_RUN_RESULT_FILENAME))).toBe(true);
+    expect(existsSync(join(parent, "run-second", QA_RUN_RESULT_FILENAME))).toBe(true);
+    const latest = JSON.parse(readFileSync(join(parent, QA_RUN_LATEST_FILENAME), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(latest.run_id).toBe("second");
+    expect(latest.dir).toBe("run-second");
+  });
+
+  test("the run block carries ISO bounds and the digest of the executed job", async () => {
+    const theJob = job();
+    const fake = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: theJob,
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      runId: "identity",
+    });
+    for (const stamp of [result.run.started_at, result.run.completed_at]) {
+      expect(new Date(stamp).toISOString()).toBe(stamp);
+    }
+    expect(Date.parse(result.run.completed_at)).toBeGreaterThanOrEqual(
+      Date.parse(result.run.started_at),
+    );
+    expect(result.run.job_digest).toBe(computeJobDigest(theJob));
+  });
+
+  test('revision_source is "job" when the job pins tested_revision, ignoring the probe', async () => {
+    const fake = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job({ tested_revision: "abc123" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      revisionProbe: { tested_revision: "zzz999", worktree_dirty: true },
+    });
+    expect(result.run.revision_source).toBe("job");
+    expect(result.run.tested_revision).toBe("abc123");
+    expect(result.run.worktree_dirty).toBeUndefined();
+    expect(result.tested_revision).toBe("abc123");
+  });
+
+  test('revision_source is "git" with worktree_dirty carried when only a probe is supplied', async () => {
+    const fake = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      revisionProbe: { tested_revision: "def456", worktree_dirty: true },
+    });
+    expect(result.run.revision_source).toBe("git");
+    expect(result.run.tested_revision).toBe("def456");
+    expect(result.run.worktree_dirty).toBe(true);
+    expect(result.tested_revision).toBe("def456");
+  });
+
+  test('revision_source is "unknown" when neither the job nor a probe names a revision', async () => {
+    const fake = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.run.revision_source).toBe("unknown");
+    expect(result.run.tested_revision).toBeUndefined();
+    expect(result.run.worktree_dirty).toBeUndefined();
+  });
+
+  test("host samples carry numeric pressure fields at start and finish", async () => {
+    const fake = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    for (const sample of [result.host.start, result.host.finish]) {
+      expect(new Date(sample.captured_at).toISOString()).toBe(sample.captured_at);
+      expect(Number.isFinite(sample.loadavg_1m)).toBe(true);
+      expect(Number.isFinite(sample.free_mem_bytes)).toBe(true);
+      expect(Number.isFinite(sample.total_mem_bytes)).toBe(true);
+      expect(sample.total_mem_bytes).toBeGreaterThan(0);
+      expect(Number.isInteger(sample.cpu_count)).toBe(true);
+      expect(sample.cpu_count).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  test("the written result assesses fresh in place and stale after being copied elsewhere", async () => {
+    const parent = outDir();
+    const theJob = job();
+    const fake = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: theJob,
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      runId: "evidence",
+    });
+    const runDir = join(parent, "run-evidence");
+    const expectations = {
+      run_id: "evidence",
+      job_digest: computeJobDigest(theJob),
+      found_in_dir: runDir,
+    };
+    const parsed: unknown = JSON.parse(readFileSync(join(runDir, QA_RUN_RESULT_FILENAME), "utf8"));
+    const inPlace = assessQaRunEvidence(parsed, expectations);
+    expect(inPlace.fresh).toBe(true);
+    expect(inPlace.reasons).toEqual([]);
+    expect(inPlace.verdict).toBe(result.verdict);
+    // The moved-result rule: the same document read from another directory is
+    // not evidence for that directory.
+    const elsewhere = outDir();
+    copyFileSync(join(runDir, QA_RUN_RESULT_FILENAME), join(elsewhere, QA_RUN_RESULT_FILENAME));
+    const movedDocument: unknown = JSON.parse(
+      readFileSync(join(elsewhere, QA_RUN_RESULT_FILENAME), "utf8"),
+    );
+    const moved = assessQaRunEvidence(movedDocument, { ...expectations, found_in_dir: elsewhere });
+    expect(moved.fresh).toBe(false);
+    expect(moved.reasons).toHaveLength(1);
+    expect(moved.reasons[0]).toContain("moved or copied");
+  });
+});
+
+describe("runQaMatrix last_completed_stage", () => {
+  test("null when the planner fails", async () => {
+    const fake = makeFakeExec({ planManifest: null });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.last_completed_stage).toBeNull();
+  });
+
+  test('a clean review with visual "none" ends at interactions', async () => {
+    const fake = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.verdict).toBe("passed");
+    expect(result.last_completed_stage).toBe("interactions");
+  });
+
+  test("a gate blocker ends the clean prefix at plan", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest(),
+      gateError: { "desktop-dark-default": "killed by SIGTERM (timeout 120000ms)" },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.blockers.some((b) => b.stage === "gates")).toBe(true);
+    // Prefix semantics: the (empty) interactions stage executes after the
+    // blocked gates stage, but the run stopped progressing cleanly at plan.
+    expect(result.last_completed_stage).toBe("plan");
+    // The invariant: last_completed_stage is never a stage a blocker names.
+    expect(result.blockers.some((b) => b.stage === result.last_completed_stage)).toBe(false);
+  });
+
+  test("gates is last when only the interactions stage is blocked", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts: [
+          { viewport: "desktop", theme: "light", state: "default" },
+          { viewport: "desktop", theme: "light", state: "menu-open" },
+        ],
+      }),
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.blockers.some((b) => b.stage === "interactions")).toBe(true);
+    expect(result.last_completed_stage).toBe("gates");
+  });
+
+  test("plan is last when both gates and interactions are blocked", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts: [
+          { viewport: "desktop", theme: "light", state: "default" },
+          { viewport: "desktop", theme: "light", state: "menu-open" },
+        ],
+      }),
+      gateError: { "desktop-light-default": "killed by SIGTERM (timeout 120000ms)" },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.blockers.some((b) => b.stage === "gates")).toBe(true);
+    expect(result.blockers.some((b) => b.stage === "interactions")).toBe(true);
+    expect(result.last_completed_stage).toBe("plan");
+  });
+
+  test("a clean review with a visual pass ends at critique", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass" },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.verdict).toBe("passed");
+    expect(result.last_completed_stage).toBe("critique");
+  });
+
+  test('a passing signoff with visual "none" ends at snapshot', async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({ contexts }),
+      snapshotSaved: true,
+    });
+    const result = await runQaMatrix({
+      job: job({ mode: "signoff" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.verdict).toBe("passed");
+    expect(result.last_completed_stage).toBe("snapshot");
   });
 });

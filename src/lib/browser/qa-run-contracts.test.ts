@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { QaManifest } from "./qa-plan.ts";
 import {
+  assessQaRunEvidence,
+  computeJobDigest,
   computeVerdict,
   contextIdFor,
   mergeCoverage,
   QA_RUN_JOB_SCHEMA_VERSION,
+  QA_RUN_RESULT_SCHEMA_VERSION,
   type QaRunCommandOutcome,
   type QaRunCritiqueOutcome,
   type QaRunJob,
@@ -243,5 +246,196 @@ describe("computeVerdict", () => {
         snapshotSaved: false,
       }),
     ).toBe("passed");
+  });
+});
+
+describe("computeJobDigest", () => {
+  test("key insertion order never changes the digest, including nested objects", () => {
+    const a: QaRunJob = {
+      schema_version: QA_RUN_JOB_SCHEMA_VERSION,
+      target: "http://localhost:4276/page",
+      mode: "review",
+      contexts: [{ id: "hd-dark-default", viewport: "hd", theme: "dark", state: "default" }],
+      checks: [{ id: "overflow", args: ["--check-overflow"], contexts: ["hd-dark-default"] }],
+      qa_hints: { scopes: ["#main"], states: ["menu-open"] },
+    };
+    const b: QaRunJob = {
+      qa_hints: { states: ["menu-open"], scopes: ["#main"] },
+      checks: [{ contexts: ["hd-dark-default"], args: ["--check-overflow"], id: "overflow" }],
+      contexts: [{ state: "default", theme: "dark", viewport: "hd", id: "hd-dark-default" }],
+      mode: "review",
+      target: "http://localhost:4276/page",
+      schema_version: QA_RUN_JOB_SCHEMA_VERSION,
+    };
+    expect(JSON.stringify(a)).not.toBe(JSON.stringify(b)); // the reorder is real
+    expect(computeJobDigest(b)).toBe(computeJobDigest(a));
+  });
+
+  test("a content change to target, mode, a context, or a check changes the digest", () => {
+    const base = computeJobDigest(validJob());
+    expect(computeJobDigest(validJob({ target: "http://localhost:4276/other" }))).not.toBe(base);
+    expect(computeJobDigest(validJob({ mode: "signoff" }))).not.toBe(base);
+    const withContext = validJob({
+      contexts: [{ id: "hd-dark-default", viewport: "hd", theme: "dark", state: "default" }],
+    });
+    expect(computeJobDigest(withContext)).not.toBe(base);
+    expect(
+      computeJobDigest(validJob({ checks: [{ id: "overflow", args: ["--check-overflow"] }] })),
+    ).not.toBe(base);
+  });
+
+  test("policy differences never change the digest", () => {
+    const base = computeJobDigest(validJob());
+    expect(computeJobDigest(validJob({ policy: { command_concurrency: 8 } }))).toBe(base);
+    expect(
+      computeJobDigest(
+        validJob({ policy: { allow_metered_critique: true, command_timeout_ms: 5_000 } }),
+      ),
+    ).toBe(base);
+  });
+
+  test("array order is semantic and changes the digest", () => {
+    const first = {
+      id: "a-light-default",
+      viewport: "a",
+      theme: "light" as const,
+      state: "default",
+    };
+    const second = {
+      id: "b-light-default",
+      viewport: "b",
+      theme: "light" as const,
+      state: "default",
+    };
+    expect(computeJobDigest(validJob({ contexts: [first, second] }))).not.toBe(
+      computeJobDigest(validJob({ contexts: [second, first] })),
+    );
+  });
+});
+
+describe("assessQaRunEvidence", () => {
+  function resultDocument(runOverrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      schema_version: QA_RUN_RESULT_SCHEMA_VERSION,
+      run: {
+        run_id: "run-1",
+        started_at: "2026-09-01T10:00:00.000Z",
+        completed_at: "2026-09-01T10:05:00.000Z",
+        tested_revision: "abc123",
+        revision_source: "job",
+        job_digest: "digest-1",
+        out_dir: "/tmp/out/run-run-1",
+        ...runOverrides,
+      },
+      verdict: "passed",
+    };
+  }
+
+  test("a complete fresh v2 document with matching expectations is fresh", () => {
+    const assessment = assessQaRunEvidence(resultDocument(), {
+      run_id: "run-1",
+      job_digest: "digest-1",
+      tested_revision: "abc123",
+      not_started_before: "2026-09-01T09:59:00.000Z",
+      max_age_ms: 60_000,
+      now: "2026-09-01T10:05:30.000Z",
+      found_in_dir: "/tmp/out/run-run-1",
+    });
+    expect(assessment.fresh).toBe(true);
+    expect(assessment.reasons).toEqual([]);
+    expect(assessment.run?.run_id).toBe("run-1");
+    expect(assessment.verdict).toBe("passed");
+  });
+
+  test("schema_version 1 is stale — pre-identity results carry nothing to verify", () => {
+    const assessment = assessQaRunEvidence({ ...resultDocument(), schema_version: 1 });
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(1);
+    expect(assessment.reasons[0]).toContain("pre-identity");
+  });
+
+  test("a missing run block is stale", () => {
+    const { run: _run, ...withoutRun } = resultDocument();
+    const assessment = assessQaRunEvidence(withoutRun);
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(1);
+    expect(assessment.reasons[0]).toContain("run-identity");
+  });
+
+  test("a run_id mismatch produces exactly its reason", () => {
+    const assessment = assessQaRunEvidence(resultDocument(), { run_id: "run-2" });
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(1);
+    expect(assessment.reasons[0]).toContain("run_id run-1 is not the expected run-2");
+  });
+
+  test("a job_digest mismatch produces exactly its reason", () => {
+    const assessment = assessQaRunEvidence(resultDocument(), { job_digest: "digest-2" });
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(1);
+    expect(assessment.reasons[0]).toContain("job_digest");
+  });
+
+  test("a tested_revision mismatch produces exactly its reason", () => {
+    const assessment = assessQaRunEvidence(resultDocument(), { tested_revision: "def456" });
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(1);
+    expect(assessment.reasons[0]).toContain("tested_revision abc123 is not the expected def456");
+  });
+
+  test('revision_source "unknown" can never satisfy a revision expectation', () => {
+    const document = resultDocument({ revision_source: "unknown" });
+    delete (document.run as Record<string, unknown>).tested_revision;
+    const assessment = assessQaRunEvidence(document, { tested_revision: "abc123" });
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(1);
+    expect(assessment.reasons[0]).toContain('revision_source "unknown"');
+  });
+
+  test("a run started before the freshness floor produces exactly its reason", () => {
+    const assessment = assessQaRunEvidence(resultDocument(), {
+      not_started_before: "2026-09-01T10:30:00.000Z",
+    });
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(1);
+    expect(assessment.reasons[0]).toContain("freshness floor");
+  });
+
+  test("a run older than max_age_ms against an explicit now produces exactly its reason", () => {
+    const assessment = assessQaRunEvidence(resultDocument(), {
+      max_age_ms: 60_000,
+      now: "2026-09-01T11:00:00.000Z",
+    });
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(1);
+    expect(assessment.reasons[0]).toContain("60000ms maximum age");
+  });
+
+  test("a found_in_dir mismatch produces exactly the moved-result reason", () => {
+    const assessment = assessQaRunEvidence(resultDocument(), {
+      found_in_dir: "/tmp/elsewhere/run-run-1",
+    });
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(1);
+    expect(assessment.reasons[0]).toContain("moved or copied");
+  });
+
+  test("multiple mismatches are all reported, not just the first", () => {
+    const assessment = assessQaRunEvidence(resultDocument(), {
+      run_id: "run-2",
+      job_digest: "digest-2",
+      tested_revision: "def456",
+      found_in_dir: "/tmp/elsewhere",
+    });
+    expect(assessment.fresh).toBe(false);
+    expect(assessment.reasons).toHaveLength(4);
+  });
+
+  test("non-object input is stale", () => {
+    for (const input of [null, undefined, "passed", 42, ["passed"]]) {
+      const assessment = assessQaRunEvidence(input);
+      expect(assessment.fresh).toBe(false);
+      expect(assessment.reasons).toEqual(["document is not a result object"]);
+    }
   });
 });

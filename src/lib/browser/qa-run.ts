@@ -378,9 +378,16 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
 
   const finalize = (): QaRunResult => {
     wall.total = Date.now() - startedAt;
+    // Prefix semantics: the last stage the run progressed THROUGH cleanly.
+    // Stages are pushed in execution order; the first blocked stage ends the
+    // clean prefix, so a gate-blocked run reports "plan" even though the
+    // (empty) interactions stage technically executed afterwards.
     const blockedStages = new Set(blockers.map((blocker) => blocker.stage));
-    const lastCompletedStage =
-      [...stagesRun].reverse().find((stage) => !blockedStages.has(stage)) ?? null;
+    let lastCompletedStage: QaRunStage | null = null;
+    for (const stage of stagesRun) {
+      if (blockedStages.has(stage)) break;
+      lastCompletedStage = stage;
+    }
     const result: QaRunResult = {
       schema_version: QA_RUN_RESULT_SCHEMA_VERSION,
       run: {
