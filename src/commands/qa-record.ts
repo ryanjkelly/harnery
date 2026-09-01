@@ -9,8 +9,6 @@
 // can report a defect but can never read `passed`. Every record carries a
 // `validate` blocker naming the reason the runner was unavailable, and the
 // verdict is computed with evidenceSource "manual", which caps at incomplete.
-//
-// Toolkit tier: this module must not import src/core (layering check).
 
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -19,6 +17,7 @@ import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { recordQaSignal } from "../core/agents/qa-signal.ts";
 import {
   QA_RUN_LATEST_FILENAME,
   QA_RUN_RESULT_FILENAME,
@@ -646,6 +645,9 @@ export function registerQaRecordCommand(program: Command, emit: EmitContext): vo
         return;
       }
       const { result, paths } = outcome;
+      // Same status surface as a runner result: an operator should see that
+      // the latest evidence was hand-recorded, not silently see nothing.
+      recordQaSignal(result);
       if (opts.json) emit.data(result);
       for (const blocker of result.blockers) {
         emit.log(`blocker [${blocker.stage}]: ${blocker.reason}`, "warn");

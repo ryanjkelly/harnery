@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type Command, Option } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { recordQaSignal } from "../core/agents/qa-signal.ts";
 import { resolveBinName } from "../core/config.ts";
 import { acquireAdmission, admissionStatus } from "../lib/admission.ts";
 import {
@@ -379,6 +380,11 @@ export function registerQaRunCommand(program: Command, emit: EmitContext): void 
         ...(admission ? { admission } : {}),
         onLog: (message) => emit.log(message, "info"),
       });
+
+      // Publish the verdict for `agents status`, so an operator reading a
+      // session sees the runner clock instead of inferring QA time from
+      // session age. Best-effort by contract: never throws.
+      recordQaSignal(result);
 
       if (opts.json) emit.data(result);
       const resultPath = join(result.run.out_dir, QA_RUN_RESULT_FILENAME);

@@ -56,6 +56,7 @@ import {
   queueMailboxMessage,
   suggestNames,
 } from "../core/agents/mailbox.ts";
+import { qaSignalStatusRow } from "../core/agents/qa-signal.ts";
 import { reconcileCoordinationV3 } from "../core/agents/reconcile-coordination-v3.ts";
 import {
   listSessionFinalizationRequestsV3,
@@ -2399,6 +2400,12 @@ function runStatus(opts: {
     /* non-fatal: status box should not fail on council errors */
   }
 
+  // Latest page-QA verdict for this session, with the RUNNER's clock. Session
+  // age is not QA time; without this row an operator reads "session 58m" as if
+  // the QA run took 58 minutes. Best-effort by contract — no pointer, a
+  // malformed one, or any read failure renders no row.
+  const qaSignal = qaSignalStatusRow({ coordRoot: root, instanceId: hb.instance_id });
+
   const data = {
     name: displayName,
     instance_id: hb.instance_id,
@@ -2436,6 +2443,7 @@ function runStatus(opts: {
     timestamp_iso: new Date().toISOString(),
     timestamp_local: timeStr,
     ...(quality ? { quality } : {}),
+    ...(qaSignal ? { qa: qaSignal.pointer } : {}),
     ...(finalization ? { finalization } : {}),
     ...(sessionEnd ? { session_end: sessionEnd } : {}),
   };
@@ -2473,6 +2481,10 @@ function runStatus(opts: {
   if (quality) {
     const idx = rows.findIndex((row) => row[0] === "time");
     rows.splice(idx, 0, ["quality", formatRunQuality(quality.status, quality.signal_ids)]);
+  }
+  if (qaSignal) {
+    const idx = rows.findIndex((row) => row[0] === "time");
+    rows.splice(idx, 0, ["qa", qaSignal.value]);
   }
   if (sessionEnd) {
     const idx = rows.findIndex((row) => row[0] === "time");

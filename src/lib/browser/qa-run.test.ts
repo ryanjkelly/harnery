@@ -1006,3 +1006,50 @@ describe("runQaMatrix schema v3 diagnostics", () => {
     expect(result.host.start.competing).toBeUndefined();
   });
 });
+
+describe("latest.json pointer is monotonic", () => {
+  test("a run finishing after a newer run does not move the pointer backwards", async () => {
+    const parent = outDir();
+    const { exec } = makeFakeExec({ planManifest: manifest() });
+    // A concurrent run that completed later already published its pointer.
+    const newerPointer = {
+      schema_version: 1,
+      run_id: "newer-run",
+      dir: "run-newer-run",
+      result: join("run-newer-run", QA_RUN_RESULT_FILENAME),
+      completed_at: new Date(Date.now() + 60_000).toISOString(),
+      verdict: "passed",
+    };
+    writeFileSync(
+      join(parent, QA_RUN_LATEST_FILENAME),
+      `${JSON.stringify(newerPointer, null, 2)}\n`,
+    );
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+      runId: "older-run",
+    });
+    expect(result.verdict).toBe("passed");
+    const pointer = JSON.parse(readFileSync(join(parent, QA_RUN_LATEST_FILENAME), "utf8"));
+    expect(pointer.run_id).toBe("newer-run");
+    // The run's own directory is still authoritative and complete.
+    expect(existsSync(join(parent, "run-older-run", QA_RUN_RESULT_FILENAME))).toBe(true);
+  });
+
+  test("an unreadable pointer is replaced rather than trusted", async () => {
+    const parent = outDir();
+    const { exec } = makeFakeExec({ planManifest: manifest() });
+    writeFileSync(join(parent, QA_RUN_LATEST_FILENAME), "{ not json");
+    await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+      runId: "recovering-run",
+    });
+    const pointer = JSON.parse(readFileSync(join(parent, QA_RUN_LATEST_FILENAME), "utf8"));
+    expect(pointer.run_id).toBe("recovering-run");
+  });
+});

@@ -515,6 +515,35 @@ IDs. Missing, expired, truncated, or insufficient evidence is `unknown`.
 operator-facing severity. Run quality is advisory and cannot alter the status
 command's Git guard or any hook verdict.
 
+### The `qa` line
+
+After this session finishes a page-QA run, status carries the verdict on the
+**runner's** clock:
+
+```
+│ qa         passed 4m ago · 90s runner (2m queued)                   │
+│ qa         incomplete 3h ago · 34s runner                           │
+│ qa         manual 12m ago · not a pass                              │
+```
+
+The line exists so runner time is never read off `session`. Session age
+measures the agent, not the run, and a box showing `session 58m` beside a QA
+result invites the conclusion that QA took 58 minutes.
+
+Read it as: verdict, how long ago the run completed, then how long the runner
+itself took. Admission-queue wait is reported separately and is never folded
+into runner time, so a slow-looking run that mostly sat waiting for a slot is
+visibly distinguishable from one that mostly worked. Hand-recorded evidence
+(`qa-record`) shows `manual … · not a pass` instead of a verdict and a clock:
+nothing re-executable ran, so there is no runner time to attribute and the
+contract caps such a result below a pass.
+
+A verdict older than 24 hours renders as `stale (2d)` and nothing else — a
+day-old result says nothing about the page as it stands now. The line is
+absent when this session has recorded no run. Every read is best-effort:
+a missing, unreadable, or partial pointer renders no line rather than failing
+the status command.
+
 ## Notes
 
 - **Native children have their own identity.** After the adapter hook observes

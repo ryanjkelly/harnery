@@ -542,9 +542,26 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       completed_at: result.run.completed_at,
       verdict: result.verdict,
     };
-    const pointerTmp = join(outParent, `.${QA_RUN_LATEST_FILENAME}.${runId}.tmp`);
-    writeFileSync(pointerTmp, `${JSON.stringify(pointer, null, 2)}\n`);
-    renameSync(pointerTmp, join(outParent, QA_RUN_LATEST_FILENAME));
+    // Monotonic by completion time: two concurrent runs can finish out of
+    // order, and a pointer that moved backwards would present the older run
+    // as current — the exact confusion per-run directories exist to prevent.
+    const pointerPath = join(outParent, QA_RUN_LATEST_FILENAME);
+    let pointerIsNewer = true;
+    try {
+      const existing = JSON.parse(readFileSync(pointerPath, "utf8")) as { completed_at?: unknown };
+      if (typeof existing?.completed_at === "string") {
+        pointerIsNewer =
+          Date.parse(result.run.completed_at) >= Date.parse(existing.completed_at) ||
+          Number.isNaN(Date.parse(existing.completed_at));
+      }
+    } catch {
+      // No readable pointer yet: this run becomes the first one.
+    }
+    if (pointerIsNewer) {
+      const pointerTmp = join(outParent, `.${QA_RUN_LATEST_FILENAME}.${runId}.tmp`);
+      writeFileSync(pointerTmp, `${JSON.stringify(pointer, null, 2)}\n`);
+      renameSync(pointerTmp, pointerPath);
+    }
     statusState = "completed";
     statusStage = null;
     statusVerdict = result.verdict;
