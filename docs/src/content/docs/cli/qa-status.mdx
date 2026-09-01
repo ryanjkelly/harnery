@@ -1,0 +1,80 @@
+---
+title: harn qa-status
+description: Report a qa-run's live state (launching, queued, running, completed, or dead), reconnect to detached runs with --wait, and inspect the browser-qa admission queue.
+sidebar:
+  order: 26
+---
+
+```
+harn qa-status [options] [path]
+```
+
+Reports where a [`harn qa-run`](/cli/qa-run/) invocation stands, from the documents the runner keeps on disk: `run-status.json` (state, stage, heartbeat), a PID liveness probe, and the result document once one exists. It exists so a client that lost its terminal, a supervisor polling a detached run, or a script gating on a verdict never has to guess whether a job is still working or silently dead.
+
+Classification is fail-closed: liveness is proven by the PID, never assumed from the status document, and the result document is authoritative over the status document once it exists.
+
+## The state model
+
+Every run directory carries `run-status.json`, written atomically at start, at every stage boundary, and on a 15-second heartbeat timer. Its `state` field is one of:
+
+| State | Meaning |
+| --- | --- |
+| `launching` | A `--detach` parent recorded the child's PID; the child has not yet taken over the status document. |
+| `queued` | Waiting for a machine-wide admission slot. The document carries `queue: { resource, waiting_since }`. |
+| `running` | The matrix is executing; `stage` names the current stage (`plan`, `gates`, `interactions`, `critique`, `snapshot`). |
+| `completed` | The run finalized; the result document carries the verdict and is authoritative. |
+
+One state is derived rather than recorded: **dead**. A run is dead when its status document shows a non-terminal state, its recorded PID is no longer alive, and no result document exists. A dead run produced no verdict and never will; treat it like an incomplete run and start a new one. Two edge cases are handled conservatively: a status document that says `completed` while no result document exists yet is reported as `running` with a warning as long as the PID is alive (the runner may still be writing), and a heartbeat older than 120 seconds earns a staleness warning but does not change the state while the PID is alive.
+
+Once the result document exists, the reported state is simply the run's verdict: `passed`, `failed`, or `incomplete`.
+
+## Path resolution
+
+`[path]` may name any of three things (default: `.qa-run`):
+
+- **A file**: its directory is treated as the run directory (pointing at a `page-qa-result.json` works).
+- **A run directory**: a directory containing `run-status.json` or `page-qa-result.json` directly.
+- **A run parent directory**: the directory you passed to `qa-run --out-dir`. Its `run-*/` children are scanned and the one with the newest `started_at` wins, falling back to the `latest.json` pointer when no child carries a status or result document.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--wait` | Poll every 2 seconds until the run reaches a terminal verdict or is dead, then exit with the runner's own exit code. This is how a client reconnects to a `qa-run --detach` job: the detached process keeps running through any disconnect, and `--wait` re-attaches to its outcome instead of orphaning or duplicating it. |
+| `--wait-timeout <minutes>` | Maximum `--wait` duration (default 60). On timeout, `qa-status` exits 5; the run itself is unaffected. |
+| `--queue` | Ignore `[path]` and print the machine-wide admission queue instead: holders and waiters per resource (`browser-qa` first), each with label, PID, and age. Dead entries are pruned on the way. See [`harn admission`](/cli/admission/) for the underlying protocol. |
+| `--json` | Print the status envelope (or queue snapshot) as JSON. |
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Run completed with verdict `passed`. |
+| 2 | Run completed with verdict `failed`. |
+| 4 | Run completed with verdict `incomplete`, or the run is dead (non-terminal state, dead PID, no result). |
+| 5 | Run is still in progress (`launching`, `queued`, or `running`), or `--wait` timed out. |
+| 1 | Usage error: unresolvable path, unreadable or unrecognizable state documents. |
+
+The codes 0, 2, and 4 mirror `qa-run`'s own exit codes, so `qa-status --wait` is a drop-in stand-in for having run the matrix in the foreground.
+
+## Examples
+
+```bash
+# What is the newest run under the default parent doing?
+harn qa-status
+
+# Reconnect to a detached run and exit with its verdict
+harn qa-status .qa-run/run-6e1f0c3a-... --wait
+
+# Poll a specific run from a script, machine-readable
+harn qa-status .qa-run --json
+
+# Who is holding the browser-qa slots, and who is waiting?
+harn qa-status --queue
+```
+
+## See also
+
+- [`harn qa-run`](/cli/qa-run/): produces the run directories this command reads, and documents `run-status.json`, `job.json`, and `--detach`.
+- [`harn qa-verify`](/cli/qa-verify/): verify a completed result is fresh evidence for a specific invocation.
+- [`harn admission`](/cli/admission/): the machine-wide admission control behind the `--queue` view.

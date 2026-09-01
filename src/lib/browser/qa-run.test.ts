@@ -5,8 +5,10 @@ import { join } from "node:path";
 import type { QaManifest } from "./qa-plan.ts";
 import {
   QA_RUN_HEADLESS_ONLY_ENV,
+  QA_RUN_JOB_FILENAME,
   QA_RUN_LATEST_FILENAME,
   QA_RUN_RESULT_FILENAME,
+  QA_RUN_STATUS_FILENAME,
   type QaRunExec,
   type QaRunExecOptions,
   type QaRunExecResult,
@@ -838,5 +840,105 @@ describe("runQaMatrix last_completed_stage", () => {
     });
     expect(result.verdict).toBe("passed");
     expect(result.last_completed_stage).toBe("snapshot");
+  });
+});
+
+describe("runQaMatrix admission and status artifacts", () => {
+  test("writes job.json and a completed run-status.json in the run directory", async () => {
+    const parent = outDir();
+    const { exec } = makeFakeExec({ planManifest: manifest() });
+    const theJob = job();
+    const result = await runQaMatrix({
+      job: theJob,
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+      runId: "status-artifacts",
+    });
+    const runDir = join(parent, "run-status-artifacts");
+    const writtenJob = JSON.parse(readFileSync(join(runDir, QA_RUN_JOB_FILENAME), "utf8"));
+    expect(computeJobDigest(writtenJob as QaRunJob)).toBe(result.run.job_digest);
+    const status = JSON.parse(readFileSync(join(runDir, QA_RUN_STATUS_FILENAME), "utf8"));
+    expect(status.state).toBe("completed");
+    expect(status.run_id).toBe("status-artifacts");
+    expect(status.pid).toBe(process.pid);
+    expect(status.stage).toBeNull();
+    expect(status.verdict).toBe(result.verdict);
+  });
+
+  test("acquired admission records queue wait, keeps total pure, and releases once", async () => {
+    const parent = outDir();
+    const { exec } = makeFakeExec({ planManifest: manifest() });
+    let released = 0;
+    let statusWhileQueued: Record<string, unknown> | undefined;
+    const runDir = join(parent, "run-queued-run");
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+      runId: "queued-run",
+      admission: {
+        resource: "browser-qa",
+        acquire: async () => {
+          statusWhileQueued = JSON.parse(
+            readFileSync(join(runDir, QA_RUN_STATUS_FILENAME), "utf8"),
+          ) as Record<string, unknown>;
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+          return () => {
+            released += 1;
+          };
+        },
+      },
+    });
+    expect(result.wall_time_ms.queue).toBeGreaterThanOrEqual(20);
+    expect(result.wall_time_ms.total).toBeGreaterThanOrEqual(0);
+    expect(released).toBe(1);
+    expect(statusWhileQueued?.state).toBe("queued");
+    expect((statusWhileQueued?.queue as Record<string, unknown>)?.resource).toBe("browser-qa");
+    expect(result.verdict).toBe("passed");
+  });
+
+  test("admission failure finalizes incomplete with an admission blocker and no browser work", async () => {
+    const parent = outDir();
+    const { exec, calls } = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+      runId: "queue-timeout",
+      admission: {
+        resource: "browser-qa",
+        acquire: async () => {
+          throw new Error("no browser-qa slot became free within 3s; current holder(s): peer");
+        },
+      },
+    });
+    expect(result.verdict).toBe("incomplete");
+    expect(result.blockers).toHaveLength(1);
+    expect(result.blockers[0]?.stage).toBe("admission");
+    expect(result.blockers[0]?.reason).toContain("no browser-qa slot");
+    expect(result.commands).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+    expect(result.last_completed_stage).toBeNull();
+    expect(typeof result.wall_time_ms.queue).toBe("number");
+    const status = JSON.parse(
+      readFileSync(join(parent, "run-queue-timeout", QA_RUN_STATUS_FILENAME), "utf8"),
+    );
+    expect(status.state).toBe("completed");
+    expect(status.verdict).toBe("incomplete");
+  });
+
+  test("a run without admission records no queue clock", async () => {
+    const parent = outDir();
+    const { exec } = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec,
+    });
+    expect(result.wall_time_ms.queue).toBeUndefined();
   });
 });

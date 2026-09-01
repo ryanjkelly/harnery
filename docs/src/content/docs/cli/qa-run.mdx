@@ -23,6 +23,10 @@ Every child is a real `browse` invocation of the same host CLI (argv arrays only
 | `--allow-metered` | Permit the critique provider's metered-API fallback. Default: subscription-backed headless harnesses only. |
 | `--out-dir <dir>` | **Parent** output directory. Default `.qa-run` under the current directory. Every invocation writes into its own `run-<run_id>/` beneath it and updates the parent's `latest.json` pointer; prior runs are never overwritten and never pass as current. |
 | `--json` | Print the full result JSON to stdout (the file is written either way). |
+| `--detach` | Launch the run as a detached background process whose authoritative state lives on disk. Prints the run directory and returns immediately; reconnect with [`harn qa-status`](/cli/qa-status/). See "Detached runs" below. |
+| `--no-queue` | Skip machine-wide admission control. Default: the run waits for a `browser-qa` slot so simultaneous heavy runs take turns instead of thrashing the host. |
+| `--queue-timeout <minutes>` | Maximum admission wait (1 to 240; default 20) before the run finalizes incomplete with an `admission` blocker. |
+| `--queue-capacity <n>` | Concurrent `browser-qa` runs this machine should allow (1 to 8; default `HARNERY_QA_ADMISSION_CAPACITY` or 2). Advisory: the smallest capacity among concurrent waiters effectively governs. |
 
 ## Exit codes
 
@@ -42,6 +46,29 @@ Every child is a real `browse` invocation of the same host CLI (argv arrays only
 5. **Snapshot.** Signoff runs whose manifest required no visual pass still persist their baseline through a dedicated snapshot pass. A signoff verdict is only `passed` when every context's snapshot was saved.
 6. **Result.** `page-qa-result.json` (schema version 2) in the run's own directory, in manifest order regardless of completion order: the run identity block, host samples, `last_completed_stage`, the manifest, merged contexts, every command's argv/exit/outcome/failures/artifacts/wall-time, critique outcomes, snapshot record, per-stage wall times, blockers, and the verdict.
 
+## Queueing: machine-wide admission
+
+A full QA matrix is heavy: a browser per context, plus a vision-critique pass. Two matrices started at once on the same machine slow each other down more than they would running back to back. By default, every `qa-run` therefore queues on the machine-wide `browser-qa` admission resource before any browser work starts. At most two runs hold slots at a time; the rest wait their turn in FIFO order.
+
+- **Capacity** is 2 by default, overridable per machine with the `HARNERY_QA_ADMISSION_CAPACITY` environment variable or per invocation with `--queue-capacity` (1 to 8). Capacity is advisory: the smallest capacity among concurrent waiters effectively governs.
+- **The wait is recorded, not hidden.** Time spent queued lands in `wall_time_ms.queue` in the result. It is never counted in `wall_time_ms.total`, which stays pure runner time, so queue contention can never make a run look slower than it was.
+- **A full queue is evidence, not an exception.** When no slot frees within the timeout (default 20 minutes, `--queue-timeout`), the run finalizes a normal `incomplete` result with an `admission` blocker naming the current holders. The result document, `latest.json` pointer, and exit code 4 all behave as for any other incomplete run, so the evidence trail survives.
+- **Opting out**: `--no-queue` skips admission entirely for a run that must not wait.
+
+While queued, the live status document (below) reports `state: "queued"` with the resource and `waiting_since`; inspect the whole queue with [`harn qa-status --queue`](/cli/qa-status/) or [`harn admission status`](/cli/admission/). Admission is a single-machine, advisory protocol built on plain files (see [`harn admission`](/cli/admission/) for the mechanics); a crashed run's slot is reclaimed automatically by dead-PID pruning.
+
+## Detached runs
+
+`--detach` launches the matrix as a detached background process and returns immediately, printing the run ID, PID, run directory, and log path. The authoritative state lives entirely on disk in the run directory: `job.json`, `run-status.json`, the runner's combined output in `runner.log`, and eventually `page-qa-result.json`. A terminal or client disconnect kills nothing and loses nothing, and because the job keeps running, there is never a reason to start a duplicate.
+
+Reconnect with:
+
+```bash
+harn qa-status <run-dir> --wait
+```
+
+`qa-status --wait` blocks until the run completes and exits with the runner's own exit code, so a detached invocation composes into scripts exactly like a foreground one. Detached runs queue for admission like any other (the status document shows `queued` while waiting); combine with `--no-queue` to skip that.
+
 ## Run identity and output layout
 
 Every invocation mints a fresh run and isolates its output. `--out-dir` names a **parent** directory; the run itself writes into `run-<run_id>/` beneath it:
@@ -51,10 +78,18 @@ Every invocation mints a fresh run and isolates its output. `--out-dir` names a 
   latest.json                 # pointer to the newest completed run
   run-<run_id>/
     page-qa-result.json       # the result document (schema version 2)
+    job.json                  # the effective validated job
+    run-status.json           # live state + stage + heartbeat
+    runner.log                # combined runner output (--detach runs)
     <context artifacts...>    # per-context png/html/json trios
 ```
 
 `latest.json` is written atomically (temp file plus rename) after each run and carries `{schema_version, run_id, dir, result, completed_at, verdict}`. Consumers resolve the current result through this pointer instead of guessing at loose files; each run's own directory remains the authoritative record, so a reused parent can never present an older run's result as the current one.
+
+Two companion documents sit beside the result in every run directory:
+
+- **`job.json`** is the effective validated job the run executed (after the CLI merged its authoritative `target` and `mode`). A reconnecting client can re-derive the job digest from it, which makes `qa-verify --job <run-dir>/job.json` possible without keeping the original job file around.
+- **`run-status.json`** is the live status document: `{schema_version, run_id, pid, state, stage, started_at, updated_at}`, plus `queue` while queued and `verdict` once completed. It is written atomically at start, at every stage boundary, and on a 15-second heartbeat timer, so a client that lost its terminal can mechanically distinguish a running job from a dead one (see [`harn qa-status`](/cli/qa-status/)). The status document is advisory; the result document stays authoritative once the run completes.
 
 The result's `run` block is what makes it verifiable evidence rather than a loose file:
 
@@ -70,7 +105,7 @@ The result's `run` block is what makes it verifiable evidence rather than a loos
 
 Two more fields support triage. `host` carries a load sample (1-minute load average, free and total memory, CPU count) at start and finish, so an incomplete run records the pressure that produced it. `last_completed_stage` names the last stage (`plan`, `gates`, `interactions`, `critique`, `snapshot`) that finished without contributing a blocker, or `null` when none did.
 
-One note on reading `wall_time_ms`: it measures **one runner invocation**, browser-process time included, not the duration of whatever larger task the invocation was part of. An agent loop that plans, edits, and re-runs QA several times accumulates its own wall clock; only the slice inside each `qa-run` shows up here.
+One note on reading `wall_time_ms`: it measures **one runner invocation**, browser-process time included, not the duration of whatever larger task the invocation was part of. An agent loop that plans, edits, and re-runs QA several times accumulates its own wall clock; only the slice inside each `qa-run` shows up here. Admission queue wait is reported separately as `wall_time_ms.queue` (absent when the run did not queue) and is deliberately excluded from `wall_time_ms.total`, which stays pure runner time.
 
 Use [`harn qa-verify`](/cli/qa-verify/) to check that a result is fresh evidence for a specific invocation (run ID, job digest, revision, age, and recorded output directory).
 
@@ -119,9 +154,19 @@ harn qa-run http://localhost:3000/pricing --job pricing-qa.json --json
 
 # Wider pool, metered critique fallback permitted
 harn qa-run https://example.com/landing --concurrency 4 --allow-metered
+
+# Detach: launch in the background, reconnect later for the verdict
+harn qa-run http://localhost:3000/pricing --detach
+harn qa-status .qa-run/run-<run_id> --wait
+
+# Skip the machine-wide queue and cap this run's admission wait for peers
+harn qa-run http://localhost:3000/pricing --no-queue
+harn qa-run http://localhost:3000/pricing --queue-timeout 5 --queue-capacity 1
 ```
 
 ## See also
 
 - [`harn browse`](/cli/browse/): the command each child runs; owns every check flag, `--qa-plan`, `--qa-snapshot`, and `--color-scheme`.
 - [`harn qa-verify`](/cli/qa-verify/): verify a result document is fresh evidence for a specific invocation.
+- [`harn qa-status`](/cli/qa-status/): live state of a run (queued, running, completed, dead), reconnect to detached runs, and the admission queue view.
+- [`harn admission`](/cli/admission/): the machine-wide admission protocol `qa-run` queues on, and the generic wrapper for other heavy jobs.

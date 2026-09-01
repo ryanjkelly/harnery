@@ -22,6 +22,7 @@ import {
   computeVerdict,
   mergeCoverage,
   QA_RUN_RESULT_SCHEMA_VERSION,
+  QA_RUN_STATUS_SCHEMA_VERSION,
   type QaRunBlocker,
   type QaRunCommandOutcome,
   type QaRunContext,
@@ -30,6 +31,8 @@ import {
   type QaRunJob,
   type QaRunResult,
   type QaRunStage,
+  type QaRunStatusDocument,
+  type QaRunStatusState,
 } from "./qa-run-contracts.js";
 
 /** Set on critique children unless the job permits metered critique: the
@@ -44,6 +47,17 @@ export const QA_RUN_RESULT_FILENAME = "page-qa-result.json";
  * run, naming the newest run's directory and verdict. Consumers resolve the
  * current result through this pointer instead of guessing at loose files. */
 export const QA_RUN_LATEST_FILENAME = "latest.json";
+
+/** Live status document beside the result (QaRunStatusDocument): written at
+ * start, every stage boundary, and on a heartbeat timer, so a disconnected
+ * client can tell a running job from a dead one without guessing. */
+export const QA_RUN_STATUS_FILENAME = "run-status.json";
+
+/** The effective validated job, written into the run directory so a
+ * reconnecting client can re-derive the job digest (`qa-verify --job`). */
+export const QA_RUN_JOB_FILENAME = "job.json";
+
+const STATUS_HEARTBEAT_MS = 15_000;
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_COMMAND_CONCURRENCY = 2;
@@ -147,6 +161,16 @@ export interface QaRunMatrixOptions {
   /** Working-tree revision probe supplied by the caller (the CLI probes git
    * once). Ignored when the job itself pins tested_revision. */
   revisionProbe?: { tested_revision?: string; worktree_dirty?: boolean };
+  /** Machine-wide admission gate. When present the runner acquires a slot
+   * before any browser work, records the wait as wall_time_ms.queue (never
+   * part of total), and finalizes an incomplete result with an "admission"
+   * blocker when acquisition fails — the evidence trail survives a full
+   * queue. The returned function releases the slot; the runner calls it at
+   * finalize, and a crashed runner's slot is reclaimed by dead-PID pruning. */
+  admission?: {
+    resource: string;
+    acquire: (onWait: (message: string) => void) => Promise<() => void>;
+  };
 }
 
 function hostSample(): QaRunHostSample {
@@ -330,7 +354,37 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   const outDir = join(outParent, `run-${runId}`);
   mkdirSync(outDir, { recursive: true });
   const startedAtIso = new Date().toISOString();
-  const hostStart = hostSample();
+  writeFileSync(join(outDir, QA_RUN_JOB_FILENAME), `${JSON.stringify(job, null, 2)}\n`);
+
+  // Live status: state + stage + heartbeat, written atomically so a client
+  // that lost its terminal can distinguish this run being alive from dead.
+  let statusState: QaRunStatusState = "running";
+  let statusStage: QaRunStage | null = null;
+  let statusQueue: QaRunStatusDocument["queue"];
+  let statusVerdict: QaRunStatusDocument["verdict"];
+  const writeStatus = (): void => {
+    const status: QaRunStatusDocument = {
+      schema_version: QA_RUN_STATUS_SCHEMA_VERSION,
+      run_id: runId,
+      pid: process.pid,
+      state: statusState,
+      stage: statusStage,
+      started_at: startedAtIso,
+      updated_at: new Date().toISOString(),
+      ...(statusQueue ? { queue: statusQueue } : {}),
+      ...(statusVerdict ? { verdict: statusVerdict } : {}),
+    };
+    try {
+      const tmp = join(outDir, `.${QA_RUN_STATUS_FILENAME}.tmp`);
+      writeFileSync(tmp, `${JSON.stringify(status, null, 2)}\n`);
+      renameSync(tmp, join(outDir, QA_RUN_STATUS_FILENAME));
+    } catch {
+      // Status is advisory; the result document is the authoritative record.
+    }
+  };
+  const heartbeat = setInterval(writeStatus, STATUS_HEARTBEAT_MS);
+  heartbeat.unref();
+
   const revision: Pick<
     QaRunResult["run"],
     "tested_revision" | "revision_source" | "worktree_dirty"
@@ -347,9 +401,44 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
           }
         : { revision_source: "unknown" };
   const jobDigest = computeJobDigest(job);
+  const wall: QaRunResult["wall_time_ms"] = {
+    plan: 0,
+    gates: 0,
+    interactions: 0,
+    critique: 0,
+    snapshot: 0,
+    total: 0,
+  };
 
+  // ------------------------------------------------------------- admission
+  // Queue wait happens before the runner clock starts: wall_time_ms.total
+  // stays pure runner time and the wait is reported as wall_time_ms.queue.
+  let releaseAdmission: (() => void) | undefined;
+  let admissionFailure: string | undefined;
+  if (options.admission) {
+    statusState = "queued";
+    statusQueue = {
+      resource: options.admission.resource,
+      waiting_since: new Date().toISOString(),
+    };
+    writeStatus();
+    const queueStart = Date.now();
+    try {
+      releaseAdmission = await options.admission.acquire((message) => {
+        log(message);
+        writeStatus();
+      });
+    } catch (err: unknown) {
+      admissionFailure = err instanceof Error ? err.message : String(err);
+    }
+    wall.queue = Date.now() - queueStart;
+    statusQueue = undefined;
+  }
+  statusState = "running";
+  writeStatus();
+
+  const hostStart = hostSample();
   const startedAt = Date.now();
-  const wall = { plan: 0, gates: 0, interactions: 0, critique: 0, snapshot: 0, total: 0 };
   const blockers: QaRunBlocker[] = [];
   const commands: QaRunCommandOutcome[] = [];
   const critique: QaRunCritiqueOutcome[] = [];
@@ -435,8 +524,22 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     const pointerTmp = join(outParent, `.${QA_RUN_LATEST_FILENAME}.${runId}.tmp`);
     writeFileSync(pointerTmp, `${JSON.stringify(pointer, null, 2)}\n`);
     renameSync(pointerTmp, join(outParent, QA_RUN_LATEST_FILENAME));
+    statusState = "completed";
+    statusStage = null;
+    statusVerdict = result.verdict;
+    writeStatus();
+    clearInterval(heartbeat);
+    releaseAdmission?.();
     return result;
   };
+
+  if (admissionFailure !== undefined) {
+    blockers.push({
+      stage: "admission",
+      reason: `no admission slot for browser work: ${admissionFailure}`,
+    });
+    return finalize();
+  }
 
   // Base render arguments shared by every per-context invocation.
   const contextRenderArgs = (ctx: QaRunContext): string[] => [
@@ -457,6 +560,8 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     ...(job.qa_hints?.states?.length ? ["--qa-states", job.qa_hints.states.join(",")] : []),
   ];
   log(`plan: ${job.target}`);
+  statusStage = "plan";
+  writeStatus();
   const planStart = Date.now();
   const plan = await timedExec(planArgv, baseEnv);
   wall.plan = Date.now() - planStart;
@@ -536,6 +641,8 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   const enforceConsole = manifest.checks.deterministic.includes("console");
   const checks = job.checks ?? [];
   const gateOutcomes = new Array<QaRunCommandOutcome>(contexts.length);
+  statusStage = "gates";
+  writeStatus();
   const gatesStart = Date.now();
   await runPool(contexts, concurrency, async (ctx, index) => {
     const applicable = checks.filter(
@@ -608,6 +715,8 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   commands.push(...gateOutcomes);
 
   // ---------------------------------------------------------- interactions
+  statusStage = "interactions";
+  writeStatus();
   const interactionsStart = Date.now();
   const declaredStates = new Set((job.interaction_states ?? []).map((state) => state.name));
   const manifestStates = [
@@ -681,6 +790,8 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   const visual = manifest.checks.visual;
   const cleanSoFar =
     blockers.length === 0 && commands.every((command) => command.outcome === "passed");
+  statusStage = "critique";
+  writeStatus();
   const critiqueStart = Date.now();
   const savedSnapshots = new Map<string, string>();
   if (cleanSoFar && visual !== "none") {
@@ -817,6 +928,8 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   // Critique invocations carry --qa-snapshot in signoff mode. When the
   // manifest requires no visual pass (visual === "none"), a passing signoff
   // still needs its baseline persisted, so a dedicated snapshot pass runs.
+  statusStage = "snapshot";
+  writeStatus();
   const snapshotStart = Date.now();
   if (job.mode === "signoff" && visual === "none" && blockers.length === 0) {
     const stillClean = commands.every((command) => command.outcome === "passed");

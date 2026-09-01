@@ -1,0 +1,70 @@
+---
+title: harn admission
+description: Machine-wide admission control for heavy jobs. Wrap any command so concurrent heavy work takes turns on one machine, and inspect who holds and who waits.
+sidebar:
+  order: 27
+---
+
+```
+harn admission run --resource <name> [options] -- <command...>
+harn admission status [options]
+```
+
+Machine-wide admission control for heavy jobs: a crash-safe FIFO slot queue with no daemon. Two production builds, two browser-QA matrices, or a build and a matrix started at the same moment slow each other down more than they would running back to back. `admission run` wraps any command so that at most a fixed number of holders per named resource run at once on one machine; everyone else waits their turn.
+
+[`harn qa-run`](/cli/qa-run/) uses this protocol internally (resource `browser-qa`, capacity 2 by default). The `admission` command is the same mechanism as a generic wrapper for everything else.
+
+## admission run
+
+```bash
+harn admission run --resource build -- npm run build
+```
+
+Joins the FIFO queue for the named resource, waits for a slot, runs the command with inherited stdio, and releases the slot when the command exits. The wrapper exits with the wrapped command's own exit code, so it composes into scripts transparently. Everything after `--` reaches the child untouched, as an argument vector, never re-parsed by a shell: the first token is the executable.
+
+The resource name is just a string agreed on by the participants: every wrapper naming `--resource build` takes turns with every other wrapper naming `build`, and has nothing to do with wrappers naming `e2e`.
+
+| Flag | Description |
+| --- | --- |
+| `--resource <name>` | Required. Admission resource to queue on, e.g. `build`. |
+| `--capacity <n>` | Concurrent holders this machine should allow (1 to 32; default 1). Advisory: the smallest capacity among concurrent waiters effectively governs. |
+| `--timeout <minutes>` | Maximum admission wait before giving up (1 to 1440; default 60). |
+| `--label <text>` | Holder description shown in status listings. Default: the command itself. |
+
+Exit codes: the child's exit code on a completed run; 4 when the admission wait timed out (the command never ran); 1 on a usage error, a spawn failure, or a child killed by a signal.
+
+## admission status
+
+```bash
+harn admission status
+```
+
+Lists each resource present in the admission state directory with its current slot holders and FIFO waiters: label, PID, and since when each has been holding or waiting. Dead entries are pruned as a side effect of being listed. `--resource <name>` narrows to one resource; `--json` emits a machine-readable snapshot.
+
+## The protocol
+
+The queue is plain files on one machine, designed so that no crash can wedge it:
+
+- **FIFO tickets.** Joining the queue writes a ticket file whose name starts with a millisecond timestamp; lexical filename order is enqueue order. Admission is an atomic rename from the `tickets/` directory to `held/`.
+- **Self-correcting races.** When two waiters admit themselves against the same freed slot, whoever sorts later re-lists the held directory, sees the over-admission, renames itself back, and rejoins the queue with its original position (the filename keeps its enqueue timestamp).
+- **Dead-PID and TTL pruning.** Every participant prunes entries whose PID is no longer alive or whose age exceeds the TTL (default 6 hours) whenever it looks at the queue. A crashed holder's slot frees as soon as anyone else looks; no daemon, no manual cleanup.
+- **Advisory, single-machine scope.** Only processes that opt in by wrapping themselves participate, and the state is local files, so the protocol coordinates one machine only. It is a cooperation mechanism, not a lock a hostile process cannot bypass.
+- **State location.** Queue state lives under `$TMPDIR/harnery-admission` by default, or the directory named by the `HARNERY_ADMISSION_DIR` environment variable. Because it sits in the temp directory, it is cleared on reboot, which is correct: stale queue state must not outlive the boot.
+
+## Examples
+
+```bash
+# Make production builds take turns on this machine
+harn admission run --resource build -- npm run build
+
+# Let two documentation renders overlap, but never a third
+harn admission run --resource docs-render --capacity 2 -- npm run docs:build
+
+# Who is holding what right now?
+harn admission status
+```
+
+## See also
+
+- [`harn qa-run`](/cli/qa-run/): queues on the `browser-qa` resource by default, records the wait as `wall_time_ms.queue`, and turns an admission timeout into an `incomplete` result with an `admission` blocker.
+- [`harn qa-status`](/cli/qa-status/): `--queue` renders the `browser-qa` view of this same state.

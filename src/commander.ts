@@ -454,6 +454,19 @@ function harneryCommandBundles({
       { hasOptions: true },
     ),
     lazy(
+      "qa-status [path]",
+      "Report a qa-run's live state (queued/launching/running/completed/dead) from its run-status.json, PID liveness, and result document; --wait reconnects to a detached run and exits with its verdict; --queue shows the machine-wide browser-qa admission queue.",
+      async (program) =>
+        (await import("./commands/qa-status.ts")).registerQaStatusCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "admission",
+      "Machine-wide admission control for heavy jobs: `admission run --resource <name> -- <command…>` waits for a FIFO slot then runs the command; `admission status` lists holders and waiters per resource.",
+      async (program) =>
+        (await import("./commands/admission.ts")).registerAdmissionCommand(program, emit),
+    ),
+    lazy(
       "browse-session",
       "Control an opted-in headed browse session through an owner-only descriptor",
       async (program) =>

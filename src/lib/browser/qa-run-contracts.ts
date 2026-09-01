@@ -118,7 +118,15 @@ export interface QaRunCritiqueOutcome {
 }
 
 export interface QaRunBlocker {
-  stage: "validate" | "plan" | "gates" | "interactions" | "critique" | "snapshot" | "result";
+  stage:
+    | "validate"
+    | "admission"
+    | "plan"
+    | "gates"
+    | "interactions"
+    | "critique"
+    | "snapshot"
+    | "result";
   context_id?: string;
   reason: string;
 }
@@ -155,6 +163,34 @@ export interface QaRunIdentity {
   out_dir: string;
 }
 
+export const QA_RUN_STATUS_SCHEMA_VERSION = 1 as const;
+
+export type QaRunStatusState = "launching" | "queued" | "running" | "completed";
+
+/** Live status document (`run-status.json`) beside the result in every run
+ * directory. Written at start, every stage boundary, and on a heartbeat
+ * timer, so a client that lost its terminal (e.g. a Windows-to-WSL bridge
+ * disconnect) can mechanically distinguish a running job from a dead one:
+ * non-terminal state + dead PID + no result document = dead. The result
+ * document stays authoritative once the run completes. */
+export interface QaRunStatusDocument {
+  schema_version: typeof QA_RUN_STATUS_SCHEMA_VERSION;
+  run_id: string;
+  /** PID of the process executing the matrix (the detach parent records the
+   * child's PID in its initial `launching` write; the child overwrites). */
+  pid: number;
+  state: QaRunStatusState;
+  /** Stage currently executing; null before plan and after completion. */
+  stage: QaRunStage | null;
+  started_at: string;
+  /** Heartbeat. Stage boundaries and a periodic timer both refresh it. */
+  updated_at: string;
+  /** Present only while state is "queued". */
+  queue?: { resource: string; waiting_since: string };
+  /** Present only once state is "completed". */
+  verdict?: QaRunVerdict;
+}
+
 /** Host-pressure sample. Captured at start and finish so an incomplete run
  * carries the load context that produced it. */
 export interface QaRunHostSample {
@@ -187,7 +223,12 @@ export interface QaRunResult {
     interactions: number;
     critique: number;
     snapshot: number;
+    /** Runner stages only — admission queue wait is deliberately excluded
+     * (see `queue`) so total stays pure runner time. */
     total: number;
+    /** Milliseconds spent waiting for a machine-wide admission slot before
+     * any browser work. Absent when the run did not queue. */
+    queue?: number;
   };
   blockers: QaRunBlocker[];
   verdict: QaRunVerdict;
