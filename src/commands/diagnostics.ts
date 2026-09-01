@@ -6,8 +6,10 @@ import type { ArtifactActor } from "../core/artifacts/index.ts";
 import {
   buildDiagnosticAdvice,
   captureDiagnosticBundle,
+  compareDiagnosticBundles,
   DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
   listDiagnosticBundles,
+  renderDiagnosticBundleComparison,
   replayDiagnosticBundle,
   showDiagnosticBundle,
 } from "../core/diagnostics/index.ts";
@@ -165,6 +167,26 @@ export function registerDiagnosticsCommand(
           kind: "diagnostic_bundle_replay",
           replay: replayDiagnosticBundle(requireRepoRoot(context), ref),
         });
+      });
+    });
+
+  root
+    .command("compare <before> <after>")
+    .description("Compare two frozen bundles without reading live supervisor state.")
+    .option("--json", "Emit structured JSON")
+    .action((before: string, after: string, opts: { json?: boolean }) => {
+      run(emit, () => {
+        const comparison = compareDiagnosticBundles(requireRepoRoot(context), before, after);
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data({
+            schema_version: DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
+            kind: "diagnostic_bundle_comparison",
+            comparison,
+          });
+          return;
+        }
+        emit.text(renderDiagnosticBundleComparison(comparison));
       });
     });
 }

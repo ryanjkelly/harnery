@@ -21,6 +21,7 @@ import {
 } from "../supervisor/contract.ts";
 import { explainSupervisorFinding } from "../supervisor/explanations.ts";
 import { updateSupervisorFindings } from "../supervisor/findings.ts";
+import { projectHookHealth } from "../supervisor/hook-health.ts";
 import { buildSupervisorTimeline } from "../supervisor/timeline.ts";
 import { buildDiagnosticAdvice } from "./advice.ts";
 import {
@@ -79,6 +80,7 @@ export function replayDiagnosticInputs(
   const logFeed =
     optionalSource<SupervisorLogFeed>(observations, "supervisor.log-feed") ??
     neutralLogFeed(observations.captured_at);
+  const hookHealth = projectHookHealth(logFeed, new Date(observations.captured_at));
   const coordination = optionalSource<CoordinationHealthSnapshot>(
     observations,
     "coordination.health",
@@ -100,6 +102,7 @@ export function replayDiagnosticInputs(
     hooks: supervisor.hooks as readonly ObservedHookHealth[],
     history,
     logFeed,
+    hookHealth,
     coordination,
     activity,
     now: new Date(observedAt),

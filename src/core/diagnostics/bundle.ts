@@ -31,6 +31,7 @@ import {
   type SupervisorCapability,
   type SupervisorFinding,
 } from "../supervisor/contract.ts";
+import { readWorkflowProof } from "../workflow/proof.ts";
 import {
   DIAGNOSTIC_ADVICE_LIMITS,
   DIAGNOSTIC_ADVICE_SCHEMA_VERSION,
@@ -56,6 +57,7 @@ import { type SanitizationStats, sanitizeDiagnosticValue } from "./sanitize.ts";
 
 const SOURCE_FILE_LIMIT_BYTES = 1_500_000;
 const DEFAULT_WINDOW_MS = 15 * 60 * 1_000;
+const SHADOW_ADMISSION_CAPTURE_LIMIT = 20;
 const PAYLOAD_FILES = DIAGNOSTIC_BUNDLE_FILES.filter(
   (path): path is Exclude<(typeof DIAGNOSTIC_BUNDLE_FILES)[number], "diagnostic-manifest.json"> =>
     path !== "diagnostic-manifest.json",
@@ -69,6 +71,7 @@ const SOURCE_SPECS = [
   ["supervisor.timelines", ".harnery/supervisor/timelines"],
   ["supervisor.explanations", ".harnery/supervisor/explanations"],
   ["supervisor.log-feed", ".harnery/supervisor/log-feed.json"],
+  ["supervisor.hook-health", ".harnery/supervisor/hook-health.json"],
   ["resources.snapshot", ".harnery/resources/snapshot.json"],
   ["coordination.health", ".harnery/supervisor/coordination-health.json"],
 ] as const;
@@ -110,9 +113,12 @@ export function captureDiagnosticBundle(
   assertValidDate(now, "now");
   const capturedAt = now.toISOString();
   const aggregateStats: SanitizationStats = { sanitized_value_count: 0, omitted_value_count: 0 };
-  const sources = SOURCE_SPECS.map(([sourceKind, relativePath]) =>
-    readCapturedSource(repoRoot, sourceKind, relativePath, aggregateStats),
-  );
+  const sources = [
+    ...SOURCE_SPECS.map(([sourceKind, relativePath]) =>
+      readCapturedSource(repoRoot, sourceKind, relativePath, aggregateStats),
+    ),
+    readShadowAdmissionSource(repoRoot, capturedAt, aggregateStats),
+  ];
   const selection = diagnosticSelection(input, sources, now);
   const observations: DiagnosticObservations = {
     schema_version: DIAGNOSTIC_INPUT_SCHEMA_VERSION,
@@ -352,6 +358,90 @@ function readCapturedSource(
       schema_version: numeric(record?.schema_version),
       observed_at: timestamp(record),
       value,
+    };
+  } catch (error) {
+    return {
+      source_kind: sourceKind,
+      capability: "error",
+      reason_code: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function readShadowAdmissionSource(
+  repoRoot: string,
+  capturedAt: string,
+  aggregateStats: SanitizationStats,
+): DiagnosticCapturedSource {
+  const sourceKind = "workflow.diagnostic-admission";
+  const workflowsRoot = join(repoRoot, ".harnery", "workflows");
+  if (!existsSync(workflowsRoot)) {
+    return { source_kind: sourceKind, capability: "unsupported", reason_code: "source_missing" };
+  }
+  try {
+    const rootStat = lstatSync(workflowsRoot);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      throw new Error("workflow_root_is_not_regular_directory");
+    }
+    const candidates = readdirSync(workflowsRoot, { withFileTypes: true })
+      .filter(
+        (entry) => entry.isDirectory() && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(entry.name),
+      )
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left));
+    const records: Record<string, unknown>[] = [];
+    let invalidCount = 0;
+    const scanLimit = SHADOW_ADMISSION_CAPTURE_LIMIT * 2;
+    for (const runId of candidates.slice(0, scanLimit)) {
+      try {
+        const proof = readWorkflowProof(repoRoot, runId);
+        const admission = proof.diagnostic_admission;
+        if (!admission) continue;
+        records.push({
+          run_id: proof.run.id,
+          ended_at: proof.run.ended_at,
+          state: admission.state,
+          action: admission.action,
+          ...(admission.reason_code ? { reason_code: admission.reason_code } : {}),
+          ...(admission.observation
+            ? {
+                pressure: admission.observation.advice.pressure,
+                fan_out_recommendation: admission.observation.advice.fan_out_recommendation,
+                freshness: admission.observation.freshness,
+                service_state: admission.observation.service_state,
+                wait_ms: admission.observation.wait_ms,
+              }
+            : {}),
+        });
+        if (records.length >= SHADOW_ADMISSION_CAPTURE_LIMIT) break;
+      } catch {
+        invalidCount += 1;
+      }
+    }
+    const omittedCount = Math.max(0, candidates.length - Math.min(candidates.length, scanLimit));
+    const projection = {
+      schema_version: 1,
+      captured_at: capturedAt,
+      max_records: SHADOW_ADMISSION_CAPTURE_LIMIT,
+      examined_run_count: Math.min(candidates.length, scanLimit),
+      omitted_run_count: omittedCount,
+      invalid_run_count: invalidCount,
+      records,
+    };
+    const sanitized = sanitizeDiagnosticValue(projection);
+    aggregateStats.sanitized_value_count += sanitized.stats.sanitized_value_count;
+    aggregateStats.omitted_value_count += sanitized.stats.omitted_value_count;
+    return {
+      source_kind: sourceKind,
+      capability: omittedCount > 0 || invalidCount > 0 ? "partial" : "supported",
+      schema_version: 1,
+      observed_at: records[0]?.ended_at as string | undefined,
+      value: sanitized.value,
+      ...(omittedCount > 0
+        ? { reason_code: "bounded_workflow_window_truncated" }
+        : invalidCount > 0
+          ? { reason_code: "invalid_workflow_proofs_ignored" }
+          : {}),
     };
   } catch (error) {
     return {

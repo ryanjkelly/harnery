@@ -20,7 +20,62 @@ describe("diagnostics command", () => {
       "explain",
       "capture",
       "replay",
+      "compare",
     ]);
+  });
+
+  test("compares two validated bundles in JSON and readable modes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-diagnostics-command-"));
+    try {
+      const before = captureDiagnosticBundle(root, {
+        now: new Date("2026-09-01T09:00:00.000Z"),
+        machineLabel: "command-test-machine",
+        engineVersion: "test-build-v1",
+      });
+      const after = captureDiagnosticBundle(root, {
+        now: new Date("2026-09-01T09:05:00.000Z"),
+        machineLabel: "command-test-machine",
+        engineVersion: "test-build-v1",
+      });
+
+      const json = capturedEmit();
+      const jsonProgram = new Command();
+      registerDiagnosticsCommand(jsonProgram, json.emit, { repoRoot: root });
+      await jsonProgram.parseAsync([
+        "node",
+        "harn",
+        "diagnostics",
+        "compare",
+        before.manifest.artifact_id,
+        after.manifest.artifact_id,
+        "--json",
+      ]);
+      expect(json.formats).toEqual(["json"]);
+      expect(json.payloads[0]).toMatchObject({
+        kind: "diagnostic_bundle_comparison",
+        comparison: {
+          observer_only: true,
+          before: { artifact_id: before.manifest.artifact_id },
+          after: { artifact_id: after.manifest.artifact_id },
+        },
+      });
+
+      const readable = capturedEmit();
+      const readableProgram = new Command();
+      registerDiagnosticsCommand(readableProgram, readable.emit, { repoRoot: root });
+      await readableProgram.parseAsync([
+        "node",
+        "harn",
+        "diagnostics",
+        "compare",
+        before.manifest.artifact_id,
+        after.manifest.artifact_id,
+      ]);
+      expect(readable.texts.join("\n")).toContain("diagnostic comparison:");
+      expect(readable.texts.join("\n")).toContain("observer only:");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("reports explicit unknown advice from live and frozen missing sources", async () => {
@@ -112,19 +167,22 @@ function capturedEmit(): {
   emit: EmitContext;
   payloads: unknown[];
   formats: string[];
+  texts: string[];
 } {
   const payloads: unknown[] = [];
   const formats: string[] = [];
+  const texts: string[] = [];
   return {
     payloads,
     formats,
+    texts,
     emit: {
       config: (opts) => {
         if (opts.format) formats.push(opts.format);
       },
       data: (payload) => payloads.push(payload),
       rows() {},
-      text() {},
+      text: (value) => texts.push(value),
       file() {},
       error: (error) => {
         throw error;
