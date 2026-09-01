@@ -55,7 +55,7 @@ The trio's `<prefix>.html` is a **standalone snapshot**, not a raw DOM dump. Sty
 | `--headed` | Headed mode for a one-off (no auth-flow framing). |
 | `--browser-arg <flag>` | Extra Chromium launch flag, passed straight to the browser (repeatable). Also settable machine-wide via `HARNERY_BROWSER_ARGS` (whitespace-separated). See WSLg note below. |
 | `--proxy-from-env` | Pass `HTTPS_PROXY`/`HTTP_PROXY` to Playwright as an authenticated browser proxy. Credentials remain in the child environment instead of command arguments. |
-| `--no-cookies` | Skip cookie-jar attach and persist. |
+| `--no-cookies` | Skip cookie-jar attach and persist. Also skips a host `extraCookies` hook. |
 | `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
 | `--profile <dir>` | Persistent Chromium profile dir. Default `~/.cache/harnery/browser-profile`. |
 | `--export-cookies <path>` | Export the live profile to an owner-only Netscape `cookies.txt` file before closing. |

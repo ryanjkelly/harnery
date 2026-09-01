@@ -11,3 +11,4 @@ export {
   type OriginEntry,
   pathMatches,
 } from "./client.js";
+export { applyExtraCookies, type ExtraCookies } from "./extra.js";

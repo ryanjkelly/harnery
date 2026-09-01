@@ -9,7 +9,7 @@ sidebar:
 harn fetch [options] <url>
 ```
 
-An HTTP request that writes the response body to stdout and speaks to the **shared cookie jar**. By default it attaches any matching cookies from `~/.cache/harnery/cookies.json` to the request and persists `Set-Cookie` responses back (the same jar [`harn browse`](/cli/browse/) and [`harn cookies`](/cli/cookies/) use). So cookies established during a `harn browse --login` session flow naturally into later `harn fetch` calls, and vice versa. Pipe it into [`harn read`](/cli/read/) for the canonical scrape-to-markdown flow: `harn fetch <url> | harn read -`.
+An HTTP request that writes the response body to stdout and speaks to the **shared cookie jar**. By default it attaches any matching cookies from `~/.cache/harnery/cookies.json` to the request and persists `Set-Cookie` responses back (the same jar [`harn browse`](/cli/browse/) and [`harn cookies`](/cli/cookies/) use). So cookies established during a `harn browse --login` session flow naturally into later `harn fetch` calls, and vice versa. Hosts that compose Harnery can also inject cookies through `HarneryProgramContext.extraCookies` (applied before the Cookie header is built; skipped with `--no-cookies`). Pipe it into [`harn read`](/cli/read/) for the canonical scrape-to-markdown flow: `harn fetch <url> | harn read -`.
 
 ## Options
 
@@ -20,7 +20,7 @@ An HTTP request that writes the response body to stdout and speaks to the **shar
 | `-d, --data <body>` | Request body. |
 | `-o, --output <file>` | Write the response body to a file instead of stdout. |
 | `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
-| `--no-cookies` | Skip cookie-jar attach and persist (clean session). |
+| `--no-cookies` | Skip cookie-jar attach and persist (clean session). Also skips a host `extraCookies` hook. |
 | `--redirect <mode>` | Redirect handling: `follow` \| `error` \| `manual`. Default `follow`. |
 | `--timeout <ms>` | Request timeout in milliseconds. Default `30000`. |
 | `--status` | Print the status line to stderr. |

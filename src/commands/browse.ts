@@ -62,7 +62,7 @@ import {
   type SaveBaselineResult,
   saveBaseline,
 } from "../lib/browser/visual-diff.ts";
-import { CookieJar } from "../lib/cookies/index.ts";
+import { applyExtraCookies, CookieJar } from "../lib/cookies/index.ts";
 
 /**
  * `harn browse <url>`: Playwright-backed page navigation with shared
@@ -739,6 +739,7 @@ async function runBrowse(
     opts.cookies === false
       ? null
       : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-browse" });
+  if (jar) applyExtraCookies(url, jar, context?.extraCookies);
   const headed = opts.login || opts.headed;
   const viewport = parseViewport(opts.viewport ?? "desktop");
   let colorScheme: "light" | "dark" | undefined;

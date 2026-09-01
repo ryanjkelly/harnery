@@ -115,3 +115,65 @@ describe("fetchWithJar response bodies", () => {
     expect(jar.list({ domain: "example.com" }).map((cookie) => cookie.name)).toEqual(["session"]);
   });
 });
+
+describe("fetchWithJar extraCookies", () => {
+  test("attaches host cookies before building the Cookie header", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-fetch-extra-"));
+    roots.push(root);
+    const jar = new CookieJar({ path: join(root, "cookies.json") });
+    jar.set({
+      name: "other",
+      value: "1",
+      domain: "example.com",
+      path: "/",
+      expires: Math.floor(Date.now() / 1000) + 3600,
+      httpOnly: false,
+      secure: true,
+    });
+
+    let cookieHeader = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      cookieHeader = headers.get("cookie") ?? "";
+      return responseAt(String(input), "ok");
+    }) as unknown as typeof fetch;
+
+    await fetchWithJar("https://example.com/page", {
+      jar,
+      extraCookies: () => [
+        {
+          name: "session",
+          value: "tok",
+          domain: "example.com",
+          path: "/",
+          expires: Math.floor(Date.now() / 1000) + 3600,
+          httpOnly: true,
+          secure: true,
+        },
+      ],
+    });
+
+    expect(cookieHeader).toContain("other=1");
+    expect(cookieHeader).toContain("session=tok");
+    expect(
+      jar
+        .list({ domain: "example.com" })
+        .map((c) => c.name)
+        .sort(),
+    ).toEqual(["other", "session"]);
+  });
+
+  test("skips extraCookies when no jar is passed", async () => {
+    let called = false;
+    globalThis.fetch = (async () => new Response("ok")) as unknown as typeof fetch;
+
+    await fetchWithJar("https://example.com/page", {
+      extraCookies: () => {
+        called = true;
+        return [];
+      },
+    });
+
+    expect(called).toBe(false);
+  });
+});

@@ -1,0 +1,59 @@
+---
+title: "ADR 0153: inject host cookies before jar attach"
+description: Give embedding hosts a synchronous extraCookies seam so minted session cookies land before fetch and browse send Cookie.
+sidebar:
+  order: 153
+---
+
+**Date:** 2026-09-01
+**Status:** Accepted
+
+## Context
+
+`HarneryProgramContext.extraHeaders` lets a host attach per-URL request
+headers on `fetch` and `browse`. That is enough for a custom header, and
+not enough for a host-minted session cookie.
+
+`fetchWithJar` builds the `Cookie` header from the jar first. If the jar
+already has any cookie for that URL, a later `extraHeaders` callback
+cannot add another `Cookie` value: caller-supplied keys win, and the
+header is already set. `browse` seeds Playwright from `jar.list()` at
+`open()`, so a cookie that is not in the jar never reaches the browser.
+
+Hosts therefore need a way to persist cookies into the jar *before* attach,
+without asking the user to run a separate cookie-set command, and without
+putting host secrets or identity rules into Harnery.
+
+## Alternatives considered
+
+- Piggyback session cookies onto `extraHeaders`. This only works when the
+  jar is empty for that URL. A shared jar with any other cookie for the
+  host silently drops the session cookie and looks like a failed login.
+- Add an async cookie callback. `extraHeaders` is synchronous so it can
+  run inside Playwright's route handler and inside `fetchWithJar` without
+  turning those paths async. An async cookie hook would split the two
+  seams and invite I/O in the per-request hot path.
+- Teach Harnery to mint a particular session cookie. Session identity is
+  host policy. Harnery must not learn a consumer's secret, email, or
+  cookie name.
+
+## Decision
+
+Add a synchronous `extraCookies?: (url, jar) => Cookie[]` callback on
+`HarneryProgramContext`, `FetchOptions`, and the `fetch` / `browse` /
+`browse-ai` command paths.
+
+The callback returns cookies to add. It must not mutate the jar.
+`applyExtraCookies` persists the returned cookies with `jar.set()` and
+runs only when a jar is in play, so `--no-cookies` skips the host hook
+the same way it skips jar attach.
+
+`fetchWithJar` applies the callback before `jar.header()`. `browse` and
+`browse-ai` apply it after constructing the jar and before Playwright or
+agent-browser load cookies.
+
+## Result
+
+A host can mint or refresh a session cookie as part of `fetch` and
+`browse`. Harnery stays generic: it does not know the cookie name or how
+the host signs it. `--no-cookies` remains a clean-session escape hatch.

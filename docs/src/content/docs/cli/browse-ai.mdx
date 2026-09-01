@@ -29,7 +29,7 @@ Two behavioral differences worth knowing. First, it runs as a **daemon**: succes
 | `--evaluate <js>` | Run JS in the page context (escape hatch for power users). |
 | `--batch <commands>` | Run multiple steps in one session, semicolon-separated (see [Batch mode](#batch-mode)). |
 | `--network-har <path>` | Record a HAR file from `open()` through the end of the run. |
-| `--no-cookies` | Skip cookie-jar attach and persist. |
+| `--no-cookies` | Skip cookie-jar attach and persist. Also skips a host `extraCookies` hook. |
 | `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
 | `--json` | Emit a JSON envelope (snapshot, screenshot path, step results). |
 | `--timeout <ms>` | Per-step timeout in milliseconds. Default `60000`. |

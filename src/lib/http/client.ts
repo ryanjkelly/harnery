@@ -1,4 +1,9 @@
-import type { Cookie, CookieJar } from "../cookies/index.ts";
+import {
+  applyExtraCookies,
+  type Cookie,
+  type CookieJar,
+  type ExtraCookies,
+} from "../cookies/index.ts";
 
 /**
  * Simple cookie-aware HTTP client.
@@ -39,6 +44,12 @@ export interface FetchOptions<TResponseType extends FetchResponseType = "text"> 
    * only land when the key isn't already set.
    */
   extraHeaders?: (url: string) => Record<string, string>;
+  /**
+   * Optional callback that returns extra cookies to persist into `jar`
+   * before the Cookie header is built. Ignored when no jar is passed
+   * (`--no-cookies`). Must stay synchronous.
+   */
+  extraCookies?: ExtraCookies;
   /** Response body representation. Default `text`; use `bytes` for lossless file output. */
   responseType?: TResponseType;
 }
@@ -72,6 +83,7 @@ export async function fetchWithJar<TResponseType extends FetchResponseType = "te
   const headers: Record<string, string> = { ...(opts.headers ?? {}) };
 
   if (opts.jar) {
+    applyExtraCookies(url, opts.jar, opts.extraCookies);
     const cookieHeader = opts.jar.header(url);
     if (cookieHeader && !headers.Cookie && !headers.cookie) {
       headers.Cookie = cookieHeader;

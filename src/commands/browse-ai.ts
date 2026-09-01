@@ -1,9 +1,9 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Command } from "commander";
-import type { EmitContext } from "../commander.ts";
+import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { AgentBrowser, type ExecResult } from "../lib/agent-browser/index.ts";
-import { CookieJar } from "../lib/cookies/index.ts";
+import { applyExtraCookies, CookieJar } from "../lib/cookies/index.ts";
 
 // Module-scoped emit assigned by registerBrowseAiCommand. Same pattern as
 // cookies/read/browse: helper functions close over `emit` so action
@@ -50,7 +50,11 @@ interface BrowseAiOpts {
   timeout: string;
 }
 
-export function registerBrowseAiCommand(program: Command, emitParam: EmitContext): void {
+export function registerBrowseAiCommand(
+  program: Command,
+  emitParam: EmitContext,
+  context?: HarneryProgramContext,
+): void {
   emit = emitParam;
   program
     .command("browse-ai <url>")
@@ -86,7 +90,7 @@ export function registerBrowseAiCommand(program: Command, emitParam: EmitContext
     .option("--timeout <ms>", "Per-step timeout in ms", "60000")
     .action((url: string, opts: BrowseAiOpts) => {
       try {
-        runBrowseAi(url, opts);
+        runBrowseAi(url, opts, context);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         emit.error({ code: "browse_ai_error", message: msg });
@@ -95,11 +99,12 @@ export function registerBrowseAiCommand(program: Command, emitParam: EmitContext
     });
 }
 
-function runBrowseAi(url: string, opts: BrowseAiOpts): void {
+function runBrowseAi(url: string, opts: BrowseAiOpts, context?: HarneryProgramContext): void {
   const jar =
     opts.cookies === false
       ? null
       : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-browse-ai" });
+  if (jar) applyExtraCookies(url, jar, context?.extraCookies);
   const ab = new AgentBrowser({
     jar,
     timeoutMs: Number.parseInt(opts.timeout, 10),

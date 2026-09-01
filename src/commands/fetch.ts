@@ -96,6 +96,7 @@ async function runFetch(
       redirect: opts.redirect as RequestRedirect,
       signal: ac.signal,
       extraHeaders: context?.extraHeaders,
+      extraCookies: context?.extraCookies,
       responseType: "bytes",
     });
   } finally {

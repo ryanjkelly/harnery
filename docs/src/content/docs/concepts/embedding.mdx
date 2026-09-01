@@ -23,7 +23,7 @@ program.addCommand(dbCommand);
 await program.parseAsync(process.argv);
 ```
 
-Once a host embeds Harnery this way, a second question follows immediately: *which of Harnery's internals may the host import?* The answer is the tier system.
+Once a host embeds Harnery this way, a second question follows immediately: *which of Harnery's internals may the host import?* The answer is the tier system. Hosts that need per-URL headers or cookies on `fetch` / `browse` wire `extraHeaders` and `extraCookies` on `HarneryProgramContext`; `--no-cookies` skips the cookie hook.
 
 ## The two tiers
 

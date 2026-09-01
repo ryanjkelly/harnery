@@ -122,6 +122,15 @@ export interface HarneryProgramContext {
    */
   extraHeaders?: (url: string) => Record<string, string>;
   /**
+   * Optional callback that returns extra cookies to persist into the shared
+   * jar before `fetch` / `browse` attach it. Runs only when a jar is in
+   * play (`--no-cookies` skips it). Use this for host-minted session
+   * cookies; `extraHeaders` cannot merge a `Cookie` header once the jar
+   * has already set one. Must stay synchronous, same as `extraHeaders`.
+   * harn standalone skips the callback entirely.
+   */
+  extraCookies?: import("./lib/cookies/index.ts").ExtraCookies;
+  /**
    * Host-injected vision-model call for `browse --check-critique`. harnery
    * ships no model client or API key; a consumer wires this to its own
    * multimodal provider (OpenAI/Anthropic/etc). Given one page tile + the
@@ -483,7 +492,7 @@ function harneryCommandBundles({
       "browse-ai <url>",
       `agent-browser (Vercel Labs) wrapper: accessibility-tree snapshots with element refs (@e1, @e2) for LLM consumption. Daemon-mode: successive calls reuse the same browser instance. Sister to ${binName} browse (Playwright).`,
       async (program) =>
-        (await import("./commands/browse-ai.ts")).registerBrowseAiCommand(program, emit),
+        (await import("./commands/browse-ai.ts")).registerBrowseAiCommand(program, emit, context),
       { hasOptions: true },
     ),
     {
