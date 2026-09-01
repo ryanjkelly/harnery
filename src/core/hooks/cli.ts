@@ -23,7 +23,6 @@ import { dirname, join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { buildInstructionBundle } from "../../lib/instructions/bundle.ts";
 import type { Adapter } from "../adapter.ts";
-import { coordBinPath } from "../agents/coord-bin.ts";
 import { resolveCoordRoot } from "../agents/coord-client.ts";
 import {
   type ClaimFinalizationDecision,
@@ -31,7 +30,10 @@ import {
   classifyWriteClaimFinalization,
   formatWriteClaimFinalizationDenial,
 } from "../agents/finalization.ts";
-import { restoreLiveCoordinationStateAfterEpochV3 } from "../agents/live-authority-v3.ts";
+import {
+  recordLiveClaimChangeV3,
+  restoreLiveCoordinationStateAfterEpochV3,
+} from "../agents/live-authority-v3.ts";
 import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "../agents/rules/stop-hook.ts";
 import {
   assistantTextStartsWithSessionNameBlock,
@@ -45,6 +47,7 @@ import type { Heartbeat } from "../agents/state/heartbeat-reader.ts";
 import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
+import { assignName } from "../agents/state/names.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
 import {
@@ -164,11 +167,9 @@ async function readStdin(): Promise<string> {
 }
 
 /**
- * Env for child agent-coord spawns, with the coord root pinned. The hook
- * process may be running with the session shell's cwd (inside a submodule or
- * journal dir), and agent-coord resolves its root from cwd unless overridden —
- * without the pin a child could write state to a different .harnery than the
- * one this hook resolved.
+ * Env for a detached hook retry worker, with the coord root pinned. The hook
+ * may run with the session shell's cwd (inside a submodule or journal dir), so
+ * the worker must retain the root this process already resolved.
  */
 function childEnv(coordRoot: string): NodeJS.ProcessEnv {
   return { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: coordRoot };
@@ -227,38 +228,18 @@ function logError(coordRoot: string | null, err: unknown, context: Record<string
 }
 
 /**
- * Spawn `agent-coord assign-name <owner> <kind>` to mint or recover the
- * hurricane-style name for this owner. Returns null on any failure so
- * session.started emission never breaks the adapter flow.
- *
- * Lives at agent-hooks side (not agent-coord) to keep emitter/consumer
- * separation: we spawn rather than import.
+ * Mint or recover the hurricane-style name for this owner in-process. Returns
+ * null on any failure so session.started emission never breaks adapter flow.
  */
-function assignNameViaAgentCoord(
+function assignNameInProcess(
   coordRoot: string,
   instanceId: string,
   kind: "session" | "subagent" | "transient",
   forkedFrom?: string,
 ): { name: string; kind: string } | null {
-  const binary = coordBinPath("agent-coord", coordRoot) ?? "";
-  if (!existsSync(binary)) return null;
   try {
-    const args = ["assign-name", instanceId, kind];
-    if (forkedFrom) args.push("--forked-from", forkedFrom);
-    const result = spawnSync(binary, args, {
-      encoding: "utf8",
-      timeout: 2000,
-      env: childEnv(coordRoot),
-    });
-    if (result.status !== 0 || !result.stdout) return null;
-    const parsed = JSON.parse(result.stdout.trim()) as {
-      name?: string;
-      kind?: string;
-    };
-    if (parsed.name && parsed.kind) {
-      return { name: parsed.name, kind: parsed.kind };
-    }
-    return null;
+    const name = assignName(coordRoot, instanceId, kind, forkedFrom ? { forkedFrom } : undefined);
+    return { name, kind };
   } catch {
     return null;
   }
@@ -332,14 +313,9 @@ function buildEventData(
       // tool.requested heal path instead. The forkedFrom plumbing below stays
       // for adapters that DO report a parent at session start.
       const forkedFrom: string | undefined = undefined;
-      // Assign (or recover) name + kind via agent-coord. Idempotent: resume
+      // Assign (or recover) name + kind in-process. Idempotent: resume
       // returns the original name; new owner consumes a counter slot.
-      const assigned = assignNameViaAgentCoord(
-        ctx.coordRoot,
-        ctx.instanceId,
-        "session",
-        forkedFrom,
-      );
+      const assigned = assignNameInProcess(ctx.coordRoot, ctx.instanceId, "session", forkedFrom);
       // Write the adapter pid-map row so `harn agents whoami` ppid-walks find
       // this owner. Prefer the payload pid (the actual claude binary), then the
       // anchor walk (the `node` ancestor for Cursor, which has no payload pid),
@@ -407,7 +383,7 @@ function buildEventData(
         ctx.adapter === "cursor" &&
         !readLiveCoordinationRow(ctx.coordRoot, ctx.instanceId)?.name
       ) {
-        assignNameViaAgentCoord(ctx.coordRoot, ctx.instanceId, "session");
+        assignNameInProcess(ctx.coordRoot, ctx.instanceId, "session");
       }
       const prompt = p?.prompt ?? "";
       const { value, truncated } = clampString(prompt, 4000);
@@ -478,7 +454,7 @@ function buildEventData(
       // (agent-coord/state/names.ts → kind=transient). Use the call ID as the
       // instance_id input; assignName falls through to transient.
       const childInstanceId = subagentCallId ?? ctx.instanceId;
-      const assigned = assignNameViaAgentCoord(ctx.coordRoot, childInstanceId, "subagent");
+      const assigned = assignNameInProcess(ctx.coordRoot, childInstanceId, "subagent");
       return {
         agent_type:
           (p?.raw.agent_type as string | undefined) ??
@@ -1113,7 +1089,7 @@ async function main(): Promise<number> {
   // agnostic since v0.5.0.
   if (norm.event_type === "session.ended") {
     try {
-      cleanupSessionEnd(coordRoot, owner.instance_id, (data.reason as string) ?? "unknown");
+      cleanupSessionEnd(coordRoot, owner.instance_id);
     } catch (err) {
       logError(coordRoot, err, { phase: "session-end-cleanup" });
     }
@@ -1138,27 +1114,9 @@ async function main(): Promise<number> {
   if (norm.event_type === "agent.started") {
     try {
       const childInstanceId = (data.agent_id as string | undefined) ?? owner.instance_id;
-      const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
-      if (existsSync(agentCoordBin)) {
-        spawnSync(agentCoordBin, ["project"], {
-          encoding: "utf8",
-          timeout: 3000,
-          env: childEnv(coordRoot),
-        });
-        spawnSync(
-          agentCoordBin,
-          [
-            "log",
-            `SUBAGENT_START  agent_type=${(data.agent_type as string) ?? "unknown"} agent_id=${childInstanceId.slice(0, 8)} platform=${adapterPlatform(adapter)}`,
-            "--instance",
-            childInstanceId,
-          ],
-          { encoding: "utf8", timeout: 2000, env: childEnv(coordRoot) },
-        );
-      }
-      emitSubagentStartContext(coordRoot, childInstanceId, sessionId, data, adapter);
+      await emitSubagentStartContext(coordRoot, childInstanceId, sessionId, data, adapter);
     } catch (err) {
-      logError(coordRoot, err, { phase: "subagent-start-project" });
+      logError(coordRoot, err, { phase: "subagent-start-context" });
     }
   }
 
@@ -1166,20 +1124,7 @@ async function main(): Promise<number> {
   if (norm.event_type === "agent.completed") {
     try {
       const childInstanceId = payload?.subagent_id ?? payload?.agent_id ?? owner.instance_id;
-      cleanupSessionEnd(coordRoot, childInstanceId, (data.reason as string) ?? "unknown");
-      const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
-      if (existsSync(agentCoordBin)) {
-        spawnSync(
-          agentCoordBin,
-          [
-            "log",
-            `SUBAGENT_STOP   agent_id=${childInstanceId.slice(0, 8)} platform=${adapterPlatform(adapter)}`,
-            "--instance",
-            childInstanceId,
-          ],
-          { encoding: "utf8", timeout: 2000, env: childEnv(coordRoot) },
-        );
-      }
+      cleanupSessionEnd(coordRoot, childInstanceId);
       const { reconcileSessionFinalizationV3 } = await import("../agents/session-finalizer-v3.ts");
       reconcileSessionFinalizationV3(coordRoot, { archive_observations: [] });
     } catch (err) {
@@ -1567,42 +1512,19 @@ async function runPreToolUseGuard(
   }
   if (targets.length === 0) return true;
 
-  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
-  if (!existsSync(agentCoordBin)) {
-    if (agentsRequireGitFinalization(coordRoot)) {
-      const { emitDeny } = await import("./adapter/output.ts");
-      emitDeny(
-        adapter,
-        "Harnery denied the write before mutation because the claim coordinator is unavailable; repair the project's Harnery installation and retry.",
-      );
-      return false;
-    }
-    return true;
-  }
+  const { evaluateClaim } = await import("../agents/rules/claim-conflict.ts");
 
   // For apply_patch (multi-file), collect siblings so the deny reason names
   // them. For single-file tools the array has one entry.
   for (const target of targets) {
-    const verdictReq = JSON.stringify({
-      rule: "claim",
-      instance_id: instanceId,
-      session_id: sessionId,
-      path: target.path,
-    });
-    const result = spawnSync(agentCoordBin, ["verdict"], {
-      input: verdictReq,
-      encoding: "utf8",
-      timeout: 3000,
-      env: childEnv(coordRoot),
-    });
-    if (result.status !== 0 || !result.stdout) continue;
-    let parsed: { allow?: boolean; reason?: string } = {};
     try {
-      parsed = JSON.parse(result.stdout.trim());
-    } catch {
-      continue;
-    }
-    if (parsed.allow === false) {
+      const parsed = evaluateClaim(coordRoot, {
+        rule: "claim",
+        instance_id: instanceId,
+        session_id: sessionId,
+        path: target.path,
+      });
+      if (parsed.allow !== false) continue;
       let reason =
         parsed.reason ?? `Path ${target.path} is currently being edited by another agent.`;
       if (targets.length > 1) {
@@ -1618,7 +1540,7 @@ async function runPreToolUseGuard(
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(adapter, reason);
       return false;
-    }
+    } catch {}
   }
   return true;
 }
@@ -1821,16 +1743,23 @@ function releaseClaimOnFailure(
   const row = readLiveCoordinationRow(coordRoot, instanceId);
   if (!row?.files_touched?.includes(canonical)) return;
 
-  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
-  if (!existsSync(agentCoordBin)) return;
-  spawnSync(agentCoordBin, ["release-claim", instanceId, canonical], {
-    encoding: "utf8",
-    timeout: 2000,
-    env: childEnv(coordRoot),
-  });
+  const before = readHeartbeat(coordRoot, instanceId);
+  try {
+    recordLiveClaimChangeV3({
+      coordRoot,
+      owner: instanceId,
+      nativeSessionId: before?.session_id ?? instanceId,
+      adapter: adapterFromPlatform(before?.platform),
+      operation: "released",
+      path: canonical,
+      access: "write",
+    });
+  } catch {
+    /* best-effort release must not break adapter flow */
+  }
 }
 
-function cleanupSessionEnd(coordRoot: string, instanceId: string, reason: string): void {
+function cleanupSessionEnd(coordRoot: string, instanceId: string): void {
   // Sweep pid-map entries pointing to this instance
   const pidmapDir = join(coordRoot, ".harnery", "pid-map");
   if (existsSync(pidmapDir)) {
@@ -1852,15 +1781,6 @@ function cleanupSessionEnd(coordRoot: string, instanceId: string, reason: string
       /* swallow */
     }
   }
-  // Activity log
-  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
-  if (existsSync(agentCoordBin)) {
-    spawnSync(
-      agentCoordBin,
-      ["log", `SESSION_END     reason=${reason}`, "--instance", instanceId],
-      { encoding: "utf8", timeout: 2000 },
-    );
-  }
 }
 
 async function emitUserPromptSubmitSystemMessage(
@@ -1871,37 +1791,18 @@ async function emitUserPromptSubmitSystemMessage(
   workspaceCwd?: string,
   recoveryBriefing = "",
 ): Promise<boolean> {
-  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
-  let additionalContext = "";
-
-  if (existsSync(agentCoordBin)) {
-    const args = ["prompt-context", "--instance", instanceId, "--session", sessionId];
-    // Every human-facing adapter gets the first-session naming reminder from
-    // the shared hook path. Cursor + Codex additionally get ongoing set-task
-    // staleness nudges; Claude Code enforces those via its Stop transcript.
-    // Codex also gets the optional project-owned prompt reminder. Claude Code
-    // already has native output-style reminders, so duplicating it would add
-    // noise. Cursor's current beforeSubmitPrompt output can allow or block but
-    // cannot inject model context; an Always Apply rule is its durable carrier.
-    // Only the boolean route travels through argv, never the host's text.
-    if (adapter === "codex") args.push("--host-prompt-reminder");
-    // Codex gets a fresh status-footer reminder on every prompt. Its Stop hook
-    // stays observe-only, so missing the footer never replaces the answer.
-    // Claude Code gets a fresh per-turn ritual reminder: satisfying the
-    // contract up front is far cheaper than the bounce-and-retry the Stop hook
-    // otherwise forces. Cursor's beforeSubmitPrompt cannot inject context, so
-    // its Stop follow-up remains the supported enforcement channel.
-    // The mailbox drain in prompt-context must know whether this adapter can
-    // receive the context it renders; draining for one that cannot would spend
-    // the messages on discarded output.
-    args.push("--adapter", adapter);
-    args.push("--session-name-nudge");
-    if (adapter === "cursor" || adapter === "codex") args.push("--task-nudge");
-    if (adapter === "codex") args.push("--status-footer-nudge");
-    if (adapter === "claude-code") args.push("--turn-ritual-nudge", adapter);
-    const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
-    if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
-  }
+  const { renderPromptContext } = await import("../agents/render/prompt-context.ts");
+  let additionalContext = renderPromptContext({
+    coordRoot,
+    instanceId,
+    sessionId,
+    adapter,
+    sessionNameNudge: true,
+    taskNudge: adapter === "cursor" || adapter === "codex",
+    hostPromptReminder: adapter === "codex",
+    statusFooterNudge: adapter === "codex",
+    turnRitualNudge: adapter === "claude-code" ? adapter : undefined,
+  }).trim();
   if (adapter === "codex") {
     const fileLinkContext = renderCodexWslFileLinkContext(coordRoot, workspaceCwd);
     if (fileLinkContext) {
@@ -1918,14 +1819,14 @@ async function emitUserPromptSubmitSystemMessage(
   return true;
 }
 
-function emitSubagentStartContext(
+async function emitSubagentStartContext(
   coordRoot: string,
   instanceId: string,
   sessionId: string,
   data: Record<string, unknown>,
   adapter: Adapter,
-): void {
-  // Look up the subagent's assigned name (just-written by agent-coord assignName
+): Promise<void> {
+  // Look up the subagent's assigned name (just-written by the in-process name
   // in session.started data) + the parent's short id for the "you are a subagent
   // of X" framing.
   const subagentName = (data.name as string | undefined) ?? "";
@@ -1938,28 +1839,31 @@ function emitSubagentStartContext(
   // Render peer table inline since the subagent might want to know who else
   // is around. Reuse prompt-context (which dedups against the per-owner hash);
   // first call will always emit.
-  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   let combined = message;
-  if (existsSync(agentCoordBin)) {
-    const result = spawnSync(
-      agentCoordBin,
-      ["prompt-context", "--instance", instanceId, "--session", sessionId, "--name", subagentName],
-      { encoding: "utf8", timeout: 3000 },
-    );
-    const ctx = (result.stdout ?? "").trim();
-    if (ctx) combined = `${message}\n\n${ctx}`;
-  }
+  const { renderPromptContext } = await import("../agents/render/prompt-context.ts");
+  const context = renderPromptContext({
+    coordRoot,
+    instanceId,
+    sessionId,
+    agentName: subagentName,
+  }).trim();
+  if (context) combined = `${message}\n\n${context}`;
 
   // Use SubagentStart event-name in CC's hookSpecificOutput shape; cursor's
   // flat `additional_context` works the same way.
-  void import("./adapter/output.ts").then(({ emitContext }) => {
-    emitContext(adapter, "SubagentStart", combined);
-  });
+  const { emitContext } = await import("./adapter/output.ts");
+  emitContext(adapter, "SubagentStart", combined);
 }
 
 function adapterPlatform(adapter: Adapter): string {
   if (adapter === "claude-code") return "claude-code";
   return adapter;
+}
+
+function adapterFromPlatform(platform: unknown): Adapter {
+  if (platform === "cursor") return "cursor";
+  if (platform === "codex") return "codex";
+  return "claude-code";
 }
 
 async function emitSessionStartSystemMessage(
@@ -1970,55 +1874,29 @@ async function emitSessionStartSystemMessage(
   adapter: Adapter,
   recoveryBriefing = "",
 ): Promise<boolean> {
-  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   const workflowChild = coordEnv("WORKFLOW_CHILD") === "1";
   let additionalContext = "";
-  if (existsSync(agentCoordBin)) {
-    // Sync-project so the heartbeat exists for downstream readers (peer table,
-    // wiring check, council invites).
-    spawnSync(agentCoordBin, ["project"], { encoding: "utf8", timeout: 3000 });
-    // Opportunistic reconciliation makes normal session starts a failsafe for
-    // archive, idle, cascade, and host lifecycle observations. It also runs the
-    // stale cache sweep, because `reconcile-finalization` dispatches to the
-    // shared reconcileCoordinationV3 composition (ADR 0077).
-    spawnSync(agentCoordBin, ["reconcile-finalization"], {
-      encoding: "utf8",
-      timeout: 5000,
-      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: coordRoot },
-    });
+  // Opportunistic reconciliation makes normal session starts a failsafe for
+  // archive, idle, cascade, and host lifecycle observations. It also runs the
+  // stale cache sweep through the shared ADR 0077 composition.
+  const { reconcileCoordinationV3 } = await import("../agents/reconcile-coordination-v3.ts");
+  reconcileCoordinationV3(coordRoot);
 
-    // SESSION_START activity log line, fired across all adapters.
-    const model = (emittedData.model as string | undefined) ?? "unknown";
-    const source = (emittedData.source as string | undefined) ?? "startup";
-    const platform = adapterPlatform(adapter);
-    spawnSync(
-      agentCoordBin,
-      [
-        "log",
-        `SESSION_START   model=${model} source=${source} platform=${platform}`,
-        "--instance",
-        instanceId,
-      ],
-      { encoding: "utf8", timeout: 2000 },
-    );
-
-    // Workflow children retain lifecycle/event capture but do not receive
-    // operator-facing peer, council, or init-remediation context. Injecting
-    // that context can make a bounded child follow housekeeping instructions
-    // instead of its assigned prompt.
-    if (!workflowChild) {
-      const agentName = (emittedData.name as string | undefined) ?? "";
-      const args = ["session-context", "--instance", instanceId, "--session", sessionId];
-      if (agentName) args.push("--name", agentName);
-      // The "You are agent-X." prefix in session-context renders unqualified by
-      // default (claude-code-style). For cursor/codex the bash dispatchers add
-      // a "(Cursor)" / "(Codex)" suffix; pass it through as --platform-label.
-      if (adapter !== "claude-code") {
-        args.push("--platform-label", platform === "cursor" ? "Cursor" : "Codex");
-      }
-      const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
-      if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
-    }
+  // Workflow children retain lifecycle/event capture but do not receive
+  // operator-facing peer, council, or init-remediation context. Injecting
+  // that context can make a bounded child follow housekeeping instructions
+  // instead of its assigned prompt.
+  if (!workflowChild) {
+    const agentName = (emittedData.name as string | undefined) ?? "";
+    const { renderSessionContext } = await import("../agents/render/session-context.ts");
+    additionalContext = renderSessionContext({
+      coordRoot,
+      instanceId,
+      sessionId,
+      agentName: agentName || undefined,
+      platformLabel:
+        adapter === "claude-code" ? undefined : adapter === "cursor" ? "Cursor" : "Codex",
+    }).trim();
   }
 
   // Effect (claude-code): merge the journal recovery cue into the session-start

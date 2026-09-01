@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -38,6 +47,52 @@ afterEach(() => {
 });
 
 describe("agent-hook V3 hard cut", () => {
+  test("runs coordination effects in-process without spawning agent-coord", () => {
+    const root = candidateRoot();
+    const owner = "in-process-hook-owner";
+    const binDir = join(root, "probe-bin");
+    const probe = join(root, "agent-coord-spawns.log");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      join(binDir, "agent-coord"),
+      '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HARNERY_FANOUT_PROBE"\n',
+      "utf8",
+    );
+    chmodSync(join(binDir, "agent-coord"), 0o755);
+    const env = {
+      HARNERY_BIN_DIR: binDir,
+      HARNERY_FANOUT_PROBE: probe,
+      HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+    };
+
+    expect(
+      run(
+        AGENT_HOOK,
+        ["session-start", "--adapter", "claude-code"],
+        { session_id: owner, cwd: root, source: "startup" },
+        root,
+        env,
+      ).status,
+    ).toBe(0);
+    expect(
+      run(
+        AGENT_HOOK,
+        ["pre-tool-use", "--adapter", "claude-code"],
+        {
+          session_id: owner,
+          cwd: root,
+          tool_name: "Edit",
+          tool_use_id: "fanout-probe-edit",
+          tool_input: { file_path: join(root, "fanout-probe.ts") },
+          hook_event_name: "PreToolUse",
+        },
+        root,
+        env,
+      ).status,
+    ).toBe(0);
+    expect(existsSync(probe)).toBeFalse();
+  });
+
   test("session start publishes V3 presence and starts the configured relay daemon", async () => {
     const root = candidateRoot();
     const origin = join(root, "presence-origin.git");

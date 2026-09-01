@@ -1,0 +1,98 @@
+---
+title: "ADR 0149: run hook coordination effects in-process"
+description: Keep each adapter hook to one Harnery runtime by calling coordination libraries directly instead of launching agent-coord children.
+sidebar:
+  order: 149
+---
+
+**Date:** 2026-09-01
+**Status:** Accepted
+
+## Context
+
+ADR 0137 bounded the history that each hook validates, which removed the
+unbounded memory and runtime curve. The remaining cost came from the process
+model. Each adapter event launched a fresh `agent-hook` runtime, and the hook
+could then launch several `agent-coord` runtimes for work implemented in the
+same package.
+
+The old hook contained 14 synchronous `agent-coord` spawn sites. Session
+start could pay for naming, projection, reconciliation, activity logging, and
+session context as separate processes. A write request launched another
+process for its claim verdict. Prompt, subagent, release, and cleanup paths
+added more.
+
+On a 16-vCPU host with five active agents, 26 Bun processes were live at once,
+load reached 22.9, and 6.7 GiB of swap was in use. The bounded hook-health
+sample recorded p95 durations of 4,271 ms for pre-tool hooks and 2,681 ms for
+post-tool hooks. Completion RSS samples reached about 413 MiB and 436 MiB.
+Those values include the hook's work, but they do not include peak memory for
+its child-process tree.
+
+## Alternatives
+
+**Keep the child boundary.** Rejected. `agent-hook` and `agent-coord` ship
+in the same package and already depend on the same coordination libraries. A
+process boundary added runtime startup, serialization, and timeout handling
+without adding an authority boundary.
+
+**Batch every hook's requests into one `agent-coord` child.** Rejected. This
+would reduce the multiplier but retain another cold runtime for every event.
+It would also create a private batch protocol for functions that already have
+typed interfaces.
+
+**Compile the hook into a standalone executable.** Deferred. Compilation may
+reduce the remaining top-level startup cost, but it does not fix nested
+processes and complicates the Bun-first development path plus the Node package
+fallback. Hook-health receipts can justify that step if one runtime remains
+too expensive.
+
+**Add a resident coordination daemon.** Deferred as in ADR 0137. The current
+change removes the multiplier without adding daemon availability, lifecycle,
+or trust requirements.
+
+## Decision
+
+`agent-hook` calls the owning coordination functions directly:
+
+- `assignName` handles session and subagent names.
+- `evaluateClaim` returns write-claim verdicts.
+- `recordLiveClaimChangeV3` releases a claim after a failed write.
+- `reconcileCoordinationV3` runs the session-start stale sweep and
+  finalization pass.
+- `renderPromptContext` and `renderSessionContext` build adapter context.
+
+The hook no longer calls the `agent-coord project` query before those reads.
+The query only validated and reported the current projection; it did not
+materialize state. The hook also drops its `agent-coord log` calls because
+`log` was not a registered command and only reached the unknown-command
+diagnostic.
+
+Existing error behavior stays intact. Naming and failed-write release remain
+best effort. A claim evaluator error remains fail-open, matching the previous
+child process path when it returned no verdict. Session-start context and
+reconciliation still run inside the existing caught hook boundary.
+
+This decision applies only to nested Harnery coordination processes. The hook
+may still run an operating-system probe on platforms without `/proc`, and
+Codex runtime-context recovery may still launch one detached `agent-hook`
+retry worker. Those processes do different work and do not recursively load
+`agent-coord`.
+
+## Result
+
+The hook has zero `agent-coord` binary resolutions or spawn sites, down from
+14 synchronous spawn sites. An integration test pins `HARNERY_BIN_DIR` to a
+probe executable, runs session start and a guarded edit request, and verifies
+that the probe is never invoked.
+
+The 15-test hook routing suite passed with 184 assertions. TypeScript
+type-checking and focused Biome checks also passed. The next busy-host
+measurement can now evaluate the cost of one hook runtime without nested Bun
+processes obscuring it.
+
+## Scope and promotion
+
+This decision applies to Harnery's adapter hook. CLI commands may still launch
+`agent-coord` when they are separate executables with a real caller boundary.
+A broader ban on internal helper processes would need separate evidence.
