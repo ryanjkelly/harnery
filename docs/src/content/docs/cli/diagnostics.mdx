@@ -169,9 +169,11 @@ hook-health or shadow-admission capture remains valid; comparison marks the
 missing optional source unavailable rather than turning it into a zero or a
 healthy result.
 
-The comparison page at `/diagnostics/compare` selects two validated bundles and
-renders the same frozen contract. Every signal row stays in the document so
-browser Find sees the complete result.
+The comparison page at `/diagnostics/compare` lists managed candidates from
+their bounded headers, then fully validates the selected pair before it renders
+the frozen contract. This avoids a repository-wide artifact inventory on every
+page load without weakening digest or schema checks. Every signal row stays in
+the document so browser Find sees the complete result.
 
 Comparison is observer-only. It does not tune thresholds, deny or delay work,
 signal processes, restart hooks, or notify people.

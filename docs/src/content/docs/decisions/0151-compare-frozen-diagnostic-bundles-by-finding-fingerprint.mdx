@@ -80,3 +80,29 @@ authority.
 Admission enforcement or hook remediation requires a separate decision backed
 by representative frozen comparisons, explicit host ownership, fail-safe
 behavior, and a rollback path.
+
+## Result and gotchas
+
+The comparison contract shipped in `576a2ff`, the dashboard in `3f1788b`, the
+CLI guide in `7c39074`, and the lightweight picker correction in `23fbd7e`.
+Two real bundles produced the same readable and JSON digest:
+`769c7e6737dca144075e2b333cd35a7bad33fd5e4f8e91d1a9713157dcae2b1d`.
+The frozen hook projection contained 50 completed invocations with no degraded,
+faulted, slow, high-memory, or retry result. Both shadow-admission projections
+kept one critical observer-only record with a 105 ms maximum wait.
+
+The first dashboard picker called the generic artifact inventory. That scan
+calculates tree sizes, Git tracking, liveness, retention, and repository budgets
+for every managed artifact, so the route took 20 to 35 seconds on the active
+workspace. The final picker scans bounded bundle headers in about 11 ms and
+fully validates only the selected pair. Three direct route reads then completed
+in 4.65 to 5.42 seconds. Selection never bypasses payload digests or schemas: a
+corrupt candidate can appear in the picker, but comparison refuses it before
+rendering any result.
+
+Page-QA run `bcc9302d-a796-4e0b-b39b-3a6cc232d768` passed desktop and mobile
+geometry, content, contrast, interaction, and scoped critique checks with no
+blockers. The critique returned one low and one medium note about the digest at
+the right edge. The full screenshots show the complete digest inside the page
+margin, while the clipping and truncation gates report zero issues, so both
+notes were tile-crop false positives.
