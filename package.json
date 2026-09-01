@@ -152,6 +152,11 @@
       "types": "./dist/core/policy/index.d.ts",
       "import": "./dist/core/policy/index.js"
     },
+    "./lib/admission": {
+      "bun": "./src/lib/admission.ts",
+      "types": "./dist/lib/admission.d.ts",
+      "import": "./dist/lib/admission.js"
+    },
     "./lib/agent-browser": {
       "bun": "./src/lib/agent-browser/index.ts",
       "types": "./dist/lib/agent-browser/index.d.ts",
@@ -230,7 +235,7 @@
     "access": "public",
     "provenance": true
   },
-  "packageManager": "bun@1.3.3",
+  "packageManager": "bun@1.4.0",
   "scripts": {
     "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/rewrite-dts-extensions.mjs",
     "clean": "rm -rf dist",
