@@ -22,7 +22,6 @@ import {
   inventoryArtifacts,
   releaseArtifact,
   resolveArtifactRef,
-  showArtifact,
 } from "../artifacts/index.ts";
 import { currentHarneryRuntimeBuild } from "../events/v3/runtime-build.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
@@ -241,21 +240,20 @@ function openDiagnosticBundleManifest(
     throw new Error("diagnostic bundle is outside the managed artifact root");
   }
   assertBundleTree(artifactPath);
-  const shown = showArtifact(repoRoot, artifactPath);
+  const artifactManifest = readCandidateArtifactManifest(artifactPath);
+  const classification = candidateClassification(artifactManifest);
   if (
     !["managed-active", "managed-current", "managed-expired", "managed-tracked"].includes(
-      shown.entry.classification,
+      classification,
     )
   ) {
-    throw new Error(
-      `diagnostic bundle has invalid managed classification ${shown.entry.classification}`,
-    );
+    throw new Error(`diagnostic bundle has invalid managed classification ${classification}`);
   }
-  if (shown.manifest.slug !== "diagnostic-bundle") {
+  if (artifactManifest.slug !== "diagnostic-bundle") {
     throw new Error("artifact is not a diagnostic bundle");
   }
   const manifest = readJson<DiagnosticBundleManifest>(artifactPath, "diagnostic-manifest.json");
-  validateManifest(manifest, shown.manifest.artifact_id);
+  validateManifest(manifest, artifactManifest.artifact_id);
   return { artifactPath, manifest };
 }
 
