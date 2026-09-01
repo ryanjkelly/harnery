@@ -12,10 +12,13 @@
 // Toolkit tier: this module must not import src/core (layering check).
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { cpus, freemem, loadavg, totalmem } from "node:os";
+import { basename, join } from "node:path";
 import type { QaManifest } from "./qa-plan.js";
 import {
+  computeJobDigest,
   computeVerdict,
   mergeCoverage,
   QA_RUN_RESULT_SCHEMA_VERSION,
@@ -23,8 +26,10 @@ import {
   type QaRunCommandOutcome,
   type QaRunContext,
   type QaRunCritiqueOutcome,
+  type QaRunHostSample,
   type QaRunJob,
   type QaRunResult,
+  type QaRunStage,
 } from "./qa-run-contracts.js";
 
 /** Set on critique children unless the job permits metered critique: the
@@ -34,6 +39,11 @@ export const QA_RUN_HEADLESS_ONLY_ENV = "HARNERY_CRITIQUE_HEADLESS_ONLY";
 
 /** Result document written into the run's output directory. */
 export const QA_RUN_RESULT_FILENAME = "page-qa-result.json";
+
+/** Pointer document written into the parent output directory after every
+ * run, naming the newest run's directory and verdict. Consumers resolve the
+ * current result through this pointer instead of guessing at loose files. */
+export const QA_RUN_LATEST_FILENAME = "latest.json";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_COMMAND_CONCURRENCY = 2;
@@ -118,8 +128,11 @@ export const defaultQaRunExec: QaRunExec = (argv, options) =>
 export interface QaRunMatrixOptions {
   /** A validated job (see validateQaRunJob — the runner trusts its shape). */
   job: QaRunJob;
-  /** Directory for artifacts and the result document. Created if missing. */
-  outDir: string;
+  /** PARENT directory for run output. Every invocation creates its own
+   * `run-<run_id>/` beneath it for artifacts and the result document, and
+   * maintains `latest.json` in the parent — a reused parent can therefore
+   * never present an older run's result as the current one. */
+  outParent: string;
   /** argv prefix that reaches the host CLI's browse command, e.g.
    * `[process.execPath, cliScript, "browse"]`. */
   browseArgv: string[];
@@ -129,6 +142,21 @@ export interface QaRunMatrixOptions {
   childEnv?: NodeJS.ProcessEnv;
   /** Progress callback for human-facing per-stage lines. */
   onLog?: (message: string) => void;
+  /** Run ID override (tests). Default: crypto.randomUUID(). */
+  runId?: string;
+  /** Working-tree revision probe supplied by the caller (the CLI probes git
+   * once). Ignored when the job itself pins tested_revision. */
+  revisionProbe?: { tested_revision?: string; worktree_dirty?: boolean };
+}
+
+function hostSample(): QaRunHostSample {
+  return {
+    captured_at: new Date().toISOString(),
+    loadavg_1m: loadavg()[0] ?? 0,
+    free_mem_bytes: freemem(),
+    total_mem_bytes: totalmem(),
+    cpu_count: cpus().length,
+  };
 }
 
 interface TimedExec {
@@ -292,18 +320,40 @@ function providerLabel(critique: EnvelopeCritique | undefined): string {
  * The verdict is computeVerdict over everything recorded — fail-closed.
  */
 export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunResult> {
-  const { job, outDir, browseArgv } = options;
+  const { job, outParent, browseArgv } = options;
   const exec = options.exec ?? defaultQaRunExec;
   const log = options.onLog ?? (() => {});
   const timeoutMs = job.policy?.command_timeout_ms ?? DEFAULT_COMMAND_TIMEOUT_MS;
   const concurrency = job.policy?.command_concurrency ?? DEFAULT_COMMAND_CONCURRENCY;
+
+  const runId = options.runId ?? randomUUID();
+  const outDir = join(outParent, `run-${runId}`);
   mkdirSync(outDir, { recursive: true });
+  const startedAtIso = new Date().toISOString();
+  const hostStart = hostSample();
+  const revision: Pick<
+    QaRunResult["run"],
+    "tested_revision" | "revision_source" | "worktree_dirty"
+  > =
+    job.tested_revision !== undefined
+      ? { tested_revision: job.tested_revision, revision_source: "job" }
+      : options.revisionProbe?.tested_revision !== undefined
+        ? {
+            tested_revision: options.revisionProbe.tested_revision,
+            revision_source: "git",
+            ...(options.revisionProbe.worktree_dirty !== undefined
+              ? { worktree_dirty: options.revisionProbe.worktree_dirty }
+              : {}),
+          }
+        : { revision_source: "unknown" };
+  const jobDigest = computeJobDigest(job);
 
   const startedAt = Date.now();
   const wall = { plan: 0, gates: 0, interactions: 0, critique: 0, snapshot: 0, total: 0 };
   const blockers: QaRunBlocker[] = [];
   const commands: QaRunCommandOutcome[] = [];
   const critique: QaRunCritiqueOutcome[] = [];
+  const stagesRun: QaRunStage[] = [];
   let manifest: QaManifest | null = null;
   let contexts: QaRunContext[] = [];
   let snapshot: QaRunResult["snapshot"] = { saved: false };
@@ -328,10 +378,25 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
 
   const finalize = (): QaRunResult => {
     wall.total = Date.now() - startedAt;
+    const blockedStages = new Set(blockers.map((blocker) => blocker.stage));
+    const lastCompletedStage =
+      [...stagesRun].reverse().find((stage) => !blockedStages.has(stage)) ?? null;
     const result: QaRunResult = {
       schema_version: QA_RUN_RESULT_SCHEMA_VERSION,
+      run: {
+        run_id: runId,
+        started_at: startedAtIso,
+        completed_at: new Date().toISOString(),
+        ...revision,
+        job_digest: jobDigest,
+        out_dir: outDir,
+      },
+      host: { start: hostStart, finish: hostSample() },
+      last_completed_stage: lastCompletedStage,
       target: job.target,
-      ...(job.tested_revision !== undefined ? { tested_revision: job.tested_revision } : {}),
+      ...(revision.tested_revision !== undefined
+        ? { tested_revision: revision.tested_revision }
+        : {}),
       mode: job.mode,
       qa_plan: manifest,
       contexts,
@@ -349,6 +414,20 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       }),
     };
     writeFileSync(join(outDir, QA_RUN_RESULT_FILENAME), `${JSON.stringify(result, null, 2)}\n`);
+    // Pointer in the parent: temp-file + rename so a reader never sees a
+    // torn write. Last completed run wins, which is correct — each run's own
+    // directory remains the authoritative record.
+    const pointer = {
+      schema_version: 1,
+      run_id: runId,
+      dir: basename(outDir),
+      result: join(basename(outDir), QA_RUN_RESULT_FILENAME),
+      completed_at: result.run.completed_at,
+      verdict: result.verdict,
+    };
+    const pointerTmp = join(outParent, `.${QA_RUN_LATEST_FILENAME}.${runId}.tmp`);
+    writeFileSync(pointerTmp, `${JSON.stringify(pointer, null, 2)}\n`);
+    renameSync(pointerTmp, join(outParent, QA_RUN_LATEST_FILENAME));
     return result;
   };
 
@@ -374,6 +453,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   const planStart = Date.now();
   const plan = await timedExec(planArgv, baseEnv);
   wall.plan = Date.now() - planStart;
+  stagesRun.push("plan");
   let planEnvelope: Record<string, unknown> | undefined;
   if (!plan.res.error && plan.res.exitCode === 0) {
     try {
@@ -515,6 +595,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     };
   });
   wall.gates = Date.now() - gatesStart;
+  stagesRun.push("gates");
   // Manifest order regardless of completion order: outcomes were written by
   // context index, so a straight push preserves it.
   commands.push(...gateOutcomes);
@@ -587,6 +668,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     });
   }
   wall.interactions = Date.now() - interactionsStart;
+  stagesRun.push("interactions");
 
   // -------------------------------------------------------------- critique
   const visual = manifest.checks.visual;
@@ -722,6 +804,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     }
   }
   wall.critique = Date.now() - critiqueStart;
+  if (cleanSoFar && visual !== "none") stagesRun.push("critique");
 
   // -------------------------------------------------------------- snapshot
   // Critique invocations carry --qa-snapshot in signoff mode. When the
@@ -773,6 +856,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     }
   }
   wall.snapshot = Date.now() - snapshotStart;
+  if (job.mode === "signoff") stagesRun.push("snapshot");
 
   if (job.mode === "signoff") {
     const allSaved = contexts.length > 0 && contexts.every((ctx) => savedSnapshots.has(ctx.id));

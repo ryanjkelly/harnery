@@ -169,7 +169,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job({ policy: { command_concurrency: 2 } }),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -193,7 +193,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job({ checks: [{ id: "runts", args: ["--check-runts", "--check-runts-fail"] }] }),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -224,7 +224,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -241,7 +241,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -256,7 +256,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -271,7 +271,7 @@ describe("runQaMatrix", () => {
     const fake = makeFakeExec({ planManifest: null });
     const result = await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -290,7 +290,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -308,7 +308,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -331,7 +331,7 @@ describe("runQaMatrix", () => {
         contexts: [{ id: "hd-dark-default", viewport: "hd", theme: "dark", state: "default" }],
         policy: { command_concurrency: 4 },
       }),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -354,7 +354,7 @@ describe("runQaMatrix", () => {
     const fake = makeFakeExec({ planManifest: manifest() });
     await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -378,7 +378,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -403,7 +403,7 @@ describe("runQaMatrix", () => {
     });
     await runQaMatrix({
       job: job({ policy: { allow_metered_critique: true } }),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -424,7 +424,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job({ mode: "signoff" }),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -447,7 +447,7 @@ describe("runQaMatrix", () => {
     });
     await runQaMatrix({
       job: job({ mode: "review" }),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -466,7 +466,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -487,7 +487,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job(),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -508,7 +508,7 @@ describe("runQaMatrix", () => {
           },
         ],
       }),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });
@@ -530,7 +530,7 @@ describe("runQaMatrix", () => {
     });
     const result = await runQaMatrix({
       job: job({ mode: "signoff" }),
-      outDir: outDir(),
+      outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
     });

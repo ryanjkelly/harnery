@@ -17,10 +17,11 @@
 //
 // Toolkit tier: this module must not import src/core (layering check).
 
+import { createHash } from "node:crypto";
 import type { QaContext, QaManifest } from "./qa-plan.js";
 
 export const QA_RUN_JOB_SCHEMA_VERSION = 1 as const;
-export const QA_RUN_RESULT_SCHEMA_VERSION = 1 as const;
+export const QA_RUN_RESULT_SCHEMA_VERSION = 2 as const;
 
 /** One rendering context the runner will capture and check. */
 export interface QaRunContext {
@@ -124,8 +125,52 @@ export interface QaRunBlocker {
 
 export type QaRunVerdict = "passed" | "failed" | "incomplete";
 
+/** Runner stages in execution order. `last_completed_stage` names the last
+ * one that finished without contributing a blocker. */
+export const QA_RUN_STAGES = ["plan", "gates", "interactions", "critique", "snapshot"] as const;
+export type QaRunStage = (typeof QA_RUN_STAGES)[number];
+
+/** Identity of one runner invocation. This block is what makes a result
+ * verifiable evidence rather than a loose file: a consumer matches it against
+ * the invocation being reported (see assessQaRunEvidence) instead of trusting
+ * whatever sits in a reused directory. */
+export interface QaRunIdentity {
+  /** Minted per invocation (crypto.randomUUID). */
+  run_id: string;
+  /** ISO-8601 UTC bounds of the invocation. */
+  started_at: string;
+  completed_at: string;
+  /** Git SHA or content identifier of what was tested, when resolvable. */
+  tested_revision?: string;
+  /** Where tested_revision came from: the job document, a git probe of the
+   * working directory, or nowhere (`unknown`, tested_revision absent). */
+  revision_source: "job" | "git" | "unknown";
+  /** `git status --porcelain` was non-empty when the run started — a revision
+   * alone does not prove content. Absent when no git probe ran. */
+  worktree_dirty?: boolean;
+  /** SHA-256 over the effective validated job (computeJobDigest). */
+  job_digest: string;
+  /** Absolute run directory the result was written into. A result found
+   * elsewhere has been moved or copied and fails evidence assessment. */
+  out_dir: string;
+}
+
+/** Host-pressure sample. Captured at start and finish so an incomplete run
+ * carries the load context that produced it. */
+export interface QaRunHostSample {
+  captured_at: string;
+  loadavg_1m: number;
+  free_mem_bytes: number;
+  total_mem_bytes: number;
+  cpu_count: number;
+}
+
 export interface QaRunResult {
   schema_version: typeof QA_RUN_RESULT_SCHEMA_VERSION;
+  run: QaRunIdentity;
+  host: { start: QaRunHostSample; finish: QaRunHostSample };
+  /** Null when the run never completed a stage cleanly (e.g. plan failed). */
+  last_completed_stage: QaRunStage | null;
   target: string;
   tested_revision?: string;
   mode: "signoff" | "review";
@@ -360,6 +405,144 @@ export function mergeCoverage(manifest: QaManifest, job: QaRunJob): QaRunContext
  *   - signoff mode additionally requires the snapshot to have been saved.
  * `passed` is only reachable when every input proves out.
  */
+// ---------------------------------------------------------------------------
+// Run identity: job digest + evidence assessment
+// ---------------------------------------------------------------------------
+
+/** Recursively key-sort plain objects so the digest is stable under key
+ * order. Arrays keep their order — it is semantically meaningful (contexts,
+ * argv arrays). */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) sorted[key] = canonicalize(record[key]);
+    return sorted;
+  }
+  return value;
+}
+
+/** SHA-256 hex digest over the effective validated job (after the CLI merges
+ * its authoritative `target` and `mode`). `policy` is excluded: concurrency,
+ * timeout, and metered-critique knobs change how the run executes, not what
+ * it proves, and CLI flags mutate them after the job file is read — including
+ * them would make the same job file verify differently across invocations. */
+export function computeJobDigest(job: QaRunJob): string {
+  const { policy: _policy, ...identityBearing } = job;
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalize(identityBearing)))
+    .digest("hex");
+}
+
+export interface QaEvidenceExpectations {
+  /** Exact run ID the caller expects (from the invocation it just made). */
+  run_id?: string;
+  /** Revision the evidence must have tested. A result whose revision_source
+   * is `unknown` cannot satisfy a revision expectation — fail-closed. */
+  tested_revision?: string;
+  /** Digest of the effective job the evidence must have run. */
+  job_digest?: string;
+  /** ISO-8601 floor: a run started before this instant is stale. */
+  not_started_before?: string;
+  /** Maximum age of completed_at in milliseconds, evaluated against `now`. */
+  max_age_ms?: number;
+  /** Evaluation instant for max_age_ms (ISO-8601; default: current time). */
+  now?: string;
+  /** Directory the result file was read from. Compared against the recorded
+   * run.out_dir: a moved or copied result is not evidence for its new home. */
+  found_in_dir?: string;
+}
+
+export interface QaEvidenceAssessment {
+  fresh: boolean;
+  /** Empty when fresh; each entry names one independent staleness reason. */
+  reasons: string[];
+  run?: QaRunIdentity;
+  verdict?: QaRunVerdict;
+}
+
+/**
+ * Assess whether a result document is fresh evidence for the invocation the
+ * caller has in mind. Fail-closed: a document without a verifiable identity
+ * block (schema v1 or foreign JSON) is stale by definition, and every
+ * expectation mismatch is reported, not just the first.
+ */
+export function assessQaRunEvidence(
+  document: unknown,
+  expectations: QaEvidenceExpectations = {},
+): QaEvidenceAssessment {
+  const reasons: string[] = [];
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    return { fresh: false, reasons: ["document is not a result object"] };
+  }
+  const result = document as Partial<QaRunResult> & Record<string, unknown>;
+  if (result.schema_version !== QA_RUN_RESULT_SCHEMA_VERSION) {
+    return {
+      fresh: false,
+      reasons: [
+        `schema_version is ${JSON.stringify(result.schema_version)}, not ` +
+          `${QA_RUN_RESULT_SCHEMA_VERSION} — pre-identity results carry nothing to verify`,
+      ],
+    };
+  }
+  const run = result.run;
+  if (
+    !run ||
+    typeof run.run_id !== "string" ||
+    typeof run.started_at !== "string" ||
+    typeof run.completed_at !== "string" ||
+    typeof run.job_digest !== "string"
+  ) {
+    return { fresh: false, reasons: ["result carries no complete run-identity block"] };
+  }
+  if (expectations.run_id !== undefined && run.run_id !== expectations.run_id) {
+    reasons.push(`run_id ${run.run_id} is not the expected ${expectations.run_id}`);
+  }
+  if (expectations.job_digest !== undefined && run.job_digest !== expectations.job_digest) {
+    reasons.push("job_digest does not match the expected job definition");
+  }
+  if (expectations.tested_revision !== undefined) {
+    if (run.revision_source === "unknown" || run.tested_revision === undefined) {
+      reasons.push(
+        `a revision expectation was given but the run recorded revision_source "unknown"`,
+      );
+    } else if (run.tested_revision !== expectations.tested_revision) {
+      reasons.push(
+        `tested_revision ${run.tested_revision} is not the expected ${expectations.tested_revision}`,
+      );
+    }
+  }
+  if (expectations.not_started_before !== undefined) {
+    if (Date.parse(run.started_at) < Date.parse(expectations.not_started_before)) {
+      reasons.push(
+        `run started ${run.started_at}, before the freshness floor ${expectations.not_started_before}`,
+      );
+    }
+  }
+  if (expectations.max_age_ms !== undefined) {
+    const now = expectations.now !== undefined ? Date.parse(expectations.now) : Date.now();
+    const age = now - Date.parse(run.completed_at);
+    if (Number.isNaN(age) || age > expectations.max_age_ms) {
+      reasons.push(
+        `run completed ${run.completed_at}, older than the ${expectations.max_age_ms}ms maximum age`,
+      );
+    }
+  }
+  if (expectations.found_in_dir !== undefined && run.out_dir !== expectations.found_in_dir) {
+    reasons.push(
+      `result was found in ${expectations.found_in_dir} but records out_dir ${run.out_dir} — ` +
+        "a moved or copied result is not evidence for its new location",
+    );
+  }
+  return {
+    fresh: reasons.length === 0,
+    reasons,
+    run: run as QaRunIdentity,
+    ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
+  };
+}
+
 export function computeVerdict(input: {
   mode: QaRunJob["mode"];
   blockers: QaRunBlocker[];

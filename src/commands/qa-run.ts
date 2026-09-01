@@ -2,6 +2,7 @@
 // gates, interactions, critique, snapshot) in one command. The agent's loop
 // collapses to: build the job, run this, read page-qa-result.json.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Command } from "commander";
@@ -54,7 +55,9 @@ export function registerQaRunCommand(program: Command, emit: EmitContext): void 
     )
     .option(
       "--out-dir <dir>",
-      "Artifact + result directory (default: .qa-run/<timestamp> under the current directory).",
+      "PARENT output directory (default: .qa-run under the current directory). Every " +
+        "invocation writes into its own run-<run_id>/ beneath it and updates the parent's " +
+        "latest.json pointer — prior runs are never overwritten and never pass as current.",
     )
     .option("--json", "Print the full QaRunResult JSON to stdout.")
     .addHelpText(
@@ -141,9 +144,7 @@ export function registerQaRunCommand(program: Command, emit: EmitContext): void 
       if (opts.allowMetered) policy.allow_metered_critique = true;
       const job: QaRunJob = { ...validation.job, policy };
 
-      const outDir = resolve(
-        opts.outDir ?? join(".qa-run", new Date().toISOString().replace(/[:.]/g, "-")),
-      );
+      const outParent = resolve(opts.outDir ?? ".qa-run");
       const cliScript = process.argv[1];
       if (!cliScript) {
         emit.error({
@@ -157,15 +158,35 @@ export function registerQaRunCommand(program: Command, emit: EmitContext): void 
       // wiring (critique provider, cookie jar, profiles) unchanged.
       const browseArgv = [process.execPath, cliScript, "browse"];
 
+      // One git probe for the identity block. Failure is not an error: a
+      // target outside any repository legitimately records "unknown".
+      let revisionProbe: { tested_revision?: string; worktree_dirty?: boolean } | undefined;
+      if (job.tested_revision === undefined) {
+        try {
+          const head = execFileSync("git", ["rev-parse", "HEAD"], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          }).trim();
+          const porcelain = execFileSync("git", ["status", "--porcelain"], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          });
+          revisionProbe = { tested_revision: head, worktree_dirty: porcelain.trim().length > 0 };
+        } catch {
+          revisionProbe = undefined;
+        }
+      }
+
       const result = await runQaMatrix({
         job,
-        outDir,
+        outParent,
         browseArgv,
+        ...(revisionProbe ? { revisionProbe } : {}),
         onLog: (message) => emit.log(message, "info"),
       });
 
       if (opts.json) emit.data(result);
-      const resultPath = join(outDir, QA_RUN_RESULT_FILENAME);
+      const resultPath = join(result.run.out_dir, QA_RUN_RESULT_FILENAME);
       for (const blocker of result.blockers) {
         emit.log(
           `blocker [${blocker.stage}${blocker.context_id ? ` ${blocker.context_id}` : ""}]: ${blocker.reason}`,
@@ -173,7 +194,8 @@ export function registerQaRunCommand(program: Command, emit: EmitContext): void 
         );
       }
       emit.log(
-        `verdict: ${result.verdict} — ${result.contexts.length} context${result.contexts.length === 1 ? "" : "s"}, ` +
+        `verdict: ${result.verdict} — run ${result.run.run_id}, ` +
+          `${result.contexts.length} context${result.contexts.length === 1 ? "" : "s"}, ` +
           `${result.commands.length} command${result.commands.length === 1 ? "" : "s"}, ` +
           `${result.blockers.length} blocker${result.blockers.length === 1 ? "" : "s"}; result: ${resultPath}`,
         result.verdict === "passed" ? "info" : "warn",
