@@ -8,9 +8,14 @@ import {
   realpathSync,
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import type { ArtifactActor, ArtifactInventoryEntry } from "../artifacts/index.ts";
+import type {
+  ArtifactActor,
+  ArtifactInventoryEntry,
+  ArtifactManifestV1,
+} from "../artifacts/index.ts";
 import {
   ARTIFACT_MANIFEST,
+  ARTIFACT_SCHEMA_VERSION,
   artifactsRoot,
   configuredArtifactRetentionDays,
   createArtifact,
@@ -99,6 +104,17 @@ export interface DiagnosticBundleListRow {
   expires_at: string | null;
   classification: ArtifactInventoryEntry["classification"];
   valid: boolean;
+  captured_at?: string;
+  finding_id?: string;
+  error?: string;
+}
+
+export interface DiagnosticBundleCandidateRow {
+  artifact_id: string;
+  created_at: string;
+  expires_at: string | null;
+  classification: ArtifactInventoryEntry["classification"];
+  selectable: boolean;
   captured_at?: string;
   finding_id?: string;
   error?: string;
@@ -210,10 +226,10 @@ export function captureDiagnosticBundle(
   return { path: created.path, manifest, summary };
 }
 
-export function validateDiagnosticBundle(
+function openDiagnosticBundleManifest(
   repoRootRaw: string,
   ref: string,
-): ValidatedDiagnosticBundle {
+): { artifactPath: string; manifest: DiagnosticBundleManifest } {
   const repoRoot = resolve(repoRootRaw);
   const artifactPath = resolveArtifactRef(repoRoot, ref);
   const managedRoot = realpathSync(artifactsRoot(repoRoot));
@@ -240,6 +256,14 @@ export function validateDiagnosticBundle(
   }
   const manifest = readJson<DiagnosticBundleManifest>(artifactPath, "diagnostic-manifest.json");
   validateManifest(manifest, shown.manifest.artifact_id);
+  return { artifactPath, manifest };
+}
+
+export function validateDiagnosticBundle(
+  repoRootRaw: string,
+  ref: string,
+): ValidatedDiagnosticBundle {
+  const { artifactPath, manifest } = openDiagnosticBundleManifest(repoRootRaw, ref);
   let totalBytes = 0;
   for (const file of manifest.files) {
     const bytes = readValidatedFile(artifactPath, file.path);
@@ -303,6 +327,115 @@ export function listDiagnosticBundles(repoRoot: string): DiagnosticBundleListRow
         };
       }
     });
+}
+
+/**
+ * Lists managed bundle candidates without opening their bounded payloads.
+ * Selection is not authority: every show, replay, and comparison operation
+ * still performs complete digest and schema validation before returning data.
+ */
+export function listDiagnosticBundleCandidates(repoRoot: string): DiagnosticBundleCandidateRow[] {
+  const root = artifactsRoot(repoRoot);
+  if (!existsSync(root)) return [];
+  const rows: DiagnosticBundleCandidateRow[] = [];
+  for (const name of readdirSync(root).sort()) {
+    const artifactPath = join(root, name);
+    let artifactManifest: ArtifactManifestV1;
+    try {
+      const stat = lstatSync(artifactPath);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+      artifactManifest = readCandidateArtifactManifest(artifactPath);
+      if (artifactManifest.slug !== "diagnostic-bundle") continue;
+      assertBundleTree(artifactPath);
+      const manifest = readJson<DiagnosticBundleManifest>(artifactPath, "diagnostic-manifest.json");
+      validateManifest(manifest, artifactManifest.artifact_id);
+      rows.push({
+        artifact_id: artifactManifest.artifact_id,
+        created_at: artifactManifest.created_at,
+        expires_at: artifactManifest.retention.expires_at,
+        classification: candidateClassification(artifactManifest),
+        selectable: true,
+        captured_at: manifest.captured_at,
+        finding_id: manifest.finding_id,
+      });
+    } catch (error) {
+      if (!existsSync(join(artifactPath, "diagnostic-manifest.json"))) continue;
+      const fallbackId = candidateArtifactId(artifactPath) ?? name;
+      rows.push({
+        artifact_id: fallbackId,
+        created_at: "",
+        expires_at: null,
+        classification: "invalid-manifest",
+        selectable: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.artifact_id, (counts.get(row.artifact_id) ?? 0) + 1);
+  return rows.map((row) =>
+    counts.get(row.artifact_id) === 1
+      ? row
+      : { ...row, selectable: false, error: "duplicate managed artifact id" },
+  );
+}
+
+function readCandidateArtifactManifest(artifactPath: string): ArtifactManifestV1 {
+  const manifestPath = join(artifactPath, ARTIFACT_MANIFEST);
+  const stat = lstatSync(manifestPath);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 64 * 1024) {
+    throw new Error("artifact manifest is not a bounded regular file");
+  }
+  let manifest: Partial<ArtifactManifestV1>;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Partial<ArtifactManifestV1>;
+  } catch {
+    throw new Error("artifact manifest is not valid JSON");
+  }
+  if (manifest.schema_version !== ARTIFACT_SCHEMA_VERSION) {
+    throw new Error(`unsupported artifact schema_version ${String(manifest.schema_version)}`);
+  }
+  if (
+    typeof manifest.artifact_id !== "string" ||
+    !/^[A-Za-z0-9_-]{1,160}$/.test(manifest.artifact_id)
+  ) {
+    throw new Error("invalid artifact_id");
+  }
+  if (typeof manifest.slug !== "string" || !manifest.slug) {
+    throw new Error("invalid artifact slug");
+  }
+  if (typeof manifest.purpose !== "string" || !manifest.purpose.trim()) {
+    throw new Error("invalid artifact purpose");
+  }
+  if (!validIsoTimestamp(manifest.created_at)) throw new Error("invalid artifact created_at");
+  if (!manifest.retention || !validIsoTimestamp(manifest.retention.expires_at)) {
+    throw new Error("invalid artifact retention");
+  }
+  if (manifest.released_at !== undefined && !validIsoTimestamp(manifest.released_at)) {
+    throw new Error("invalid artifact released_at");
+  }
+  return manifest as ArtifactManifestV1;
+}
+
+function candidateArtifactId(artifactPath: string): string | undefined {
+  try {
+    return readCandidateArtifactManifest(artifactPath).artifact_id;
+  } catch {
+    return undefined;
+  }
+}
+
+function candidateClassification(
+  manifest: ArtifactManifestV1,
+): ArtifactInventoryEntry["classification"] {
+  if (!manifest.released_at) return "managed-active";
+  return Date.parse(manifest.retention.expires_at) <= Date.now()
+    ? "managed-expired"
+    : "managed-current";
+}
+
+function validIsoTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
 export function replayDiagnosticBundle(

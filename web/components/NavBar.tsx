@@ -50,6 +50,7 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
         <div className="flex items-baseline flex-wrap gap-x-4 gap-y-1 sm:gap-6">
           <Link
             href="/"
+            prefetch={false}
             className="flex items-center gap-2 font-semibold text-base hover:text-foreground"
           >
             {/* Brand emblem (provisional). Served from web/public/; swap when final. */}
@@ -70,6 +71,7 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
                 <Link
                   key={entry.href}
                   href={entry.href}
+                  prefetch={false}
                   aria-current={isRouteActive(entry.href, pathname) ? "page" : undefined}
                   className={
                     isRouteActive(entry.href, pathname)

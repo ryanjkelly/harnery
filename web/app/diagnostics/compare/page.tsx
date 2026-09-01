@@ -9,7 +9,7 @@ import { coordRoot } from "@/lib/coord-reader";
 import { readDiagnosticComparison } from "@/lib/diagnostics-reader";
 import {
   type DiagnosticBundleComparison,
-  listDiagnosticBundles,
+  listDiagnosticBundleCandidates,
 } from "../../../../src/core/diagnostics/index";
 
 export const dynamic = "force-dynamic";
@@ -28,8 +28,8 @@ export default async function DiagnosticComparisonPage({ searchParams }: PagePro
   const raw = await searchParams;
   const before = opaqueArtifactId(raw.before);
   const after = opaqueArtifactId(raw.after);
-  const bundles = listDiagnosticBundles(root)
-    .filter((bundle) => bundle.valid && bundle.captured_at)
+  const bundles = listDiagnosticBundleCandidates(root)
+    .filter((bundle) => bundle.selectable && bundle.captured_at)
     .sort((left, right) => right.captured_at!.localeCompare(left.captured_at!));
   let comparison: DiagnosticBundleComparison | undefined;
   let error: string | undefined;
@@ -69,7 +69,8 @@ export default async function DiagnosticComparisonPage({ searchParams }: PagePro
             </button>
           </form>
           <p className="mt-2 text-xs text-muted-foreground">
-            {bundles.length} validated managed bundle{bundles.length === 1 ? "" : "s"} available.
+            {bundles.length} managed bundle candidate{bundles.length === 1 ? "" : "s"} available.
+            The selected pair is fully validated before comparison.
           </p>
         </section>
 
@@ -104,7 +105,7 @@ function BundleSelect({
   label: string;
   name: "before" | "after";
   value?: string;
-  bundles: ReturnType<typeof listDiagnosticBundles>;
+  bundles: ReturnType<typeof listDiagnosticBundleCandidates>;
 }) {
   return (
     <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">

@@ -219,6 +219,7 @@ function BundleSummary({
       </div>
       <Link
         href={`/diagnostics/bundles/${encodeURIComponent(bundle.artifact_id)}`}
+        prefetch={false}
         className="mt-2 block break-all font-mono text-xs underline decoration-dotted underline-offset-2 hover:text-sky-500 focus-visible:outline-2 focus-visible:outline-offset-2"
       >
         {bundle.artifact_id}

@@ -24,6 +24,7 @@ import { updateSupervisorFindings } from "../supervisor/findings.ts";
 import { buildSupervisorTimeline } from "../supervisor/timeline.ts";
 import {
   captureDiagnosticBundle,
+  listDiagnosticBundleCandidates,
   readFrozenDiagnosticBundle,
   replayDiagnosticBundle,
   validateDiagnosticBundle,
@@ -263,6 +264,23 @@ describe("diagnostic bundles", () => {
       "not a regular file",
     );
     expect(() => readFrozenDiagnosticBundle(root, linked.path)).toThrow("opaque artifact id");
+  });
+
+  test("lists managed candidates without weakening validation of a selected bundle", () => {
+    const root = repo();
+    const captured = captureDiagnosticBundle(root, {
+      now: new Date("2026-08-30T12:08:30.000Z"),
+      machineLabel: "machine-a",
+      engineVersion: "test-build-v1",
+    });
+    writeFileSync(join(captured.path, "expected.json"), "{}\n", { mode: 0o600 });
+
+    expect(listDiagnosticBundleCandidates(root)).toContainEqual(
+      expect.objectContaining({ artifact_id: captured.manifest.artifact_id, selectable: true }),
+    );
+    expect(() => readFrozenDiagnosticBundle(root, captured.manifest.artifact_id)).toThrow(
+      "byte length mismatch",
+    );
   });
 
   test("rejects unknown manifest keys, invalid expected schemas, and external trees", () => {
