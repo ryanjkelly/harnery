@@ -291,7 +291,7 @@ try {
     [
       'import { WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION, WORKFLOW_PROOF_SCHEMA_VERSION, WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION, WORKSPACE_BINDING_SCHEMA_VERSION, WORKSPACE_RECEIPT_SCHEMA_VERSION, createLocalGitWorktreeProvider, deriveWorkspaceLifecycle, inspectWorkflowWorkspace, isWorkspaceLifecycleState, listWorkflowWorkspaceInspections, prepareIntegration, readWorkflowProof, readWorkflowWorkspaceStatus, renderWorkflowWorkspaceStatus, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
       'if (WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow attempt-context schema version");',
-      'if (WORKFLOW_PROOF_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow proof schema version");',
+      'if (WORKFLOW_PROOF_SCHEMA_VERSION !== 2) throw new Error("unexpected workflow proof schema version");',
       'if (WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow work-context schema version");',
       'if (WORKSPACE_BINDING_SCHEMA_VERSION !== 1 || WORKSPACE_RECEIPT_SCHEMA_VERSION !== 1) throw new Error("unexpected workspace schema version");',
       'if (typeof readWorkflowProof !== "function" || typeof runWorkflow !== "function") throw new Error("workflow functions missing");',
