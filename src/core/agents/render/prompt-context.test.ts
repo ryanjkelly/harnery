@@ -71,7 +71,7 @@ describe("renderPromptContext on the V3 coordination projection", () => {
 
     const cursor = render({ turnRitualNudge: "cursor" });
     expect(cursor).toContain("Turn ritual (Stop-enforced)");
-    expect(cursor).not.toContain("paste its output verbatim in a fenced code block");
+    expect(cursor).toContain("paste its output verbatim in a fenced code block");
   });
 
   test("peer changes refresh the semantic hash from canonical V3 claims", () => {

@@ -619,6 +619,50 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(readFileSync(eventV3Paths(root).active, "utf8")).not.toContain("private");
   }, 15_000);
 
+  test("carries Cursor response ritual evidence into Stop without retaining the reply", () => {
+    const root = candidateRoot("cursor");
+    const nativeSession = "cursor-response-ritual";
+    const base = (signal: Parameters<typeof recordHookSignalV3>[0]["signal"]) =>
+      baseInput(
+        root,
+        signal,
+        parsed({ conversation_id: nativeSession, turn_id: "cursor-generation-one" }),
+        "cursor",
+      );
+
+    expect(recordHookSignalV3(base("session-start")).state).toBe("recorded");
+    expect(recordHookSignalV3(base("user-prompt-submit")).state).toBe("recorded");
+    const response = recordHookSignalV3({
+      ...base("after-agent-response"),
+      turn_ritual: {
+        status_box_present: true,
+        status_box_present_strict: true,
+        session_name_required: false,
+        session_name_present: false,
+      },
+    });
+    expect(["observed", "spooled"]).toContain(response.state);
+    expect(
+      recordHookSignalV3({
+        ...base("stop"),
+      }).state,
+    ).toBe("recorded");
+
+    const terminal = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .reverse()
+      .find((event) => event.event_type === "turn.completed");
+    expect(terminal?.payload).toMatchObject({
+      ritual: {
+        status_box_present: { state: "observed", value: true },
+        status_box_present_strict: { state: "observed", value: true },
+      },
+    });
+    expect(
+      readHookProducerStateV3(root, "cursor", nativeSession)?.cursor_response_ritual,
+    ).toBeUndefined();
+  });
+
   test("accumulates bounded hook CLI time inside the active turn", () => {
     const root = candidateRoot();
     const nativeSession = "hook-timing-session";

@@ -106,6 +106,11 @@ describe("applyInstructions (cursor)", () => {
     expect(has(".agents/skills/harn-decide/SKILL.md")).toBe(true);
     expect(has(".agents/skills/harn-council/SKILL.md")).toBe(true);
     expect(has(".agents/skills/harn-end/SKILL.md")).toBe(true);
+    expect(has(".cursor/rules/harnery-turn-ritual.mdc")).toBe(true);
+    expect(read(".cursor/rules/harnery-turn-ritual.mdc")).toContain("alwaysApply: true");
+    expect(read(".cursor/rules/harnery-turn-ritual.mdc")).toContain(
+      "Append that command's stdout verbatim in a fenced code block",
+    );
   });
 
   test("cursor block points at its installed skills", () => {
@@ -115,6 +120,16 @@ describe("applyInstructions (cursor)", () => {
     expect(md).toContain("`harn-council` skill");
     expect(md).toContain("`harn-end` skill");
     expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("fresh");
+  });
+
+  test("cursor rule drift is checked and deinit removes the owned file", () => {
+    applyInstructions(root, { binName: BIN, adapter: "cursor", dryRun: false });
+    const rule = ".cursor/rules/harnery-turn-ritual.mdc";
+    writeFileSync(join(root, rule), `${read(rule)}\nHAND EDIT\n`);
+    expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("drift");
+    applyInstructions(root, { binName: BIN, adapter: "cursor", dryRun: false });
+    removeInstructions(root, { adapter: "cursor", dryRun: false });
+    expect(has(rule)).toBe(false);
   });
 });
 

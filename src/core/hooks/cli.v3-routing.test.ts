@@ -278,6 +278,14 @@ describe("agent-hook V3 hard cut", () => {
         hook_event_name: "sessionStart",
       }).status,
     ).toBe(0);
+    expect(
+      runHook("user-prompt-submit", {
+        conversation_id: owner,
+        generation_id: "cursor-name-turn",
+        hook_event_name: "beforeSubmitPrompt",
+        prompt: "private prompt",
+      }).status,
+    ).toBe(0);
     const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
     if (!instanceId) throw new Error("Cursor owner was not projected");
     const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
@@ -309,10 +317,31 @@ describe("agent-hook V3 hard cut", () => {
       conversation_id: owner,
       generation_id: "cursor-name-response",
       hook_event_name: "afterAgentResponse",
-      text: `\`\`\`\n${name}\n\`\`\``,
+      text: `\`\`\`\n${name}\n\`\`\`\n\n\`\`\`\n┌─ agent-Maya status\nPRIVATE_CURSOR_REPLY_BODY\n\`\`\``,
     });
     expect(response.status).toBe(0);
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
+
+    const stop = runHook("stop", {
+      conversation_id: owner,
+      generation_id: "cursor-name-stop",
+      hook_event_name: "stop",
+      status: "completed",
+    });
+    expect(stop.status).toBe(0);
+    const terminal = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .reverse()
+      .find((event) => event.event_type === "turn.completed");
+    expect(terminal?.payload).toMatchObject({
+      ritual: {
+        status_box_present_strict: { state: "observed", value: true },
+      },
+    });
+    expect(JSON.stringify(readLedgerV3(root))).not.toContain("PRIVATE_CURSOR_REPLY_BODY");
+    expect(JSON.stringify(readHookProducerStateV3(root, "cursor", owner))).not.toContain(
+      "PRIVATE_CURSOR_REPLY_BODY",
+    );
 
     const allowed = runHook("pre-tool-use", {
       conversation_id: owner,
@@ -891,7 +920,15 @@ describe("agent-hook V3 hard cut", () => {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as Record<string, unknown>);
-      expect(diagnostics.at(-1)).toMatchObject({
+      const exhausted = diagnostics
+        .reverse()
+        .find(
+          (record) =>
+            record.event === "agent_hook.diagnostic" &&
+            (record.fields as Record<string, unknown> | undefined)?.skipped ===
+              "stop-remediation-cap-exhausted",
+        );
+      expect(exhausted).toMatchObject({
         event: "agent_hook.diagnostic",
         fields: {
           skipped: "stop-remediation-cap-exhausted",
@@ -900,9 +937,9 @@ describe("agent-hook V3 hard cut", () => {
           session_id: owner,
         },
       });
-      expect(
-        (diagnostics.at(-1)?.fields as Record<string, unknown>)?.remediation_cycle_anchor,
-      ).toMatch(/^tid_/);
+      expect((exhausted?.fields as Record<string, unknown>)?.remediation_cycle_anchor).toMatch(
+        /^tid_/,
+      );
     } finally {
       clearRemediationCount(owner);
     }

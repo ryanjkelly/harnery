@@ -219,10 +219,9 @@ function renderTurnRitualReminder(
 
   const bin = resolveBinName(coordRoot);
   const statusCommand = endOfTurnStatusCommand(coordRoot);
-  // Claude Code renders the status box only if the reply carries it; Cursor
-  // shows the box inline on its own, so it is never asked for a second copy.
+  // Claude Code and Cursor can both enforce completed assistant reply text.
   const paste =
-    adapter === "claude-code"
+    adapter === "claude-code" || adapter === "cursor"
       ? " and paste its output verbatim in a fenced code block at the end of your reply"
       : "";
   return (

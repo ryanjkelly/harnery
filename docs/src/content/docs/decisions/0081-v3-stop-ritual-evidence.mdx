@@ -47,9 +47,12 @@ Add two optional, privacy-safe fields to V3:
 - `turn.started.payload.stop_remediation` records that the prompt begins with
   Harnery's machine remediation marker.
 - `turn.completed.payload.ritual` records observation-wrapped status-box and
-  session-name results. It contains booleans only. Cursor reports the
-  reply-text observations as unsupported because its Stop payload does not
-  expose assistant text.
+  session-name results. It contains booleans only. Cursor's Stop payload does
+  not expose assistant text, but its earlier `afterAgentResponse` hook does.
+  That hook reduces the completed reply to status-box booleans in owner-only
+  producer state. Stop consumes the matching observation into
+  `turn.completed` and clears the temporary state. The reply body never enters
+  V3 intake, producer state, diagnostics, or the canonical ledger.
 
 The fields are optional so the contract change is structurally additive. A
 current producer writes them on every applicable event. A current Claude Code
@@ -68,7 +71,8 @@ Deduplicating the second role would make `set-task ""` unable to repair a
 conversational Cursor turn.
 
 Claude Code keeps exit-2 enforcement. Cursor keeps its bounded
-`followup_message` enforcement and asks for both repair commands in one pass.
+`followup_message` enforcement and asks for every missing repair in one pass,
+including pasting the status box when assistant-text evidence is false.
 Codex remains observe-only, and workflow children remain exempt.
 
 ## Result
@@ -86,6 +90,14 @@ status calls still soft-fail because their observations do not gate the turn.
 The ledger now makes ritual overhead auditable without storing reply content.
 Tool, command, and turn economics can be compared with the coordination events
 that caused extra work, including remediation turns.
+
+A later Cursor audit found that running the status command was not the same as
+showing its output in the assistant reply. A live Cursor trace confirmed that
+`afterAgentResponse` runs before Stop, and focused lifecycle tests confirmed
+that its boolean is readable when Stop records the terminal. Cursor now uses
+the strict assistant-text observation for rule 2/3, while rule 1/3 still
+requires the status command itself. `init --adapter cursor` also installs an
+Always Apply rule that tells the agent to paste the status output.
 
 A later Cursor audit found one false-zero path in that comparison. The recorder
 initialized its tool aggregate to zero, then reported that value as exact when

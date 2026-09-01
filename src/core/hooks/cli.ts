@@ -717,8 +717,9 @@ async function main(): Promise<number> {
   // that tool. It is not a transcript and therefore cannot prove that an
   // earlier assistant response omitted the required session-name block.
   // afterAgentResponse is the one native boundary that carries the completed
-  // assistant text, so stamp a positive sighting here without retaining or
-  // emitting the response body into V3.
+  // assistant text. Preserve only privacy-safe ritual booleans in the V3
+  // producer's open-turn state; Stop consumes them into the authoritative
+  // turn.completed event. The response body never enters V3 or heartbeat.
   if (adapter === "cursor" && eventName === "after-agent-response") {
     const payload = parsePayload(raw, adapter);
     const owner = resolveOwner({ payload: payload?.raw ?? null, coordRoot });
@@ -734,6 +735,53 @@ async function main(): Promise<number> {
     } else {
       appendDebug(coordRoot, { ...debugBase, skipped: "no-session-name-sighting" });
     }
+    if (ledgerRoute.state === "blocked") {
+      appendDebug(coordRoot, {
+        ...debugBase,
+        skipped: "v3-control-blocked",
+        reason: ledgerRoute.reason,
+        owner_source: owner.source,
+      });
+      return 0;
+    }
+    const statusBoxPresentStrict = scanAssistantStatusBoxPresent(undefined, text);
+    // The hook parser needs the completed reply long enough to scan it, but
+    // durable hook intake must never retain that body. Keep every other native
+    // field so turn correlation remains available to the producer.
+    const { text: _completedReply, ...privacySafeRaw } = payload?.raw ?? {};
+    const privacySafePayload = payload ? { ...payload, raw: privacySafeRaw } : null;
+    const v3Result = recordLiveHookSignalV3({
+      coordRoot,
+      route: ledgerRoute,
+      eventName,
+      payload: privacySafePayload,
+      adapter,
+      instanceId: owner.instance_id,
+      hook_name: eventName,
+      hook_duration_ms: Math.max(0, Math.floor(performance.now() - hookStartedAt)),
+      monotonic_ns: hookClock.monotonic_ns,
+      turn_ritual: {
+        status_box_present: statusBoxPresentStrict,
+        status_box_present_strict: statusBoxPresentStrict,
+        session_name_required: name !== undefined,
+        session_name_present: name ? assistantTextStartsWithSessionNameBlock(text, name) : false,
+      },
+    });
+    observeHookDebug(hookHealthState, { event_v3_state: v3Result.state });
+    appendDebug(coordRoot, {
+      ...debugBase,
+      effect: "cursor-response-ritual-observed",
+      owner_source: owner.source,
+      event_v3_state: v3Result.state,
+      ...(v3Result.state === "observed"
+        ? {
+            generation_id: v3Result.generation_id,
+            turn_id: v3Result.turn_id,
+            response_observed_at: v3Result.observed_at,
+            status_box_present_strict: statusBoxPresentStrict,
+          }
+        : {}),
+    });
     return 0;
   }
 

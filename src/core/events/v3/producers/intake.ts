@@ -44,6 +44,7 @@ const HOOK_SIGNALS: ReadonlySet<string> = new Set([
   "session-start",
   "session-end",
   "user-prompt-submit",
+  "after-agent-response",
   "stop",
   "stop-failure",
   "pre-tool-use",

@@ -35,6 +35,7 @@ export type BaseAdapterSignalV3 =
   | "prompt"
   | "turn_id"
   | "turn_completion"
+  | "assistant_reply_text"
   | "tool_request"
   | "tool_result"
   | "tool_failure"
@@ -66,6 +67,7 @@ const SHARED_SIGNAL_SUPPORT = {
   session_start: "native",
   prompt: "native",
   turn_completion: "native",
+  assistant_reply_text: "native",
   tool_request: "native",
   tool_result: "native",
   tool_failure: "native",

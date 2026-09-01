@@ -19,6 +19,7 @@ export type HookSignalV3Base =
   | "session-start"
   | "session-end"
   | "user-prompt-submit"
+  | "after-agent-response"
   | "stop"
   | "stop-failure"
   | "pre-tool-use"
@@ -249,6 +250,11 @@ export function normalizeHookEventV3Base(
         },
       }) as EventV3Base;
     }
+    case "after-agent-response":
+      // Cursor's completed-response hook contributes a privacy-safe ritual
+      // observation to producer state. The authoritative turn.completed event
+      // remains the later Stop signal, which consumes that observation.
+      return null;
     case "stop":
     case "stop-failure":
       return buildEventV3Base("turn.completed", {
@@ -446,9 +452,15 @@ function turnRitualObservation(
 ): TurnRitualObservationV3 {
   if (adapter === "cursor") {
     const unsupported = { state: "unsupported" as const, capability: "assistant_reply_text" };
+    const observed = <T>(value: T) => ({
+      state: "observed" as const,
+      value,
+      attestation: "derived" as const,
+      confidence: "exact" as const,
+    });
     return {
-      status_box_present: unsupported,
-      status_box_present_strict: unsupported,
+      status_box_present: observed(evidence.status_box_present),
+      status_box_present_strict: observed(evidence.status_box_present_strict),
       session_name: unsupported,
     };
   }

@@ -121,14 +121,23 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     expect(one.reason).not.toContain("Repair ALL of them");
   });
 
-  test("Cursor uses the inline status event and does not require reply-text evidence", () => {
+  test("Cursor requires both the status event and reply-text status evidence", () => {
     expect(
       verdict("cursor", [
         turnStarted(0),
         event("tool.requested", 1),
         status(2),
         task(3),
-        turnCompleted(4),
+        turnCompleted(4, ritual(false)),
+      ]),
+    ).toMatchObject({ allow: false, rule: "stop-hook.rule_2_3" });
+    expect(
+      verdict("cursor", [
+        turnStarted(0),
+        event("tool.requested", 1),
+        status(2),
+        task(3),
+        turnCompleted(4, ritual(true)),
       ]),
     ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
   });
@@ -138,11 +147,11 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
       turnStarted(0),
       event("tool.requested", 1),
       task(2),
-      turnCompleted(3),
+      turnCompleted(3, ritual(false)),
       turnStarted(4, true),
       event("tool.requested", 5),
       status(6),
-      turnCompleted(7),
+      turnCompleted(7, ritual(true)),
     ];
     expect(verdict("cursor", repaired)).toMatchObject({
       allow: true,

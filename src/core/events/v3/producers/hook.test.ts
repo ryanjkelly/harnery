@@ -214,7 +214,7 @@ describe("event ledger V3 hook producer", () => {
     });
   });
 
-  test("records Cursor remediation structurally and marks reply-text rituals unsupported", () => {
+  test("records Cursor remediation and observed response-text status evidence", () => {
     const prompt = normalizeHookEventV3(
       "user-prompt-submit",
       parsed({ session_id: "native-session", prompt: "private remediation prompt" }),
@@ -236,11 +236,8 @@ describe("event ledger V3 hook producer", () => {
     expect(JSON.stringify(prompt)).not.toContain("private remediation prompt");
     expect(terminal?.payload).toMatchObject({
       ritual: {
-        status_box_present: { state: "unsupported", capability: "assistant_reply_text" },
-        status_box_present_strict: {
-          state: "unsupported",
-          capability: "assistant_reply_text",
-        },
+        status_box_present: { state: "observed", value: false },
+        status_box_present_strict: { state: "observed", value: false },
         session_name: { state: "unsupported", capability: "assistant_reply_text" },
       },
     });

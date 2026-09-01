@@ -154,22 +154,16 @@ export function evaluateStopHookV3Events(
     .map((event) => observedBoolean(event.payload.ritual?.status_box_present_strict))
     .filter((value): value is boolean => value !== undefined);
   const currentStrictBox = claudeContinuation ? req.status_box_present_strict : undefined;
-  if (req.adapter !== "cursor" && latestBox === undefined && currentStrictBox === undefined) {
+  if (latestBox === undefined && currentStrictBox === undefined) {
     return evidenceUnavailable(
       "turn.completed has no observed V3 assistant-text status-box result; Stop remains fail-open",
     );
   }
 
-  const ackPresent =
-    req.adapter === "cursor"
-      ? requiredStatusChecked
-      : claudeContinuation
-        ? strictBoxObservations.includes(true) || currentStrictBox === true
-        : latestBox === true;
-  const ackBlock =
-    req.adapter === "cursor"
-      ? () => rule13Block(coordRoot, req.session_id)
-      : () => rule23Block(coordRoot, req.session_id);
+  const ackPresent = claudeContinuation
+    ? strictBoxObservations.includes(true) || currentStrictBox === true
+    : latestBox === true;
+  const ackBlock = () => rule23Block(coordRoot, req.session_id);
 
   // Pure prose turns keep the human-visible acknowledgement but do not require
   // task or final-status mutations. This preserves the pre-V3 policy exactly.
@@ -354,7 +348,7 @@ function sessionIdSuffix(sessionId?: string): string {
  * The verdict keeps the first failure's rule id, so the `blocked_rule`
  * telemetry and the adapter's `rule=` stderr contract are unchanged; the
  * reason enumerates the rest so a single continuation can repair all of them.
- * Cursor maps the acknowledgement onto rule 1/3, so identical rules dedupe.
+ * Duplicate rules are folded so one continuation repairs every missing signal.
  */
 function mergeStopBlocks(blocks: VerdictResult[]): VerdictResult | undefined {
   let primary: VerdictResult | undefined;

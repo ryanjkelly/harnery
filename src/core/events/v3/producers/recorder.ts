@@ -141,6 +141,14 @@ interface TurnHarnessTimingV3 {
   slowest_hook_ms: number;
 }
 
+interface CursorResponseRitualV3 {
+  turn_id: `tid_${string}`;
+  native_turn_id?: string;
+  observed_at: string;
+  status_box_present: boolean;
+  status_box_present_strict: boolean;
+}
+
 interface PendingEventV3 {
   source_id?: `hid_${string}`;
   event: EventV3;
@@ -201,6 +209,10 @@ export interface HookProducerStateV3 {
   current_turn_id?: `tid_${string}`;
   /** Native turn identity retained owner-only for transcript attribution. */
   current_native_turn_id?: string;
+  /** Latest completed assistant response for Cursor's open turn. The response
+   * body is discarded by agent-hook; only these booleans survive until Stop
+   * copies them into the authoritative turn.completed ritual observation. */
+  cursor_response_ritual?: CursorResponseRitualV3;
   tool_call_count: number;
   tool_call_count_turn_id?: `tid_${string}`;
   last_event_id?: `evt_${string}`;
@@ -288,6 +300,12 @@ export type RecordHookSignalV3Result =
   /** A late signal for a span already closed in memory; preserved in diagnostics, never re-opened. */
   | { state: "suppressed"; reason: "closed_span" }
   | { state: "ignored" }
+  | {
+      state: "observed";
+      generation_id: `gen_${string}`;
+      turn_id: `tid_${string}`;
+      observed_at: string;
+    }
   /** Durably queued in the intake spool; a lease holder or drain hook records it. */
   | { state: "spooled" }
   | { state: "recorded"; event: EventV3; durability: WriteEventV3Result; recovered: boolean };
@@ -871,6 +889,51 @@ function processHookSignalLocked(
     // Sample once for the native event and every span it opens or closes so
     // their self-contained timing cannot drift by a millisecond.
     const eventClock = signalClock(input);
+    if (input.signal === "after-agent-response") {
+      if (
+        input.adapter !== "cursor" ||
+        !state.current_turn_id ||
+        !state.current_turn_span ||
+        !input.turn_ritual
+      ) {
+        writeProducerDiagnosticV3(input.coordRoot, "cursor_response_ritual_unbound", {
+          adapter: input.adapter,
+          instance_id: input.instance_id,
+          generation_id: state.generation_id,
+          signal: input.signal,
+          reason: !state.current_turn_id
+            ? "no_open_turn"
+            : !state.current_turn_span
+              ? "no_open_turn_span"
+              : "ritual_observation_missing",
+        });
+        publishProducerState(path, state);
+        return { state: "ignored" };
+      }
+      const observation: CursorResponseRitualV3 = {
+        turn_id: state.current_turn_id,
+        ...(input.payload.turn_id ? { native_turn_id: input.payload.turn_id } : {}),
+        observed_at: eventClock.observed_at,
+        status_box_present: input.turn_ritual.status_box_present,
+        status_box_present_strict: input.turn_ritual.status_box_present_strict,
+      };
+      state.cursor_response_ritual = observation;
+      publishProducerState(path, state);
+      writeProducerDiagnosticV3(input.coordRoot, "cursor_response_ritual_observed", {
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        turn_id: observation.turn_id,
+        ...(observation.native_turn_id ? { native_turn_id: observation.native_turn_id } : {}),
+        response_observed_at: observation.observed_at,
+        status_box_present_strict: observation.status_box_present_strict,
+      });
+      return {
+        state: "observed",
+        generation_id: state.generation_id,
+        turn_id: observation.turn_id,
+        observed_at: observation.observed_at,
+      };
+    }
     if (input.signal === "user-prompt-submit" && !state.current_turn_span) {
       state.current_turn_span = openSpanStateV3({
         span_id: spanIdV3(),
@@ -1096,6 +1159,38 @@ function processHookSignalLocked(
     // Before the signal's own event: the tool call or turn that carries the
     // new effort already ran under it, so it must ride the new attestation.
     maybeAttestTuningChange(input, state, path, rootId);
+    const cursorResponseRitual =
+      input.adapter === "cursor" &&
+      (input.signal === "stop" || input.signal === "stop-failure") &&
+      state.current_turn_id &&
+      state.cursor_response_ritual?.turn_id === state.current_turn_id
+        ? state.cursor_response_ritual
+        : undefined;
+    const terminalTurnRitual =
+      input.adapter === "cursor" && (input.signal === "stop" || input.signal === "stop-failure")
+        ? cursorResponseRitual
+          ? {
+              status_box_present: cursorResponseRitual.status_box_present,
+              status_box_present_strict: cursorResponseRitual.status_box_present_strict,
+              session_name_required: false,
+              session_name_present: false,
+            }
+          : undefined
+        : input.turn_ritual;
+    if (cursorResponseRitual) {
+      writeProducerDiagnosticV3(input.coordRoot, "cursor_response_ritual_consumed", {
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        turn_id: cursorResponseRitual.turn_id,
+        ...(cursorResponseRitual.native_turn_id
+          ? { response_native_turn_id: cursorResponseRitual.native_turn_id }
+          : {}),
+        ...(input.payload.turn_id ? { stop_native_turn_id: input.payload.turn_id } : {}),
+        response_observed_at: cursorResponseRitual.observed_at,
+        stop_observed_at: eventClock.observed_at,
+        status_box_present_strict: cursorResponseRitual.status_box_present_strict,
+      });
+    }
     const event = normalizeHookEventV3(input.signal, eventInput.payload, {
       coordRoot: input.coordRoot,
       adapter: input.adapter,
@@ -1154,7 +1249,7 @@ function processHookSignalLocked(
       child_generation_id: delegation?.child_generation_id,
       agent_role: delegation?.role,
       stop_remediation: input.stop_remediation,
-      turn_ritual: input.turn_ritual,
+      turn_ritual: terminalTurnRitual,
     });
     if (!event) return { state: "ignored" };
     if (
@@ -3258,6 +3353,8 @@ function hookSignalCapability(signal: HookSignalV3): AdapterSignalV3 {
       return "session_end";
     case "user-prompt-submit":
       return "prompt";
+    case "after-agent-response":
+      return "assistant_reply_text";
     case "stop":
     case "stop-failure":
       return "turn_completion";
@@ -3515,6 +3612,7 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
   if (event.event_type === "turn.started") {
     const nextTurnId = (event.scope as { turn_id: `tid_${string}` }).turn_id;
     state.current_turn_id = nextTurnId;
+    state.cursor_response_ritual = undefined;
     state.session_start_derivation = undefined;
     if (state.tool_call_count_turn_id !== nextTurnId) {
       state.tool_call_count = 0;
@@ -3600,6 +3698,7 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
     }
     state.current_turn_id = undefined;
     state.current_native_turn_id = undefined;
+    state.cursor_response_ritual = undefined;
     state.current_turn_span = undefined;
     state.tool_call_count = 0;
     state.tool_call_count_turn_id = undefined;
@@ -3904,6 +4003,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "current_native_turn_id",
     "current_turn_span",
     "cursor_mode",
+    "cursor_response_ritual",
     "delegations",
     "epoch_genesis_id",
     "format",
@@ -4021,6 +4121,15 @@ function readProducerState(path: string): HookProducerStateV3 {
       (typeof state.current_native_turn_id !== "string" ||
         state.current_native_turn_id.length === 0 ||
         state.current_native_turn_id.length > 512)) ||
+    (state.cursor_response_ritual !== undefined &&
+      (!/^tid_[a-f0-9]{64}$/.test(state.cursor_response_ritual.turn_id) ||
+        (state.cursor_response_ritual.native_turn_id !== undefined &&
+          (typeof state.cursor_response_ritual.native_turn_id !== "string" ||
+            state.cursor_response_ritual.native_turn_id.length === 0 ||
+            state.cursor_response_ritual.native_turn_id.length > 512)) ||
+        !Number.isFinite(Date.parse(state.cursor_response_ritual.observed_at)) ||
+        typeof state.cursor_response_ritual.status_box_present !== "boolean" ||
+        typeof state.cursor_response_ritual.status_box_present_strict !== "boolean")) ||
     (state.last_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.last_event_id)) ||
     (state.last_monotonic_ns !== undefined && !/^\d+$/.test(state.last_monotonic_ns)) ||
     (state.last_observed_at !== undefined &&

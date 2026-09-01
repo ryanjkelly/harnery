@@ -73,6 +73,7 @@ export function hookSignalV3(eventName: string): HookSignalV3 | undefined {
     case "session-start":
     case "session-end":
     case "user-prompt-submit":
+    case "after-agent-response":
     case "stop":
     case "stop-failure":
     case "pre-tool-use":
