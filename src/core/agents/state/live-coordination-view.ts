@@ -197,6 +197,7 @@ export function projectHeartbeatV3(
     suggested_session_name: cache?.suggested_session_name,
     session_name_seen_at: cache?.session_name_seen_at,
     session_name_seen_for: cache?.session_name_seen_for,
+    session_name_display_requested_for: cache?.session_name_display_requested_for,
     workflow_run_id: generation.run_id,
     workflow_agent_id: generation.workflow_agent_id,
     parent_instance_id: parent ? nativeInstanceIdV3(parent.instance_id) : undefined,

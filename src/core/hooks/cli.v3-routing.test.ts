@@ -412,6 +412,182 @@ describe("agent-hook V3 hard cut", () => {
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
   });
 
+  test("Cursor closes a latch its first post-mint turn missed, whatever the fence label", () => {
+    const root = candidateRoot("cursor");
+    const owner = "cursor-late-display-owner";
+    const name = "Agent Maya - Auth refactor";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "cursor"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+
+    expect(
+      runHook("session-start", {
+        conversation_id: owner,
+        generation_id: "late-display-start",
+        hook_event_name: "sessionStart",
+      }).status,
+    ).toBe(0);
+    expect(
+      runHook("user-prompt-submit", {
+        conversation_id: owner,
+        generation_id: "late-display-turn",
+        hook_event_name: "beforeSubmitPrompt",
+        prompt: "private prompt",
+      }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("Cursor owner was not projected");
+    const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        ...readLiveCoordinationRow(root, instanceId),
+        instance_id: instanceId,
+        suggested_session_name: name,
+      }),
+      "utf8",
+    );
+
+    // The mint turn runs tools with no name block. Cursor supplies no
+    // transcript, so this can never become an omission, and every tool in the
+    // batch has to run rather than a subset.
+    for (const [index, message] of ["", "Reading the plan first.", ""].entries()) {
+      const batched = runHook("pre-tool-use", {
+        conversation_id: owner,
+        generation_id: "late-display-batch",
+        hook_event_name: "preToolUse",
+        ...(message ? { agent_message: message } : {}),
+        tool_name: "Read",
+        tool_use_id: `late-display-batch-${index}`,
+        tool_input: { target_file: "README.md" },
+      });
+      expect(batched.status).toBe(0);
+      expect(batched.stdout).not.toContain('"permission":"deny"');
+    }
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
+
+    // A later reply opens with the block. A labelled fence renders the same
+    // single title line, so it closes the latch the first turn missed.
+    const response = runHook("after-agent-response", {
+      conversation_id: owner,
+      generation_id: "late-display-response",
+      hook_event_name: "afterAgentResponse",
+      text: `\`\`\`txt\n${name}\n\`\`\`\n\nNow continuing the work.`,
+    });
+    expect(response.status).toBe(0);
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
+
+    const after = runHook("pre-tool-use", {
+      conversation_id: owner,
+      generation_id: "late-display-after",
+      hook_event_name: "preToolUse",
+      tool_name: "Write",
+      tool_use_id: "late-display-write",
+      tool_input: { target_file: join(root, "notes.md"), contents: "ok" },
+    });
+    expect(after.status).toBe(0);
+    expect(after.stdout).not.toContain('"permission":"deny"');
+  });
+
+  test("Cursor stamps a parallel batch that opens with the block and survives title drift", () => {
+    const root = candidateRoot("cursor");
+    const owner = "cursor-drift-owner";
+    const asked = "Agent Maya - Auth refactor";
+    const drifted = "Agent Maya - Session naming";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "cursor"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+
+    expect(
+      runHook("session-start", {
+        conversation_id: owner,
+        generation_id: "drift-start",
+        hook_event_name: "sessionStart",
+      }).status,
+    ).toBe(0);
+    expect(
+      runHook("user-prompt-submit", {
+        conversation_id: owner,
+        generation_id: "drift-turn",
+        hook_event_name: "beforeSubmitPrompt",
+        prompt: "private prompt",
+      }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("Cursor owner was not projected");
+    const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
+    mkdirSync(dirname(cachePath), { recursive: true });
+    const seedCache = (row: Record<string, unknown>) =>
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          ...readLiveCoordinationRow(root, instanceId),
+          instance_id: instanceId,
+          ...row,
+        }),
+        "utf8",
+      );
+
+    // One message opens with the block and then requests several tools. The
+    // leading tool carries the narration; its siblings carry none.
+    seedCache({ suggested_session_name: asked, session_name_display_requested_for: asked });
+    const lead = runHook("pre-tool-use", {
+      conversation_id: owner,
+      generation_id: "drift-batch",
+      hook_event_name: "preToolUse",
+      agent_message: `\`\`\`\n${asked}\n\`\`\`\n\nStarting the sweep.`,
+      tool_name: "Read",
+      tool_use_id: "drift-batch-lead",
+      tool_input: { target_file: "README.md" },
+    });
+    expect(lead.status).toBe(0);
+    expect(lead.stdout).not.toContain('"permission":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(asked);
+    for (const index of [1, 2]) {
+      const sibling = runHook("pre-tool-use", {
+        conversation_id: owner,
+        generation_id: "drift-batch",
+        hook_event_name: "preToolUse",
+        tool_name: "Grep",
+        tool_use_id: `drift-batch-sibling-${index}`,
+        tool_input: { pattern: "example" },
+      });
+      expect(sibling.status).toBe(0);
+      expect(sibling.stdout).not.toContain('"permission":"deny"');
+    }
+
+    // Now the title changes after the agent was asked for the old one. The
+    // display it was handed still closes the new latch, stamped against the
+    // pending title so nothing stays permanently owed.
+    seedCache({
+      suggested_session_name: drifted,
+      session_name_display_requested_for: asked,
+    });
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).not.toBe(drifted);
+    const response = runHook("after-agent-response", {
+      conversation_id: owner,
+      generation_id: "drift-response",
+      hook_event_name: "afterAgentResponse",
+      text: `\`\`\`\n${asked}\n\`\`\`\n\nContinuing.`,
+    });
+    expect(response.status).toBe(0);
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(drifted);
+
+    const after = runHook("pre-tool-use", {
+      conversation_id: owner,
+      generation_id: "drift-after",
+      hook_event_name: "preToolUse",
+      tool_name: "Write",
+      tool_use_id: "drift-write",
+      tool_input: { target_file: join(root, "notes.md"), contents: "ok" },
+    });
+    expect(after.status).toBe(0);
+    expect(after.stdout).not.toContain('"permission":"deny"');
+  });
+
   test("Codex preserves ordered display and stays silent when its transcript is unavailable", () => {
     const root = candidateRoot("codex");
     const owner = "codex-session-name-owner";

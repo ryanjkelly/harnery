@@ -8,6 +8,7 @@
 export interface SessionNameDisplayState {
   suggested_session_name?: string;
   session_name_seen_for?: string;
+  session_name_display_requested_for?: string;
 }
 
 export const SESSION_NAME_DISPLAY_NOTE =
@@ -19,6 +20,45 @@ export function sessionNameDisplayPending(
   const name = row?.suggested_session_name;
   if (!name || row?.session_name_seen_for === name) return null;
   return name;
+}
+
+/**
+ * Every title whose exact display satisfies the current latch.
+ *
+ * The pending title always counts. The title the agent was last instructed to
+ * display also counts, because the harness — not the agent — is what changed
+ * the target after asking. Accepting it costs nothing the operator can see: a
+ * clean one-line block did open that reply. Refusing it left Cursor sessions
+ * permanently latched, since no Cursor surface can re-open a missed window.
+ */
+export function sessionNameDisplayAcceptedNames(
+  row: SessionNameDisplayState | null | undefined,
+): string[] {
+  const pending = sessionNameDisplayPending(row);
+  if (!pending) return [];
+  const requested = row?.session_name_display_requested_for;
+  return requested && requested !== pending ? [pending, requested] : [pending];
+}
+
+/**
+ * Match assistant text against any accepted title and report which one closed
+ * the latch, so a drifted display can be stamped against the pending title and
+ * logged as drift rather than silently discarded.
+ */
+export function matchSessionNameDisplay(
+  row: SessionNameDisplayState | null | undefined,
+  text: string | undefined,
+  startsWithBlock: (
+    text: string,
+    expectedName: string,
+  ) => boolean = assistantTextStartsWithSessionNameBlock,
+): { pending: string; displayed: string } | null {
+  if (!text) return null;
+  const accepted = sessionNameDisplayAcceptedNames(row);
+  const pending = accepted[0];
+  if (!pending) return null;
+  const displayed = accepted.find((candidate) => startsWithBlock(text, candidate));
+  return displayed ? { pending, displayed } : null;
 }
 
 export function sessionNameDisplayBlock(name: string): string {
@@ -108,15 +148,28 @@ function responseContainsSessionNameMint(
 }
 
 /**
- * Accept the exact unlabelled block Harnery requests. `text` and `plaintext`
- * are tolerated for older prompts, but the code block may contain only the
- * suggested name and must be the first non-whitespace user-facing content.
+ * A leading fenced block whose only line is the suggested name.
+ *
+ * What the contract protects is what the operator sees: the reply opens with a
+ * code block containing exactly the title, so it renders as one clean
+ * copy-pasteable line. The fence's info string changes none of that, so any
+ * single-word language tag passes. Restricting it to `text`/`plaintext` meant a
+ * model that wrote ```txt or ```markdown produced a display the operator could
+ * read perfectly while the latch refused to close — and since nothing else can
+ * close a Cursor latch, that mismatch stranded the whole session.
+ *
+ * Still exact in every load-bearing way: the block is the first user-facing
+ * content, holds one line, and that line equals the name. The backreference
+ * requires the closing fence to match the opening run, so a longer fence cannot
+ * be closed by a shorter one.
  */
+const LEADING_SESSION_NAME_BLOCK =
+  /^(`{3,})[ \t]*[A-Za-z0-9_.+#-]*[ \t]*\n([^\n]*)\n\1[ \t]*(?:\n|$)/;
+
 export function assistantTextStartsWithSessionNameBlock(text: string, name: string): boolean {
   if (!text || !name) return false;
   const normalized = text.replace(/\r\n?/g, "\n").trimStart();
-  const match = /^```(?:text|plaintext)?[ \t]*\n([^\n]*)\n```(?:[ \t]*(?:\n|$))/.exec(normalized);
-  return match?.[1] === name;
+  return LEADING_SESSION_NAME_BLOCK.exec(normalized)?.[2] === name;
 }
 
 /**

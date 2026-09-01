@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   assistantTextStartsWithSessionNameBlock,
   isSessionNameRemediationCommand,
+  matchSessionNameDisplay,
+  sessionNameDisplayAcceptedNames,
   sessionNameDisplayBlock,
   sessionNameDisplayPending,
   sessionNameDisplayRecoveryInstruction,
@@ -33,6 +35,57 @@ describe("session name display latch", () => {
     expect(
       assistantTextStartsWithSessionNameBlock(`\n  \`\`\`text\n${NAME}\n\`\`\`\nContinuing.`, NAME),
     ).toBe(true);
+  });
+
+  test("tolerates any single-word fence label and a longer matching fence", () => {
+    for (const label of ["txt", "markdown", "plaintext", "text", "md"]) {
+      expect(assistantTextStartsWithSessionNameBlock(`\`\`\`${label}\n${NAME}\n\`\`\``, NAME)).toBe(
+        true,
+      );
+    }
+    expect(
+      assistantTextStartsWithSessionNameBlock(`\`\`\`\`\n${NAME}\n\`\`\`\`\nNext.`, NAME),
+    ).toBe(true);
+  });
+
+  test("still requires a closing fence as long as the opening run", () => {
+    expect(assistantTextStartsWithSessionNameBlock(`\`\`\`\`\n${NAME}\n\`\`\`\nNext.`, NAME)).toBe(
+      false,
+    );
+  });
+
+  test("accepts the title the agent was told to show when the suggestion drifted", () => {
+    const asked = "Agent Maya - Auth refactor";
+    const row = {
+      suggested_session_name: "Agent Maya - Session naming",
+      session_name_display_requested_for: asked,
+    };
+    expect(sessionNameDisplayAcceptedNames(row)).toEqual(["Agent Maya - Session naming", asked]);
+    expect(matchSessionNameDisplay(row, sessionNameDisplayBlock(asked))).toEqual({
+      pending: "Agent Maya - Session naming",
+      displayed: asked,
+    });
+    // A satisfied latch accepts nothing further, drift record or not.
+    expect(
+      sessionNameDisplayAcceptedNames({
+        ...row,
+        session_name_seen_for: row.suggested_session_name,
+      }),
+    ).toEqual([]);
+  });
+
+  test("never accepts a title that was neither pending nor requested", () => {
+    const row = {
+      suggested_session_name: NAME,
+      session_name_display_requested_for: NAME,
+    };
+    expect(
+      matchSessionNameDisplay(row, sessionNameDisplayBlock("Agent Maya - Something else")),
+    ).toBeNull();
+    expect(
+      matchSessionNameDisplay(row, `Starting.\n\n${sessionNameDisplayBlock(NAME)}`),
+    ).toBeNull();
+    expect(matchSessionNameDisplay(row, undefined)).toBeNull();
   });
 
   test("rejects prose mentions, leading commentary, and extra block content", () => {

@@ -33,6 +33,13 @@ export interface Heartbeat {
   session_name_seen_at?: string;
   /** The specific suggested name proven present by the sighting stamp. */
   session_name_seen_for?: string;
+  /**
+   * The suggested name the agent was last actually instructed to display.
+   * Usually identical to `suggested_session_name`; it differs only when the
+   * title changed after the instruction went out, and a display of it still
+   * counts so that drift cannot strand the latch.
+   */
+  session_name_display_requested_for?: string;
   last_status_at?: string;
   current_turn_id?: string;
   parent_instance_id?: string;

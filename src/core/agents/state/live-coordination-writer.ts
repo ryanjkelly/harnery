@@ -107,6 +107,11 @@ function materializeLiveCoordinationHeartbeat(
           ...(current.session_name_seen_at
             ? { session_name_seen_at: current.session_name_seen_at }
             : {}),
+          ...(current.session_name_display_requested_for
+            ? {
+                session_name_display_requested_for: current.session_name_display_requested_for,
+              }
+            : {}),
         }
       : {};
   const materialized: V3HeartbeatMaterialization = {

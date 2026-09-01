@@ -38,6 +38,8 @@ import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "../agents/rules/stop-
 import {
   assistantTextStartsWithSessionNameBlock,
   isSessionNameRemediationCommand,
+  matchSessionNameDisplay,
+  sessionNameDisplayAcceptedNames,
   sessionNameDisplayInstruction,
   sessionNameDisplayPending,
   sessionNameDisplayRecoveryInstruction,
@@ -47,6 +49,7 @@ import type { Heartbeat } from "../agents/state/heartbeat-reader.ts";
 import {
   readHeartbeat,
   setAssignedNameCache,
+  stampSessionNameRequested,
   stampSessionNameSeen,
 } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
@@ -117,6 +120,7 @@ import {
 import { adapterPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
+import type { SessionNameDisplayInspection } from "./resolve/transcript.ts";
 import {
   inspectSessionNameDisplayImmediately,
   scanAssistantStatusBoxPresent,
@@ -730,13 +734,32 @@ async function main(): Promise<number> {
       appendDebug(coordRoot, { ...debugBase, skipped: "no-owner-resolved" });
       return 0;
     }
-    const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, owner.instance_id));
+    const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
+    const name = sessionNameDisplayPending(row);
     const text = typeof payload?.raw.text === "string" ? payload.raw.text : "";
-    if (name && assistantTextStartsWithSessionNameBlock(text, name)) {
-      stampSessionNameSeen(coordRoot, owner.instance_id, name);
-      appendDebug(coordRoot, { ...debugBase, effect: "session-name-display-stamped" });
+    const sighting = matchSessionNameDisplay(row, text);
+    if (sighting) {
+      stampSessionNameSeen(coordRoot, owner.instance_id, sighting.pending);
+      appendDebug(coordRoot, {
+        ...debugBase,
+        effect: "session-name-display-stamped",
+        session_name_pending: sighting.pending,
+        ...(sighting.displayed === sighting.pending
+          ? {}
+          : { session_name_displayed: sighting.displayed, session_name_drift: true }),
+      });
+    } else if (!name) {
+      // Nothing was owed. Distinct from a miss: conflating the two is what made
+      // a latched Cursor session undiagnosable from this log.
+      appendDebug(coordRoot, { ...debugBase, skipped: "no-pending-session-name" });
     } else {
-      appendDebug(coordRoot, { ...debugBase, skipped: "no-session-name-sighting" });
+      appendDebug(coordRoot, {
+        ...debugBase,
+        skipped: "session-name-block-absent",
+        session_name_pending: name,
+        reply_bytes: text.length,
+        reply_leads_with_fence: /^\s*`{3,}/.test(text),
+      });
     }
     if (ledgerRoute.state === "blocked") {
       appendDebug(coordRoot, {
@@ -1408,6 +1431,11 @@ async function main(): Promise<number> {
     try {
       const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, owner.instance_id));
       if (name && toolResponseMintedSessionName(payload?.tool_response, name)) {
+        // Record the title before asking for it. The suggestion can still
+        // change afterwards (an assigned-name rewrite, a lifecycle re-mint, a
+        // rebuilt cache), and the agent must not be stranded for displaying
+        // exactly what it was handed.
+        stampSessionNameRequested(coordRoot, owner.instance_id, name);
         const { emitContext } = await import("./adapter/output.ts");
         emitContext(adapter, "PostToolUse", sessionNameDisplayInstruction(name));
       }
@@ -1484,25 +1512,7 @@ async function enforcePendingSessionNameDisplay(
   const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
   if (isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) return true;
 
-  const inspection =
-    adapter === "cursor" && payload?.agent_message !== undefined
-      ? {
-          state: assistantTextStartsWithSessionNameBlock(payload.agent_message, name)
-            ? ("present" as const)
-            : ("unavailable" as const),
-        }
-      : inspectSessionNameDisplayImmediately(
-          // Codex hook payloads omit transcript_path on every event, which
-          // left this inspection permanently unavailable and the latch never
-          // stamped. Discover the rollout by session id; the scan only runs
-          // while a name is pending, so the latch closes after one success.
-          payload?.transcript_path ??
-            (adapter === "codex"
-              ? discoverCodexSessionTranscript(payload?.session_id ?? instanceId)
-              : undefined),
-          name,
-          assistantTextStartsWithSessionNameBlock,
-        );
+  const inspection = inspectDisplayEvidence(instanceId, adapter, payload, coordination);
   if (inspection.state === "present") {
     stampSessionNameSeen(coordRoot, instanceId, name);
     return true;
@@ -1517,9 +1527,63 @@ async function enforcePendingSessionNameDisplay(
     return true;
   }
 
+  // Record the refusal. Without this the gate was the one enforcement path
+  // that left no trace, so a session reporting "the gate keeps denying me"
+  // could not be confirmed or refuted from the hook log.
+  appendDebug(coordRoot, {
+    ts: new Date().toISOString(),
+    event_name: "pre-tool-use",
+    adapter,
+    effect: "session-name-display-denied",
+    session_name_pending: name,
+    tool_name: payload?.tool_name,
+  });
   const { emitDeny } = await import("./adapter/output.ts");
   emitDeny(adapter, sessionNameDisplayRecoveryInstruction(name, resolveBinName(coordRoot)));
   return false;
+}
+
+/**
+ * Evidence for the pending display, over every title whose display counts.
+ *
+ * Cursor supplies the current narration directly; Claude Code and Codex are
+ * resolved from their JSONL transcripts. Absent is the only state that denies,
+ * so a title is refused only when a readable surface positively shows some
+ * other opening text for every accepted title.
+ */
+function inspectDisplayEvidence(
+  instanceId: string,
+  adapter: Adapter,
+  payload: ParsedPayload | null,
+  coordination: Heartbeat | null,
+): SessionNameDisplayInspection {
+  if (adapter === "cursor" && payload?.agent_message !== undefined) {
+    return matchSessionNameDisplay(coordination, payload.agent_message)
+      ? { state: "present" }
+      : { state: "unavailable", reason: "transcript_not_ready" };
+  }
+
+  // Codex hook payloads omit transcript_path on every event, which left this
+  // inspection permanently unavailable and the latch never stamped. Discover
+  // the rollout by session id; the scan only runs while a name is pending, so
+  // the latch closes after one success.
+  const transcriptPath =
+    payload?.transcript_path ??
+    (adapter === "codex"
+      ? discoverCodexSessionTranscript(payload?.session_id ?? instanceId)
+      : undefined);
+
+  let verdict: SessionNameDisplayInspection = { state: "absent" };
+  for (const candidate of sessionNameDisplayAcceptedNames(coordination)) {
+    const inspection = inspectSessionNameDisplayImmediately(
+      transcriptPath,
+      candidate,
+      assistantTextStartsWithSessionNameBlock,
+    );
+    if (inspection.state === "present") return inspection;
+    if (inspection.state === "unavailable") verdict = inspection;
+  }
+  return verdict;
 }
 
 function generationBoundHeartbeat(

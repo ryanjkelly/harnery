@@ -22,6 +22,7 @@
  * Never throws: coordination telemetry must not take down a hook.
  */
 
+import { sessionNameDisplayAcceptedNames } from "../agents/session-name-display.ts";
 import { stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 
@@ -42,7 +43,11 @@ export function sessionNamePresence(
     if (row?.session_name_seen_for === name) {
       return { session_name_present: true, session_name_present_for: name };
     }
-    const present = scanAssistantText(name);
+    // A display of the title Harnery last asked for counts here too, so Stop
+    // and the PreToolUse gate cannot disagree about the same reply.
+    const present = sessionNameDisplayAcceptedNames(row).some((candidate) =>
+      scanAssistantText(candidate),
+    );
     if (present) stampSessionNameSeen(coordRoot, instanceId, name);
     return { session_name_present: present, session_name_present_for: name };
   } catch {

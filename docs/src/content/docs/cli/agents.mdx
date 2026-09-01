@@ -186,8 +186,16 @@ allowing another tool. Cursor stamps the completed assistant text from
 `afterAgentResponse`; its `preToolUse.agent_message` is only the current
 narration, so missing the earlier block there cannot reject the tool. The block
 must be the first non-whitespace content and contain only
-`suggested_session_name`. Chat UIs add a one-click Copy button, so the operator
-gets the exact title without hand-selecting.
+`suggested_session_name`; the fence may carry any single-word language label,
+and the closing fence must be as long as the opening one. Chat UIs add a
+one-click Copy button, so the operator gets the exact title without
+hand-selecting.
+
+Displaying the title Harnery last asked for always satisfies the latch, even
+when the suggestion has since changed. A title can change after the instruction
+goes out — a lifecycle transition re-mints it, and a rebuilt generation cache
+can re-mint from the current task — and an agent must not be blocked for showing
+exactly what it was handed.
 
 For transcript-backed adapters, the evidence boundary is the first assistant
 message after the mint result. Later commentary or a user prompt does not erase

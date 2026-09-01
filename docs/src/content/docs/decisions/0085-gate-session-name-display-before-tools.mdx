@@ -139,3 +139,30 @@ pending-verification reminder and every routine `set-task` created another
 retry boundary. The hook now stays silent when evidence is unavailable, and
 the prompt reminder is deduplicated by exact minted name. The latch remains
 pending for honest V3 telemetry; only the automatic re-request is bounded.
+
+A later Cursor session showed that fail-open is not enough on an adapter with
+no transcript. Cursor can close the latch through exactly two samples of
+assistant text: one narration handed to a tool hook, and one completed reply.
+When both miss, the suggestion stays pending for the rest of the session, so
+`suggest-name` keeps reprinting the same title, the naming rule keeps asking for
+it, and the agent has no reachable way to satisfy either. Two mismatches turned
+out to be enough to cause that. A fenced block labelled anything other than
+`text` or `plaintext` was rejected even though it renders as the same single
+title line an operator reads and copies. And a suggestion that changed after the
+instruction went out — an assigned-name rewrite, a lifecycle re-mint, a rebuilt
+cache that re-minted from the current task — left the agent displaying a title
+that matched nothing.
+
+The gate now accepts any single-word fence label, and records the title the
+agent was actually instructed to display so that its display also satisfies the
+latch. Neither relaxes what the operator sees: the block is still the reply's
+first content, still holds one line, and that line still equals a title Harnery
+asked for. Fixing only the fail-open direction would leave the same class of
+mismatch stranding future sessions, because the harness, not the agent, owns
+both the title and the instruction.
+
+The same session was undiagnosable from the hook log, which recorded one
+`no-session-name-sighting` reason for both "nothing was owed" and "the reply did
+not open with the block", and recorded nothing at all when the gate denied a
+tool. Those are now distinct reasons, and a denial is logged with the pending
+title.

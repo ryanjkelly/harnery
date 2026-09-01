@@ -180,6 +180,29 @@ export function stampSessionNameSeen(
   }));
 }
 
+/**
+ * Remember which title the agent was actually asked to display.
+ *
+ * The gate can only ask for a display through the PostToolUse instruction, and
+ * the title it names can change afterwards (an assigned-name rewrite of an
+ * `Agent unknown - ...` suggestion, a lifecycle re-mint, a rebuilt cache that
+ * re-minted from the current task). Without this record the agent's correct
+ * display of the title it was handed matches nothing, the latch never closes,
+ * and on Cursor no later surface can repair it.
+ */
+export function stampSessionNameRequested(
+  coordRoot: string,
+  instanceId: string,
+  name: string,
+): Heartbeat | null {
+  if (!name) return null;
+  return mutate(coordRoot, instanceId, (hb) =>
+    hb.session_name_display_requested_for === name
+      ? hb
+      : { ...hb, session_name_display_requested_for: name },
+  );
+}
+
 export function releaseClaim(
   coordRoot: string,
   instanceId: string,
