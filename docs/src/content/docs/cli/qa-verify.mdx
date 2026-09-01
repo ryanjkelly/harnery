@@ -1,0 +1,71 @@
+---
+title: harn qa-verify
+description: Verify that a qa-run result document is fresh evidence for a specific invocation, matching its run identity against expectations.
+sidebar:
+  order: 26
+---
+
+```
+harn qa-verify [options] <path>
+```
+
+Checks whether a [`harn qa-run`](/cli/qa-run/) result document is fresh evidence for the invocation you have in mind, rather than a leftover from an earlier run, a different job, or another revision. Every schema-v2 result carries a run identity block (`run_id`, start and completion timestamps, the tested revision, a digest of the effective job, and the directory it was written into). `qa-verify` matches that block against the expectations you pass as flags and exits accordingly.
+
+The assessment is fail-closed. A document with no verifiable identity block (a schema-v1 result, or arbitrary JSON) is stale by definition: it carries nothing to verify. Every expectation mismatch is reported, not just the first.
+
+## Why verify evidence
+
+A QA result file proves nothing by itself. A reused output workspace can hold a result from last week, a result produced for a narrower job, or a result for a revision that has since changed. Any consumer that gates on "the page passed QA" (a signoff step, a deploy gate, a review bot) should verify the result is the one it asked for: the exact run it launched, the job it defined, the revision it is shipping, and recent enough to matter. `qa-verify` is that check as one command with a scriptable exit code.
+
+## Path resolution
+
+`<path>` may name any of three things:
+
+- **A file**: read directly as the result document.
+- **A run parent directory**: when the directory contains `latest.json`, the pointer's `result` path is followed (relative to the directory). This is the directory you passed to `qa-run --out-dir`.
+- **A run directory**: when the directory contains `page-qa-result.json` directly (a `run-<run_id>/` directory).
+
+A directory with neither file is a usage error naming both expectations.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--run-id <id>` | Exact run ID the evidence must carry (the `run_id` printed and recorded by the invocation you made). |
+| `--revision <sha>` | Revision the evidence must have tested. A result whose `revision_source` is `unknown` cannot satisfy this expectation. |
+| `--job <file>` | Job document (JSON) to digest-match. Reconstructed the way `qa-run` builds the effective job: the result's `target` and `mode` overlay the file's values before validation and digesting, then the digest is compared against the recorded `job_digest`. |
+| `--max-age <minutes>` | Maximum age of the run's `completed_at`. Older evidence is stale. |
+| `--json` | Print the assessment object (plus `result_path`) as JSON. |
+
+All flags are optional. With none, `qa-verify` still requires a complete identity block and still applies the moved-result rule below.
+
+## The moved-result rule
+
+Each result records the absolute directory it was written into (`run.out_dir`). `qa-verify` always compares that against the directory the result file was actually read from. A result that was moved or copied fails verification: evidence is tied to where the runner wrote it, and a file relocated into a new workspace is not evidence for that workspace.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Evidence is fresh: identity block complete, every expectation satisfied. |
+| 1 | Usage error, unreadable or unparseable input, or a `--job` file that does not reconstruct a valid job. |
+| 3 | Evidence is stale or unverifiable. Each independent reason is printed as a warning. |
+
+Note that exit 0 means the evidence is authentic and current, not that the page passed: read the printed verdict (or `verdict` in `--json` output) for the QA outcome itself.
+
+## Examples
+
+```bash
+# After a qa-run into .qa-run, verify its latest result is the run you made
+harn qa-verify .qa-run --run-id 6e1f0c3a-...
+
+# Gate on the exact job and revision being shipped, no older than an hour
+harn qa-verify .qa-run --job pricing-qa.json --revision "$(git rev-parse HEAD)" --max-age 60
+
+# Machine-readable assessment of one specific result file
+harn qa-verify .qa-run/run-6e1f0c3a-.../page-qa-result.json --json
+```
+
+## See also
+
+- [`harn qa-run`](/cli/qa-run/): produces the result documents this command verifies, and documents the run identity block and output layout.

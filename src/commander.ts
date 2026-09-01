@@ -447,6 +447,13 @@ function harneryCommandBundles({
       { hasOptions: true },
     ),
     lazy(
+      "qa-verify <path>",
+      "Verify a qa-run result is fresh evidence for a specific invocation: match its run identity (run_id, job digest, tested revision, age, recorded output directory) against expectations. Fail-closed on missing identity.",
+      async (program) =>
+        (await import("./commands/qa-verify.ts")).registerQaVerifyCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
       "browse-session",
       "Control an opted-in headed browse session through an owner-only descriptor",
       async (program) =>
