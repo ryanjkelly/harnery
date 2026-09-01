@@ -7,6 +7,9 @@ sidebar:
 
 ```
 harn admission run --resource <name> [options] -- <command...>
+harn admission run --detach --resource <name> -- <command...>
+harn admission wait <job-dir> [options]
+harn admission jobs [options]
 harn admission status [options]
 ```
 
@@ -30,8 +33,66 @@ The resource name is just a string agreed on by the participants: every wrapper 
 | `--capacity <n>` | Concurrent holders this machine should allow (1 to 32; default 1). Advisory: the smallest capacity among concurrent waiters effectively governs. |
 | `--timeout <minutes>` | Maximum admission wait before giving up (1 to 1440; default 60). |
 | `--label <text>` | Holder description shown in status listings. Default: the command itself. |
+| `--detach` | Run the command as a durable job instead of in the foreground. See below. |
+| `--json` | With `--detach`, print the job envelope as JSON. |
 
 Exit codes: the child's exit code on a completed run; 4 when the admission wait timed out (the command never ran); 1 on a usage error, a spawn failure, or a child killed by a signal.
+
+## Durable jobs: run --detach
+
+```bash
+harn admission run --detach --resource build -- npm run build
+```
+
+A foreground wrapper dies with its terminal. Close the tab, drop the SSH connection, or lose the bridge between an agent and the machine it drives, and the build dies halfway through, usually with no record of how far it got. `--detach` removes the client from the critical path:
+
+1. The client mints a job record, launches a detached supervisor process, prints the job id and directory, and exits 0. It never waits for the slot.
+2. The supervisor queues for the admission slot, runs the command with its output on disk, refreshes a heartbeat every 15 seconds, and writes the terminal record with the command's exit code.
+3. Any later client reads that record. Reconnecting is a read, so it can happen from a different terminal, a different session, or after an hour of disconnection.
+
+```
+[info] detached job 544726e2-5ef2-42f4-afd6-9365ba1e4c41 (supervisor pid 2587475)
+[info] job dir: /tmp/harnery-admission-jobs/jobs/544726e2-5ef2-42f4-afd6-9365ba1e4c41
+[info] log: /tmp/harnery-admission-jobs/jobs/544726e2-5ef2-42f4-afd6-9365ba1e4c41/job.log
+[info] reconnect: harn admission wait /tmp/harnery-admission-jobs/jobs/544726e2-5ef2-42f4-afd6-9365ba1e4c41
+```
+
+Each job directory holds three files:
+
+| File | Contents |
+| --- | --- |
+| `job.json` | The immutable description: job id, resource, capacity, label, argument vector, working directory, creation time. |
+| `status.json` | The mutable state, rewritten atomically: `launching`, `queued`, `running`, or `completed`, plus the supervisor PID, the heartbeat, and the final `exit_code` and `signal`. |
+| `job.log` | The command's merged stdout and stderr. |
+
+Job records live beside the queue state, under `$TMPDIR/harnery-admission-jobs` by default, or the directory named by `HARNERY_JOBS_DIR`.
+
+Exit codes with `--detach`: 0 once the job is launched, 1 on a usage error or a failure to launch the supervisor. The job's own outcome comes from `admission wait`.
+
+## admission wait
+
+```bash
+harn admission wait /tmp/harnery-admission-jobs/jobs/544726e2-...
+```
+
+Polls the job record every 2 seconds until it settles, printing a line on each state transition, then exits with the job's own exit code. Reconnecting a second time to a job that already finished gives the same answer, because the record is what decides, not the client's memory of it.
+
+`--timeout <minutes>` bounds the wait (1 to 1440, default 120). `--json` prints the full job report.
+
+Exit codes: the job's own exit code once it completes; 1 on a usage error or an unreadable job record; 4 when the job is dead; 5 when the wait timed out while the job was still running.
+
+## admission jobs
+
+```bash
+harn admission jobs
+```
+
+Lists recent jobs, newest first, with id, state, resource, exit code, heartbeat age, and label. `--limit <n>` bounds the listing (default 20) and `--json` emits the full reports.
+
+```
+[info] job 544726e2-...: completed, resource smoke-test, exit 0, heartbeat 33s ago, age 39s - npm run build
+[warn] job e42e838b-...: dead, resource smoke-test, pid 2687437 not running, heartbeat 2s ago, age 2s - npm run build
+```
 
 ## admission status
 
@@ -39,7 +100,19 @@ Exit codes: the child's exit code on a completed run; 4 when the admission wait 
 harn admission status
 ```
 
-Lists each resource present in the admission state directory with its current slot holders and FIFO waiters: label, PID, and since when each has been holding or waiting. Dead entries are pruned as a side effect of being listed. `--resource <name>` narrows to one resource; `--json` emits a machine-readable snapshot.
+Lists each resource present in the admission state directory with its current slot holders and FIFO waiters: label, PID, and since when each has been holding or waiting. Dead entries are pruned as a side effect of being listed. Detached jobs still in flight are listed underneath. `--resource <name>` narrows to one resource; `--json` emits a machine-readable snapshot.
+
+## Reading a job record
+
+Classification is fail-closed, the same rule [`harn qa-status`](/cli/qa-status/) applies to a detached QA run. Liveness is proven by the supervisor's PID, never assumed from the status document:
+
+- **`launching`**: the record exists and the supervisor is starting.
+- **`queued`**: the supervisor is waiting for a slot on its resource.
+- **`running`**: the command is executing. A heartbeat older than 120 seconds earns a staleness warning but stays `running` while the PID is alive.
+- **`completed`**: terminal. `exit_code` and `signal` are final.
+- **`dead`**: derived, never written. The state is non-terminal, the supervisor PID is gone, and no terminal record was written. Something killed the supervisor.
+
+**Never relaunch a job because a client lost sight of it.** A disconnect says nothing about the job, and the whole point of the record is that it outlives the connection. Ask `admission wait` or `admission jobs` first: relaunch only after one of them reports `dead`, and read `job.log` before you do, because the wrapped command may have finished its side effects before the supervisor died. Note that killing a supervisor does not kill the command it launched, so a `dead` record can coexist with a command still running.
 
 ## The protocol
 
@@ -62,6 +135,11 @@ harn admission run --resource docs-render --capacity 2 -- npm run docs:build
 
 # Who is holding what right now?
 harn admission status
+
+# Start a build that survives losing this terminal, then reconnect to it
+harn admission run --detach --resource build -- npm run build
+harn admission jobs
+harn admission wait /tmp/harnery-admission-jobs/jobs/<job-id>
 ```
 
 ## See also
