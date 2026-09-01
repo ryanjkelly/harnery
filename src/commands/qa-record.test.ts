@@ -258,6 +258,37 @@ describe("recordManualQa", () => {
     expect(copied.recorded_by).toBe("agent-Test");
   });
 
+  test("an older manual completion does not move latest.json backwards", () => {
+    const dir = workspace();
+    const evidencePath = writeEvidence(dir, baseEvidence());
+    const outDir = join(dir, ".qa-run");
+    const newer = recordManualQa({
+      target: "https://example.test/pricing",
+      evidencePath,
+      outDir,
+      runId: "newer-manual-run",
+      completedAt: new Date("2026-09-01T09:02:00.000Z"),
+      revisionProbe: noRevision,
+    });
+    const older = recordManualQa({
+      target: "https://example.test/pricing",
+      evidencePath,
+      outDir,
+      runId: "older-manual-run",
+      completedAt: new Date("2026-09-01T09:01:00.000Z"),
+      revisionProbe: noRevision,
+    });
+
+    expect(newer.exit).toBe(4);
+    expect(older.exit).toBe(4);
+    const pointer = JSON.parse(readFileSync(join(outDir, "latest.json"), "utf8"));
+    expect(pointer.run_id).toBe("newer-manual-run");
+    expect(
+      JSON.parse(readFileSync(join(outDir, "run-older-manual-run", "page-qa-result.json"), "utf8"))
+        .run.run_id,
+    ).toBe("older-manual-run");
+  });
+
   test("derives contexts from check IDs when the document declares none", () => {
     const dir = workspace();
     const { contexts: _contexts, ...withoutContexts } = baseEvidence({

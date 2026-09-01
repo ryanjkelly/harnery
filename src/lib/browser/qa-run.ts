@@ -48,6 +48,48 @@ export const QA_RUN_RESULT_FILENAME = "page-qa-result.json";
  * current result through this pointer instead of guessing at loose files. */
 export const QA_RUN_LATEST_FILENAME = "latest.json";
 
+export interface QaRunLatestPointerInput {
+  run_id: string;
+  dir: string;
+  completed_at: string;
+  verdict: QaRunResult["verdict"];
+}
+
+/**
+ * Publish the parent directory's latest-result pointer without allowing an
+ * older completion to replace a newer one. Both runner and manual evidence
+ * use this writer so every producer preserves the same ordering invariant.
+ */
+export function writeLatestPointer(outParent: string, input: QaRunLatestPointerInput): string {
+  const pointerPath = join(outParent, QA_RUN_LATEST_FILENAME);
+  let pointerIsNewer = true;
+  try {
+    const existing = JSON.parse(readFileSync(pointerPath, "utf8")) as {
+      completed_at?: unknown;
+    };
+    if (typeof existing.completed_at === "string") {
+      const existingCompletedAt = Date.parse(existing.completed_at);
+      const candidateCompletedAt = Date.parse(input.completed_at);
+      pointerIsNewer =
+        Number.isNaN(existingCompletedAt) || candidateCompletedAt >= existingCompletedAt;
+    }
+  } catch {
+    // No readable pointer yet: this result becomes the first one.
+  }
+
+  if (pointerIsNewer) {
+    const pointer = {
+      schema_version: 1,
+      ...input,
+      result: join(input.dir, QA_RUN_RESULT_FILENAME),
+    };
+    const pointerTmp = join(outParent, `.${QA_RUN_LATEST_FILENAME}.${input.run_id}.tmp`);
+    writeFileSync(pointerTmp, `${JSON.stringify(pointer, null, 2)}\n`);
+    renameSync(pointerTmp, pointerPath);
+  }
+  return pointerPath;
+}
+
 /** Live status document beside the result (QaRunStatusDocument): written at
  * start, every stage boundary, and on a heartbeat timer, so a disconnected
  * client can tell a running job from a dead one without guessing. */
@@ -531,37 +573,12 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       }),
     };
     writeFileSync(join(outDir, QA_RUN_RESULT_FILENAME), `${JSON.stringify(result, null, 2)}\n`);
-    // Pointer in the parent: temp-file + rename so a reader never sees a
-    // torn write. Last completed run wins, which is correct — each run's own
-    // directory remains the authoritative record.
-    const pointer = {
-      schema_version: 1,
+    writeLatestPointer(outParent, {
       run_id: runId,
       dir: basename(outDir),
-      result: join(basename(outDir), QA_RUN_RESULT_FILENAME),
       completed_at: result.run.completed_at,
       verdict: result.verdict,
-    };
-    // Monotonic by completion time: two concurrent runs can finish out of
-    // order, and a pointer that moved backwards would present the older run
-    // as current — the exact confusion per-run directories exist to prevent.
-    const pointerPath = join(outParent, QA_RUN_LATEST_FILENAME);
-    let pointerIsNewer = true;
-    try {
-      const existing = JSON.parse(readFileSync(pointerPath, "utf8")) as { completed_at?: unknown };
-      if (typeof existing?.completed_at === "string") {
-        pointerIsNewer =
-          Date.parse(result.run.completed_at) >= Date.parse(existing.completed_at) ||
-          Number.isNaN(Date.parse(existing.completed_at));
-      }
-    } catch {
-      // No readable pointer yet: this run becomes the first one.
-    }
-    if (pointerIsNewer) {
-      const pointerTmp = join(outParent, `.${QA_RUN_LATEST_FILENAME}.${runId}.tmp`);
-      writeFileSync(pointerTmp, `${JSON.stringify(pointer, null, 2)}\n`);
-      renameSync(pointerTmp, pointerPath);
-    }
+    });
     statusState = "completed";
     statusStage = null;
     statusVerdict = result.verdict;

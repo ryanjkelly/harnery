@@ -19,9 +19,9 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { recordQaSignal } from "../core/agents/qa-signal.ts";
 import {
-  QA_RUN_LATEST_FILENAME,
   QA_RUN_RESULT_FILENAME,
   QA_RUN_STATUS_FILENAME,
+  writeLatestPointer,
 } from "../lib/browser/qa-run.ts";
 import {
   computeJobDigest,
@@ -483,18 +483,12 @@ export function writeManualRun(
   writeFileSync(statusTmp, `${JSON.stringify(status, null, 2)}\n`);
   renameSync(statusTmp, statusPath);
 
-  const pointer = {
-    schema_version: 1,
+  const latestPath = writeLatestPointer(outParent, {
     run_id: result.run.run_id,
     dir: basename(runDir),
-    result: join(basename(runDir), QA_RUN_RESULT_FILENAME),
     completed_at: result.run.completed_at,
     verdict: result.verdict,
-  };
-  const latestPath = join(outParent, QA_RUN_LATEST_FILENAME);
-  const pointerTmp = join(outParent, `.${QA_RUN_LATEST_FILENAME}.${result.run.run_id}.tmp`);
-  writeFileSync(pointerTmp, `${JSON.stringify(pointer, null, 2)}\n`);
-  renameSync(pointerTmp, latestPath);
+  });
 
   return { runDir, resultPath, evidencePath, statusPath, latestPath };
 }
