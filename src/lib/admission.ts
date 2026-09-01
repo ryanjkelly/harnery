@@ -29,7 +29,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { coordEnv } from "./env.ts";
 
 export interface AdmissionConfig {
   /** Base directory holding one subdirectory per resource. */
@@ -320,6 +322,16 @@ export function admissionStatus(
     holders: listLive(heldDir(full), ttlMs).map((holderEntry) => holderEntry.entry),
     waiters: listLive(ticketsDir(full), ttlMs).map((ticket) => ticket.entry),
   };
+}
+
+/**
+ * Base directory for admission queue state. tmpdir clears on reboot, which
+ * is correct — stale queue state must not outlive the boot. Override with
+ * HARNERY_ADMISSION_DIR. Host CLIs and harn commands must share this helper
+ * so they join the same machine-wide queues.
+ */
+export function admissionBaseDir(): string {
+  return coordEnv("ADMISSION_DIR") ?? join(tmpdir(), "harnery-admission");
 }
 
 /** Resources present under an admission base directory. */

@@ -32,7 +32,7 @@ The `package.json` exports map is the tier boundary, not a naming convention or 
 | Tier | Subpaths | What it is | Stability posture |
 |---|---|---|---|
 | **Product** | `harnery`, `harnery/commander`, `harnery/core/*` | The coordination layer: agents state, session events, hooks, journal, plus CLI composition. | The API to build against. Semver applies with full force here. |
-| **Toolkit** | `harnery/lib/*` (`http`, `cookies`, `format`, `readability`, `browser`, `agent-browser`, `machine`, `tunnel/state`) | The supporting utilities Harnery's own CLI is built from, exposed so embedding hosts can lean on them instead of re-implementing. | Supported, but secondary. Can evolve faster than the product tier. Never the reason to adopt Harnery. |
+| **Toolkit** | `harnery/lib/*` (`admission`, `http`, `cookies`, `format`, `readability`, `browser`, `agent-browser`, `machine`, `tunnel/state`) | The supporting utilities Harnery's own CLI is built from, exposed so embedding hosts can lean on them instead of re-implementing. | Supported, but secondary. Can evolve faster than the product tier. Never the reason to adopt Harnery. |
 
 Anything not in the exports map is internal, whatever directory it lives in. The source layout under `src/lib/` hosts both toolkit modules and internal coordination libraries, and only the exports map decides which is public.
 

@@ -5,13 +5,12 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type Command, Option } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { recordQaSignal } from "../core/agents/qa-signal.ts";
 import { resolveBinName } from "../core/config.ts";
-import { acquireAdmission, admissionStatus } from "../lib/admission.ts";
+import { acquireAdmission, admissionBaseDir, admissionStatus } from "../lib/admission.ts";
 import {
   QA_RUN_JOB_FILENAME,
   QA_RUN_RESULT_FILENAME,
@@ -33,12 +32,6 @@ export const QA_ADMISSION_RESOURCE = "browser-qa";
 
 /** Default concurrent browser-QA runs per machine. */
 export const QA_ADMISSION_DEFAULT_CAPACITY = 2;
-
-/** Base directory for admission queue state. tmpdir clears on reboot, which
- * is correct — stale queue state must not outlive the boot. */
-export function admissionBaseDir(): string {
-  return coordEnv("ADMISSION_DIR") ?? join(tmpdir(), "harnery-admission");
-}
 
 interface QaRunOpts {
   job?: string;

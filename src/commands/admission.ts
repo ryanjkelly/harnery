@@ -21,6 +21,7 @@ import {
   type AdmissionStatus,
   AdmissionTimeoutError,
   acquireAdmission,
+  admissionBaseDir,
   admissionStatus,
   listAdmissionResources,
 } from "../lib/admission.ts";
@@ -41,7 +42,6 @@ import {
   writeJobStatus,
 } from "../lib/durable-job.ts";
 import { coordEnv } from "../lib/env.ts";
-import { admissionBaseDir } from "./qa-run.ts";
 
 interface AdmissionStatusOpts {
   resource?: string;

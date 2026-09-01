@@ -13,6 +13,7 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import {
   type AdmissionEntry,
+  admissionBaseDir,
   admissionStatus,
   pidAlive as defaultPidAlive,
   listAdmissionResources,
@@ -27,7 +28,7 @@ import {
   type QaRunStage,
   type QaRunVerdict,
 } from "../lib/browser/qa-run-contracts.ts";
-import { admissionBaseDir, QA_ADMISSION_RESOURCE } from "./qa-run.ts";
+import { QA_ADMISSION_RESOURCE } from "./qa-run.ts";
 
 /** A running state whose heartbeat is older than this earns a staleness
  * warning, but stays "running" while the PID is alive. */

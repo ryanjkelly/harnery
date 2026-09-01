@@ -7,6 +7,7 @@ import {
   type AdmissionConfig,
   AdmissionTimeoutError,
   acquireAdmission,
+  admissionBaseDir,
   admissionStatus,
   listAdmissionResources,
   pidAlive,
@@ -208,5 +209,29 @@ describe("admissionStatus", () => {
     expect(listAdmissionResources(dir)).toEqual(["res"]);
     holder.release();
     (await waiter).release();
+  });
+});
+
+describe("admissionBaseDir", () => {
+  test("defaults to tmpdir/harnery-admission", () => {
+    const prev = process.env.HARNERY_ADMISSION_DIR;
+    delete process.env.HARNERY_ADMISSION_DIR;
+    try {
+      expect(admissionBaseDir()).toBe(join(tmpdir(), "harnery-admission"));
+    } finally {
+      if (prev === undefined) delete process.env.HARNERY_ADMISSION_DIR;
+      else process.env.HARNERY_ADMISSION_DIR = prev;
+    }
+  });
+
+  test("honors HARNERY_ADMISSION_DIR", () => {
+    const prev = process.env.HARNERY_ADMISSION_DIR;
+    process.env.HARNERY_ADMISSION_DIR = "/tmp/custom-admission-dir";
+    try {
+      expect(admissionBaseDir()).toBe("/tmp/custom-admission-dir");
+    } finally {
+      if (prev === undefined) delete process.env.HARNERY_ADMISSION_DIR;
+      else process.env.HARNERY_ADMISSION_DIR = prev;
+    }
   });
 });

@@ -15,7 +15,7 @@ harn admission status [options]
 
 Machine-wide admission control for heavy jobs: a crash-safe FIFO slot queue with no daemon. Two production builds, two browser-QA matrices, or a build and a matrix started at the same moment slow each other down more than they would running back to back. `admission run` wraps any command so that at most a fixed number of holders per named resource run at once on one machine; everyone else waits their turn.
 
-[`harn qa-run`](/cli/qa-run/) uses this protocol internally (resource `browser-qa`, capacity 2 by default). The `admission` command is the same mechanism as a generic wrapper for everything else.
+[`harn qa-run`](/cli/qa-run/) uses this protocol internally (resource `browser-qa`, capacity 2 by default). The `admission` command is the same mechanism as a generic wrapper for everything else. Embedding hosts that need to join those queues from their own commands import `acquireAdmission` and `admissionBaseDir` from `harnery/lib/admission` so they share the on-disk tickets instead of wrapping the CLI.
 
 ## admission run
 
