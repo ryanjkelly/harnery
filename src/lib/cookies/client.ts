@@ -1,5 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 /**
  * Shared cookie-store library.
@@ -58,6 +69,160 @@ export interface InfoResult {
   exportedFrom?: string;
 }
 
+export class CookieStoreParseError extends Error {
+  readonly path: string;
+
+  constructor(path: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `Cookie-store parse failed at "${path}" after a stable read: ${detail}. ` +
+        "The original cookie-store file was left unchanged.",
+      { cause },
+    );
+    this.name = "CookieStoreParseError";
+    this.path = path;
+  }
+}
+
+const LOCK_WAIT_MS = 10_000;
+const LOCK_POLL_MS = 10;
+const STABLE_READ_ATTEMPTS = 5;
+const STABLE_READ_POLL_MS = 10;
+const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(ms: number): void {
+  Atomics.wait(sleepBuffer, 0, 0, ms);
+}
+
+function isErrorCode(error: unknown, code: string): boolean {
+  return (error as NodeJS.ErrnoException).code === code;
+}
+
+interface FileSnapshot {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
+function snapshot(path: string): FileSnapshot {
+  const stat = statSync(path);
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+  };
+}
+
+function sameSnapshot(left: FileSnapshot, right: FileSnapshot): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function readStableFile(path: string): string | undefined {
+  for (let attempt = 1; attempt <= STABLE_READ_ATTEMPTS; attempt++) {
+    let before: FileSnapshot;
+    try {
+      before = snapshot(path);
+    } catch (error) {
+      if (isErrorCode(error, "ENOENT")) return undefined;
+      throw error;
+    }
+
+    try {
+      const raw = readFileSync(path, "utf8");
+      const after = snapshot(path);
+      if (sameSnapshot(before, after)) return raw;
+    } catch (error) {
+      if (!isErrorCode(error, "ENOENT")) throw error;
+    }
+
+    if (attempt < STABLE_READ_ATTEMPTS) sleepSync(STABLE_READ_POLL_MS);
+  }
+
+  throw new Error(
+    `Cookie-store read failed at "${path}": the file did not remain stable across ` +
+      `${STABLE_READ_ATTEMPTS} attempts. The original cookie-store file was left unchanged.`,
+  );
+}
+
+function atomicWrite(path: string, contents: string): void {
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const temporary = join(dir, `.${basename(path)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
+  try {
+    writeFileSync(temporary, contents, { mode: 0o600 });
+    renameSync(temporary, path);
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // A successful rename already removed the temporary path. A failed
+      // cleanup must not hide the original write error.
+    }
+  }
+}
+
+function withStoreLock<T>(path: string, operation: () => T): T {
+  mkdirSync(dirname(path), { recursive: true });
+  const lockPath = `${path}.lock`;
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let lockFd: number | undefined;
+
+  while (lockFd === undefined) {
+    try {
+      lockFd = openSync(lockPath, "wx", 0o600);
+      try {
+        writeFileSync(
+          lockFd,
+          `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
+        );
+      } catch (error) {
+        closeSync(lockFd);
+        lockFd = undefined;
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          // Preserve the lock-write error.
+        }
+        throw error;
+      }
+    } catch (error) {
+      if (!isErrorCode(error, "EEXIST")) {
+        if (lockFd !== undefined) closeSync(lockFd);
+        throw error;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Cookie-store update timed out waiting for lock "${lockPath}" after ${LOCK_WAIT_MS}ms. ` +
+            "The cookie-store file was left unchanged.",
+        );
+      }
+      sleepSync(LOCK_POLL_MS);
+    }
+  }
+
+  closeSync(lockFd);
+  try {
+    return operation();
+  } finally {
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      // The update has already committed. Do not replace its result with a
+      // cleanup error; a later writer will report the exact lock path.
+    }
+  }
+}
+
 export class CookieJar {
   readonly path: string;
   private readonly source: string;
@@ -72,11 +237,14 @@ export class CookieJar {
   }
 
   load(): CookieStore {
-    if (!existsSync(this.path)) {
-      return { cookies: [], origins: [] };
+    const raw = readStableFile(this.path);
+    if (raw === undefined) return { cookies: [], origins: [] };
+    let parsed: CookieStore;
+    try {
+      parsed = JSON.parse(raw) as CookieStore;
+    } catch (error) {
+      throw new CookieStoreParseError(this.path, error);
     }
-    const raw = readFileSync(this.path, "utf-8");
-    const parsed = JSON.parse(raw);
     return {
       cookies: parsed.cookies ?? [],
       origins: parsed.origins ?? [],
@@ -90,13 +258,29 @@ export class CookieJar {
    * (constructor-provided source). Creates the parent directory if needed.
    */
   save(store: CookieStore): void {
-    const stamped: CookieStore = {
+    withStoreLock(this.path, () => this.saveUnlocked(store));
+  }
+
+  private saveUnlocked(store: CookieStore): CookieStore {
+    const stamped = this.stamp(store);
+    atomicWrite(this.path, `${JSON.stringify(stamped, null, 2)}\n`);
+    return stamped;
+  }
+
+  private stamp(store: CookieStore): CookieStore {
+    return {
       ...store,
       exportedAt: new Date().toISOString(),
       exportedFrom: this.source,
     };
-    mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, `${JSON.stringify(stamped, null, 2)}\n`);
+  }
+
+  private update<T>(operation: (store: CookieStore) => { store: CookieStore; result: T }): T {
+    return withStoreLock(this.path, () => {
+      const updated = operation(this.load());
+      this.saveUnlocked(updated.store);
+      return updated.result;
+    });
   }
 
   /**
@@ -118,10 +302,18 @@ export class CookieJar {
    * Returns the saved store.
    */
   set(cookie: Cookie): CookieStore {
-    const store = this.load();
-    const merged = mergeCookies(store, [cookie]);
-    this.save(merged);
-    return merged;
+    return this.merge([cookie]);
+  }
+
+  /** Merge cookies and origins in one interprocess-coordinated update. */
+  merge(cookies: Cookie[], origins: OriginEntry[] = []): CookieStore {
+    return this.update((store) => {
+      const merged = mergeCookies(store, cookies);
+      const byOrigin = new Map(store.origins.map((origin) => [origin.origin, origin]));
+      for (const origin of origins) byOrigin.set(origin.origin, origin);
+      merged.origins = [...byOrigin.values()];
+      return { store: merged, result: merged };
+    });
   }
 
   /**
@@ -133,24 +325,27 @@ export class CookieJar {
     if (!opts.domain && !opts.all) {
       throw new Error("Specify { domain } or { all: true }");
     }
-    const store = this.load();
-    const before = store.cookies.length;
-    if (opts.all) {
-      store.cookies = [];
-      store.origins = [];
-    } else if (opts.domain) {
-      const dom = opts.domain;
-      store.cookies = store.cookies.filter((c) => !domainMatches(c.domain, dom));
-      store.origins = store.origins.filter((o) => {
-        try {
-          return !domainMatches(dom, new URL(o.origin).hostname);
-        } catch {
-          return true;
-        }
-      });
-    }
-    this.save(store);
-    return { before, after: store.cookies.length };
+    return this.update((store) => {
+      const before = store.cookies.length;
+      if (opts.all) {
+        store.cookies = [];
+        store.origins = [];
+      } else if (opts.domain) {
+        const dom = opts.domain;
+        store.cookies = store.cookies.filter((c) => !domainMatches(c.domain, dom));
+        store.origins = store.origins.filter((o) => {
+          try {
+            return !domainMatches(dom, new URL(o.origin).hostname);
+          } catch {
+            return true;
+          }
+        });
+      }
+      return {
+        store,
+        result: { before, after: store.cookies.length },
+      };
+    });
   }
 
   /**
@@ -188,15 +383,7 @@ export class CookieJar {
       const store: CookieStore = { cookies, origins: incoming.origins ?? [] };
       this.save(store);
     } else {
-      const store = this.load();
-      const merged = mergeCookies(store, cookies);
-      if (incoming.origins) {
-        const seen = new Set(store.origins.map((o) => o.origin));
-        for (const o of incoming.origins) {
-          if (!seen.has(o.origin)) merged.origins.push(o);
-        }
-      }
-      this.save(merged);
+      this.merge(cookies, incoming.origins ?? []);
     }
     return { count: cookies.length };
   }
@@ -209,8 +396,7 @@ export class CookieJar {
       exportedAt: new Date().toISOString(),
       exportedFrom: `${this.source}-export`,
     };
-    mkdirSync(dirname(filePath), { recursive: true });
-    writeFileSync(filePath, `${JSON.stringify(stamped, null, 2)}\n`);
+    atomicWrite(filePath, `${JSON.stringify(stamped, null, 2)}\n`);
     return { count: stamped.cookies.length };
   }
 

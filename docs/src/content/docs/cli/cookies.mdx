@@ -13,6 +13,21 @@ Manages the shared browser cookie store at `~/.cache/harnery/cookies.json`. The 
 
 Running `harn cookies` with no subcommand lists the store (same as `harn cookies list`). Use `--store <path>` for a separate jar (e.g. one per environment); it goes **before** the subcommand.
 
+## Concurrency and recovery
+
+The default jar is safe to share across concurrent `browse`, `browse-ai`, and
+`fetch` processes. Updates take a short interprocess lock, merge while holding
+that lock, and atomically replace the completed JSON file. A process that cannot
+acquire the lock within 10 seconds stops with the exact `.lock` path instead of
+writing without coordination.
+
+Reads verify that the file stayed unchanged while it was read. If stable content
+is malformed, the command identifies cookie-store parsing as the failed stage,
+prints the exact store path, and leaves the original file untouched. Copy that
+file before repairing it or restoring a known-good export. Do not delete or
+rename the store merely because parsing failed, and do not remove its `.lock`
+file while another browser process may still be running.
+
 ## Subcommands
 
 ```

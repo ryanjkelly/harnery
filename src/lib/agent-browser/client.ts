@@ -1,11 +1,6 @@
 import { type SpawnSyncOptions, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import {
-  type CookieJar,
-  type CookieStore,
-  type Cookie as JarCookie,
-  mergeCookies,
-} from "../cookies/index.ts";
+import type { CookieJar, Cookie as JarCookie } from "../cookies/index.ts";
 
 /**
  * Thin wrapper over Vercel Labs' `agent-browser` Rust CLI.
@@ -216,10 +211,7 @@ export class AgentBrowser {
       const parsed = JSON.parse(result.stdout);
       const cookies: JarCookie[] = parsed.data?.cookies ?? parsed.cookies ?? [];
       if (!Array.isArray(cookies) || cookies.length === 0) return { saved: 0 };
-      const jar = this.opts.jar;
-      const store: CookieStore = jar.load();
-      const merged = mergeCookies(store, cookies);
-      jar.save(merged);
+      this.opts.jar.merge(cookies);
       return { saved: cookies.length };
     } catch {
       return { saved: 0 };

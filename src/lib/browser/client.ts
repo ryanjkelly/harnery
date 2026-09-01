@@ -11,7 +11,11 @@ import {
   type Cookie as PWCookie,
   type Request,
 } from "playwright";
-import type { CookieJar, Cookie as JarCookie } from "../cookies/index.ts";
+import {
+  type CookieJar,
+  CookieStoreParseError,
+  type Cookie as JarCookie,
+} from "../cookies/index.ts";
 import { type AssertResult, type AssertSpec, buildAssertCheck } from "./asserts.js";
 import {
   buildClearContentAnnotationsScript,
@@ -313,6 +317,8 @@ export class Browser {
    * the whole sequence — not just the launch — can be retried as a unit.
    */
   private async openOnce(): Promise<void> {
+    const jarCookies = this.opts.jar?.list() ?? [];
+
     // Hold a launch slot only across the spawn itself, not the browser's life.
     await acquireLaunchSlot();
     try {
@@ -334,11 +340,8 @@ export class Browser {
     }
     this.context.setDefaultNavigationTimeout(this.opts.navigationTimeout ?? 30_000);
 
-    if (this.opts.jar) {
-      const jarCookies = this.opts.jar.list();
-      if (jarCookies.length > 0) {
-        await this.context.addCookies(jarCookies.map(toPWCookie));
-      }
+    if (jarCookies.length > 0) {
+      await this.context.addCookies(jarCookies.map(toPWCookie));
     }
 
     // Caller-injected extraHeaders callback (e.g., for Cloudflare-bypass
@@ -402,6 +405,11 @@ export class Browser {
         this.consoleEvents = [];
         this.pageErrors = [];
         this.failedRequests = [];
+        if (err instanceof CookieStoreParseError) {
+          throw new Error(`Failed to open browser during cookie-store load: ${err.message}`, {
+            cause: err,
+          });
+        }
         if (attempt < maxAttempts) {
           await new Promise((resolve) => setTimeout(resolve, attempt * 250));
         }
@@ -1600,9 +1608,7 @@ export class Browser {
     if (this.opts.jar) {
       try {
         const live = await this.context.cookies();
-        for (const c of live) {
-          this.opts.jar.set(toJarCookie(c));
-        }
+        this.opts.jar.merge(live.map(toJarCookie));
       } catch {
         // Cookie persist is best-effort; never block close on it.
       }

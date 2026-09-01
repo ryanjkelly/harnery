@@ -3,6 +3,7 @@ export {
   CookieJar,
   type CookieJarOptions,
   type CookieStore,
+  CookieStoreParseError,
   domainMatches,
   type InfoResult,
   isExpired,
