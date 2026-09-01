@@ -16,6 +16,7 @@ export interface ResourceProcessSample {
   owner_kind: "agent" | "service" | "unattributed";
   owner_id: string | null;
   owner_root_pid: number | null;
+  owner_source?: "pid-map" | "session-environment" | "service";
 }
 
 export interface ResourceProcessGroup {
@@ -90,6 +91,12 @@ export interface ResourceSamplerState {
   cpu_total_ticks: number;
   cpu_idle_ticks: number;
   process_ticks: Map<string, number>;
+  process_owners: Map<string, ResourceProcessOwnerProof>;
+}
+
+export interface ResourceProcessOwnerProof {
+  session_id: string;
+  instance_id: string;
 }
 
 export interface ResourceSampleResult {

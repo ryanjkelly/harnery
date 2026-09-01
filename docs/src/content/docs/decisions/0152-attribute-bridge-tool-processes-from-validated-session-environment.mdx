@@ -1,0 +1,93 @@
+---
+title: "ADR 0152: attribute bridge tool processes from validated session environment"
+description: Attribute Codex WSL tool trees without guessing from commands or assigning shared host memory.
+sidebar:
+  order: 152
+---
+
+**Date:** 2026-09-01
+**Status:** Accepted
+
+## Context
+
+[ADR 0140](./0140-observe-local-resource-pressure-with-an-optional-daemon/)
+attributes a process tree when its parent chain reaches a live,
+start-token-validated PID-map row. That evidence remains sufficient for agent
+processes and hooks that create the row themselves.
+
+A Codex task running on Windows can execute Linux tools through the Codex WSL
+bridge. The resident bridge daemon launches the tool and its coordination hook
+as sibling process trees. The hook can write a valid PID-map row, but ancestry
+from the tool cannot reach it. The resource observer therefore reports the
+active tool as unattributed even though the bridge gave the tool an exact task
+identity.
+
+This must not be solved by matching command text, associating a recent hook
+with a nearby process, or dividing a shared Windows Codex process among tasks.
+Those approaches turn correlation into ownership and can produce false
+per-agent memory totals.
+
+## Alternatives considered
+
+- Make the bridge daemon write a PID-map row for each tool. The daemon would
+  need to coordinate a second ownership channel and clean up racing child
+  processes. It already passes exact identity to the child, so a separate
+  mutable map would duplicate the stronger evidence.
+- Connect hooks and tools by timing or command text. Multiple tasks can run the
+  same command at once, and command text is user-controlled. Neither signal
+  proves ownership.
+- Attribute the resident bridge daemon and every descendant. The daemon serves
+  multiple tasks, so one root cannot truthfully name one owner.
+- Add native Windows process sampling and assign `codex.exe` to the active
+  task. The host process is shared and does not expose a tested one-process-per-
+  task boundary. Native telemetry may be added later, but shared memory must
+  remain service-level or unattributed.
+- Keep all bridge-launched tools unattributed. This preserves correctness but
+  discards exact identity already present on each child and prevents useful
+  task-level WSL memory evidence.
+
+## Decision
+
+The Linux sampler may create an agent ownership anchor from a process
+environment only when all of these conditions hold:
+
+1. `HARNERY_AGENT_COORD_BRIDGE` equals `codex-wsl`.
+2. `HARNERY_AGENT_COORD_PLATFORM` equals `codex`.
+3. `HARNERY_AGENT_COORD_SESSION_ID` and `CODEX_THREAD_ID` are present and
+   exactly equal.
+4. That session identifier equals the native session identity of exactly one
+   authority-safe, live, top-level Codex row in Event Ledger V3.
+
+The sampler reads only those named fields from `/proc/<pid>/environ` into local
+variables. It never persists or logs the complete environment. Missing,
+mismatched, stale, delegated-only, or ambiguous evidence remains
+`unattributed`.
+
+Processes with the same validated owner are collapsed to the highest matching
+process in their sampled parent chain. Descendants inherit that root. A
+start-token-validated PID-map row takes precedence on the same process, and an
+explicit Harnery service anchor retains its existing override.
+
+The snapshot adds an optional `owner_source` field with `pid-map`,
+`session-environment`, or `service`. Keeping the field optional preserves
+replay of schema-1 snapshots captured before this decision. Process identity
+proof is cached by PID plus start identity to avoid rereading unchanged
+environments. Every sample revalidates the cached session against the current
+live coordination projection; a missing or ambiguous owner drops the proof.
+
+The bridge identifies the top-level Codex task, not a delegated child. Tool
+processes therefore belong to that top-level task unless a future bridge
+contract supplies separate child identity. The WSL observer still describes
+only the Linux namespace. It does not assign shared Windows Codex host memory
+to individual tasks.
+
+## Result
+
+Active Codex WSL commands and their descendants appear under a truthful agent
+group while they run. The same snapshot shows whether ownership came from the
+PID map, validated bridge identity, or a configured service root.
+
+The change enables task-attributed WSL memory evidence without adding a daemon,
+changing execution authority, copying environments into diagnostics, or
+weakening the unsupported-platform boundary. Native Windows service telemetry
+and per-task host-process attribution remain separate problems.

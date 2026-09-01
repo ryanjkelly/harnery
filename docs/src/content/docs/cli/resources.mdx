@@ -5,7 +5,9 @@ description: Observe local CPU and memory pressure by agent and process tree.
 
 `harn resources` reads local machine and process resource use. It attributes a
 process tree to an agent only when parent-PID ancestry reaches a live Harnery
-PID-map row. Expensive processes that cannot be attributed remain visible.
+PID-map row or an exact Codex WSL bridge identity resolves to one live,
+top-level Codex session. Expensive processes that cannot be attributed remain
+visible.
 
 ```bash
 harn resources snapshot
@@ -25,6 +27,7 @@ atomic current snapshot under `.harnery/resources/`. Its process table contains:
 - current CPU calculated from consecutive samples;
 - resident memory and process age;
 - agent, Harnery service, or unattributed ownership; and
+- the proof source for attributed ownership; and
 - a bounded command excerpt with common inline secret arguments redacted.
 
 The observer shows every attributed process tree. An unmatched process enters
@@ -38,8 +41,13 @@ coordination or the dashboard.
 ## Platform support
 
 Linux and WSL procfs are supported. A WSL observer reports the Linux namespace;
-it does not claim to see unrelated Windows host processes. Other native
-platforms return an explicit unsupported state until a tested sampler ships.
+it does not claim to see unrelated Windows host processes. A shared Windows
+Codex host process is not allocated to individual WSL tasks. Codex WSL tool
+processes can be attributed only when all bridge identity fields agree and the
+session has one authority-safe live owner. Delegated tools inherit the
+top-level Codex task because the bridge does not expose a separate child-task
+identity. Other native platforms return an explicit unsupported state until a
+tested sampler ships.
 
 The current sampler does not report GPU use, process I/O, sockets, file
 descriptors, or cgroup limits. It does not provide kill, restart, renice, or

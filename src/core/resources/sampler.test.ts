@@ -94,14 +94,214 @@ describe("resource sampler", () => {
       unattributedRssFloor: 0,
     });
     expect(result.snapshot.processes).toMatchObject([
-      { pid: 200, owner_kind: "service", owner_id: "dashboard", owner_root_pid: 200 },
-      { pid: 201, owner_kind: "service", owner_id: "dashboard", owner_root_pid: 200 },
+      {
+        pid: 200,
+        owner_kind: "service",
+        owner_id: "dashboard",
+        owner_root_pid: 200,
+        owner_source: "service",
+      },
+      {
+        pid: 201,
+        owner_kind: "service",
+        owner_id: "dashboard",
+        owner_root_pid: 200,
+        owner_source: "service",
+      },
     ]);
     expect(result.snapshot.groups).toMatchObject([
       { kind: "service", id: "dashboard", process_count: 2, root_pids: [200] },
     ]);
   });
+
+  test("attributes a Codex WSL process tree from exact live session identity", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-resources-codex-wsl-"));
+    roots.push(root);
+    const procRoot = join(root, "proc");
+    mkdirSync(procRoot, { recursive: true });
+    writeSystemFiles(procRoot, { total: 1_000, idle: 500 });
+    const environment = codexWslEnvironment("session-1");
+    writeProcess(procRoot, {
+      pid: 200,
+      ppid: 1,
+      startTicks: 100,
+      processTicks: 20,
+      environment,
+    });
+    writeProcess(procRoot, {
+      pid: 201,
+      ppid: 200,
+      startTicks: 110,
+      processTicks: 10,
+      environment,
+    });
+    writeProcess(procRoot, { pid: 202, ppid: 201, startTicks: 120, processTicks: 5 });
+
+    const result = sampleResources(root, undefined, {
+      procRoot,
+      nowMs: 1_000,
+      clockTicks: 100,
+      pageSize: 4_096,
+      sessionOwners: [liveCodexOwner()],
+      unattributedRssFloor: 0,
+    });
+
+    expect(result.snapshot.processes).toMatchObject([
+      {
+        pid: 200,
+        owner_kind: "agent",
+        owner_id: "agent-1",
+        owner_root_pid: 200,
+        owner_source: "session-environment",
+      },
+      {
+        pid: 201,
+        owner_kind: "agent",
+        owner_id: "agent-1",
+        owner_root_pid: 200,
+        owner_source: "session-environment",
+      },
+      {
+        pid: 202,
+        owner_kind: "agent",
+        owner_id: "agent-1",
+        owner_root_pid: 200,
+        owner_source: "session-environment",
+      },
+    ]);
+    expect(result.state?.process_owners).toEqual(
+      new Map([
+        ["200:100", { session_id: "session-1", instance_id: "agent-1" }],
+        ["201:110", { session_id: "session-1", instance_id: "agent-1" }],
+      ]),
+    );
+  });
+
+  test("rejects incomplete, mismatched, delegated, stale, and ambiguous bridge identity", () => {
+    const cases = [
+      {
+        name: "missing bridge marker",
+        environment: codexWslEnvironment("session-1").filter(
+          (entry) => !entry.startsWith("HARNERY_AGENT_COORD_BRIDGE="),
+        ),
+        owners: [liveCodexOwner()],
+      },
+      {
+        name: "mismatched native session",
+        environment: codexWslEnvironment("session-1", "session-2"),
+        owners: [liveCodexOwner()],
+      },
+      {
+        name: "delegated-only session",
+        environment: codexWslEnvironment("session-1"),
+        owners: [{ ...liveCodexOwner(), kind: "subagent" }],
+      },
+      {
+        name: "stale session",
+        environment: codexWslEnvironment("session-1"),
+        owners: [],
+      },
+      {
+        name: "ambiguous session",
+        environment: codexWslEnvironment("session-1"),
+        owners: [liveCodexOwner(), { ...liveCodexOwner(), instanceId: "agent-2" }],
+      },
+    ];
+
+    for (const fixture of cases) {
+      const root = mkdtempSync(join(tmpdir(), "harnery-resources-rejected-"));
+      roots.push(root);
+      const procRoot = join(root, "proc");
+      mkdirSync(procRoot, { recursive: true });
+      writeSystemFiles(procRoot, { total: 1_000, idle: 500 });
+      writeProcess(procRoot, {
+        pid: 200,
+        ppid: 1,
+        startTicks: 100,
+        processTicks: 20,
+        environment: fixture.environment,
+      });
+      const result = sampleResources(root, undefined, {
+        procRoot,
+        nowMs: 1_000,
+        clockTicks: 100,
+        pageSize: 4_096,
+        sessionOwners: fixture.owners,
+        unattributedRssFloor: 0,
+      });
+      expect(result.snapshot.processes[0]?.owner_kind, fixture.name).toBe("unattributed");
+      expect(result.snapshot.processes[0]?.owner_source, fixture.name).toBeUndefined();
+    }
+  });
+
+  test("revalidates cached bridge proof against current live coordination", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-resources-cached-owner-"));
+    roots.push(root);
+    const procRoot = join(root, "proc");
+    mkdirSync(procRoot, { recursive: true });
+    writeSystemFiles(procRoot, { total: 1_000, idle: 500 });
+    writeProcess(procRoot, {
+      pid: 200,
+      ppid: 1,
+      startTicks: 100,
+      processTicks: 20,
+      environment: codexWslEnvironment("session-1"),
+    });
+    const first = sampleResources(root, undefined, {
+      procRoot,
+      nowMs: 1_000,
+      clockTicks: 100,
+      pageSize: 4_096,
+      sessionOwners: [liveCodexOwner()],
+      unattributedRssFloor: 0,
+    });
+    rmSync(join(procRoot, "200", "environ"));
+    const cached = sampleResources(root, first.state, {
+      procRoot,
+      nowMs: 2_000,
+      clockTicks: 100,
+      pageSize: 4_096,
+      sessionOwners: [liveCodexOwner()],
+      unattributedRssFloor: 0,
+    });
+    expect(cached.snapshot.processes[0]?.owner_source).toBe("session-environment");
+
+    const expired = sampleResources(root, cached.state, {
+      procRoot,
+      nowMs: 3_000,
+      clockTicks: 100,
+      pageSize: 4_096,
+      sessionOwners: [],
+      unattributedRssFloor: 0,
+    });
+    expect(expired.snapshot.processes[0]?.owner_kind).toBe("unattributed");
+    expect(expired.state?.process_owners.size).toBe(0);
+  });
 });
+
+function liveCodexOwner(): {
+  nativeSessionId: string;
+  instanceId: string;
+  platform: string;
+  kind: string;
+} {
+  return {
+    nativeSessionId: "session-1",
+    instanceId: "agent-1",
+    platform: "codex",
+    kind: "session",
+  };
+}
+
+function codexWslEnvironment(sessionId: string, codexThreadId = sessionId): string[] {
+  return [
+    "HARNERY_AGENT_COORD_BRIDGE=codex-wsl",
+    "HARNERY_AGENT_COORD_PLATFORM=codex",
+    `HARNERY_AGENT_COORD_SESSION_ID=${sessionId}`,
+    `CODEX_THREAD_ID=${codexThreadId}`,
+    "UNRELATED_SECRET=must-not-be-retained",
+  ];
+}
 
 function writeProcSnapshot(
   procRoot: string,
@@ -128,7 +328,13 @@ function writeSystemFiles(procRoot: string, values: { total: number; idle: numbe
 
 function writeProcess(
   procRoot: string,
-  values: { pid: number; ppid: number; startTicks: number; processTicks: number },
+  values: {
+    pid: number;
+    ppid: number;
+    startTicks: number;
+    processTicks: number;
+    environment?: readonly string[];
+  },
 ): void {
   mkdirSync(join(procRoot, String(values.pid)), { recursive: true });
   const fields = Array.from({ length: 22 }, () => "0");
@@ -143,4 +349,10 @@ function writeProcess(
     `${values.pid} (node worker) ${fields.join(" ")}\n`,
   );
   writeFileSync(join(procRoot, String(values.pid), "cmdline"), "node\0worker.js\0");
+  if (values.environment) {
+    writeFileSync(
+      join(procRoot, String(values.pid), "environ"),
+      `${values.environment.join("\0")}\0`,
+    );
+  }
 }

@@ -3,11 +3,13 @@ import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { cpus, loadavg, platform, release } from "node:os";
 import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 import { parsePidmapRow } from "../agents/state/pidmap.ts";
 import { checkPidToken } from "../agents/state/proc-start.ts";
 import {
   RESOURCE_SNAPSHOT_SCHEMA_VERSION,
   type ResourceProcessGroup,
+  type ResourceProcessOwnerProof,
   type ResourceProcessSample,
   type ResourceSampleResult,
   type ResourceSamplerState,
@@ -44,9 +46,17 @@ interface ResourceSamplerOptions {
   clockTicks?: number;
   pageSize?: number;
   services?: readonly { pid: number; id: string }[];
+  sessionOwners?: readonly SessionOwner[];
   unattributedCpuFloor?: number;
   unattributedRssFloor?: number;
   maxProcesses?: number;
+}
+
+interface SessionOwner {
+  nativeSessionId: string;
+  instanceId: string;
+  platform: string;
+  kind: string;
 }
 
 let cachedClockTicks: number | undefined;
@@ -86,7 +96,24 @@ export function sampleResources(
   const cpu = parseLinuxCpu(readFileSync(join(procRoot, "stat"), "utf8"));
   const memory = parseMeminfo(readFileSync(join(procRoot, "meminfo"), "utf8"));
   const readings = readLinuxProcesses(procRoot, clockTicks, pageSize, uptimeSeconds);
-  const anchors = readOwnershipAnchors(coordRoot, readings, options.services ?? []);
+  const liveSessionOwners = uniqueLiveCodexSessionOwners(
+    options.sessionOwners ??
+      readLiveCoordinationRows(coordRoot).map((row) => ({
+        nativeSessionId: row.native_session_id ?? "",
+        instanceId: row.instance_id,
+        platform: row.platform ?? "",
+        kind: row.kind ?? "",
+      })),
+  );
+  const ownership = readOwnershipAnchors(
+    coordRoot,
+    procRoot,
+    readings,
+    options.services ?? [],
+    liveSessionOwners,
+    previous?.process_owners,
+  );
+  const anchors = ownership.anchors;
   const byPid = new Map(readings.map((reading) => [reading.pid, reading]));
   const processTicks = new Map<string, number>();
   const intervalMs = previous ? Math.max(0, nowMs - previous.sampled_at_ms) : null;
@@ -116,6 +143,7 @@ export function sampleResources(
       owner_kind: ownership?.kind ?? "unattributed",
       owner_id: ownership?.id ?? null,
       owner_root_pid: ownership?.rootPid ?? null,
+      ...(ownership ? { owner_source: ownership.source } : {}),
     };
   });
   const visible = processes
@@ -182,6 +210,7 @@ export function sampleResources(
       cpu_total_ticks: cpu.total,
       cpu_idle_ticks: cpu.idle,
       process_ticks: processTicks,
+      process_owners: ownership.processOwners,
     },
   };
 }
@@ -288,13 +317,20 @@ function readLinuxProcesses(
 interface OwnershipAnchor {
   kind: "agent" | "service";
   id: string;
+  source: "pid-map" | "session-environment" | "service";
 }
 
 function readOwnershipAnchors(
   coordRoot: string,
+  procRoot: string,
   readings: readonly LinuxProcessReading[],
   services: readonly { pid: number; id: string }[],
-): Map<number, OwnershipAnchor> {
+  liveSessionOwners: ReadonlyMap<string, string>,
+  previousOwners?: ReadonlyMap<string, ResourceProcessOwnerProof>,
+): {
+  anchors: Map<number, OwnershipAnchor>;
+  processOwners: Map<string, ResourceProcessOwnerProof>;
+} {
   const byPid = new Set(readings.map((row) => row.pid));
   const directory = join(coordRoot, ".harnery", "pid-map");
   const anchors = new Map<number, OwnershipAnchor>();
@@ -306,25 +342,121 @@ function readOwnershipAnchors(
       try {
         const row = parsePidmapRow(readFileSync(join(directory, entry), "utf8"));
         if (!row.instanceId || checkPidToken(pid, row.startToken) === "mismatch") continue;
-        anchors.set(pid, { kind: "agent", id: row.instanceId });
+        anchors.set(pid, { kind: "agent", id: row.instanceId, source: "pid-map" });
       } catch {
         // An unreadable or racing row cannot prove ownership.
       }
     }
   }
+
+  const processOwners = readBridgeProcessOwners(
+    procRoot,
+    readings,
+    liveSessionOwners,
+    previousOwners,
+  );
+  const byReadingPid = new Map(readings.map((row) => [row.pid, row]));
+  for (const reading of readings) {
+    const identity = `${reading.pid}:${reading.startTicks}`;
+    const owner = processOwners.get(identity);
+    if (!owner || anchors.has(reading.pid)) continue;
+    const parent = byReadingPid.get(reading.ppid);
+    const parentOwner = parent
+      ? processOwners.get(`${parent.pid}:${parent.startTicks}`)
+      : undefined;
+    if (parentOwner?.instance_id === owner.instance_id) continue;
+    anchors.set(reading.pid, {
+      kind: "agent",
+      id: owner.instance_id,
+      source: "session-environment",
+    });
+  }
+
   for (const service of services) {
     if (byPid.has(service.pid) && service.id.trim()) {
-      anchors.set(service.pid, { kind: "service", id: service.id.trim() });
+      anchors.set(service.pid, { kind: "service", id: service.id.trim(), source: "service" });
     }
   }
-  return anchors;
+  return { anchors, processOwners };
+}
+
+function uniqueLiveCodexSessionOwners(rows: readonly SessionOwner[]): Map<string, string> {
+  const candidates = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const sessionId = row.nativeSessionId.trim();
+    const instanceId = row.instanceId.trim();
+    if (row.platform !== "codex" || row.kind !== "session" || !sessionId || !instanceId) continue;
+    const owners = candidates.get(sessionId) ?? new Set<string>();
+    owners.add(instanceId);
+    candidates.set(sessionId, owners);
+  }
+  const result = new Map<string, string>();
+  for (const [sessionId, owners] of candidates) {
+    if (owners.size === 1) result.set(sessionId, [...owners][0]!);
+  }
+  return result;
+}
+
+function readBridgeProcessOwners(
+  procRoot: string,
+  readings: readonly LinuxProcessReading[],
+  liveSessionOwners: ReadonlyMap<string, string>,
+  previousOwners?: ReadonlyMap<string, ResourceProcessOwnerProof>,
+): Map<string, ResourceProcessOwnerProof> {
+  const result = new Map<string, ResourceProcessOwnerProof>();
+  if (liveSessionOwners.size === 0) return result;
+  for (const reading of readings) {
+    const identity = `${reading.pid}:${reading.startTicks}`;
+    const previous = previousOwners?.get(identity);
+    if (previous && liveSessionOwners.get(previous.session_id) === previous.instance_id) {
+      result.set(identity, previous);
+      continue;
+    }
+    const sessionId = readCodexWslBridgeSessionId(procRoot, reading.pid);
+    if (!sessionId) continue;
+    const instanceId = liveSessionOwners.get(sessionId);
+    if (instanceId) result.set(identity, { session_id: sessionId, instance_id: instanceId });
+  }
+  return result;
+}
+
+function readCodexWslBridgeSessionId(procRoot: string, pid: number): string | undefined {
+  try {
+    const entries = readFileSync(join(procRoot, String(pid), "environ"), "utf8").split("\0");
+    let bridge: string | undefined;
+    let platform: string | undefined;
+    let coordinationSessionId: string | undefined;
+    let codexThreadId: string | undefined;
+    for (const entry of entries) {
+      if (entry.startsWith("HARNERY_AGENT_COORD_BRIDGE=")) {
+        bridge = entry.slice("HARNERY_AGENT_COORD_BRIDGE=".length);
+      } else if (entry.startsWith("HARNERY_AGENT_COORD_PLATFORM=")) {
+        platform = entry.slice("HARNERY_AGENT_COORD_PLATFORM=".length);
+      } else if (entry.startsWith("HARNERY_AGENT_COORD_SESSION_ID=")) {
+        coordinationSessionId = entry.slice("HARNERY_AGENT_COORD_SESSION_ID=".length);
+      } else if (entry.startsWith("CODEX_THREAD_ID=")) {
+        codexThreadId = entry.slice("CODEX_THREAD_ID=".length);
+      }
+    }
+    if (
+      bridge === "codex-wsl" &&
+      platform === "codex" &&
+      coordinationSessionId &&
+      coordinationSessionId === codexThreadId
+    ) {
+      return coordinationSessionId;
+    }
+  } catch {
+    // An unreadable or racing environment cannot prove ownership.
+  }
+  return undefined;
 }
 
 function resolveOwnership(
   pid: number,
   byPid: ReadonlyMap<number, LinuxProcessReading>,
   anchors: ReadonlyMap<number, OwnershipAnchor>,
-): { kind: "agent" | "service"; id: string; rootPid: number } | undefined {
+): (OwnershipAnchor & { rootPid: number }) | undefined {
   const seen = new Set<number>();
   let cursor = pid;
   for (let hops = 0; hops < 64 && cursor > 0 && !seen.has(cursor); hops++) {
