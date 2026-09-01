@@ -74,7 +74,31 @@ second diagnostics store or bundle contract.
 
 ## Result
 
-Pending implementation.
+Commits `117116e` and `b65c3ae` shipped the terminal receipt, bounded
+projection, findings, CLI status, diagnostics integration, documentation, and
+resource dashboard. Commits `816de16` and `a679a36` finished the mobile table
+presentation after browser QA.
+
+A harmless Codex hook invocation still returned zero and wrote its terminal
+receipt to the bounded `agent-hook-debug-log` family. A foreground one-cycle
+supervisor pass read the newest 50 receipts and produced a schema-1 projection.
+It reported partial capability because the retained log window was truncated,
+rather than treating the missing history as healthy. The sample contained 25
+`pre-tool-use` and 25 `post-tool-use` receipts. Their p95 durations were 4,271
+ms and 2,681 ms, with maximum completion RSS samples of about 413 MiB and 436
+MiB. No degraded, faulted, slow, high-memory, or retry finding opened.
+
+Focused hook-health, supervisor, findings, reader, type, lint, package, web,
+documentation, portability, layering, public-surface, changeset-content, and
+humanizer checks passed. The complete test command passed 2,459 tests and hit
+nine unrelated fixed five-second timeouts while the shared machine was heavily
+loaded. All nine completed successfully when rerun alone with a 20-second test
+ceiling. None touched the hook-health implementation.
+
+The completed-hook section passed scoped mobile and desktop QA in light and
+dark modes with no overflow, clipping, overlap, or runt text. The section keeps
+all aggregate rows in the DOM and tells mobile readers that the full metric
+table scrolls horizontally.
 
 ## Scope and promotion
 
