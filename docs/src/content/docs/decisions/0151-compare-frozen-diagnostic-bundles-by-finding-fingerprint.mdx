@@ -1,0 +1,82 @@
+---
+title: "ADR 0151: compare frozen diagnostic bundles by finding fingerprint"
+description: Expose deterministic regression and recovery evidence without reading live state or granting control authority.
+sidebar:
+  order: 151
+---
+
+**Date:** 2026-09-01
+**Status:** Accepted
+
+## Context
+
+A diagnostic bundle freezes sanitized supervisor inputs, findings, timelines,
+explanations, thresholds, and pressure advice. Replay proves that one bundle
+still derives the same expected output. It does not explain how two captures
+differ.
+
+Finding identifiers name incident episodes. The same underlying signal can
+resolve and later reopen under another identifier, so identifier equality is
+not a stable comparison key. Raw file or digest differences are also too broad:
+they reveal that bytes changed without identifying whether pressure worsened,
+recovered, or merely gained evidence.
+
+Comparison is intended to establish signal quality before any decision gives
+diagnostics authority over dispatch or remediation. It therefore needs the same
+frozen-input, bounded-output, and explicit-capability rules as replay.
+
+## Alternatives considered
+
+- Compare expected-output digests only. A digest is useful for replay identity
+  but cannot tell an operator what changed.
+- Match finding identifiers. Reopened episodes can carry different identifiers
+  even when the source, kind, and scope are the same.
+- Compare a bundle with current live state. The live projection can change
+  during the read and would make the result non-replayable.
+- Treat threshold or capability changes as ordinary finding changes. This can
+  make a policy change look like a machine regression and missing evidence look
+  like recovery.
+- Tune thresholds or enforce advice during comparison. That would combine the
+  evidence gate with the authority decision it is meant to inform.
+
+## Decision
+
+Harnery compares exactly two independently validated managed diagnostic
+bundles. It never reads or merges current supervisor state while comparing
+them.
+
+Comparison schema 1 uses each finding's stable fingerprint as the signal key.
+It retains the before and after episode identifiers and frozen finding records
+as evidence. A signal is `added`, `resolved`, or `persistent`. Persistent
+signals also report deterministic field changes for severity, state,
+occurrence count, peak value when units match, attributed owner, and declared
+workload relationship. Stable ordering is by change class, severity, finding
+kind, scope, and fingerprint.
+
+The result compares frozen pressure advice, threshold digests, engine builds,
+and source capabilities. Threshold and capability changes remain explicit
+comparability warnings. An absent optional source is reported as unavailable;
+it is never converted to a zero count or healthy state.
+
+New captures may include bounded hook-health and shadow-admission projections.
+Comparison summarizes only their public scalar contracts. It excludes raw hook
+payloads, commands, prompts, paths, tool data, error text, workflow transcripts,
+and child output. Existing schema-3 bundles remain valid and comparable with an
+explicit optional-source gap.
+
+`harn diagnostics compare <before> <after>` exposes the comparison contract.
+The dashboard may render the same frozen result at an opaque two-artifact route.
+Both inputs retain the existing managed-artifact path and digest validation.
+
+The result is marked `observer_only: true`. It cannot tune thresholds, deny or
+delay dispatch, signal processes, restart hooks, or notify people.
+
+## Scope and promotion
+
+This decision belongs to Harnery's diagnostic bundle, command, and dashboard
+surfaces. It establishes no generic object-diff protocol and grants no control
+authority.
+
+Admission enforcement or hook remediation requires a separate decision backed
+by representative frozen comparisons, explicit host ownership, fail-safe
+behavior, and a rollback path.
