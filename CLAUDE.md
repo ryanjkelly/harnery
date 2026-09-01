@@ -46,6 +46,7 @@ When writing README/docs/marketing copy, coordination leads and the toolkit is f
 bun install
 bun test <paths...>      # edit loop: run only the behavior you changed
 bun run test             # full unit + alongside-source suite, with browser process isolation
+bun run test:list        # list the full runner's partitions without executing them
 bun run test:integration
 bun run typecheck        # tsc --noEmit (strict mode)
 bun run lint             # Biome over src/ (check + assists, read-only)
@@ -59,7 +60,9 @@ Use focused `bun test <paths...>` commands while editing. At an integration
 boundary, run `bun run test`; [scripts/test.mjs](scripts/test.mjs) gives the
 browser-backed files fresh Bun processes because accumulated Playwright state
 can stall Chromium in one long process. An unscoped `bun test` bypasses that
-isolation and is not the full-suite command.
+isolation and is not the full-suite command. A root-level sentinel rejects that
+unsafe form before the suite starts. The full runner prints every partition's
+elapsed time and a slowest-first summary.
 
 ## Runtime: Bun for dev, Node for ship
 

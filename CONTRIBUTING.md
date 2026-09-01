@@ -16,7 +16,7 @@ Requires:
 git clone https://github.com/ryanjkelly/harnery.git
 cd harnery
 bun install
-bun test
+bun run test
 bin/harn --help
 bun run build        # optional: produce dist/ and exercise the Node path (tsc + dts fixup)
 ```
@@ -58,7 +58,7 @@ The release PR is opened by the Actions bot, so branch-protection checks never r
 **Published-package CI only runs on `main`.** Commits to `next` do not run the root suite, so a green `next` is not release-verified; the full suite runs only once you push to `main`. Run it locally before releasing:
 
 ```bash
-bun run typecheck && bun run lint && bun test && bun run test:integration
+bun run typecheck && bun run lint && bun run test && bun run test:integration
 ```
 
 The `installers` job also runs only on `main`: it packs the tarball and exercises the `install.sh` / `uninstall.sh` one-liners plus a `scripts/setup.sh` → `scripts/teardown.sh` round-trip. Those shell scripts have no unit tests, so if you touch them, run that round-trip against a throwaway project yourself, or a regression stays hidden on `next` until release.

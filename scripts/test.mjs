@@ -38,6 +38,34 @@ const browserProcessFiles = new Set([
 // shared CI runner. Keep the core suite's strict default while giving this
 // isolated partition enough room to finish real browser work.
 const browserTestArgs = ["--max-concurrency", "1", "--timeout", "15000"];
+const partitionTimings = [];
+
+// The complete suite has several intentionally process-heavy families. Keep
+// them separate from ordinary unit tests so the timing summary identifies the
+// source of a slowdown instead of reporting one opaque core bucket.
+const namedCorePartitions = [
+  {
+    label: "CLI integration test partition",
+    matches: (file) => file.startsWith("tests/integration/"),
+  },
+  {
+    label: "workflow and governor test partition",
+    matches: (file) =>
+      file.startsWith("src/core/workflow/") ||
+      file.startsWith("src/core/work/") ||
+      file.startsWith("src/core/governor/"),
+  },
+  {
+    label: "event recorder test partition",
+    matches: (file) => file.startsWith("src/core/events/v3/producers/"),
+  },
+];
+
+function formatDuration(durationMs) {
+  if (durationMs < 1_000) return `${Math.round(durationMs)}ms`;
+  if (durationMs < 10_000) return `${(durationMs / 1_000).toFixed(2)}s`;
+  return `${(durationMs / 1_000).toFixed(1)}s`;
+}
 
 function discoverTests(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -50,10 +78,17 @@ function discoverTests(dir) {
 
 function run(label, files, extraArgs = []) {
   process.stdout.write(`\n=== ${label} (${files.length} files) ===\n`);
+  const startedAt = performance.now();
   const result = spawnSync(process.execPath, ["test", ...files, ...extraArgs], {
     cwd: repoRoot,
     stdio: "inherit",
   });
+  const durationMs = performance.now() - startedAt;
+  const outcome = result.status === 0 ? "passed" : "failed";
+  partitionTimings.push({ label, files: files.length, durationMs });
+  process.stdout.write(
+    `=== ${label} ${outcome} in ${formatDuration(durationMs)} (${files.length} files) ===\n`,
+  );
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
@@ -62,7 +97,16 @@ const allFiles = [
   ...discoverTests(join(repoRoot, "src")),
   ...discoverTests(join(repoRoot, "tests")),
 ].sort();
-const coreFiles = allFiles.filter((file) => !browserFiles.has(file));
+const nonBrowserFiles = allFiles.filter((file) => !browserFiles.has(file));
+const namedCoreFiles = namedCorePartitions
+  .map((partition) => ({
+    ...partition,
+    files: nonBrowserFiles.filter(partition.matches),
+  }))
+  .filter((partition) => partition.files.length > 0);
+const coreFiles = nonBrowserFiles.filter(
+  (file) => !namedCorePartitions.some((partition) => partition.matches(file)),
+);
 const isolatedBrowserFiles = allFiles.filter(
   (file) => browserFiles.has(file) && !browserProcessFiles.has(file),
 );
@@ -74,8 +118,31 @@ if (isolatedBrowserFiles.length + isolatedBrowserProcessFiles.length !== browser
   throw new Error(`browser test partition is stale; missing: ${missing.join(", ")}`);
 }
 
-for (const file of isolatedBrowserProcessFiles) {
-  run(`browser process partition: ${file}`, [file], browserTestArgs);
+const partitionPlan = [
+  ...isolatedBrowserProcessFiles.map((file) => ({
+    label: `browser process partition: ${file}`,
+    files: [file],
+    extraArgs: browserTestArgs,
+  })),
+  { label: "browser test partition", files: isolatedBrowserFiles, extraArgs: browserTestArgs },
+  ...namedCoreFiles.map((partition) => ({ ...partition, extraArgs: [] })),
+  { label: "core test partition", files: coreFiles, extraArgs: [] },
+];
+
+if (process.argv.includes("--list")) {
+  for (const partition of partitionPlan) {
+    process.stdout.write(`${partition.label}: ${partition.files.length} files\n`);
+  }
+  process.exit(0);
 }
-run("browser test partition", isolatedBrowserFiles, browserTestArgs);
-run("core test partition", coreFiles);
+
+for (const partition of partitionPlan) {
+  run(partition.label, partition.files, partition.extraArgs);
+}
+
+process.stdout.write("\n=== Test partition timings (slowest first) ===\n");
+for (const timing of partitionTimings.toSorted((a, b) => b.durationMs - a.durationMs)) {
+  process.stdout.write(
+    `- ${timing.label}: ${formatDuration(timing.durationMs)} (${timing.files} files)\n`,
+  );
+}
