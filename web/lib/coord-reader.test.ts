@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
@@ -12,6 +12,7 @@ import {
   __resetCoordRootCache,
   classifyAgentLedgerStateV3,
   readAgents,
+  readCachedAgentsForCodec,
   readEvents,
 } from "./coord-reader.ts";
 
@@ -87,6 +88,44 @@ describe("V3 web coordination reader", () => {
     const agents = readAgents();
     expect(agents.active).toHaveLength(1);
     expect(agents.active[0]?.platform).toBe("codex");
+  });
+
+  test("Codec caches recover a history name instead of a blank or UUID heading", () => {
+    const root = freshRoot();
+    process.env.HARNERY_COORD_ROOT = root;
+    __resetCoordRootCache();
+    const native = "f60993f5-5a32-4d5a-bd8f-825bca29167e";
+    mkdirSync(join(root, ".harnery", "active"), { recursive: true });
+    writeFileSync(
+      join(root, ".harnery", ".name-history"),
+      `${JSON.stringify({
+        instance_id: native,
+        name: "Kestrel",
+        kind: "session",
+        source: "pool",
+        ts: "2026-09-01T06:48:00Z",
+      })}\n`,
+    );
+    writeFileSync(
+      join(root, ".harnery", "active", `${native}.json`),
+      JSON.stringify({
+        schema_version: 2,
+        instance_id: native,
+        v3_instance_id: `inst_${native}`,
+        v3_generation_id: "gen_fixture",
+        name: "",
+        last_heartbeat: new Date().toISOString(),
+        files_touched: [],
+        activity: "working",
+        task_state: "active",
+        task: "Wrap session",
+      }),
+    );
+
+    const snapshot = readCachedAgentsForCodec();
+    expect(snapshot.active).toHaveLength(1);
+    expect(snapshot.active[0]?.name).toBe("Kestrel");
+    expect(snapshot.active[0]?.task).toBe("Wrap session");
   });
 });
 

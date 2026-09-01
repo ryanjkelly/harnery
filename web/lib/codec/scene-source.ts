@@ -13,7 +13,12 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { type AgentsSnapshot, coordRoot, readCachedAgentsForCodec } from "@/lib/coord-reader";
+import {
+  type AgentsSnapshot,
+  coordRoot,
+  historyNameForInstance,
+  readCachedAgentsForCodec,
+} from "@/lib/coord-reader";
 import { readDurableWork } from "@/lib/work-reader";
 import { readWorkflowChildSessionsFromCache } from "@/lib/workflow-reader";
 import {
@@ -21,6 +26,7 @@ import {
   type LiveDisplayRowV3,
   readLiveDisplayV3,
 } from "../../../src/core/events/v3/live-feed";
+import { nativeInstanceIdV3 } from "../../../src/core/events/v3/live-route-observer";
 import { eventV3Paths } from "../../../src/core/events/v3/reader";
 import { SEMANTIC_HARD_CALLS_PER_HOUR } from "../../../src/core/semantic/scheduler";
 import { readSemanticServiceStatus } from "../../../src/core/semantic/service-status";
@@ -364,6 +370,19 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
     }
   } catch {
     // Missing or unreadable artifacts simply omit the Browse affordance.
+  }
+  try {
+    for (const panel of scene.panels) {
+      if (panel.machine) continue;
+      const hist = historyNameForInstance(panel.instance_id);
+      if (!hist) continue;
+      const shortId = nativeInstanceIdV3(panel.instance_id).slice(0, 8);
+      if (!panel.identity.display_name.trim() || panel.identity.display_name === shortId) {
+        panel.identity.display_name = hist;
+      }
+    }
+  } catch {
+    // History is optional presentation; the short-id fallback stands.
   }
   // Character assignment is presentation metadata layered on after the pure
   // projection; a registry failure leaves the fallback pack in place. Every

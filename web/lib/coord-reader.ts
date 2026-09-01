@@ -322,7 +322,7 @@ export function readCachedAgentsForCodec(): AgentsSnapshot {
       const ts = Date.parse(row.last_heartbeat);
       return {
         ...row,
-        name: row.name ?? row.instance_id,
+        name: codecCacheDisplayName(row),
         activity: row.activity ?? "unknown",
         task_state: row.task_state ?? "active",
         age_seconds: Number.isFinite(ts)
@@ -520,25 +520,46 @@ function heartbeatFromLedgerRecord(record: AgentLedgerRecordV3): Heartbeat {
 }
 
 function nameForLedgerInstance(instanceId: string): string {
+  return historyNameForInstance(instanceId) ?? nativeInstanceIdV3(instanceId).slice(0, 8);
+}
+
+/** Pool or assumed name from `.name-history`. Empty cache names stay empty so
+ * Codec can fall back to the short native id instead of a UUID heading. */
+export function historyNameForInstance(instanceId: string): string | undefined {
   const historyPath = path.join(harneryDir(), ".name-history");
-  if (existsSync(historyPath)) {
-    for (const line of readFileSync(historyPath, "utf8").split("\n").reverse()) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line) as { instance_id?: string; name?: string };
-        if (
-          entry.name &&
-          entry.instance_id &&
-          (entry.instance_id === instanceId || liveInstanceIdV3(entry.instance_id) === instanceId)
-        ) {
-          return entry.name.startsWith("agent-") ? entry.name.slice("agent-".length) : entry.name;
-        }
-      } catch {
-        // Ignore malformed history rows; the instance prefix remains an honest fallback.
+  if (!existsSync(historyPath)) return undefined;
+  const native = nativeInstanceIdV3(instanceId);
+  const live = liveInstanceIdV3(instanceId);
+  for (const line of readFileSync(historyPath, "utf8").split("\n").reverse()) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as { instance_id?: string; name?: string };
+      if (!entry.name || !entry.instance_id) continue;
+      const entryNative = nativeInstanceIdV3(entry.instance_id);
+      if (
+        entry.instance_id === instanceId ||
+        entry.instance_id === native ||
+        entry.instance_id === live ||
+        liveInstanceIdV3(entry.instance_id) === instanceId ||
+        entryNative === native
+      ) {
+        return entry.name.startsWith("agent-") ? entry.name.slice("agent-".length) : entry.name;
       }
+    } catch {
+      // Ignore malformed history rows; the instance prefix remains an honest fallback.
     }
   }
-  return nativeInstanceIdV3(instanceId).slice(0, 8);
+  return undefined;
+}
+
+function codecCacheDisplayName(row: Omit<Heartbeat, "age_seconds">): string {
+  const explicit = typeof row.name === "string" ? row.name.trim() : "";
+  if (explicit) return explicit;
+  return (
+    historyNameForInstance(row.instance_id) ??
+    (row.v3_instance_id ? historyNameForInstance(row.v3_instance_id) : undefined) ??
+    ""
+  );
 }
 
 function normalizeTaskState(value: string | undefined): TaskState {

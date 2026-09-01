@@ -281,7 +281,12 @@ describe("projectScene", () => {
   });
 
   test("recent evidence still surfaces a stale heartbeat as online, not unknown", () => {
-    const staleWorking = hb({ age_seconds: 900, activity: "working" });
+    const staleWorking = hb({
+      age_seconds: 900,
+      activity: "working",
+      task: "Apply pack feedback",
+      task_updated_at: "2026-08-16T09:50:00.000Z",
+    });
     const scene = projectScene({
       snapshot: snapshot([], [staleWorking]),
       events: [
@@ -296,12 +301,67 @@ describe("projectScene", () => {
     });
     expect(scene.panels).toHaveLength(1);
     expect(scene.panels[0]?.identity.display_name).toBe("Sara");
+    expect(scene.panels[0]?.identity.task).toMatchObject({
+      value: "Apply pack feedback",
+      provenance: "projection",
+    });
     expect(scene.panels[0]?.presence).toMatchObject({
       value: "online",
       provenance: "event",
       confidence: "medium",
     });
     expect(scene.panels[0]?.activity).toMatchObject({ value: "working", provenance: "event" });
+  });
+
+  test("a stale unnamed heartbeat with recent evidence uses the short native id, not a blank header", () => {
+    const native = "f60993f5-5a32-4d5a-bd8f-825bca29167e";
+    const scene = projectScene({
+      snapshot: snapshot([], [hb({ instance_id: native, name: "", age_seconds: 900 })]),
+      events: [
+        ev({
+          instance_id: native,
+          event_type: "command.started",
+          ts: "2026-08-16T10:03:00.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(1);
+    expect(scene.panels[0]?.identity.display_name).toBe("f60993f5");
+  });
+
+  test("evidence on a canonical id still inherits the native heartbeat's declared task", () => {
+    const native = "f60993f5-5a32-4d5a-bd8f-825bca29167e";
+    const canonical = `inst_${native}`;
+    const scene = projectScene({
+      snapshot: snapshot(
+        [],
+        [
+          hb({
+            instance_id: native,
+            v3_instance_id: canonical,
+            name: "Kestrel",
+            age_seconds: 900,
+            task: "Wrap session",
+            task_updated_at: "2026-08-16T09:50:00.000Z",
+          }),
+        ],
+      ),
+      events: [
+        ev({
+          instance_id: canonical,
+          event_type: "tool.requested",
+          category: "edit",
+          outcome: "started",
+          ts: "2026-08-16T10:03:00.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(1);
+    expect(scene.panels[0]?.instance_id).toBe(native);
+    expect(scene.panels[0]?.identity.display_name).toBe("Kestrel");
+    expect(scene.panels[0]?.identity.task?.value).toBe("Wrap session");
   });
 
   test("an old session.ended on a stale heartbeat does not linger in the scene", () => {

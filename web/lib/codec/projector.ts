@@ -314,6 +314,33 @@ function ms(ts: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
+/** Empty strings are absent. `??` would keep them and blank a Codec header. */
+function usableName(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function indexSnapshotHeartbeats(snapshot: AgentsSnapshot): Map<string, Heartbeat> {
+  const byId = new Map<string, Heartbeat>();
+  for (const hb of [...snapshot.active, ...snapshot.stale, ...snapshot.terminal]) {
+    byId.set(hb.instance_id, hb);
+    if (hb.v3_instance_id) byId.set(hb.v3_instance_id, hb);
+  }
+  return byId;
+}
+
+function panelDisplayName(
+  identityName: string | undefined,
+  heartbeatName: string | undefined,
+  instanceId: string,
+): string {
+  return (
+    usableName(identityName) ||
+    usableName(heartbeatName) ||
+    nativeInstanceIdV3(instanceId).slice(0, 8)
+  );
+}
+
 function present<T>(
   value: T,
   provenance: Presented<T>["provenance"],
@@ -650,7 +677,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   const events = alignEventInstanceIds(inputs.events, inputs.snapshot);
   const evidence = foldEvidence(events);
   const activityChannels = projectActivityChannels(events, now);
-  const heartbeatName = new Map<string, string>();
+  const heartbeats = indexSnapshotHeartbeats(inputs.snapshot);
   const generationToInstance = new Map<string, string>();
   const childOf = new Map<string, { parent: string; event_id: string; ts: string }>();
   for (const hb of [
@@ -658,7 +685,6 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     ...inputs.snapshot.stale,
     ...inputs.snapshot.terminal,
   ]) {
-    heartbeatName.set(hb.instance_id, hb.name);
     if (hb.generation_id) generationToInstance.set(hb.generation_id, hb.instance_id);
   }
   for (const [instanceId, slot] of evidence) {
@@ -762,10 +788,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const panel: CodecPanelScene = {
       instance_id: hb.instance_id,
       identity: {
-        display_name:
-          ev?.identityName?.trim() ||
-          hb.name?.trim() ||
-          nativeInstanceIdV3(hb.instance_id).slice(0, 8),
+        display_name: panelDisplayName(ev?.identityName, hb.name, hb.instance_id),
         ...(task ? { task } : {}),
       },
       presence: panelPresence,
@@ -856,8 +879,10 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       },
       now,
     );
-    const task =
-      ev.lastTaskChanged?.task && !ev.lastTaskChanged.task_cleared
+    const matchingHeartbeat = heartbeats.get(instanceId);
+    const task = matchingHeartbeat
+      ? taskLabel(matchingHeartbeat, ev)
+      : ev.lastTaskChanged?.task && !ev.lastTaskChanged.task_cleared
         ? present(
             ev.lastTaskChanged.task,
             "event" as const,
@@ -870,10 +895,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const evidencePanel: CodecPanelScene = {
       instance_id: instanceId,
       identity: {
-        display_name:
-          ev.identityName ??
-          heartbeatName.get(instanceId) ??
-          nativeInstanceIdV3(instanceId).slice(0, 8),
+        display_name: panelDisplayName(ev.identityName, matchingHeartbeat?.name, instanceId),
         ...(task ? { task } : {}),
       },
       presence: evPresence,

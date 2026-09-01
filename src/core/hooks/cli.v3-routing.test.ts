@@ -1155,6 +1155,45 @@ describe("agent-hook V3 hard cut", () => {
     const ledger = readLedgerV3(root);
     expect(ledger.events.some(({ event }) => event.event_type === "session.started")).toBeFalse();
   });
+
+  test("a mid-flight Claude Code prompt mints a pool name onto the cache", () => {
+    const root = candidateRoot();
+    const owner = "f60993f5-5a32-4d5a-bd8f-825bca29167e";
+    expect(
+      run(
+        AGENT_HOOK,
+        ["user-prompt-submit", "--adapter", "claude-code"],
+        {
+          session_id: owner,
+          cwd: root,
+          prompt: "continue",
+          hook_event_name: "UserPromptSubmit",
+        },
+        root,
+        { HARNERY_AGENT_COORD_BYPASS_STOP: "1" },
+      ).status,
+    ).toBe(0);
+
+    const history = readFileSync(join(root, ".harnery", ".name-history"), "utf8");
+    expect(history).toContain(owner);
+    const minted = [...history.matchAll(/"name":"([A-Z][a-z]+)"/g)].map((match) => match[1]);
+    expect(minted.at(-1)).toMatch(/^[A-Z][a-z]+$/);
+
+    expect(
+      run(
+        AGENT_HOOK,
+        ["session-start", "--adapter", "claude-code"],
+        { session_id: owner, cwd: root, source: "startup" },
+        root,
+        { HARNERY_AGENT_COORD_BYPASS_STOP: "1" },
+      ).status,
+    ).toBe(0);
+    const laterHistory = readFileSync(join(root, ".harnery", ".name-history"), "utf8");
+    const laterNames = [...laterHistory.matchAll(/"name":"([A-Z][a-z]+)"/g)].map(
+      (match) => match[1],
+    );
+    expect(new Set(laterNames)).toEqual(new Set(minted));
+  });
 });
 
 function candidateRoot(adapter: "claude-code" | "codex" | "cursor" = "claude-code"): string {

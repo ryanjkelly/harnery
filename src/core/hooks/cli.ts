@@ -44,7 +44,11 @@ import {
   toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
 import type { Heartbeat } from "../agents/state/heartbeat-reader.ts";
-import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
+import {
+  readHeartbeat,
+  setAssignedNameCache,
+  stampSessionNameSeen,
+} from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { assignName } from "../agents/state/names.ts";
@@ -245,6 +249,31 @@ function assignNameInProcess(
   }
 }
 
+/** Mid-flight sessions can emit tools before SessionStart assigns a pool name.
+ * Stamp the disposable cache so Codec does not render the 8-character id. */
+function ensureSessionDisplayName(
+  coordRoot: string,
+  instanceId: string,
+  sessionId: string,
+  adapter: Adapter,
+): void {
+  if (coordEnv("WORKFLOW_CHILD") === "1") return;
+  const row =
+    readLiveCoordinationRow(coordRoot, instanceId) ?? readHeartbeat(coordRoot, instanceId);
+  if (row?.kind === "subagent" || row?.kind === "transient" || row?.workflow_run_id) return;
+  if (row?.name?.trim()) return;
+  const assigned = assignNameInProcess(coordRoot, instanceId, "session");
+  if (!assigned?.name) return;
+  if (!readHeartbeat(coordRoot, instanceId)) {
+    try {
+      ensureLiveCoordinationHeartbeat(coordRoot, instanceId, sessionId, adapter);
+    } catch {
+      /* cache materialization is best-effort; history still holds the name */
+    }
+  }
+  setAssignedNameCache(coordRoot, instanceId, assigned.name, "session");
+}
+
 /**
  * Direct (in-process) pidmap write, avoiding the spawn overhead of going via
  * the agent-coord CLI for every session.started signal. Pid-map rows
@@ -376,13 +405,11 @@ function buildEventData(
       };
 
     case "turn.started": {
-      // Cursor can deliver beforeSubmitPrompt before sessionStart. Ensure that
-      // high-confidence prompt bootstrap also mints durable display identity;
-      // a later SessionStart remains idempotent.
-      if (
-        ctx.adapter === "cursor" &&
-        !readLiveCoordinationRow(ctx.coordRoot, ctx.instanceId)?.name
-      ) {
+      // Mid-flight onboarding (any adapter) can observe a turn before
+      // SessionStart. Mint durable display identity here so a later
+      // SessionStart remains idempotent and Codec is not stuck on the
+      // 8-character native id.
+      if (!readLiveCoordinationRow(ctx.coordRoot, ctx.instanceId)?.name) {
         assignNameInProcess(ctx.coordRoot, ctx.instanceId, "session");
       }
       const prompt = p?.prompt ?? "";
@@ -784,6 +811,16 @@ async function main(): Promise<number> {
 
   const sessionId = payload?.session_id ?? payload?.conversation_id ?? owner.instance_id;
   const priorCoordination = readHeartbeat(coordRoot, owner.instance_id);
+  if (
+    norm.event_type !== "session.ended" &&
+    coordEnv("WORKFLOW_CHILD") !== "1" &&
+    priorCoordination?.kind !== "subagent" &&
+    priorCoordination?.kind !== "transient" &&
+    !priorCoordination?.workflow_run_id &&
+    !priorCoordination?.name?.trim()
+  ) {
+    assignNameInProcess(coordRoot, owner.instance_id, "session");
+  }
 
   const data = buildEventData(norm.event_type, {
     coordRoot,
@@ -877,6 +914,13 @@ async function main(): Promise<number> {
       });
     } catch (error) {
       logError(coordRoot, error, { phase: "epoch-coordination-restore" });
+    }
+  }
+  if (norm.event_type !== "session.ended") {
+    try {
+      ensureSessionDisplayName(coordRoot, owner.instance_id, sessionId, adapter);
+    } catch (error) {
+      logError(coordRoot, error, { phase: "session-display-name" });
     }
   }
   const v3EventId =
