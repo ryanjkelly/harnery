@@ -116,10 +116,7 @@ function writeProcSnapshot(
   });
 }
 
-function writeSystemFiles(
-  procRoot: string,
-  values: { total: number; idle: number },
-): void {
+function writeSystemFiles(procRoot: string, values: { total: number; idle: number }): void {
   const system = Math.max(0, values.total - values.idle - 100);
   writeFileSync(join(procRoot, "stat"), `cpu 100 ${system} 0 ${values.idle} 0 0 0 0 0 0\n`);
   writeFileSync(

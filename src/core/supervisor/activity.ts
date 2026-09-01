@@ -62,7 +62,9 @@ export function collectSupervisorActivitySnapshot(
     return unavailable(observedAt, "activity-projection-read-failed", "error");
   }
 
-  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs || left.name.localeCompare(right.name));
+  candidates.sort(
+    (left, right) => right.mtimeMs - left.mtimeMs || left.name.localeCompare(right.name),
+  );
   const entries: SupervisorDeclaredActivity[] = [];
   let totalBytes = 0;
   let stale = 0;
@@ -87,7 +89,11 @@ export function collectSupervisorActivitySnapshot(
       continue;
     }
     const age = now.getTime() - Date.parse(cache.last_heartbeat!);
-    if (!Number.isFinite(age) || age < -30_000 || age > SUPERVISOR_FINDING_POLICY.activity_freshness_ms) {
+    if (
+      !Number.isFinite(age) ||
+      age < -30_000 ||
+      age > SUPERVISOR_FINDING_POLICY.activity_freshness_ms
+    ) {
       stale += 1;
       continue;
     }
@@ -172,7 +178,9 @@ function unavailable(
   };
 }
 
-function isActivity(value: string | undefined): value is SupervisorDeclaredActivity["declared_activity"] {
+function isActivity(
+  value: string | undefined,
+): value is SupervisorDeclaredActivity["declared_activity"] {
   return value === "working" || value === "needs_input" || value === "idle" || value === "unknown";
 }
 

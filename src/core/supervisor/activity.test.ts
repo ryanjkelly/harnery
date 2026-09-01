@@ -18,10 +18,7 @@ describe("supervisor activity projection", () => {
       task_state: "active",
       last_heartbeat: "2026-08-30T12:00:00.000Z",
     });
-    const snapshot = collectSupervisorActivitySnapshot(
-      root,
-      new Date("2026-08-30T12:01:00.000Z"),
-    );
+    const snapshot = collectSupervisorActivitySnapshot(root, new Date("2026-08-30T12:01:00.000Z"));
     expect(snapshot.capability.state).toBe("supported");
     expect(snapshot.entries).toMatchObject([
       {
@@ -44,10 +41,7 @@ describe("supervisor activity projection", () => {
     const target = join(root, "outside.json");
     writeFileSync(target, JSON.stringify(cache("linked-agent", {})), "utf8");
     symlinkSync(target, join(root, ".harnery", "active", "linked-agent.json"));
-    const snapshot = collectSupervisorActivitySnapshot(
-      root,
-      new Date("2026-08-30T12:01:00.000Z"),
-    );
+    const snapshot = collectSupervisorActivitySnapshot(root, new Date("2026-08-30T12:01:00.000Z"));
     expect(snapshot.entries).toHaveLength(0);
     expect(snapshot.omitted_entry_count).toBe(3);
     expect(snapshot.capability).toMatchObject({
@@ -64,11 +58,7 @@ function activityRoot(): string {
   return root;
 }
 
-function writeCache(
-  root: string,
-  id: string,
-  overrides: Partial<ReturnType<typeof cache>>,
-): void {
+function writeCache(root: string, id: string, overrides: Partial<ReturnType<typeof cache>>): void {
   writeFileSync(
     join(root, ".harnery", "active", `${id}.json`),
     JSON.stringify(cache(id, overrides)),

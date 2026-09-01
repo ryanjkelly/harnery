@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { CoordinationHealthSnapshot } from "../agents/health.ts";
 import type {
-  SupervisorConsumerRecord,
   SupervisorActivitySnapshot,
+  SupervisorConsumerRecord,
   SupervisorFindingExplanation,
   SupervisorFindings,
   SupervisorHistory,
