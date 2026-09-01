@@ -44,7 +44,8 @@ When writing README/docs/marketing copy, coordination leads and the toolkit is f
 
 ```bash
 bun install
-bun test                 # unit + alongside-source tests
+bun test <paths...>      # edit loop: run only the behavior you changed
+bun run test             # full unit + alongside-source suite, with browser process isolation
 bun run test:integration
 bun run typecheck        # tsc --noEmit (strict mode)
 bun run lint             # Biome over src/ (check + assists, read-only)
@@ -53,6 +54,12 @@ bun run build            # tsc -> dist/ (JS + .d.ts) for the Node target; prepub
 bun run docs:dev         # Starlight docs site
 bin/harn --help
 ```
+
+Use focused `bun test <paths...>` commands while editing. At an integration
+boundary, run `bun run test`; [scripts/test.mjs](scripts/test.mjs) gives the
+browser-backed files fresh Bun processes because accumulated Playwright state
+can stall Chromium in one long process. An unscoped `bun test` bypasses that
+isolation and is not the full-suite command.
 
 ## Runtime: Bun for dev, Node for ship
 
@@ -99,7 +106,7 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=e8a81d93 -->
+<!-- harnery:begin instructions v=92968c66 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
@@ -148,6 +155,12 @@ coordination ledger (`.harnery/ledgers/v3/`). Lead a shell command with a
 `# intent: <why>` comment (or set the tool's description) so the recorded event
 carries a reason instead of `(no intent)`; the [tool-intent
 guide](https://harnery.com/guides/tool-intent/) owns the details.
+
+**Messaging another agent.** `harn agents ping <name> "<message>"` reaches an
+agent by name whether or not they are running: a live agent sees it on their next
+prompt, and a dormant name holds it until a session of that name next starts.
+Send it as your first and only step. Do not check who is live first, and do not
+hunt for somewhere else to leave it. Only a never-used name is refused.
 
 **Journal.** `harn journal add <category> "<text>"` (category = note, plan, decision, blocker, question, done, or handoff)
 leaves breadcrumbs that survive context compaction;
