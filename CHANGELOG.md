@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.37.0
+
+### Minor Changes
+
+- 56751e7: Add a live structured-log flow dashboard with bounded per-family reads, severity filters, pause controls, and record inspection.
+- d299154: Improve local diagnostic findings with incident recurrence, validated process ownership, bounded agent activity context, and explicit service-staleness reasons.
+- 78074e3: Add `--color-scheme <light|dark>` to `browse`: emulates `prefers-color-scheme` for the whole session (threaded to Playwright's context colorScheme), so theme-aware pages render in either scheme without page-specific toggles. Absent flag keeps today's behavior.
+- 94ae820: Add `harn diagnostics explain --json` for deterministic local pressure and fan-out advice. Live advice requires a current supervisor heartbeat, so an old findings file cannot masquerade as current pressure. Advice is included in frozen diagnostic bundles and replay digests, while repetitive related timeline events are compacted into counted first-to-last clusters. The supervisor remains observer-only and never starts, stops, or throttles work.
+- b65c3ae: Record bounded terminal hook-health receipts, project them through the local
+  supervisor, surface deterministic findings, and show completed hook health on
+  the resource dashboard.
+- f5ae171: Add an optional local resource observer with process-tree attribution, bounded snapshots, and service lifecycle commands.
+- 576a2ff: Add deterministic comparison for two frozen diagnostic bundles, including
+  finding regressions and recoveries, advice and capability changes, completed
+  hook health, and bounded shadow-admission evidence.
+- 5aab533: Replace the resource-only daemon with an optional local supervisor that collects bounded resource history, service and hook health, anomalies, and incremental structured-log feeds for the dashboard.
+- c8c2db7: Make `agents ping` deliver to an agent name rather than to a running instance. A message to a name with no live session is now held in a durable mailbox and delivered when a session of that name next starts, instead of being refused. A message to a live agent is surfaced in their next prompt, which previously never happened: the entry landed in their journal and nothing showed it to them.
+
+  The refusal that remains is a name no agent has ever held, and that error lists the closest known names. Senders therefore need one command and no lookup of who is currently running, which is what the previous behavior forced. Per-message and per-mailbox ceilings bound the queue, and delivered messages are archived for audit.
+
+  Also fixes the prompt-context route resolving the agent name: the hook does not pass `--name`, so every name-addressed section, pending council invites included, was silently skipped. The name is now read from the heartbeat when the caller omits it.
+
+- 7528cc3: Add `qa-run`, a one-command page-QA matrix runner: it executes the QA planner, deterministic gates per viewport/theme/state through a bounded process pool, interaction assertions, manifest-required critique, and the QA snapshot in a single invocation, writing one fail-closed machine-readable result. Jobs are validated (secret-bearing fields refused) and may widen but never narrow the planner's coverage.
+- 6da5243: Add sanitized diagnostic bundle capture, strict frozen-bundle validation, and offline finding replay through `harn diagnostics`.
+- d2894e3: Add opt-in shadow admission telemetry to workflow and governor runs. `--observe-pressure` demand-starts the optional supervisor only before a real child dispatch, waits for a fresh cycle, records bounded diagnostic advice in the transcript, proof, and run report, and always leaves dispatch unchanged.
+- 9dd6e3e: Bound repository-local coordination storage with artifact byte budgets, explicit
+  large-workspace acknowledgement, loose-file adoption, closed Event Ledger V3
+  epoch retention, and verified compression for sealed legacy V1 shards.
+
+### Patch Changes
+
+- 182c71f: Correct the `agents health` finding text for heartbeat cache issues. It said the listed rows were files "the sweep isn't reaping", which was true only while the sweep was absent from the reconcile pass. Now that it runs there, a surviving row means the sweep deliberately kept it (malformed but mtime-fresh, or neither audit write could persist) or it aged past the freshness cutoff since the last pass. The old wording reported working behavior as a fault.
+- d1d891c: Do not drain an agent's mailbox on a prompt an adapter cannot deliver. Cursor's prompt hook can allow or block a turn but cannot inject model context, so rendering messages there removed them from the queue and then discarded the output. Those sessions now keep their messages until SessionStart, which Cursor does deliver. The capability is exported as `canReceiveContext` so any future consumer of state-spending context has one place to check.
+- 8c7513b: Make `qa-run` execute every deterministic check in the planner manifest, fail on recorded browser diagnostics when `console` is required, and stop incomplete when a future planner check has no executable mapping.
+- 4546bfb: Run hook coordination effects in-process so one adapter event no longer
+  launches several nested `agent-coord` runtimes.
+- 0074b5c: Verify that local file URLs target a dashboard serving the same repository root.
+- 2de364d: Rename the `agents health` JSON field `zombies` to `heartbeat_cache_issues` so it matches the rendered `cache issues` row and the condition it actually measures. Stale or malformed heartbeat cache files are not zombie processes.
+- 15edcde: Restore stale coordination-cache reaping in the reconcile pass. Both `agents reconcile` and the session-start pass now call one shared composition that runs the stale sweep before V3 session finalization and reports `swept_heartbeats`, `swept_pidmaps`, and `swept_peer_hashes`. Previously each called only the finalizer, so the sweep ran nowhere but its own uninvoked subcommand and stale rows accumulated indefinitely.
+
+  Also fix the finalizer predicate for `lifecycle.sweep_observed`, which matched `stale_sweep` (the finalization-request name) instead of `stale_heartbeat` (the observation the sweep emits). From a cold start that branch was unreachable, so a swept session never produced its finalization request.
+
+  The sweep's safety contract is unchanged: configured coordination freshness for valid rows, an extra stale-mtime gate for malformed or missing timestamps, a durable audit record before any deletion, and keeping the row when neither audit write can be persisted.
+
+- a40880d: Keep a blocked committer's staged paths in its durable claim set. When two sessions have unfinished changes in one file, the original claim holder's later commit is now blocked too instead of silently sweeping the other session's working-tree edits. Canonical Codex session rows also bypass the PID-based transient-identity heuristic because Windows-hosted sessions cross a process boundary and have no usable WSL PID anchor.
+- 9def66f: Require Cursor replies to show the Harnery status box. The response hook now records only privacy-safe visibility booleans for Stop, and Cursor projects receive a generated Always Apply rule with the paste instruction.
+
 ## 0.36.0
 
 ### Minor Changes
