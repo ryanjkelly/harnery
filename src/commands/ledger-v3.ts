@@ -5,13 +5,16 @@ import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import {
+  compressSealedLegacyV1Segments,
   inventoryLegacyV1Segments,
   streamLegacyV1Rows,
   verifyLegacyV1HardFence,
   writeLegacyV1Canary,
 } from "../core/events/legacy-storage/index.ts";
 import {
+  cleanEventV3Archives,
   initializeEventLedgerV3,
+  inventoryEventV3Archives,
   readEventV3ControlState,
   recoverInvalidEventLedgerV3,
   sha256V3,
@@ -56,6 +59,39 @@ export function registerLedgerV3Command(
         emit.data(readEventV3ControlState(coordRoot(context)));
       } catch (error) {
         emitFailure(emit, "ledger_v3_status_failed", error);
+      }
+    });
+
+  const archives = command
+    .command("archives")
+    .description("Inventory and enforce bounded retention for complete closed V3 epochs");
+
+  archives
+    .command("list")
+    .description("Show closed epochs, retention classifications, and planned actions")
+    .option("--root <path>", "Explicit coordination root")
+    .action((options: { root?: string }) => {
+      try {
+        const rows = inventoryEventV3Archives(resolve(options.root ?? coordRoot(context)));
+        emit.data({ rows, meta: summarizeArchiveRows(rows) });
+      } catch (error) {
+        emitFailure(emit, "ledger_v3_archive_inventory_failed", error);
+      }
+    });
+
+  archives
+    .command("clean")
+    .description("Preview closed-epoch deletion; pass --yes to execute the exact current plan")
+    .option("--root <path>", "Explicit coordination root")
+    .option("--yes", "Delete only epochs still classified expired or over-budget")
+    .action((options: { root?: string; yes?: boolean }) => {
+      try {
+        const rows = cleanEventV3Archives(resolve(options.root ?? coordRoot(context)), {
+          yes: options.yes,
+        });
+        emit.data({ rows, meta: summarizeArchiveRows(rows) });
+      } catch (error) {
+        emitFailure(emit, "ledger_v3_archive_cleanup_failed", error);
       }
     });
 
@@ -356,6 +392,32 @@ export function registerLedgerV3Command(
     });
 
   command
+    .command("legacy-compress")
+    .description("Preview verified gzip replacement of sealed non-terminal V1 shards")
+    .option("--root <path>", "Explicit coordination root")
+    .option("--yes", "Replace only unchanged shards after exact logical-row parity")
+    .action(async (options: { root?: string; yes?: boolean }) => {
+      try {
+        const rows = await compressSealedLegacyV1Segments(
+          resolve(options.root ?? coordRoot(context)),
+          { yes: options.yes },
+        );
+        emit.data({
+          rows,
+          meta: {
+            total: rows.length,
+            would_compress: rows.filter((row) => row.action === "would-compress").length,
+            compressed: rows.filter((row) => row.action === "compressed").length,
+            bytes_before: rows.reduce((sum, row) => sum + row.bytes_before, 0),
+            bytes_after: rows.reduce((sum, row) => sum + (row.bytes_after ?? row.bytes_before), 0),
+          },
+        });
+      } catch (error) {
+        emitFailure(emit, "ledger_v1_compression_failed", error);
+      }
+    });
+
+  command
     .command("verify-legacy")
     .description("Stream and validate one loose or manifest-bound gzip legacy segment")
     .argument("<source>", "Loose segment or compressed-segment manifest")
@@ -523,6 +585,26 @@ function sameSortedStrings(left: string[], right: string[]): boolean {
     leftSorted.length === rightSorted.length &&
     leftSorted.every((value, index) => value === rightSorted[index])
   );
+}
+
+function summarizeArchiveRows(
+  rows: Array<{ classification: string; action: string; bytes: number | null }>,
+): Record<string, unknown> {
+  const classifications: Record<string, number> = {};
+  for (const row of rows) {
+    classifications[row.classification] = (classifications[row.classification] ?? 0) + 1;
+  }
+  return {
+    total: rows.length,
+    bytes: rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0),
+    classifications,
+    would_delete: rows.filter((row) => row.action === "would-delete").length,
+    would_delete_bytes: rows.reduce(
+      (sum, row) => sum + (row.action === "would-delete" ? (row.bytes ?? 0) : 0),
+      0,
+    ),
+    deleted: rows.filter((row) => row.action === "deleted").length,
+  };
 }
 
 function emitFailure(emit: EmitContext, code: string, error: unknown): never {

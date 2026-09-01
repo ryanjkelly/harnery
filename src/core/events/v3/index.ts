@@ -3,6 +3,15 @@ export {
   validateAdditiveSchemaAdvanceV3,
 } from "./advance.ts";
 export {
+  autoCleanEventV3Archives,
+  cleanEventV3Archives,
+  type EventV3ArchiveAutoCleanResult,
+  type EventV3ArchiveClassification,
+  type EventV3ArchiveEntry,
+  eventV3ArchivesRoot,
+  inventoryEventV3Archives,
+} from "./archive-retention.ts";
+export {
   type AuthorityMutationV3,
   type AuthorityReceiptV3,
   type AuthorityReconcilerV3,

@@ -1,0 +1,100 @@
+---
+title: "ADR 0150: bound local coordination storage"
+description: Apply byte budgets to managed artifacts and closed event epochs, adopt loose artifact files, and compress sealed legacy shards without weakening active-authority safeguards.
+sidebar:
+  order: 150
+---
+
+**Date:** 2026-09-01
+**Status:** Accepted
+
+## Context
+
+Time-based artifact retention bounded how long an inactive managed workspace
+survived, but it did not bound bytes written inside that window. One workspace
+could therefore add tens of gigabytes and remain current. Direct-child loose
+files had no manifest and were deliberately excluded from cleanup.
+
+ADR 0137 bounded the active Event Ledger V3 read cost by rotating a complete
+epoch at 32 MiB. The closed epochs were preserved under `v3-archives` without
+retention, which transferred unbounded growth from the active file to the
+archive directory. Sealed V1 shards were finite after the hard fence but still
+occupied their original uncompressed space.
+
+This matters most on copy-on-write or virtualized filesystems where deleting a
+large transient tree may not return host disk immediately. Preventing the peak
+is more useful than relying on a later host compaction.
+
+## Alternatives considered
+
+- Keep time-only artifact retention. Rejected because a fresh workspace can be
+  arbitrarily large, so the policy has no storage bound.
+- Reject writes at the filesystem layer. Rejected because callers write normal
+  files directly inside a returned workspace. Harnery does not mediate each
+  write and cannot make that boundary atomic or portable.
+- Compress every closed V3 epoch indefinitely. Rejected because compression
+  changes only the growth rate, not the bound, and the recovery verifier reads
+  complete directories rather than compressed containers.
+- Put closed epochs through generic storage maintenance. Deferred because the
+  current generic executor is deliberately inactive for canonical and recovery
+  families. The Event Ledger owner can make a narrower complete-epoch decision
+  without granting path-level deletion authority to other providers.
+- Compress the V1 terminal shard. Rejected because `V1-SEALED.json` binds its
+  exact filename and digest. Replacing it would invalidate the hard fence.
+
+## Decision
+
+Managed artifacts receive two configurable soft limits. The repository default
+is 20 GiB and one workspace defaults to 1 GiB. `artifacts create --big` records
+an explicit oversize acknowledgement in the manifest. An inactive workspace
+above the unit limit without that field becomes `managed-oversize`. When total
+eligible managed bytes exceed the repository budget, Harnery marks inactive
+workspaces `managed-over-budget` in earliest-effective-expiry order until the
+remainder fits.
+
+`artifacts list` and the dry-run `artifacts clean` expose those actions. The
+mutating cleanup recalculates the complete policy and rechecks artifact ID,
+bytes, last modification, and effective expiry before removing a direct-child
+directory. Live owners, tracked content, unreadable trees, symlinks, invalid
+manifests, and unmanaged entries remain protected even when that leaves the
+store above budget.
+
+`artifacts adopt-unmanaged` previews untracked direct-child regular files and
+legacy directories. With `--yes`, it moves unchanged files into one managed
+workspace and adds a manifest to each unchanged directory in place. Links,
+tracked paths, and invalid manifests stay untouched. An adoption above the unit
+limit also requires `--big`.
+
+Closed V3 epochs receive a 1 GiB and seven-day default policy, with the newest
+two complete epochs protected regardless of pressure. Age candidates are
+selected first, then the oldest complete epochs needed to satisfy the byte
+budget. `ledger-v3 archives list` and `clean` are dry-run surfaces;
+`clean --yes` recomputes the plan before every removal and rechecks path shape,
+size, and modification time. The daily SessionStart janitor uses the same
+guarded operation. The active epoch is outside this policy.
+
+The V1 hard fence proves that legacy shards no longer grow. `ledger-v3
+legacy-compress --yes` may replace only sealed, non-terminal loose shards. It
+verifies the fence, source size and digest, gzip logical-row parity, and source
+stability before publishing the gzip file and unlinking the loose source. The
+terminal shard and existing gzip files remain unchanged.
+
+Project config may override `artifacts.max_bytes`,
+`artifacts.max_unit_bytes`, `events.archive_max_bytes`,
+`events.archive_max_age_days`, `events.archive_keep_min`, and
+`events.archive_auto_clean` within documented ranges. Writers continue under
+pressure; these are cleanup budgets, not write quotas.
+
+## Result
+
+Artifact growth is bounded across both the whole managed store and one
+unacknowledged workspace. Existing loose files have a guarded migration path.
+Closed V3 history keeps a small recent audit and recovery floor without growing
+forever, while the active authority remains untouched. Sealed V1 data can shed
+most of its physical size without changing logical rows or invalidating the
+terminal fence.
+
+Focused artifact, configuration, V3 archive, V1 fence, compression, and command
+tests cover preview behavior, protected classes, deterministic selection,
+exact revalidation, row parity, and terminal-fence preservation. Type checking
+also covers the published artifact and Event V3 exports.

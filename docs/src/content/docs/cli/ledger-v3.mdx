@@ -62,6 +62,58 @@ privacy, terminal-race, rotation, and run-quality boundary tests. Sessions that
 started under the archived epoch remain audit evidence and do not become part
 of the new epoch retroactively.
 
+## Closed-epoch retention
+
+Closed epochs are local audit and recovery evidence, not an unlimited second
+copy of all coordination history. Harnery keeps at least the newest two complete
+epochs. Outside that floor, it selects epochs older than seven days and then the
+oldest epochs needed to fit a 1 GiB byte budget.
+
+Preview the exact policy and candidates before changing the filesystem:
+
+```bash
+harn ledger-v3 archives list
+harn ledger-v3 archives clean
+harn ledger-v3 archives clean --yes
+```
+
+The mutating command recalculates the complete plan before every removal. It
+deletes only a still-complete `epoch-<timestamp>` directory whose size and last
+modification match the preview. Unknown directories, symlinks, unreadable trees,
+and the newest minimum remain untouched.
+
+Set repository-specific limits in `.harnery/config.jsonc`:
+
+```json
+{
+  "events": {
+    "archive_max_bytes": 1073741824,
+    "archive_max_age_days": 7,
+    "archive_keep_min": 2,
+    "archive_auto_clean": true
+  }
+}
+```
+
+The daily session-start janitor runs the same guarded cleanup. Set
+`archive_auto_clean` to `false` when a project must keep every closed epoch
+locally, but provide another bounded retention mechanism in that case.
+
+## Sealed V1 shards
+
+A hard-fenced project no longer appends to V1, so those shards are finite but
+can still occupy substantial disk. `legacy-compress` replaces non-terminal
+loose shards with gzip files only after the hard fence passes, the source
+digest remains unchanged, and every logical row matches the compressed copy.
+
+```bash
+harn ledger-v3 legacy-compress
+harn ledger-v3 legacy-compress --yes
+```
+
+The terminal shard named by `V1-SEALED.json` remains loose because its exact
+digest is part of the fence. Existing `.gz` files also remain unchanged.
+
 ## Backup and recovery
 
 `harn backup snapshot` includes `ledgers/` by default along with durable

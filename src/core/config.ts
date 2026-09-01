@@ -137,12 +137,23 @@ interface HarneryConfig {
    * (default 32 MiB; `0` disables rotation). Read via
    * `eventLedgerRotateActiveBytes()`.
    */
-  events?: { rotate_active_bytes?: number };
+  events?: {
+    rotate_active_bytes?: number;
+    archive_max_bytes?: number;
+    archive_max_age_days?: number;
+    archive_keep_min?: number;
+    archive_auto_clean?: boolean;
+  };
   /**
    * Managed working-artifact defaults. `default_retention_days` is the
    * create-time TTL when the caller does not pass `artifacts create --days`.
    */
-  artifacts?: { default_retention_days?: number; auto_clean?: boolean };
+  artifacts?: {
+    default_retention_days?: number;
+    auto_clean?: boolean;
+    max_bytes?: number;
+    max_unit_bytes?: number;
+  };
   /**
    * `harn backup` (restic) defaults: `repo` path/URL, `password_file`, and the
    * `keep_daily`/`keep_weekly`/`keep_monthly` prune policy. Read via `backupConfig()`.
@@ -622,6 +633,51 @@ export function eventLedgerRotateActiveBytes(coordRoot?: string | null): number 
   return resolveEventLedgerRotateActiveBytesV3(root);
 }
 
+const DEFAULT_EVENT_ARCHIVE_MAX_BYTES = 1024 * 1024 * 1024;
+const DEFAULT_EVENT_ARCHIVE_MAX_AGE_DAYS = 7;
+const DEFAULT_EVENT_ARCHIVE_KEEP_MIN = 2;
+
+export interface EventLedgerArchivePolicy {
+  maxBytes: number;
+  maxAgeDays: number;
+  keepMin: number;
+  autoClean: boolean;
+}
+
+/** Bounded retention for closed V3 epochs under `ledgers/v3-archives`. */
+export function eventLedgerArchivePolicy(coordRoot?: string | null): EventLedgerArchivePolicy {
+  const root = coordRoot ?? findCoordRoot();
+  const configured = root ? readConfig(root).events : undefined;
+  return {
+    maxBytes: integerSetting(
+      coordEnv("EVENT_V3_ARCHIVE_MAX_BYTES"),
+      configured?.archive_max_bytes,
+      64 * 1024 * 1024,
+      1024 * 1024 * 1024 * 1024,
+      DEFAULT_EVENT_ARCHIVE_MAX_BYTES,
+    ),
+    maxAgeDays: integerSetting(
+      coordEnv("EVENT_V3_ARCHIVE_MAX_AGE_DAYS"),
+      configured?.archive_max_age_days,
+      1,
+      3650,
+      DEFAULT_EVENT_ARCHIVE_MAX_AGE_DAYS,
+    ),
+    keepMin: integerSetting(
+      coordEnv("EVENT_V3_ARCHIVE_KEEP_MIN"),
+      configured?.archive_keep_min,
+      1,
+      1000,
+      DEFAULT_EVENT_ARCHIVE_KEEP_MIN,
+    ),
+    autoClean: booleanSetting(
+      coordEnv("EVENT_V3_ARCHIVE_AUTO_CLEAN"),
+      configured?.archive_auto_clean,
+      true,
+    ),
+  };
+}
+
 function parseWebPort(value: unknown, source: string): number {
   const port = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -703,6 +759,33 @@ export function artifactDefaultRetentionDays(coordRoot?: string | null): number 
     : 3;
 }
 
+const DEFAULT_ARTIFACT_MAX_BYTES = 20 * 1024 * 1024 * 1024;
+const DEFAULT_ARTIFACT_MAX_UNIT_BYTES = 1024 * 1024 * 1024;
+
+/** Soft repository budget for managed working artifacts. */
+export function artifactMaxBytes(coordRoot?: string | null): number {
+  const root = coordRoot ?? findCoordRoot();
+  return integerSetting(
+    coordEnv("ARTIFACT_MAX_BYTES"),
+    root ? readConfig(root).artifacts?.max_bytes : undefined,
+    64 * 1024 * 1024,
+    1024 * 1024 * 1024 * 1024,
+    DEFAULT_ARTIFACT_MAX_BYTES,
+  );
+}
+
+/** Size at which one bundle requires an explicit `artifacts create --big` acknowledgement. */
+export function artifactMaxUnitBytes(coordRoot?: string | null): number {
+  const root = coordRoot ?? findCoordRoot();
+  return integerSetting(
+    coordEnv("ARTIFACT_MAX_UNIT_BYTES"),
+    root ? readConfig(root).artifacts?.max_unit_bytes : undefined,
+    16 * 1024 * 1024,
+    1024 * 1024 * 1024 * 1024,
+    DEFAULT_ARTIFACT_MAX_UNIT_BYTES,
+  );
+}
+
 /**
  * Whether the daily SessionStart sweep of expired artifact workspaces runs.
  * Precedence: `HARNERY_ARTIFACT_AUTO_CLEAN` (0/false disables) ->
@@ -731,6 +814,32 @@ export function artifactAutoCleanIntervalHours(): number {
     if (Number.isFinite(n) && n > 0 && n <= 24 * 365) return n;
   }
   return 24;
+}
+
+function integerSetting(
+  envValue: string | undefined,
+  configured: unknown,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  for (const value of [envValue, configured]) {
+    const parsed = typeof value === "number" ? value : Number(value);
+    if (Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum) return parsed;
+  }
+  return fallback;
+}
+
+function booleanSetting(
+  envValue: string | undefined,
+  configured: unknown,
+  fallback: boolean,
+): boolean {
+  if (envValue !== undefined) {
+    if (envValue === "1" || envValue.toLowerCase() === "true") return true;
+    if (envValue === "0" || envValue.toLowerCase() === "false") return false;
+  }
+  return typeof configured === "boolean" ? configured : fallback;
 }
 
 /** Resolved `harn backup` defaults (restic repo/password + prune policy). */

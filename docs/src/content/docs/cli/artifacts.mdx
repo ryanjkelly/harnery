@@ -17,7 +17,8 @@ Each workspace lives under `.harnery/artifacts/` with a versioned manifest.
 ## Subcommands
 
 ```bash
-harn artifacts create <slug> --purpose <text> [--days <n>]
+harn artifacts create <slug> --purpose <text> [--days <n>] [--big]
+harn artifacts adopt-unmanaged [--days <n>] [--big] [--yes]
 harn artifacts list
 harn artifacts show <ref>
 harn artifacts renew <ref> --days <n> --reason <text>
@@ -67,15 +68,60 @@ Set a project default in `.harnery/config.jsonc`:
 the requested length. The `expires_at` field returned by `list` and `show` is
 the effective deadline after accounting for the latest change.
 
+## Size budgets
+
+Managed artifacts have two byte limits by default:
+
+- The whole repository has a soft 20 GiB budget. When retained managed bytes
+  exceed it, Harnery selects inactive workspaces by earliest effective expiry
+  until the remainder fits.
+- One workspace has a 1 GiB ceiling. Pass `create --big` when a job is expected
+  to exceed it. An inactive oversized workspace without that acknowledgement
+  becomes a cleanup candidate even before its time window expires.
+
+Live owners, Git-tracked content, unreadable paths, and direct-child symlinks
+stay protected under pressure. The limits therefore bound eligible managed
+data, not storage Harnery cannot safely delete. Configure the limits in bytes:
+
+```json
+{
+  "artifacts": {
+    "max_bytes": 21474836480,
+    "max_unit_bytes": 1073741824
+  }
+}
+```
+
+`list` and `clean` expose `managed-over-budget` and `managed-oversize` before
+anything changes. `clean --yes` recalculates the whole plan and checks the
+candidate's ID, size, last modification, and expiry immediately before removal.
+
+## Adopt loose files
+
+Older integrations sometimes wrote regular files directly under
+`.harnery/artifacts/`. Preview their adoption with:
+
+```bash
+harn artifacts adopt-unmanaged
+harn artifacts adopt-unmanaged --yes
+```
+
+The command moves unchanged, untracked direct-child regular files into one
+managed workspace. It adopts an untracked legacy directory in place by adding
+its manifest, so existing paths keep working. Symlinks, tracked paths, invalid
+manifests, and entries that changed during the preview stay untouched. If the
+combined file workspace or one adopted directory exceeds the per-bundle
+ceiling, the mutating command also requires `--big`.
+
 ## Automatic cleanup
 
-Expired workspaces are also swept automatically: the first session start of
-each day runs the same guarded deletion as `clean --yes`, so retention holds
+Cleanup candidates are also swept automatically: the first session start of
+each day runs the same guarded deletion as `clean --yes`, so time and byte limits hold
 without anyone remembering a maintenance command. The sweep is throttled by a
 stamp file (`.harnery/artifacts-auto-clean.json`, which also records the last
 run's deleted count and bytes), deletes only entries still classified
-`managed-expired` after the final recheck, and never touches unmanaged or
-legacy directories. A repo with no sessions accumulates nothing and pays
+`managed-expired`, `managed-oversize`, or `managed-over-budget` after the final
+recheck, and never touches unmanaged or legacy directories. A repo with no sessions accumulates nothing and pays
 nothing.
 
 Disable it per project or per process:
@@ -97,6 +143,8 @@ Disable it per project or per process:
 | `managed-active` | The creating agent has a fresh heartbeat and has not released the unit. | Keep |
 | `managed-current` | Retention has not expired. | Keep |
 | `managed-expired` | Retention expired and no protection remains. | Delete |
+| `managed-oversize` | An inactive unit exceeds the per-bundle ceiling without `--big`. | Delete |
+| `managed-over-budget` | The repository exceeds its managed byte budget and this inactive unit expires earliest. | Delete |
 | `managed-tracked` | Git tracks at least one path inside the unit. | Keep |
 | `invalid-manifest` | The manifest is unreadable, invalid, or uses an unknown schema. | Keep |
 | `unmanaged` | The entry has no managed manifest or is not a directory. | Keep |

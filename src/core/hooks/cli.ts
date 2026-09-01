@@ -1015,6 +1015,7 @@ async function main(): Promise<number> {
     // Session start is the only caller of the artifact janitor and the storage
     // maintenance pass, so both load here instead of on every tool call.
     const { autoCleanArtifacts } = await import("../artifacts/index.ts");
+    const { autoCleanEventV3Archives } = await import("../events/v3/archive-retention.ts");
     const { createAutomaticMaintenanceComposition, runAutomaticMaintenancePass } = await import(
       "../storage/maintenance-providers.ts"
     );
@@ -1025,6 +1026,13 @@ async function main(): Promise<number> {
       autoCleanArtifacts(coordRoot);
     } catch (err) {
       logError(coordRoot, err, { phase: "artifact-auto-clean" });
+    }
+    // Effect: apply the same daily throttle to closed V3 epochs. The newest
+    // recovery epochs remain protected by the archive retention policy.
+    try {
+      autoCleanEventV3Archives(coordRoot);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "event-v3-archive-auto-clean" });
     }
     // Plan one bounded, claim-first global slice from cached pressure only.
     // Existing owner janitors above remain the only active executors until

@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -13,6 +15,7 @@ import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../tests/helpers/event-v3-runtime.ts";
 import {
   ARTIFACT_MANIFEST,
+  adoptUnmanagedArtifactFiles,
   artifactsRoot,
   cleanArtifacts,
   createArtifact,
@@ -182,6 +185,91 @@ describe("managed artifacts", () => {
     expect(inventoryArtifacts(repo, { now })).toEqual([]);
   });
 
+  test("requires --big acknowledgement above the per-bundle ceiling", () => {
+    const repo = root();
+    const saved = process.env.HARNERY_ARTIFACT_MAX_UNIT_BYTES;
+    process.env.HARNERY_ARTIFACT_MAX_UNIT_BYTES = String(16 * 1024 * 1024);
+    try {
+      const ordinary = createArtifact(repo, {
+        slug: "ordinary-large",
+        purpose: "Unacknowledged large output",
+        retentionDays: 3,
+        now,
+        id: "artifact_largeordinary",
+      });
+      writeFileSync(join(ordinary.path, "payload.bin"), "");
+      truncateSync(join(ordinary.path, "payload.bin"), 17 * 1024 * 1024);
+      const acknowledged = createArtifact(repo, {
+        slug: "expected-large",
+        purpose: "Expected large output",
+        retentionDays: 3,
+        now,
+        id: "artifact_largeexpected",
+        big: true,
+      });
+      writeFileSync(join(acknowledged.path, "payload.bin"), "");
+      truncateSync(join(acknowledged.path, "payload.bin"), 17 * 1024 * 1024);
+
+      const rows = inventoryArtifacts(repo, { now: new Date() });
+      expect(rows.find((row) => row.artifact_id === ordinary.manifest.artifact_id)).toMatchObject({
+        classification: "managed-oversize",
+        action: "would-delete",
+        oversize_acknowledged: false,
+      });
+      expect(
+        rows.find((row) => row.artifact_id === acknowledged.manifest.artifact_id),
+      ).toMatchObject({
+        classification: "managed-current",
+        action: "keep",
+        oversize_acknowledged: true,
+      });
+    } finally {
+      if (saved === undefined) delete process.env.HARNERY_ARTIFACT_MAX_UNIT_BYTES;
+      else process.env.HARNERY_ARTIFACT_MAX_UNIT_BYTES = saved;
+    }
+  });
+
+  test("plans earliest-expiring inactive bundles until the repository fits its byte budget", () => {
+    const repo = root();
+    const saved = process.env.HARNERY_ARTIFACT_MAX_BYTES;
+    process.env.HARNERY_ARTIFACT_MAX_BYTES = String(64 * 1024 * 1024);
+    try {
+      const early = createArtifact(repo, {
+        slug: "early",
+        purpose: "Expires first",
+        retentionDays: 2,
+        now,
+        id: "artifact_budgetearly",
+        big: true,
+      });
+      const late = createArtifact(repo, {
+        slug: "late",
+        purpose: "Expires later",
+        retentionDays: 5,
+        now,
+        id: "artifact_budgetlate",
+        big: true,
+      });
+      writeFileSync(join(early.path, "payload.bin"), "");
+      truncateSync(join(early.path, "payload.bin"), 40 * 1024 * 1024);
+      writeFileSync(join(late.path, "payload.bin"), "");
+      truncateSync(join(late.path, "payload.bin"), 40 * 1024 * 1024);
+
+      const rows = inventoryArtifacts(repo, { now: new Date() });
+      expect(rows.find((row) => row.artifact_id === early.manifest.artifact_id)).toMatchObject({
+        classification: "managed-over-budget",
+        action: "would-delete",
+      });
+      expect(rows.find((row) => row.artifact_id === late.manifest.artifact_id)).toMatchObject({
+        classification: "managed-current",
+        action: "keep",
+      });
+    } finally {
+      if (saved === undefined) delete process.env.HARNERY_ARTIFACT_MAX_BYTES;
+      else process.env.HARNERY_ARTIFACT_MAX_BYTES = saved;
+    }
+  });
+
   test("protects unmanaged, invalid, symlinked, and current entries", () => {
     const repo = root();
     const workspace = artifactsRoot(repo);
@@ -201,6 +289,39 @@ describe("managed artifacts", () => {
     expect(cleanArtifacts(repo, { yes: true, now }).every((entry) => entry.action === "keep")).toBe(
       true,
     );
+  });
+
+  test("previews loose files and adopts untracked legacy directories in place", () => {
+    const repo = root();
+    const workspace = artifactsRoot(repo);
+    mkdirSync(join(workspace, "legacy-directory"), { recursive: true });
+    writeFileSync(join(workspace, "legacy-directory", "keep.txt"), "keep");
+    writeFileSync(join(workspace, "loose-one.bin"), "one");
+    writeFileSync(join(workspace, "loose-two.bin"), "two");
+
+    const preview = adoptUnmanagedArtifactFiles(repo, {
+      purpose: "Adopt old loose files",
+      retentionDays: 3,
+      now,
+    });
+    expect(preview.candidates.map((row) => [row.name, row.kind])).toEqual([
+      ["legacy-directory", "directory"],
+      ["loose-one.bin", "file"],
+      ["loose-two.bin", "file"],
+    ]);
+    expect(preview.adopted_artifact_id).toBeNull();
+
+    const adopted = adoptUnmanagedArtifactFiles(repo, {
+      yes: true,
+      purpose: "Adopt old loose files",
+      retentionDays: 3,
+      now,
+    });
+    expect(adopted.adopted_artifact_id).not.toBeNull();
+    expect(readFileSync(join(adopted.adopted_path!, "loose-one.bin"), "utf8")).toBe("one");
+    expect(readFileSync(join(workspace, "legacy-directory", "keep.txt"), "utf8")).toBe("keep");
+    expect(adopted.adopted_directories).toBe(1);
+    expect(existsSync(join(workspace, "legacy-directory", ARTIFACT_MANIFEST))).toBe(true);
   });
 
   test("protects force-tracked content inside an expired artifact", () => {

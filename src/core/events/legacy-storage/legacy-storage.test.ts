@@ -12,10 +12,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { canonicalJsonV3 } from "../v3/canonical.ts";
 import { activateLegacyV1CanaryReplacement, writeLegacyV1Canary } from "./canary.ts";
+import { compressSealedLegacyV1Segments } from "./compression.ts";
 import { verifyLegacyV1HardFence } from "./fence.ts";
 import { inventoryLegacyV1Segments } from "./inventory.ts";
 import { streamLegacyV1Rows } from "./reader.ts";
@@ -137,6 +138,32 @@ describe("sealed legacy V1 storage", () => {
     expect(await collectRows(segment)).toEqual([
       '{"at":"2026-08-20T00:00:00.000Z","event":"safe"}',
     ]);
+  });
+
+  test("previews and replaces non-terminal sealed shards only after exact gzip row parity", async () => {
+    const fixture = legacyFixture();
+    const source = join(fixture.harnery, "events-manual.ndjson");
+    const contents = [
+      '{"at":"2026-08-01T00:00:00.000Z","event":"repeat-repeat-repeat"}',
+      '{"at":"2026-08-01T00:01:00.000Z","event":"repeat-repeat-repeat"}',
+      "",
+    ].join("\n");
+    writeFileSync(source, contents, { mode: 0o400 });
+
+    const preview = await compressSealedLegacyV1Segments(fixture.root);
+    expect(preview.find((row) => row.filename === "events-manual.ndjson")?.action).toBe(
+      "would-compress",
+    );
+    expect(preview.find((row) => row.filename === basename(fixture.terminal))?.action).toBe("keep");
+
+    const applied = await compressSealedLegacyV1Segments(fixture.root, { yes: true });
+    const compressed = applied.find((row) => row.filename === "events-manual.ndjson.gz");
+    expect(compressed?.action).toBe("compressed");
+    expect(existsSync(source)).toBe(false);
+    expect(await collectRows(join(fixture.harnery, "events-manual.ndjson.gz"))).toEqual(
+      contents.trim().split("\n"),
+    );
+    await verifyLegacyV1HardFence(fixture.root);
   });
 
   test("rejects symlinks and keeps streaming the opened file when its pathname is replaced", async () => {

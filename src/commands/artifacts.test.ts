@@ -10,6 +10,7 @@ describe("artifacts command", () => {
     expect(command?.aliases()).toContain("artifact");
     expect(command?.commands.map((candidate) => candidate.name())).toEqual([
       "create",
+      "adopt-unmanaged",
       "list",
       "show",
       "renew",

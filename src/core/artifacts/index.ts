@@ -27,6 +27,8 @@ import {
   artifactAutoCleanEnabled,
   artifactAutoCleanIntervalHours,
   artifactDefaultRetentionDays,
+  artifactMaxBytes,
+  artifactMaxUnitBytes,
 } from "../config.ts";
 import { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
 
@@ -52,12 +54,15 @@ export interface ArtifactManifestV1 {
   };
   released_at?: string;
   released_by?: ArtifactActor;
+  oversize_acknowledged?: boolean;
 }
 
 export type ArtifactClassification =
   | "managed-active"
   | "managed-current"
   | "managed-expired"
+  | "managed-oversize"
+  | "managed-over-budget"
   | "managed-tracked"
   | "invalid-manifest"
   | "unmanaged"
@@ -78,6 +83,7 @@ export interface ArtifactInventoryEntry {
   last_modified_at: string | null;
   expires_at: string | null;
   owner_instance_id: string | null;
+  oversize_acknowledged: boolean;
 }
 
 export interface ArtifactCreateInput {
@@ -87,11 +93,21 @@ export interface ArtifactCreateInput {
   actor?: ArtifactActor;
   now?: Date;
   id?: string;
+  big?: boolean;
 }
 
 export interface ArtifactMutationInput {
   actor?: ArtifactActor;
   now?: Date;
+}
+
+export interface ArtifactAdoptionResult {
+  candidates: Array<{ path: string; name: string; bytes: number; kind: "file" | "directory" }>;
+  candidate_bytes: number;
+  requires_big: boolean;
+  adopted_artifact_id: string | null;
+  adopted_path: string | null;
+  adopted_directories: number;
 }
 
 interface ParsedManifest {
@@ -145,6 +161,7 @@ export function createArtifact(
     retention: {
       expires_at: addDays(now, retentionDays).toISOString(),
     },
+    ...(input.big ? { oversize_acknowledged: true } : {}),
   };
   atomicWriteManifest(path, manifest);
   return { path, manifest };
@@ -177,7 +194,7 @@ export function inventoryArtifacts(
   for (const name of names) {
     rows.push(classifyArtifactPath(repoRoot, join(root, name), now, freshnessSeconds));
   }
-  return rows;
+  return applyArtifactBudgets(repoRoot, rows);
 }
 
 export function showArtifact(
@@ -186,12 +203,8 @@ export function showArtifact(
   opts: { now?: Date; freshnessSeconds?: number } = {},
 ): { entry: ArtifactInventoryEntry; manifest: ArtifactManifestV1 } {
   const path = resolveArtifactRef(repoRoot, ref);
-  const entry = classifyArtifactPath(
-    repoRoot,
-    path,
-    opts.now ?? new Date(),
-    opts.freshnessSeconds ?? 600,
-  );
+  const entry = inventoryArtifacts(repoRoot, opts).find((row) => row.path === path);
+  if (!entry) throw new Error(`artifact "${ref}" was not found`);
   const parsed = readManifest(path);
   if (!parsed.ok) throw new Error(parsed.reason);
   return { entry, manifest: parsed.manifest };
@@ -243,6 +256,108 @@ export function releaseArtifact(
   return manifest;
 }
 
+/** Adopt untracked loose files and legacy directories without changing directory paths. */
+export function adoptUnmanagedArtifactFiles(
+  repoRoot: string,
+  input: {
+    yes?: boolean;
+    big?: boolean;
+    purpose: string;
+    retentionDays: number;
+    actor?: ArtifactActor;
+    now?: Date;
+  },
+): ArtifactAdoptionResult {
+  const now = input.now ?? new Date();
+  const candidates: ArtifactAdoptionResult["candidates"] = [];
+  for (const row of inventoryArtifacts(repoRoot, { now })) {
+    if (row.classification !== "unmanaged") continue;
+    try {
+      const stat = lstatSync(row.path);
+      if (stat.isSymbolicLink() || containsTrackedPath(repoRoot, row.path)) continue;
+      if (stat.isFile()) {
+        candidates.push({ path: row.path, name: row.name, bytes: stat.size, kind: "file" });
+        continue;
+      }
+      if (stat.isDirectory() && !existsSync(join(row.path, ARTIFACT_MANIFEST))) {
+        const bytes = safeTreeSize(row.path);
+        if (bytes !== null && normalizeSlug(row.name)) {
+          candidates.push({ path: row.path, name: row.name, bytes, kind: "directory" });
+        }
+      }
+    } catch {
+      // A racing or unreadable entry stays unmanaged.
+    }
+  }
+  const candidateBytes = candidates.reduce((sum, row) => sum + row.bytes, 0);
+  const fileBytes = candidates.reduce((sum, row) => sum + (row.kind === "file" ? row.bytes : 0), 0);
+  const maxUnitBytes = artifactMaxUnitBytes(repoRoot);
+  const requiresBig =
+    fileBytes > maxUnitBytes ||
+    candidates.some((row) => row.kind === "directory" && row.bytes > maxUnitBytes);
+  const preview: ArtifactAdoptionResult = {
+    candidates,
+    candidate_bytes: candidateBytes,
+    requires_big: requiresBig,
+    adopted_artifact_id: null,
+    adopted_path: null,
+    adopted_directories: 0,
+  };
+  if (!input.yes || candidates.length === 0) return preview;
+  if (requiresBig && !input.big) {
+    throw new Error("unmanaged adoption exceeds the per-bundle ceiling; repeat with --big");
+  }
+
+  // Revalidate every exact source before creating a destination. A changed,
+  // tracked, linked, or non-regular entry aborts the whole adoption.
+  for (const candidate of candidates) {
+    const stat = lstatSync(candidate.path);
+    const bytes = stat.isDirectory() ? safeTreeSize(candidate.path) : stat.size;
+    if (
+      stat.isSymbolicLink() ||
+      bytes !== candidate.bytes ||
+      containsTrackedPath(repoRoot, candidate.path)
+    ) {
+      throw new Error(`unmanaged entry changed before adoption: ${candidate.name}`);
+    }
+    if (candidate.kind === "file" ? !stat.isFile() : !stat.isDirectory()) {
+      throw new Error(`unmanaged entry changed before adoption: ${candidate.name}`);
+    }
+  }
+  const files = candidates.filter((candidate) => candidate.kind === "file");
+  const created = files.length
+    ? createArtifact(repoRoot, {
+        slug: "adopted-unmanaged",
+        purpose: input.purpose,
+        retentionDays: input.retentionDays,
+        actor: input.actor,
+        now,
+        big: input.big,
+      })
+    : null;
+  for (const candidate of files) renameSync(candidate.path, join(created!.path, candidate.name));
+  const retentionDays = positiveDays(input.retentionDays);
+  const directories = candidates.filter((candidate) => candidate.kind === "directory");
+  for (const candidate of directories) {
+    atomicWriteManifest(candidate.path, {
+      schema_version: ARTIFACT_SCHEMA_VERSION,
+      artifact_id: randomUUID(),
+      slug: normalizeSlug(candidate.name),
+      purpose: `${input.purpose}: ${candidate.name}`,
+      created_at: now.toISOString(),
+      created_by: input.actor,
+      retention: { expires_at: addDays(now, retentionDays).toISOString() },
+      ...(input.big ? { oversize_acknowledged: true } : {}),
+    });
+  }
+  return {
+    ...preview,
+    adopted_artifact_id: created?.manifest.artifact_id ?? null,
+    adopted_path: created?.path ?? null,
+    adopted_directories: directories.length,
+  };
+}
+
 export function cleanArtifacts(
   repoRoot: string,
   opts: { yes?: boolean; now?: Date; freshnessSeconds?: number } = {},
@@ -253,11 +368,24 @@ export function cleanArtifacts(
   if (!opts.yes) return rows;
 
   return rows.map((entry) => {
-    if (entry.classification !== "managed-expired") return entry;
+    if (entry.action !== "would-delete") return entry;
     // Reclassify immediately before removal. A renewal, release-state change,
     // heartbeat, symlink swap, or tracked file added since inventory must win.
-    const current = classifyArtifactPath(repoRoot, entry.path, now, freshnessSeconds);
-    if (current.classification !== "managed-expired") return current;
+    const current = inventoryArtifacts(repoRoot, { now, freshnessSeconds }).find(
+      (row) => row.path === entry.path,
+    );
+    if (!current) {
+      return { ...entry, classification: "unknown", reason: "entry disappeared", action: "keep" };
+    }
+    if (
+      current.action !== "would-delete" ||
+      current.artifact_id !== entry.artifact_id ||
+      current.bytes !== entry.bytes ||
+      current.last_modified_at !== entry.last_modified_at ||
+      current.expires_at !== entry.expires_at
+    ) {
+      return current;
+    }
     try {
       const top = lstatSync(current.path);
       if (!top.isDirectory() || top.isSymbolicLink()) {
@@ -404,6 +532,7 @@ function classifyArtifactPath(
     last_modified_at: new Date(effectiveLastModifiedMs).toISOString(),
     expires_at: effectiveExpiresAt,
     owner_instance_id: manifest.created_by?.instance_id ?? null,
+    oversize_acknowledged: manifest.oversize_acknowledged === true,
   });
 
   if (base.bytes === null || lastModifiedMs === null) {
@@ -450,6 +579,59 @@ function classifyArtifactPath(
   };
 }
 
+function applyArtifactBudgets(
+  repoRoot: string,
+  inputRows: ArtifactInventoryEntry[],
+): ArtifactInventoryEntry[] {
+  const maxUnitBytes = artifactMaxUnitBytes(repoRoot);
+  const maxBytes = artifactMaxBytes(repoRoot);
+  const rows = inputRows.map((row) => ({ ...row }));
+
+  for (const row of rows) {
+    if (
+      row.classification === "managed-current" &&
+      row.bytes !== null &&
+      row.bytes > maxUnitBytes &&
+      !row.oversize_acknowledged
+    ) {
+      row.classification = "managed-oversize";
+      row.reason = `bundle uses ${row.bytes} bytes, above the ${maxUnitBytes}-byte ceiling without --big`;
+      row.action = "would-delete";
+    }
+  }
+
+  const managedBytes = rows.reduce(
+    (sum, row) => sum + (row.artifact_id && row.bytes !== null ? row.bytes : 0),
+    0,
+  );
+  let retainedBytes =
+    managedBytes -
+    rows.reduce(
+      (sum, row) => sum + (row.action === "would-delete" && row.bytes !== null ? row.bytes : 0),
+      0,
+    );
+  if (retainedBytes <= maxBytes) return rows;
+
+  const candidates = rows
+    .filter(
+      (row) =>
+        row.classification === "managed-current" && row.action === "keep" && row.bytes !== null,
+    )
+    .sort((left, right) =>
+      `${left.expires_at ?? ""}\0${left.created_at ?? ""}\0${left.name}`.localeCompare(
+        `${right.expires_at ?? ""}\0${right.created_at ?? ""}\0${right.name}`,
+      ),
+    );
+  for (const row of candidates) {
+    if (retainedBytes <= maxBytes) break;
+    row.classification = "managed-over-budget";
+    row.reason = `repository artifact budget is ${maxBytes} bytes; earliest-expiring inactive bundles are removed first`;
+    row.action = "would-delete";
+    retainedBytes -= row.bytes ?? 0;
+  }
+  return rows;
+}
+
 function readManifest(path: string): ParsedManifest | ManifestError {
   const manifestPath = join(path, ARTIFACT_MANIFEST);
   if (!existsSync(manifestPath)) {
@@ -494,6 +676,9 @@ function readManifest(path: string): ParsedManifest | ManifestError {
   }
   if (m.released_by !== undefined && !validActor(m.released_by)) {
     return { ok: false, reason: "invalid released_by" };
+  }
+  if (m.oversize_acknowledged !== undefined && typeof m.oversize_acknowledged !== "boolean") {
+    return { ok: false, reason: "invalid oversize_acknowledged" };
   }
   return { ok: true, manifest: m as ArtifactManifestV1 };
 }
@@ -604,6 +789,7 @@ function rowFor(
     last_modified_at: null,
     expires_at: null,
     owner_instance_id: null,
+    oversize_acknowledged: false,
   };
 }
 

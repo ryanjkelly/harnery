@@ -17,6 +17,7 @@ describe("ledger-v3 command", () => {
     const command = program.commands.find((candidate) => candidate.name() === "ledger-v3");
     expect(command?.commands.map((candidate) => candidate.name())).toEqual([
       "status",
+      "archives",
       "initialize",
       "recover",
       "verify-support",
@@ -27,6 +28,7 @@ describe("ledger-v3 command", () => {
       "support-replacement",
       "verify-v1-fence",
       "legacy-inventory",
+      "legacy-compress",
       "verify-legacy",
       "legacy-canary",
     ]);

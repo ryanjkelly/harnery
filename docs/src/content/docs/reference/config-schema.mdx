@@ -151,9 +151,25 @@ wait, freshness, and rollout contract.
 | ------------------------ | ------ | ------- | ----------- |
 | `default_retention_days` | number | `3`     | Retention used by `harn artifacts create` when `--days` is absent |
 | `auto_clean` | boolean | `true` | Daily session-start sweep of expired workspaces (same guarded deletion as `artifacts clean --yes`) |
+| `max_bytes` | integer | `21474836480` | Soft managed-store budget; valid range 64 MiB through 1 TiB |
+| `max_unit_bytes` | integer | `1073741824` | Per-workspace ceiling unless creation records `--big`; valid range 16 MiB through 1 TiB |
 
 Resolution: `HARNERY_ARTIFACT_RETENTION_DAYS` env → this `config.jsonc` key →
 `3`. See [`harn artifacts`](/cli/artifacts/) for cleanup behavior.
+
+## `events`
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `rotate_active_bytes` | integer | `33554432` | Active V3 byte threshold for starting a fresh epoch; non-positive disables rotation |
+| `archive_max_bytes` | integer | `1073741824` | Soft byte budget for complete closed epochs; valid range 64 MiB through 1 TiB |
+| `archive_max_age_days` | integer | `7` | Maximum closed-epoch age outside the newest minimum; valid range 1 through 3,650 |
+| `archive_keep_min` | integer | `2` | Newest complete epochs protected regardless of age or bytes; valid range 1 through 1,000 |
+| `archive_auto_clean` | boolean | `true` | Daily session-start execution of the same guarded plan as `ledger-v3 archives clean --yes` |
+
+Byte and age pressure never removes the active V3 directory, a protected newest
+epoch, an unknown directory, a symlink, or an unreadable tree. Invalid archive
+settings fall back to the built-in safe defaults.
 
 ## `logs.storage`
 

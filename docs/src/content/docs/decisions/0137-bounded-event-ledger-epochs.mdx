@@ -97,8 +97,9 @@ complete.
 Two storage follow-ups remain. Ready rows spooled with deferred drain in the
 final moments before rotation are archived undrained; their bytes are preserved
 in the archived spool, and rotation drains the spool first to keep that window
-small. Archived epochs accumulate under `.harnery/ledgers/v3-archives/` and are
-not yet retention-managed; that belongs with the storage budgets of ADR 0134.
+small. ADR 0150 closed the archive follow-up with a guarded byte-and-age policy
+that keeps a configurable newest-epoch floor. The active epoch remains outside
+that policy.
 
 Rotation also exposed a writer race on a multi-agent host. It came from
 re-onboarding, not the archive.

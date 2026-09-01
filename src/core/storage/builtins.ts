@@ -61,8 +61,8 @@ const V3_ARCHIVE_PROVIDER: HarneryStorageProvider = {
   provider_id: "event-v3-archive-provider",
   kind: "filesystem",
   inventory: "filesystem",
-  maintenance: "none",
-  lifecycle_authority: "Event Ledger V3 logical authority reader",
+  maintenance: "delegated",
+  lifecycle_authority: "Event Ledger V3 closed-epoch retention policy",
   partitions: ["canonical", "support"],
 };
 
@@ -83,7 +83,7 @@ function eventFamilies(): HarneryStorageFamily[] {
     family({
       id: "event-v3-canonical-active",
       owner: "Event Ledger V3 authority",
-      storage_class: "canonical-authority",
+      storage_class: "durable-object-history",
       roots: (context) => [
         exact(context, ".harnery/ledgers/v3/active.ndjson", "file"),
         exact(context, ".harnery/ledgers/v3/catalog.json", "file"),
@@ -114,14 +114,14 @@ function eventFamilies(): HarneryStorageFamily[] {
       format: "canonical-ndjson",
       durability: "immutable",
       writer_model: "object-owned",
-      policy: authorityPolicy("event-v3-archive-canonical-v1"),
+      policy: closedEpochPolicy("event-v3-archive-canonical-v2"),
       consumers: ["Event Ledger V3 logical authority reader", "recovery verifier"],
       provider: V3_ARCHIVE_PROVIDER,
     }),
     family({
       id: "event-v3-support-active",
       owner: "Event Ledger V3 producer recovery",
-      storage_class: "recovery-state",
+      storage_class: "durable-object-history",
       roots: (context) => [
         subtree(context, ".harnery/ledgers/v3/diagnostics", OWNER_PROTOCOL_LINKS),
         subtree(context, ".harnery/ledgers/v3/diagnostic-summaries", OWNER_PROTOCOL_LINKS),
@@ -169,7 +169,7 @@ function eventFamilies(): HarneryStorageFamily[] {
       format: "files",
       durability: "immutable",
       writer_model: "object-owned",
-      policy: recoveryPolicy("event-v3-archive-support-v1"),
+      policy: closedEpochPolicy("event-v3-archive-support-v2"),
       consumers: ["Event Ledger V3 support reader", "recovery verifier", "agents health"],
       provider: V3_ARCHIVE_PROVIDER,
     }),
@@ -810,6 +810,19 @@ function ownerHistoryPolicy(version: string): HarneryStoragePolicy {
     maxFiles: unbounded("files", "no generic durable-history file policy is activated"),
     maxRecords: unbounded("records", "no generic durable-history record policy is activated"),
     reason: "Durable history follows its owning product object's lifecycle.",
+  });
+}
+
+function closedEpochPolicy(version: string): HarneryStoragePolicy {
+  return policy(version, "active", "private", "owner-content", {
+    status: "active",
+    mode: "delegated",
+    maxAge: bounded(7 * DAY_MS, "milliseconds"),
+    maxBytes: bounded(1024 * MIB, "bytes"),
+    maxFiles: unbounded("files", "complete epoch directories are the deletion unit"),
+    maxRecords: unbounded("records", "complete epoch directories are the deletion unit"),
+    reason:
+      "The Event Ledger owner keeps the newest two complete epochs and revalidates each closed epoch before removal.",
   });
 }
 

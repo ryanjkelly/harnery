@@ -4,6 +4,7 @@ import { monorepoRoot, resolveOwner } from "../core/agents/index.ts";
 import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import {
   type ArtifactActor,
+  adoptUnmanagedArtifactFiles,
   cleanArtifacts,
   createArtifact,
   inventoryArtifacts,
@@ -28,7 +29,8 @@ export function registerArtifactsCommand(
     .description("Create one managed artifact workspace and print its path.")
     .requiredOption("--purpose <text>", "What the files are for")
     .option("--days <n>", "Retention in days (default from artifacts.default_retention_days)")
-    .action((slug: string, opts: { purpose: string; days?: string }) => {
+    .option("--big", "Acknowledge that this workspace may exceed the per-bundle size ceiling")
+    .action((slug: string, opts: { purpose: string; days?: string; big?: boolean }) => {
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
         const actor = currentActor(repoRoot);
@@ -40,6 +42,7 @@ export function registerArtifactsCommand(
           purpose: opts.purpose,
           retentionDays,
           actor,
+          big: opts.big,
         });
         emit.data({
           path: created.path,
@@ -47,6 +50,34 @@ export function registerArtifactsCommand(
           expires_at: created.manifest.retention.expires_at,
           owner_instance_id: actor?.instance_id ?? null,
         });
+      });
+    });
+
+  root
+    .command("adopt-unmanaged")
+    .description("Preview loose direct-child files, or move them into one managed workspace.")
+    .option(
+      "--purpose <text>",
+      "Why the adopted files are being retained",
+      "Adopt legacy loose artifact files",
+    )
+    .option("--days <n>", "Retention in days (default from artifacts.default_retention_days)")
+    .option("--big", "Acknowledge an adopted bundle above the per-bundle size ceiling")
+    .option("--yes", "Move the exact previewed regular files into a managed workspace")
+    .action((opts: { purpose: string; days?: string; big?: boolean; yes?: boolean }) => {
+      run(emit, () => {
+        const repoRoot = requireRepoRoot(context);
+        emit.data(
+          adoptUnmanagedArtifactFiles(repoRoot, {
+            yes: opts.yes,
+            big: opts.big,
+            purpose: opts.purpose,
+            retentionDays: opts.days
+              ? parseDays(opts.days)
+              : artifactDefaultRetentionDays(repoRoot),
+            actor: currentActor(repoRoot),
+          }),
+        );
       });
     });
 
@@ -143,16 +174,23 @@ function parseDays(value: string): number {
   return parsed;
 }
 
-function summarize(rows: { classification: string; action: string }[]): Record<string, unknown> {
+function summarize(
+  rows: { classification: string; action: string; bytes?: number | null }[],
+): Record<string, unknown> {
   const classifications: Record<string, number> = {};
   for (const row of rows) {
     classifications[row.classification] = (classifications[row.classification] ?? 0) + 1;
   }
   return {
     total: rows.length,
+    bytes: rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0),
     classifications,
     would_delete: rows.filter((row) => row.action === "would-delete").length,
     deleted: rows.filter((row) => row.action === "deleted").length,
+    would_delete_bytes: rows.reduce(
+      (sum, row) => sum + (row.action === "would-delete" ? (row.bytes ?? 0) : 0),
+      0,
+    ),
   };
 }
 

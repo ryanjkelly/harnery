@@ -6,11 +6,14 @@ import {
   agentsFinalizationRoots,
   agentsRequireGitFinalization,
   artifactDefaultRetentionDays,
+  artifactMaxBytes,
+  artifactMaxUnitBytes,
   backupConfig,
   coordFreshnessSeconds,
   DEFAULT_BIN_NAME,
   DEFAULT_FRESHNESS_SECS,
   endOfTurnStatusCommand,
+  eventLedgerArchivePolicy,
   hostPromptReminder,
   logStorageConfigSource,
   MAX_HOST_PROMPT_REMINDER_CHARS,
@@ -402,6 +405,54 @@ describe("artifactDefaultRetentionDays", () => {
     expect(artifactDefaultRetentionDays(root)).toBe(9);
     process.env.HARNERY_ARTIFACT_RETENTION_DAYS = "-1";
     expect(artifactDefaultRetentionDays(root)).toBe(5);
+  });
+});
+
+describe("bounded local storage settings", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  test("uses conservative artifact and closed-epoch defaults", () => {
+    const root = makeRoot(`{}`);
+    roots.push(root);
+    expect(artifactMaxBytes(root)).toBe(20 * 1024 * 1024 * 1024);
+    expect(artifactMaxUnitBytes(root)).toBe(1024 * 1024 * 1024);
+    expect(eventLedgerArchivePolicy(root)).toEqual({
+      maxBytes: 1024 * 1024 * 1024,
+      maxAgeDays: 7,
+      keepMin: 2,
+      autoClean: true,
+    });
+  });
+
+  test("reads valid project overrides and ignores unsafe values", () => {
+    const root = makeRoot(`{
+      "artifacts": { "max_bytes": 134217728, "max_unit_bytes": 33554432 },
+      "events": {
+        "archive_max_bytes": 268435456,
+        "archive_max_age_days": 14,
+        "archive_keep_min": 4,
+        "archive_auto_clean": false
+      }
+    }`);
+    const invalid = makeRoot(`{
+      "artifacts": { "max_bytes": 1, "max_unit_bytes": -1 },
+      "events": { "archive_max_bytes": 1, "archive_max_age_days": 0, "archive_keep_min": 0 }
+    }`);
+    roots.push(root, invalid);
+    expect(artifactMaxBytes(root)).toBe(134217728);
+    expect(artifactMaxUnitBytes(root)).toBe(33554432);
+    expect(eventLedgerArchivePolicy(root)).toEqual({
+      maxBytes: 268435456,
+      maxAgeDays: 14,
+      keepMin: 4,
+      autoClean: false,
+    });
+    expect(artifactMaxBytes(invalid)).toBe(20 * 1024 * 1024 * 1024);
+    expect(eventLedgerArchivePolicy(invalid).keepMin).toBe(2);
   });
 });
 
