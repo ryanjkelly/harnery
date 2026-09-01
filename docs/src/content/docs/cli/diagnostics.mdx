@@ -1,12 +1,12 @@
 ---
 title: diagnostics
-description: Capture and replay sanitized local diagnostic bundles.
+description: Capture, replay, and compare sanitized local diagnostic bundles.
 ---
 
 `harn diagnostics` lists current findings and turns a bounded set of local
 supervisor inputs into a frozen, portable bundle. Use it to inspect a finding
-now, preserve it for later, or check whether a finding-engine change reproduces
-the same result.
+now, preserve it for later, check whether a finding-engine change reproduces
+the same result, or expose regressions and recoveries between two captures.
 
 ```bash
 harn diagnostics list
@@ -14,6 +14,7 @@ harn diagnostics show <artifact-ref>
 harn diagnostics explain [--bundle <artifact-ref>] [--json]
 harn diagnostics capture [--finding <id> | --from <timestamp> --to <timestamp>]
 harn diagnostics replay <artifact-ref>
+harn diagnostics compare <before-artifact-ref> <after-artifact-ref> [--json]
 ```
 
 `list` returns active and recently resolved findings together with saved
@@ -119,7 +120,11 @@ credential-shaped values, home-directory paths, prompts, transcripts, tool
 payloads, and environment blocks. Missing or unreadable sources stay visible as
 unsupported or error capabilities instead of disappearing from the result.
 The frozen inputs include the bounded activity projection and the finding-policy
-values used for episode gaps and freshness checks.
+values used for episode gaps and freshness checks. New captures also include
+the bounded completed-hook projection and up to 20 recent shadow-admission
+records. Admission capture keeps only the run ID, terminal time, observer state,
+pressure, recommendation, freshness, service state, and wait time. It excludes
+workflow names, objectives, transcripts, child output, commands, and tool data.
 
 ## Validation and replay
 
@@ -137,6 +142,39 @@ not trigger a live fallback.
 
 The output uses versioned JSON envelopes. `replay.matched` is `true` only when
 the rebuilt output matches the frozen expected output exactly.
+
+## Compare two bundles
+
+`compare` validates both managed bundles independently and reads no live
+supervisor state. It matches findings by stable fingerprint rather than episode
+ID, because a signal can resolve and later reopen under a new ID. The result
+classifies each fingerprint as added, resolved, or persistent and then labels
+its effect as a regression, worsening, change, improvement, recovery, or no
+change.
+
+Persistent signals compare severity, open or resolved state, recurrence count,
+peak value when units match, attributed owner, and workload relationship. The
+result also compares pressure advice and source capabilities. Completed-hook
+summaries expose invocation, degraded, faulted, slow, high-memory, and retry
+counts. Shadow-admission summaries expose pressure counts, unavailable samples,
+and maximum observation wait.
+
+The default output is a compact readable report. `--json` returns comparison
+schema 1, including a deterministic `comparison_digest`. Repeating the same two
+inputs produces the same ordered rows and digest.
+
+Threshold, engine-build, machine, capture-order, duplicate-fingerprint, and
+source-capability differences are explicit warnings. A bundle created before
+hook-health or shadow-admission capture remains valid; comparison marks the
+missing optional source unavailable rather than turning it into a zero or a
+healthy result.
+
+The comparison page at `/diagnostics/compare` selects two validated bundles and
+renders the same frozen contract. Every signal row stays in the document so
+browser Find sees the complete result.
+
+Comparison is observer-only. It does not tune thresholds, deny or delay work,
+signal processes, restart hooks, or notify people.
 
 Diagnostic bundle and expected-output schemas are version 3. The input schema
 remains version 2, and the nested timeline schema is version 2. Harnery is
