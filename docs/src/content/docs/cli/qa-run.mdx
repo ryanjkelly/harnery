@@ -129,7 +129,7 @@ A job (`--job`) widens or parameterizes the run. It is validated before anything
     { "name": "menu-open", "setup": ["--click", "#menu"], "assertions": ["exists .menu-panel"] }
   ],
   "qa_hints": { "scopes": ["#main"], "states": ["menu-open"] },
-  "policy": { "command_concurrency": 2, "command_timeout_ms": 120000 }
+  "policy": { "command_concurrency": 2, "command_timeout_ms": 120000, "run_deadline_ms": 900000 }
 }
 ```
 
@@ -137,6 +137,7 @@ A job (`--job`) widens or parameterizes the run. It is validated before anything
 - `contexts` append to the planner's matrix (union, never narrowing). Derived context IDs are `<viewport>-<theme>-<state>`.
 - `checks[].args` are argument arrays appended to the context's capture command, never shell strings. A check without `contexts` applies to every context. The runner always adds the planner's deterministic checks. Job checks can add coverage but cannot omit the manifest floor.
 - Each interaction needs at least one outcome assertion: a click without a proven outcome is not a gate.
+- `policy.run_deadline_ms` (default 900000, minimum 10000) is the overall runner deadline. A run that exceeds it skips its remaining commands, records a `deadline` blocker, finalizes as `incomplete`, and releases its admission slot — the deadline clock starts after admission, so queue wait never counts against it. The per-command cap still bounds each child: SIGTERM goes to the child's whole process group at `command_timeout_ms`, SIGKILL follows five seconds later, and a command that ran past its cap is reported as an error even if it then exited 0.
 - **Jobs must not carry credentials.** Secret-bearing field names (`token`, `password`, `cookie`, …) and credential-shaped values (`Bearer …`) are refused; authentication is referenced through existing browser profiles and cookie stores.
 
 ## Verdict rules (fail-closed)

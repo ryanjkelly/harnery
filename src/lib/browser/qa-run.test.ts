@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QaManifest } from "./qa-plan.ts";
 import {
+  defaultQaRunExec,
   QA_RUN_HEADLESS_ONLY_ENV,
   QA_RUN_JOB_FILENAME,
+  QA_RUN_KILL_GRACE_MS,
   QA_RUN_LATEST_FILENAME,
   QA_RUN_RESULT_FILENAME,
   QA_RUN_STATUS_FILENAME,
@@ -83,6 +85,8 @@ interface FakeExecConfig {
   };
   /** Whether signoff critique/snapshot envelopes report a persisted snapshot. */
   snapshotSaved?: boolean;
+  /** Async delay before every critique invocation, to exercise the deadline. */
+  critiqueDelayMs?: number;
 }
 
 interface FakeExecRecord {
@@ -116,6 +120,9 @@ function makeFakeExec(config: FakeExecConfig): {
       const outPrefix = argvValue(argv, "--out");
       if (!outPrefix) return { exitCode: 1, stdout: "", stderr: "", error: "missing --out" };
       if (argv.includes("--check-critique")) {
+        if (config.critiqueDelayMs) {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, config.critiqueDelayMs));
+        }
         const critique = config.critique ?? { outcome: "pass" as const };
         const envelope: Record<string, unknown> = {
           critique: {
@@ -1051,5 +1058,132 @@ describe("latest.json pointer is monotonic", () => {
     });
     const pointer = JSON.parse(readFileSync(join(parent, QA_RUN_LATEST_FILENAME), "utf8"));
     expect(pointer.run_id).toBe("recovering-run");
+  });
+});
+
+describe("defaultQaRunExec timeout enforcement", () => {
+  // The live failure this guards against: a child that catches SIGTERM while
+  // awaiting its own grandchildren turned execFile's timeout into an
+  // unbounded wait (a critique command outlived its 120s cap by 10x).
+  test("a SIGTERM-catching child is killed within timeout plus grace", async () => {
+    const started = Date.now();
+    const res = await defaultQaRunExec(["bash", "-c", "trap '' TERM; sleep 60"], {
+      timeoutMs: 1_000,
+      env: process.env,
+    });
+    const elapsed = Date.now() - started;
+    expect(res.exitCode).toBeNull();
+    expect(res.error).toContain("timed out after 1000ms");
+    // SIGTERM at 1s is trapped; SIGKILL lands at 1s + grace. Generous slack
+    // for a loaded CI host, but far below the 60s the child wanted.
+    expect(elapsed).toBeLessThan(1_000 + QA_RUN_KILL_GRACE_MS + 10_000);
+  }, 30_000);
+
+  test("a grandchild in the child's process group dies with the group", async () => {
+    const pidFile = join(outDir(), "grandchild.pid");
+    const res = await defaultQaRunExec(
+      ["bash", "-c", `trap '' TERM; (trap '' TERM; echo $BASHPID > ${pidFile}; sleep 60) & wait`],
+      { timeoutMs: 1_000, env: process.env },
+    );
+    expect(res.error).toContain("timed out");
+    const grandchildPid = Number(readFileSync(pidFile, "utf8").trim());
+    expect(Number.isInteger(grandchildPid)).toBe(true);
+    // The group SIGKILL is delivered before the exec promise settles; give
+    // the kernel a beat to reap, then prove the grandchild is gone.
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    let alive = true;
+    try {
+      process.kill(grandchildPid, 0);
+    } catch {
+      alive = false;
+    }
+    expect(alive).toBe(false);
+  }, 30_000);
+
+  test("a child that exits 0 after the deadline still reports a timeout error", async () => {
+    const res = await defaultQaRunExec(["bash", "-c", "trap 'exit 0' TERM; sleep 60"], {
+      timeoutMs: 500,
+      env: process.env,
+    });
+    expect(res.exitCode).toBeNull();
+    expect(res.error).toContain("timed out");
+  }, 30_000);
+
+  test("a fast clean child is untouched", async () => {
+    const res = await defaultQaRunExec(["bash", "-c", "echo hi"], {
+      timeoutMs: 5_000,
+      env: process.env,
+    });
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout.trim()).toBe("hi");
+    expect(res.error).toBeUndefined();
+  });
+});
+
+describe("runQaMatrix run deadline", () => {
+  test("deadline during gates skips remaining commands and finalizes incomplete", async () => {
+    const contexts = ["a", "b", "c", "d", "e"].map((viewport) => ({
+      viewport,
+      theme: "light" as const,
+      state: "default" as const,
+    }));
+    const fake = makeFakeExec({
+      planManifest: manifest({ contexts }),
+      gateDelayMs: Object.fromEntries(contexts.map((c) => [`${c.viewport}-light-default`, 120])),
+    });
+    const result = await runQaMatrix({
+      job: job({ policy: { command_concurrency: 1, run_deadline_ms: 100 } }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.verdict).toBe("incomplete");
+    const blocker = result.blockers.find((entry) => entry.stage === "deadline");
+    expect(blocker?.reason).toContain("run deadline of 100ms exceeded");
+    // Serial gates at 120ms each against a 100ms deadline: the first gate
+    // runs, every later context is skipped without a command row.
+    const gates = result.commands.filter((command) => command.check_id !== "plan");
+    expect(gates.length).toBeLessThan(contexts.length);
+  });
+
+  test("deadline during critique breaks the context loop and never reports a partial pass", async () => {
+    const contexts = [
+      { viewport: "desktop", theme: "light" as const, state: "default" },
+      { viewport: "mobile", theme: "light" as const, state: "default" },
+      { viewport: "desktop", theme: "dark" as const, state: "default" },
+    ];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
+      }),
+      critiqueDelayMs: 200,
+    });
+    const result = await runQaMatrix({
+      job: job({ policy: { run_deadline_ms: 150 } }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.verdict).toBe("incomplete");
+    expect(result.blockers.some((entry) => entry.stage === "deadline")).toBe(true);
+    // At least one critique context was cut off entirely.
+    expect(result.critique.length).toBeLessThan(contexts.length);
+    // No context row may claim a pass the deadline interrupted mid-scope.
+    for (const row of result.critique) {
+      expect(["passed", "failed", "unknown"]).toContain(row.outcome);
+    }
+  });
+
+  test("a run under its deadline is unaffected", async () => {
+    const fake = makeFakeExec({ planManifest: manifest() });
+    const result = await runQaMatrix({
+      job: job({ policy: { run_deadline_ms: 60_000 } }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.verdict).toBe("passed");
+    expect(result.blockers).toHaveLength(0);
   });
 });

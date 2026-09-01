@@ -78,6 +78,11 @@ export interface QaRunPolicy {
   command_concurrency?: number;
   /** Per-command timeout in milliseconds (default 120000). */
   command_timeout_ms?: number;
+  /** Overall runner deadline in milliseconds (default 900000). When the run
+   * exceeds it, remaining commands are skipped, a `deadline` blocker is
+   * recorded, and the result finalizes as incomplete — releasing the
+   * admission slot instead of holding it open-endedly. */
+  run_deadline_ms?: number;
 }
 
 export interface QaRunJob {
@@ -133,6 +138,7 @@ export interface QaRunBlocker {
     | "interactions"
     | "critique"
     | "snapshot"
+    | "deadline"
     | "result";
   context_id?: string;
   reason: string;
@@ -411,6 +417,12 @@ export function validateQaRunJob(value: unknown): QaRunJobValidation {
       const n = p.command_timeout_ms;
       if (typeof n !== "number" || !Number.isInteger(n) || n < 1000) {
         errors.push("policy.command_timeout_ms must be an integer ≥ 1000");
+      }
+    }
+    if (p?.run_deadline_ms !== undefined) {
+      const n = p.run_deadline_ms;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 10_000) {
+        errors.push("policy.run_deadline_ms must be an integer ≥ 10000");
       }
     }
   }

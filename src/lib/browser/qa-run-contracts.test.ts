@@ -86,7 +86,7 @@ describe("validateQaRunJob", () => {
         { name: "menu-open", setup: ["--click", "#menu"], assertions: ["exists .menu-panel"] },
       ],
       qa_hints: { scopes: ["#main"], states: ["menu-open"] },
-      policy: { command_concurrency: 3, command_timeout_ms: 60_000 },
+      policy: { command_concurrency: 3, command_timeout_ms: 60_000, run_deadline_ms: 600_000 },
     });
     const result = validateQaRunJob(job);
     expect(result.ok).toBe(true);
@@ -119,6 +119,14 @@ describe("validateQaRunJob", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.errors.some((e) => e.includes("looks like a credential"))).toBe(true);
+    }
+  });
+
+  test("a sub-floor run deadline is refused", () => {
+    const result = validateQaRunJob(validJob({ policy: { run_deadline_ms: 500 } }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.includes("run_deadline_ms"))).toBe(true);
     }
   });
 

@@ -11,7 +11,7 @@
 //
 // Toolkit tier: this module must not import src/core (layering check).
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
@@ -102,6 +102,7 @@ export const QA_RUN_JOB_FILENAME = "job.json";
 const STATUS_HEARTBEAT_MS = 15_000;
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+const DEFAULT_RUN_DEADLINE_MS = 900_000;
 const DEFAULT_COMMAND_CONCURRENCY = 2;
 const EXEC_MAX_BUFFER = 16 * 1024 * 1024;
 
@@ -136,8 +137,31 @@ export interface QaRunExecResult {
 /** Injectable child-process executor. `argv[0]` is the executable. */
 export type QaRunExec = (argv: string[], options: QaRunExecOptions) => Promise<QaRunExecResult>;
 
-/** Default executor: execFile with argv arrays only (never a shell string),
- * closed stdin, bounded output buffers, and the policy timeout. */
+/** Grace between the timeout's SIGTERM and the follow-up SIGKILL. A child
+ * that catches SIGTERM (Bun installs a handler by default) gets this long to
+ * exit before the kill is made non-negotiable. */
+export const QA_RUN_KILL_GRACE_MS = 5_000;
+
+/** After the group SIGKILL, how long to wait for stdio to drain before
+ * destroying the streams and settling anyway. An escaped grandchild (setsid)
+ * can hold the pipes open forever; the result must not wait on it. */
+const KILL_DRAIN_MS = 2_000;
+
+/** Default executor: spawn with argv arrays only (never a shell string),
+ * closed stdin, bounded output buffers, and the policy timeout.
+ *
+ * Timeout enforcement is escalated and group-wide, via `spawn` rather than
+ * `execFile` for two live-verified reasons. First, a child that catches
+ * SIGTERM while awaiting its own grandchildren turns a single polite kill
+ * into an unbounded wait (a critique command outlived its 120s cap by 10x).
+ * Second, `execFile` resolves only when the child's stdio closes, and an
+ * orphaned grandchild inheriting the pipe keeps it open after the child is
+ * dead — so even a delivered kill did not settle the call. The child is
+ * therefore spawned detached into its own process group; at the deadline the
+ * whole group gets SIGTERM, then SIGKILL after a grace, and the result
+ * settles on exit with whatever output drained, never waiting on a pipe an
+ * orphan still holds. A timed-out command reports an error even if the child
+ * then exits 0 — a result produced after the deadline cannot be trusted. */
 export const defaultQaRunExec: QaRunExec = (argv, options) =>
   new Promise((resolvePromise) => {
     const [command, ...args] = argv;
@@ -145,40 +169,112 @@ export const defaultQaRunExec: QaRunExec = (argv, options) =>
       resolvePromise({ exitCode: null, stdout: "", stderr: "", error: "empty argv" });
       return;
     }
-    const child = execFile(
-      command,
-      args,
-      {
-        timeout: options.timeoutMs,
-        maxBuffer: EXEC_MAX_BUFFER,
-        env: options.env,
-        killSignal: "SIGTERM",
-      },
-      (err, stdout, stderr) => {
-        const out = String(stdout ?? "");
-        const errOut = String(stderr ?? "");
-        if (!err) {
-          resolvePromise({ exitCode: 0, stdout: out, stderr: errOut });
+    // Windows has no process groups; the direct-child kill is the best
+    // available fallback there.
+    const groupKill = process.platform !== "win32";
+    const child = spawn(command, args, {
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      ...(groupKill ? { detached: true } : {}),
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let outBytes = 0;
+    let timedOut = false;
+    let overflowed = false;
+    let settled = false;
+    let termTimer: ReturnType<typeof setTimeout> | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const settle = (result: QaRunExecResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(termTimer);
+      clearTimeout(killTimer);
+      clearTimeout(drainTimer);
+      resolvePromise(result);
+    };
+
+    const signalGroup = (signal: NodeJS.Signals): void => {
+      const pid = child.pid;
+      if (!pid) return;
+      if (groupKill) {
+        try {
+          process.kill(-pid, signal);
           return;
+        } catch {
+          // Group already gone, or the leader died before setpgid: fall
+          // through to the direct child so the kill still lands somewhere.
         }
-        const failure = err as NodeJS.ErrnoException & {
-          code?: number | string;
-          killed?: boolean;
-          signal?: NodeJS.Signals | null;
-        };
-        if (typeof failure.code === "number") {
-          // Completed with a nonzero exit code: a real outcome, not an error.
-          resolvePromise({ exitCode: failure.code, stdout: out, stderr: errOut });
-          return;
-        }
-        const reason =
-          failure.killed || failure.signal
-            ? `killed by ${failure.signal ?? "signal"} (timeout ${options.timeoutMs}ms)`
-            : failure.message || "spawn failed";
-        resolvePromise({ exitCode: null, stdout: out, stderr: errOut, error: reason });
-      },
-    );
-    child.stdin?.end();
+      }
+      try {
+        child.kill(signal);
+      } catch {
+        // Nothing left to kill.
+      }
+    };
+
+    const collect = (chunk: Buffer | string, sink: "stdout" | "stderr"): void => {
+      const text = String(chunk);
+      outBytes += text.length;
+      if (sink === "stdout") stdout += text;
+      else stderr += text;
+      if (outBytes > EXEC_MAX_BUFFER && !overflowed) {
+        overflowed = true;
+        signalGroup("SIGKILL");
+      }
+    };
+    child.stdout?.on("data", (chunk) => collect(chunk, "stdout"));
+    child.stderr?.on("data", (chunk) => collect(chunk, "stderr"));
+
+    child.on("error", (err) => {
+      settle({ exitCode: null, stdout, stderr, error: err.message || "spawn failed" });
+    });
+
+    const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (timedOut) {
+        settle({
+          exitCode: null,
+          stdout,
+          stderr,
+          error: `timed out after ${options.timeoutMs}ms (process group killed)`,
+        });
+      } else if (overflowed) {
+        settle({
+          exitCode: null,
+          stdout,
+          stderr,
+          error: `output exceeded ${EXEC_MAX_BUFFER} bytes (process group killed)`,
+        });
+      } else if (signal) {
+        settle({ exitCode: null, stdout, stderr, error: `killed by ${signal}` });
+      } else {
+        settle({ exitCode: code, stdout, stderr });
+      }
+    };
+
+    // "close" is the clean path: process exited AND stdio drained. "exit"
+    // arms the drain failsafe so an orphan holding the pipes cannot postpone
+    // the result forever.
+    child.on("close", (code, signal) => finish(code, signal));
+    child.on("exit", (code, signal) => {
+      drainTimer = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish(code, signal);
+      }, KILL_DRAIN_MS);
+      drainTimer.unref?.();
+    });
+
+    termTimer = setTimeout(() => {
+      timedOut = true;
+      signalGroup("SIGTERM");
+    }, options.timeoutMs);
+    killTimer = setTimeout(() => signalGroup("SIGKILL"), options.timeoutMs + QA_RUN_KILL_GRACE_MS);
+    termTimer.unref?.();
+    killTimer.unref?.();
   });
 
 export interface QaRunMatrixOptions {
@@ -498,6 +594,25 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   const hostStart = hostSample();
   const startedAt = Date.now();
   const blockers: QaRunBlocker[] = [];
+  // Overall deadline: the clock starts after admission (pure runner time) and
+  // is consulted before every command, so the worst overshoot is one command
+  // timeout plus the kill grace. Exceeding it fails closed as incomplete.
+  const runDeadlineMs = job.policy?.run_deadline_ms ?? DEFAULT_RUN_DEADLINE_MS;
+  let deadlineHit = false;
+  const pastDeadline = (): boolean => {
+    if (deadlineHit) return true;
+    if (Date.now() - startedAt < runDeadlineMs) return false;
+    deadlineHit = true;
+    blockers.push({
+      stage: "deadline",
+      reason:
+        `run deadline of ${runDeadlineMs}ms exceeded — remaining commands were skipped and ` +
+        "the result finalized as incomplete (raise policy.run_deadline_ms for a legitimately " +
+        "larger matrix)",
+    });
+    log(`deadline: ${runDeadlineMs}ms exceeded, skipping remaining commands`);
+    return true;
+  };
   const commands: QaRunCommandOutcome[] = [];
   const critique: QaRunCritiqueOutcome[] = [];
   const stagesRun: QaRunStage[] = [];
@@ -698,6 +813,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   enterStage("gates");
   const gatesStart = Date.now();
   await runPool(contexts, concurrency, async (ctx, index) => {
+    if (pastDeadline()) return;
     const applicable = checks.filter(
       (check) => check.contexts === undefined || check.contexts.includes(ctx.id),
     );
@@ -764,8 +880,9 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   wall.gates = Date.now() - gatesStart;
   stagesRun.push("gates");
   // Manifest order regardless of completion order: outcomes were written by
-  // context index, so a straight push preserves it.
-  commands.push(...gateOutcomes);
+  // context index, so a straight push preserves it. Deadline-skipped slots
+  // are empty: the single deadline blocker is their record.
+  commands.push(...gateOutcomes.filter((outcome) => outcome !== undefined));
 
   // ---------------------------------------------------------- interactions
   enterStage("interactions");
@@ -787,6 +904,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     }
   }
   for (const state of job.interaction_states ?? []) {
+    if (pastDeadline()) break;
     const outPrefix = join(outDir, `interaction-${state.name}`);
     const argv = [
       ...browseArgv,
@@ -852,13 +970,19 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     const scopeSelectors =
       visual === "full-page" ? [undefined] : manifest.scopes.map((s) => s.selector);
     for (const ctx of contexts) {
+      if (pastDeadline()) break;
       let tilesTotal = 0;
       let tilesReviewed = 0;
       let tilesReused = 0;
       let provider = "none";
       let contextOutcome: QaRunCritiqueOutcome["outcome"] = "passed";
       const findings: QaRunCritiqueOutcome["findings"] = [];
+      let scopesSkipped = false;
       for (const [scopeIndex, selector] of scopeSelectors.entries()) {
+        if (pastDeadline()) {
+          scopesSkipped = true;
+          break;
+        }
         const suffix = scopeSelectors.length > 1 ? `-scope${scopeIndex}` : "";
         const outPrefix = join(outDir, `${ctx.id}-critique${suffix}`);
         const argv = [
@@ -954,6 +1078,9 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
           wall_time_ms: wallTimeMs,
         });
       }
+      // A context whose scope commands were cut off by the deadline proved
+      // nothing — never let its row read "passed".
+      if (scopesSkipped && contextOutcome === "passed") contextOutcome = "unknown";
       critique.push({
         context_id: ctx.id,
         provider,
@@ -985,6 +1112,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     const stillClean = commands.every((command) => command.outcome === "passed");
     if (stillClean) {
       for (const ctx of contexts) {
+        if (pastDeadline()) break;
         const outPrefix = join(outDir, `${ctx.id}-snapshot`);
         const argv = [
           ...browseArgv,
