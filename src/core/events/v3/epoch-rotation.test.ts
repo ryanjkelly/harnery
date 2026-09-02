@@ -1,14 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { eventV3Fixture } from "../../../../tests/helpers/event-v3.ts";
@@ -23,7 +14,7 @@ import {
   resolveLiveEventLedgerRouteV3,
 } from "./live-routing.ts";
 import { recordCommandSignalV3 } from "./producers/command-recorder.ts";
-import { readHookProducerStateV3 } from "./producers/recorder.ts";
+import { readHookProducerStateV3, recordHookSignalV3 } from "./producers/recorder.ts";
 import { readLedgerV3 } from "./reader.ts";
 import { drainReadyEventsV3, eventV3Paths, writeEventV3 } from "./writer.ts";
 
@@ -200,26 +191,21 @@ describe("event ledger V3 size rotation", () => {
         ? started.event.scope.generation_id
         : undefined;
 
-    const producerDirectory = join(
-      root,
-      ".harnery",
-      "ledgers",
-      "v3",
-      "private-producers",
-      "claude-code",
-    );
-    const producerFile = readdirSync(producerDirectory).find((name) => name.endsWith(".json"));
-    expect(producerFile).toBeDefined();
-    const archivedStateCopy = join(freshRoot(), "stale-producer-state.json");
-    copyFileSync(join(producerDirectory, producerFile!), archivedStateCopy);
-
     const rotated = rotateOversizedEventLedgerV3(root, { thresholdBytes: 1 });
     expect(rotated.state).toBe("rotated");
+    const reanchored = readHookProducerStateV3(root, "claude-code", "native-session");
+    expect(reanchored?.generation_id).toBeDefined();
+    if (!reanchored) throw new Error("expected rotation-reanchored producer state");
+    expect(reanchored?.generation_id).not.toBe(startedGeneration);
+    expect(reanchored?.current_turn_id).toBeUndefined();
 
-    // Reproduce the post-rotation republish race: a hook that read its state
-    // before rotation writes that state back into the successor's directory.
-    mkdirSync(producerDirectory, { recursive: true, mode: 0o700 });
-    copyFileSync(archivedStateCopy, join(producerDirectory, producerFile!));
+    const afterRotation = readLedgerV3(root);
+    expect(afterRotation).toMatchObject({ complete: true, diagnostics: [] });
+    expect(afterRotation.events.map(({ event }) => event.event_type)).toEqual([
+      "ledger.genesis",
+      "ledger.activated",
+      "session.started",
+    ]);
 
     const routeAfter = resolveLiveEventLedgerRouteV3(root);
     expect(routeAfter.state).toBe("v3");
@@ -234,9 +220,7 @@ describe("event ledger V3 size rotation", () => {
     });
     expect(resumed.state).toBe("recorded");
     if (resumed.state === "recorded" && "generation_id" in resumed.event.scope) {
-      // The stale authority was never adopted: the session re-onboarded into
-      // a fresh generation whose sequences and causal links are epoch-local.
-      expect(resumed.event.scope.generation_id).not.toBe(startedGeneration);
+      expect(resumed.event.scope.generation_id).toBe(reanchored.generation_id);
     }
 
     const ledger = readLedgerV3(root);
@@ -244,7 +228,73 @@ describe("event ledger V3 size rotation", () => {
     const archivedLedger = readFileSync(join(rotated.archived_epoch!, "active.ndjson"), "utf8");
     expect(archivedLedger).toContain("session.started");
   });
-  test("a mid-turn rotation re-onboards the live session with an open, visible turn", () => {
+  test("a late old-epoch hook cannot overwrite rotation-reanchored state", () => {
+    const root = activeRoot();
+    process.env.HARNERY_EVENT_V3_ROTATE_ACTIVE_BYTES = "0";
+    const instanceId = liveInstanceIdV3("agent-RacingRotation");
+    const nativeSession = "native-racing-rotation";
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    const base = {
+      coordRoot: root,
+      mode: route.mode,
+      adapter: "claude-code" as const,
+      instance_id: instanceId,
+      producer_id: "prd_agent-hook" as const,
+      build_id: route.build_id,
+      platform: "linux" as const,
+    };
+    expect(
+      recordHookSignalV3({
+        ...base,
+        signal: "session-start",
+        payload: { session_id: nativeSession, raw: {} },
+      }).state,
+    ).toBe("recorded");
+    expect(
+      recordHookSignalV3({
+        ...base,
+        signal: "user-prompt-submit",
+        payload: { session_id: nativeSession, turn_id: "turn-one", raw: {} },
+      }).state,
+    ).toBe("recorded");
+    const generationBefore = readHookProducerStateV3(
+      root,
+      "claude-code",
+      nativeSession,
+    )?.generation_id;
+    let rotationObserved = false;
+
+    const raced = recordHookSignalV3({
+      ...base,
+      signal: "pre-tool-use",
+      payload: {
+        session_id: nativeSession,
+        turn_id: "turn-one",
+        tool_use_id: "tool-at-boundary",
+        tool_name: "Bash",
+        raw: {},
+      },
+      writerOptions: {
+        onStep: (step) => {
+          if (step !== "ready_published" || rotationObserved) return;
+          rotationObserved = true;
+          expect(rotateOversizedEventLedgerV3(root, { thresholdBytes: 1 }).state).toBe("rotated");
+        },
+      },
+    });
+    expect(raced.state).toBe("recorded");
+    expect(rotationObserved).toBeTrue();
+
+    const reanchored = readHookProducerStateV3(root, "claude-code", nativeSession);
+    expect(reanchored?.generation_id).toBeDefined();
+    expect(reanchored?.generation_id).not.toBe(generationBefore);
+    expect(reanchored?.epoch_genesis_id).toBe(liveGenesisIdV3(root));
+    expect(reanchored?.current_turn_id).toBeDefined();
+    expect(readLedgerV3(root)).toMatchObject({ complete: true, diagnostics: [] });
+  });
+
+  test("a mid-turn rotation reanchors the live session with an open, visible turn", () => {
     const root = activeRoot();
     process.env.HARNERY_EVENT_V3_ROTATE_ACTIVE_BYTES = "0";
     const instanceId = "agent-MidTurn";
@@ -283,22 +333,12 @@ describe("event ledger V3 size rotation", () => {
     const rotated = rotateOversizedEventLedgerV3(root, { thresholdBytes: 1 });
     expect(rotated.state).toBe("rotated");
 
-    // The next hook is a tool signal with a deferred drain, exactly as the
-    // adapter delivers it: not a user prompt, and nothing else drains for it.
-    const afterRotation = record(
-      "pre-tool-use",
-      { turn_id: "turn-one", tool_use_id: "tool-2", tool_name: "Bash" },
-      { defer_drain: true },
-    );
-    expect(afterRotation.state).toBe("recorded");
-
+    // Rotation itself has already re-anchored the session and open turn.
+    // Nothing below relies on another adapter hook arriving first.
     const state = readHookProducerStateV3(root, "claude-code", nativeSession);
     expect(state?.current_turn_id).toBeDefined();
     expect(state?.current_turn_span).toBeDefined();
 
-    // Onboarding committed eagerly: the successor ledger already holds the
-    // derived session.started and turn.started, while the tool request itself
-    // still waits in the spool as the deferring hook asked.
     const ledger = readLedgerV3(root);
     expect(ledger).toMatchObject({ complete: true, diagnostics: [] });
     const types = ledger.events.map(({ event }) => event.event_type);
@@ -310,10 +350,8 @@ describe("event ledger V3 size rotation", () => {
     ]);
     const turnStarted = ledger.events.find(({ event }) => event.event_type === "turn.started");
     expect(turnStarted?.event.provenance.attestation).toBe("derived");
-    expect(turnStarted?.event.provenance.source_event).toBe("claude-code.recovery");
-    expect(readdirSync(eventV3Paths(root).spool).filter((n) => n.endsWith(".ready"))).toHaveLength(
-      1,
-    );
+    expect(turnStarted?.event.provenance.source_event).toBe("claude-code.epoch-rotation-reanchor");
+    expect(readdirSync(eventV3Paths(root).spool).filter((n) => n.endsWith(".ready"))).toEqual([]);
 
     // Authority commands can see the session again without a new prompt.
     const view = readCoordinationViewV3(root);
@@ -342,6 +380,18 @@ describe("event ledger V3 size rotation", () => {
       platform: "linux",
     });
     expect(command.state).toBe("recorded");
+
+    // A later tool hook keeps using the carried-forward generation. Its
+    // deferred event may wait in the spool without affecting command joins.
+    const afterRotation = record(
+      "pre-tool-use",
+      { turn_id: "turn-one", tool_use_id: "tool-2", tool_name: "Bash" },
+      { defer_drain: true },
+    );
+    expect(afterRotation.state).toBe("recorded");
+    expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.generation_id).toBe(
+      state?.generation_id,
+    );
 
     // The next native prompt closes the derived turn and opens its own.
     expect(record("user-prompt-submit", { turn_id: "turn-two", prompt: "next" }).state).toBe(

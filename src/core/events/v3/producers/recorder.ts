@@ -695,7 +695,7 @@ function processHookSignalLocked(
       const durability = writeEventV3(input.coordRoot, pendingEvent, input.writerOptions);
       applyCommittedEvent(state, pendingEvent);
       state.pending = undefined;
-      publishProducerState(path, state);
+      publishProducerState(input.coordRoot, path, state);
       if (pendingSource && incomingSource === pendingSource) {
         recovered = { state: "recorded", event: pendingEvent, durability, recovered: true };
       }
@@ -890,7 +890,7 @@ function processHookSignalLocked(
         span_id: state.current_turn_span?.span_id,
         payload: input.payload,
       });
-      publishProducerState(path, state);
+      publishProducerState(input.coordRoot, path, state);
       return { state: "ignored" };
     }
 
@@ -916,7 +916,7 @@ function processHookSignalLocked(
               ? "no_open_turn_span"
               : "ritual_observation_missing",
         });
-        publishProducerState(path, state);
+        publishProducerState(input.coordRoot, path, state);
         return { state: "ignored" };
       }
       const observation: CursorResponseRitualV3 = {
@@ -927,7 +927,7 @@ function processHookSignalLocked(
         status_box_present_strict: input.turn_ritual.status_box_present_strict,
       };
       state.cursor_response_ritual = observation;
-      publishProducerState(path, state);
+      publishProducerState(input.coordRoot, path, state);
       writeProducerDiagnosticV3(input.coordRoot, "cursor_response_ritual_observed", {
         instance_id: state.instance_id,
         generation_id: state.generation_id,
@@ -1855,6 +1855,11 @@ function commitMidFlightTurnStart(
   state: HookProducerStateV3,
   path: string,
   rootId: `root_${string}`,
+  recovery?: {
+    source_event: string;
+    confidence: "high" | "medium" | "low";
+    attribution_method: "native_payload" | "session_env";
+  },
 ): void {
   const fingerprintContext = fingerprintContextV3(
     input.coordRoot,
@@ -1904,11 +1909,11 @@ function commitMidFlightTurnStart(
   }
   event.provenance = {
     ...event.provenance,
-    source_event: `${input.adapter}.recovery`,
+    source_event: recovery?.source_event ?? `${input.adapter}.recovery`,
     attestation: "derived",
-    confidence: nativeTurnId ? "medium" : "low",
+    confidence: recovery?.confidence ?? (nativeTurnId ? "medium" : "low"),
     attribution: {
-      method: nativeTurnId ? "native_payload" : "session_env",
+      method: recovery?.attribution_method ?? (nativeTurnId ? "native_payload" : "session_env"),
       state: "verified",
       subject_instance_id: state.instance_id,
     },
@@ -1928,11 +1933,11 @@ function commitEventLocked(
   markObservedClockRegressionV3(event, state.last_observed_at);
   assertEventV3(event);
   state.pending = { ...(sourceId ? { source_id: sourceId } : {}), event };
-  publishProducerState(path, state);
+  publishProducerState(input.coordRoot, path, state);
   const durability = writeEventV3(input.coordRoot, event, input.writerOptions);
   applyCommittedEvent(state, event);
   state.pending = undefined;
-  publishProducerState(path, state);
+  publishProducerState(input.coordRoot, path, state);
   return durability;
 }
 
@@ -1989,7 +1994,7 @@ function commitContextObservation(
     contextProvenance?.source_witness &&
     state.last_context_source_witness === contextProvenance.source_witness
   ) {
-    publishProducerState(path, state);
+    publishProducerState(input.coordRoot, path, state);
     return;
   }
   if (measurement.state === "observed" && contextProvenance?.source_witness) {
@@ -2120,13 +2125,13 @@ function maybeCommitActiveRuntimeContextObservation(
     return;
   }
   if (input.adapter === "cursor" && state.cursor_mode === "cloud") {
-    publishProducerState(path, state);
+    publishProducerState(input.coordRoot, path, state);
     return;
   }
 
   const transcriptPath = runtimeTranscriptPath(input, state);
   if (!transcriptPath && input.adapter !== "cursor") {
-    publishProducerState(path, state);
+    publishProducerState(input.coordRoot, path, state);
     return;
   }
   const runtime = readRuntimeContextTelemetry(
@@ -2145,7 +2150,7 @@ function maybeCommitActiveRuntimeContextObservation(
   );
   if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
   if (runtime.state !== "observed") {
-    publishProducerState(path, state);
+    publishProducerState(input.coordRoot, path, state);
     return;
   }
 
@@ -2412,7 +2417,7 @@ function reconcilePendingRuntimeContexts(
   if (state.pending_runtime_contexts?.length === 0) {
     state.pending_runtime_contexts = undefined;
   }
-  publishProducerState(path, state);
+  publishProducerState(input.coordRoot, path, state);
 }
 
 function reconcilePendingRuntimeContextsBeforeApprovedEnd(
@@ -3190,7 +3195,7 @@ export function recordApprovedSessionEndV3(
       const durability = writeEventV3(input.coordRoot, pending, input.writerOptions);
       applyCommittedEvent(state, pending);
       state.pending = undefined;
-      publishProducerState(record.path, state);
+      publishProducerState(input.coordRoot, record.path, state);
       recovered = true;
       if (pending.event_type === "session.ended") {
         return { state: "recorded", event: pending, durability, recovered };
@@ -3287,11 +3292,11 @@ export function recordApprovedSessionEndV3(
     assertEventV3(event);
 
     state.pending = { event };
-    publishProducerState(record.path, state);
+    publishProducerState(input.coordRoot, record.path, state);
     const durability = writeEventV3(input.coordRoot, event, input.writerOptions);
     applyCommittedEvent(state, event);
     state.pending = undefined;
-    publishProducerState(record.path, state);
+    publishProducerState(input.coordRoot, record.path, state);
     return { state: "recorded", event, durability, recovered };
   } finally {
     lease.release();
@@ -3375,7 +3380,7 @@ export function salvageOpenSpansV3(input: SalvageOpenSpansV3Input): SalvageOpenS
       writeEventV3(input.coordRoot, pendingEvent, input.writerOptions);
       applyCommittedEvent(state, pendingEvent);
       state.pending = undefined;
-      publishProducerState(record.path, state);
+      publishProducerState(input.coordRoot, record.path, state);
     }
     const allowed = new Set(input.allowed_span_ids);
     const fingerprintContext = fingerprintContextV3(
@@ -3454,6 +3459,155 @@ export function listHookProducerStateRecordsV3(
     (left, right) =>
       left.state.generation_id.localeCompare(right.state.generation_id) ||
       left.path.localeCompare(right.path),
+  );
+}
+
+export interface ReanchorArchivedHookProducersV3Input {
+  coordRoot: string;
+  archivedEpoch: string;
+  mode: EventV3WriteMode;
+  build_id: `build_${string}`;
+  platform: "linux" | "windows" | "macos" | "unknown";
+  observed_at?: string;
+}
+
+export interface ReanchorArchivedHookProducersV3Result {
+  sessions: number;
+  turns: number;
+}
+
+/**
+ * Re-anchor every live archived hook producer into a newly activated epoch.
+ *
+ * The archive rename is the rotation's atomic snapshot: it includes every
+ * state published before the boundary without copying any old boot sequence
+ * or causal link into the successor. Each live session gets a fresh
+ * generation and attestation. Only a turn that was open at the boundary is
+ * reopened, which makes command telemetry joinable before another adapter
+ * hook fires while preserving the between-turn state for idle sessions.
+ */
+export function reanchorArchivedHookProducersV3(
+  input: ReanchorArchivedHookProducersV3Input,
+): ReanchorArchivedHookProducersV3Result {
+  const control = readEventV3ControlState(input.coordRoot);
+  if (control.state !== input.mode) {
+    throw new Error(`event_v3_rotation_reanchor_gate_closed:${control.state}`);
+  }
+  const rootId = control.genesis.event.scope.root_id as `root_${string}`;
+  const epochId = control.genesis.profile.privacy_key_epoch;
+  const genesisId = control.genesis.event.payload.genesis_id as `gex_${string}`;
+  const boundaryEventId =
+    control.state === "candidate"
+      ? control.genesis.event.event_id
+      : control.activation.event.event_id;
+  const observedAt = input.observed_at ?? new Date().toISOString();
+  let sessions = 0;
+  let turns = 0;
+
+  for (const archived of listArchivedHookProducerStatesV3(input.archivedEpoch)) {
+    const previous = archived.state;
+    if (previous.terminal || !previous.started_event_id) continue;
+    const path = producerStatePath(input.coordRoot, previous.adapter, archived.sessionHash);
+    const lease = acquireStateLeaseWithRetry(input.coordRoot, path, 40);
+    if (!lease) {
+      throw new Error(`event_v3_rotation_reanchor_busy:${previous.instance_id}`);
+    }
+    try {
+      if (existsSync(path)) {
+        const current = readProducerState(path);
+        if (current.epoch_genesis_id === genesisId) continue;
+      }
+      const sourceEvent = `${previous.adapter}.epoch-rotation-reanchor`;
+      const rotationInput: RecordHookSignalV3Input = {
+        coordRoot: input.coordRoot,
+        mode: input.mode,
+        signal: "session-start",
+        payload: {
+          raw: {},
+          ...(previous.current_native_turn_id ? { turn_id: previous.current_native_turn_id } : {}),
+          ...(previous.adapter === "cursor" && previous.cursor_mode
+            ? { cursor_mode: previous.cursor_mode }
+            : {}),
+        },
+        adapter: previous.adapter,
+        instance_id: previous.instance_id,
+        producer_id: "prd_agent-hook",
+        build_id: input.build_id,
+        platform: input.platform,
+        observed_at: observedAt,
+        writerOptions: { expectedGenesisId: genesisId },
+      };
+      const state = newProducerState(
+        rotationInput,
+        previous.session_id,
+        epochId,
+        boundaryEventId as `evt_${string}`,
+        genesisId,
+      );
+      const sessionStart = buildMidFlightSessionStart(rotationInput, state, rootId);
+      if (sessionStart.event_type !== "session.started") {
+        throw new Error("rotation re-anchor session start could not be normalized");
+      }
+      sessionStart.provenance = {
+        ...sessionStart.provenance,
+        source_event: sourceEvent,
+        attestation: "derived",
+        confidence: "high",
+        attribution: {
+          method: "session_env",
+          state: "verified",
+          subject_instance_id: state.instance_id,
+        },
+      };
+      sessionStart.payload.resume = {
+        state: "unknown",
+        reason: "epoch_rotation_reanchor",
+      };
+      assertEventV3(sessionStart);
+      commitEventLocked(rotationInput, state, path, sessionStart);
+      sessions += 1;
+
+      if (previous.current_turn_id && previous.current_turn_span) {
+        commitMidFlightTurnStart(rotationInput, state, path, rootId, {
+          source_event: sourceEvent,
+          confidence: "high",
+          attribution_method: "session_env",
+        });
+        turns += 1;
+      }
+    } finally {
+      lease.release();
+    }
+  }
+  return { sessions, turns };
+}
+
+function listArchivedHookProducerStatesV3(
+  archivedEpoch: string,
+): Array<{ sessionHash: `hid_${string}`; state: HookProducerStateV3 }> {
+  const producerRoot = join(resolve(archivedEpoch), "private-producers");
+  if (!existsSync(producerRoot)) return [];
+  const records: Array<{ sessionHash: `hid_${string}`; state: HookProducerStateV3 }> = [];
+  for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+    const directory = join(producerRoot, adapter);
+    if (!existsSync(directory)) continue;
+    const metadata = lstatSync(directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error("V3 archived producer state directory is unsafe");
+    }
+    for (const name of readdirSync(directory).filter((entry) =>
+      /^hid_[a-f0-9]{64}\.json$/.test(entry),
+    )) {
+      records.push({
+        sessionHash: name.slice(0, -".json".length) as `hid_${string}`,
+        state: readProducerState(join(directory, name)),
+      });
+    }
+  }
+  return records.sort(
+    (left, right) =>
+      left.state.generation_id.localeCompare(right.state.generation_id) ||
+      left.sessionHash.localeCompare(right.sessionHash),
   );
 }
 
@@ -4035,7 +4189,12 @@ function acquireStateLease(coordRoot: string, statePath: string) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   chmodSync(producerRoot, 0o700);
   chmodSync(directory, 0o700);
-  return acquireNoClobberLease({
+  const acquiredControl = readEventV3ControlState(coordRoot);
+  const acquiredGenesis =
+    acquiredControl.state === "candidate" || acquiredControl.state === "active"
+      ? acquiredControl.genesis.event.payload.genesis_id
+      : undefined;
+  const lease = acquireNoClobberLease({
     path: `${statePath}.lease`,
     scope: "event-v3-hook-producer",
     authoritySha256: createHash("sha256")
@@ -4046,9 +4205,32 @@ function acquireStateLease(coordRoot: string, statePath: string) {
     staleAfterMs: 5_000,
     validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
   });
+  return {
+    ...lease,
+    release() {
+      try {
+        lease.release();
+      } catch (error) {
+        const current = readEventV3ControlState(coordRoot);
+        const epochReplaced =
+          acquiredGenesis !== undefined &&
+          (current.state === "candidate" || current.state === "active") &&
+          current.genesis.event.payload.genesis_id !== acquiredGenesis;
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" && epochReplaced) return;
+        throw error;
+      }
+    },
+  };
 }
 
-function publishProducerState(path: string, state: HookProducerStateV3): void {
+function publishProducerState(coordRoot: string, path: string, state: HookProducerStateV3): void {
+  const control = readEventV3ControlState(coordRoot);
+  if (
+    (control.state === "candidate" || control.state === "active") &&
+    state.epoch_genesis_id !== control.genesis.event.payload.genesis_id
+  ) {
+    return;
+  }
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {

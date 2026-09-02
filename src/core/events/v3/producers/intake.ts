@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Adapter } from "../../../adapter.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
@@ -224,7 +224,14 @@ export function listHookIntakeRecordsV3(directory: string): HookIntakeEntryV3[] 
 }
 
 export function removeIntakeRecordV3(path: string): void {
-  if (existsSync(path)) unlinkSync(path);
+  if (existsSync(path)) {
+    unlinkSync(path);
+  } else if (!existsSync(dirname(path))) {
+    // Epoch rotation atomically moves the complete intake tree into the
+    // archive. A producer that was already draining the old path has nothing
+    // left to remove or fsync in the successor.
+    return;
+  }
   fsyncParentDirectory(path);
 }
 

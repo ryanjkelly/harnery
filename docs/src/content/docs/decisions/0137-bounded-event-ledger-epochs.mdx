@@ -62,9 +62,14 @@ epoch that produced it, then archives the entire `ledgers/v3` directory
 `.harnery/ledgers/v3-archives/` and activates a fresh genesis, the same
 mechanics the runtime-incompatibility refresh already used. Only a currently
 valid ledger rotates; integrity failures stay closed for the explicit
-recovery command. Live sessions re-onboard into the successor epoch on their
-next signal through the existing mid-flight onboarding path (ADR 0078).
-Rotation failure never blocks recording; the oversized epoch keeps serving.
+recovery command. The atomic archive rename is also the live-session snapshot.
+Before rotation returns, every non-terminal archived producer is re-anchored
+with a fresh epoch-local generation, attestation, boot sequence, and session
+span. A turn that was open at the boundary is reopened from the owner-only
+producer state; an idle session stays between turns. Late old-epoch producers
+cannot overwrite the replacement state because private-state publication
+carries the same genesis fence as event publication. Rotation failure never
+blocks recording; the oversized epoch keeps serving.
 
 **Epoch fence on writes.** An event's authority is epoch-local: producer boot
 sequences must start at 1 and every causal link must resolve inside its own
@@ -94,6 +99,16 @@ and a live session that re-publishes stale producer state after rotation is
 re-onboarded into a fresh generation while the successor ledger stays
 complete.
 
+A later rotation showed the remaining pre-hook gap: for 45 seconds, 1,485
+command observations could not find a current producer generation. Each was
+dropped and wrote its own `command_emit_unjoinable` diagnostic. Re-anchoring
+now happens inside rotation, before control returns to any producer. A
+regression records a command immediately after rotation, without another hook,
+and proves it joins the reopened turn. A second regression pauses an old-epoch
+hook after its ready row is published, rotates underneath it, and proves its
+late state publication neither overwrites the re-anchored generation nor
+breaks intake or lease cleanup.
+
 A rotation that fires while a session is mid-turn exposed a second gap, this
 one in re-onboarding rather than in the archive. The session's next hook after
 rotation is usually a tool signal, not a prompt. Mid-flight onboarding opened a
@@ -120,8 +135,8 @@ that policy.
 
 Rotation also exposed a writer race on a multi-agent host. It came from
 re-onboarding, not the archive.
-Rotation ends every live generation at once, so every session mints a fresh
-generation and attestation in one burst while unrelated authority writes
+Rotation re-anchors every live generation at once, so it mints fresh
+generations and attestations in one burst while unrelated authority writes
 continue. That is the condition required by a known append-ordering defect, in
 which an event carrying an attestation can be committed before the event that
 mints it, because a drain orders frames by their declared causes and an

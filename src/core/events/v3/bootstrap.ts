@@ -30,6 +30,7 @@ import {
 import { repairEventV3ControlPair } from "./control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "./fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
+import { reanchorArchivedHookProducersV3 } from "./producers/recorder.ts";
 import { resolveEventLedgerRotateActiveBytesV3 } from "./rotation-config.ts";
 import { currentHarneryRuntimeBuild, liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
 import { drainReadyEventsV3 } from "./writer.ts";
@@ -210,6 +211,15 @@ export function rotateOversizedEventLedgerV3(
       approvalRecordId: "harnery-runtime-v3-size-rotation",
       forceNewEpoch: true,
     });
+    if (initialized.archived_epoch) {
+      reanchorArchivedHookProducersV3({
+        coordRoot: root,
+        archivedEpoch: initialized.archived_epoch,
+        mode: initialized.control.state,
+        build_id: liveEventV3BuildId(currentHarneryRuntimeBuild()),
+        platform: livePlatformV3(),
+      });
+    }
     return {
       state: "rotated",
       active_bytes: activeBytes,
