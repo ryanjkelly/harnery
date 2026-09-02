@@ -65,7 +65,7 @@ function job(overrides: Partial<QaRunJob> = {}): QaRunJob {
   };
 }
 
-type DisconnectStage = "plan" | "gates" | "critique" | "none";
+type DisconnectStage = "plan" | "gates" | "capture" | "none";
 
 /** Fake executor that behaves normally until the named stage, where every
  * child dies the way a severed bridge kills it. */
@@ -87,14 +87,10 @@ function makeDisconnectingExec(
     }
     const outPrefix = argvValue(argv, "--out");
     if (outPrefix === undefined) return { exitCode: 1, stdout: "", stderr: "", error: "no --out" };
-    if (argv.includes("--check-critique")) {
-      if (stage === "critique") return { ...lost };
-      writeFileSync(
-        `${outPrefix}.json`,
-        JSON.stringify({
-          critique: { rule: "critique", tiles: 3, provider: true, findings: [], outcome: "pass" },
-        }),
-      );
+    // The capture child is the only browser child after the gates; the judge
+    // runs in-process and has no bridge to lose.
+    if (argv.includes("--review-pack")) {
+      if (stage === "capture") return { ...lost };
       return { exitCode: 0, stdout: "", stderr: "" };
     }
     if (stage === "gates") return { ...lost };
@@ -188,10 +184,10 @@ describe("qa-run bridge disconnect", () => {
     expect(status.verdict).toBe("incomplete");
   });
 
-  test("a critique killed by a lost bridge blocks at critique and records the host pressure that stage began under", async () => {
+  test("a capture killed by a lost bridge blocks at capture and records the host pressure that stage began under", async () => {
     const parent = outParentDir();
     const { exec } = makeDisconnectingExec(
-      "critique",
+      "capture",
       manifest({ checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" } }),
     );
     const result = await runQaMatrix({
@@ -199,24 +195,25 @@ describe("qa-run bridge disconnect", () => {
       outParent: parent,
       browseArgv: BROWSE_ARGV,
       exec,
-      runId: "critique-disconnect",
+      runId: "capture-disconnect",
     });
 
     expect(result.verdict).toBe("incomplete");
-    const blocker = result.blockers.find((entry) => entry.stage === "critique");
+    const blocker = result.blockers.find((entry) => entry.stage === "capture");
     expect(blocker?.context_id).toBe("desktop-light-default");
-    expect(blocker?.reason).toContain("critique command did not complete");
+    expect(blocker?.reason).toContain("capture command did not complete");
     expect(blocker?.reason).toContain(BRIDGE_LOST);
-    expect(result.critique[0]?.outcome).toBe("unknown");
+    // No context reached the judge, so nothing is proven for the critique.
+    expect(result.critique).toHaveLength(0);
     // The gates that ran before the disconnect keep their proven outcomes.
     expect(result.last_completed_stage).toBe("interactions");
 
-    const sample = result.host.stages?.critique;
+    const sample = result.host.stages?.capture;
     expect(sample).toBeDefined();
     const capturedAt = sample?.captured_at ?? "";
     expect(new Date(capturedAt).toISOString()).toBe(capturedAt);
 
-    const status = readStatusDocument(join(parent, "run-critique-disconnect"));
+    const status = readStatusDocument(join(parent, "run-capture-disconnect"));
     expect(status.state).toBe("completed");
     expect(status.verdict).toBe("incomplete");
   });
