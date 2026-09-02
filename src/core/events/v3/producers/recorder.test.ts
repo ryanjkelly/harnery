@@ -4316,6 +4316,52 @@ describe("event ledger V3 hook intake spool", () => {
     expect(afterEnd.state).toBe("missing_session_start");
   });
 
+  test("onboarding opens a turn for in-turn signals and abstains for the rest", () => {
+    // A turn terminal is the sharpest case: before onboarding opened a turn,
+    // a session first seen at its Stop had nothing to close, so the signal was
+    // ignored and the turn never reached the ledger at all.
+    const stopRoot = candidateRoot();
+    const stopResult = recordHookSignalV3(
+      baseInput(
+        stopRoot,
+        "stop",
+        parsed({ session_id: "onboard-at-stop", turn_id: "native-turn" }),
+      ),
+    );
+    expect(stopResult.state).toBe("recorded");
+    const stopTypes = readLedgerV3(stopRoot).events.map(({ event }) => event.event_type);
+    expect(stopTypes).toContain("turn.started");
+    expect(stopTypes).toContain("turn.completed");
+    expect(readLedgerV3(stopRoot)).toMatchObject({ complete: true, diagnostics: [] });
+
+    // A permission wait is only recorded inside a turn, so onboarding has to
+    // open one before the wait can be observed.
+    const waitRoot = candidateRoot();
+    expect(
+      recordHookSignalV3(
+        baseInput(
+          waitRoot,
+          "permission-request",
+          parsed({ session_id: "onboard-at-permission", tool_name: "Bash" }),
+        ),
+      ).state,
+    ).toBe("recorded");
+    const waitTypes = readLedgerV3(waitRoot).events.map(({ event }) => event.event_type);
+    expect(waitTypes).toContain("turn.started");
+    expect(waitTypes).toContain("wait.started");
+
+    // Compaction can run between turns, so it must not manufacture one.
+    const compactRoot = candidateRoot();
+    expect(
+      recordHookSignalV3(
+        baseInput(compactRoot, "post-compact", parsed({ session_id: "onboard-at-compact" })),
+      ).state,
+    ).toBe("recorded");
+    const compactTypes = readLedgerV3(compactRoot).events.map(({ event }) => event.event_type);
+    expect(compactTypes).not.toContain("turn.started");
+    expect(readLedgerV3(compactRoot)).toMatchObject({ complete: true, diagnostics: [] });
+  });
+
   test("a poison intake record is quarantined and the drain continues", () => {
     const root = candidateRoot();
     const nativeSession = "poison-session";

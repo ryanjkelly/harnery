@@ -15,3 +15,10 @@ the spool where the coordination view could not see it, and `set-task`,
 commits its own events eagerly and, when the triggering signal is one an
 adapter can only deliver inside a turn, opens a derived turn that keeps the
 payload's native turn id. The session recovers on its very next tool call.
+
+This also closes a quieter loss on the same path. A session first observed at
+a turn terminal had no turn to close, so the signal was ignored and that turn
+never reached the ledger; it is now recorded as a derived pair. A permission
+wait, which is only recorded inside a turn, is likewise no longer dropped.
+Compaction signals still onboard without opening a turn, because they can run
+between turns.
