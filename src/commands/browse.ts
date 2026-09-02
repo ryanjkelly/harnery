@@ -1019,6 +1019,7 @@ async function runBrowse(
         critique?.provider &&
         critique.outcome !== "skipped" &&
         critiqueTiles !== undefined &&
+        !critique.coverage?.capped &&
         (!qaReuse || qaReuse.tiles_reused === 0);
       const persistedCritique: PersistedCritique | undefined =
         fullCoverage && critique && critiqueTiles
