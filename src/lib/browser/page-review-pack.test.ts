@@ -6,7 +6,10 @@ import { PNG } from "pngjs";
 import type { CritiqueTile } from "./critique.ts";
 import {
   buildInspectionPlan,
+  cropPngRegion,
+  expandedTileFilename,
   finalizePageReviewPack,
+  findPackTile,
   listPackContexts,
   PAGE_REVIEW_FINDINGS_SCHEMA,
   PAGE_REVIEW_PACK_SCHEMA,
@@ -15,6 +18,7 @@ import {
   readPackManifest,
   readPackTiles,
   writePackContext,
+  writePackExpandedTile,
 } from "./page-review-pack.ts";
 
 function png(width: number, height: number): Buffer {
@@ -221,5 +225,107 @@ describe("finalizePageReviewPack", () => {
     expect(review).toContain(
       "[T003](contexts/desktop-light-default/tiles/T003.png) · **high** · text-clipping",
     );
+  });
+});
+
+/** Solid-colour PNG, so a crop can be checked by pixel value. */
+function solidPng(width: number, height: number, rgb: [number, number, number]): Buffer {
+  const image = new PNG({ width, height });
+  for (let i = 0; i < width * height; i++) {
+    image.data[i * 4] = rgb[0];
+    image.data[i * 4 + 1] = rgb[1];
+    image.data[i * 4 + 2] = rgb[2];
+    image.data[i * 4 + 3] = 255;
+  }
+  return PNG.sync.write(image);
+}
+
+describe("writePackExpandedTile", () => {
+  test("crops the tile rect at the DPR into <tile>@<dpr>x.png, records it, and leaves every existing tile alone", () => {
+    const dir = packDir();
+    // Three 16×16 bands at y = 0, 1280, 2560 on a 64×128 page (fixture units).
+    const record = writePackContext(dir, capture());
+    const before = record.tiles.map((t) => ({ file: t.file, sha: t.sha256 }));
+    // A 2× render of the same page: twice the pixels in both directions.
+    const fullPage = solidPng(128, 256, [200, 30, 30]);
+    const { record: next, expanded } = writePackExpandedTile(dir, record.id, {
+      tileId: "T001",
+      dpr: 2,
+      fullPage,
+      capturedAt: "2026-09-02T06:00:00.000Z",
+    });
+    expect(expanded.tile).toBe("T001");
+    expect(expanded.dpr).toBe(2);
+    expect(expanded.width).toBe(32);
+    expect(expanded.height).toBe(32);
+    expect(expanded.file).toBe(
+      `contexts/desktop-light-default/tiles/${expandedTileFilename("T001", 2)}`,
+    );
+    expect(expandedTileFilename("T001", 2)).toBe("T001@2x.png");
+    const written = PNG.sync.read(readFileSync(join(dir, expanded.file)));
+    expect([written.width, written.height]).toEqual([32, 32]);
+    expect([written.data[0], written.data[1], written.data[2]]).toEqual([200, 30, 30]);
+    // Source tiles are byte-identical and their records unchanged.
+    expect(next.tiles.map((t) => ({ file: t.file, sha: t.sha256 }))).toEqual(before);
+    expect(() => readPackTiles(dir, next)).not.toThrow();
+    // The record on disk carries the expanded entry.
+    const reread = readPackContext(dir, record.id);
+    expect(reread.expanded).toEqual([expanded]);
+    // A second expand of the same tile + dpr replaces the entry instead of stacking it.
+    writePackExpandedTile(dir, record.id, { tileId: "T001", dpr: 2, fullPage });
+    expect(readPackContext(dir, record.id).expanded).toHaveLength(1);
+    // A different dpr is a second entry.
+    writePackExpandedTile(dir, record.id, {
+      tileId: "T001",
+      dpr: 3,
+      fullPage: solidPng(192, 384, [0, 0, 0]),
+    });
+    expect(readPackContext(dir, record.id).expanded?.map((e) => e.dpr)).toEqual([2, 3]);
+    // review.md lists the expanded files after the tile index.
+    finalizePageReviewPack({
+      packDir: dir,
+      target: "http://localhost:4276/page",
+      contexts: [readPackContext(dir, record.id)],
+      critique: null,
+    });
+    const review = readFileSync(join(dir, "review.md"), "utf8");
+    expect(review).toContain("Expanded tiles");
+    expect(review).toContain("[T001@2x.png](contexts/desktop-light-default/tiles/T001@2x.png)");
+  });
+
+  test("an unknown tile, an unknown context, and an ambiguous tile all fail with a named reason", () => {
+    const dir = packDir();
+    const desktop = writePackContext(dir, capture());
+    const mobile = writePackContext(
+      dir,
+      capture({ context: { viewport: "mobile", theme: "light", state: "default" } }),
+    );
+    expect(() =>
+      writePackExpandedTile(dir, desktop.id, { tileId: "T099", dpr: 2, fullPage: png(128, 256) }),
+    ).toThrow(/T099 is not in context desktop-light-default/);
+    expect(() => findPackTile([desktop, mobile], "T001", "hd-dark-default")).toThrow(
+      /hd-dark-default is not in the pack/,
+    );
+    expect(() => findPackTile([desktop, mobile], "T001")).toThrow(/pass --context/);
+    expect(findPackTile([desktop, mobile], "T001", mobile.id).context.id).toBe(mobile.id);
+    expect(findPackTile([desktop], "T002").tile.id).toBe("T002");
+    expect(() =>
+      writePackExpandedTile(dir, desktop.id, { tileId: "T001", dpr: 0, fullPage: png(1, 1) }),
+    ).toThrow(/dpr/);
+  });
+
+  test("cropPngRegion clamps to the image instead of throwing", () => {
+    const {
+      png: out,
+      width,
+      height,
+    } = cropPngRegion(png(10, 10), {
+      x: 8,
+      y: 8,
+      width: 10,
+      height: 10,
+    });
+    expect([width, height]).toEqual([2, 2]);
+    expect(PNG.sync.read(out).width).toBe(2);
   });
 });

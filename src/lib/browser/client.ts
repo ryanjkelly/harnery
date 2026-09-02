@@ -92,6 +92,12 @@ export interface BrowserOptions {
   /** Viewport. Default 1280x800. */
   viewport?: { width: number; height: number };
   /**
+   * Device scale factor (DPR) for the context. Unset keeps Playwright's
+   * default of 1, so screenshots are CSS-pixel sized. A higher value renders
+   * every screenshot at that multiple (2 doubles both dimensions).
+   */
+  deviceScaleFactor?: number;
+  /**
    * Emulated `prefers-color-scheme` for the context. Unset keeps Playwright's
    * default (light), byte-identical to prior behavior.
    */
@@ -326,6 +332,9 @@ export class Browser {
       this.context = await chromium.launchPersistentContext(this.profileDir, {
         headless: !this.opts.headed,
         viewport: this.opts.viewport ?? { width: 1280, height: 800 },
+        ...(this.opts.deviceScaleFactor !== undefined
+          ? { deviceScaleFactor: this.opts.deviceScaleFactor }
+          : {}),
         ...(this.opts.colorScheme ? { colorScheme: this.opts.colorScheme } : {}),
         ...(this.opts.launchTimeout !== undefined ? { timeout: this.opts.launchTimeout } : {}),
         ...(this.opts.launchArgs && this.opts.launchArgs.length > 0

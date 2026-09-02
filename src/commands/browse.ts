@@ -35,7 +35,12 @@ import {
   writeNetscapeCookieFile,
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
-import { type PageReviewContextRecord, writePackContext } from "../lib/browser/page-review-pack.ts";
+import {
+  type PageReviewContextRecord,
+  type PageReviewExpandedTileRecord,
+  writePackContext,
+  writePackExpandedTile,
+} from "../lib/browser/page-review-pack.ts";
 import {
   buildQaManifest,
   classifySignatures,
@@ -119,6 +124,7 @@ interface BrowseOpts {
   store?: string;
   profile?: string;
   viewport?: string;
+  deviceScaleFactor?: string;
   colorScheme?: string;
   waitUntil: string;
   timeout: string;
@@ -219,6 +225,8 @@ interface BrowseOpts {
   reviewPackContext?: string;
   reviewPackScope?: string[];
   reviewPackBands?: boolean;
+  /** Re-capture ONE existing tile of --review-pack-context at --device-scale-factor. */
+  reviewPackExpand?: string;
   // Next.js dev-overlay capture (auto-on; --no-dev-overlay opts out)
   devOverlay?: boolean;
 }
@@ -720,6 +728,17 @@ export function registerBrowseCommand(
         "visual pass).",
     )
     .option(
+      "--review-pack-expand <tile-id>",
+      "Instead of capturing a context, re-render ONE existing tile of --review-pack-context " +
+        "(e.g. T012) at --device-scale-factor and write it beside the original as " +
+        "tiles/<tile>@<dpr>x.png. Existing tiles are untouched.",
+    )
+    .option(
+      "--device-scale-factor <n>",
+      "Device scale factor for the browser context (default 1). 2 renders every screenshot " +
+        "at twice the pixels; pair with --review-pack-expand for a sharper look at one tile.",
+    )
+    .option(
       "--no-dev-overlay",
       "Skip auto-capture of Next.js dev-overlay issues. Default: capture every queued error (kind/code/message/stack) when a <nextjs-portal> shadow root is present. Necessary because Next.js 16 + React 19 route hydration errors + most React warnings through onCaughtError → next-devtools' errorQueue, NOT through console.error, so Playwright's standard listener doesn't see them. Surfaces them in the JSON envelope under `devOverlay`.",
     )
@@ -773,6 +792,14 @@ async function runBrowse(
   if (jar) applyExtraCookies(url, jar, context?.extraCookies);
   const headed = opts.login || opts.headed;
   const viewport = parseViewport(opts.viewport ?? "desktop");
+  const deviceScaleFactor = parseDeviceScaleFactor(opts.deviceScaleFactor);
+  if (opts.reviewPackExpand !== undefined) {
+    if (opts.reviewPack === undefined || opts.reviewPackContext === undefined) {
+      throw new Error(
+        "--review-pack-expand requires --review-pack <dir> and --review-pack-context <id>.",
+      );
+    }
+  }
   let colorScheme: "light" | "dark" | undefined;
   if (opts.colorScheme !== undefined) {
     if (opts.colorScheme !== "light" && opts.colorScheme !== "dark") {
@@ -800,6 +827,7 @@ async function runBrowse(
     headed,
     jar,
     viewport,
+    ...(deviceScaleFactor !== undefined ? { deviceScaleFactor } : {}),
     ...(colorScheme ? { colorScheme } : {}),
     navigationTimeout: Number.parseInt(opts.timeout, 10),
     waitUntil: opts.waitUntil as BrowseOpts["waitUntil"] as never,
@@ -1041,7 +1069,9 @@ async function runBrowse(
     // Page review pack capture: tiles, DOM, and signature to disk, no vision
     // call. Also before annotations, for the same reason as the critique.
     let reviewPack: ReviewPackReport | undefined;
-    if (opts.reviewPack !== undefined) {
+    if (opts.reviewPack !== undefined && opts.reviewPackExpand !== undefined) {
+      reviewPack = await expandReviewPackTile(browser, opts, deviceScaleFactor ?? 1);
+    } else if (opts.reviewPack !== undefined) {
       reviewPack = await captureReviewPackContext(browser, url, navResult, opts, qaCapture);
     }
     // Persist the QA baseline AFTER critique so a passing run's verdicts ride
@@ -2253,6 +2283,44 @@ interface ReviewPackReport {
   scopes: Array<{ selector: string; tiles: number }>;
   coverage: CritiqueCoverage;
   files: PageReviewContextRecord["files"];
+  /** Set by --review-pack-expand: the one region that was re-captured. */
+  expanded?: PageReviewExpandedTileRecord;
+}
+
+/**
+ * `--review-pack-expand`: re-render one existing tile of a pack context at
+ * the context's device scale factor. The page is screenshotted whole at that
+ * DPR and the tile's CSS-pixel rect (scaled by the DPR) is cropped from it in
+ * pixel space, the same way the original tiles were cut, so the region
+ * matches the source tile exactly. No other pack file changes.
+ */
+async function expandReviewPackTile(
+  browser: Browser,
+  opts: BrowseOpts,
+  dpr: number,
+): Promise<ReviewPackReport> {
+  const packDir = opts.reviewPack as string;
+  const contextId = opts.reviewPackContext as string;
+  const tileId = opts.reviewPackExpand as string;
+  const buffer = await browser.fullPageScreenshotBuffer();
+  const { record, expanded } = writePackExpandedTile(packDir, contextId, {
+    tileId,
+    dpr,
+    fullPage: buffer,
+  });
+  emit.log(
+    `review-pack: ${record.id}/${tileId} expanded at ${dpr}× → ${expanded.width}×${expanded.height} px, ${expanded.file}`,
+    "info",
+  );
+  return {
+    dir: packDir,
+    context_id: record.id,
+    tiles: record.tiles.length,
+    scopes: record.scopes,
+    coverage: record.coverage,
+    files: record.files,
+    expanded,
+  };
 }
 
 /**
@@ -2503,6 +2571,15 @@ async function waitForTerminalEnter(signal: AbortSignal): Promise<void> {
     process.stdin.once("data", onData);
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+function parseDeviceScaleFactor(spec: string | undefined): number | undefined {
+  if (spec === undefined) return undefined;
+  const value = Number.parseFloat(spec);
+  if (!Number.isFinite(value) || value < 1 || value > 4) {
+    throw new Error(`--device-scale-factor must be a number between 1 and 4 (got: ${spec})`);
+  }
+  return value;
 }
 
 function parseViewport(spec: string): { width: number; height: number } {

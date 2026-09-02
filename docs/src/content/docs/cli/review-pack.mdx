@@ -8,6 +8,7 @@ sidebar:
 ```
 harn review-pack create [options] <target>
 harn review-pack judge [options] <dir>
+harn review-pack expand [options] <dir> --tile <id>
 ```
 
 A **page review pack** is the on-disk evidence for reviewing one rendered page. For every rendering context (viewport × theme × state) it holds the full-page screenshot, the critique tiles as PNG files, the serialized DOM, and the QA signature. On top sit a `review.md` entry point, a bounded inspection plan, coverage, deterministic gate results, machine findings once a judge has run, and a reviewer-owned `findings.json`. An agent can review the page from the pack alone, with no browser and no third-party tool.
@@ -46,6 +47,20 @@ Exit 0 when every judged context passed; 2 on a high-severity finding; 4 when no
 
 harnery ships no model client. The judge uses the same host-injected `critiqueProvider` as `browse --check-critique`; without one every context reports `skipped`, never a pass.
 
+## `expand <dir> --tile <id>`
+
+Re-captures one tile region of an existing pack at a higher device scale factor, for a sharper look at a small defect a native-pixel tile only hints at. The same target and context are rendered again through one child `browse --review-pack-expand`, the whole page is screenshotted at that DPR, and the tile's rect (scaled by the DPR) is cropped from it in pixel space, the same way the original tiles were cut. The result lands beside the source tile as `contexts/<id>/tiles/<tile>@<dpr>x.png`; the context record gains an `expanded` entry (`tile`, `dpr`, `width`, `height`, `file`, `sha256`, `bytes`, `captured_at`) and `review.md` lists it under the context's tile index. Existing tiles, their digests, and every other pack file stay untouched, so a verdict already written against the pack still holds.
+
+| Flag | Description |
+| --- | --- |
+| `--tile <id>` | Tile id to expand (`T012`). Required. |
+| `--context <id>` | Context the tile belongs to. Required when more than one context carries that tile id. |
+| `--dpr <n>` | Device scale factor for the re-capture (1 to 4; default 2). |
+| `--timeout <ms>` | Capture timeout (default 120000). |
+| `--json` | Print the expanded tile record. |
+
+Exit 0 when the region was written; 1 when the pack, context, or tile does not exist (the error names what the pack does have); 4 when the target could not be rendered again (the child's last lines are quoted). Expanding the same tile at the same DPR again replaces that entry; a different DPR adds a second one. The re-render is a fresh navigation, so a page that changed since capture shows its current state, not the captured one; compare against the source tile before citing it.
+
 ## Pack layout
 
 ```
@@ -63,6 +78,7 @@ harnery ships no model client. The judge uses the same host-injected `critiquePr
     context.json             # viewport, theme, state, url, page size, coverage, tile records
     full-page.png            # orientation only; tiles are the evidence
     tiles/T001.png …         # native-pixel tiles, ids stable within the context
+    tiles/T012@2x.png        # one region re-captured at 2× (review-pack expand), optional
     tiles.json  dom.html  signature.json
 ```
 
@@ -83,9 +99,12 @@ harn review-pack create http://localhost:3000/pricing --context desktop:dark --s
 
 # Judge with eight vision calls in flight
 harn review-pack judge ./pack --pool 8
+
+# Look closer at one tile: re-render it at 2× beside the original
+harn review-pack expand ./pack --tile T012 --context desktop-light-default
 ```
 
 ## See also
 
 - [`harn qa-run`](/cli/qa-run/): writes a pack in every run and judges it as its critique stage.
-- [`harn browse`](/cli/browse/): `--review-pack`, `--review-pack-context`, `--review-pack-scope`, and the `--check-critique-*` tiling knobs.
+- [`harn browse`](/cli/browse/): `--review-pack`, `--review-pack-context`, `--review-pack-scope`, `--review-pack-expand`, `--device-scale-factor`, and the `--check-critique-*` tiling knobs.

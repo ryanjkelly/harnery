@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { PNG } from "pngjs";
 import type { CritiqueCoverage, CritiqueFinding, CritiqueTile } from "./critique.js";
 import type { QaContext, QaSignature } from "./qa-plan.js";
 
@@ -47,6 +48,24 @@ export interface PageReviewTileRecord {
   bytes: number;
 }
 
+/** One tile region re-captured at a higher device scale factor after the
+ * original capture (`review-pack expand`). The source tile is untouched; this
+ * record sits beside it. `file` is pack-relative. Optional and additive on the
+ * v1 context record. */
+export interface PageReviewExpandedTileRecord {
+  /** Source tile id (`T012`). */
+  tile: string;
+  /** Device scale factor the region was rendered at (2 = twice the pixels). */
+  dpr: number;
+  /** Pixel size of the expanded PNG (source tile size × dpr, clamped). */
+  width: number;
+  height: number;
+  file: string;
+  sha256: string;
+  bytes: number;
+  captured_at: string;
+}
+
 export interface PageReviewContextRecord {
   id: string;
   viewport: string;
@@ -64,6 +83,8 @@ export interface PageReviewContextRecord {
   files: { full_page: string; dom: string; signature: string; tiles: string; context: string };
   dom_sha256: string;
   tiles: PageReviewTileRecord[];
+  /** Higher-DPR re-captures of single tiles, in the order they were made. */
+  expanded?: PageReviewExpandedTileRecord[];
 }
 
 /** What a capture hands the pack for one context. `tiles` are the full-page
@@ -178,6 +199,119 @@ function writeJson(path: string, value: unknown): void {
 
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
+}
+
+/** Deterministic file name for an expanded tile: `T012@2x.png`. */
+export function expandedTileFilename(tileId: string, dpr: number): string {
+  return `${tileId}@${dpr}x.png`;
+}
+
+/**
+ * Crop one region out of a PNG buffer in pixel space. The rect is clamped to
+ * the image so an off-by-one never throws; the result is at least 1×1.
+ */
+export function cropPngRegion(
+  buffer: Buffer,
+  rect: { x: number; y: number; width: number; height: number },
+): { png: Buffer; width: number; height: number } {
+  const src = PNG.sync.read(buffer);
+  const sx = Math.max(0, Math.min(Math.round(rect.x), src.width - 1));
+  const sy = Math.max(0, Math.min(Math.round(rect.y), src.height - 1));
+  const w = Math.max(1, Math.min(Math.round(rect.width), src.width - sx));
+  const h = Math.max(1, Math.min(Math.round(rect.height), src.height - sy));
+  const dst = new PNG({ width: w, height: h });
+  for (let row = 0; row < h; row++) {
+    const srcStart = ((sy + row) * src.width + sx) * 4;
+    src.data.copy(dst.data, row * w * 4, srcStart, srcStart + w * 4);
+  }
+  return { png: PNG.sync.write(dst), width: w, height: h };
+}
+
+/**
+ * Locate one tile across a pack's contexts. With `contextId` the lookup is
+ * exact; without it the tile id must be unique across the given contexts,
+ * otherwise the caller has to name the context.
+ */
+export function findPackTile(
+  contexts: PageReviewContextRecord[],
+  tileId: string,
+  contextId?: string,
+): { context: PageReviewContextRecord; tile: PageReviewTileRecord } {
+  if (contextId !== undefined) {
+    const context = contexts.find((ctx) => ctx.id === contextId);
+    if (!context) {
+      throw new Error(
+        `context ${contextId} is not in the pack (have: ${contexts.map((c) => c.id).join(", ") || "none"})`,
+      );
+    }
+    const tile = context.tiles.find((t) => t.id === tileId);
+    if (!tile) {
+      throw new Error(
+        `tile ${tileId} is not in context ${contextId} (${context.tiles.length} tile(s): ${
+          context.tiles[0]?.id ?? "none"
+        }…${context.tiles[context.tiles.length - 1]?.id ?? ""})`,
+      );
+    }
+    return { context, tile };
+  }
+  const matches = contexts.flatMap((context) =>
+    context.tiles.filter((t) => t.id === tileId).map((tile) => ({ context, tile })),
+  );
+  if (matches.length === 0) throw new Error(`tile ${tileId} is not in any context of the pack`);
+  if (matches.length > 1) {
+    throw new Error(
+      `tile ${tileId} exists in ${matches.length} contexts (${matches
+        .map((m) => m.context.id)
+        .join(", ")}); pass --context <id>`,
+    );
+  }
+  return matches[0] as { context: PageReviewContextRecord; tile: PageReviewTileRecord };
+}
+
+/**
+ * Write one tile region re-rendered at `dpr` into an existing context:
+ * `tiles/<tile>@<dpr>x.png` cropped from `fullPage` (a screenshot of the same
+ * page at that device scale factor, so the source tile's CSS-pixel rect is
+ * multiplied by `dpr`). Existing tiles are never touched; the context record
+ * gains or replaces one `expanded` entry for that tile + dpr and is rewritten.
+ */
+export function writePackExpandedTile(
+  packDir: string,
+  contextId: string,
+  input: { tileId: string; dpr: number; fullPage: Buffer; capturedAt?: string },
+): { record: PageReviewContextRecord; expanded: PageReviewExpandedTileRecord } {
+  if (!Number.isFinite(input.dpr) || input.dpr <= 0) {
+    throw new Error(`dpr must be a positive number (got ${input.dpr})`);
+  }
+  const record = readPackContext(packDir, contextId);
+  const { tile } = findPackTile([record], input.tileId, contextId);
+  const paths = packPaths(packDir);
+  const dir = paths.contextDir(contextId);
+  const file = join(dir, "tiles", expandedTileFilename(tile.id, input.dpr));
+  const { png, width, height } = cropPngRegion(input.fullPage, {
+    x: tile.x * input.dpr,
+    y: tile.scrollY * input.dpr,
+    width: tile.width * input.dpr,
+    height: tile.height * input.dpr,
+  });
+  mkdirSync(join(dir, "tiles"), { recursive: true });
+  writeFileSync(file, png);
+  const expanded: PageReviewExpandedTileRecord = {
+    tile: tile.id,
+    dpr: input.dpr,
+    width,
+    height,
+    file: relative(packDir, file).split("\\").join("/"),
+    sha256: sha256Hex(png),
+    bytes: png.byteLength,
+    captured_at: input.capturedAt ?? new Date().toISOString(),
+  };
+  const kept = (record.expanded ?? []).filter(
+    (entry) => !(entry.tile === expanded.tile && entry.dpr === expanded.dpr),
+  );
+  const next: PageReviewContextRecord = { ...record, expanded: [...kept, expanded] };
+  writeJson(join(dir, "context.json"), { schema: PAGE_REVIEW_PACK_SCHEMA, ...next });
+  return { record: next, expanded };
 }
 
 /**
@@ -740,6 +874,18 @@ export function renderReviewMarkdown(
       );
     }
     lines.push("");
+    if (ctx.expanded && ctx.expanded.length > 0) {
+      lines.push(
+        "Expanded tiles (the same region re-rendered at a higher device scale factor; the source tile above is unchanged):",
+      );
+      lines.push("");
+      for (const entry of ctx.expanded) {
+        lines.push(
+          `- ${entry.tile} at ${entry.dpr}× · ${entry.width}×${entry.height} px · [${expandedTileFilename(entry.tile, entry.dpr)}](${entry.file})`,
+        );
+      }
+      lines.push("");
+    }
   }
   lines.push("## Write findings");
   lines.push("");

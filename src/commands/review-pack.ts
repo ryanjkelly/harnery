@@ -13,7 +13,9 @@ import { createManagedQaOutParent, resolveQaRepoRoot } from "../core/qa-artifact
 import { DEFAULT_CRITIQUE_RUBRIC } from "../lib/browser/critique.ts";
 import { judgePageReviewPack, toCritiqueRecords } from "../lib/browser/page-review-judge.ts";
 import {
+  expandedTileFilename,
   finalizePageReviewPack,
+  findPackTile,
   listPackContexts,
   type PageReviewContextRecord,
   packPaths,
@@ -38,6 +40,14 @@ interface JudgeOpts {
   pool?: string;
   allowMetered?: boolean;
   context?: string[];
+  json?: boolean;
+}
+
+interface ExpandOpts {
+  tile?: string;
+  context?: string;
+  dpr?: string;
+  timeout?: string;
   json?: boolean;
 }
 
@@ -361,5 +371,149 @@ export function registerReviewPackCommand(
       if (opts.json) emit.data(result as unknown as Record<string, unknown>);
       if (result.outcome === "fail") process.exitCode = 2;
       else if (result.outcome !== "pass") process.exitCode = 4;
+    });
+
+  root
+    .command("expand <dir>")
+    .description(
+      "Re-capture ONE tile region of an existing pack at a higher device scale factor: the " +
+        "same target and context are rendered again through a child browse, the tile's rect " +
+        "is cropped at that DPR into contexts/<id>/tiles/<tile>@<dpr>x.png, the context record " +
+        "gains an `expanded` entry, and review.md is refreshed. Existing tiles are never touched.",
+    )
+    .requiredOption("--tile <id>", "Tile id to expand (e.g. T012).")
+    .option(
+      "--context <id>",
+      "Context the tile belongs to. Required when more than one context carries that tile id.",
+    )
+    .option("--dpr <n>", "Device scale factor for the re-capture (1-4; default 2).", "2")
+    .option("--timeout <ms>", "Capture timeout in milliseconds (default 120000).", "120000")
+    .option("--json", "Print the expanded tile record as JSON.")
+    .action(async (dir: string, opts: ExpandOpts) => {
+      const packDir = resolve(dir);
+      let manifest: ReturnType<typeof readPackManifest>;
+      try {
+        manifest = readPackManifest(packDir);
+      } catch (err: unknown) {
+        emit.error({
+          code: "review_pack_unreadable",
+          message: `not a page review pack: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        process.exitCode = 1;
+        return;
+      }
+      const dpr = Number.parseFloat(opts.dpr ?? "2");
+      if (!Number.isFinite(dpr) || dpr < 1 || dpr > 4) {
+        emit.error({
+          code: "review_pack_invalid_dpr",
+          message: "--dpr must be a number between 1 and 4",
+        });
+        process.exitCode = 1;
+        return;
+      }
+      const tileId = (opts.tile ?? "").trim();
+      let located: ReturnType<typeof findPackTile>;
+      try {
+        located = findPackTile(manifest.contexts, tileId, opts.context);
+      } catch (err: unknown) {
+        emit.error({
+          code: "review_pack_unknown_tile",
+          message: err instanceof Error ? err.message : String(err),
+        });
+        process.exitCode = 1;
+        return;
+      }
+      const ctx = located.context;
+      const cliScript = process.argv[1];
+      if (!cliScript) {
+        emit.error({
+          code: "review_pack_no_cli_script",
+          message: "cannot resolve the host CLI script path for the child browse invocation",
+        });
+        process.exitCode = 1;
+        return;
+      }
+      const timeoutMs = Math.max(1000, Number.parseInt(opts.timeout ?? "120000", 10) || 120_000);
+      // Same render inputs as the original capture: target, viewport, color
+      // scheme, theme and state labels. Only the DPR differs.
+      const argv = [
+        process.execPath,
+        cliScript,
+        "browse",
+        manifest.target,
+        "--viewport",
+        ctx.viewport,
+        ...(ctx.theme === "dark" ? ["--color-scheme", "dark"] : []),
+        "--out",
+        resolve(packDir, "..", `${ctx.id}-expand-${tileId}`),
+        "--no-screenshot",
+        "--review-pack",
+        packDir,
+        "--review-pack-context",
+        ctx.id,
+        "--review-pack-expand",
+        tileId,
+        "--device-scale-factor",
+        String(dpr),
+        "--qa-theme",
+        ctx.theme,
+        "--qa-state",
+        ctx.state,
+      ];
+      emit.log(`expand ${ctx.id}/${tileId} at ${dpr}× from ${manifest.target}`, "info");
+      const res = await defaultQaRunExec(argv, { timeoutMs, env: { ...process.env } });
+      if (res.error || res.exitCode !== 0) {
+        const tail = (res.stderr || res.stdout).trim().split("\n").slice(-3).join(" ");
+        emit.error({
+          code: "review_pack_expand_failed",
+          message:
+            `re-capture of ${ctx.id}/${tileId} did not complete: ` +
+            (res.error ?? `exit code ${res.exitCode}${tail ? `: ${tail}` : ""}`),
+        });
+        process.exitCode = 4;
+        return;
+      }
+      let updated: PageReviewContextRecord;
+      try {
+        updated = readPackContext(packDir, ctx.id);
+      } catch (err: unknown) {
+        emit.error({
+          code: "review_pack_expand_failed",
+          message: `pack context unreadable after expand: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        process.exitCode = 4;
+        return;
+      }
+      const expanded = updated.expanded?.find(
+        (entry) => entry.tile === tileId && entry.dpr === dpr,
+      );
+      if (!expanded) {
+        emit.error({
+          code: "review_pack_expand_failed",
+          message: `the child browse exited 0 but ${ctx.id} carries no expanded record for ${tileId} at ${dpr}×`,
+        });
+        process.exitCode = 4;
+        return;
+      }
+      finalizePageReviewPack({
+        packDir,
+        target: manifest.target,
+        ...(manifest.tested_revision !== undefined
+          ? { tested_revision: manifest.tested_revision }
+          : {}),
+        contexts: manifest.contexts.map((entry) => (entry.id === ctx.id ? updated : entry)),
+        gates: manifest.gates,
+        critique: manifest.critique,
+        ...(manifest.pool ? { pool: manifest.pool } : {}),
+        warnings: manifest.warnings.filter((w) => !w.includes("tile cap reached")),
+        createdAt: manifest.created_at,
+        judgeCommand: judgeCommandFor(packDir),
+      });
+      emit.log(
+        `expanded ${ctx.id}/${tileId} at ${dpr}× → ${expanded.width}×${expanded.height} px · ` +
+          `${expandedTileFilename(tileId, dpr)} · ${packPaths(packDir).review}`,
+        "info",
+      );
+      if (opts.json) emit.data(expanded as unknown as Record<string, unknown>);
     });
 }

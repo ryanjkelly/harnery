@@ -375,10 +375,13 @@ open, through the same host-injected provider `--check-critique` uses.
 | `--review-pack-context <id>` | Context id inside the pack (default `<viewport>-<theme>-<state>` from `--viewport`, `--qa-theme`, `--qa-state`). |
 | `--review-pack-scope <selector>` | Also tile one screenshot per matching element (repeatable). Scope tiles follow the full-page bands in the tile order. |
 | `--no-review-pack-bands` | Keep only scope tiles; skip full-page bands (a scoped visual pass). |
+| `--review-pack-expand <tile-id>` | Instead of capturing a context, re-render one existing tile of `--review-pack-context` at `--device-scale-factor` and write it beside the original as `tiles/<tile>@<dpr>x.png`. Existing tiles are untouched. This is the child [`harn review-pack expand`](/cli/review-pack/) runs. |
+| `--device-scale-factor <n>` | Device scale factor for the browser context (1 to 4; default 1). Every screenshot renders at that multiple of its CSS pixels. |
 
 The JSON envelope gains `reviewPack` (`dir`, `context_id`, `tiles`, `scopes`,
-`coverage`, and the pack-relative `files`). The context's `coverage` is the
-band coverage when bands were kept, else the scopes folded together.
+`coverage`, and the pack-relative `files`; plus `expanded` after
+`--review-pack-expand`). The context's `coverage` is the band coverage when
+bands were kept, else the scopes folded together.
 
 ### Diagnostics
 
