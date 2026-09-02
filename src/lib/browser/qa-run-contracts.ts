@@ -183,7 +183,7 @@ export interface QaRunCritiquePool {
 
 /** Where the run's page review pack lives: the on-disk evidence an agent can
  * review without a browser (tiles, DOM, coverage, `review.md`, and the
- * reviewer-owned `findings.json`). */
+ * delegated-review `findings.json`). */
 export interface QaRunReviewPack {
   schema: string;
   dir: string;

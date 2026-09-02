@@ -40,6 +40,7 @@ import {
   packPaths,
   readPackContext,
   readPackFindings,
+  readPackInspectionPlan,
   readPackManifest,
   readPackVerdict,
   resolvePackVerdict,
@@ -155,6 +156,14 @@ interface FindingsAddOpts {
   json?: boolean;
 }
 
+interface ReviewAddOpts {
+  reviewer?: string;
+  assigned?: string[];
+  completed?: string[];
+  status?: string;
+  json?: boolean;
+}
+
 interface DispositionOpts {
   note?: string;
   by?: string;
@@ -165,7 +174,7 @@ interface VerdictOpts {
   json?: boolean;
 }
 
-/** Next free reviewer finding id in the `F001` series. */
+/** Next free review-subagent finding id in the `F001` series. */
 function nextFindingId(findings: ReadonlyArray<{ id: string }>): string {
   let max = 0;
   for (const finding of findings) {
@@ -994,14 +1003,90 @@ export function registerReviewPackCommand(
       emit.log(`review: ${summary.review}`, "info");
     });
 
+  const reviews = root
+    .command("reviews")
+    .description("Record delegated review-subagent coverage for primary tiles.");
+
+  reviews
+    .command("add <dir>")
+    .description(
+      "Record one review subagent's assigned and completed primary tiles. Re-running with " +
+        "the same reviewer replaces that reviewer's record.",
+    )
+    .requiredOption("--reviewer <id>", "Review subagent name or stable id.")
+    .requiredOption(
+      "--assigned <context/tile>",
+      "Assigned primary tile, e.g. desktop-light-default/T012 (repeatable).",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
+      "--completed <context/tile>",
+      "Assigned tile opened at native pixels (repeatable).",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option("--status <status>", "complete or incomplete.", "complete")
+    .option("--json", "Print the written delegated-review record as JSON.")
+    .action((dir: string, opts: ReviewAddOpts) => {
+      const pack = readReviewerPack(dir, emit);
+      if (!pack) return;
+      const { packDir, findings: doc } = pack;
+      const plan = readPackInspectionPlan(packDir);
+      const primary = new Set(
+        plan.contexts.flatMap((context) =>
+          context.primary_tiles.map((tile) => `${context.context_id}/${tile.id}`),
+        ),
+      );
+      const assigned = [...new Set((opts.assigned ?? []).map((tile) => tile.trim()))].filter(
+        Boolean,
+      );
+      const completed = [...new Set((opts.completed ?? []).map((tile) => tile.trim()))].filter(
+        Boolean,
+      );
+      const unknown = assigned.filter((tile) => !primary.has(tile));
+      if (unknown.length > 0) {
+        emit.error({
+          code: "review_pack_unknown_primary_tile",
+          message: `assigned tile(s) are not primary tiles in the inspection plan: ${unknown.join(", ")}`,
+        });
+        process.exitCode = 1;
+        return;
+      }
+      const record = {
+        reviewer: opts.reviewer?.trim() ?? "",
+        assigned_tiles: assigned,
+        completed_tiles: completed,
+        status: opts.status as "complete" | "incomplete",
+      };
+      const nextReviews = doc.delegated_reviews.filter(
+        (entry) => entry.reviewer !== record.reviewer,
+      );
+      const reviewerNames = [
+        ...new Set([...nextReviews.map((entry) => entry.reviewer), record.reviewer]),
+      ];
+      const next: PageReviewFindingsDocument = {
+        ...doc,
+        reviewer: reviewerNames.filter(Boolean).join(", ") || null,
+        reviewed_at: new Date().toISOString(),
+        delegated_reviews: [...nextReviews, record],
+      };
+      if (!commitFindings(packDir, next, emit)) return;
+      emit.log(
+        `${record.reviewer} · ${record.completed_tiles.length}/${record.assigned_tiles.length} assigned primary tiles · ${record.status}`,
+        "info",
+      );
+      if (opts.json) emit.data(record as unknown as Record<string, unknown>);
+    });
+
   const findings = root
     .command("findings")
-    .description("Reviewer findings in a pack's findings.json (the file the reviewer owns).");
+    .description("Review-subagent findings serialized into the pack's findings.json.");
 
   findings
     .command("add <dir>")
     .description(
-      "Append one reviewer finding to findings.json. The document is validated against " +
+      "Append one review-subagent finding to findings.json. The document is validated against " +
         "findings.schema.json before the atomic write; every violation is printed at once. " +
         "Ids run F001, F002, ... unless --id is given.",
     )
@@ -1147,9 +1232,10 @@ export function registerReviewPackCommand(
     .description(
       "Combine the machine critique with the reviewer's dispositions and findings into one " +
         "reviewed outcome: a machine high counts unless dispositioned artifact, not-a-defect, " +
-        "or duplicate-of-gate; a reviewer finding at high or critical counts. Writes " +
-        "evidence/verdict.json and refreshes review.md. Exit 2 on fail, 4 when the machine " +
-        "critique is skipped or incomplete, 1 on a findings.json validation error.",
+        "or duplicate-of-gate; a review-subagent finding at high or critical counts. Every " +
+        "primary tile also needs completed delegated-review coverage. Writes evidence/verdict.json " +
+        "and refreshes review.md. Exit 2 on fail, 4 when critique or delegated coverage is " +
+        "skipped or incomplete, 1 on a findings.json validation error.",
     )
     .option("--json", "Print the verdict as JSON.")
     .action((dir: string, opts: VerdictOpts) => {
@@ -1168,7 +1254,7 @@ export function registerReviewPackCommand(
       }
       const verdict: PageReviewVerdictDocument = {
         schema: PAGE_REVIEW_VERDICT_SCHEMA,
-        ...resolvePackVerdict(manifest, doc),
+        ...resolvePackVerdict(manifest, readPackInspectionPlan(packDir), doc),
         reviewed_at: new Date().toISOString(),
       };
       const paths = packPaths(packDir);
@@ -1181,7 +1267,7 @@ export function registerReviewPackCommand(
       emit.log(
         `reviewed ${verdict.reviewed_outcome.toUpperCase()} · machine ${verdict.machine_outcome} · ` +
           `highs ${verdict.high_total}: ${verdict.high_confirmed} confirmed, ${verdict.high_dismissed} dismissed, ${verdict.high_open} open · ` +
-          `reviewer high/critical ${verdict.reviewer_high} · ${paths.verdict}`,
+          `reviewer high/critical ${verdict.reviewer_high} · delegated tiles ${verdict.primary_tiles_reviewed}/${verdict.primary_tiles_total} · ${paths.verdict}`,
         verdict.reviewed_outcome === "pass" ? "info" : "warn",
       );
       if (opts.json) emit.data(verdict as unknown as Record<string, unknown>);

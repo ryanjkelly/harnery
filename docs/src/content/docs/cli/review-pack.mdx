@@ -1,6 +1,6 @@
 ---
 title: harn review-pack
-description: Capture a page's rendering contexts into a directory an agent can review without a browser, and judge a pack from disk through one bounded pool of vision calls.
+description: Capture a page's rendering contexts into a directory review subagents can inspect without a browser, and judge a pack from disk through one bounded pool of vision calls.
 sidebar:
   order: 26
 ---
@@ -9,6 +9,7 @@ sidebar:
 harn review-pack create [options] <target>
 harn review-pack judge [options] <dir>
 harn review-pack expand [options] <dir> --tile <id>
+harn review-pack reviews add [options] <dir>
 harn review-pack findings add [options] <dir>
 harn review-pack disposition [options] <dir> <context>/<tile>#<n> <disposition>
 harn review-pack verdict [options] <dir>
@@ -17,7 +18,7 @@ harn review-pack show [options] <dir>
 harn review-pack clean [options]
 ```
 
-A **page review pack** is the on-disk evidence for reviewing one rendered page. For every rendering context (viewport × theme × state) it holds the full-page screenshot, the critique tiles as PNG files, the serialized DOM, and the QA signature. On top sit a `review.md` entry point, a bounded inspection plan, coverage, deterministic gate results, machine findings once a judge has run, and a reviewer-owned `findings.json`. An agent can review the page from the pack alone, with no browser and no third-party tool.
+A **page review pack** is the on-disk evidence for reviewing one rendered page. For every rendering context (viewport × theme × state) it holds the full-page screenshot, the critique tiles as PNG files, the serialized DOM, and the QA signature. On top sit a `review.md` entry point, a bounded inspection plan, coverage, deterministic gate results, machine findings once a judge has run, and a delegated-review `findings.json`. Review subagents can inspect the page from the pack alone, with no browser and no third-party tool. The coordinating agent assigns the tiles and synthesizes their reports; it does not open tile images itself.
 
 The pack is also what makes judging cheap. Capture needs a browser and takes seconds; judging needs a vision model and takes minutes. Splitting them means every browser closes before the first model call, and one bounded pool judges every tile of every context. The judge never opens a browser. [`harn qa-run`](/cli/qa-run/) writes a pack in every run directory; this command builds or judges one directly.
 
@@ -43,7 +44,7 @@ Exit 0 when every context was captured; 4 when at least one capture failed (the 
 
 **Capture fidelity.** A full-page screenshot of a very tall page can differ from what a scrolling reader sees (a blank block where content should be, a callout cut mid-sentence). While its browser is still open, each capture re-shoots two probe bands (the top band and the middle band) by scrolling to them and compares the result with the same region of the full-page screenshot, using the band-diff mismatch threshold. When the probes agree, the tiles come from the full-page screenshot and the context records `capture_fidelity.source: "full-page"`. When a probe disagrees, every band is re-captured by scrolling, the tiles are cut from those captures instead, the record says `"scrolled-bands"`, and `review.md` carries a coverage warning. Band-diff reuse is skipped for a scrolled-bands context because its full-page PNG is no longer what the tiles came from.
 
-**Gate-hit bands.** When [`harn qa-run`](/cli/qa-run/) captures a context, it passes every rectangle its deterministic gates recorded (`browse --review-pack-hit-rect`). A band that contains one of those rectangles is captured even when it lies below the tile cap, labelled `hit band <n>` with `kind: "hit-band"`, so the reviewer opens the tile that shows the overflow or the runt instead of reading "no tile covers this rect". Coverage still reports the regular band prefix honestly; `hit_bands` on the context record counts the extras.
+**Gate-hit bands.** When [`harn qa-run`](/cli/qa-run/) captures a context, it passes every rectangle its deterministic gates recorded (`browse --review-pack-hit-rect`). A band that contains one of those rectangles is captured even when it lies below the tile cap, labelled `hit band <n>` with `kind: "hit-band"`, so an assigned review subagent opens the tile that shows the overflow or the runt instead of reading "no tile covers this rect". Coverage still reports the regular band prefix honestly; `hit_bands` on the context record counts the extras.
 
 ## `judge <dir>`
 
@@ -61,15 +62,16 @@ Exit 0 when every judged context passed; 2 on a high-severity finding; 4 when no
 
 harnery ships no model client. The judge uses the same host-injected `critiqueProvider` as `browse --check-critique`; without one every context reports `skipped`, never a pass. Each tile goes to the provider with the rubric plus a short position preamble (band N of M, document y range, page height, overlap with its neighbours, whether it touches the page top or bottom, and the capture source), so the model can tell a slice edge from a container edge.
 
-## `findings add`, `disposition`, `verdict`
+## `reviews add`, `findings add`, `disposition`, `verdict`
 
-The reviewer half of the loop. Machine findings in `evidence/critique.json` are claims; a reviewer confirms or dismisses each one and records defects the machine missed, and the verdict command turns both into a reviewed outcome that sits beside the machine outcome. `evidence/critique.json` is never edited; everything the reviewer writes goes into `findings.json`.
+The reviewer half of the loop is delegated. The coordinating agent assigns every primary tile to review subagents, and each tile must receive at least one completed native-pixel subagent review. The coordinator never substitutes its own image read. Machine findings in `evidence/critique.json` are claims; review subagents confirm or dismiss each one and record defects the machine missed. The coordinator serializes those reports into `findings.json`, then the verdict command turns both into a reviewed outcome beside the machine outcome. If subagents are unavailable or any primary tile is uncovered, the review is incomplete. `evidence/critique.json` is never edited.
 
 | Command | Description |
 | --- | --- |
-| `findings add <dir> --context <id> --tile <id> --severity <s> --category <c> --observation <text>` | Append a reviewer finding (`--tile` repeatable, at least one; `--recommendation`, `--id F001`, `--reviewer <name>` optional; ids auto-number). Validated against `findings.schema.json` before the write. |
+| `reviews add <dir> --reviewer <id> --assigned <context>/<tile> --completed <context>/<tile>` | Record one review subagent's assignment and completed native-pixel reads (`--assigned` and `--completed` repeatable; `--status complete|incomplete`, default `complete`). Repeating the reviewer id replaces its prior record. Only primary tiles from the inspection plan may be assigned. |
+| `findings add <dir> --context <id> --tile <id> --severity <s> --category <c> --observation <text>` | Append a review-subagent finding (`--tile` repeatable, at least one; `--recommendation`, `--id F001`, `--reviewer <name>` optional; ids auto-number). Validated against `findings.schema.json` before the write. |
 | `disposition <dir> <context>/<tile>#<n> <disposition> [--note <text>] [--by <name>]` | Record a verdict on one machine finding: `confirmed`, `artifact`, `not-a-defect`, or `duplicate-of-gate`. `<n>` is the finding's 0-based position among that tile's findings in `evidence/critique.json`. A target that does not exist is refused; a repeat replaces the earlier disposition. |
-| `verdict <dir> [--json]` | Compute the reviewed outcome and write `evidence/verdict.json` (`harnery-page-review-verdict/v1`), then refresh `review.md` with a "Reviewed outcome" section. A machine `high` counts unless its disposition is `artifact`, `not-a-defect`, or `duplicate-of-gate`; a reviewer finding of severity `critical` or `high` counts. Exit 2 when the reviewed outcome is `fail`, 4 when it is `incomplete` or `skipped`, 1 on validation errors. |
+| `verdict <dir> [--json]` | Compute the reviewed outcome and write `evidence/verdict.json` (`harnery-page-review-verdict/v2`), then refresh `review.md` with a "Reviewed outcome" section. A machine `high` counts unless dismissed; a review-subagent finding of severity `critical` or `high` counts. Missing completed subagent coverage for any primary tile keeps the outcome `incomplete`. Exit 2 on `fail`, 4 on `incomplete` or `skipped`, 1 on validation errors. |
 
 The reviewed outcome does not change what `qa-run` calls `passed`; it is the reviewer's record, reported beside the machine outcome.
 
@@ -101,7 +103,7 @@ Exit 0 when the region was written; 1 when the pack, context, or tile does not e
 <pack>/
   review.md                  # start here: protocol, contexts, coverage, findings, inspection plan
   manifest.json              # harnery-page-review/v1; carries retention.expires_at and size_bytes
-  findings.json              # reviewer-owned output (harnery-page-review-findings/v1): findings + dispositions
+  findings.json              # delegated output (harnery-page-review-findings/v2): reviews + findings + dispositions
   findings.schema.json
   evidence/
     inspection-plan.json     # the bounded complete-review budget per context, plus gate_hits → tiles
@@ -122,17 +124,17 @@ After expiry the directory holds only `pack-expired.json`.
 
 Tile ids are `T001…` per context, bands first and then each scope's tiles in selector order; a finding cites `<context-id>/<tile-id>`. Every tile record carries its SHA-256, and the judge refuses a tile whose bytes no longer match, so a pack cannot be edited under a verdict.
 
-Each context with tiles also carries a **contact sheet**, `contacts.png`: every tile box-filtered down into a fixed grid of four 320 px cells per row (sheet width stays under 1600 px), read row-major in tile id order, each cell stamped with its tile id in a label band. It is built when the context is captured and rebuilt by `create`, `judge`, or `qa-run` when missing; the record's `contact_sheet` field carries the file, digest, grid size, and reading order. It exists so a reviewer can orient in one image before opening tiles; it is never evidence on its own, because the downscale hides exactly the small defects the tiles show.
+Each context with tiles also carries a **contact sheet**, `contacts.png`: every tile box-filtered down into a fixed grid of four 320 px cells per row (sheet width stays under 1600 px), read row-major in tile id order, each cell stamped with its tile id in a label band. It is built when the context is captured and rebuilt by `create`, `judge`, or `qa-run` when missing; the record's `contact_sheet` field carries the file, digest, grid size, and reading order. It lets review subagents orient before opening their assigned tiles; it is never evidence on its own, because the downscale hides exactly the small defects the tiles show.
 
 ## Gate hits mapped to tiles
 
 Deterministic gate results recorded in a pack (by `qa-run`) can carry `hits`: every finding in the gate's `browse` JSON envelope that has a document-space rectangle. Runts, truncation, contrast, placeholder, image, clip, overlap, crowd, align, gap, overflow, and target-size results all qualify; a finding without a rectangle keeps its place in the gate's `failures` text and nothing else. At most 50 hits are kept per gate envelope.
 
-The inspection plan maps each hit to the tiles whose rect intersects it and lists them under `gate_hits` (`check_id`, `rule`, `label`, `rect`, `tiles`); those tiles join `primary_tiles` with a `gate hit (<rule>): <label>` reason, so a reviewer opens the tile that shows the runt or the clipped element instead of hunting for it. `review.md` renders the same mapping under each gate line, with the rectangle and links to the tiles. A hit whose rectangle no tile covers (below a capped context's last band, for example) is reported as such rather than dropped.
+The inspection plan maps each hit to the tiles whose rect intersects it and lists them under `gate_hits` (`check_id`, `rule`, `label`, `rect`, `tiles`); those tiles join `primary_tiles` with a `gate hit (<rule>): <label>` reason, so the assigned review subagent opens the tile that shows the runt or clipped element instead of hunting for it. `review.md` renders the same mapping under each gate line, with the rectangle and links to the tiles. A hit whose rectangle no tile covers (below a capped context's last band, for example) is reported as such rather than dropped.
 
 ## Reviewing a pack
 
-`review.md` carries the protocol. The short version: read the context table and coverage, glance at each context's contact sheet for orientation, open the inspection plan's primary tiles (page top, page bottom, every scoped tile, every hit band, every tile with a machine finding), treat machine findings as claims to confirm against the tile, cite deterministic gate failures rather than re-deriving them (their `gate_hits` name the tiles to look at), do not invent evidence for anything under "not checked", disposition every machine finding with `review-pack disposition`, add what the machine missed with `review-pack findings add`, and run `review-pack verdict`. Do it while the pack is alive: 90 minutes after the judge, the tiles are gone and only the report remains.
+`review.md` carries the protocol. The short version: the coordinating agent reads the context table and coverage, then gives review subagents disjoint assignments covering every inspection-plan primary tile. The subagents use contact sheets for orientation, open their assigned tiles at native pixels, treat machine findings as claims, cite deterministic gate failures rather than re-deriving them, and report anything the machine missed. The coordinator does not open the images; it serializes the subagent reports with `review-pack disposition` and `review-pack findings add`, then runs `review-pack verdict`. Missing subagents or uncovered tiles make the review incomplete. Do it while the pack is alive: 90 minutes after the judge, the tiles are gone and only the report remains.
 
 ## Examples
 

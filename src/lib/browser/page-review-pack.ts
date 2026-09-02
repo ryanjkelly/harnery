@@ -2,7 +2,7 @@
 // without a browser. A pack holds, per rendering context (viewport × theme ×
 // state), the full-page screenshot, its critique tiles as PNG files, the
 // serialized DOM, and the QA signature; plus a `review.md` entry point, a
-// bounded inspection plan, coverage, and a reviewer-owned `findings.json`.
+// bounded inspection plan, coverage, and a delegated-review `findings.json`.
 //
 // The split this enables: capture (needs a browser, seconds) and judging
 // (vision calls, minutes) become separate stages. Every browser is closed
@@ -29,7 +29,7 @@ import type { CritiqueCoverage, CritiqueFinding, CritiqueTile } from "./critique
 import type { QaContext, QaSignature } from "./qa-plan.js";
 
 export const PAGE_REVIEW_PACK_SCHEMA = "harnery-page-review/v1";
-export const PAGE_REVIEW_FINDINGS_SCHEMA = "harnery-page-review-findings/v1";
+export const PAGE_REVIEW_FINDINGS_SCHEMA = "harnery-page-review-findings/v2";
 
 /** Directory name a qa-run gives its pack inside the run directory. */
 export const PAGE_REVIEW_PACK_DIRNAME = "pack";
@@ -55,7 +55,7 @@ export const PAGE_REVIEW_DISPOSITIONS = [
 export type PageReviewDisposition = (typeof PAGE_REVIEW_DISPOSITIONS)[number];
 
 /** Schema id and file name of the reviewed-outcome record `review-pack verdict` writes. */
-export const PAGE_REVIEW_VERDICT_SCHEMA = "harnery-page-review-verdict/v1";
+export const PAGE_REVIEW_VERDICT_SCHEMA = "harnery-page-review-verdict/v2";
 export const PAGE_REVIEW_VERDICT_FILENAME = "verdict.json";
 
 export const PAGE_REVIEW_FINDING_SEVERITIES = [
@@ -81,7 +81,7 @@ export const PAGE_REVIEW_FINDING_CATEGORIES = [
 ] as const;
 export type PageReviewFindingCategory = (typeof PAGE_REVIEW_FINDING_CATEGORIES)[number];
 
-/** One reviewer-written finding in `findings.json`. */
+/** One review-subagent finding in `findings.json`. */
 export interface PageReviewReviewerFinding {
   id: string;
   severity: PageReviewFindingSeverity;
@@ -104,13 +104,24 @@ export interface PageReviewDispositionRecord {
   at?: string;
 }
 
-/** The reviewer-owned `findings.json` document. */
+/** One review subagent's assigned and completed primary-tile work. */
+export interface PageReviewDelegatedReviewRecord {
+  reviewer: string;
+  /** `<context-id>/<tile-id>` entries assigned to this subagent. */
+  assigned_tiles: string[];
+  /** Assigned entries the subagent actually opened at native pixels. */
+  completed_tiles: string[];
+  status: "complete" | "incomplete";
+}
+
+/** The delegated-review `findings.json` document. */
 export interface PageReviewFindingsDocument {
   schema: string;
   schema_path?: string;
   target: string;
   reviewer: string | null;
   reviewed_at: string | null;
+  delegated_reviews: PageReviewDelegatedReviewRecord[];
   findings: PageReviewReviewerFinding[];
   dispositions?: PageReviewDispositionRecord[];
 }
@@ -126,12 +137,18 @@ export interface PageReviewVerdict {
   high_dismissed: number;
   /** Highs with no disposition; they still count against the page. */
   high_open: number;
-  /** Reviewer findings at `critical` or `high`; each counts against the page. */
+  /** Review-subagent findings at `critical` or `high`; each counts against the page. */
   reviewer_high: number;
   /** Dispositions whose target matched a machine finding. */
   dispositions_applied: number;
   /** Disposition targets that name no machine finding in the critique. */
   unmatched_dispositions: string[];
+  /** Primary tiles the inspection plan requires. */
+  primary_tiles_total: number;
+  /** Required tiles covered by a completed review-subagent record. */
+  primary_tiles_reviewed: number;
+  /** Required `<context-id>/<tile-id>` entries with no completed subagent review. */
+  uncovered_primary_tiles: string[];
 }
 
 export interface PageReviewVerdictDocument extends PageReviewVerdict {
@@ -319,7 +336,7 @@ export interface PageReviewInspectionPlan {
   contexts: Array<{
     context_id: string;
     full_page: string;
-    /** Tiles to open for a complete review; everything else is drill-down. */
+    /** Tiles review subagents must open for a complete review; everything else is drill-down. */
     primary_tiles: Array<{ id: string; file: string; reason: string }>;
     drilldown_tiles: number;
     /** Every gate hit with a rectangle, mapped to the tiles that show it. */
@@ -900,6 +917,11 @@ export function readPackManifest(packDir: string): PageReviewPackManifest {
   return manifest;
 }
 
+/** Read the bounded primary-tile plan used to prove delegated review coverage. */
+export function readPackInspectionPlan(packDir: string): PageReviewInspectionPlan {
+  return readJson<PageReviewInspectionPlan>(packPaths(packDir).inspectionPlan);
+}
+
 // ---------------------------------------------------------------------------
 // Findings, dispositions, verdict: the reviewer's half of the pack
 // ---------------------------------------------------------------------------
@@ -925,6 +947,7 @@ export function writePackFindings(packDir: string, doc: PageReviewFindingsDocume
 
 const FINDING_ID_PATTERN = /^[A-Z][A-Z0-9_-]*$/;
 const DISPOSITION_TARGET_PATTERN = /^[^/#]+\/T[0-9]{3}#[0-9]+$/;
+const REVIEW_TILE_PATTERN = /^[^/]+\/T[0-9]{3}$/;
 const DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -945,13 +968,21 @@ export function validateFindingsDocument(doc: unknown): string[] {
     "target",
     "reviewer",
     "reviewed_at",
+    "delegated_reviews",
     "findings",
     "dispositions",
   ]);
   for (const key of Object.keys(doc)) {
     if (!topAllowed.has(key)) errors.push(`unknown top-level key "${key}"`);
   }
-  for (const key of ["schema", "target", "reviewer", "reviewed_at", "findings"]) {
+  for (const key of [
+    "schema",
+    "target",
+    "reviewer",
+    "reviewed_at",
+    "delegated_reviews",
+    "findings",
+  ]) {
     if (!(key in doc)) errors.push(`missing required key "${key}"`);
   }
   if (doc.schema !== undefined && doc.schema !== PAGE_REVIEW_FINDINGS_SCHEMA) {
@@ -969,6 +1000,61 @@ export function validateFindingsDocument(doc: unknown): string[] {
   if (doc.reviewed_at !== undefined && doc.reviewed_at !== null) {
     if (typeof doc.reviewed_at !== "string" || !DATE_TIME_PATTERN.test(doc.reviewed_at)) {
       errors.push("reviewed_at must be an RFC 3339 date-time string or null");
+    }
+  }
+
+  if (doc.delegated_reviews !== undefined) {
+    if (!Array.isArray(doc.delegated_reviews)) {
+      errors.push("delegated_reviews must be an array");
+    } else {
+      const allowed = new Set(["reviewer", "assigned_tiles", "completed_tiles", "status"]);
+      doc.delegated_reviews.forEach((entry: unknown, index: number) => {
+        const at = `delegated_reviews[${index}]`;
+        if (!isRecord(entry)) {
+          errors.push(`${at}: must be an object`);
+          return;
+        }
+        for (const key of Object.keys(entry)) {
+          if (!allowed.has(key)) errors.push(`${at}: unknown key "${key}"`);
+        }
+        for (const key of ["reviewer", "assigned_tiles", "completed_tiles", "status"]) {
+          if (!(key in entry)) errors.push(`${at}: missing required key "${key}"`);
+        }
+        if (
+          entry.reviewer !== undefined &&
+          (typeof entry.reviewer !== "string" || entry.reviewer.trim().length === 0)
+        ) {
+          errors.push(`${at}: reviewer must be a non-empty string`);
+        }
+        for (const key of ["assigned_tiles", "completed_tiles"] as const) {
+          const value = entry[key];
+          if (!Array.isArray(value) || value.some((tile) => typeof tile !== "string")) {
+            errors.push(`${at}: ${key} must be an array of <context-id>/T012 strings`);
+            continue;
+          }
+          const invalid = value.filter((tile) => !REVIEW_TILE_PATTERN.test(tile));
+          if (invalid.length > 0) {
+            errors.push(`${at}: ${key} contains invalid tile(s): ${invalid.join(", ")}`);
+          }
+          if (new Set(value).size !== value.length) {
+            errors.push(`${at}: ${key} must not contain duplicates`);
+          }
+        }
+        if (
+          entry.status !== undefined &&
+          entry.status !== "complete" &&
+          entry.status !== "incomplete"
+        ) {
+          errors.push(`${at}: status must be complete or incomplete`);
+        }
+        if (Array.isArray(entry.assigned_tiles) && Array.isArray(entry.completed_tiles)) {
+          const assigned = new Set(entry.assigned_tiles);
+          const outside = entry.completed_tiles.filter((tile) => !assigned.has(tile));
+          if (outside.length > 0) {
+            errors.push(`${at}: completed_tiles not assigned: ${outside.join(", ")}`);
+          }
+        }
+      });
     }
   }
 
@@ -1136,11 +1222,12 @@ export function machineFindingTargets(
  * findings into one reviewed outcome. A machine `high` counts against the page
  * unless a reviewer dispositioned it `artifact`, `not-a-defect`, or
  * `duplicate-of-gate`; `confirmed` and undispositioned highs count; so does a
- * reviewer finding at `critical` or `high`. Nothing here rewrites the
+ * review-subagent finding at `critical` or `high`. Nothing here rewrites the
  * critique: `evidence/critique.json` stays the machine record.
  */
 export function resolvePackVerdict(
   manifest: Pick<PageReviewPackManifest, "critique">,
+  inspectionPlan: PageReviewInspectionPlan,
   findings: PageReviewFindingsDocument,
 ): PageReviewVerdict {
   const critique = manifest.critique;
@@ -1179,12 +1266,26 @@ export function resolvePackVerdict(
     (f) => f.severity === "critical" || f.severity === "high",
   ).length;
 
+  const requiredTiles = new Set(
+    inspectionPlan.contexts.flatMap((context) =>
+      context.primary_tiles.map((tile) => `${context.context_id}/${tile.id}`),
+    ),
+  );
+  const completedTiles = new Set(
+    findings.delegated_reviews
+      .filter((review) => review.status === "complete")
+      .flatMap((review) => review.completed_tiles),
+  );
+  const uncovered_primary_tiles = [...requiredTiles]
+    .filter((tile) => !completedTiles.has(tile))
+    .sort();
+
   const blocking = high_confirmed + high_open + reviewer_high;
   const anyIncomplete = critique?.some((row) => row.outcome === "incomplete") ?? false;
   const reviewed_outcome: PageReviewVerdict["reviewed_outcome"] =
     blocking > 0
       ? "fail"
-      : anyIncomplete
+      : anyIncomplete || uncovered_primary_tiles.length > 0
         ? "incomplete"
         : machine_outcome === "skipped"
           ? "skipped"
@@ -1200,6 +1301,9 @@ export function resolvePackVerdict(
     reviewer_high,
     dispositions_applied: byTarget.size,
     unmatched_dispositions: unmatched,
+    primary_tiles_total: requiredTiles.size,
+    primary_tiles_reviewed: requiredTiles.size - uncovered_primary_tiles.length,
+    uncovered_primary_tiles,
   };
 }
 
@@ -1241,13 +1345,35 @@ export function findingsSchemaDocument(): Record<string, unknown> {
     title: "Page review findings",
     type: "object",
     additionalProperties: false,
-    required: ["schema", "target", "reviewer", "reviewed_at", "findings"],
+    required: ["schema", "target", "reviewer", "reviewed_at", "delegated_reviews", "findings"],
     properties: {
       schema: { const: PAGE_REVIEW_FINDINGS_SCHEMA },
       schema_path: { type: "string" },
       target: { type: "string" },
       reviewer: { type: ["string", "null"] },
       reviewed_at: { type: ["string", "null"], format: "date-time" },
+      delegated_reviews: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["reviewer", "assigned_tiles", "completed_tiles", "status"],
+          properties: {
+            reviewer: { type: "string", minLength: 1 },
+            assigned_tiles: {
+              type: "array",
+              uniqueItems: true,
+              items: { type: "string", pattern: "^[^/]+/T[0-9]{3}$" },
+            },
+            completed_tiles: {
+              type: "array",
+              uniqueItems: true,
+              items: { type: "string", pattern: "^[^/]+/T[0-9]{3}$" },
+            },
+            status: { enum: ["complete", "incomplete"] },
+          },
+        },
+      },
       findings: {
         type: "array",
         items: {
@@ -1675,6 +1801,7 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
       target: input.target,
       reviewer: null,
       reviewed_at: null,
+      delegated_reviews: [],
       findings: [],
       dispositions: [],
     });
@@ -1787,28 +1914,28 @@ export function renderReviewMarkdown(
     "This pack is evidence, not a verdict. Tile PNGs are the evidence; every other file here is navigation. Cite a tile as `<context-id>/<tile-id>` in every finding.",
   );
   lines.push("");
-  lines.push("## Agent review protocol");
+  lines.push("## Delegated review protocol");
   lines.push("");
   lines.push(
-    "1. Read the context table and the coverage section below. A capped context has unreviewed page below its last tile.",
+    "1. The coordinating agent reads the context table and coverage below. A capped context has unreviewed page below its last tile.",
   );
   lines.push(
-    "2. Read `evidence/inspection-plan.json`. Its `primary_tiles` are the complete-review budget for each context: the top of the page, the bottom, every scoped tile, every tile with a machine finding, and every tile a gate hit lands on (`gate_hits` maps each gate rectangle to tile ids). Open those tile files. Open another tile only for a named layout, text, or image question.",
+    "2. Read `evidence/inspection-plan.json`, then dispatch review subagents with disjoint assignments covering every `primary_tiles` entry. Those tiles are the complete-review budget for each context: the page top, page bottom, every scoped tile, every tile with a machine finding, and every tile a gate hit lands on. Each tile must be opened at native pixels by at least one completed subagent. The coordinating agent must not open tile images itself.",
   );
   lines.push(
-    "3. Use the contact sheet (`contacts.png`, every tile downscaled into one grid, ids stamped, row-major order) and the full-page screenshot for orientation only; both hide small defects a tile shows at native pixels.",
+    "3. Review subagents may use the contact sheet (`contacts.png`, every tile downscaled into one grid, ids stamped, row-major order) and the full-page screenshot for orientation only; both hide small defects a tile shows at native pixels.",
   );
   lines.push(
-    "4. Read the machine findings section. They come from a vision model judging each tile alone; a finding is a claim to confirm against the tile, never a fact. Slice-edge cropping is a tiling artifact, not a defect.",
+    "4. Review subagents read the machine findings for their assigned tiles. A finding is a claim to confirm against the tile, never a fact. Slice-edge cropping is a tiling artifact, not a defect.",
   );
   lines.push(
-    "5. Read the deterministic gate results. A failed gate is already a defect; do not re-litigate it, cite it.",
+    "5. Review subagents read the deterministic gate results for their assignments. A failed gate is already a defect; do not re-litigate it, cite it.",
   );
   lines.push(
-    "6. Read `not checked`. Do not invent evidence for anything listed there; record the gap in `findings.json` instead.",
+    "6. Review subagents read `not checked`. Do not invent evidence for anything listed there; record the gap in their report instead.",
   );
   lines.push(
-    "7. Write findings into `findings.json` (contract below). Check peer claims before writing when the pack sits in a shared workspace.",
+    "7. The coordinating agent serializes the subagent reports into `findings.json`, recording the reviewer names or ids, then runs the verdict. If subagents are unavailable, any primary tile is uncovered, or reports conflict, dispatch another subagent; never substitute a coordinator image read. Without complete delegated coverage, the review is incomplete.",
   );
   lines.push("");
   lines.push("## Contexts");
@@ -1877,8 +2004,8 @@ export function renderReviewMarkdown(
   if (manifest.critique === null) {
     lines.push(
       judgeCommand
-        ? `The judge stage has not run. Run \`${judgeCommand}\` to add machine findings, or review the primary tiles directly.`
-        : "The judge stage has not run. Review the primary tiles directly.",
+        ? `The judge stage has not run. Run \`${judgeCommand}\` to add machine findings, then dispatch review subagents over the primary tiles.`
+        : "The judge stage has not run. Dispatch review subagents over the primary tiles.",
     );
   } else {
     for (const row of manifest.critique) {
@@ -1911,15 +2038,21 @@ export function renderReviewMarkdown(
       `- Machine high findings: ${verdict.high_total} total · ${verdict.high_confirmed} confirmed · ${verdict.high_dismissed} dismissed (artifact, not a defect, or duplicate of a gate) · ${verdict.high_open} without a disposition.`,
     );
     lines.push(
-      `- Reviewer findings at critical or high: ${verdict.reviewer_high}. Dispositions applied: ${verdict.dispositions_applied}.`,
+      `- Review-subagent findings at critical or high: ${verdict.reviewer_high}. Dispositions applied: ${verdict.dispositions_applied}.`,
     );
+    lines.push(
+      `- Delegated primary-tile coverage: ${verdict.primary_tiles_reviewed}/${verdict.primary_tiles_total}.`,
+    );
+    if (verdict.uncovered_primary_tiles.length > 0) {
+      lines.push(`- Uncovered primary tiles: ${verdict.uncovered_primary_tiles.join(", ")}.`);
+    }
     if (verdict.unmatched_dispositions.length > 0) {
       lines.push(
         `- Dispositions naming no machine finding (ignored): ${verdict.unmatched_dispositions.join(", ")}.`,
       );
     }
     lines.push(
-      "- A confirmed or undispositioned high, or a reviewer finding at high or critical, fails the reviewed outcome. The machine critique above is unchanged by any disposition.",
+      "- A confirmed or undispositioned high, or a review-subagent finding at high or critical, fails the reviewed outcome. Missing delegated coverage keeps it incomplete. The machine critique above is unchanged by any disposition.",
     );
     lines.push("");
   }
@@ -1942,7 +2075,7 @@ export function renderReviewMarkdown(
     lines.push("");
     if (ctx.contact_sheet) {
       lines.push(
-        `Contact sheet: [${CONTACT_SHEET_FILENAME}](${ctx.contact_sheet.file}) shows every tile below in id order, row-major (left to right, then top to bottom), ${ctx.contact_sheet.columns} per row, each cell stamped with its tile id. Orientation only; open the tile file for native pixels.`,
+        `Contact sheet: [${CONTACT_SHEET_FILENAME}](${ctx.contact_sheet.file}) shows every tile below in id order, row-major (left to right, then top to bottom), ${ctx.contact_sheet.columns} per row, each cell stamped with its tile id. Orientation only; a review subagent opens the tile file for native pixels.`,
       );
       lines.push("");
     }
@@ -1971,7 +2104,7 @@ export function renderReviewMarkdown(
   lines.push("## Write findings");
   lines.push("");
   lines.push(
-    "`findings.json` is the reviewer-owned output file. Set top-level `reviewer` and an RFC 3339 `reviewed_at`. Each finding requires `id`, `severity` (critical, high, medium, low, info), `category`, `context_id`, `evidence` (tile ids or pack-relative paths), and `observation`; `recommendation` and `confidence` are optional. Use `findings.schema.json` only when a validator rejects the write.",
+    "`findings.json` is the delegated review output file. The coordinating agent writes it serially from completed subagent reports. Record each assignment with `review-pack reviews add`; `delegated_reviews` must prove completed coverage for every primary tile before the verdict can pass. Set top-level `reviewer` to the review subagent names or ids and set an RFC 3339 `reviewed_at`. Each finding requires `id`, `severity` (critical, high, medium, low, info), `category`, `context_id`, `evidence` (tile ids or pack-relative paths), and `observation`; `recommendation` and `confidence` are optional. Use `findings.schema.json` only when a validator rejects the write.",
   );
   lines.push("");
   lines.push("## Files");

@@ -36,6 +36,7 @@ import {
   type PageReviewContextCapture,
   type PageReviewCritiqueRecord,
   type PageReviewFindingsDocument,
+  type PageReviewInspectionPlan,
   readPackContext,
   readPackDom,
   readPackFindings,
@@ -409,6 +410,8 @@ describe("contact sheets", () => {
       "Contact sheet: [contacts.png](contexts/desktop-light-default/contacts.png)",
     );
     expect(review).toContain("4 per row");
+    expect(review).toContain("dispatch review subagents with disjoint assignments");
+    expect(review).toContain("The coordinating agent must not open tile images itself");
   });
 
   test("buildContactSheet box-filters large tiles, keeps small ones at native size, and stamps ids", () => {
@@ -988,9 +991,49 @@ describe("findings and verdict", () => {
       target: "http://localhost:4276/page",
       reviewer: "agent-test",
       reviewed_at: "2026-09-02T06:00:00.000Z",
+      delegated_reviews: [
+        {
+          reviewer: "agent-test",
+          assigned_tiles: [
+            `${CTX}/T001`,
+            `${CTX}/T002`,
+            `${CTX}/T003`,
+            `${CTX}/T004`,
+            `${CTX}/T005`,
+          ],
+          completed_tiles: [
+            `${CTX}/T001`,
+            `${CTX}/T002`,
+            `${CTX}/T003`,
+            `${CTX}/T004`,
+            `${CTX}/T005`,
+          ],
+          status: "complete",
+        },
+      ],
       findings: [],
       dispositions: [],
       ...overrides,
+    };
+  }
+
+  function inspectionPlan(): PageReviewInspectionPlan {
+    return {
+      schema: PAGE_REVIEW_PACK_SCHEMA,
+      purpose: "fixture",
+      contexts: [
+        {
+          context_id: CTX,
+          full_page: `contexts/${CTX}/full-page.png`,
+          primary_tiles: Array.from({ length: 5 }, (_, index) => ({
+            id: `T${String(index + 1).padStart(3, "0")}`,
+            file: `contexts/${CTX}/tiles/T${String(index + 1).padStart(3, "0")}.png`,
+            reason: "fixture",
+          })),
+          drilldown_tiles: 0,
+          gate_hits: [],
+        },
+      ],
     };
   }
 
@@ -999,6 +1042,14 @@ describe("findings and verdict", () => {
     const errors = validateFindingsDocument({
       ...findingsDoc(),
       reviewed_at: "yesterday",
+      delegated_reviews: [
+        {
+          reviewer: "",
+          assigned_tiles: [`${CTX}/T001`, "bad"],
+          completed_tiles: [`${CTX}/T002`],
+          status: "done",
+        },
+      ],
       findings: [
         {
           id: "f1",
@@ -1018,6 +1069,10 @@ describe("findings and verdict", () => {
       ],
     });
     expect(errors).toContain("reviewed_at must be an RFC 3339 date-time string or null");
+    expect(errors).toContain("delegated_reviews[0]: reviewer must be a non-empty string");
+    expect(errors).toContain("delegated_reviews[0]: assigned_tiles contains invalid tile(s): bad");
+    expect(errors).toContain("delegated_reviews[0]: status must be complete or incomplete");
+    expect(errors).toContain(`delegated_reviews[0]: completed_tiles not assigned: ${CTX}/T002`);
     expect(errors).toContain("findings[0]: id must match ^[A-Z][A-Z0-9_-]*$");
     expect(errors).toContain(
       "findings[0]: severity must be one of critical, high, medium, low, info",
@@ -1052,7 +1107,7 @@ describe("findings and verdict", () => {
   test("verdict math: confirmed and undispositioned highs fail, dismissed highs do not, unmatched targets are reported", () => {
     const manifest = { critique: [critiqueRow()] };
     // Nothing dispositioned: every high is open.
-    const open = resolvePackVerdict(manifest, findingsDoc());
+    const open = resolvePackVerdict(manifest, inspectionPlan(), findingsDoc());
     expect(open).toMatchObject({
       machine_outcome: "fail",
       reviewed_outcome: "fail",
@@ -1067,6 +1122,7 @@ describe("findings and verdict", () => {
     // One confirmed, one artifact, one open, the medium dispositioned too, one stray target.
     const mixed = resolvePackVerdict(
       manifest,
+      inspectionPlan(),
       findingsDoc({
         dispositions: [
           { target: `${CTX}/T002#0`, disposition: "confirmed" },
@@ -1093,14 +1149,14 @@ describe("findings and verdict", () => {
         { target: `${CTX}/T003#2`, disposition: "not-a-defect" },
       ],
     });
-    expect(resolvePackVerdict(manifest, dismissed)).toMatchObject({
+    expect(resolvePackVerdict(manifest, inspectionPlan(), dismissed)).toMatchObject({
       machine_outcome: "fail",
       reviewed_outcome: "pass",
       high_dismissed: 3,
       high_open: 0,
     });
-    // A reviewer finding at high or critical fails even when the machine is clean.
-    const reviewerHigh = resolvePackVerdict(manifest, {
+    // A review-subagent finding at high or critical fails even when the machine is clean.
+    const reviewerHigh = resolvePackVerdict(manifest, inspectionPlan(), {
       ...dismissed,
       findings: [
         {
@@ -1115,9 +1171,9 @@ describe("findings and verdict", () => {
     });
     expect(reviewerHigh.reviewed_outcome).toBe("fail");
     expect(reviewerHigh.reviewer_high).toBe(1);
-    // A medium reviewer finding does not.
+    // A medium review-subagent finding does not.
     expect(
-      resolvePackVerdict(manifest, {
+      resolvePackVerdict(manifest, inspectionPlan(), {
         ...dismissed,
         findings: [
           {
@@ -1134,7 +1190,7 @@ describe("findings and verdict", () => {
   });
 
   test("verdict follows the machine when there is no critique, a skipped judge, or an incomplete context", () => {
-    expect(resolvePackVerdict({ critique: null }, findingsDoc())).toMatchObject({
+    expect(resolvePackVerdict({ critique: null }, inspectionPlan(), findingsDoc())).toMatchObject({
       machine_outcome: "skipped",
       reviewed_outcome: "skipped",
       high_total: 0,
@@ -1142,26 +1198,55 @@ describe("findings and verdict", () => {
     expect(
       resolvePackVerdict(
         { critique: [critiqueRow({ outcome: "skipped", findings: [] })] },
+        inspectionPlan(),
         findingsDoc(),
       ).reviewed_outcome,
     ).toBe("skipped");
     expect(
       resolvePackVerdict(
         { critique: [critiqueRow({ outcome: "incomplete", findings: [] })] },
+        inspectionPlan(),
         findingsDoc(),
       ),
     ).toMatchObject({ machine_outcome: "incomplete", reviewed_outcome: "incomplete" });
     // An incomplete judge with a confirmed high is still a fail.
     expect(
-      resolvePackVerdict({ critique: [critiqueRow({ outcome: "incomplete" })] }, findingsDoc())
-        .reviewed_outcome,
+      resolvePackVerdict(
+        { critique: [critiqueRow({ outcome: "incomplete" })] },
+        inspectionPlan(),
+        findingsDoc(),
+      ).reviewed_outcome,
     ).toBe("fail");
     expect(
       resolvePackVerdict(
         { critique: [critiqueRow({ outcome: "pass", findings: [] })] },
+        inspectionPlan(),
         findingsDoc(),
       ),
     ).toMatchObject({ machine_outcome: "pass", reviewed_outcome: "pass" });
+  });
+
+  test("verdict stays incomplete until completed subagent records cover every primary tile", () => {
+    const verdict = resolvePackVerdict(
+      { critique: [critiqueRow({ outcome: "pass", findings: [] })] },
+      inspectionPlan(),
+      findingsDoc({
+        delegated_reviews: [
+          {
+            reviewer: "agent-one",
+            assigned_tiles: [`${CTX}/T001`, `${CTX}/T002`],
+            completed_tiles: [`${CTX}/T001`],
+            status: "complete",
+          },
+        ],
+      }),
+    );
+    expect(verdict).toMatchObject({
+      reviewed_outcome: "incomplete",
+      primary_tiles_total: 5,
+      primary_tiles_reviewed: 1,
+      uncovered_primary_tiles: [`${CTX}/T002`, `${CTX}/T003`, `${CTX}/T004`, `${CTX}/T005`],
+    });
   });
 
   test("writePackFindings is atomic and round-trips; finalize keeps the verdict section idempotently", () => {
@@ -1187,7 +1272,7 @@ describe("findings and verdict", () => {
 
     const verdict = {
       schema: PAGE_REVIEW_VERDICT_SCHEMA,
-      ...resolvePackVerdict(readPackManifest(dir), readPackFindings(dir)),
+      ...resolvePackVerdict(readPackManifest(dir), inspectionPlan(), readPackFindings(dir)),
       reviewed_at: "2026-09-02T06:30:00.000Z",
     };
     writeFileSync(join(dir, "evidence", "verdict.json"), JSON.stringify(verdict));

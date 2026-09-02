@@ -285,6 +285,45 @@ describe("review-pack findings add", () => {
   });
 });
 
+describe("review-pack reviews add", () => {
+  test("records completed subagent coverage and rejects non-primary assignments", async () => {
+    const dir = seedPack();
+    const written = await run([
+      "reviews",
+      "add",
+      dir,
+      "--reviewer",
+      "agent-review-1",
+      "--assigned",
+      `${CTX}/T001`,
+      "--completed",
+      `${CTX}/T001`,
+      "--json",
+    ]);
+    expect(written.errors).toEqual([]);
+    expect(written.data[0]).toMatchObject({
+      reviewer: "agent-review-1",
+      assigned_tiles: [`${CTX}/T001`],
+      completed_tiles: [`${CTX}/T001`],
+      status: "complete",
+    });
+    expect(readJson(join(dir, "findings.json")).delegated_reviews).toEqual([written.data[0]]);
+    resetExitCode();
+
+    const refused = await run([
+      "reviews",
+      "add",
+      dir,
+      "--reviewer",
+      "agent-review-2",
+      "--assigned",
+      `${CTX}/T999`,
+    ]);
+    expect(refused.errors[0]?.code).toBe("review_pack_unknown_primary_tile");
+    expect(exitCode()).toBe(1);
+  });
+});
+
 describe("review-pack disposition", () => {
   test("writes a disposition for an existing machine finding and replaces a repeat", async () => {
     const dir = seedPack();
@@ -359,6 +398,30 @@ describe("review-pack verdict", () => {
     const d2 = await run(["disposition", dir, `${CTX}/T003#1`, "not-a-defect"]);
     expect(d1.errors).toEqual([]);
     expect(d2.errors).toEqual([]);
+    const coverage = await run([
+      "reviews",
+      "add",
+      dir,
+      "--reviewer",
+      "agent-review-1",
+      "--assigned",
+      `${CTX}/T001`,
+      "--assigned",
+      `${CTX}/T002`,
+      "--assigned",
+      `${CTX}/T003`,
+      "--assigned",
+      `${CTX}/T004`,
+      "--completed",
+      `${CTX}/T001`,
+      "--completed",
+      `${CTX}/T002`,
+      "--completed",
+      `${CTX}/T003`,
+      "--completed",
+      `${CTX}/T004`,
+    ]);
+    expect(coverage.errors).toEqual([]);
     const passed = await run(["verdict", dir, "--json"]);
     expect(passed.errors).toEqual([]);
     expect(exitCode()).toBe(0);
@@ -367,6 +430,8 @@ describe("review-pack verdict", () => {
       high_dismissed: 2,
       high_open: 0,
       dispositions_applied: 2,
+      primary_tiles_reviewed: 4,
+      primary_tiles_total: 4,
     });
     expect(readJson(verdictPath).reviewed_outcome).toBe("pass");
     const review = readFileSync(join(dir, "review.md"), "utf8");
@@ -379,7 +444,7 @@ describe("review-pack verdict", () => {
     const skipped = await run(["verdict", unjudged, "--json"]);
     expect(skipped.data[0]).toMatchObject({
       machine_outcome: "skipped",
-      reviewed_outcome: "skipped",
+      reviewed_outcome: "incomplete",
     });
     expect(exitCode()).toBe(4);
     resetExitCode();
