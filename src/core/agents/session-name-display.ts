@@ -120,10 +120,16 @@ function responseContainsSessionNameMint(
           return true;
         }
       } catch {
-        // Wrapper prose and partial JSON are not authoritative mint evidence.
+        // Fall through to the textual check below.
       }
     }
-    return false;
+    // The mint command's stdout often reaches the transcript mangled: cut
+    // short by `cut`/`head -c`, or with a tail-truncated first line. Whole-JSON
+    // parsing then fails even though the name and the mint flag are both
+    // legible, and a session that did mint can never latch. Accept the text
+    // when the exact quoted name sits under its key AND a mint flag is true;
+    // ordinary status output carries the name without any flag.
+    return textCarriesSessionNameMint(value, name);
   }
 
   if (typeof value !== "object") return false;
@@ -145,6 +151,18 @@ function responseContainsSessionNameMint(
   return Object.values(row).some((item) =>
     responseContainsSessionNameMint(item, name, seen, depth + 1),
   );
+}
+
+const MINT_FLAG_PATTERN = /"(?:first_of_session|name_reminted|session_name_retry)"\s*:\s*true\b/;
+
+function textCarriesSessionNameMint(text: string, name: string): boolean {
+  const quotedName = JSON.stringify(name);
+  const keyIndex = text.indexOf('"suggested_session_name"');
+  if (keyIndex < 0) return false;
+  const afterKey = text.slice(keyIndex + '"suggested_session_name"'.length);
+  const valueMatch = /^\s*:\s*("(?:[^"\\]|\\.)*")/.exec(afterKey);
+  if (!valueMatch || valueMatch[1] !== quotedName) return false;
+  return MINT_FLAG_PATTERN.test(text);
 }
 
 /**

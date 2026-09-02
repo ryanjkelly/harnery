@@ -197,4 +197,43 @@ describe("session name display latch", () => {
       ),
     ).toBe(false);
   });
+
+  test("recognizes a mint whose JSON the shell cut short", () => {
+    const full = JSON.stringify({
+      name: "agent-Maya",
+      suggested_session_name: NAME,
+      session_name_retry: true,
+      agent_name: "Maya",
+      description: "Auth refactor",
+    });
+    // `| cut -c1-120` style truncation: the closing brace never arrives.
+    const cut = full.slice(0, full.indexOf('"agent_name"') + 20);
+    expect(JSON.parse.bind(null, cut)).toThrow();
+    expect(toolResponseMintedSessionName(cut, NAME)).toBe(true);
+    // A tail window that lost the opening brace still carries name and flag.
+    expect(toolResponseMintedSessionName(full.slice(8), NAME)).toBe(true);
+    // Wrapper prose around the cut JSON is fine too.
+    expect(toolResponseMintedSessionName({ output: `Output:\n${cut}` }, NAME)).toBe(true);
+  });
+
+  test("truncated output without the flag or with another name never mints", () => {
+    const noFlag = JSON.stringify({ suggested_session_name: NAME, cleared: false }).slice(0, -1);
+    expect(toolResponseMintedSessionName(noFlag, NAME)).toBe(false);
+    const flagLost = JSON.stringify({
+      suggested_session_name: NAME,
+      session_name_retry: true,
+    }).slice(0, -12);
+    expect(toolResponseMintedSessionName(flagLost, NAME)).toBe(false);
+    const otherName = JSON.stringify({
+      suggested_session_name: "Agent Maya - Earlier focus",
+      first_of_session: true,
+    }).slice(0, -1);
+    expect(toolResponseMintedSessionName(otherName, NAME)).toBe(false);
+    // A name that merely starts the same must not match by prefix.
+    const longer = JSON.stringify({
+      suggested_session_name: `${NAME} again`,
+      first_of_session: true,
+    }).slice(0, -1);
+    expect(toolResponseMintedSessionName(longer, NAME)).toBe(false);
+  });
 });

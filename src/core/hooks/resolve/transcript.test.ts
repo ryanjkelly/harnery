@@ -200,6 +200,27 @@ describe("ordered session-name transcript scans", () => {
     ).toBe(true);
   });
 
+  test("accepts the block after a Claude Code mint result the shell cut short", () => {
+    const minted = JSON.stringify({
+      name: "agent-Maya",
+      suggested_session_name: NAME,
+      session_name_retry: true,
+      agent_name: "Maya",
+    });
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", content: minted.slice(0, minted.length - 10) }],
+        },
+      },
+      { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+    ]);
+    expect(
+      scanSessionNameDisplayedImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toBe(true);
+  });
+
   test("accepts the exact first assistant block after a Codex mint result", () => {
     const p = writeTranscript([
       {
