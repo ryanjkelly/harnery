@@ -29,7 +29,7 @@ import type { CritiqueCoverage, CritiqueFinding, CritiqueTile } from "./critique
 import type { QaContext, QaSignature } from "./qa-plan.js";
 
 export const PAGE_REVIEW_PACK_SCHEMA = "harnery-page-review/v1";
-export const PAGE_REVIEW_FINDINGS_SCHEMA = "harnery-page-review-findings/v2";
+export const PAGE_REVIEW_FINDINGS_SCHEMA = "harnery-page-review-findings/v3";
 
 /** Directory name a qa-run gives its pack inside the run directory. */
 export const PAGE_REVIEW_PACK_DIRNAME = "pack";
@@ -81,6 +81,9 @@ export const PAGE_REVIEW_FINDING_CATEGORIES = [
 ] as const;
 export type PageReviewFindingCategory = (typeof PAGE_REVIEW_FINDING_CATEGORIES)[number];
 
+export const PAGE_REVIEW_SUBAGENT_MODELS = ["GPT-5.6 Luna", "Composer 2.5", "Haiku 4.5"] as const;
+export type PageReviewSubagentModel = (typeof PAGE_REVIEW_SUBAGENT_MODELS)[number];
+
 /** One review-subagent finding in `findings.json`. */
 export interface PageReviewReviewerFinding {
   id: string;
@@ -107,6 +110,7 @@ export interface PageReviewDispositionRecord {
 /** One review subagent's assigned and completed primary-tile work. */
 export interface PageReviewDelegatedReviewRecord {
   reviewer: string;
+  model: PageReviewSubagentModel;
   /** `<context-id>/<tile-id>` entries assigned to this subagent. */
   assigned_tiles: string[];
   /** Assigned entries the subagent actually opened at native pixels. */
@@ -1007,7 +1011,7 @@ export function validateFindingsDocument(doc: unknown): string[] {
     if (!Array.isArray(doc.delegated_reviews)) {
       errors.push("delegated_reviews must be an array");
     } else {
-      const allowed = new Set(["reviewer", "assigned_tiles", "completed_tiles", "status"]);
+      const allowed = new Set(["reviewer", "model", "assigned_tiles", "completed_tiles", "status"]);
       doc.delegated_reviews.forEach((entry: unknown, index: number) => {
         const at = `delegated_reviews[${index}]`;
         if (!isRecord(entry)) {
@@ -1017,7 +1021,7 @@ export function validateFindingsDocument(doc: unknown): string[] {
         for (const key of Object.keys(entry)) {
           if (!allowed.has(key)) errors.push(`${at}: unknown key "${key}"`);
         }
-        for (const key of ["reviewer", "assigned_tiles", "completed_tiles", "status"]) {
+        for (const key of ["reviewer", "model", "assigned_tiles", "completed_tiles", "status"]) {
           if (!(key in entry)) errors.push(`${at}: missing required key "${key}"`);
         }
         if (
@@ -1025,6 +1029,12 @@ export function validateFindingsDocument(doc: unknown): string[] {
           (typeof entry.reviewer !== "string" || entry.reviewer.trim().length === 0)
         ) {
           errors.push(`${at}: reviewer must be a non-empty string`);
+        }
+        if (
+          entry.model !== undefined &&
+          !(PAGE_REVIEW_SUBAGENT_MODELS as readonly string[]).includes(String(entry.model))
+        ) {
+          errors.push(`${at}: model must be one of ${PAGE_REVIEW_SUBAGENT_MODELS.join(", ")}`);
         }
         for (const key of ["assigned_tiles", "completed_tiles"] as const) {
           const value = entry[key];
@@ -1357,9 +1367,10 @@ export function findingsSchemaDocument(): Record<string, unknown> {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["reviewer", "assigned_tiles", "completed_tiles", "status"],
+          required: ["reviewer", "model", "assigned_tiles", "completed_tiles", "status"],
           properties: {
             reviewer: { type: "string", minLength: 1 },
+            model: { enum: [...PAGE_REVIEW_SUBAGENT_MODELS] },
             assigned_tiles: {
               type: "array",
               uniqueItems: true,
@@ -1920,7 +1931,7 @@ export function renderReviewMarkdown(
     "1. The coordinating agent reads the context table and coverage below. A capped context has unreviewed page below its last tile.",
   );
   lines.push(
-    "2. Read `evidence/inspection-plan.json`, then dispatch review subagents with disjoint assignments covering every `primary_tiles` entry. Those tiles are the complete-review budget for each context: the page top, page bottom, every scoped tile, every tile with a machine finding, and every tile a gate hit lands on. Each tile must be opened at native pixels by at least one completed subagent. The coordinating agent must not open tile images itself.",
+    "2. Read `evidence/inspection-plan.json`, then dispatch review subagents with disjoint assignments covering every `primary_tiles` entry. Choose the first model available in this exact order: GPT-5.6 Luna (`gpt-5.6-luna` where an id is required), Composer 2.5, Haiku 4.5. Use that model for every tile-review subagent; do not substitute another model. If none exists, the review is incomplete. Each tile must be opened at native pixels by at least one completed subagent. The coordinating agent must not open tile images itself.",
   );
   lines.push(
     "3. Review subagents may use the contact sheet (`contacts.png`, every tile downscaled into one grid, ids stamped, row-major order) and the full-page screenshot for orientation only; both hide small defects a tile shows at native pixels.",
@@ -2104,7 +2115,7 @@ export function renderReviewMarkdown(
   lines.push("## Write findings");
   lines.push("");
   lines.push(
-    "`findings.json` is the delegated review output file. The coordinating agent writes it serially from completed subagent reports. Record each assignment with `review-pack reviews add`; `delegated_reviews` must prove completed coverage for every primary tile before the verdict can pass. Set top-level `reviewer` to the review subagent names or ids and set an RFC 3339 `reviewed_at`. Each finding requires `id`, `severity` (critical, high, medium, low, info), `category`, `context_id`, `evidence` (tile ids or pack-relative paths), and `observation`; `recommendation` and `confidence` are optional. Use `findings.schema.json` only when a validator rejects the write.",
+    "`findings.json` is the delegated review output file. The coordinating agent writes it serially from completed subagent reports. Record each assignment and its chosen model with `review-pack reviews add`; `delegated_reviews` must prove completed coverage for every primary tile before the verdict can pass. Set top-level `reviewer` to the review subagent names or ids and set an RFC 3339 `reviewed_at`. Each finding requires `id`, `severity` (critical, high, medium, low, info), `category`, `context_id`, `evidence` (tile ids or pack-relative paths), and `observation`; `recommendation` and `confidence` are optional. Use `findings.schema.json` only when a validator rejects the write.",
   );
   lines.push("");
   lines.push("## Files");

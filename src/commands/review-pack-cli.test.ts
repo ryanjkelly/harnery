@@ -294,6 +294,8 @@ describe("review-pack reviews add", () => {
       dir,
       "--reviewer",
       "agent-review-1",
+      "--model",
+      "GPT-5.6 Luna",
       "--assigned",
       `${CTX}/T001`,
       "--completed",
@@ -303,6 +305,7 @@ describe("review-pack reviews add", () => {
     expect(written.errors).toEqual([]);
     expect(written.data[0]).toMatchObject({
       reviewer: "agent-review-1",
+      model: "GPT-5.6 Luna",
       assigned_tiles: [`${CTX}/T001`],
       completed_tiles: [`${CTX}/T001`],
       status: "complete",
@@ -316,6 +319,8 @@ describe("review-pack reviews add", () => {
       dir,
       "--reviewer",
       "agent-review-2",
+      "--model",
+      "GPT-5.6 Luna",
       "--assigned",
       `${CTX}/T999`,
     ]);
@@ -404,6 +409,8 @@ describe("review-pack verdict", () => {
       dir,
       "--reviewer",
       "agent-review-1",
+      "--model",
+      "GPT-5.6 Luna",
       "--assigned",
       `${CTX}/T001`,
       "--assigned",

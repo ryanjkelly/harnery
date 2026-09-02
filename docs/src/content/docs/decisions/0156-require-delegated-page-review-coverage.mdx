@@ -43,10 +43,12 @@ at native pixels by at least one completed review subagent. The coordinating
 agent assigns the tiles, serializes reports, records dispositions and findings,
 and makes the final judgment without opening tile images itself.
 
-`harnery-page-review-findings/v2` adds `delegated_reviews`. Each record names a
-review subagent and carries `assigned_tiles`, `completed_tiles`, and a
-`complete` or `incomplete` status. `harn review-pack reviews add` validates and
-writes those records.
+`harnery-page-review-findings/v2` adds `delegated_reviews`. Version 3 requires
+each record to name the review subagent's model as well as its
+`assigned_tiles`, `completed_tiles`, and `complete` or `incomplete` status.
+Tile review uses the first model available from GPT-5.6 Luna, Composer 2.5,
+then Haiku 4.5. No other model satisfies the contract. `harn review-pack
+reviews add` validates and writes those records.
 
 `resolvePackVerdict` now reads the inspection plan, compares required primary
 tiles with completed review records, and returns `incomplete` while any tile is

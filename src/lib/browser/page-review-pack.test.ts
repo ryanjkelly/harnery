@@ -411,6 +411,9 @@ describe("contact sheets", () => {
     );
     expect(review).toContain("4 per row");
     expect(review).toContain("dispatch review subagents with disjoint assignments");
+    expect(review).toContain(
+      "GPT-5.6 Luna (`gpt-5.6-luna` where an id is required), Composer 2.5, Haiku 4.5",
+    );
     expect(review).toContain("The coordinating agent must not open tile images itself");
   });
 
@@ -994,6 +997,7 @@ describe("findings and verdict", () => {
       delegated_reviews: [
         {
           reviewer: "agent-test",
+          model: "GPT-5.6 Luna",
           assigned_tiles: [
             `${CTX}/T001`,
             `${CTX}/T002`,
@@ -1045,6 +1049,7 @@ describe("findings and verdict", () => {
       delegated_reviews: [
         {
           reviewer: "",
+          model: "unknown",
           assigned_tiles: [`${CTX}/T001`, "bad"],
           completed_tiles: [`${CTX}/T002`],
           status: "done",
@@ -1070,6 +1075,9 @@ describe("findings and verdict", () => {
     });
     expect(errors).toContain("reviewed_at must be an RFC 3339 date-time string or null");
     expect(errors).toContain("delegated_reviews[0]: reviewer must be a non-empty string");
+    expect(errors).toContain(
+      "delegated_reviews[0]: model must be one of GPT-5.6 Luna, Composer 2.5, Haiku 4.5",
+    );
     expect(errors).toContain("delegated_reviews[0]: assigned_tiles contains invalid tile(s): bad");
     expect(errors).toContain("delegated_reviews[0]: status must be complete or incomplete");
     expect(errors).toContain(`delegated_reviews[0]: completed_tiles not assigned: ${CTX}/T002`);
@@ -1234,6 +1242,7 @@ describe("findings and verdict", () => {
         delegated_reviews: [
           {
             reviewer: "agent-one",
+            model: "GPT-5.6 Luna",
             assigned_tiles: [`${CTX}/T001`, `${CTX}/T002`],
             completed_tiles: [`${CTX}/T001`],
             status: "complete",

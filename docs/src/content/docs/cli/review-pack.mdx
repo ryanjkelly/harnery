@@ -64,11 +64,11 @@ harnery ships no model client. The judge uses the same host-injected `critiquePr
 
 ## `reviews add`, `findings add`, `disposition`, `verdict`
 
-The reviewer half of the loop is delegated. The coordinating agent assigns every primary tile to review subagents, and each tile must receive at least one completed native-pixel subagent review. The coordinator never substitutes its own image read. Machine findings in `evidence/critique.json` are claims; review subagents confirm or dismiss each one and record defects the machine missed. The coordinator serializes those reports into `findings.json`, then the verdict command turns both into a reviewed outcome beside the machine outcome. If subagents are unavailable or any primary tile is uncovered, the review is incomplete. `evidence/critique.json` is never edited.
+The reviewer half of the loop is delegated. The coordinating agent assigns every primary tile to review subagents, and each tile must receive at least one completed native-pixel subagent review. It chooses the first available model in this order: GPT-5.6 Luna (`gpt-5.6-luna` where an adapter requires an id), Composer 2.5, then Haiku 4.5. It uses that model for every tile-review subagent and does not substitute another model. The coordinator never substitutes its own image read. Machine findings in `evidence/critique.json` are claims; review subagents confirm or dismiss each one and record defects the machine missed. The coordinator serializes those reports into `findings.json`, then the verdict command turns both into a reviewed outcome beside the machine outcome. If no listed model is available, subagents are unavailable, or any primary tile is uncovered, the review is incomplete. `evidence/critique.json` is never edited.
 
 | Command | Description |
 | --- | --- |
-| `reviews add <dir> --reviewer <id> --assigned <context>/<tile> --completed <context>/<tile>` | Record one review subagent's assignment and completed native-pixel reads (`--assigned` and `--completed` repeatable; `--status complete|incomplete`, default `complete`). Repeating the reviewer id replaces its prior record. Only primary tiles from the inspection plan may be assigned. |
+| `reviews add <dir> --reviewer <id> --model <name> --assigned <context>/<tile> --completed <context>/<tile>` | Record one review subagent's model, assignment, and completed native-pixel reads. `--model` accepts GPT-5.6 Luna, Composer 2.5, or Haiku 4.5. `--assigned` and `--completed` repeat; `--status complete|incomplete` defaults to `complete`. Repeating the reviewer id replaces its prior record. Only primary tiles may be assigned. |
 | `findings add <dir> --context <id> --tile <id> --severity <s> --category <c> --observation <text>` | Append a review-subagent finding (`--tile` repeatable, at least one; `--recommendation`, `--id F001`, `--reviewer <name>` optional; ids auto-number). Validated against `findings.schema.json` before the write. |
 | `disposition <dir> <context>/<tile>#<n> <disposition> [--note <text>] [--by <name>]` | Record a verdict on one machine finding: `confirmed`, `artifact`, `not-a-defect`, or `duplicate-of-gate`. `<n>` is the finding's 0-based position among that tile's findings in `evidence/critique.json`. A target that does not exist is refused; a repeat replaces the earlier disposition. |
 | `verdict <dir> [--json]` | Compute the reviewed outcome and write `evidence/verdict.json` (`harnery-page-review-verdict/v2`), then refresh `review.md` with a "Reviewed outcome" section. A machine `high` counts unless dismissed; a review-subagent finding of severity `critical` or `high` counts. Missing completed subagent coverage for any primary tile keeps the outcome `incomplete`. Exit 2 on `fail`, 4 on `incomplete` or `skipped`, 1 on validation errors. |
@@ -103,7 +103,7 @@ Exit 0 when the region was written; 1 when the pack, context, or tile does not e
 <pack>/
   review.md                  # start here: protocol, contexts, coverage, findings, inspection plan
   manifest.json              # harnery-page-review/v1; carries retention.expires_at and size_bytes
-  findings.json              # delegated output (harnery-page-review-findings/v2): reviews + findings + dispositions
+  findings.json              # delegated output (harnery-page-review-findings/v3): reviews + findings + dispositions
   findings.schema.json
   evidence/
     inspection-plan.json     # the bounded complete-review budget per context, plus gate_hits → tiles
@@ -134,7 +134,7 @@ The inspection plan maps each hit to the tiles whose rect intersects it and list
 
 ## Reviewing a pack
 
-`review.md` carries the protocol. The short version: the coordinating agent reads the context table and coverage, then gives review subagents disjoint assignments covering every inspection-plan primary tile. The subagents use contact sheets for orientation, open their assigned tiles at native pixels, treat machine findings as claims, cite deterministic gate failures rather than re-deriving them, and report anything the machine missed. The coordinator does not open the images; it serializes the subagent reports with `review-pack disposition` and `review-pack findings add`, then runs `review-pack verdict`. Missing subagents or uncovered tiles make the review incomplete. Do it while the pack is alive: 90 minutes after the judge, the tiles are gone and only the report remains.
+`review.md` carries the protocol. The short version: the coordinating agent reads the context table and coverage, selects GPT-5.6 Luna when available (otherwise Composer 2.5, then Haiku 4.5), and gives review subagents disjoint assignments covering every inspection-plan primary tile. The subagents use contact sheets for orientation, open their assigned tiles at native pixels, treat machine findings as claims, cite deterministic gate failures rather than re-deriving them, and report anything the machine missed. The coordinator does not open the images; it records each reviewer and model with `review-pack reviews add`, serializes dispositions and findings, then runs `review-pack verdict`. A missing listed model, missing subagent, or uncovered tile makes the review incomplete. Do it while the pack is alive: 90 minutes after the judge, the tiles are gone and only the report remains.
 
 ## Examples
 

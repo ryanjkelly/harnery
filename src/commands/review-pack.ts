@@ -27,6 +27,7 @@ import {
   PAGE_REVIEW_DISPOSITIONS,
   PAGE_REVIEW_FINDING_CATEGORIES,
   PAGE_REVIEW_FINDING_SEVERITIES,
+  PAGE_REVIEW_SUBAGENT_MODELS,
   PAGE_REVIEW_VERDICT_SCHEMA,
   type PageReviewContextRecord,
   type PageReviewDisposition,
@@ -158,6 +159,7 @@ interface FindingsAddOpts {
 
 interface ReviewAddOpts {
   reviewer?: string;
+  model?: string;
   assigned?: string[];
   completed?: string[];
   status?: string;
@@ -1014,6 +1016,7 @@ export function registerReviewPackCommand(
         "the same reviewer replaces that reviewer's record.",
     )
     .requiredOption("--reviewer <id>", "Review subagent name or stable id.")
+    .requiredOption("--model <name>", `Subagent model: ${PAGE_REVIEW_SUBAGENT_MODELS.join(", ")}.`)
     .requiredOption(
       "--assigned <context/tile>",
       "Assigned primary tile, e.g. desktop-light-default/T012 (repeatable).",
@@ -1055,6 +1058,7 @@ export function registerReviewPackCommand(
       }
       const record = {
         reviewer: opts.reviewer?.trim() ?? "",
+        model: opts.model as (typeof PAGE_REVIEW_SUBAGENT_MODELS)[number],
         assigned_tiles: assigned,
         completed_tiles: completed,
         status: opts.status as "complete" | "incomplete",
