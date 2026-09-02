@@ -1,0 +1,82 @@
+---
+title: "ADR 0155: scope coordination authority to proven generations"
+description: Keep an attributable projection defect inside its generation while preserving global refusal for shared state and incomplete ledger reads.
+sidebar:
+  order: 155
+---
+
+**Date:** 2026-09-02
+**Status:** Accepted
+
+## Context
+
+The V3 safety reducer projects every diagnostic into one `authority_safe`
+boolean. The coordination view used that global value for every live
+generation, even when a diagnostic named one generation, subject instance, or
+event. A transition mismatch in one session therefore removed every session
+from the live coordination view. Unaffected sessions could not declare tasks,
+claim files, or complete their end-of-turn checks.
+
+Some failures cannot be contained safely. Claim and decision projections hold
+shared state. A canonical reader diagnostic makes the source incomplete and
+prevents the reader from producing the append-validation checkpoint that
+proves causal parents and attestation declarations for later writes. Allowing
+an unrelated producer to append without that checkpoint would weaken the
+ordering guarantees established by ADR 0137.
+
+## Alternatives
+
+**Keep one global authority flag.** Rejected because a generation-local
+transition, wait, lifecycle, or terminal defect does not make a peer's event
+chain ambiguous. The existing event and subject attribution already identifies
+the affected generation.
+
+**Scope every diagnostic, including canonical reader failures.** Rejected.
+Malformed frames, sequence gaps, broken causal links, and control-event defects
+make the canonical read incomplete. The writer cannot prove later dependencies
+from an incomplete read, so ADR 0084's fail-closed recovery boundary remains in
+force.
+
+**Scope claim defects to one path and decision defects to one decision.** Not
+chosen here. Those projections are shared across generations and the current
+view has no resource-level authority contract. A future change may add one,
+but treating them as generation-local now would overstate what the reducer can
+prove.
+
+## Decision
+
+`CoordinationViewV3` partitions safety diagnostics into
+`global_diagnostics` and `diagnostics_by_generation`.
+
+Attribution prefers an explicit diagnostic generation and the diagnostic
+event's canonical generation. It falls back to the subject instance's current
+generation only when no exact generation witness exists. A diagnostic with no
+projected generation remains global.
+
+`authority_safe` now means that the coordination view has no global
+authority-blocking diagnostic. Each generation's `authority_eligible` requires
+that global condition, a live phase, and no authority-blocking diagnostic in
+its own partition. Evidence completeness follows the same partition, so an
+isolated defect does not erase a peer's evidence.
+
+All `ledger_incomplete`, claim-conflict, claim-release, and decision-state
+diagnostics remain global. An unverified claim or decision attribution also
+remains global. Existing consumers may still call
+`requireAuthoritySafeCoordinationViewV3`; the helper now rejects only when the
+view's global boundary is unsafe, while consumers continue filtering individual
+generations through `authority_eligible`.
+
+`agents health` reports global and isolated coordination diagnostics, their
+codes, and the affected generation IDs on its first read. The normal health box
+shows whether coordination authority is safe and how many diagnostics were
+isolated.
+
+## Result
+
+Regression coverage projects two live generations beside one task-transition
+prior-state mismatch. The affected generation loses authority and evidence;
+its peer remains eligible and can complete finalization. A high-level test then
+records a real task mutation for the unaffected peer through the coordination
+outbox. Separate tests prove that a producer sequence gap from the canonical
+reader and a shared decision-state mismatch still close the global gate.
+

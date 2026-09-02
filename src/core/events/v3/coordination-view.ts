@@ -52,8 +52,11 @@ export interface CoordinationViewV3 {
   contract_major: 2;
   reducer_build_id: typeof EVENT_V3_SAFETY_REDUCER_BUILD;
   source_complete: boolean;
+  /** True when no unscoped authority diagnostic can affect every generation. */
   authority_safe: boolean;
   diagnostics: SafetyProjectionDiagnosticV3[];
+  global_diagnostics: SafetyProjectionDiagnosticV3[];
+  diagnostics_by_generation: Record<string, SafetyProjectionDiagnosticV3[]>;
   instances: Record<string, CoordinationGenerationViewV3>;
   terminal_generations: Record<string, CoordinationGenerationViewV3>;
   delegations: SafetyProjectionV3["delegations"];
@@ -95,7 +98,9 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
   const safety = reduceSafetyProjectionV3(read);
   const starts = new Map<string, Extract<EventV3, { event_type: "session.started" }>>();
   const eventGeneration = new Map<string, string>();
+  const eventTypes = new Map<string, EventV3["event_type"]>();
   for (const { event } of read.events) {
+    eventTypes.set(event.event_id, event.event_type);
     const generationId = "generation_id" in event.scope ? event.scope.generation_id : undefined;
     if (generationId !== undefined) {
       eventGeneration.set(event.event_id, generationId);
@@ -105,6 +110,15 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
     }
   }
 
+  const { globalDiagnostics, diagnosticsByGeneration } = partitionCoordinationDiagnosticsV3(
+    safety,
+    eventGeneration,
+    eventTypes,
+  );
+  const globalAuthoritySafe = !globalDiagnostics.some(
+    (diagnostic) => diagnostic.authority_blocking,
+  );
+
   const instances: Record<string, CoordinationGenerationViewV3> = {};
   const terminalGenerations: Record<string, CoordinationGenerationViewV3> = {};
   const states = Object.values(safety.generations).sort((left, right) =>
@@ -113,14 +127,7 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
   for (const state of states) {
     const started = starts.get(state.generation_id);
     if (!started) continue;
-    const diagnostics = safety.diagnostics.filter(
-      (diagnostic) =>
-        diagnostic.generation_id === state.generation_id ||
-        diagnostic.subject_instance_id === state.instance_id ||
-        (diagnostic.event_id !== undefined &&
-          eventGeneration.get(diagnostic.event_id) === state.generation_id) ||
-        diagnostic.code === "ledger_incomplete",
-    );
+    const diagnostics = diagnosticsByGeneration[state.generation_id] ?? [];
     const delegation = Object.values(safety.delegations).find(
       (candidate) => candidate.child_generation_id === state.generation_id,
     );
@@ -173,8 +180,11 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
       last_context_event_id: state.last_context_event_id,
       provisional_termination: state.provisional_termination,
       terminal: state.terminal,
-      evidence_complete: safety.evidence_complete && diagnostics.length === 0,
-      authority_eligible: safety.authority_safe && state.phase === "live",
+      evidence_complete: globalDiagnostics.length === 0 && diagnostics.length === 0,
+      authority_eligible:
+        globalAuthoritySafe &&
+        !diagnostics.some((diagnostic) => diagnostic.authority_blocking) &&
+        state.phase === "live",
     };
     if (state.phase === "terminal") {
       terminalGenerations[state.generation_id] = view;
@@ -188,8 +198,10 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
     contract_major: 2,
     reducer_build_id: EVENT_V3_SAFETY_REDUCER_BUILD,
     source_complete: read.complete,
-    authority_safe: safety.authority_safe,
+    authority_safe: globalAuthoritySafe,
     diagnostics: safety.diagnostics,
+    global_diagnostics: globalDiagnostics,
+    diagnostics_by_generation: diagnosticsByGeneration,
     instances,
     terminal_generations: terminalGenerations,
     delegations: safety.delegations,
@@ -198,6 +210,83 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
   };
   coordinationViewCacheV3.set(read, view);
   return view;
+}
+
+/**
+ * Partition reducer findings at the narrowest authority boundary that can be
+ * proven from canonical event attribution. A diagnostic stays global when it
+ * concerns shared claim/decision state, lacks a live generation witness, or
+ * came from the canonical reader. Reader failures deliberately remain global:
+ * an incomplete read cannot produce the append checkpoint that proves causal
+ * parents and attestations for later writes.
+ */
+function partitionCoordinationDiagnosticsV3(
+  safety: SafetyProjectionV3,
+  eventGeneration: ReadonlyMap<string, string>,
+  eventTypes: ReadonlyMap<string, EventV3["event_type"]>,
+): {
+  globalDiagnostics: SafetyProjectionDiagnosticV3[];
+  diagnosticsByGeneration: Record<string, SafetyProjectionDiagnosticV3[]>;
+} {
+  const globalDiagnostics: SafetyProjectionDiagnosticV3[] = [];
+  const diagnosticsByGeneration: Record<string, SafetyProjectionDiagnosticV3[]> = {};
+  for (const diagnostic of safety.diagnostics) {
+    const generationIds = diagnosticGenerationIdsV3(diagnostic, safety, eventGeneration);
+    if (
+      generationIds.length === 0 ||
+      diagnosticRequiresGlobalAuthorityV3(diagnostic, eventTypes.get(diagnostic.event_id ?? ""))
+    ) {
+      globalDiagnostics.push(diagnostic);
+      continue;
+    }
+    for (const generationId of generationIds) {
+      const generationDiagnostics = diagnosticsByGeneration[generationId] ?? [];
+      generationDiagnostics.push(diagnostic);
+      diagnosticsByGeneration[generationId] = generationDiagnostics;
+    }
+  }
+  return { globalDiagnostics, diagnosticsByGeneration };
+}
+
+function diagnosticGenerationIdsV3(
+  diagnostic: SafetyProjectionDiagnosticV3,
+  safety: SafetyProjectionV3,
+  eventGeneration: ReadonlyMap<string, string>,
+): string[] {
+  const exact = new Set<string>();
+  if (diagnostic.generation_id && safety.generations[diagnostic.generation_id]) {
+    exact.add(diagnostic.generation_id);
+  }
+  const eventGenerationId = diagnostic.event_id
+    ? eventGeneration.get(diagnostic.event_id)
+    : undefined;
+  if (eventGenerationId && safety.generations[eventGenerationId]) exact.add(eventGenerationId);
+  if (exact.size > 0) return [...exact].sort();
+
+  const subjectGenerationId = diagnostic.subject_instance_id
+    ? safety.current_generation_by_instance[diagnostic.subject_instance_id]
+    : undefined;
+  return subjectGenerationId && safety.generations[subjectGenerationId]
+    ? [subjectGenerationId]
+    : [];
+}
+
+function diagnosticRequiresGlobalAuthorityV3(
+  diagnostic: SafetyProjectionDiagnosticV3,
+  eventType: EventV3["event_type"] | undefined,
+): boolean {
+  if (diagnostic.code === "ledger_incomplete") return true;
+  if (diagnostic.code === "decision_prior_mismatch") return true;
+  if (
+    diagnostic.code === "claim_acquire_conflict" ||
+    diagnostic.code === "claim_release_without_acquire"
+  ) {
+    return true;
+  }
+  return (
+    diagnostic.code === "authority_attribution_unverified" &&
+    (eventType === "decision.state_changed" || eventType === "coord.claim_changed")
+  );
 }
 
 /** Refuse authority decisions while still allowing callers to render diagnostics. */

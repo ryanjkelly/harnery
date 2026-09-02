@@ -12,6 +12,7 @@ import {
 import { repairEventV3ControlPair } from "../core/events/v3/control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../core/events/v3/fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
+import { recordCoordinationAuthorityV3 } from "../core/events/v3/producers/coordination-recorder.ts";
 import {
   appendHookIntakeRecordV3,
   writeProducerDiagnosticV3,
@@ -152,6 +153,85 @@ describe("event-ledger health counters", () => {
 
     // No producer is near the span cap.
     expect(health.span_pressure).toEqual([]);
+    expect(health.coordination_authority).toEqual({
+      safe: true,
+      global_diagnostics: 0,
+      isolated_diagnostics: 0,
+      affected_generations: [],
+      codes: [],
+    });
+  });
+
+  test("reports a generation-isolated authority diagnostic on its first health read", () => {
+    const root = candidateRoot();
+    const firstSession = "native-health-first";
+    const secondSession = "native-health-second";
+    expect(
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "session-start",
+          parsed({ session_id: firstSession }),
+          "cursor",
+          "inst_first",
+        ),
+      ).state,
+    ).toBe("recorded");
+    expect(
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "session-start",
+          parsed({ session_id: secondSession }),
+          "cursor",
+          "inst_second",
+        ),
+      ).state,
+    ).toBe("recorded");
+    const first = readHookProducerStateV3(root, "cursor", firstSession);
+    const second = readHookProducerStateV3(root, "cursor", secondSession);
+    if (!first || !second) throw new Error("expected two producer generations");
+    let authorityState = sha256V3("empty");
+    const desiredState = sha256V3("cleared");
+    expect(
+      recordCoordinationAuthorityV3({
+        coordRoot: root,
+        mode: "candidate",
+        signal: "task-changed",
+        observation: {
+          native_observation_id: "mismatched-first-task",
+          state: "cleared",
+          prior_state: "set",
+        },
+        adapter: "cursor",
+        native_actor_session_id: firstSession,
+        actor_instance_id: first.instance_id,
+        subject_instance_id: first.instance_id,
+        producer_id: "prd_coord",
+        build_id: "build_fixture",
+        platform: "linux",
+        expected_prior_state_digest: authorityState,
+        desired_state_digest: desiredState,
+        reconciler: {
+          readStateDigest: () => authorityState,
+          apply: () => {
+            authorityState = desiredState;
+          },
+        },
+      }).state,
+    ).toBe("recorded");
+
+    const health = collectEventLedgerHealthV3(root);
+    if (health.state !== "live") throw new Error(`expected live health, got ${health.reason}`);
+
+    expect(health.coordination_authority).toEqual({
+      safe: true,
+      global_diagnostics: 0,
+      isolated_diagnostics: 1,
+      affected_generations: [first.generation_id],
+      codes: ["transition_prior_mismatch"],
+    });
+    expect(health.coordination_authority.affected_generations).not.toContain(second.generation_id);
   });
 });
 
@@ -197,6 +277,7 @@ function baseInput(
   signal: Parameters<typeof recordHookSignalV3>[0]["signal"],
   payload: ParsedPayload,
   adapter: "claude-code" | "cursor" = "claude-code",
+  instanceId: `inst_${string}` = "inst_fixture",
 ) {
   return {
     coordRoot: root,
@@ -204,7 +285,7 @@ function baseInput(
     signal,
     payload,
     adapter,
-    instance_id: "inst_fixture" as const,
+    instance_id: instanceId,
     producer_id: "prd_hook" as const,
     build_id: "build_fixture" as const,
     platform: "linux" as const,

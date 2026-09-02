@@ -29,6 +29,7 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
+import { recordCoordinationAuthorityV3 } from "../events/v3/producers/coordination-recorder.ts";
 import {
   listHookProducerStateRecordsV3,
   recordHookSignalV3,
@@ -770,6 +771,77 @@ describe("live V3 coordination", () => {
     expect(
       ensureLiveCoordinationHeartbeat(root, "operator", "native-session", "claude-code"),
     ).not.toBeNull();
+  });
+
+  test("lets an unaffected peer mutate after another generation fails projection", () => {
+    const root = candidateRoot("claude-code");
+    for (const [owner, nativeSessionId] of [
+      ["first", "native-first"],
+      ["second", "native-second"],
+    ] as const) {
+      expect(
+        recordHookSignalV3({
+          coordRoot: root,
+          mode: "candidate",
+          signal: "session-start",
+          payload: parsed({ session_id: nativeSessionId }),
+          adapter: "claude-code",
+          instance_id: `inst_${owner}`,
+          producer_id: "prd_agent-hook",
+          build_id: "build_fixture",
+          platform: "linux",
+        }).state,
+      ).toBe("recorded");
+      expect(
+        ensureLiveCoordinationHeartbeat(root, owner, nativeSessionId, "claude-code"),
+      ).not.toBeNull();
+    }
+
+    let firstState = sha256V3("empty");
+    const clearedState = sha256V3("cleared");
+    expect(
+      recordCoordinationAuthorityV3({
+        coordRoot: root,
+        mode: "candidate",
+        signal: "task-changed",
+        observation: {
+          native_observation_id: "invalid-first-transition",
+          state: "cleared",
+          prior_state: "set",
+        },
+        adapter: "claude-code",
+        native_actor_session_id: "native-first",
+        actor_instance_id: "inst_first",
+        subject_instance_id: "inst_first",
+        producer_id: "prd_fault-fixture",
+        build_id: "build_fixture",
+        platform: "linux",
+        expected_prior_state_digest: firstState,
+        desired_state_digest: clearedState,
+        reconciler: {
+          readStateDigest: () => firstState,
+          apply: () => {
+            firstState = clearedState;
+          },
+        },
+      }).state,
+    ).toBe("recorded");
+
+    const faultedView = readCoordinationViewV3(root);
+    expect(faultedView.authority_safe).toBeTrue();
+    expect(faultedView.instances.inst_first?.authority_eligible).toBeFalse();
+    expect(faultedView.instances.inst_second?.authority_eligible).toBeTrue();
+    expect(
+      recordLiveTaskChangeV3({
+        coordRoot: root,
+        owner: "second",
+        nativeSessionId: "native-second",
+        adapter: "claude-code",
+        task: "Continue unaffected work",
+      }).state,
+    ).toBe("recorded");
+    expect(readHeartbeat(root, "second")?.task).toBe("Continue unaffected work");
+    expect(readCoordinationViewV3(root).instances.inst_second?.task_state).toBe("set");
   });
 });
 

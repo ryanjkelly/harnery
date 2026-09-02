@@ -92,7 +92,10 @@ import {
 } from "../core/config.ts";
 import type { EventTypeV3 } from "../core/events/v3/contract.ts";
 import { readEventV3ControlState } from "../core/events/v3/control.ts";
-import { projectCoordinationViewV3 } from "../core/events/v3/coordination-view.ts";
+import {
+  projectCoordinationViewV3,
+  readCoordinationViewV3,
+} from "../core/events/v3/coordination-view.ts";
 import { liveInstanceIdV3 } from "../core/events/v3/live-routing.ts";
 import {
   countSummarizedSinceV3,
@@ -3113,6 +3116,13 @@ export type EventLedgerHealthV3 =
         /** Times the summary gate failed open (loose write proceeded). */
         mitigation_fail_open: number;
       };
+      coordination_authority: {
+        safe: boolean;
+        global_diagnostics: number;
+        isolated_diagnostics: number;
+        affected_generations: string[];
+        codes: string[];
+      };
       span_pressure: Array<{ instance_id: string; generation_id: string; span_count: number }>;
       collection_errors: string[];
     };
@@ -3292,6 +3302,57 @@ export function collectEventLedgerHealthV3(root: string, nowMs = Date.now()): Ev
     collectionErrors.push(`diagnostic summaries unreadable: ${errorText(error)}`);
   }
 
+  let coordinationAuthority: Extract<
+    EventLedgerHealthV3,
+    { state: "live" }
+  >["coordination_authority"] = {
+    safe: false,
+    global_diagnostics: 0,
+    isolated_diagnostics: 0,
+    affected_generations: [],
+    codes: [],
+  };
+  try {
+    const view = readCoordinationViewV3(root);
+    const globalDiagnostics = view.global_diagnostics.filter(
+      (diagnostic) => diagnostic.authority_blocking,
+    );
+    const isolatedDiagnostics = new Map<string, (typeof globalDiagnostics)[number]>();
+    const affectedGenerations: string[] = [];
+    for (const [generationId, diagnostics] of Object.entries(view.diagnostics_by_generation)) {
+      const blocking = diagnostics.filter((diagnostic) => diagnostic.authority_blocking);
+      if (blocking.length === 0) continue;
+      affectedGenerations.push(generationId);
+      for (const diagnostic of blocking) {
+        isolatedDiagnostics.set(
+          [
+            diagnostic.code,
+            diagnostic.source_code ?? "",
+            diagnostic.event_id ?? "",
+            diagnostic.generation_id ?? "",
+            diagnostic.subject_instance_id ?? "",
+          ].join("\0"),
+          diagnostic,
+        );
+      }
+    }
+    coordinationAuthority = {
+      safe: view.authority_safe,
+      global_diagnostics: globalDiagnostics.length,
+      isolated_diagnostics: isolatedDiagnostics.size,
+      affected_generations: affectedGenerations.sort(),
+      codes: [
+        ...new Set(
+          [...globalDiagnostics, ...isolatedDiagnostics.values()].map(
+            (diagnostic) => diagnostic.source_code ?? diagnostic.code,
+          ),
+        ),
+      ].sort(),
+    };
+  } catch (error) {
+    collectionErrors.push(`coordination authority unreadable: ${errorText(error)}`);
+  }
+
   return {
     state: "live",
     mode: control.state,
@@ -3315,6 +3376,7 @@ export function collectEventLedgerHealthV3(root: string, nowMs = Date.now()): Ev
       recent_by_category: recentByCategory,
       mitigation_fail_open: mitigationFailOpen,
     },
+    coordination_authority: coordinationAuthority,
     span_pressure: spanPressure,
     collection_errors: collectionErrors,
   };
@@ -4070,6 +4132,17 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     );
   }
   if (eventLedger.state === "live") {
+    const authority = eventLedger.coordination_authority;
+    if (authority.global_diagnostics > 0) {
+      findings.push(
+        `${authority.global_diagnostics} global coordination authority diagnostic(s): ${authority.codes.join(", ")}`,
+      );
+    }
+    if (authority.isolated_diagnostics > 0) {
+      findings.push(
+        `${authority.isolated_diagnostics} coordination authority diagnostic(s) isolated to ${authority.affected_generations.length} generation(s): ${authority.codes.join(", ")}`,
+      );
+    }
     // Open spans whose generation has no open turn: the turn ended without its
     // tool spans closing, so an explicit end can only queue, never finalize.
     const orphanGenerations = eventLedger.open_spans.generations.filter(
@@ -4210,6 +4283,7 @@ function renderHealthBox(report: HealthReport): void {
       )
       .join(", ");
     ledgerStr = [
+      `authority ${ledger.coordination_authority.safe ? "safe" : "unsafe"}${ledger.coordination_authority.isolated_diagnostics > 0 ? ` (${ledger.coordination_authority.isolated_diagnostics} isolated)` : ""}`,
       `open spans ${ledger.open_spans.total}${orphanGenerations > 0 ? ` (${orphanGenerations} gen turn-closed)` : ""}`,
       `pending ends ${ledger.pending_finalizations.length}${pendingAges ? ` (${pendingAges})` : ""}`,
       `intake ${ledger.intake_spool.total}`,
