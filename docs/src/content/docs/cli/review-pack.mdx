@@ -9,11 +9,19 @@ sidebar:
 harn review-pack create [options] <target>
 harn review-pack judge [options] <dir>
 harn review-pack expand [options] <dir> --tile <id>
+harn review-pack findings add [options] <dir>
+harn review-pack disposition [options] <dir> <context>/<tile>#<n> <disposition>
+harn review-pack verdict [options] <dir>
+harn review-pack list [options]
+harn review-pack show [options] <dir>
+harn review-pack clean [options]
 ```
 
 A **page review pack** is the on-disk evidence for reviewing one rendered page. For every rendering context (viewport × theme × state) it holds the full-page screenshot, the critique tiles as PNG files, the serialized DOM, and the QA signature. On top sit a `review.md` entry point, a bounded inspection plan, coverage, deterministic gate results, machine findings once a judge has run, and a reviewer-owned `findings.json`. An agent can review the page from the pack alone, with no browser and no third-party tool.
 
-The pack is also what makes judging cheap. Capture needs a browser and takes seconds; judging needs a vision model and takes minutes. Splitting them means every browser closes before the first model call, and one bounded pool judges every tile of every context. [`harn qa-run`](/cli/qa-run/) writes a pack in every run directory; this command builds or judges one directly.
+The pack is also what makes judging cheap. Capture needs a browser and takes seconds; judging needs a vision model and takes minutes. Splitting them means every browser closes before the first model call, and one bounded pool judges every tile of every context. The judge never opens a browser. [`harn qa-run`](/cli/qa-run/) writes a pack in every run directory; this command builds or judges one directly.
+
+A pack is working evidence, not a record. It expires **90 minutes after its judge finishes** (after capture when no judge runs) and the whole directory is then deleted, leaving only `pack-expired.json` (target, created and expiry times, context count, machine outcome). The run's `page-qa-result.json` carries every machine finding inline, so a run stays reportable after its pack is gone. Anything a reader must keep (a cited tile, a disposition, a reviewed outcome) goes into the report while the pack is alive. `--retain <minutes>` on `create`, `judge`, and `qa-run` changes the window for one pack; a pack written to an explicit `--out` is unmanaged and is never deleted automatically.
 
 ## `create <target>`
 
@@ -28,9 +36,14 @@ Renders each context once through child [`harn browse --review-pack`](/cli/brows
 | `--max-tiles <n>` | Full-page band cap per context (default 24). Coverage records what was kept. |
 | `--concurrency <n>` | Concurrent capture browsers (1–8; default 2). |
 | `--timeout <ms>` | Per-capture timeout (default 120000). |
+| `--retain <minutes>` | Minutes until the pack expires and is deleted (default 90). |
 | `--json` | Print the pack manifest. |
 
 Exit 0 when every context was captured; 4 when at least one capture failed (the pack still holds the others and names the gap under warnings); 1 for usage errors.
+
+**Capture fidelity.** A full-page screenshot of a very tall page can differ from what a scrolling reader sees (a blank block where content should be, a callout cut mid-sentence). While its browser is still open, each capture re-shoots two probe bands (the top band and the middle band) by scrolling to them and compares the result with the same region of the full-page screenshot, using the band-diff mismatch threshold. When the probes agree, the tiles come from the full-page screenshot and the context records `capture_fidelity.source: "full-page"`. When a probe disagrees, every band is re-captured by scrolling, the tiles are cut from those captures instead, the record says `"scrolled-bands"`, and `review.md` carries a coverage warning. Band-diff reuse is skipped for a scrolled-bands context because its full-page PNG is no longer what the tiles came from.
+
+**Gate-hit bands.** When [`harn qa-run`](/cli/qa-run/) captures a context, it passes every rectangle its deterministic gates recorded (`browse --review-pack-hit-rect`). A band that contains one of those rectangles is captured even when it lies below the tile cap, labelled `hit band <n>` with `kind: "hit-band"`, so the reviewer opens the tile that shows the overflow or the runt instead of reading "no tile covers this rect". Coverage still reports the regular band prefix honestly; `hit_bands` on the context record counts the extras.
 
 ## `judge <dir>`
 
@@ -41,11 +54,32 @@ Reads the pack's tiles back from disk and sends every tile of every context thro
 | `--pool <n>` | Vision calls in flight across the pack (1–16; default: the provider's own concurrency). |
 | `--allow-metered` | Permit the provider's metered-API fallback. Default: subscription-backed headless harnesses only (`HARNERY_CRITIQUE_HEADLESS_ONLY=1` is set while the judge runs). |
 | `--context <id>` | Judge only this context id (repeatable). |
+| `--retain <minutes>` | Reset the pack's expiry to this many minutes after the judge finishes (default 90). |
 | `--json` | Print the judge result. |
 
 Exit 0 when every judged context passed; 2 on a high-severity finding; 4 when no provider judged (the host injected none, or the headless list was exhausted); 1 for usage errors.
 
-harnery ships no model client. The judge uses the same host-injected `critiqueProvider` as `browse --check-critique`; without one every context reports `skipped`, never a pass.
+harnery ships no model client. The judge uses the same host-injected `critiqueProvider` as `browse --check-critique`; without one every context reports `skipped`, never a pass. Each tile goes to the provider with the rubric plus a short position preamble (band N of M, document y range, page height, overlap with its neighbours, whether it touches the page top or bottom, and the capture source), so the model can tell a slice edge from a container edge.
+
+## `findings add`, `disposition`, `verdict`
+
+The reviewer half of the loop. Machine findings in `evidence/critique.json` are claims; a reviewer confirms or dismisses each one and records defects the machine missed, and the verdict command turns both into a reviewed outcome that sits beside the machine outcome. `evidence/critique.json` is never edited; everything the reviewer writes goes into `findings.json`.
+
+| Command | Description |
+| --- | --- |
+| `findings add <dir> --context <id> --tile <id> --severity <s> --category <c> --observation <text>` | Append a reviewer finding (`--tile` repeatable, at least one; `--recommendation`, `--id F001`, `--reviewer <name>` optional; ids auto-number). Validated against `findings.schema.json` before the write. |
+| `disposition <dir> <context>/<tile>#<n> <disposition> [--note <text>] [--by <name>]` | Record a verdict on one machine finding: `confirmed`, `artifact`, `not-a-defect`, or `duplicate-of-gate`. `<n>` is the finding's 0-based position among that tile's findings in `evidence/critique.json`. A target that does not exist is refused; a repeat replaces the earlier disposition. |
+| `verdict <dir> [--json]` | Compute the reviewed outcome and write `evidence/verdict.json` (`harnery-page-review-verdict/v1`), then refresh `review.md` with a "Reviewed outcome" section. A machine `high` counts unless its disposition is `artifact`, `not-a-defect`, or `duplicate-of-gate`; a reviewer finding of severity `critical` or `high` counts. Exit 2 when the reviewed outcome is `fail`, 4 when it is `incomplete` or `skipped`, 1 on validation errors. |
+
+The reviewed outcome does not change what `qa-run` calls `passed`; it is the reviewer's record, reported beside the machine outcome.
+
+## `list`, `show`, `clean`
+
+| Command | Description |
+| --- | --- |
+| `list [--root <dir>] [--json]` | Every pack under the artifact store (or `--root`): path, age, size, contexts, machine outcome, reviewed outcome when a verdict exists, expiry, and whether it has expired. |
+| `show <dir> [--json]` | One pack's context table and finding counts from `manifest.json`, without opening `review.md`. |
+| `clean [--root <dir>] [--yes] [--include-unmanaged] [--json]` | Preview the expired packs under the store and, with `--yes`, delete them. Deletion empties the pack directory (keeping only a workspace's own artifact manifest) and writes `pack-expired.json`. A pack without `retention.managed: true` is skipped unless `--include-unmanaged` is passed. Hosts can run this sweep automatically before each `qa-run` and `review-pack create` by setting `review_pack.auto_clean: true` in the harnery config; it ships off. |
 
 ## `expand <dir> --tile <id>`
 
@@ -66,22 +100,25 @@ Exit 0 when the region was written; 1 when the pack, context, or tile does not e
 ```
 <pack>/
   review.md                  # start here: protocol, contexts, coverage, findings, inspection plan
-  manifest.json              # harnery-page-review/v1
-  findings.json              # reviewer-owned output (harnery-page-review-findings/v1)
+  manifest.json              # harnery-page-review/v1; carries retention.expires_at and size_bytes
+  findings.json              # reviewer-owned output (harnery-page-review-findings/v1): findings + dispositions
   findings.schema.json
   evidence/
     inspection-plan.json     # the bounded complete-review budget per context, plus gate_hits → tiles
     coverage.json            # bands kept vs page height, warnings, not_checked
-    critique.json            # machine findings per context and tile (after judge)
+    critique.json            # machine findings per context and tile (after judge); never edited
+    verdict.json             # reviewed outcome (after review-pack verdict)
     index.json  files.json   # small map, complete inventory
   contexts/<context-id>/
-    context.json             # viewport, theme, state, url, page size, coverage, tile records
+    context.json             # viewport, theme, state, url, page size, coverage, capture_fidelity, tile records
     full-page.png            # orientation only; tiles are the evidence
     contacts.png             # every tile downscaled into one grid, ids stamped (orientation only)
-    tiles/T001.png …         # native-pixel tiles, ids stable within the context
+    tiles/T001.png …         # native-pixel tiles, ids stable within the context (bands, hit bands, scopes)
     tiles/T012@2x.png        # one region re-captured at 2× (review-pack expand), optional
-    tiles.json  dom.html  signature.json
+    tiles.json  dom.html.gz  signature.json
 ```
+
+After expiry the directory holds only `pack-expired.json`.
 
 Tile ids are `T001…` per context, bands first and then each scope's tiles in selector order; a finding cites `<context-id>/<tile-id>`. Every tile record carries its SHA-256, and the judge refuses a tile whose bytes no longer match, so a pack cannot be edited under a verdict.
 
@@ -95,7 +132,7 @@ The inspection plan maps each hit to the tiles whose rect intersects it and list
 
 ## Reviewing a pack
 
-`review.md` carries the protocol. The short version: read the context table and coverage, glance at each context's contact sheet for orientation, open the inspection plan's primary tiles (page top, page bottom, every scoped tile, every tile with a machine finding), treat machine findings as claims to confirm against the tile, cite deterministic gate failures rather than re-deriving them (their `gate_hits` name the tiles to look at), do not invent evidence for anything under "not checked", and write findings into `findings.json` with `id`, `severity`, `category`, `context_id`, `evidence`, and `observation`.
+`review.md` carries the protocol. The short version: read the context table and coverage, glance at each context's contact sheet for orientation, open the inspection plan's primary tiles (page top, page bottom, every scoped tile, every hit band, every tile with a machine finding), treat machine findings as claims to confirm against the tile, cite deterministic gate failures rather than re-deriving them (their `gate_hits` name the tiles to look at), do not invent evidence for anything under "not checked", disposition every machine finding with `review-pack disposition`, add what the machine missed with `review-pack findings add`, and run `review-pack verdict`. Do it while the pack is alive: 90 minutes after the judge, the tiles are gone and only the report remains.
 
 ## Examples
 
@@ -111,6 +148,15 @@ harn review-pack judge ./pack --pool 8
 
 # Look closer at one tile: re-render it at 2× beside the original
 harn review-pack expand ./pack --tile T012 --context desktop-light-default
+
+# Dismiss a machine finding as a capture artifact, record one the machine missed, and write the reviewed outcome
+harn review-pack disposition ./pack desktop-light-default/T006#0 artifact --note "callout is intact when scrolled"
+harn review-pack findings add ./pack --context mobile-dark-default --tile T015 --severity medium --category contrast --observation "table headers are hard to read on the dark surface"
+harn review-pack verdict ./pack
+
+# See what is on disk, then delete what has expired
+harn review-pack list
+harn review-pack clean --yes
 ```
 
 ## See also
