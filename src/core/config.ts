@@ -155,6 +155,14 @@ interface HarneryConfig {
     max_unit_bytes?: number;
   };
   /**
+   * Page review packs. `auto_clean` lets `qa-run` and `review-pack create`
+   * delete expired packs in the artifact store before they start. Read via
+   * `reviewPackAutoCleanEnabled()`; ships off.
+   */
+  review_pack?: {
+    auto_clean?: boolean;
+  };
+  /**
    * `harn backup` (restic) defaults: `repo` path/URL, `password_file`, and the
    * `keep_daily`/`keep_weekly`/`keep_monthly` prune policy. Read via `backupConfig()`.
    */
@@ -799,6 +807,21 @@ export function artifactAutoCleanEnabled(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return true;
   return readConfig(root).artifacts?.auto_clean !== false;
+}
+
+/**
+ * Whether `qa-run` and `review-pack create` sweep expired page review packs
+ * out of the artifact store before starting. Precedence:
+ * `HARNERY_REVIEW_PACK_AUTO_CLEAN` (1/true enables, 0/false disables) ->
+ * `review_pack.auto_clean` -> disabled. The sweep deletes only packs whose
+ * manifest says `managed: true` with `retention.expires_at` in the past.
+ */
+export function reviewPackAutoCleanEnabled(coordRoot?: string | null): boolean {
+  const env = coordEnv("REVIEW_PACK_AUTO_CLEAN");
+  if (env !== undefined) return env === "1" || env.toLowerCase() === "true";
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return false;
+  return readConfig(root).review_pack?.auto_clean === true;
 }
 
 /**

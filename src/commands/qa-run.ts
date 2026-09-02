@@ -9,9 +9,14 @@ import { join, resolve } from "node:path";
 import { type Command, Option } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { recordQaSignal } from "../core/agents/qa-signal.ts";
-import { resolveBinName } from "../core/config.ts";
+import { artifactsRoot } from "../core/artifacts/index.ts";
+import { resolveBinName, reviewPackAutoCleanEnabled } from "../core/config.ts";
 import { createManagedQaOutParent, resolveQaRepoRoot } from "../core/qa-artifacts.ts";
 import { acquireAdmission, admissionBaseDir, admissionStatus } from "../lib/admission.ts";
+import {
+  deleteExpiredPacks,
+  PAGE_REVIEW_DEFAULT_RETENTION_MINUTES,
+} from "../lib/browser/page-review-pack.ts";
 import {
   QA_RUN_JOB_FILENAME,
   QA_RUN_RESULT_FILENAME,
@@ -40,6 +45,7 @@ interface QaRunOpts {
   concurrency?: string;
   pool?: string;
   allowMetered?: boolean;
+  retain?: string;
   outDir?: string;
   json?: boolean;
   detach?: boolean;
@@ -89,6 +95,12 @@ export function registerQaRunCommand(
       "--allow-metered",
       "Permit the critique provider's metered-API fallback. Default: subscription-backed " +
         "headless harnesses only — exhaustion becomes an incomplete blocker, never a metered call.",
+    )
+    .option(
+      "--retain <minutes>",
+      `Minutes the run's page review pack lives after the judge finishes before the whole ` +
+        `pack is deleted (1-43200; default ${PAGE_REVIEW_DEFAULT_RETENTION_MINUTES}). Sets ` +
+        "policy.review_pack_retention_minutes. The result document keeps every finding inline.",
     )
     .option(
       "--out-dir <dir>",
@@ -221,14 +233,46 @@ export function registerQaRunCommand(
         policy.critique_pool = n;
       }
       if (opts.allowMetered) policy.allow_metered_critique = true;
+      if (opts.retain !== undefined) {
+        const n = Number.parseInt(opts.retain, 10);
+        if (!Number.isInteger(n) || n < 1 || n > 43_200) {
+          emit.error({
+            code: "qa_run_invalid_retain",
+            message: "--retain must be an integer between 1 and 43200 (minutes)",
+          });
+          process.exitCode = 1;
+          return;
+        }
+        policy.review_pack_retention_minutes = n;
+      }
       const job: QaRunJob = { ...validation.job, policy };
+
+      const repoRoot = resolveQaRepoRoot(context);
+      // Expired packs in the store go before this run adds one; opt-in via
+      // review_pack.auto_clean. Only managed, expired packs are deleted.
+      if (reviewPackAutoCleanEnabled(repoRoot)) {
+        try {
+          const swept = deleteExpiredPacks({ roots: [artifactsRoot(repoRoot)], dryRun: false });
+          if (swept.deleted.length > 0) {
+            emit.log(
+              `removed ${swept.deleted.length} expired page review pack${swept.deleted.length === 1 ? "" : "s"}`,
+              "info",
+            );
+          }
+        } catch (err: unknown) {
+          emit.log(
+            `expired pack sweep skipped: ${err instanceof Error ? err.message : String(err)}`,
+            "warn",
+          );
+        }
+      }
 
       let outParent: string;
       try {
         outParent =
           opts.outDir !== undefined
             ? resolve(opts.outDir)
-            : createManagedQaOutParent(resolveQaRepoRoot(context), "qa-run");
+            : createManagedQaOutParent(repoRoot, "qa-run");
       } catch (err: unknown) {
         emit.error({
           code: "qa_run_output_unavailable",
@@ -304,6 +348,7 @@ export function registerQaRunCommand(
           ...(opts.concurrency !== undefined ? ["--concurrency", opts.concurrency] : []),
           ...(opts.pool !== undefined ? ["--pool", opts.pool] : []),
           ...(opts.allowMetered ? ["--allow-metered"] : []),
+          ...(opts.retain !== undefined ? ["--retain", opts.retain] : []),
           "--out-dir",
           outParent,
           "--run-id",
@@ -417,6 +462,9 @@ export function registerQaRunCommand(
           ? { critiqueProviderLoader: context.critiqueProviderLoader }
           : {}),
         reviewPackJudgeCommand: (packDir) => `${binName} review-pack judge ${packDir}`,
+        // A pack in the managed store expires and is deleted; one under an
+        // explicit --out-dir is the caller's and is never swept automatically.
+        reviewPackManaged: opts.outDir === undefined,
         onLog: (message) => emit.log(message, "info"),
       });
 
@@ -433,7 +481,15 @@ export function registerQaRunCommand(
           "warn",
         );
       }
-      if (result.review_pack) emit.log(`review pack: ${result.review_pack.review}`, "info");
+      if (result.review_pack) {
+        emit.log(
+          `review pack: ${result.review_pack.review}` +
+            (result.review_pack.expires_at
+              ? ` (deleted after ${result.review_pack.expires_at})`
+              : ""),
+          "info",
+        );
+      }
       emit.log(
         `verdict: ${result.verdict} — run ${result.run.run_id}, ` +
           `${result.contexts.length} context${result.contexts.length === 1 ? "" : "s"}, ` +

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import type { CritiqueProvider, CritiqueTile } from "./critique.ts";
-import { judgePageReviewPack, toCritiqueRecords } from "./page-review-judge.ts";
+import { judgePageReviewPack, tileRubricPreamble, toCritiqueRecords } from "./page-review-judge.ts";
 import { type PageReviewContextCapture, writePackContext } from "./page-review-pack.ts";
 import { QA_CRITIQUE_CONTRACT_VERSION, rubricDigest } from "./qa-reuse.ts";
 import { saveQaSnapshot } from "./qa-snapshot.ts";
@@ -248,5 +248,114 @@ describe("judgePageReviewPack", () => {
     expect(calls).toBe(2);
     expect(result.contexts[0]?.tiles_reused).toBe(0);
     expect(result.contexts[0]?.reuse).toBeUndefined();
+  });
+
+  test("each provider call gets a per-tile preamble: band position, y range, overlap, edges, source", async () => {
+    const dir = pack();
+    // Three bands of 40 px with an 8 px overlap on a 104 px page.
+    const overlapping: CritiqueTile[] = [0, 32, 64].map((scrollY, index) => ({
+      index,
+      label: `band ${index + 1}`,
+      scrollY,
+      x: 0,
+      width: 64,
+      height: 40,
+      pngBase64: png(64, 40).toString("base64"),
+    }));
+    const cap = capture({ viewport: "desktop", theme: "light", state: "default" }, 3);
+    const record = writePackContext(dir, {
+      ...cap,
+      tiles: overlapping,
+      pageHeight: 104,
+      fullPage: png(64, 104),
+      coverage: { ...cap.coverage, page_height_px: 104, reviewed_height_px: 104 },
+    });
+    const rubrics = new Map<string, string>();
+    const provider: CritiqueProvider = async ({ rubric, tile }) => {
+      rubrics.set(tile.label, rubric);
+      return [];
+    };
+    await judgePageReviewPack({ packDir: dir, provider, rubric: RUBRIC });
+    expect(rubrics.size).toBe(3);
+    for (const rubric of rubrics.values()) expect(rubric.endsWith(`\n\n${RUBRIC}`)).toBe(true);
+
+    const first = rubrics.get("band 1") ?? "";
+    expect(first).toContain("Tile T001: band 1 of 3, document y 0-40 px of a 104 px tall page.");
+    expect(first).toContain("Its bottom 8 px repeat the top of T002.");
+    expect(first).toContain("touches the page top");
+    expect(first).toContain("Capture source: full-page");
+
+    const middle = rubrics.get("band 2") ?? "";
+    expect(middle).toContain("band 2 of 3, document y 32-72 px");
+    expect(middle).toContain(
+      "Its top 8 px repeat the bottom of T001; its bottom 8 px repeat the top of T003.",
+    );
+    expect(middle).toContain("This tile is interior");
+
+    const last = rubrics.get("band 3") ?? "";
+    expect(last).toContain("band 3 of 3, document y 64-104 px");
+    expect(last).toContain("touches the page bottom");
+
+    // An unknown tile id yields no preamble.
+    expect(tileRubricPreamble(record, "nope")).toBe("");
+  });
+
+  test("a scrolled-bands context names its capture source and skips band-diff reuse", async () => {
+    const dir = pack();
+    const root = mkdtempSync(join(tmpdir(), "page-review-judge-store-"));
+    const cap = capture({ viewport: "desktop", theme: "light", state: "default" }, 3);
+    const record = writePackContext(dir, {
+      ...cap,
+      captureFidelity: {
+        source: "scrolled-bands",
+        probed: [{ tile_id: "T002", scrollY: 32, height: 32, mismatch_ratio: 0.4 }],
+        mismatched: ["T002"],
+        mismatch_threshold: 0.001,
+      },
+    });
+    expect(record.capture_fidelity?.source).toBe("scrolled-bands");
+    // A baseline that would let every tile be reused if the full page were trusted.
+    saveQaSnapshot(
+      "http://localhost:4276/desktop",
+      { viewport: "desktop", theme: "light", state: "default" },
+      {
+        signature: cap.signature,
+        domHtml: cap.domHtml,
+        screenshotPng: cap.fullPage,
+        critique: {
+          contract_version: QA_CRITIQUE_CONTRACT_VERSION,
+          rubric_digest: rubricDigest(RUBRIC),
+          outcome: "pass",
+          findings: [],
+          tiles: record.tiles.map((t) => ({
+            index: t.index,
+            label: t.label,
+            x: t.x,
+            scrollY: t.scrollY,
+            width: t.width,
+            height: t.height,
+          })),
+        },
+      },
+      { root },
+    );
+    const rubrics: string[] = [];
+    const logs: string[] = [];
+    const provider: CritiqueProvider = async ({ rubric }) => {
+      rubrics.push(rubric);
+      return [];
+    };
+    const result = await judgePageReviewPack({
+      packDir: dir,
+      provider,
+      rubric: RUBRIC,
+      reuse: { target: "http://localhost:4276/desktop", store: { root } },
+      onLog: (line) => logs.push(line),
+    });
+    expect(rubrics).toHaveLength(3);
+    expect(result.contexts[0]?.tiles_reused).toBe(0);
+    expect(result.contexts[0]?.reuse).toBeUndefined();
+    expect(logs.some((line) => line.includes("reuse skipped"))).toBe(true);
+    for (const rubric of rubrics) expect(rubric).toContain("Capture source: scrolled-bands");
   });
 });

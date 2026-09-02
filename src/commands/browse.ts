@@ -2,8 +2,17 @@ import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSyn
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { Command } from "commander";
+import { PNG } from "pngjs";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
+import {
+  CAPTURE_FIDELITY_MISMATCH_THRESHOLD,
+  chooseProbeBands,
+  compareBand,
+  decideFidelity,
+  type FidelityProbe,
+  pngDimensions,
+} from "../lib/browser/capture-fidelity.ts";
 import {
   type AssertResult,
   Browser,
@@ -36,8 +45,12 @@ import {
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
 import {
+  findPackTile,
+  type PageReviewCaptureFidelity,
   type PageReviewContextRecord,
   type PageReviewExpandedTileRecord,
+  readPackContext,
+  tileId,
   writePackContext,
   writePackExpandedTile,
 } from "../lib/browser/page-review-pack.ts";
@@ -227,6 +240,8 @@ interface BrowseOpts {
   reviewPackBands?: boolean;
   /** Re-capture ONE existing tile of --review-pack-context at --device-scale-factor. */
   reviewPackExpand?: string;
+  /** Gate-hit rectangles (`x,y,w,h` strings) whose bands are captured past the tile cap. */
+  reviewPackHitRect?: string[];
   // Next.js dev-overlay capture (auto-on; --no-dev-overlay opts out)
   devOverlay?: boolean;
 }
@@ -734,6 +749,14 @@ export function registerBrowseCommand(
         "tiles/<tile>@<dpr>x.png. Existing tiles are untouched.",
     )
     .option(
+      "--review-pack-hit-rect <x,y,w,h>",
+      "Document-space rectangle (integer px) a deterministic gate already flagged. Every " +
+        "full-page band that contains it is captured even past --check-critique-max-tiles, " +
+        `labelled \`hit band N\` (repeatable, at most ${REVIEW_PACK_HIT_RECT_MAX}).`,
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
       "--device-scale-factor <n>",
       "Device scale factor for the browser context (default 1). 2 renders every screenshot " +
         "at twice the pixels; pair with --review-pack-expand for a sharper look at one tile.",
@@ -800,6 +823,8 @@ async function runBrowse(
       );
     }
   }
+  // Malformed hit rects fail here, before a browser launches.
+  parseReviewPackHitRects(opts.reviewPackHitRect);
   let colorScheme: "light" | "dark" | undefined;
   if (opts.colorScheme !== undefined) {
     if (opts.colorScheme !== "light" && opts.colorScheme !== "dark") {
@@ -2283,16 +2308,24 @@ interface ReviewPackReport {
   scopes: Array<{ selector: string; tiles: number }>;
   coverage: CritiqueCoverage;
   files: PageReviewContextRecord["files"];
+  /** Bands captured past the tile cap for --review-pack-hit-rect rectangles. */
+  hit_bands?: number;
+  /** Where the tiles came from and what the fidelity probe saw. */
+  capture_fidelity?: PageReviewCaptureFidelity;
+  /** Capture warnings worth surfacing beside coverage (fidelity fallback, failed probes). */
+  warnings?: string[];
   /** Set by --review-pack-expand: the one region that was re-captured. */
   expanded?: PageReviewExpandedTileRecord;
 }
 
 /**
  * `--review-pack-expand`: re-render one existing tile of a pack context at
- * the context's device scale factor. The page is screenshotted whole at that
- * DPR and the tile's CSS-pixel rect (scaled by the DPR) is cropped from it in
- * pixel space, the same way the original tiles were cut, so the region
- * matches the source tile exactly. No other pack file changes.
+ * the context's device scale factor. The tile's CSS-pixel rect is captured by
+ * scrolling the viewport to it and clipping (`captureRegionByScroll`), which
+ * renders the region the way a reader sees it and yields tile size × DPR
+ * pixels. A second full-page screenshot is not taken: it would reproduce the
+ * very raster artifact the expand is meant to check. No other pack file
+ * changes.
  */
 async function expandReviewPackTile(
   browser: Browser,
@@ -2302,11 +2335,17 @@ async function expandReviewPackTile(
   const packDir = opts.reviewPack as string;
   const contextId = opts.reviewPackContext as string;
   const tileId = opts.reviewPackExpand as string;
-  const buffer = await browser.fullPageScreenshotBuffer();
+  const { tile } = findPackTile([readPackContext(packDir, contextId)], tileId, contextId);
+  const region = await browser.captureRegionByScroll({
+    x: tile.x,
+    y: tile.scrollY,
+    width: tile.width,
+    height: tile.height,
+  });
   const { record, expanded } = writePackExpandedTile(packDir, contextId, {
     tileId,
     dpr,
-    fullPage: buffer,
+    region,
   });
   emit.log(
     `review-pack: ${record.id}/${tileId} expanded at ${dpr}× → ${expanded.width}×${expanded.height} px, ${expanded.file}`,
@@ -2321,6 +2360,92 @@ async function expandReviewPackTile(
     files: record.files,
     expanded,
   };
+}
+
+/**
+ * Capture-fidelity probe (capture-fidelity.ts). The top and middle bands are
+ * re-shot by scrolling the viewport (`Browser.captureRegionByScroll`) and
+ * pixel compared with the crops the tiler took from the full-page screenshot.
+ * When they agree the tiles stand and the record says `full-page`; when they
+ * do not, every band is re-cut from a scrolled capture (same rects, same ids,
+ * only the pixels change) and the record says `scrolled-bands`. A probe that
+ * cannot run, or a re-capture that comes back the wrong size (a page wider
+ * than the viewport), keeps the full-page crop for that band and says so in a
+ * warning. Runs while the capture browser is open; the judge never opens one.
+ */
+async function reconcileCaptureFidelity(
+  browser: Browser,
+  tiles: CritiqueTile[],
+): Promise<{ tiles: CritiqueTile[]; fidelity: PageReviewCaptureFidelity; warnings: string[] }> {
+  const threshold = CAPTURE_FIDELITY_MISMATCH_THRESHOLD;
+  const warnings: string[] = [];
+  const dpr = await browser.currentPage.evaluate(() => window.devicePixelRatio || 1);
+  // Tile rects live in the full-page PNG's pixel space; the scroll capture
+  // takes CSS px and renders at the page's DPR, so the two line up again.
+  const cssRect = (tile: CritiqueTile) => ({
+    x: (tile.x ?? 0) / dpr,
+    y: tile.scrollY / dpr,
+    width: tile.width / dpr,
+    height: tile.height / dpr,
+  });
+  const shots = new Map<number, Buffer | undefined>();
+  const shoot = async (position: number): Promise<Buffer | undefined> => {
+    if (shots.has(position)) return shots.get(position);
+    const tile = tiles[position] as CritiqueTile;
+    let shot: Buffer | undefined;
+    try {
+      const captured = await browser.captureRegionByScroll(cssRect(tile));
+      const size = pngDimensions(captured);
+      if (Math.abs(size.width - tile.width) > 1 || Math.abs(size.height - tile.height) > 1) {
+        warnings.push(
+          `review-pack: scrolled capture of ${tileId(position)} came back ` +
+            `${size.width}×${size.height} px for a ${tile.width}×${tile.height} px band; ` +
+            "its full-page crop was kept",
+        );
+      } else {
+        shot = captured;
+      }
+    } catch (err: unknown) {
+      warnings.push(
+        `review-pack: scrolled capture of ${tileId(position)} failed ` +
+          `(${err instanceof Error ? err.message : String(err)}); its full-page crop was kept`,
+      );
+    }
+    shots.set(position, shot);
+    return shot;
+  };
+  const probes: FidelityProbe[] = [];
+  const positions = tiles.map((tile, position) => ({ position, scrollY: tile.scrollY }));
+  for (const { position } of chooseProbeBands(positions)) {
+    const tile = tiles[position] as CritiqueTile;
+    const shot = await shoot(position);
+    if (!shot) continue;
+    const cmp = compareBand(
+      PNG.sync.read(Buffer.from(tile.pngBase64, "base64")),
+      PNG.sync.read(shot),
+      threshold,
+    );
+    probes.push({
+      tile_id: tileId(position),
+      scrollY: tile.scrollY,
+      height: tile.height,
+      mismatch_ratio: cmp.mismatch_ratio,
+    });
+  }
+  const fidelity = decideFidelity(probes, threshold);
+  if (fidelity.source === "full-page") return { tiles, fidelity, warnings };
+  const recut: CritiqueTile[] = [];
+  for (let position = 0; position < tiles.length; position++) {
+    const tile = tiles[position] as CritiqueTile;
+    const shot = await shoot(position);
+    recut.push(shot ? { ...tile, pngBase64: shot.toString("base64") } : tile);
+  }
+  warnings.unshift(
+    `review-pack: the full-page screenshot disagreed with the viewport render on ` +
+      `${fidelity.mismatched.join(", ")} (mismatch ratio above ${threshold}); every band was ` +
+      "re-captured by scrolling the viewport",
+  );
+  return { tiles: recut, fidelity, warnings };
 }
 
 /**
@@ -2348,11 +2473,41 @@ async function captureReviewPackContext(
   }
   const tiling = { bandHeight: band, overlap, maxTiles, atoms };
   const withBands = opts.reviewPackBands !== false;
-  const banded = withBands ? tilesFromFullPage(buffer, tiling) : undefined;
+  // Gate-hit rectangles (qa-run lifts them from the gate stage, which runs
+  // first) pull the bands they land in past the cap; those tiles follow the
+  // kept bands as `hit band N`. Coverage still describes the kept prefix.
+  const hitRects = parseReviewPackHitRects(opts.reviewPackHitRect);
+  const banded = withBands
+    ? tilesFromFullPage(buffer, { ...tiling, hitRects, maxHitBands: REVIEW_PACK_HIT_RECT_MAX })
+    : undefined;
   if (banded?.coverage.capped) {
     emit.log(
       `review-pack: page banded to the ${maxTiles}-tile cap (raise --check-critique-max-tiles for full coverage)`,
       "warn",
+    );
+  }
+  if (banded && banded.hitBands > 0) {
+    emit.log(
+      `review-pack: ${banded.hitBands} band(s) below the tile cap captured for ${hitRects.length} gate-hit rect(s)`,
+      "info",
+    );
+  }
+  // Fidelity: prove the full-page screenshot against scrolled viewport
+  // renders while the browser is still open; on disagreement the bands are
+  // re-cut from scrolled captures (see reconcileCaptureFidelity).
+  let bandTiles = banded?.tiles ?? [];
+  let captureFidelity: PageReviewCaptureFidelity | undefined;
+  const fidelityWarnings: string[] = [];
+  if (bandTiles.length > 0) {
+    const reconciled = await reconcileCaptureFidelity(browser, bandTiles);
+    bandTiles = reconciled.tiles;
+    captureFidelity = reconciled.fidelity;
+    fidelityWarnings.push(...reconciled.warnings);
+    for (const warning of reconciled.warnings) emit.log(warning, "warn");
+    emit.log(
+      `review-pack: capture fidelity ${captureFidelity.source} ` +
+        `(${captureFidelity.probed.length} band(s) probed, ${captureFidelity.mismatched.length} mismatched)`,
+      "info",
     );
   }
   const scopeTiles: Array<{ selector: string; tiles: CritiqueTile[]; coverage: CritiqueCoverage }> =
@@ -2402,7 +2557,7 @@ async function captureReviewPackContext(
     fullPage: buffer,
     pageWidth: page.width,
     pageHeight: page.height,
-    tiles: banded?.tiles ?? [],
+    tiles: bandTiles,
     coverage: coverage ?? {
       page_height_px: page.height,
       reviewed_height_px: 0,
@@ -2413,6 +2568,8 @@ async function captureReviewPackContext(
     scopeTiles: scopeTiles.map(({ selector, tiles }) => ({ selector, tiles })),
     signature: capture.signature,
     domHtml: capture.domHtml,
+    ...(captureFidelity ? { captureFidelity } : {}),
+    hitBands: banded?.hitBands ?? 0,
   });
   emit.log(
     `review-pack: ${record.id} → ${record.tiles.length} tile(s)` +
@@ -2429,6 +2586,9 @@ async function captureReviewPackContext(
     scopes: record.scopes,
     coverage: record.coverage,
     files: record.files,
+    ...(record.hit_bands !== undefined ? { hit_bands: record.hit_bands } : {}),
+    ...(record.capture_fidelity ? { capture_fidelity: record.capture_fidelity } : {}),
+    ...(fidelityWarnings.length > 0 ? { warnings: fidelityWarnings } : {}),
   };
 }
 
@@ -2570,6 +2730,37 @@ async function waitForTerminalEnter(signal: AbortSignal): Promise<void> {
     };
     process.stdin.once("data", onData);
     signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Upper bound on --review-pack-hit-rect values (and on hit bands cut past the cap). */
+const REVIEW_PACK_HIT_RECT_MAX = 50;
+
+/** `x,y,w,h` integer rectangles from repeated --review-pack-hit-rect flags. */
+function parseReviewPackHitRects(
+  specs: string[] | undefined,
+): Array<{ x: number; y: number; width: number; height: number }> {
+  const list = specs ?? [];
+  if (list.length > REVIEW_PACK_HIT_RECT_MAX) {
+    throw new Error(
+      `--review-pack-hit-rect accepts at most ${REVIEW_PACK_HIT_RECT_MAX} rectangles (got ${list.length}).`,
+    );
+  }
+  return list.map((spec) => {
+    const parts = spec.split(",").map((part) => part.trim());
+    const nums = parts.map((part) => (/^-?\d+$/.test(part) ? Number.parseInt(part, 10) : NaN));
+    if (parts.length !== 4 || nums.some((n) => !Number.isFinite(n))) {
+      throw new Error(
+        `--review-pack-hit-rect must be four integers x,y,w,h in document px (got: ${spec}).`,
+      );
+    }
+    const [x, y, width, height] = nums as [number, number, number, number];
+    if (width < 0 || height < 0) {
+      throw new Error(
+        `--review-pack-hit-rect width and height must not be negative (got: ${spec}).`,
+      );
+    }
+    return { x, y, width, height };
   });
 }
 

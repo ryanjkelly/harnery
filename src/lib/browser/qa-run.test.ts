@@ -325,6 +325,10 @@ describe("runQaMatrix", () => {
     expect(fake.maxInFlight()).toBeLessThanOrEqual(2);
     // 1 plan + 5 gates, nothing else (visual "none", review mode).
     expect(fake.calls).toHaveLength(6);
+    // No capture stage follows, so the gate trio keeps its screenshot.
+    const gates = fake.calls.filter((call) => call.argv.includes("--out"));
+    expect(gates).toHaveLength(5);
+    expect(gates.every((call) => !call.argv.includes("--no-screenshot"))).toBe(true);
   });
 
   test("planner deterministic checks always execute and a job can only add gates", async () => {
@@ -458,6 +462,11 @@ describe("runQaMatrix", () => {
     expect(result.verdict).toBe("failed");
     expect(fake.calls.some((call) => call.argv.includes("--review-pack"))).toBe(false);
     expect(fake.providerCalls).toHaveLength(0);
+    // A visual manifest means the pack would hold the full-page PNG, so every
+    // gate child ran without a screenshot.
+    const gates = fake.calls.filter((call) => call.argv.includes("--out"));
+    expect(gates.length).toBeGreaterThan(0);
+    expect(gates.every((call) => call.argv.includes("--no-screenshot"))).toBe(true);
     const failedGate = result.commands.find((c) => c.context_id === "mobile-light-default");
     expect(failedGate?.outcome).toBe("failed");
     expect(failedGate?.failures.some((f) => f.includes("overflow"))).toBe(true);
@@ -966,6 +975,13 @@ describe("runQaMatrix", () => {
     });
     const packDir = join(parent, "run-packed", PAGE_REVIEW_PACK_DIRNAME);
     expect(result.review_pack?.dir).toBe(packDir);
+    // The pack expires 90 minutes after the judge finished (an explicit
+    // outParent is unmanaged), and the result carries its size on disk.
+    expect(typeof result.review_pack?.expires_at).toBe("string");
+    const expiresMs = Date.parse(result.review_pack?.expires_at ?? "");
+    expect(expiresMs).toBeGreaterThan(Date.now() + 85 * 60_000);
+    expect(expiresMs).toBeLessThanOrEqual(Date.now() + 90 * 60_000);
+    expect(result.review_pack?.size_bytes).toBeGreaterThan(0);
     expect(existsSync(join(packDir, "review.md"))).toBe(true);
     expect(existsSync(join(packDir, "findings.json"))).toBe(true);
     expect(existsSync(join(packDir, "contexts", "mobile-dark-default", "tiles", "T001.png"))).toBe(
@@ -1056,6 +1072,83 @@ describe("runQaMatrix", () => {
     expect(review).toContain(
       '  - runts · p.lede: "alone." · at (2, 1283) 4×3 px → [T002](contexts/desktop-light-default/tiles/T002.png)',
     );
+  });
+
+  test("gate-hit rectangles ride into the capture child as --review-pack-hit-rect; a run without hits sends none", async () => {
+    const contexts = [
+      { viewport: "desktop", theme: "light" as const, state: "default" },
+      { viewport: "mobile", theme: "light" as const, state: "default" },
+    ];
+    const plan = manifest({
+      contexts,
+      checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
+    });
+    // Only the desktop gate records rectangles (one fractional, rounded to
+    // integer px); the mobile capture must carry no hit-rect flag.
+    const fake = makeFakeExec({
+      planManifest: plan,
+      gateEnvelope: {
+        "desktop-light-default": {
+          runts: {
+            outcome: "pass",
+            runts: [
+              {
+                block: "p.lede",
+                word: "alone.",
+                snippet: "",
+                rect: { x: 2.4, y: 40_468.2, width: 300, height: 16 },
+                lines: 2,
+              },
+              {
+                block: "p.deep",
+                word: "end.",
+                snippet: "",
+                rect: { x: 10, y: 90_000, width: 40, height: 16 },
+                lines: 2,
+              },
+            ],
+          },
+        },
+      },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.blockers).toEqual([]);
+    const captures = fake.calls.filter((call) => call.argv.includes("--review-pack"));
+    expect(captures).toHaveLength(2);
+    const desktop = captures.find(
+      (call) => argvValue(call.argv, "--review-pack-context") === "desktop-light-default",
+    );
+    const mobile = captures.find(
+      (call) => argvValue(call.argv, "--review-pack-context") === "mobile-light-default",
+    );
+    const rectsOf = (argv: string[]): string[] =>
+      argv.flatMap((arg, i) => (arg === "--review-pack-hit-rect" ? [argv[i + 1] ?? ""] : []));
+    expect(rectsOf(desktop?.argv ?? [])).toEqual(["2,40468,300,16", "10,90000,40,16"]);
+    expect(rectsOf(mobile?.argv ?? [])).toEqual([]);
+    // Gate children never carry the flag; it belongs to the capture stage.
+    const gates = fake.calls.filter(
+      (call) => !call.argv.includes("--qa-plan") && !call.argv.includes("--review-pack"),
+    );
+    expect(gates.length).toBeGreaterThan(0);
+    for (const call of gates) expect(call.argv.includes("--review-pack-hit-rect")).toBe(false);
+
+    const quiet = makeFakeExec({ planManifest: plan });
+    await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: quiet.exec,
+      critiqueProvider: quiet.provider,
+      snapshotStore: { root: quiet.snapshotRoot },
+    });
+    expect(quiet.calls.some((call) => call.argv.includes("--review-pack-hit-rect"))).toBe(false);
   });
 
   test("policy.critique_pool bounds vision calls across every context", async () => {

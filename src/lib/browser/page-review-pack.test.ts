@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { PNG } from "pngjs";
 import type { CritiqueTile } from "./critique.ts";
 import {
@@ -9,22 +18,36 @@ import {
   buildInspectionPlan,
   CONTACT_SHEET_COLUMNS,
   cropPngRegion,
+  deleteExpiredPacks,
   expandedTileFilename,
   finalizePageReviewPack,
   findPackTile,
+  findPageReviewPacks,
   GATE_HITS_PER_ENVELOPE,
   gateHitsFromEnvelope,
   listPackContexts,
+  machineFindingTargets,
+  PAGE_REVIEW_EXPIRED_SCHEMA,
+  PAGE_REVIEW_EXPIRED_STUB_FILENAME,
   PAGE_REVIEW_FINDINGS_SCHEMA,
+  PAGE_REVIEW_PACK_DIRNAME,
   PAGE_REVIEW_PACK_SCHEMA,
+  PAGE_REVIEW_VERDICT_SCHEMA,
   type PageReviewContextCapture,
+  type PageReviewCritiqueRecord,
+  type PageReviewFindingsDocument,
   readPackContext,
+  readPackDom,
+  readPackFindings,
   readPackManifest,
   readPackTiles,
+  resolvePackVerdict,
   tilesCoveringRect,
+  validateFindingsDocument,
   writePackContactSheet,
   writePackContext,
   writePackExpandedTile,
+  writePackFindings,
 } from "./page-review-pack.ts";
 
 function png(width: number, height: number): Buffer {
@@ -89,7 +112,8 @@ describe("writePackContext / readPackContext / readPackTiles", () => {
     expect(existsSync(join(dir, record.files.full_page))).toBe(true);
     expect(existsSync(join(dir, record.files.dom))).toBe(true);
     expect(existsSync(join(dir, record.files.signature))).toBe(true);
-    expect(readFileSync(join(dir, record.files.dom), "utf8")).toContain("fixture");
+    expect(record.files.dom.endsWith(".gz")).toBe(true);
+    expect(readPackDom(dir, record)).toContain("fixture");
 
     const again = readPackContext(dir, record.id);
     expect(again).toEqual(record);
@@ -99,6 +123,26 @@ describe("writePackContext / readPackContext / readPackTiles", () => {
     expect(loaded[0]?.pngBase64).toBe(tiles(1)[0]?.pngBase64);
     expect(loaded[4]?.scope).toBe("#hero");
     expect(listPackContexts(dir)).toEqual(["desktop-light-default"]);
+  });
+
+  test("the DOM is stored gzip-compressed, reads back byte-exact, and the digest covers the plain bytes", () => {
+    const dir = packDir();
+    const domHtml = `<html><body>${"x".repeat(20_000)}<p>\u00e9\u4e2d</p></body></html>`;
+    const record = writePackContext(dir, capture({ domHtml }));
+    const onDisk = readFileSync(join(dir, record.files.dom));
+    expect(onDisk.byteLength).toBeLessThan(Buffer.byteLength(domHtml, "utf8"));
+    expect(gunzipSync(onDisk).toString("utf8")).toBe(domHtml);
+    expect(readPackDom(dir, record)).toBe(domHtml);
+    expect(record.dom_sha256).toBe(createHash("sha256").update(domHtml, "utf8").digest("hex"));
+  });
+
+  test("an older pack with a plain dom.html still reads", () => {
+    const dir = packDir();
+    const record = writePackContext(dir, capture());
+    const plainRel = record.files.dom.replace(/dom\.html\.gz$/, "dom.html");
+    writeFileSync(join(dir, plainRel), "<html><body>plain</body></html>");
+    const legacy = { ...record, files: { ...record.files, dom: plainRel } };
+    expect(readPackDom(dir, legacy)).toBe("<html><body>plain</body></html>");
   });
 
   test("an explicit context id and an altered tile are both honored: id kept, tamper refused", () => {
@@ -650,5 +694,520 @@ describe("gate hits", () => {
     expect(review).toContain("p.deep · at (4, 9000) 50×16 px → no tile covers this rect");
     // A gate without hits keeps the single-line form.
     expect(review).toContain("manifest:overflow · **passed**\n");
+  });
+});
+
+describe("deleteExpiredPacks", () => {
+  const PAST = "2026-09-02T00:00:00.000Z";
+  const FUTURE = "2026-09-03T00:00:00.000Z";
+  const NOW = new Date("2026-09-02T12:00:00.000Z");
+
+  /** A finalized pack at `dir` with the given retention (or none). */
+  function makePack(
+    dir: string,
+    retention: { expires_at: string; managed: boolean } | undefined,
+    critique: "fail" | "pass" | null = null,
+  ): void {
+    mkdirSync(dir, { recursive: true });
+    const ctx = writePackContext(dir, capture());
+    finalizePageReviewPack({
+      packDir: dir,
+      target: "http://localhost:4276/page",
+      contexts: [ctx],
+      critique:
+        critique === null
+          ? null
+          : [
+              {
+                context_id: ctx.id,
+                provider: "fixture",
+                tiles_total: 3,
+                tiles_reviewed: 3,
+                tiles_reused: 0,
+                outcome: critique,
+                findings: [],
+                coverage: ctx.coverage,
+              },
+            ],
+      createdAt: "2026-09-01T23:00:00.000Z",
+      ...(retention ? { retention } : {}),
+    });
+  }
+
+  test("finds packs at the root, in child workspaces, and under run-*/pack; skips dirs without a manifest", () => {
+    const root = packDir();
+    makePack(join(root, "review-pack_a"), { expires_at: FUTURE, managed: true });
+    makePack(join(root, "qa-run_b", "run-1", PAGE_REVIEW_PACK_DIRNAME), {
+      expires_at: FUTURE,
+      managed: true,
+    });
+    mkdirSync(join(root, "qa-run_b", "run-2", PAGE_REVIEW_PACK_DIRNAME), { recursive: true });
+    mkdirSync(join(root, "plain-dir"), { recursive: true });
+    writeFileSync(join(root, "plain-dir", "manifest.json"), JSON.stringify({ schema: "other" }));
+    expect(findPageReviewPacks([root])).toEqual([
+      join(root, "qa-run_b", "run-1", PAGE_REVIEW_PACK_DIRNAME),
+      join(root, "review-pack_a"),
+    ]);
+    // A root that is itself a pack is found once.
+    expect(findPageReviewPacks([join(root, "review-pack_a")])).toEqual([
+      join(root, "review-pack_a"),
+    ]);
+    expect(findPageReviewPacks([join(root, "does-not-exist")])).toEqual([]);
+  });
+
+  test("deletes an expired managed pack, keeps .harnery-artifact.json, and leaves the stub", () => {
+    const root = packDir();
+    const dir = join(root, "review-pack_expired");
+    makePack(dir, { expires_at: PAST, managed: true }, "fail");
+    writeFileSync(join(dir, ".harnery-artifact.json"), JSON.stringify({ schema_version: 1 }));
+    const result = deleteExpiredPacks({ roots: [root], now: NOW, dryRun: false });
+    expect(result.candidates).toHaveLength(1);
+    expect(result.deleted).toHaveLength(1);
+    expect(result.deleted[0]).toMatchObject({
+      dir,
+      target: "http://localhost:4276/page",
+      created_at: "2026-09-01T23:00:00.000Z",
+      expires_at: PAST,
+      managed: true,
+      expired: true,
+    });
+    expect(result.deleted[0]?.size_bytes).toBeGreaterThan(0);
+    expect(readdirSync(dir).sort()).toEqual([
+      ".harnery-artifact.json",
+      PAGE_REVIEW_EXPIRED_STUB_FILENAME,
+    ]);
+    const stub = JSON.parse(readFileSync(join(dir, PAGE_REVIEW_EXPIRED_STUB_FILENAME), "utf8"));
+    expect(stub).toMatchObject({
+      schema: PAGE_REVIEW_EXPIRED_SCHEMA,
+      target: "http://localhost:4276/page",
+      created_at: "2026-09-01T23:00:00.000Z",
+      expires_at: PAST,
+      deleted_at: NOW.toISOString(),
+      contexts: 1,
+      machine_outcome: "fail",
+    });
+    // A second sweep finds nothing: the stub is not a pack.
+    expect(deleteExpiredPacks({ roots: [root], now: NOW, dryRun: false }).candidates).toEqual([]);
+  });
+
+  test("leaves unmanaged, unexpired, and retention-less packs alone; --include-unmanaged takes the unmanaged one", () => {
+    const root = packDir();
+    const unmanaged = join(root, "explicit-out");
+    const unexpired = join(root, "review-pack_fresh");
+    const noRetention = join(root, "review-pack_legacy");
+    makePack(unmanaged, { expires_at: PAST, managed: false }, "pass");
+    makePack(unexpired, { expires_at: FUTURE, managed: true });
+    makePack(noRetention, undefined);
+    const kept = deleteExpiredPacks({ roots: [root], now: NOW, dryRun: false });
+    expect(kept.candidates.map((row) => row.dir).sort()).toEqual(
+      [unmanaged, unexpired, noRetention].sort(),
+    );
+    expect(kept.deleted).toEqual([]);
+    for (const dir of [unmanaged, unexpired, noRetention]) {
+      expect(existsSync(join(dir, "manifest.json"))).toBe(true);
+      expect(existsSync(join(dir, PAGE_REVIEW_EXPIRED_STUB_FILENAME))).toBe(false);
+    }
+    const legacy = kept.candidates.find((row) => row.dir === noRetention);
+    expect(legacy).toMatchObject({ expires_at: null, managed: null, expired: false });
+
+    const swept = deleteExpiredPacks({
+      roots: [root],
+      now: NOW,
+      includeUnmanaged: true,
+      dryRun: false,
+    });
+    expect(swept.deleted.map((row) => row.dir)).toEqual([unmanaged]);
+    expect(readdirSync(unmanaged)).toEqual([PAGE_REVIEW_EXPIRED_STUB_FILENAME]);
+    const stub = JSON.parse(
+      readFileSync(join(unmanaged, PAGE_REVIEW_EXPIRED_STUB_FILENAME), "utf8"),
+    );
+    expect(stub.machine_outcome).toBe("pass");
+    expect(existsSync(join(unexpired, "manifest.json"))).toBe(true);
+    expect(existsSync(join(noRetention, "manifest.json"))).toBe(true);
+  });
+
+  test("dryRun reports the would-be deletions and touches nothing", () => {
+    const root = packDir();
+    const dir = join(root, "qa-run_c", "run-9", PAGE_REVIEW_PACK_DIRNAME);
+    makePack(dir, { expires_at: PAST, managed: true });
+    const before = readdirSync(dir).sort();
+    const result = deleteExpiredPacks({ roots: [root], now: NOW, dryRun: true });
+    expect(result.deleted.map((row) => row.dir)).toEqual([dir]);
+    expect(readdirSync(dir).sort()).toEqual(before);
+    expect(existsSync(join(dir, PAGE_REVIEW_EXPIRED_STUB_FILENAME))).toBe(false);
+    expect(existsSync(join(dir, "contexts", "desktop-light-default", "tiles", "T001.png"))).toBe(
+      true,
+    );
+  });
+});
+
+describe("hit bands", () => {
+  test("writePackContext records tile kind and hit_bands; the plan makes the hit band primary and maps the gate hit to it", () => {
+    const dir = packDir();
+    // Two kept bands (cap) plus one band cut past the cap for a gate hit at y 40,468.
+    const kept = tiles(2).map((t) => ({ ...t, width: 64, height: 1400 }));
+    const hitBand: CritiqueTile = {
+      index: 31,
+      label: "hit band 32",
+      scrollY: 31 * 1280,
+      x: 0,
+      width: 64,
+      height: 1400,
+      pngBase64: png(16, 16).toString("base64"),
+    };
+    const record = writePackContext(
+      dir,
+      capture({
+        pageHeight: 78 * 1280,
+        tiles: [...kept, hitBand],
+        coverage: {
+          page_height_px: 78 * 1280,
+          reviewed_height_px: 2680,
+          bands_total: 78,
+          bands_reviewed: 2,
+          capped: true,
+        },
+        scopeTiles: [{ selector: "#side", tiles: tiles(1, "side") }],
+        hitBands: 1,
+      }),
+    );
+    expect(record.hit_bands).toBe(1);
+    expect(record.tiles.map((t) => [t.id, t.kind, t.label])).toEqual([
+      ["T001", "band", "band 1"],
+      ["T002", "band", "band 2"],
+      ["T003", "hit-band", "hit band 32"],
+      ["T004", "scope", "side 1"],
+    ]);
+    // Coverage stays honest about the kept prefix.
+    expect(record.coverage.bands_reviewed).toBe(2);
+    expect(readPackContext(dir, record.id).hit_bands).toBe(1);
+
+    const gates = [
+      {
+        context_id: record.id,
+        check_id: "manifest:overflow",
+        outcome: "failed" as const,
+        failures: ["overflow: 1 hit"],
+        hits: [
+          { rule: "overflow", label: "div.wide", rect: { x: 4, y: 40_468, width: 50, height: 16 } },
+        ],
+      },
+    ];
+    const plan = buildInspectionPlan([record], null, gates);
+    const ctx = plan.contexts[0];
+    expect(ctx?.gate_hits[0]?.tiles).toEqual(["T003"]);
+    // Page top, page bottom (the last KEPT band, never the hit band), the hit band, the scope tile.
+    expect(ctx?.primary_tiles.map((t) => [t.id, t.reason])).toEqual([
+      ["T001", "page top: header, navigation, first fold"],
+      ["T002", "page bottom: footer and final call to action"],
+      [
+        "T003",
+        "hit band: captured past the tile cap for a gate hit; gate hit (overflow): div.wide",
+      ],
+      ["T004", "scoped tile for #side"],
+    ]);
+
+    finalizePageReviewPack({
+      packDir: dir,
+      target: "http://localhost:4276/page",
+      contexts: [record],
+      gates,
+      critique: null,
+    });
+    const manifest = readPackManifest(dir);
+    expect(manifest.warnings).toContain(
+      `${record.id}: 1 band(s) below the tile cap were captured because gate hits land in them.`,
+    );
+    const review = readFileSync(join(dir, "review.md"), "utf8");
+    expect(review).toContain("| Tile | Label | Kind | Scope |");
+    expect(review).toContain("| T003 | hit band 32 | hit-band | full page | 39680 |");
+    expect(review).toContain(
+      `div.wide · at (4, 40468) 50×16 px → [T003](contexts/${record.id}/tiles/T003.png)`,
+    );
+  });
+
+  test("a capture without hit bands writes no hit_bands field and no hit-band warning", () => {
+    const dir = packDir();
+    const record = writePackContext(dir, capture({ hitBands: 0 }));
+    expect(record.hit_bands).toBeUndefined();
+    expect(record.tiles.every((t) => t.kind === "band")).toBe(true);
+    finalizePageReviewPack({
+      packDir: dir,
+      target: "http://localhost:4276/page",
+      contexts: [record],
+      critique: null,
+    });
+    expect(readPackManifest(dir).warnings.some((w) => w.includes("below the tile cap"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("findings and verdict", () => {
+  const CTX = "desktop-light-default";
+
+  /** Three highs (T002#0, T003#0, T003#2) and one medium (T003#1) on one context. */
+  function critiqueRow(
+    overrides: Partial<PageReviewCritiqueRecord> = {},
+  ): PageReviewCritiqueRecord {
+    return {
+      context_id: CTX,
+      provider: "fixture",
+      tiles_total: 5,
+      tiles_reviewed: 5,
+      tiles_reused: 0,
+      outcome: "fail",
+      findings: [
+        { tile: 1, tile_id: "T002", severity: "high", category: "text-clipping", description: "a" },
+        {
+          tile: 2,
+          tile_id: "T003",
+          severity: "high",
+          category: "render-artifact",
+          description: "b",
+        },
+        { tile: 2, tile_id: "T003", severity: "medium", category: "spacing", description: "c" },
+        { tile: 2, tile_id: "T003", severity: "high", category: "contrast", description: "d" },
+      ],
+      coverage: {
+        page_height_px: 128,
+        reviewed_height_px: 128,
+        bands_total: 5,
+        bands_reviewed: 5,
+        capped: false,
+      },
+      ...overrides,
+    };
+  }
+
+  function findingsDoc(
+    overrides: Partial<PageReviewFindingsDocument> = {},
+  ): PageReviewFindingsDocument {
+    return {
+      schema: PAGE_REVIEW_FINDINGS_SCHEMA,
+      target: "http://localhost:4276/page",
+      reviewer: "agent-test",
+      reviewed_at: "2026-09-02T06:00:00.000Z",
+      findings: [],
+      dispositions: [],
+      ...overrides,
+    };
+  }
+
+  test("validateFindingsDocument accepts the skeleton and rejects a bad enum, id, target, and empty evidence", () => {
+    expect(validateFindingsDocument(findingsDoc())).toEqual([]);
+    const errors = validateFindingsDocument({
+      ...findingsDoc(),
+      reviewed_at: "yesterday",
+      findings: [
+        {
+          id: "f1",
+          severity: "urgent",
+          category: "vibes",
+          context_id: CTX,
+          evidence: [],
+          observation: "",
+          extra: true,
+        },
+        { id: "F002", severity: "low", category: "layout", context_id: CTX, evidence: ["T001"] },
+      ],
+      dispositions: [
+        { target: `${CTX}/T2#0`, disposition: "maybe" },
+        { target: `${CTX}/T002#0`, disposition: "confirmed", at: "noon" },
+        { target: `${CTX}/T002#0`, disposition: "artifact" },
+      ],
+    });
+    expect(errors).toContain("reviewed_at must be an RFC 3339 date-time string or null");
+    expect(errors).toContain("findings[0]: id must match ^[A-Z][A-Z0-9_-]*$");
+    expect(errors).toContain(
+      "findings[0]: severity must be one of critical, high, medium, low, info",
+    );
+    expect(errors.some((e) => e.startsWith("findings[0]: category must be one of"))).toBe(true);
+    expect(errors).toContain("findings[0]: evidence must be a non-empty array of strings");
+    expect(errors).toContain("findings[0]: observation must be a non-empty string");
+    expect(errors).toContain('findings[0]: unknown key "extra"');
+    expect(errors).toContain('findings[1]: missing required key "observation"');
+    expect(errors).toContain("dispositions[0]: target must look like <context-id>/T012#0");
+    expect(errors).toContain(
+      "dispositions[0]: disposition must be one of confirmed, artifact, not-a-defect, duplicate-of-gate",
+    );
+    expect(errors).toContain("dispositions[1]: at must be an RFC 3339 date-time string");
+    expect(errors).toContain(`dispositions[2]: duplicate target "${CTX}/T002#0"`);
+    expect(validateFindingsDocument("nope")).toEqual(["findings document must be a JSON object"]);
+    expect(validateFindingsDocument({})).toContain('missing required key "schema"');
+  });
+
+  test("machineFindingTargets numbers a tile's findings in critique order across severities", () => {
+    const targets = machineFindingTargets([critiqueRow()]);
+    expect([...targets.keys()]).toEqual([
+      `${CTX}/T002#0`,
+      `${CTX}/T003#0`,
+      `${CTX}/T003#1`,
+      `${CTX}/T003#2`,
+    ]);
+    expect(targets.get(`${CTX}/T003#1`)?.severity).toBe("medium");
+    expect(machineFindingTargets(null).size).toBe(0);
+  });
+
+  test("verdict math: confirmed and undispositioned highs fail, dismissed highs do not, unmatched targets are reported", () => {
+    const manifest = { critique: [critiqueRow()] };
+    // Nothing dispositioned: every high is open.
+    const open = resolvePackVerdict(manifest, findingsDoc());
+    expect(open).toMatchObject({
+      machine_outcome: "fail",
+      reviewed_outcome: "fail",
+      high_total: 3,
+      high_confirmed: 0,
+      high_dismissed: 0,
+      high_open: 3,
+      reviewer_high: 0,
+      dispositions_applied: 0,
+      unmatched_dispositions: [],
+    });
+    // One confirmed, one artifact, one open, the medium dispositioned too, one stray target.
+    const mixed = resolvePackVerdict(
+      manifest,
+      findingsDoc({
+        dispositions: [
+          { target: `${CTX}/T002#0`, disposition: "confirmed" },
+          { target: `${CTX}/T003#0`, disposition: "artifact" },
+          { target: `${CTX}/T003#1`, disposition: "not-a-defect" },
+          { target: `mobile-light-default/T009#0`, disposition: "artifact" },
+        ],
+      }),
+    );
+    expect(mixed).toMatchObject({
+      reviewed_outcome: "fail",
+      high_total: 3,
+      high_confirmed: 1,
+      high_dismissed: 1,
+      high_open: 1,
+      dispositions_applied: 3,
+      unmatched_dispositions: ["mobile-light-default/T009#0"],
+    });
+    // Every high dismissed: the machine fail becomes a reviewed pass.
+    const dismissed = findingsDoc({
+      dispositions: [
+        { target: `${CTX}/T002#0`, disposition: "artifact" },
+        { target: `${CTX}/T003#0`, disposition: "duplicate-of-gate" },
+        { target: `${CTX}/T003#2`, disposition: "not-a-defect" },
+      ],
+    });
+    expect(resolvePackVerdict(manifest, dismissed)).toMatchObject({
+      machine_outcome: "fail",
+      reviewed_outcome: "pass",
+      high_dismissed: 3,
+      high_open: 0,
+    });
+    // A reviewer finding at high or critical fails even when the machine is clean.
+    const reviewerHigh = resolvePackVerdict(manifest, {
+      ...dismissed,
+      findings: [
+        {
+          id: "F001",
+          severity: "critical",
+          category: "content",
+          context_id: CTX,
+          evidence: ["T001"],
+          observation: "price is wrong",
+        },
+      ],
+    });
+    expect(reviewerHigh.reviewed_outcome).toBe("fail");
+    expect(reviewerHigh.reviewer_high).toBe(1);
+    // A medium reviewer finding does not.
+    expect(
+      resolvePackVerdict(manifest, {
+        ...dismissed,
+        findings: [
+          {
+            id: "F001",
+            severity: "medium",
+            category: "layout",
+            context_id: CTX,
+            evidence: ["T001"],
+            observation: "tight",
+          },
+        ],
+      }).reviewed_outcome,
+    ).toBe("pass");
+  });
+
+  test("verdict follows the machine when there is no critique, a skipped judge, or an incomplete context", () => {
+    expect(resolvePackVerdict({ critique: null }, findingsDoc())).toMatchObject({
+      machine_outcome: "skipped",
+      reviewed_outcome: "skipped",
+      high_total: 0,
+    });
+    expect(
+      resolvePackVerdict(
+        { critique: [critiqueRow({ outcome: "skipped", findings: [] })] },
+        findingsDoc(),
+      ).reviewed_outcome,
+    ).toBe("skipped");
+    expect(
+      resolvePackVerdict(
+        { critique: [critiqueRow({ outcome: "incomplete", findings: [] })] },
+        findingsDoc(),
+      ),
+    ).toMatchObject({ machine_outcome: "incomplete", reviewed_outcome: "incomplete" });
+    // An incomplete judge with a confirmed high is still a fail.
+    expect(
+      resolvePackVerdict({ critique: [critiqueRow({ outcome: "incomplete" })] }, findingsDoc())
+        .reviewed_outcome,
+    ).toBe("fail");
+    expect(
+      resolvePackVerdict(
+        { critique: [critiqueRow({ outcome: "pass", findings: [] })] },
+        findingsDoc(),
+      ),
+    ).toMatchObject({ machine_outcome: "pass", reviewed_outcome: "pass" });
+  });
+
+  test("writePackFindings is atomic and round-trips; finalize keeps the verdict section idempotently", () => {
+    const dir = packDir();
+    const desktop = writePackContext(dir, capture({ tiles: tiles(5) }));
+    const base = {
+      packDir: dir,
+      target: "http://localhost:4276/page",
+      contexts: [desktop],
+      critique: [critiqueRow()],
+      createdAt: "2026-09-02T05:00:00.000Z",
+    };
+    finalizePageReviewPack(base);
+    const doc = readPackFindings(dir);
+    expect(doc.dispositions).toEqual([]);
+    doc.dispositions = [{ target: `${CTX}/T002#0`, disposition: "artifact", note: "seam" }];
+    writePackFindings(dir, doc);
+    expect(readPackFindings(dir).dispositions).toEqual(doc.dispositions);
+    expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+
+    // No verdict yet: review.md carries no reviewed section.
+    expect(readFileSync(join(dir, "review.md"), "utf8")).not.toContain("## Reviewed outcome");
+
+    const verdict = {
+      schema: PAGE_REVIEW_VERDICT_SCHEMA,
+      ...resolvePackVerdict(readPackManifest(dir), readPackFindings(dir)),
+      reviewed_at: "2026-09-02T06:30:00.000Z",
+    };
+    writeFileSync(join(dir, "evidence", "verdict.json"), JSON.stringify(verdict));
+    finalizePageReviewPack(base);
+    const first = readFileSync(join(dir, "review.md"), "utf8");
+    expect(first.split("## Reviewed outcome")).toHaveLength(2);
+    expect(first).toContain("**FAIL** (machine outcome fail), recorded 2026-09-02T06:30:00.000Z");
+    expect(first).toContain(
+      "Machine high findings: 3 total · 0 confirmed · 1 dismissed (artifact, not a defect, or duplicate of a gate) · 2 without a disposition.",
+    );
+    // The section sits between the machine findings and the inspection plan.
+    expect(first.indexOf("## Machine findings")).toBeLessThan(first.indexOf("## Reviewed outcome"));
+    expect(first.indexOf("## Reviewed outcome")).toBeLessThan(first.indexOf("## Inspection plan"));
+
+    finalizePageReviewPack(base);
+    const second = readFileSync(join(dir, "review.md"), "utf8");
+    expect(second).toBe(first);
+    // The machine record is untouched by the reviewer's file.
+    const critique = JSON.parse(readFileSync(join(dir, "evidence", "critique.json"), "utf8"));
+    expect(critique.contexts[0].findings).toHaveLength(4);
+    expect(JSON.stringify(critique)).not.toContain("disposition");
   });
 });

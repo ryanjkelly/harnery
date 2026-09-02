@@ -18,7 +18,12 @@
 //      orchestration live here; the model call lives in the host.
 
 import { PNG } from "pngjs";
-import { bandOversizedRect, snappedBandRects, type VisualAtom } from "./tiling.js";
+import {
+  bandOversizedRect,
+  bandsCoveringRects,
+  snappedBandRects,
+  type VisualAtom,
+} from "./tiling.js";
 
 export interface CritiqueTile {
   index: number;
@@ -154,6 +159,15 @@ export function bandRects(
  * the provider would downscale. Atom coordinates must be in the same pixel
  * space as the screenshot (identical at deviceScaleFactor 1; scale them if
  * the capture DPR differs).
+ *
+ * `hitRects` (document-space rectangles a deterministic gate already flagged)
+ * add bands past the `maxTiles` cap: every full-page band that intersects a
+ * hit rect and was dropped by the cap is cut as well, labelled `hit band N`
+ * (N is the band's 1-based position in the full band list, and the tile's
+ * `index` is that position minus one), and appended after the kept bands.
+ * `coverage` stays honest about the kept prefix; `hitBands` counts the
+ * extras. Ignored for selector tiling (`elementRects`), which has no cap to
+ * look past in that sense.
  */
 export function tilesFromFullPage(
   fullPageBuffer: Buffer,
@@ -163,8 +177,11 @@ export function tilesFromFullPage(
     overlap?: number;
     maxTiles: number;
     atoms?: VisualAtom[];
+    hitRects?: Array<{ x: number; y: number; width: number; height: number }>;
+    /** Cap on hit bands appended past `maxTiles` (default 50). */
+    maxHitBands?: number;
   },
-): { tiles: CritiqueTile[]; coverage: CritiqueCoverage } {
+): { tiles: CritiqueTile[]; coverage: CritiqueCoverage; hitBands: number } {
   const png = PNG.sync.read(fullPageBuffer);
   const snapOpts = {
     bandHeight: opts.bandHeight ?? 1400,
@@ -202,8 +219,7 @@ export function tilesFromFullPage(
       height: b.height,
     }));
   }
-  const tiles: CritiqueTile[] = [];
-  for (const rect of rects.slice(0, opts.maxTiles)) {
+  const cutTile = (rect: (typeof rects)[number]): CritiqueTile => {
     const sx = Math.max(0, Math.min(Math.round(rect.x), png.width - 1));
     const sy = Math.max(0, Math.min(Math.round(rect.y), png.height - 1));
     const w = Math.max(1, Math.min(Math.round(rect.width), png.width - sx));
@@ -216,7 +232,7 @@ export function tilesFromFullPage(
       const dstStart = row * w * 4;
       png.data.copy(dst.data, dstStart, srcStart, srcStart + w * 4);
     }
-    tiles.push({
+    return {
       index: rect.index,
       label: rect.label,
       scrollY: sy,
@@ -224,9 +240,20 @@ export function tilesFromFullPage(
       width: w,
       height: h,
       pngBase64: PNG.sync.write(dst).toString("base64"),
-    });
-  }
+    };
+  };
   const kept = rects.slice(0, opts.maxTiles);
+  const tiles: CritiqueTile[] = kept.map(cutTile);
+  let hitBands = 0;
+  const banding = !(opts.elementRects && opts.elementRects.length > 0);
+  if (banding && opts.hitRects && opts.hitRects.length > 0) {
+    for (const index of bandsCoveringRects(rects, kept.length, opts.hitRects, opts.maxHitBands)) {
+      const band = rects[index];
+      if (!band) continue;
+      tiles.push(cutTile({ ...band, label: `hit band ${index + 1}` }));
+      hitBands++;
+    }
+  }
   const coverage: CritiqueCoverage = {
     page_height_px: png.height,
     reviewed_height_px: kept.reduce(
@@ -237,7 +264,7 @@ export function tilesFromFullPage(
     bands_reviewed: kept.length,
     capped: rects.length > kept.length,
   };
-  return { tiles, coverage };
+  return { tiles, coverage, hitBands };
 }
 
 /**

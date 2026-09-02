@@ -13,8 +13,17 @@
 // Toolkit tier: this module must not import src/core (layering check).
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { join, relative, resolve } from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { PNG } from "pngjs";
 import type { CritiqueCoverage, CritiqueFinding, CritiqueTile } from "./critique.js";
 import type { QaContext, QaSignature } from "./qa-plan.js";
@@ -44,6 +53,91 @@ export const PAGE_REVIEW_DISPOSITIONS = [
   "duplicate-of-gate",
 ] as const;
 export type PageReviewDisposition = (typeof PAGE_REVIEW_DISPOSITIONS)[number];
+
+/** Schema id and file name of the reviewed-outcome record `review-pack verdict` writes. */
+export const PAGE_REVIEW_VERDICT_SCHEMA = "harnery-page-review-verdict/v1";
+export const PAGE_REVIEW_VERDICT_FILENAME = "verdict.json";
+
+export const PAGE_REVIEW_FINDING_SEVERITIES = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "info",
+] as const;
+export type PageReviewFindingSeverity = (typeof PAGE_REVIEW_FINDING_SEVERITIES)[number];
+export const PAGE_REVIEW_FINDING_CATEGORIES = [
+  "layout",
+  "typography",
+  "contrast",
+  "content",
+  "image",
+  "interaction",
+  "accessibility",
+  "responsiveness",
+  "render-artifact",
+  "coverage",
+  "other",
+] as const;
+export type PageReviewFindingCategory = (typeof PAGE_REVIEW_FINDING_CATEGORIES)[number];
+
+/** One reviewer-written finding in `findings.json`. */
+export interface PageReviewReviewerFinding {
+  id: string;
+  severity: PageReviewFindingSeverity;
+  category: PageReviewFindingCategory;
+  context_id: string;
+  /** Tile ids (`T012`) or pack-relative file paths; never empty. */
+  evidence: string[];
+  observation: string;
+  recommendation?: string;
+  confidence?: number;
+}
+
+/** A reviewer's verdict on one machine finding in `evidence/critique.json`. */
+export interface PageReviewDispositionRecord {
+  /** `<context-id>/<tile-id>#<n>`, n = 0-based position among the tile's findings. */
+  target: string;
+  disposition: PageReviewDisposition;
+  note?: string;
+  by?: string;
+  at?: string;
+}
+
+/** The reviewer-owned `findings.json` document. */
+export interface PageReviewFindingsDocument {
+  schema: string;
+  schema_path?: string;
+  target: string;
+  reviewer: string | null;
+  reviewed_at: string | null;
+  findings: PageReviewReviewerFinding[];
+  dispositions?: PageReviewDispositionRecord[];
+}
+
+/** What `resolvePackVerdict` derives from the machine critique plus the reviewer's file. */
+export interface PageReviewVerdict {
+  machine_outcome: "pass" | "fail" | "skipped" | "incomplete";
+  reviewed_outcome: "pass" | "fail" | "skipped" | "incomplete";
+  /** Machine `high` findings across every judged context. */
+  high_total: number;
+  high_confirmed: number;
+  /** Highs dispositioned `artifact`, `not-a-defect`, or `duplicate-of-gate`. */
+  high_dismissed: number;
+  /** Highs with no disposition; they still count against the page. */
+  high_open: number;
+  /** Reviewer findings at `critical` or `high`; each counts against the page. */
+  reviewer_high: number;
+  /** Dispositions whose target matched a machine finding. */
+  dispositions_applied: number;
+  /** Disposition targets that name no machine finding in the critique. */
+  unmatched_dispositions: string[];
+}
+
+export interface PageReviewVerdictDocument extends PageReviewVerdict {
+  schema: string;
+  reviewed_at: string;
+}
 
 /** How a context's tiles were cut: from one full-page screenshot (the
  * default) or from per-band scrolled viewport captures (the fallback when the
@@ -135,7 +229,8 @@ export interface PageReviewContextRecord {
   /** Full-page band coverage (what the tiler kept of the page). */
   coverage: CritiqueCoverage;
   scopes: Array<{ selector: string; tiles: number }>;
-  /** Pack-relative file paths. */
+  /** Pack-relative file paths. `dom` ends in `.gz` (gzip) for packs written
+   * after the footprint change and in `.html` (plain) for older packs. */
   files: { full_page: string; dom: string; signature: string; tiles: string; context: string };
   dom_sha256: string;
   tiles: PageReviewTileRecord[];
@@ -165,6 +260,12 @@ export interface PageReviewContextCapture {
   signature: QaSignature;
   domHtml: string;
   capturedAt?: string;
+  /** Result of the capture-fidelity probe (capture-fidelity.ts); absent when
+   * the capture did not probe. Copied onto the record as `capture_fidelity`. */
+  captureFidelity?: PageReviewCaptureFidelity;
+  /** Bands cut past the tile cap because a gate hit lands in them (their
+   * tiles sit in `tiles` after the kept bands, labelled `hit band N`). */
+  hitBands?: number;
 }
 
 /** One context's machine critique, as the judge records it into the pack. */
@@ -269,6 +370,7 @@ export function packPaths(packDir: string) {
     index: join(evidenceDir, "index.json"),
     inventory: join(evidenceDir, "files.json"),
     critique: join(evidenceDir, "critique.json"),
+    verdict: join(evidenceDir, PAGE_REVIEW_VERDICT_FILENAME),
     contextsDir,
     contextDir: (contextId: string) => join(contextsDir, safeSegment(contextId)),
   };
@@ -372,7 +474,15 @@ export function findPackTile(
 export function writePackExpandedTile(
   packDir: string,
   contextId: string,
-  input: { tileId: string; dpr: number; fullPage: Buffer; capturedAt?: string },
+  input: { tileId: string; dpr: number; capturedAt?: string } & (
+    | { fullPage: Buffer; region?: undefined }
+    | {
+        fullPage?: undefined;
+        /** The tile's region already rendered at `dpr` (a scrolled viewport
+         * capture, `Browser.captureRegionByScroll`); written as is. */
+        region: Buffer;
+      }
+  ),
 ): { record: PageReviewContextRecord; expanded: PageReviewExpandedTileRecord } {
   if (!Number.isFinite(input.dpr) || input.dpr <= 0) {
     throw new Error(`dpr must be a positive number (got ${input.dpr})`);
@@ -382,12 +492,18 @@ export function writePackExpandedTile(
   const paths = packPaths(packDir);
   const dir = paths.contextDir(contextId);
   const file = join(dir, "tiles", expandedTileFilename(tile.id, input.dpr));
-  const { png, width, height } = cropPngRegion(input.fullPage, {
-    x: tile.x * input.dpr,
-    y: tile.scrollY * input.dpr,
-    width: tile.width * input.dpr,
-    height: tile.height * input.dpr,
-  });
+  const { png, width, height } = input.region
+    ? {
+        png: input.region,
+        width: input.region.readUInt32BE(16),
+        height: input.region.readUInt32BE(20),
+      }
+    : cropPngRegion(input.fullPage, {
+        x: tile.x * input.dpr,
+        y: tile.scrollY * input.dpr,
+        width: tile.width * input.dpr,
+        height: tile.height * input.dpr,
+      });
   mkdirSync(join(dir, "tiles"), { recursive: true });
   writeFileSync(file, png);
   const expanded: PageReviewExpandedTileRecord = {
@@ -409,7 +525,7 @@ export function writePackExpandedTile(
 }
 
 /**
- * Write one context's capture into the pack: `full-page.png`, `dom.html`,
+ * Write one context's capture into the pack: `full-page.png`, `dom.html.gz`,
  * `signature.json`, `tiles/T001.png…`, `tiles.json`, and `context.json`.
  * Full-page bands come first, then each scope's tiles in selector order, so
  * tile ids are stable for a given capture. Returns the record written.
@@ -428,12 +544,14 @@ export function writePackContext(
 
   const rel = (abs: string): string => relative(packDir, abs).split("\\").join("/");
   const fullPagePath = join(dir, "full-page.png");
-  const domPath = join(dir, "dom.html");
+  const domPath = join(dir, "dom.html.gz");
   const signaturePath = join(dir, "signature.json");
   const tilesPath = join(dir, "tiles.json");
   const contextPath = join(dir, "context.json");
   writeFileSync(fullPagePath, capture.fullPage);
-  writeFileSync(domPath, capture.domHtml);
+  // The serialized DOM compresses roughly 10:1; `dom_sha256` stays the digest
+  // of the uncompressed bytes so a reader can verify what `readPackDom` returns.
+  writeFileSync(domPath, gzipSync(Buffer.from(capture.domHtml, "utf8")));
   writeJson(signaturePath, capture.signature);
 
   const records: PageReviewTileRecord[] = [];
@@ -455,6 +573,7 @@ export function writePackContext(
       index: tile.index,
       label: tile.label,
       ...(scope !== undefined ? { scope } : {}),
+      kind: tile.label.startsWith("hit band") ? "hit-band" : scope !== undefined ? "scope" : "band",
       x: tile.x ?? 0,
       scrollY: tile.scrollY,
       width: tile.width,
@@ -488,6 +607,10 @@ export function writePackContext(
     },
     dom_sha256: sha256Hex(capture.domHtml),
     tiles: records,
+    ...(capture.captureFidelity ? { capture_fidelity: capture.captureFidelity } : {}),
+    ...(capture.hitBands !== undefined && capture.hitBands > 0
+      ? { hit_bands: capture.hitBands }
+      : {}),
   };
   writeJson(tilesPath, { schema: PAGE_REVIEW_PACK_SCHEMA, context_id: contextId, tiles: records });
   writeJson(contextPath, { schema: PAGE_REVIEW_PACK_SCHEMA, ...record });
@@ -759,8 +882,12 @@ export function readPackSignature(packDir: string, record: PageReviewContextReco
   return readJson<QaSignature>(join(packDir, record.files.signature));
 }
 
+/** Read a context's serialized DOM, inflating a gzip-compressed `dom.html.gz`
+ * and reading an older plain `dom.html` as-is. */
 export function readPackDom(packDir: string, record: PageReviewContextRecord): string {
-  return readFileSync(join(packDir, record.files.dom), "utf8");
+  const path = join(packDir, record.files.dom);
+  const bytes = readFileSync(path);
+  return (path.endsWith(".gz") ? gunzipSync(bytes) : bytes).toString("utf8");
 }
 
 export function readPackManifest(packDir: string): PageReviewPackManifest {
@@ -771,6 +898,317 @@ export function readPackManifest(packDir: string): PageReviewPackManifest {
     );
   }
   return manifest;
+}
+
+// ---------------------------------------------------------------------------
+// Findings, dispositions, verdict: the reviewer's half of the pack
+// ---------------------------------------------------------------------------
+
+export function readPackFindings(packDir: string): PageReviewFindingsDocument {
+  const path = packPaths(packDir).findings;
+  const doc = readJson<PageReviewFindingsDocument>(path);
+  if (doc.schema !== PAGE_REVIEW_FINDINGS_SCHEMA) {
+    throw new Error(
+      `${path}: expected schema ${PAGE_REVIEW_FINDINGS_SCHEMA}, found ${String(doc.schema)}`,
+    );
+  }
+  return doc;
+}
+
+/** Write `findings.json` atomically: a temp file beside it, then a rename. */
+export function writePackFindings(packDir: string, doc: PageReviewFindingsDocument): void {
+  const path = packPaths(packDir).findings;
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(doc, null, 2)}\n`);
+  renameSync(temp, path);
+}
+
+const FINDING_ID_PATTERN = /^[A-Z][A-Z0-9_-]*$/;
+const DISPOSITION_TARGET_PATTERN = /^[^/#]+\/T[0-9]{3}#[0-9]+$/;
+const DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Check a findings document against the rules `findingsSchemaDocument()`
+ * states, by hand so the toolkit tier carries no validator dependency.
+ * Returns every violation found; an empty array means the document is valid.
+ */
+export function validateFindingsDocument(doc: unknown): string[] {
+  const errors: string[] = [];
+  if (!isRecord(doc)) return ["findings document must be a JSON object"];
+  const topAllowed = new Set([
+    "schema",
+    "schema_path",
+    "target",
+    "reviewer",
+    "reviewed_at",
+    "findings",
+    "dispositions",
+  ]);
+  for (const key of Object.keys(doc)) {
+    if (!topAllowed.has(key)) errors.push(`unknown top-level key "${key}"`);
+  }
+  for (const key of ["schema", "target", "reviewer", "reviewed_at", "findings"]) {
+    if (!(key in doc)) errors.push(`missing required key "${key}"`);
+  }
+  if (doc.schema !== undefined && doc.schema !== PAGE_REVIEW_FINDINGS_SCHEMA) {
+    errors.push(`schema must be ${PAGE_REVIEW_FINDINGS_SCHEMA}`);
+  }
+  if (doc.schema_path !== undefined && typeof doc.schema_path !== "string") {
+    errors.push("schema_path must be a string");
+  }
+  if (doc.target !== undefined && typeof doc.target !== "string") {
+    errors.push("target must be a string");
+  }
+  if (doc.reviewer !== undefined && doc.reviewer !== null && typeof doc.reviewer !== "string") {
+    errors.push("reviewer must be a string or null");
+  }
+  if (doc.reviewed_at !== undefined && doc.reviewed_at !== null) {
+    if (typeof doc.reviewed_at !== "string" || !DATE_TIME_PATTERN.test(doc.reviewed_at)) {
+      errors.push("reviewed_at must be an RFC 3339 date-time string or null");
+    }
+  }
+
+  if (doc.findings !== undefined) {
+    if (!Array.isArray(doc.findings)) {
+      errors.push("findings must be an array");
+    } else {
+      const allowed = new Set([
+        "id",
+        "severity",
+        "category",
+        "context_id",
+        "evidence",
+        "observation",
+        "recommendation",
+        "confidence",
+      ]);
+      const seenIds = new Set<string>();
+      doc.findings.forEach((entry: unknown, index: number) => {
+        const at = `findings[${index}]`;
+        if (!isRecord(entry)) {
+          errors.push(`${at}: must be an object`);
+          return;
+        }
+        for (const key of Object.keys(entry)) {
+          if (!allowed.has(key)) errors.push(`${at}: unknown key "${key}"`);
+        }
+        for (const key of ["id", "severity", "category", "context_id", "evidence", "observation"]) {
+          if (!(key in entry)) errors.push(`${at}: missing required key "${key}"`);
+        }
+        if (entry.id !== undefined) {
+          if (typeof entry.id !== "string" || !FINDING_ID_PATTERN.test(entry.id)) {
+            errors.push(`${at}: id must match ${FINDING_ID_PATTERN.source}`);
+          } else if (seenIds.has(entry.id)) {
+            errors.push(`${at}: duplicate id "${entry.id}"`);
+          } else {
+            seenIds.add(entry.id);
+          }
+        }
+        if (
+          entry.severity !== undefined &&
+          !(PAGE_REVIEW_FINDING_SEVERITIES as readonly string[]).includes(String(entry.severity))
+        ) {
+          errors.push(
+            `${at}: severity must be one of ${PAGE_REVIEW_FINDING_SEVERITIES.join(", ")}`,
+          );
+        }
+        if (
+          entry.category !== undefined &&
+          !(PAGE_REVIEW_FINDING_CATEGORIES as readonly string[]).includes(String(entry.category))
+        ) {
+          errors.push(
+            `${at}: category must be one of ${PAGE_REVIEW_FINDING_CATEGORIES.join(", ")}`,
+          );
+        }
+        if (entry.context_id !== undefined && typeof entry.context_id !== "string") {
+          errors.push(`${at}: context_id must be a string`);
+        }
+        if (entry.evidence !== undefined) {
+          if (!Array.isArray(entry.evidence) || entry.evidence.length === 0) {
+            errors.push(`${at}: evidence must be a non-empty array of strings`);
+          } else if (entry.evidence.some((e: unknown) => typeof e !== "string")) {
+            errors.push(`${at}: evidence entries must be strings`);
+          }
+        }
+        if (
+          entry.observation !== undefined &&
+          (typeof entry.observation !== "string" || entry.observation.length === 0)
+        ) {
+          errors.push(`${at}: observation must be a non-empty string`);
+        }
+        if (entry.recommendation !== undefined && typeof entry.recommendation !== "string") {
+          errors.push(`${at}: recommendation must be a string`);
+        }
+        if (entry.confidence !== undefined) {
+          const c = entry.confidence;
+          if (typeof c !== "number" || !Number.isFinite(c) || c < 0 || c > 1) {
+            errors.push(`${at}: confidence must be a number between 0 and 1`);
+          }
+        }
+      });
+    }
+  }
+
+  if (doc.dispositions !== undefined) {
+    if (!Array.isArray(doc.dispositions)) {
+      errors.push("dispositions must be an array");
+    } else {
+      const allowed = new Set(["target", "disposition", "note", "by", "at"]);
+      const seen = new Set<string>();
+      doc.dispositions.forEach((entry: unknown, index: number) => {
+        const at = `dispositions[${index}]`;
+        if (!isRecord(entry)) {
+          errors.push(`${at}: must be an object`);
+          return;
+        }
+        for (const key of Object.keys(entry)) {
+          if (!allowed.has(key)) errors.push(`${at}: unknown key "${key}"`);
+        }
+        for (const key of ["target", "disposition"]) {
+          if (!(key in entry)) errors.push(`${at}: missing required key "${key}"`);
+        }
+        if (entry.target !== undefined) {
+          if (typeof entry.target !== "string" || !DISPOSITION_TARGET_PATTERN.test(entry.target)) {
+            errors.push(`${at}: target must look like <context-id>/T012#0`);
+          } else if (seen.has(entry.target)) {
+            errors.push(`${at}: duplicate target "${entry.target}"`);
+          } else {
+            seen.add(entry.target);
+          }
+        }
+        if (
+          entry.disposition !== undefined &&
+          !(PAGE_REVIEW_DISPOSITIONS as readonly string[]).includes(String(entry.disposition))
+        ) {
+          errors.push(`${at}: disposition must be one of ${PAGE_REVIEW_DISPOSITIONS.join(", ")}`);
+        }
+        for (const key of ["note", "by"]) {
+          if (entry[key] !== undefined && typeof entry[key] !== "string") {
+            errors.push(`${at}: ${key} must be a string`);
+          }
+        }
+        if (entry.at !== undefined) {
+          if (typeof entry.at !== "string" || !DATE_TIME_PATTERN.test(entry.at)) {
+            errors.push(`${at}: at must be an RFC 3339 date-time string`);
+          }
+        }
+      });
+    }
+  }
+  return errors;
+}
+
+/** `<context-id>/<tile-id>#<n>` for the n-th finding of a tile in one context. */
+export function dispositionTarget(contextId: string, tileId: string, n: number): string {
+  return `${contextId}/${tileId}#${n}`;
+}
+
+/**
+ * Every machine finding in the critique, keyed by its disposition target.
+ * `n` counts a tile's findings in critique order, all severities included, so
+ * a reviewer can point at the second finding on T006 as `ctx/T006#1`.
+ */
+export function machineFindingTargets(
+  critique: PageReviewCritiqueRecord[] | null,
+): Map<string, CritiqueFinding & { tile_id: string; context_id: string }> {
+  const out = new Map<string, CritiqueFinding & { tile_id: string; context_id: string }>();
+  if (!critique) return out;
+  for (const row of critique) {
+    const perTile = new Map<string, number>();
+    for (const finding of row.findings) {
+      const n = perTile.get(finding.tile_id) ?? 0;
+      perTile.set(finding.tile_id, n + 1);
+      out.set(dispositionTarget(row.context_id, finding.tile_id, n), {
+        ...finding,
+        context_id: row.context_id,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Combine the immutable machine critique with the reviewer's dispositions and
+ * findings into one reviewed outcome. A machine `high` counts against the page
+ * unless a reviewer dispositioned it `artifact`, `not-a-defect`, or
+ * `duplicate-of-gate`; `confirmed` and undispositioned highs count; so does a
+ * reviewer finding at `critical` or `high`. Nothing here rewrites the
+ * critique: `evidence/critique.json` stays the machine record.
+ */
+export function resolvePackVerdict(
+  manifest: Pick<PageReviewPackManifest, "critique">,
+  findings: PageReviewFindingsDocument,
+): PageReviewVerdict {
+  const critique = manifest.critique;
+  const machine_outcome: PageReviewVerdict["machine_outcome"] =
+    critique === null || critique.length === 0
+      ? "skipped"
+      : critique.some((row) => row.outcome === "fail")
+        ? "fail"
+        : critique.some((row) => row.outcome === "incomplete")
+          ? "incomplete"
+          : critique.every((row) => row.outcome === "skipped")
+            ? "skipped"
+            : "pass";
+
+  const targets = machineFindingTargets(critique);
+  const byTarget = new Map<string, PageReviewDispositionRecord>();
+  const unmatched: string[] = [];
+  for (const entry of findings.dispositions ?? []) {
+    if (targets.has(entry.target)) byTarget.set(entry.target, entry);
+    else unmatched.push(entry.target);
+  }
+
+  let high_total = 0;
+  let high_confirmed = 0;
+  let high_dismissed = 0;
+  let high_open = 0;
+  for (const [target, finding] of targets) {
+    if (finding.severity !== "high") continue;
+    high_total += 1;
+    const disposition = byTarget.get(target)?.disposition;
+    if (disposition === undefined) high_open += 1;
+    else if (disposition === "confirmed") high_confirmed += 1;
+    else high_dismissed += 1;
+  }
+  const reviewer_high = findings.findings.filter(
+    (f) => f.severity === "critical" || f.severity === "high",
+  ).length;
+
+  const blocking = high_confirmed + high_open + reviewer_high;
+  const anyIncomplete = critique?.some((row) => row.outcome === "incomplete") ?? false;
+  const reviewed_outcome: PageReviewVerdict["reviewed_outcome"] =
+    blocking > 0
+      ? "fail"
+      : anyIncomplete
+        ? "incomplete"
+        : machine_outcome === "skipped"
+          ? "skipped"
+          : "pass";
+
+  return {
+    machine_outcome,
+    reviewed_outcome,
+    high_total,
+    high_confirmed,
+    high_dismissed,
+    high_open,
+    reviewer_high,
+    dispositions_applied: byTarget.size,
+    unmatched_dispositions: unmatched,
+  };
+}
+
+/** The verdict a previous `review-pack verdict` wrote, or undefined when none exists. */
+export function readPackVerdict(packDir: string): PageReviewVerdictDocument | undefined {
+  const path = packPaths(packDir).verdict;
+  if (!existsSync(path)) return undefined;
+  const doc = readJson<PageReviewVerdictDocument>(path);
+  return doc.schema === PAGE_REVIEW_VERDICT_SCHEMA ? doc : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,7 +1513,10 @@ export function buildInspectionPlan(
         list.push(reason);
         reasons.set(id, list);
       };
-      const bands = ctx.tiles.filter((tile) => tile.scope === undefined);
+      // Hit bands sit past the cap, so they never stand in for the page bottom.
+      const bands = ctx.tiles.filter(
+        (tile) => tile.scope === undefined && tile.kind !== "hit-band",
+      );
       const first = bands[0] ?? ctx.tiles[0];
       const last = bands[bands.length - 1] ?? ctx.tiles[ctx.tiles.length - 1];
       if (first) add(first.id, "page top: header, navigation, first fold");
@@ -1083,6 +1524,8 @@ export function buildInspectionPlan(
         add(last.id, "page bottom: footer and final call to action");
       for (const tile of ctx.tiles) {
         if (tile.scope !== undefined) add(tile.id, `scoped tile for ${tile.scope}`);
+        if (tile.kind === "hit-band")
+          add(tile.id, "hit band: captured past the tile cap for a gate hit");
       }
       const row = critique?.find((entry) => entry.context_id === ctx.id);
       for (const finding of row?.findings ?? []) {
@@ -1166,6 +1609,11 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
           `(${ctx.coverage.reviewed_height_px} of ${ctx.coverage.page_height_px} px) are in the pack; the rest of the page is unreviewed.`,
       );
     }
+    if (ctx.hit_bands !== undefined && ctx.hit_bands > 0) {
+      warnings.push(
+        `${ctx.id}: ${ctx.hit_bands} band(s) below the tile cap were captured because gate hits land in them.`,
+      );
+    }
   }
   notChecked.push({
     check: "interactive behavior",
@@ -1236,7 +1684,9 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
   let retention = input.retention;
   if (!retention && existsSync(paths.manifest)) {
     try {
-      const prior = JSON.parse(readFileSync(paths.manifest, "utf8")) as Partial<PageReviewPackManifest>;
+      const prior = JSON.parse(
+        readFileSync(paths.manifest, "utf8"),
+      ) as Partial<PageReviewPackManifest>;
       if (prior.retention) retention = prior.retention;
     } catch {
       // A malformed prior manifest is rewritten below; retention starts absent.
@@ -1290,7 +1740,16 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
       ),
     },
   });
-  writeFileSync(paths.review, renderReviewMarkdown(manifest, plan, input.judgeCommand));
+  // A verdict written by `review-pack verdict` survives every refinalize so
+  // review.md keeps its "Reviewed outcome" section; the section itself notes
+  // when the verdict predates the current critique.
+  let verdict: PageReviewVerdictDocument | undefined;
+  try {
+    verdict = readPackVerdict(input.packDir);
+  } catch {
+    verdict = undefined;
+  }
+  writeFileSync(paths.review, renderReviewMarkdown(manifest, plan, input.judgeCommand, verdict));
   const inventory: Array<{ path: string; bytes: number }> = [];
   walkFiles(input.packDir, input.packDir, inventory);
   writeJson(paths.inventory, {
@@ -1315,6 +1774,7 @@ export function renderReviewMarkdown(
   manifest: PageReviewPackManifest,
   plan: PageReviewInspectionPlan,
   judgeCommand?: string,
+  verdict?: PageReviewVerdictDocument,
 ): string {
   const lines: string[] = [];
   const contexts = manifest.contexts;
@@ -1440,6 +1900,29 @@ export function renderReviewMarkdown(
       lines.push("");
     }
   }
+  if (verdict) {
+    lines.push("## Reviewed outcome");
+    lines.push("");
+    lines.push(
+      `**${verdict.reviewed_outcome.toUpperCase()}** (machine outcome ${verdict.machine_outcome}), recorded ${verdict.reviewed_at} in \`evidence/${PAGE_REVIEW_VERDICT_FILENAME}\`.`,
+    );
+    lines.push("");
+    lines.push(
+      `- Machine high findings: ${verdict.high_total} total · ${verdict.high_confirmed} confirmed · ${verdict.high_dismissed} dismissed (artifact, not a defect, or duplicate of a gate) · ${verdict.high_open} without a disposition.`,
+    );
+    lines.push(
+      `- Reviewer findings at critical or high: ${verdict.reviewer_high}. Dispositions applied: ${verdict.dispositions_applied}.`,
+    );
+    if (verdict.unmatched_dispositions.length > 0) {
+      lines.push(
+        `- Dispositions naming no machine finding (ignored): ${verdict.unmatched_dispositions.join(", ")}.`,
+      );
+    }
+    lines.push(
+      "- A confirmed or undispositioned high, or a reviewer finding at high or critical, fails the reviewed outcome. The machine critique above is unchanged by any disposition.",
+    );
+    lines.push("");
+  }
   lines.push("## Inspection plan");
   lines.push("");
   for (const ctx of plan.contexts) {
@@ -1463,11 +1946,12 @@ export function renderReviewMarkdown(
       );
       lines.push("");
     }
-    lines.push("| Tile | Label | Scope | y (px) | Size (px) | File |");
-    lines.push("|---|---|---|---|---|---|");
+    lines.push("| Tile | Label | Kind | Scope | y (px) | Size (px) | File |");
+    lines.push("|---|---|---|---|---|---|---|");
     for (const tile of ctx.tiles) {
+      const kind = tile.kind ?? (tile.scope !== undefined ? "scope" : "band");
       lines.push(
-        `| ${tile.id} | ${tile.label} | ${tile.scope ?? "full page"} | ${tile.scrollY} | ${tile.width}×${tile.height} | [${tile.id}.png](${tile.file}) |`,
+        `| ${tile.id} | ${tile.label} | ${kind} | ${tile.scope ?? "full page"} | ${tile.scrollY} | ${tile.width}×${tile.height} | [${tile.id}.png](${tile.file}) |`,
       );
     }
     lines.push("");
@@ -1498,4 +1982,202 @@ export function renderReviewMarkdown(
   if (manifest.critique !== null) lines.push(`- [Machine critique](${manifest.files.critique})`);
   lines.push("");
   return `${lines.join("\n")}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// Expiry: find packs, delete the expired ones, leave a stub behind
+// ---------------------------------------------------------------------------
+
+/** Schema of the stub left behind when an expired pack is deleted. */
+export const PAGE_REVIEW_EXPIRED_SCHEMA = "harnery-page-review-expired/v1";
+
+/** The artifact store's per-workspace manifest. A standalone review-pack
+ * workspace IS the pack, so deletion keeps this one file beside the stub.
+ * Named here rather than imported: this toolkit module must not reach into
+ * `src/core`. */
+const ARTIFACT_WORKSPACE_MANIFEST_FILENAME = ".harnery-artifact.json";
+
+/** What remains of a deleted pack: enough for a result document's
+ * `review_pack.dir` to explain itself without the evidence. */
+export interface PageReviewExpiredStub {
+  schema: typeof PAGE_REVIEW_EXPIRED_SCHEMA;
+  target: string;
+  created_at: string;
+  expires_at: string;
+  deleted_at: string;
+  /** Contexts the pack held before deletion. */
+  contexts: number;
+  /** Aggregate of the manifest's critique outcomes; null when no judge ran. */
+  machine_outcome: PageReviewCritiqueRecord["outcome"] | null;
+}
+
+/** One pack as seen by the expiry sweep. `expires_at`, `size_bytes`, and
+ * `managed` are null when the manifest does not carry them; such a pack is
+ * never deleted. */
+export interface PageReviewPackRow {
+  dir: string;
+  target: string;
+  created_at: string;
+  expires_at: string | null;
+  size_bytes: number | null;
+  managed: boolean | null;
+  /** `retention.expires_at` is in the past (at the sweep's `now`). */
+  expired: boolean;
+}
+
+export interface DeleteExpiredPacksInput {
+  /** Directories to search; see `findPageReviewPacks` for the shape searched. */
+  roots: string[];
+  /** Sweep clock (default: the wall clock). */
+  now?: Date;
+  /** Also delete packs whose manifest says `managed: false` (an explicit
+   * `--out`). Default false: only the store's own packs are touched. */
+  includeUnmanaged?: boolean;
+  /** Report without touching the filesystem. */
+  dryRun: boolean;
+}
+
+export interface DeleteExpiredPacksResult {
+  /** Every pack found under the roots, deletable or not. */
+  candidates: PageReviewPackRow[];
+  /** Packs removed by this call; under `dryRun`, the packs that would be. */
+  deleted: PageReviewPackRow[];
+}
+
+/** The manifest at `dir`, or null when `dir` is not a page review pack. A
+ * malformed or foreign `manifest.json` is not a pack. */
+function readPackManifestIfPack(dir: string): PageReviewPackManifest | null {
+  const manifestPath = join(dir, PAGE_REVIEW_MANIFEST_FILENAME);
+  if (!existsSync(manifestPath)) return null;
+  try {
+    const manifest = JSON.parse(
+      readFileSync(manifestPath, "utf8"),
+    ) as Partial<PageReviewPackManifest>;
+    if (manifest.schema !== PAGE_REVIEW_PACK_SCHEMA) return null;
+    if (typeof manifest.target !== "string" || typeof manifest.created_at !== "string") return null;
+    return manifest as PageReviewPackManifest;
+  } catch {
+    return null;
+  }
+}
+
+function listChildDirs(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(dir, entry.name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** A workspace and the qa-run packs beneath it (`run-<id>/pack`). */
+function packCandidatesUnder(workspace: string): string[] {
+  const out = [workspace];
+  for (const runDir of listChildDirs(workspace)) {
+    if (!runDir.split(/[\\/]/).pop()?.startsWith("run-")) continue;
+    out.push(join(runDir, PAGE_REVIEW_PACK_DIRNAME));
+  }
+  return out;
+}
+
+/**
+ * Every page review pack under the given roots. A pack is a directory whose
+ * `manifest.json` carries the pack schema. Each root is searched as: the root
+ * itself, each immediate child workspace, and `run-<id>/pack` under the root and
+ * under each workspace (the layout of the managed artifact store, where a
+ * `review-pack` workspace is itself the pack and a `qa-run` workspace holds
+ * one pack per run). Nothing deeper is walked.
+ */
+export function findPageReviewPacks(roots: string[]): string[] {
+  const found = new Set<string>();
+  for (const rawRoot of roots) {
+    const root = resolve(rawRoot);
+    if (!existsSync(root)) continue;
+    const candidates = [
+      ...packCandidatesUnder(root),
+      ...listChildDirs(root).flatMap((workspace) => packCandidatesUnder(workspace)),
+    ];
+    for (const candidate of candidates) {
+      if (readPackManifestIfPack(candidate)) found.add(candidate);
+    }
+  }
+  return [...found].sort();
+}
+
+function packRow(dir: string, manifest: PageReviewPackManifest, nowMs: number): PageReviewPackRow {
+  const expiresAt = manifest.retention?.expires_at ?? null;
+  const expiresMs = expiresAt === null ? Number.NaN : Date.parse(expiresAt);
+  return {
+    dir,
+    target: manifest.target,
+    created_at: manifest.created_at,
+    expires_at: expiresAt,
+    size_bytes: typeof manifest.size_bytes === "number" ? manifest.size_bytes : null,
+    managed: typeof manifest.retention?.managed === "boolean" ? manifest.retention.managed : null,
+    expired: Number.isFinite(expiresMs) && expiresMs <= nowMs,
+  };
+}
+
+/** Whether the sweep may delete this pack: expired, and either managed by the
+ * store or explicitly included. A pack without retention never qualifies. */
+export function isPackDeletable(row: PageReviewPackRow, includeUnmanaged = false): boolean {
+  if (!row.expired || row.expires_at === null) return false;
+  if (row.managed === true) return true;
+  return includeUnmanaged && row.managed === false;
+}
+
+/** One verdict for the whole pack from its per-context critique rows: any
+ * fail is a fail, otherwise the weakest non-pass outcome, otherwise pass. */
+export function aggregateMachineOutcome(
+  critique: PageReviewCritiqueRecord[] | null | undefined,
+): PageReviewCritiqueRecord["outcome"] | null {
+  if (!critique || critique.length === 0) return null;
+  if (critique.some((row) => row.outcome === "fail")) return "fail";
+  if (critique.some((row) => row.outcome === "incomplete")) return "incomplete";
+  if (critique.some((row) => row.outcome === "skipped")) return "skipped";
+  return "pass";
+}
+
+/**
+ * Delete every expired pack under the roots and leave `pack-expired.json` in
+ * its place. Deletion removes every entry inside the pack directory except
+ * the artifact store's own `.harnery-artifact.json` (a standalone review-pack
+ * workspace is the pack, and the store still owns the workspace). Nothing
+ * outside the pack directory is touched. Only a pack whose manifest carries
+ * `retention.expires_at` in the past is eligible, and an unmanaged pack
+ * (explicit `--out`) only when `includeUnmanaged` is set.
+ */
+export function deleteExpiredPacks(input: DeleteExpiredPacksInput): DeleteExpiredPacksResult {
+  const now = input.now ?? new Date();
+  const nowMs = now.getTime();
+  const candidates: PageReviewPackRow[] = [];
+  const deleted: PageReviewPackRow[] = [];
+  for (const dir of findPageReviewPacks(input.roots)) {
+    const manifest = readPackManifestIfPack(dir);
+    if (!manifest) continue;
+    const row = packRow(dir, manifest, nowMs);
+    candidates.push(row);
+    if (!isPackDeletable(row, input.includeUnmanaged === true)) continue;
+    if (!input.dryRun) {
+      const stub: PageReviewExpiredStub = {
+        schema: PAGE_REVIEW_EXPIRED_SCHEMA,
+        target: manifest.target,
+        created_at: manifest.created_at,
+        // Guarded by isPackDeletable: a deletable row always has expires_at.
+        expires_at: row.expires_at ?? "",
+        deleted_at: now.toISOString(),
+        contexts: Array.isArray(manifest.contexts) ? manifest.contexts.length : 0,
+        machine_outcome: aggregateMachineOutcome(manifest.critique),
+      };
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === ARTIFACT_WORKSPACE_MANIFEST_FILENAME) continue;
+        rmSync(join(dir, entry.name), { recursive: true, force: true });
+      }
+      writeJson(join(dir, PAGE_REVIEW_EXPIRED_STUB_FILENAME), stub);
+    }
+    deleted.push(row);
+  }
+  return { candidates, deleted };
 }

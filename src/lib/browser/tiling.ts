@@ -162,3 +162,35 @@ export function bandOversizedRect(
     height: r.height,
   }));
 }
+
+/**
+ * Indices of bands past the kept prefix (`allBands[0..keptCount)`) that
+ * intersect any of `rects`. A tile cap keeps the top of a tall page and drops
+ * the rest; a deterministic gate that already found a defect below the cap
+ * still deserves a tile, so the caller cuts these bands as well and labels
+ * them as hit bands. Pure: the result is deduplicated, ascending, and holds
+ * at most `maxExtra` entries. Rects and bands share one pixel space.
+ */
+export function bandsCoveringRects(
+  allBands: ReadonlyArray<{ x: number; y: number; width: number; height: number }>,
+  keptCount: number,
+  rects: ReadonlyArray<{ x: number; y: number; width: number; height: number }>,
+  maxExtra = 50,
+): number[] {
+  const out: number[] = [];
+  if (rects.length === 0 || maxExtra <= 0) return out;
+  for (let index = Math.max(0, keptCount); index < allBands.length; index++) {
+    if (out.length >= maxExtra) break;
+    const band = allBands[index];
+    if (!band) continue;
+    const hit = rects.some((rect) => {
+      const x1 = rect.x + Math.max(rect.width, 1);
+      const y1 = rect.y + Math.max(rect.height, 1);
+      return (
+        band.x < x1 && band.x + band.width > rect.x && band.y < y1 && band.y + band.height > rect.y
+      );
+    });
+    if (hit) out.push(index);
+  }
+  return out;
+}

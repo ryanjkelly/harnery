@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { bandOversizedRect, cutCost, snappedBandRects, type VisualAtom } from "./tiling.ts";
+import {
+  bandOversizedRect,
+  bandsCoveringRects,
+  cutCost,
+  snappedBandRects,
+  type VisualAtom,
+} from "./tiling.ts";
 
 /** A paragraph: line boxes every `lineHeight` px from top, `lines` of them. */
 function paragraph(top: number, lines: number, lineHeight = 24, glyph = 18): VisualAtom[] {
@@ -120,5 +126,56 @@ describe("bandOversizedRect", () => {
   test("leaves elements within 1.25x of the budget whole", () => {
     const small = { ...rect, height: 1700 };
     expect(bandOversizedRect(small, [], OPTS)).toEqual([small]);
+  });
+});
+
+describe("bandsCoveringRects", () => {
+  // 78 bands of 1400 px stepping 1280 px, like a tall page at the defaults.
+  const bands = Array.from({ length: 78 }, (_, index) => ({
+    x: 0,
+    y: index * 1280,
+    width: 1280,
+    height: 1400,
+  }));
+
+  test("returns the bands below the kept prefix that a hit rect lands in, ascending", () => {
+    // y 40,468 sits in band 31 (39,680..41,080); band 32 starts at 40,960, past the rect.
+    const hits = [{ x: 100, y: 40_468, width: 300, height: 20 }];
+    expect(bandsCoveringRects(bands, 24, hits)).toEqual([31]);
+    // A rect across the seam lands in both neighbours.
+    expect(bandsCoveringRects(bands, 24, [{ x: 0, y: 40_950, width: 10, height: 20 }])).toEqual([
+      31, 32,
+    ]);
+  });
+
+  test("a hit inside the kept prefix adds nothing; a hit straddling the cap adds only the dropped band", () => {
+    expect(bandsCoveringRects(bands, 24, [{ x: 0, y: 500, width: 10, height: 10 }])).toEqual([]);
+    // Band 23 (29,440..30,840) is kept; band 24 (30,720..32,120) overlaps the same rect and is not.
+    expect(bandsCoveringRects(bands, 24, [{ x: 0, y: 30_800, width: 10, height: 10 }])).toEqual([
+      24,
+    ]);
+  });
+
+  test("dedupes across rects, keeps the tile cap untouched when no rects are given, and caps extras", () => {
+    const rects = [
+      { x: 0, y: 40_468, width: 10, height: 10 },
+      { x: 500, y: 40_470, width: 10, height: 10 },
+      { x: 0, y: 90_000, width: 10, height: 10 },
+    ];
+    expect(bandsCoveringRects(bands, 24, rects)).toEqual([31, 70]);
+    expect(bandsCoveringRects(bands, 24, [])).toEqual([]);
+    expect(bandsCoveringRects(bands, 24, rects, 1)).toEqual([31]);
+    expect(bandsCoveringRects(bands, 24, rects, 0)).toEqual([]);
+  });
+
+  test("a zero-size rect still counts as a point; a rect off the page hits nothing", () => {
+    // 50,000 sits in the 120 px overlap of bands 38 (48,640..50,040) and 39 (49,920..51,320).
+    expect(bandsCoveringRects(bands, 24, [{ x: 0, y: 50_000, width: 0, height: 0 }])).toEqual([
+      38, 39,
+    ]);
+    expect(bandsCoveringRects(bands, 24, [{ x: 0, y: 200_000, width: 10, height: 10 }])).toEqual(
+      [],
+    );
+    expect(bandsCoveringRects(bands, 78, [{ x: 0, y: 50_000, width: 10, height: 10 }])).toEqual([]);
   });
 });

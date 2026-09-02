@@ -69,6 +69,94 @@ interface WorkItem {
   contextIndex: number;
   tile: CritiqueTile & { id: string };
   url: string;
+  /** The rubric with this tile's position preamble in front of it. */
+  rubric: string;
+}
+
+/**
+ * Orientation the provider reads before the rubric: which band this tile is,
+ * where it sits on the page, how much of it repeats a neighbour, whether it
+ * touches the page top or bottom, and how it was captured. A tile edge that
+ * continues in the next band is not a clipped element, and a fixed header at
+ * the top of a scrolled-band capture is not a layout defect; the preamble
+ * says so where the pixels cannot. Adds context only: the finding taxonomy
+ * the rubric defines is unchanged. Empty for an unknown tile id.
+ */
+export function tileRubricPreamble(record: PageReviewContextRecord, tileId: string): string {
+  const tile = record.tiles.find((entry) => entry.id === tileId);
+  if (!tile) return "";
+  const pageHeight = record.page.height;
+  const top = tile.scrollY;
+  const bottom = tile.scrollY + tile.height;
+  const lines: string[] = [];
+  if (tile.scope !== undefined) {
+    lines.push(
+      `Tile ${tile.id}: selector tile for ${tile.scope} (${tile.label}), ` +
+        `document y ${top}-${bottom} px of a ${pageHeight} px tall page.`,
+    );
+  } else {
+    const bands = record.tiles
+      .filter((entry) => entry.scope === undefined)
+      .sort((a, b) => a.scrollY - b.scrollY || a.index - b.index);
+    const n = bands.findIndex((entry) => entry.id === tile.id);
+    const capped = record.coverage.capped
+      ? ` (the page has ${record.coverage.bands_total} bands; those past the cap are not in this pack)`
+      : "";
+    lines.push(
+      `Tile ${tile.id}: band ${n + 1} of ${bands.length}${capped}, ` +
+        `document y ${top}-${bottom} px of a ${pageHeight} px tall page.`,
+    );
+    const prev = bands[n - 1];
+    const next = bands[n + 1];
+    const overlaps: string[] = [];
+    if (prev) {
+      const above = Math.max(0, prev.scrollY + prev.height - top);
+      overlaps.push(
+        above > 0
+          ? `its top ${above} px repeat the bottom of ${prev.id}`
+          : `it starts where ${prev.id} ends, with no overlap`,
+      );
+    }
+    if (next) {
+      const below = Math.max(0, bottom - next.scrollY);
+      overlaps.push(
+        below > 0
+          ? `its bottom ${below} px repeat the top of ${next.id}`
+          : `it ends where ${next.id} starts, with no overlap`,
+      );
+    }
+    if (overlaps.length > 0) {
+      const joined = overlaps.join("; ");
+      lines.push(`${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`);
+    }
+  }
+  const touchesTop = top <= 0;
+  const touchesBottom = bottom >= pageHeight;
+  if (touchesTop && touchesBottom) {
+    lines.push("This tile covers the whole page height.");
+  } else if (touchesTop) {
+    lines.push(
+      "This tile touches the page top; content cut at its bottom edge continues in the next band.",
+    );
+  } else if (touchesBottom) {
+    lines.push(
+      "This tile touches the page bottom; content cut at its top edge continues in the previous band.",
+    );
+  } else {
+    lines.push(
+      "This tile is interior: content cut at its top and bottom edges continues in the neighbouring bands.",
+    );
+  }
+  const source = record.capture_fidelity?.source ?? "full-page";
+  lines.push(
+    source === "scrolled-bands"
+      ? "Capture source: scrolled-bands (the viewport was scrolled to this band and clipped, because " +
+          "the full-page screenshot disagreed with the viewport render). Fixed and sticky elements " +
+          "are shown once, at their document position, as a full-page screenshot shows them; a " +
+          "fixed bar that is absent from this band is therefore not a defect."
+      : "Capture source: full-page (one full-page screenshot, cropped to this band).",
+  );
+  return lines.join(" ");
 }
 
 function providerLabel(meta: Record<string, unknown> | undefined, present: boolean): string {
@@ -110,7 +198,13 @@ export async function judgePageReviewPack(
     let reuse: CritiqueReusePlan | undefined;
     // Reuse only for unscoped captures: scope tiles share tiler indices with
     // the bands, and a mixed set would mis-associate baseline findings.
-    if (options.reuse && provider && record.scopes.length === 0) {
+    // Never for a scrolled-bands context: its tiles were cut from scrolled
+    // viewport captures, not from the full-page PNG the band diff compares.
+    const scrolled = record.capture_fidelity?.source === "scrolled-bands";
+    if (options.reuse && provider && scrolled) {
+      log(`judge ${record.id}: band-diff reuse skipped (tiles came from scrolled bands)`);
+    }
+    if (options.reuse && provider && record.scopes.length === 0 && !scrolled) {
       const context: QaContext = {
         viewport: record.viewport,
         theme: record.theme,
@@ -143,7 +237,15 @@ export async function judgePageReviewPack(
 
   const work: WorkItem[] = [];
   perContext.forEach((entry, contextIndex) => {
-    for (const tile of entry.review) work.push({ contextIndex, tile, url: entry.record.url });
+    for (const tile of entry.review) {
+      const preamble = tileRubricPreamble(entry.record, tile.id);
+      work.push({
+        contextIndex,
+        tile,
+        url: entry.record.url,
+        rubric: preamble ? `${preamble}\n\n${rubric}` : rubric,
+      });
+    }
   });
 
   let meta: Record<string, unknown> | undefined;
@@ -165,7 +267,7 @@ export async function judgePageReviewPack(
         if (!entry) continue;
         entry.judged.add(item.tile.id);
         try {
-          const found = await provider({ url: item.url, rubric, tile: item.tile });
+          const found = await provider({ url: item.url, rubric: item.rubric, tile: item.tile });
           for (const finding of found) {
             entry.findings.push({ ...finding, tile: item.tile.index, tile_id: item.tile.id });
           }

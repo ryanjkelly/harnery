@@ -89,6 +89,23 @@ describe("validateQaRunJob", () => {
     expect(validateQaRunJob(validJob({ policy: { critique_max_tiles: 40 } })).ok).toBe(true);
   });
 
+  test("policy.review_pack_retention_minutes must be an integer between 1 and 43200", () => {
+    for (const bad of [0, 43_201, 1.5, "90"]) {
+      const result = validateQaRunJob(
+        validJob({ policy: { review_pack_retention_minutes: bad as number } }),
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.join("\n")).toContain("policy.review_pack_retention_minutes");
+      }
+    }
+    for (const ok of [1, 90, 43_200]) {
+      expect(validateQaRunJob(validJob({ policy: { review_pack_retention_minutes: ok } })).ok).toBe(
+        true,
+      );
+    }
+  });
+
   test("a valid job round-trips", () => {
     const job = validJob({
       contexts: [{ id: "hd-dark-default", viewport: "hd", theme: "dark", state: "default" }],

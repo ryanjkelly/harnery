@@ -60,6 +60,29 @@ describe("tilesFromFullPage coverage", () => {
     // Two bands of 1400 with a 120 overlap reach 1280 + 1400 px.
     expect(coverage.reviewed_height_px).toBe(2680);
   });
+
+  test("hit rects below the cap add labelled hit bands after the kept prefix; coverage stays honest", () => {
+    const { tiles, coverage, hitBands } = tilesFromFullPage(blankPage(400, 5000), {
+      bandHeight: 1400,
+      overlap: 120,
+      maxTiles: 2,
+      hitRects: [{ x: 10, y: 4000, width: 50, height: 10 }],
+    });
+    // Bands: 0..1400, 1280..2680, 2560..3960, 3840..5000. y=4000 lands in band 4 only.
+    expect(tiles.map((t) => t.label)).toEqual(["band 1", "band 2", "hit band 4"]);
+    expect(tiles[2]).toMatchObject({ index: 3, scrollY: 3840, height: 1160 });
+    expect(hitBands).toBe(1);
+    expect(coverage).toMatchObject({ bands_total: 4, bands_reviewed: 2, capped: true });
+    // A hit inside the kept prefix adds nothing.
+    const inside = tilesFromFullPage(blankPage(400, 5000), {
+      bandHeight: 1400,
+      overlap: 120,
+      maxTiles: 2,
+      hitRects: [{ x: 10, y: 100, width: 50, height: 10 }],
+    });
+    expect(inside.tiles).toHaveLength(2);
+    expect(inside.hitBands).toBe(0);
+  });
 });
 
 describe("runCritique concurrency", () => {

@@ -17,6 +17,7 @@ import {
   type Cookie as JarCookie,
 } from "../cookies/index.ts";
 import { type AssertResult, type AssertSpec, buildAssertCheck } from "./asserts.js";
+import { stitchPngRows } from "./capture-fidelity.js";
 import {
   buildClearContentAnnotationsScript,
   buildContentAnnotateScript,
@@ -633,6 +634,151 @@ export class Browser {
   }): Promise<string> {
     const buf = await this.currentPage.screenshot({ type: "png", clip: rect });
     return buf.toString("base64");
+  }
+
+  /**
+   * PNG of a document-space rect captured the way a reader sees it: scroll so
+   * the rect's top sits at the top of the viewport, wait for the scroll to
+   * settle (instant scroll, then rAF frames until `scrollY` stops moving),
+   * and clip the viewport. Restores the scroll position afterwards.
+   *
+   * Bands are taller than the viewport. Rather than resizing the viewport to
+   * the band height (which reflows `vh`-sized layout, moves sticky and fixed
+   * elements, and so stops matching what the user sees), the rect is captured
+   * in viewport-height pieces at the real viewport and the pieces are
+   * stitched with pngjs. The final piece of a multi-piece rect is anchored to
+   * the viewport bottom so a fixed header, which sits at the viewport top, is
+   * not repeated in the middle of the band. No viewport change is made.
+   *
+   * Pixels come back at the page's device scale factor, so a rect at DPR 2
+   * yields an image twice the rect's CSS size, the same as a full-page
+   * screenshot cropped in pixel space would.
+   *
+   * Parity with the full-page screenshot: a full-page capture renders the
+   * whole document as one viewport, so a fixed header or a stuck sticky bar
+   * appears once, at its document position. Scrolled, the same element would
+   * ride along at the top of every piece and differ from the full-page crop
+   * on every band but the first. So while a piece is captured at a non-zero
+   * scroll, every `position: fixed`/`sticky` element that has left its
+   * scroll-0 document position is given `visibility: hidden` (layout kept,
+   * inline style restored afterwards). The result is the region as a
+   * full-page screenshot would show it, without the full-page raster.
+   */
+  async captureRegionByScroll(rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }): Promise<Buffer> {
+    const page = this.currentPage;
+    if (!(rect.width > 0) || !(rect.height > 0)) {
+      throw new Error(
+        `captureRegionByScroll: rect must have a positive size (got ${rect.width}×${rect.height})`,
+      );
+    }
+    const settle = (top: number) =>
+      page.evaluate(async (target: number) => {
+        window.scrollTo({ left: window.scrollX, top: target, behavior: "instant" });
+        const frame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+        let last = Number.NaN;
+        for (let i = 0; i < 8; i++) {
+          await frame();
+          const now = window.scrollY;
+          if (now === last) break;
+          last = now;
+        }
+        return {
+          scrollX: window.scrollX,
+          scrollY: window.scrollY,
+          innerWidth: window.innerWidth,
+          innerHeight: window.innerHeight,
+        };
+      }, top);
+    const original = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+    const pieces: Buffer[] = [];
+    // Viewport-pinned candidates, measured at scroll 0 so each later capture
+    // can tell "still where the full page shows it" from "riding along".
+    await settle(0);
+    const pinned = await page.evaluateHandle(() => {
+      const out: Array<{ el: HTMLElement; top: number; prior: string }> = [];
+      const all = document.querySelectorAll<HTMLElement>("body *");
+      const limit = Math.min(all.length, 20_000);
+      for (let i = 0; i < limit; i++) {
+        const el = all[i] as HTMLElement;
+        const position = getComputedStyle(el).position;
+        if (position !== "fixed" && position !== "sticky") continue;
+        out.push({
+          el,
+          top: el.getBoundingClientRect().top + window.scrollY,
+          prior: el.style.visibility,
+        });
+      }
+      return out;
+    });
+    const syncPinned = (mode: "hide-moved" | "restore") =>
+      page.evaluate(
+        ([entries, action]) => {
+          for (const entry of entries) {
+            if (action === "restore") {
+              entry.el.style.visibility = entry.prior;
+              continue;
+            }
+            const now = entry.el.getBoundingClientRect().top + window.scrollY;
+            entry.el.style.visibility = Math.abs(now - entry.top) > 1 ? "hidden" : entry.prior;
+          }
+        },
+        [pinned, mode] as const,
+      );
+    try {
+      const bottom = rect.y + rect.height;
+      let cursor = rect.y;
+      let first = true;
+      while (cursor < bottom) {
+        const remaining = bottom - cursor;
+        // Top-align the piece; a final partial piece is then re-anchored to
+        // the viewport bottom once the viewport height is known.
+        let view = await settle(cursor);
+        if (!first && remaining < view.innerHeight) {
+          view = await settle(Math.max(0, bottom - view.innerHeight));
+        }
+        await syncPinned("hide-moved");
+        const offset = cursor - view.scrollY;
+        if (offset < 0 || offset >= view.innerHeight) {
+          throw new Error(
+            `captureRegionByScroll: document y ${cursor} is not reachable in the viewport ` +
+              `(scrollY ${view.scrollY}, innerHeight ${view.innerHeight})`,
+          );
+        }
+        const pieceHeight = Math.min(remaining, view.innerHeight - offset);
+        const clipX = Math.max(0, rect.x - view.scrollX);
+        const clipWidth = Math.min(rect.width, view.innerWidth - clipX);
+        if (!(clipWidth > 0)) {
+          throw new Error(
+            `captureRegionByScroll: document x ${rect.x} is outside the viewport (innerWidth ${view.innerWidth})`,
+          );
+        }
+        pieces.push(
+          await page.screenshot({
+            type: "png",
+            clip: { x: clipX, y: offset, width: clipWidth, height: pieceHeight },
+          }),
+        );
+        cursor += pieceHeight;
+        first = false;
+      }
+    } finally {
+      try {
+        await syncPinned("restore");
+      } finally {
+        await pinned.dispose();
+        await page.evaluate(
+          ({ x, y }: { x: number; y: number }) =>
+            window.scrollTo({ left: x, top: y, behavior: "instant" }),
+          original,
+        );
+      }
+    }
+    return stitchPngRows(pieces);
   }
 
   /** Document-space rects + labels for each element matching `selector` (semantic tiling). */

@@ -21,6 +21,7 @@ import { type JudgedContext, judgePageReviewPack, toCritiqueRecords } from "./pa
 import {
   finalizePageReviewPack,
   gateHitsFromEnvelope,
+  PAGE_REVIEW_DEFAULT_RETENTION_MINUTES,
   PAGE_REVIEW_FINDINGS_FILENAME,
   PAGE_REVIEW_PACK_DIRNAME,
   PAGE_REVIEW_PACK_SCHEMA,
@@ -31,6 +32,7 @@ import {
   readPackContext,
   readPackDom,
   readPackFullPage,
+  readPackManifest,
   readPackSignature,
 } from "./page-review-pack.js";
 import type { QaManifest } from "./qa-plan.js";
@@ -127,6 +129,8 @@ const STATUS_HEARTBEAT_MS = 15_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_RUN_DEADLINE_MS = 900_000;
 const DEFAULT_COMMAND_CONCURRENCY = 2;
+/** Gate-hit rectangles forwarded to one context's capture child (`--review-pack-hit-rect`). */
+const REVIEW_PACK_HIT_RECTS_PER_CONTEXT = 50;
 const EXEC_MAX_BUFFER = 16 * 1024 * 1024;
 
 /** The planner's deterministic vocabulary is an executable contract, not a
@@ -346,6 +350,12 @@ export interface QaRunMatrixOptions {
   /** Renders the command a reader can run to judge the pack later; shown in
    * the pack's review.md when the judge did not run. */
   reviewPackJudgeCommand?: (packDir: string) => string;
+  /** True when the run writes into the managed artifact store: the pack's
+   * manifest then says `managed: true` and the expiry sweep may delete it
+   * once `policy.review_pack_retention_minutes` (default 90) have passed
+   * since the judge finished. A pack under an explicit out dir stays
+   * unmanaged and is never deleted automatically. */
+  reviewPackManaged?: boolean;
 }
 
 interface TimedExec {
@@ -885,6 +895,10 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       ...contextRenderArgs(ctx),
       "--out",
       outPrefix,
+      // When the manifest requires a visual pass, the capture stage writes the
+      // full-page PNG into the pack, so the gate trio carries no screenshot;
+      // nothing reads the gate PNG (the envelope JSON is the evidence).
+      ...(manifest.checks.visual !== "none" ? ["--no-screenshot"] : []),
       ...manifestGateArgs,
       ...applicable.flatMap((check) => check.args),
     ];
@@ -1059,12 +1073,26 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         ...(pool ? { pool } : {}),
         ...(judgeCommand ? { judgeCommand } : {}),
         createdAt: startedAtIso,
+        // The retention clock restarts at each finalize, so it ends
+        // `retention_minutes` after the judge (or after capture when the
+        // judge never runs).
+        retention: {
+          expires_at: new Date(
+            Date.now() +
+              (job.policy?.review_pack_retention_minutes ?? PAGE_REVIEW_DEFAULT_RETENTION_MINUTES) *
+                60_000,
+          ).toISOString(),
+          managed: options.reviewPackManaged === true,
+        },
       });
+      const written = readPackManifest(packDir);
       reviewPack = {
         schema: PAGE_REVIEW_PACK_SCHEMA,
         dir: packDir,
         review: join(packDir, PAGE_REVIEW_REVIEW_FILENAME),
         findings: join(packDir, PAGE_REVIEW_FINDINGS_FILENAME),
+        ...(written.retention ? { expires_at: written.retention.expires_at } : {}),
+        ...(written.size_bytes !== undefined ? { size_bytes: written.size_bytes } : {}),
       };
     } catch (err: unknown) {
       blockers.push({
@@ -1103,6 +1131,23 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     visual === "full-page"
       ? []
       : manifest.scopes.flatMap((s) => ["--review-pack-scope", s.selector]);
+  // Gate-hit rectangles ride into each context's capture child so the bands
+  // they land in are cut even past the tile cap (`hit band N` tiles). The
+  // gates ran first, so the rects are known before the page is captured.
+  const hitRectsByContext = new Map<string, string[]>();
+  for (const gate of gateRecords()) {
+    for (const hit of gate.hits ?? []) {
+      const list = hitRectsByContext.get(gate.context_id) ?? [];
+      if (list.length >= REVIEW_PACK_HIT_RECTS_PER_CONTEXT) break;
+      const r = hit.rect;
+      list.push(
+        [r.x, r.y, Math.max(0, r.width), Math.max(0, r.height)].map((n) => Math.round(n)).join(","),
+      );
+      hitRectsByContext.set(gate.context_id, list);
+    }
+  }
+  const hitRectArgs = (contextId: string): string[] =>
+    (hitRectsByContext.get(contextId) ?? []).flatMap((spec) => ["--review-pack-hit-rect", spec]);
 
   enterStage("capture");
   const captureStart = Date.now();
@@ -1131,6 +1176,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         ...scopeArgs,
         ...critiqueMaxTilesArgs,
         ...bandArgs,
+        ...hitRectArgs(ctx.id),
       ];
       log(
         `capture ${ctx.id}${scopeArgs.length > 0 ? ` [${manifest.scopes.map((s) => s.selector).join(",")}]` : ""}`,
