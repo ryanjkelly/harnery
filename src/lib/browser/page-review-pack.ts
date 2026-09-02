@@ -66,6 +66,23 @@ export interface PageReviewExpandedTileRecord {
   captured_at: string;
 }
 
+/** The per-context contact sheet: every tile downscaled into one grid PNG
+ * for orientation. Reading order is row-major (left to right, then top to
+ * bottom) in tile id order; each cell carries its tile id stamped in its
+ * label band. Optional and additive on the v1 context record. */
+export interface PageReviewContactSheetRecord {
+  file: string;
+  sha256: string;
+  bytes: number;
+  width: number;
+  height: number;
+  columns: number;
+  rows: number;
+  cell_width: number;
+  cell_height: number;
+  order: "row-major";
+}
+
 export interface PageReviewContextRecord {
   id: string;
   viewport: string;
@@ -85,6 +102,8 @@ export interface PageReviewContextRecord {
   tiles: PageReviewTileRecord[];
   /** Higher-DPR re-captures of single tiles, in the order they were made. */
   expanded?: PageReviewExpandedTileRecord[];
+  /** Downscaled grid of every tile (`contacts.png`); absent for a context with no tiles. */
+  contact_sheet?: PageReviewContactSheetRecord;
 }
 
 /** What a capture hands the pack for one context. `tiles` are the full-page
@@ -343,6 +362,7 @@ export function writePackContext(
   writeJson(signaturePath, capture.signature);
 
   const records: PageReviewTileRecord[] = [];
+  const tilePngs = new Map<string, Buffer>();
   const ordered: Array<{ tile: CritiqueTile; scope?: string }> = [
     ...capture.tiles.map((tile) => ({ tile })),
     ...(capture.scopeTiles ?? []).flatMap((entry) =>
@@ -354,6 +374,7 @@ export function writePackContext(
     const png = Buffer.from(tile.pngBase64, "base64");
     const file = join(tilesDir, `${id}.png`);
     writeFileSync(file, png);
+    tilePngs.set(id, png);
     records.push({
       id,
       index: tile.index,
@@ -395,7 +416,215 @@ export function writePackContext(
   };
   writeJson(tilesPath, { schema: PAGE_REVIEW_PACK_SCHEMA, context_id: contextId, tiles: records });
   writeJson(contextPath, { schema: PAGE_REVIEW_PACK_SCHEMA, ...record });
-  return record;
+  // The contact sheet is navigation, so it rides on the record but never
+  // gates the capture: the tiles are already on disk when it is built.
+  return writePackContactSheet(packDir, record, tilePngs);
+}
+
+// ---------------------------------------------------------------------------
+// Contact sheet
+// ---------------------------------------------------------------------------
+
+export const CONTACT_SHEET_FILENAME = "contacts.png";
+/** Tiles per row. Four 320 px cells plus gutters stay under a 1600 px sheet. */
+export const CONTACT_SHEET_COLUMNS = 4;
+const CONTACT_CELL = 320;
+const CONTACT_LABEL_H = 20;
+const CONTACT_GUTTER = 8;
+const CONTACT_BG: [number, number, number] = [212, 212, 216];
+const CONTACT_LABEL_BG: [number, number, number] = [24, 24, 27];
+const CONTACT_LABEL_FG: [number, number, number] = [250, 250, 250];
+
+/** 3×5 bitmap glyphs for the characters a tile id uses. Rows top-down, bits
+ * left-to-right. Anything else renders as a blank column. */
+const CONTACT_FONT: Record<string, number[]> = {
+  "0": [0b111, 0b101, 0b101, 0b101, 0b111],
+  "1": [0b010, 0b110, 0b010, 0b010, 0b111],
+  "2": [0b111, 0b001, 0b111, 0b100, 0b111],
+  "3": [0b111, 0b001, 0b111, 0b001, 0b111],
+  "4": [0b101, 0b101, 0b111, 0b001, 0b001],
+  "5": [0b111, 0b100, 0b111, 0b001, 0b111],
+  "6": [0b111, 0b100, 0b111, 0b101, 0b111],
+  "7": [0b111, 0b001, 0b001, 0b001, 0b001],
+  "8": [0b111, 0b101, 0b111, 0b101, 0b111],
+  "9": [0b111, 0b101, 0b111, 0b001, 0b111],
+  T: [0b111, 0b010, 0b010, 0b010, 0b010],
+};
+
+function fillRect(
+  png: PNG,
+  x0: number,
+  y0: number,
+  w: number,
+  h: number,
+  rgb: [number, number, number],
+): void {
+  for (let y = y0; y < y0 + h; y++) {
+    for (let x = x0; x < x0 + w; x++) {
+      const i = (y * png.width + x) * 4;
+      png.data[i] = rgb[0];
+      png.data[i + 1] = rgb[1];
+      png.data[i + 2] = rgb[2];
+      png.data[i + 3] = 255;
+    }
+  }
+}
+
+/** Stamp `text` at (x, y) with the bitmap font at `scale` pixels per dot. */
+function stampText(
+  png: PNG,
+  text: string,
+  x: number,
+  y: number,
+  scale: number,
+  rgb: [number, number, number],
+): void {
+  let cursor = x;
+  for (const ch of text) {
+    const glyph = CONTACT_FONT[ch];
+    if (glyph) {
+      glyph.forEach((rowBits, row) => {
+        for (let col = 0; col < 3; col++) {
+          if ((rowBits >> (2 - col)) & 1) {
+            fillRect(png, cursor + col * scale, y + row * scale, scale, scale, rgb);
+          }
+        }
+      });
+    }
+    cursor += 4 * scale;
+  }
+}
+
+/**
+ * Box-filter downscale (area average) of `src` to `dstW`×`dstH`. Never used
+ * to upscale; callers pass a destination no larger than the source.
+ */
+function boxDownscale(src: PNG, dstW: number, dstH: number): PNG {
+  const dst = new PNG({ width: dstW, height: dstH });
+  for (let dy = 0; dy < dstH; dy++) {
+    const sy0 = Math.floor((dy * src.height) / dstH);
+    const sy1 = Math.max(sy0 + 1, Math.floor(((dy + 1) * src.height) / dstH));
+    for (let dx = 0; dx < dstW; dx++) {
+      const sx0 = Math.floor((dx * src.width) / dstW);
+      const sx1 = Math.max(sx0 + 1, Math.floor(((dx + 1) * src.width) / dstW));
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      let n = 0;
+      for (let sy = sy0; sy < sy1; sy++) {
+        for (let sx = sx0; sx < sx1; sx++) {
+          const i = (sy * src.width + sx) * 4;
+          r += src.data[i] ?? 0;
+          g += src.data[i + 1] ?? 0;
+          b += src.data[i + 2] ?? 0;
+          a += src.data[i + 3] ?? 0;
+          n++;
+        }
+      }
+      const o = (dy * dstW + dx) * 4;
+      dst.data[o] = Math.round(r / n);
+      dst.data[o + 1] = Math.round(g / n);
+      dst.data[o + 2] = Math.round(b / n);
+      dst.data[o + 3] = Math.round(a / n);
+    }
+  }
+  return dst;
+}
+
+/**
+ * Build one contact sheet from tile PNGs, in the order given: a fixed grid of
+ * `CONTACT_SHEET_COLUMNS` cells per row, each cell a label band stamped with
+ * the tile id above the tile downscaled (box filter, aspect kept, never
+ * upscaled) to fit the cell. Row-major reading order.
+ */
+export function buildContactSheet(tiles: Array<{ id: string; png: Buffer }>): {
+  png: Buffer;
+  width: number;
+  height: number;
+  columns: number;
+  rows: number;
+  cell_width: number;
+  cell_height: number;
+} {
+  const columns = Math.max(1, Math.min(CONTACT_SHEET_COLUMNS, tiles.length));
+  const rows = Math.max(1, Math.ceil(tiles.length / columns));
+  const cellH = CONTACT_LABEL_H + CONTACT_CELL;
+  const width = columns * CONTACT_CELL + (columns + 1) * CONTACT_GUTTER;
+  const height = rows * cellH + (rows + 1) * CONTACT_GUTTER;
+  const sheet = new PNG({ width, height });
+  fillRect(sheet, 0, 0, width, height, CONTACT_BG);
+  tiles.forEach((tile, position) => {
+    const col = position % columns;
+    const row = Math.floor(position / columns);
+    const x0 = CONTACT_GUTTER + col * (CONTACT_CELL + CONTACT_GUTTER);
+    const y0 = CONTACT_GUTTER + row * (cellH + CONTACT_GUTTER);
+    fillRect(sheet, x0, y0, CONTACT_CELL, CONTACT_LABEL_H, CONTACT_LABEL_BG);
+    stampText(sheet, tile.id, x0 + 4, y0 + 3, 3, CONTACT_LABEL_FG);
+    const src = PNG.sync.read(tile.png);
+    const scale = Math.min(1, CONTACT_CELL / src.width, CONTACT_CELL / src.height);
+    const dstW = Math.max(1, Math.round(src.width * scale));
+    const dstH = Math.max(1, Math.round(src.height * scale));
+    const scaled = scale < 1 ? boxDownscale(src, dstW, dstH) : src;
+    const ty = y0 + CONTACT_LABEL_H;
+    for (let y = 0; y < scaled.height; y++) {
+      const srcStart = y * scaled.width * 4;
+      scaled.data.copy(
+        sheet.data,
+        ((ty + y) * width + x0) * 4,
+        srcStart,
+        srcStart + scaled.width * 4,
+      );
+    }
+  });
+  return {
+    png: PNG.sync.write(sheet),
+    width,
+    height,
+    columns,
+    rows,
+    cell_width: CONTACT_CELL,
+    cell_height: cellH,
+  };
+}
+
+/**
+ * Write (or rewrite) a context's `contacts.png` from its tiles and record it
+ * on the context. Tile bytes are read from the pack unless supplied. A
+ * context with no tiles gets no sheet and its record is returned unchanged.
+ */
+export function writePackContactSheet(
+  packDir: string,
+  record: PageReviewContextRecord,
+  tilePngs?: Map<string, Buffer>,
+): PageReviewContextRecord {
+  if (record.tiles.length === 0) return record;
+  const tiles = record.tiles.map((tile) => ({
+    id: tile.id,
+    png: tilePngs?.get(tile.id) ?? readFileSync(join(packDir, tile.file)),
+  }));
+  const sheet = buildContactSheet(tiles);
+  const dir = packPaths(packDir).contextDir(record.id);
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, CONTACT_SHEET_FILENAME);
+  writeFileSync(file, sheet.png);
+  const next: PageReviewContextRecord = {
+    ...record,
+    contact_sheet: {
+      file: relative(packDir, file).split("\\").join("/"),
+      sha256: sha256Hex(sheet.png),
+      bytes: sheet.png.byteLength,
+      width: sheet.width,
+      height: sheet.height,
+      columns: sheet.columns,
+      rows: sheet.rows,
+      cell_width: sheet.cell_width,
+      cell_height: sheet.cell_height,
+      order: "row-major",
+    },
+  };
+  writeJson(join(dir, "context.json"), { schema: PAGE_REVIEW_PACK_SCHEMA, ...next });
+  return next;
 }
 
 /** Context ids present in the pack, in directory order. */
@@ -649,11 +878,27 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
       "The pack shows rendered text. It does not verify prices, dates, names, or claims against an outside source.",
   });
 
-  const plan = buildInspectionPlan(input.contexts, critique);
+  // A context captured by an older writer, or one whose sheet was removed,
+  // gets its contact sheet here so every finalized pack carries one per
+  // context with tiles. Failure is a warning, never a lost pack.
+  const contexts = input.contexts.map((ctx) => {
+    if (ctx.tiles.length === 0) return ctx;
+    if (ctx.contact_sheet && existsSync(join(input.packDir, ctx.contact_sheet.file))) return ctx;
+    try {
+      return writePackContactSheet(input.packDir, ctx);
+    } catch (err: unknown) {
+      warnings.push(
+        `${ctx.id}: contact sheet not written (${err instanceof Error ? err.message : String(err)})`,
+      );
+      return ctx;
+    }
+  });
+
+  const plan = buildInspectionPlan(contexts, critique);
   writeJson(paths.inspectionPlan, plan);
   writeJson(paths.coverage, {
     schema: PAGE_REVIEW_PACK_SCHEMA,
-    contexts: input.contexts.map((ctx) => ({
+    contexts: contexts.map((ctx) => ({
       context_id: ctx.id,
       page_height_px: ctx.coverage.page_height_px,
       reviewed_height_px: ctx.coverage.reviewed_height_px,
@@ -692,7 +937,7 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
     target: input.target,
     ...(input.tested_revision !== undefined ? { tested_revision: input.tested_revision } : {}),
     tool: input.tool ?? { name: "harnery" },
-    contexts: input.contexts,
+    contexts,
     gates,
     critique,
     ...(input.pool ? { pool: input.pool } : {}),
@@ -716,8 +961,8 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
       "Small map for agents that should not have to probe the manifest before finding evidence.",
     target: input.target,
     counts: {
-      contexts: input.contexts.length,
-      tiles: input.contexts.reduce((sum, ctx) => sum + ctx.tiles.length, 0),
+      contexts: contexts.length,
+      tiles: contexts.reduce((sum, ctx) => sum + ctx.tiles.length, 0),
       machine_findings: critique?.reduce((sum, row) => sum + row.findings.length, 0) ?? null,
     },
     start_here: {
@@ -726,7 +971,10 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
       coverage: manifest.files.coverage,
       critique: critique !== null ? manifest.files.critique : null,
       findings: manifest.files.findings,
-      contexts: Object.fromEntries(input.contexts.map((ctx) => [ctx.id, ctx.files.context])),
+      contexts: Object.fromEntries(contexts.map((ctx) => [ctx.id, ctx.files.context])),
+      contact_sheets: Object.fromEntries(
+        contexts.flatMap((ctx) => (ctx.contact_sheet ? [[ctx.id, ctx.contact_sheet.file]] : [])),
+      ),
     },
   });
   writeFileSync(paths.review, renderReviewMarkdown(manifest, plan, input.judgeCommand));
@@ -771,7 +1019,7 @@ export function renderReviewMarkdown(
     "2. Read `evidence/inspection-plan.json`. Its `primary_tiles` are the complete-review budget for each context: the top of the page, the bottom, every scoped tile, and every tile with a machine finding. Open those tile files. Open another tile only for a named layout, text, or image question.",
   );
   lines.push(
-    "3. Use the full-page screenshot for orientation only; it is downscaled by any viewer and hides small defects a tile shows at native pixels.",
+    "3. Use the contact sheet (`contacts.png`, every tile downscaled into one grid, ids stamped, row-major order) and the full-page screenshot for orientation only; both hide small defects a tile shows at native pixels.",
   );
   lines.push(
     "4. Read the machine findings section. They come from a vision model judging each tile alone; a finding is a claim to confirm against the tile, never a fact. Slice-edge cropping is a tiling artifact, not a defect.",
@@ -789,15 +1037,18 @@ export function renderReviewMarkdown(
   lines.push("## Contexts");
   lines.push("");
   lines.push(
-    "| Context | Viewport | Theme | State | Page (w×h px) | Tiles | Coverage | Full page |",
+    "| Context | Viewport | Theme | State | Page (w×h px) | Tiles | Coverage | Contacts | Full page |",
   );
-  lines.push("|---|---|---|---|---|---|---|---|");
+  lines.push("|---|---|---|---|---|---|---|---|---|");
   for (const ctx of contexts) {
     const cov = ctx.coverage.capped
       ? `${ctx.coverage.bands_reviewed}/${ctx.coverage.bands_total} bands, capped`
       : "complete";
+    const contacts = ctx.contact_sheet
+      ? `[${CONTACT_SHEET_FILENAME}](${ctx.contact_sheet.file})`
+      : "none";
     lines.push(
-      `| ${ctx.id} | ${ctx.viewport} | ${ctx.theme} | ${ctx.state} | ${ctx.page.width}×${ctx.page.height} | ${ctx.tiles.length} | ${cov} | [full-page.png](${ctx.files.full_page}) |`,
+      `| ${ctx.id} | ${ctx.viewport} | ${ctx.theme} | ${ctx.state} | ${ctx.page.width}×${ctx.page.height} | ${ctx.tiles.length} | ${cov} | ${contacts} | [full-page.png](${ctx.files.full_page}) |`,
     );
   }
   lines.push("");
@@ -866,6 +1117,12 @@ export function renderReviewMarkdown(
   for (const ctx of contexts) {
     lines.push(`### ${ctx.id}`);
     lines.push("");
+    if (ctx.contact_sheet) {
+      lines.push(
+        `Contact sheet: [${CONTACT_SHEET_FILENAME}](${ctx.contact_sheet.file}) shows every tile below in id order, row-major (left to right, then top to bottom), ${ctx.contact_sheet.columns} per row, each cell stamped with its tile id. Orientation only; open the tile file for native pixels.`,
+      );
+      lines.push("");
+    }
     lines.push("| Tile | Label | Scope | y (px) | Size (px) | File |");
     lines.push("|---|---|---|---|---|---|");
     for (const tile of ctx.tiles) {

@@ -971,6 +971,7 @@ describe("runQaMatrix", () => {
     expect(existsSync(join(packDir, "contexts", "mobile-dark-default", "tiles", "T001.png"))).toBe(
       true,
     );
+    expect(existsSync(join(packDir, "contexts", "mobile-dark-default", "contacts.png"))).toBe(true);
     const pack = readPackManifest(packDir);
     expect(pack.contexts.map((ctx) => ctx.id)).toEqual([
       "desktop-light-default",

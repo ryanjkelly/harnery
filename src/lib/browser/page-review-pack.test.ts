@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import type { CritiqueTile } from "./critique.ts";
 import {
+  buildContactSheet,
   buildInspectionPlan,
+  CONTACT_SHEET_COLUMNS,
   cropPngRegion,
   expandedTileFilename,
   finalizePageReviewPack,
@@ -17,6 +19,7 @@ import {
   readPackContext,
   readPackManifest,
   readPackTiles,
+  writePackContactSheet,
   writePackContext,
   writePackExpandedTile,
 } from "./page-review-pack.ts";
@@ -327,5 +330,118 @@ describe("writePackExpandedTile", () => {
     });
     expect([width, height]).toEqual([2, 2]);
     expect(PNG.sync.read(out).width).toBe(2);
+  });
+});
+
+describe("contact sheets", () => {
+  test("writePackContext writes contacts.png as a row-major grid and records its layout", () => {
+    const dir = packDir();
+    const record = writePackContext(dir, capture({ tiles: tiles(6) }));
+    expect(record.contact_sheet).toBeDefined();
+    const sheet = record.contact_sheet;
+    if (!sheet) throw new Error("no contact sheet");
+    expect(sheet.file).toBe("contexts/desktop-light-default/contacts.png");
+    expect(sheet.order).toBe("row-major");
+    expect(sheet.columns).toBe(CONTACT_SHEET_COLUMNS);
+    expect(sheet.rows).toBe(2);
+    const image = PNG.sync.read(readFileSync(join(dir, sheet.file)));
+    expect([image.width, image.height]).toEqual([sheet.width, sheet.height]);
+    expect(sheet.width).toBeLessThanOrEqual(1600);
+    // The record on disk matches, and finalize does not rebuild an existing sheet.
+    expect(readPackContext(dir, record.id).contact_sheet).toEqual(sheet);
+    finalizePageReviewPack({
+      packDir: dir,
+      target: "http://localhost:4276/page",
+      contexts: [record],
+      critique: null,
+    });
+    expect(readPackManifest(dir).contexts[0]?.contact_sheet?.sha256).toBe(sheet.sha256);
+    const review = readFileSync(join(dir, "review.md"), "utf8");
+    expect(review).toContain("| [contacts.png](contexts/desktop-light-default/contacts.png) |");
+    expect(review).toContain(
+      "Contact sheet: [contacts.png](contexts/desktop-light-default/contacts.png)",
+    );
+    expect(review).toContain("4 per row");
+  });
+
+  test("buildContactSheet box-filters large tiles, keeps small ones at native size, and stamps ids", () => {
+    // A 640×640 tile, left half red, right half blue, lands at 320×320.
+    const wide = new PNG({ width: 640, height: 640 });
+    for (let y = 0; y < 640; y++) {
+      for (let x = 0; x < 640; x++) {
+        const i = (y * 640 + x) * 4;
+        wide.data[i] = x < 320 ? 255 : 0;
+        wide.data[i + 1] = 0;
+        wide.data[i + 2] = x < 320 ? 0 : 255;
+        wide.data[i + 3] = 255;
+      }
+    }
+    const sheet = buildContactSheet([
+      { id: "T001", png: PNG.sync.write(wide) },
+      { id: "T002", png: solidPng(16, 16, [0, 200, 0]) },
+    ]);
+    expect(sheet.columns).toBe(2);
+    expect(sheet.rows).toBe(1);
+    const image = PNG.sync.read(sheet.png);
+    const px = (x: number, y: number): number[] => {
+      const i = (y * image.width + x) * 4;
+      return [image.data[i] ?? -1, image.data[i + 1] ?? -1, image.data[i + 2] ?? -1];
+    };
+    const gutter = 8;
+    const labelH = sheet.cell_height - sheet.cell_width;
+    // First cell: red on the left edge of the image area, blue on the right.
+    expect(px(gutter, gutter + labelH)).toEqual([255, 0, 0]);
+    expect(px(gutter + 319, gutter + labelH + 319)).toEqual([0, 0, 255]);
+    // Second cell: a 16×16 tile is drawn at native size, so pixel 15 is green and 16 is background.
+    const x2 = gutter * 2 + sheet.cell_width;
+    expect(px(x2 + 15, gutter + labelH + 15)).toEqual([0, 200, 0]);
+    expect(px(x2 + 16, gutter + labelH + 16)).toEqual([212, 212, 216]);
+    // The label band carries stamped glyph pixels (white on the dark band).
+    let lit = 0;
+    for (let y = gutter; y < gutter + labelH; y++) {
+      for (let x = gutter; x < gutter + 80; x++) {
+        if (px(x, y)[0] === 250) lit++;
+      }
+    }
+    expect(lit).toBeGreaterThan(20);
+  });
+
+  test("finalize builds a missing sheet from disk and skips a context without tiles", () => {
+    const dir = packDir();
+    const withTiles = writePackContext(dir, capture());
+    const { contact_sheet: _drop, ...bare } = withTiles;
+    const empty = writePackContext(
+      dir,
+      capture({
+        context: { viewport: "mobile", theme: "light", state: "default" },
+        tiles: [],
+        coverage: {
+          page_height_px: 128,
+          reviewed_height_px: 0,
+          bands_total: 0,
+          bands_reviewed: 0,
+          capped: false,
+        },
+      }),
+    );
+    expect(empty.contact_sheet).toBeUndefined();
+    finalizePageReviewPack({
+      packDir: dir,
+      target: "http://localhost:4276/page",
+      contexts: [bare, empty],
+      critique: null,
+    });
+    const manifest = readPackManifest(dir);
+    expect(manifest.contexts[0]?.contact_sheet?.file).toBe(
+      "contexts/desktop-light-default/contacts.png",
+    );
+    expect(manifest.contexts[1]?.contact_sheet).toBeUndefined();
+    expect(readPackContext(dir, "desktop-light-default").contact_sheet).toBeDefined();
+    const rebuilt = writePackContactSheet(dir, bare);
+    expect(rebuilt.contact_sheet?.sha256).toBe(manifest.contexts[0]?.contact_sheet?.sha256);
+    const review = readFileSync(join(dir, "review.md"), "utf8");
+    expect(review).toContain(
+      "| mobile-light-default | mobile | light | default | 64×128 | 0 | complete | none |",
+    );
   });
 });

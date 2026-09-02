@@ -77,6 +77,7 @@ Exit 0 when the region was written; 1 when the pack, context, or tile does not e
   contexts/<context-id>/
     context.json             # viewport, theme, state, url, page size, coverage, tile records
     full-page.png            # orientation only; tiles are the evidence
+    contacts.png             # every tile downscaled into one grid, ids stamped (orientation only)
     tiles/T001.png …         # native-pixel tiles, ids stable within the context
     tiles/T012@2x.png        # one region re-captured at 2× (review-pack expand), optional
     tiles.json  dom.html  signature.json
@@ -84,9 +85,11 @@ Exit 0 when the region was written; 1 when the pack, context, or tile does not e
 
 Tile ids are `T001…` per context, bands first and then each scope's tiles in selector order; a finding cites `<context-id>/<tile-id>`. Every tile record carries its SHA-256, and the judge refuses a tile whose bytes no longer match, so a pack cannot be edited under a verdict.
 
+Each context with tiles also carries a **contact sheet**, `contacts.png`: every tile box-filtered down into a fixed grid of four 320 px cells per row (sheet width stays under 1600 px), read row-major in tile id order, each cell stamped with its tile id in a label band. It is built when the context is captured and rebuilt by `create`, `judge`, or `qa-run` when missing; the record's `contact_sheet` field carries the file, digest, grid size, and reading order. It exists so a reviewer can orient in one image before opening tiles; it is never evidence on its own, because the downscale hides exactly the small defects the tiles show.
+
 ## Reviewing a pack
 
-`review.md` carries the protocol. The short version: read the context table and coverage, open the inspection plan's primary tiles (page top, page bottom, every scoped tile, every tile with a machine finding), treat machine findings as claims to confirm against the tile, cite deterministic gate failures rather than re-deriving them, do not invent evidence for anything under "not checked", and write findings into `findings.json` with `id`, `severity`, `category`, `context_id`, `evidence`, and `observation`.
+`review.md` carries the protocol. The short version: read the context table and coverage, glance at each context's contact sheet for orientation, open the inspection plan's primary tiles (page top, page bottom, every scoped tile, every tile with a machine finding), treat machine findings as claims to confirm against the tile, cite deterministic gate failures rather than re-deriving them, do not invent evidence for anything under "not checked", and write findings into `findings.json` with `id`, `severity`, `category`, `context_id`, `evidence`, and `observation`.
 
 ## Examples
 
