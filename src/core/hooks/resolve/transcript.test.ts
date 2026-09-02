@@ -305,6 +305,27 @@ describe("ordered session-name transcript scans", () => {
     ).toEqual({ state: "unavailable", reason: "missing_transcript" });
   });
 
+  test("treats an assistant-only transcript with no mint result as unavailable", () => {
+    const p = writeTranscript([
+      {
+        role: "assistant",
+        message: {
+          content: [
+            { type: "text", text: BLOCK },
+            {
+              type: "tool_use",
+              name: "Read",
+              input: { path: "README.md" },
+            },
+          ],
+        },
+      },
+    ]);
+    expect(
+      inspectSessionNameDisplayImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toEqual({ state: "unavailable", reason: "transcript_not_ready" });
+  });
+
   test("accepts an exact display after an explicit pending-name retry", () => {
     const p = writeTranscript([
       {

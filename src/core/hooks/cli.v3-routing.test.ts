@@ -588,6 +588,79 @@ describe("agent-hook V3 hard cut", () => {
     expect(after.stdout).not.toContain('"permission":"deny"');
   });
 
+  test("Cursor fails open when its readable transcript omits mint results", () => {
+    const root = candidateRoot("cursor");
+    const owner = "cursor-assistant-only-transcript-owner";
+    const name = "Agent Maya - Auth refactor";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "cursor"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+
+    expect(
+      runHook("session-start", {
+        conversation_id: owner,
+        generation_id: "assistant-only-start",
+        hook_event_name: "sessionStart",
+      }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("Cursor owner was not projected");
+    const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        ...readLiveCoordinationRow(root, instanceId),
+        instance_id: instanceId,
+        suggested_session_name: name,
+      }),
+      "utf8",
+    );
+
+    // Cursor persists a readable agent transcript that contains assistant
+    // messages and tool requests but no tool-result row for the name mint.
+    // That surface cannot prove whether the first post-mint reply was valid.
+    const transcript = join(root, "cursor-agent-transcript.jsonl");
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          role: "user",
+          message: { content: [{ type: "text", text: "Review the repository." }] },
+        },
+        {
+          role: "assistant",
+          message: {
+            content: [
+              { type: "text", text: `\`\`\`\n${name}\n\`\`\`` },
+              {
+                type: "tool_use",
+                name: "Read",
+                input: { path: "README.md" },
+              },
+            ],
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+
+    const allowed = runHook("pre-tool-use", {
+      conversation_id: owner,
+      generation_id: "assistant-only-turn",
+      hook_event_name: "preToolUse",
+      transcript_path: transcript,
+      tool_name: "Grep",
+      tool_use_id: "assistant-only-grep",
+      tool_input: { pattern: "example" },
+    });
+    expect(allowed.status).toBe(0);
+    expect(allowed.stdout).not.toContain('"permission":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
+  });
+
   test("Codex preserves ordered display and stays silent when its transcript is unavailable", () => {
     const root = candidateRoot("codex");
     const owner = "codex-session-name-owner";

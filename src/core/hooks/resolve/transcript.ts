@@ -167,9 +167,16 @@ export function inspectSessionNameDisplayImmediately(
       awaitingReply = false;
     }
   }
-  return sawMintResult && awaitingReply
-    ? { state: "unavailable", reason: "transcript_not_ready" }
-    : { state: "absent" };
+  // Some adapter transcripts persist assistant messages and tool requests but
+  // omit tool-result rows entirely. A readable file with no mint result cannot
+  // establish the ordered verification boundary, so it is unavailable evidence
+  // rather than proof that the agent displayed the title incorrectly. Only a
+  // transcript that contains the mint followed by a non-matching assistant
+  // reply can safely deny the next tool.
+  if (!sawMintResult || awaitingReply) {
+    return { state: "unavailable", reason: "transcript_not_ready" };
+  }
+  return { state: "absent" };
 }
 
 /**
