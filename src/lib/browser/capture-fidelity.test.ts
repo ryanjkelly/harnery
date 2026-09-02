@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { PNG } from "pngjs";
 import {
   CAPTURE_FIDELITY_MISMATCH_THRESHOLD,
-  chooseProbeBands,
   compareBand,
   decideFidelity,
   pngDimensions,
@@ -24,28 +23,6 @@ function image(width: number, height: number, paint?: (x: number, y: number) => 
   }
   return img;
 }
-
-function bands(count: number, height = 100): Array<{ id: string; scrollY: number }> {
-  return Array.from({ length: count }, (_, i) => ({ id: `T${i + 1}`, scrollY: i * height }));
-}
-
-describe("chooseProbeBands", () => {
-  test("picks the top band and the middle band by document position", () => {
-    const picked = chooseProbeBands(bands(5));
-    expect(picked.map((b) => b.id)).toEqual(["T1", "T3"]);
-  });
-
-  test("order of the input does not matter; scrollY decides", () => {
-    const picked = chooseProbeBands([...bands(4)].reverse());
-    expect(picked.map((b) => b.id)).toEqual(["T1", "T3"]);
-  });
-
-  test("one band probes once, two bands probe both, none probes nothing", () => {
-    expect(chooseProbeBands(bands(1)).map((b) => b.id)).toEqual(["T1"]);
-    expect(chooseProbeBands(bands(2)).map((b) => b.id)).toEqual(["T1", "T2"]);
-    expect(chooseProbeBands([])).toEqual([]);
-  });
-});
 
 describe("compareBand", () => {
   test("identical pixels agree", () => {

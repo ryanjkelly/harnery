@@ -7,7 +7,6 @@ import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
   CAPTURE_FIDELITY_MISMATCH_THRESHOLD,
-  chooseProbeBands,
   compareBand,
   decideFidelity,
   type FidelityProbe,
@@ -2363,12 +2362,12 @@ async function expandReviewPackTile(
 }
 
 /**
- * Capture-fidelity probe (capture-fidelity.ts). The top and middle bands are
- * re-shot by scrolling the viewport (`Browser.captureRegionByScroll`) and
- * pixel compared with the crops the tiler took from the full-page screenshot.
- * When they agree the tiles stand and the record says `full-page`; when they
- * do not, every band is re-cut from a scrolled capture (same rects, same ids,
- * only the pixels change) and the record says `scrolled-bands`. A probe that
+ * Capture-fidelity probe (capture-fidelity.ts). Every band is re-shot by
+ * scrolling the viewport (`Browser.captureRegionByScroll`) and pixel compared
+ * with the crop the tiler took from the full-page screenshot. When they all
+ * agree the tiles stand and the record says `full-page`; when any disagrees,
+ * every band is re-cut from its scrolled capture (same rects, same ids, only
+ * the pixels change) and the record says `scrolled-bands`. A probe that
  * cannot run, or a re-capture that comes back the wrong size (a page wider
  * than the viewport), keeps the full-page crop for that band and says so in a
  * warning. Runs while the capture browser is open; the judge never opens one.
@@ -2414,9 +2413,12 @@ async function reconcileCaptureFidelity(
     shots.set(position, shot);
     return shot;
   };
+  // Every band is probed. A two-band sample (top and middle) missed a raster
+  // artifact that sat elsewhere on the page, and once every band has been
+  // shot by scrolling, the fallback below costs nothing extra: the same shots
+  // become the tiles.
   const probes: FidelityProbe[] = [];
-  const positions = tiles.map((tile, position) => ({ position, scrollY: tile.scrollY }));
-  for (const { position } of chooseProbeBands(positions)) {
+  for (let position = 0; position < tiles.length; position++) {
     const tile = tiles[position] as CritiqueTile;
     const shot = await shoot(position);
     if (!shot) continue;

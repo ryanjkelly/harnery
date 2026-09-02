@@ -3,14 +3,14 @@
 // A full-page screenshot of a very tall page can carry raster artifacts (a
 // blank block, a callout clipped mid-sentence) that a viewport render of the
 // same region does not show. While the capture browser is still open, the
-// capture branch re-shoots a couple of bands by scroll-and-clip and pixel
-// compares them with the crop the tiler took from the full-page image. When
-// they disagree, every band is re-cut from scrolled captures and the context
-// records `capture_fidelity.source = "scrolled-bands"`.
+// capture branch re-shoots every band by scroll-and-clip and pixel compares
+// each with the crop the tiler took from the full-page image. When any band
+// disagrees, the tiles are re-cut from those scrolled captures and the
+// context records `capture_fidelity.source = "scrolled-bands"`.
 //
-// This module owns the parts that need no browser: which bands to probe, the
-// comparison, the decision, and the row stitch that joins viewport-height
-// pieces into one band capture. `client.ts` owns the scroll-and-clip itself.
+// This module owns the parts that need no browser: the comparison, the
+// decision, and the row stitch that joins viewport-height pieces into one
+// band capture. `client.ts` owns the scroll-and-clip itself.
 
 import { PNG } from "pngjs";
 import type { PageReviewCaptureFidelity } from "./page-review-pack.js";
@@ -21,21 +21,6 @@ import { DEFAULT_REUSE_MISMATCH_RATIO, rectMismatch } from "./qa-reuse.js";
 export const CAPTURE_FIDELITY_MISMATCH_THRESHOLD = DEFAULT_REUSE_MISMATCH_RATIO;
 
 export type FidelityProbe = PageReviewCaptureFidelity["probed"][number];
-
-/**
- * The bands worth re-shooting: the top band and the middle band (by document
- * position). Two probes catch the two failure shapes seen so far, a page that
- * renders wrong from the start and one whose full-page raster degrades some
- * way down, without paying for every band up front. Returns one band when the
- * page has fewer than two.
- */
-export function chooseProbeBands<T extends { scrollY: number }>(tiles: readonly T[]): T[] {
-  if (tiles.length === 0) return [];
-  const ordered = [...tiles].sort((a, b) => a.scrollY - b.scrollY);
-  const top = ordered[0] as T;
-  const middle = ordered[Math.floor(ordered.length / 2)] as T;
-  return middle === top ? [top] : [top, middle];
-}
 
 /**
  * Pixel-compare a band cropped from the full-page screenshot with the same

@@ -699,8 +699,20 @@ export class Browser {
     // Viewport-pinned candidates, measured at scroll 0 so each later capture
     // can tell "still where the full page shows it" from "riding along".
     await settle(0);
+    // Hiding uses opacity, not visibility: `visibility: hidden` on the pinned
+    // element is undone by any descendant that sets `visibility: visible`
+    // (a revealed brand label inside a sticky bar did exactly that), while
+    // opacity is a group effect no descendant can override. Transitions are
+    // switched off inline so the capture never lands mid-fade.
     const pinned = await page.evaluateHandle(() => {
-      const out: Array<{ el: HTMLElement; top: number; prior: string }> = [];
+      const out: Array<{
+        el: HTMLElement;
+        top: number;
+        priorOpacity: string;
+        priorOpacityPriority: string;
+        priorTransition: string;
+        priorTransitionPriority: string;
+      }> = [];
       const all = document.querySelectorAll<HTMLElement>("body *");
       const limit = Math.min(all.length, 20_000);
       for (let i = 0; i < limit; i++) {
@@ -710,22 +722,40 @@ export class Browser {
         out.push({
           el,
           top: el.getBoundingClientRect().top + window.scrollY,
-          prior: el.style.visibility,
+          priorOpacity: el.style.getPropertyValue("opacity"),
+          priorOpacityPriority: el.style.getPropertyPriority("opacity"),
+          priorTransition: el.style.getPropertyValue("transition"),
+          priorTransitionPriority: el.style.getPropertyPriority("transition"),
         });
       }
       return out;
     });
     const syncPinned = (mode: "hide-moved" | "restore") =>
       page.evaluate(
-        ([entries, action]) => {
+        async ([entries, action]) => {
           for (const entry of entries) {
+            const restore = () => {
+              entry.el.style.setProperty("opacity", entry.priorOpacity, entry.priorOpacityPriority);
+              entry.el.style.setProperty(
+                "transition",
+                entry.priorTransition,
+                entry.priorTransitionPriority,
+              );
+            };
             if (action === "restore") {
-              entry.el.style.visibility = entry.prior;
+              restore();
               continue;
             }
             const now = entry.el.getBoundingClientRect().top + window.scrollY;
-            entry.el.style.visibility = Math.abs(now - entry.top) > 1 ? "hidden" : entry.prior;
+            if (Math.abs(now - entry.top) > 1) {
+              entry.el.style.setProperty("transition", "none", "important");
+              entry.el.style.setProperty("opacity", "0", "important");
+            } else {
+              restore();
+            }
           }
+          // Let the style change paint before the screenshot is taken.
+          await new Promise<void>((r) => requestAnimationFrame(() => r()));
         },
         [pinned, mode] as const,
       );
