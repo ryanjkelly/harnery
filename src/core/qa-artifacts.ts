@@ -18,7 +18,7 @@ import {
   createArtifact,
 } from "./artifacts/index.ts";
 
-export type QaArtifactKind = "qa-run" | "qa-record";
+export type QaArtifactKind = "qa-run" | "qa-record" | "review-pack";
 
 export function resolveQaRepoRoot(context?: HarneryProgramContext): string {
   return resolve(context?.repoRoot ?? monorepoRoot() ?? process.cwd());
@@ -27,7 +27,12 @@ export function resolveQaRepoRoot(context?: HarneryProgramContext): string {
 export function createManagedQaOutParent(repoRoot: string, kind: QaArtifactKind): string {
   return createArtifact(repoRoot, {
     slug: kind,
-    purpose: kind === "qa-run" ? "Page QA run evidence" : "Hand-recorded page QA evidence",
+    purpose:
+      kind === "qa-run"
+        ? "Page QA run evidence"
+        : kind === "review-pack"
+          ? "Page review pack"
+          : "Hand-recorded page QA evidence",
     retentionDays: configuredArtifactRetentionDays(repoRoot),
   }).path;
 }

@@ -133,6 +133,7 @@ describe("write/read round trip", () => {
         plan: 1_000,
         gates: 60_000,
         interactions: 10_000,
+        capture: 0,
         critique: 15_000,
         snapshot: 4_000,
         total: 90_000,

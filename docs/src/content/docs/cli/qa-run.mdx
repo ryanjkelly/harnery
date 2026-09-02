@@ -1,6 +1,6 @@
 ---
 title: harn qa-run
-description: Run the whole page-QA matrix (planner, deterministic gates, interactions, critique, snapshot) in one command with a fail-closed result.
+description: Run the whole page-QA matrix (planner, deterministic gates, interactions, capture into a page review pack, one pool of vision calls, snapshot) in one command with a fail-closed result.
 sidebar:
   order: 25
 ---
@@ -9,9 +9,9 @@ sidebar:
 harn qa-run [options] <target>
 ```
 
-Executes a complete page-QA matrix against one target (URL, local file path, or framework route) in a single invocation. Without it, a signoff means a long serial sequence of [`harn browse`](/cli/browse/) commands, one per viewport, theme, state, interaction, and critique pass. `qa-run` runs that whole sequence itself: the QA planner first, then the deterministic gates for every required context through a bounded child-process pool, then interaction assertions serially, then the manifest-required vision critique one context at a time, and finally the QA snapshot. It writes `page-qa-result.json` with a terminal verdict of `passed`, `failed`, or `incomplete`.
+Executes a complete page-QA matrix against one target (URL, local file path, or framework route) in a single invocation. Without it, a signoff means a long serial sequence of [`harn browse`](/cli/browse/) commands, one per viewport, theme, state, interaction, and critique pass. `qa-run` runs that whole sequence itself: the QA planner first, then the deterministic gates for every required context through a bounded child-process pool, then interaction assertions serially, then a **capture** of every context into a [page review pack](/cli/review-pack/) through the same pool (each browser closes as soon as its tiles are on disk), then the **critique**: one in-process pool of vision calls over every tile of every context, with no browser open, and finally the QA snapshot. It writes `page-qa-result.json` with a terminal verdict of `passed`, `failed`, or `incomplete`.
 
-Every child is a real `browse` invocation of the same host CLI (argv arrays only, never a shell string), so profile, cookie, and critique-provider semantics are byte-identical to running the commands by hand.
+Every child is a real `browse` invocation of the same host CLI (argv arrays only, never a shell string), so profile, cookie, and capture semantics are byte-identical to running the commands by hand. The vision calls run in the runner's own process through the host's injected critique provider, the same provider `browse --check-critique` uses.
 
 ## Options
 
@@ -19,7 +19,8 @@ Every child is a real `browse` invocation of the same host CLI (argv arrays only
 | --- | --- |
 | `--job <file>` | QA job document (JSON, see below). Validated before any browser starts; all validation errors print at once. Absent: a minimal implicit job for `<target>`. |
 | `--mode <mode>` | `signoff` persists a QA snapshot on a passing run; `review` never does. Default `signoff`. An explicit `--mode` overrides the job file's mode. |
-| `--concurrency <n>` | Concurrent deterministic captures (1–8; default 2). Interactions and critique always run serially. |
+| `--concurrency <n>` | Concurrent deterministic gates and pack captures (1–8; default 2). Interactions always run serially. |
+| `--pool <n>` | Vision calls in flight during the critique stage, across every context (1–16; default: the provider's own concurrency). Sets `policy.critique_pool`. |
 | `--allow-metered` | Permit the critique provider's metered-API fallback. Default: subscription-backed headless harnesses only. |
 | `--out-dir <dir>` | **Parent** output directory. By default, each invocation creates a managed workspace under `.harnery/artifacts/`. An explicit parent is reused as given. Every invocation writes into its own `run-<run_id>/` beneath the parent and updates `latest.json`; prior runs are never overwritten and never pass as current. |
 | `--json` | Print the full result JSON to stdout (the file is written either way). |
@@ -42,13 +43,14 @@ Every child is a real `browse` invocation of the same host CLI (argv arrays only
 1. **Plan.** `browse --qa-plan` classifies the render against the persisted QA baseline and emits the coverage manifest. A missing, unparseable, or incomplete manifest is a `plan` blocker: the run stops before any further browser work and the verdict is `incomplete`.
 2. **Deterministic gates.** Coverage is the union of the manifest's contexts and the job's extra contexts; a job can widen the matrix but never narrow it below the manifest. Each context (viewport × theme × state) gets one child `browse` invocation carrying all of its applicable job checks, with a unique `--out` prefix under the run directory. Dark contexts render through `browse --color-scheme dark`. Exit 0 is a pass; exit 2 is a failed gate (failure details are parsed from the JSON artifact); anything else (a timeout, a spawn error, a missing artifact) is an `unknown` outcome plus a named blocker.
 3. **Interactions.** Each `interaction_states` entry runs serially: its setup flags, then every assertion as `--assert` with `--assert-fail`. A manifest-required interaction state the job does not declare is a blocker: coverage may never be narrower than the manifest.
-4. **Critique.** Only when every gate and interaction passed and the manifest requires a visual pass. One context at a time (the critique provider owns tile concurrency), with `--check-critique-fail`, `--qa-reuse` when a baseline exists, and, in signoff mode, `--qa-snapshot` riding in the same invocation. Unless the job permits metered critique, children run with `HARNERY_CRITIQUE_HEADLESS_ONLY=1`; an exhausted headless list becomes an `incomplete` blocker naming the policy, never a metered call. Full-page critique reviews at most `policy.critique_max_tiles` bands per context (default 24, the `browse --check-critique-max-tiles` default) and drops the rest of a taller page; each critique row records `coverage` (page height, reviewed height, bands total and reviewed, `capped`). In signoff mode a capped context is a `critique` blocker and the run is `incomplete`; in review mode the row keeps its outcome and carries the flag.
-5. **Snapshot.** Signoff runs whose manifest required no visual pass still persist their baseline through a dedicated snapshot pass. A signoff verdict is only `passed` when every context's snapshot was saved.
-6. **Result.** `page-qa-result.json` (schema version 2) in the run's own directory, in manifest order regardless of completion order: the run identity block, host samples, `last_completed_stage`, the manifest, merged contexts, every command's argv/exit/outcome/failures/artifacts/wall-time, critique outcomes (each with the vision backend's call count and p50/p95 latency in `latency_ms`, and the page `coverage` the tiles reached), snapshot record, per-stage wall times, blockers, and the verdict.
+4. **Capture.** Only when every gate and interaction passed and the manifest requires a visual pass. Each context gets one child `browse --review-pack <run-dir>/pack` invocation through the same bounded pool as the gates. The child renders once, writes the full-page screenshot, the critique tiles as PNG files, the serialized DOM, and the QA signature into `pack/contexts/<id>/`, and closes its browser. A scoped manifest passes each scope as `--review-pack-scope` and skips full-page bands. Full-page capture keeps at most `policy.critique_max_tiles` bands per context (default 24) and records `coverage` (page height, reviewed height, bands total and reviewed, `capped`). A child that dies or writes no readable context is a `capture` blocker; the other contexts still proceed.
+5. **Critique.** One pool of vision calls over every tile of every captured context, read from disk, in the runner's own process. No browser is open. Pool size is `policy.critique_pool` (default: the provider's own concurrency). Unless the job permits metered critique, the runner sets `HARNERY_CRITIQUE_HEADLESS_ONLY=1` on its own environment before loading the provider; an exhausted headless list becomes an `incomplete` blocker naming the policy, never a metered call. When a persisted baseline exists, band-diff reuse skips tiles whose pixels provably did not change and carried no baseline finding. In signoff mode a capped context is a `critique` blocker and the run is `incomplete`; in review mode the row keeps its outcome and carries the flag. Tiles the pool never reached before the run deadline leave their context `unknown` with a blocker, never a partial pass. The pack's `review.md`, inspection plan, and `evidence/critique.json` are refreshed with the machine findings.
+6. **Snapshot.** In signoff mode the runner persists each context's baseline from the pack's own files (signature, DOM, screenshot), with the critique attached only when the whole tile set was freshly judged, uncapped, and unscoped. A manifest that required no visual pass still gets a dedicated `browse --qa-snapshot` pass. A signoff verdict is only `passed` when every context's snapshot was saved.
+7. **Result.** `page-qa-result.json` (schema version 4) in the run's own directory, in manifest order regardless of completion order: the run identity block, host samples, `last_completed_stage`, the manifest, merged contexts, every command's argv/exit/outcome/failures/artifacts/wall-time, critique outcomes per context (findings cite `<context-id>/<tile-id>`, plus the page `coverage` the tiles reached), the `critique_pool` block (concurrency, tiles total/reviewed/reused, wall time, provider, and the backends' p50/p95 `latency_ms` over the whole pool), the `review_pack` location, the snapshot record, per-stage wall times (`capture` is browser time, `critique` is judge time), blockers, and the verdict.
 
 ## Queueing: machine-wide admission
 
-A full QA matrix is heavy: a browser per context, plus a vision-critique pass. Two matrices started at once on the same machine slow each other down more than they would running back to back. By default, every `qa-run` therefore queues on the machine-wide `browser-qa` admission resource before any browser work starts. At most two runs hold slots at a time; the rest wait their turn in FIFO order.
+A full QA matrix is heavy: a browser per context during gates and capture, then a pool of vision calls. Two matrices started at once on the same machine slow each other down more than they would running back to back. By default, every `qa-run` therefore queues on the machine-wide `browser-qa` admission resource before any browser work starts. At most two runs hold slots at a time; the rest wait their turn in FIFO order.
 
 - **Capacity** is 2 by default, overridable per machine with the `HARNERY_QA_ADMISSION_CAPACITY` environment variable or per invocation with `--queue-capacity` (1 to 8). Capacity is advisory: the smallest capacity among concurrent waiters effectively governs.
 - **The wait is recorded, not hidden.** Time spent queued lands in `wall_time_ms.queue` in the result. It is never counted in `wall_time_ms.total`, which stays pure runner time, so queue contention can never make a run look slower than it was.
@@ -78,11 +80,16 @@ Every invocation mints a fresh run and isolates its output. Without `--out-dir`,
   .harnery-artifact.json     # retention and cleanup metadata
   latest.json                 # pointer to the newest completed run
   run-<run_id>/
-    page-qa-result.json       # the result document (schema version 2)
+    page-qa-result.json       # the result document (schema version 4)
     job.json                  # the effective validated job
     run-status.json           # live state + stage + heartbeat
     runner.log                # combined runner output (--detach runs)
-    <context artifacts...>    # per-context png/html/json trios
+    <context artifacts...>    # per-context png/html/json trios (gates, captures)
+    pack/                     # the page review pack (see harn review-pack)
+      review.md               # agent entry point: protocol, contexts, findings, plan
+      manifest.json  findings.json  findings.schema.json
+      evidence/               # inspection-plan, coverage, critique, index, files
+      contexts/<id>/          # full-page.png, tiles/T001.png…, dom.html, signature.json
 ```
 
 `latest.json` is written atomically (temp file plus rename) after each run and carries `{schema_version, run_id, dir, result, completed_at, verdict}`. Consumers resolve the current result through this pointer instead of guessing at loose files; each run's own directory remains the authoritative record, so a reused parent can never present an older run's result as the current one.
@@ -104,7 +111,7 @@ The result's `run` block is what makes it verifiable evidence rather than a loos
 | `job_digest` | SHA-256 over the effective validated job. `policy` is excluded: concurrency and timeout knobs change how the run executes, not what it proves. |
 | `out_dir` | Absolute run directory the result was written into. A result found elsewhere has been moved or copied. |
 
-Two more fields support triage. `host` carries a load sample (1-minute load average, free and total memory, CPU count) at start and finish, so an incomplete run records the pressure that produced it. `last_completed_stage` names the last stage (`plan`, `gates`, `interactions`, `critique`, `snapshot`) that finished without contributing a blocker, or `null` when none did.
+Two more fields support triage. `host` carries a load sample (1-minute load average, free and total memory, CPU count) at start and finish, so an incomplete run records the pressure that produced it. `last_completed_stage` names the last stage (`plan`, `gates`, `interactions`, `capture`, `critique`, `snapshot`) that finished without contributing a blocker, or `null` when none did.
 
 One note on reading `wall_time_ms`: it measures **one runner invocation**, browser-process time included, not the duration of whatever larger task the invocation was part of. An agent loop that plans, edits, and re-runs QA several times accumulates its own wall clock; only the slice inside each `qa-run` shows up here. Admission queue wait is reported separately as `wall_time_ms.queue` (absent when the run did not queue) and is deliberately excluded from `wall_time_ms.total`, which stays pure runner time.
 
@@ -138,13 +145,14 @@ A job (`--job`) widens or parameterizes the run. It is validated before anything
 - `contexts` append to the planner's matrix (union, never narrowing). Derived context IDs are `<viewport>-<theme>-<state>`.
 - `checks[].args` are argument arrays appended to the context's capture command, never shell strings. A check without `contexts` applies to every context. The runner always adds the planner's deterministic checks. Job checks can add coverage but cannot omit the manifest floor.
 - Each interaction needs at least one outcome assertion: a click without a proven outcome is not a gate.
-- `policy.critique_max_tiles` (default 24, 1 to 200) is the per-context band cap for full-page critique, passed to the planner and to every critique child as `--check-critique-max-tiles` so the predicted ceiling and the real coverage agree. Each tile is one vision call (about 3 to 4 seconds on a subscription-backed headless harness), so raising it buys coverage on a tall page at a proportional cost. It stays out of the job digest because the row's `coverage` records what was actually reviewed.
+- `policy.critique_max_tiles` (default 24, 1 to 200) is the per-context band cap for full-page capture, passed to the planner and to every capture child as `--check-critique-max-tiles` so the predicted ceiling and the real coverage agree. Each tile is one vision call (about 3 to 4 seconds on a subscription-backed headless harness), so raising it buys coverage on a tall page at a proportional cost. It stays out of the job digest because the row's `coverage` records what was actually reviewed.
+- `policy.critique_pool` (1 to 16; default the provider's own concurrency, 4 for headless harnesses) is how many vision calls run at once during the critique stage, across every context. Every browser has closed by then, so a wider pool costs model-call parallelism, not browser memory. Also settable with `--pool`.
 - `policy.run_deadline_ms` (default 900000, minimum 10000) is the overall runner deadline. A run that exceeds it skips its remaining commands, records a `deadline` blocker, finalizes as `incomplete`, and releases its admission slot — the deadline clock starts after admission, so queue wait never counts against it. The per-command cap still bounds each child: SIGTERM goes to the child's whole process group at `command_timeout_ms`, SIGKILL follows five seconds later, and a command that ran past its cap is reported as an error even if it then exited 0.
 - **Jobs must not carry credentials.** Secret-bearing field names (`token`, `password`, `cookie`, …) and credential-shaped values (`Bearer …`) are refused; authentication is referenced through existing browser profiles and cookie stores.
 
 ## Verdict rules (fail-closed)
 
-`passed` requires an intact planner manifest, every gate and interaction passed, every required critique tile with a known outcome, and, in signoff mode, the snapshot persisted. A defect found by a completed check is `failed`. Anything the runner could not establish (a blocker, an unknown outcome, a dead child, a missing artifact) is `incomplete`; an incomplete run is never a pass.
+`passed` requires an intact planner manifest, every gate and interaction passed, every context captured, every required critique tile with a known outcome, and, in signoff mode, the snapshot persisted. A defect found by a completed check is `failed`. Anything the runner could not establish (a blocker, an unknown outcome, a dead child, a missing artifact) is `incomplete`; an incomplete run is never a pass.
 
 ## Examples
 
@@ -155,8 +163,8 @@ harn qa-run http://localhost:3000/pricing --mode review
 # Full signoff from a job file, results as JSON
 harn qa-run http://localhost:3000/pricing --job pricing-qa.json --json
 
-# Wider pool, metered critique fallback permitted
-harn qa-run https://example.com/landing --concurrency 4 --allow-metered
+# Wider capture pool and a wider vision pool, metered critique fallback permitted
+harn qa-run https://example.com/landing --concurrency 4 --pool 8 --allow-metered
 
 # Detach: launch in the background, reconnect later for the verdict
 harn qa-run http://localhost:3000/pricing --detach
@@ -169,7 +177,8 @@ harn qa-run http://localhost:3000/pricing --queue-timeout 5 --queue-capacity 1
 
 ## See also
 
-- [`harn browse`](/cli/browse/): the command each child runs; owns every check flag, `--qa-plan`, `--qa-snapshot`, and `--color-scheme`.
+- [`harn browse`](/cli/browse/): the command each child runs; owns every check flag, `--qa-plan`, `--review-pack`, `--qa-snapshot`, and `--color-scheme`.
+- [`harn review-pack`](/cli/review-pack/): the pack every run writes, and how to build or judge one on its own.
 - [`harn qa-verify`](/cli/qa-verify/): verify a result document is fresh evidence for a specific invocation.
 - [`harn qa-status`](/cli/qa-status/): live state of a run (queued, running, completed, dead), reconnect to detached runs, and the admission queue view.
 - [`harn admission`](/cli/admission/): the machine-wide admission protocol `qa-run` queues on, and the generic wrapper for other heavy jobs.

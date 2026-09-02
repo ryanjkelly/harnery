@@ -21,7 +21,7 @@ import { createHash } from "node:crypto";
 import type { QaContext, QaManifest } from "./qa-plan.js";
 
 export const QA_RUN_JOB_SCHEMA_VERSION = 1 as const;
-export const QA_RUN_RESULT_SCHEMA_VERSION = 3 as const;
+export const QA_RUN_RESULT_SCHEMA_VERSION = 4 as const;
 
 /** How a result's evidence was produced. `runner` means the qa-run matrix
  * executed the checks itself. `manual` means an operator or agent performed
@@ -88,6 +88,11 @@ export interface QaRunPolicy {
    * per-tile cost is accepted; each critique row's `coverage` records what the
    * run actually saw, which is why this knob can stay out of the job digest. */
   critique_max_tiles?: number;
+  /** Vision calls in flight during the judge stage, across every context of
+   * the run (1 to 16). Default: the host provider's own concurrency. The
+   * capture stage closes every browser before judging starts, so this knob
+   * costs model-call parallelism, never browser memory. */
+  critique_pool?: number;
 }
 
 export interface QaRunJob {
@@ -124,11 +129,9 @@ export interface QaRunCommandOutcome {
   wall_time_ms: number;
 }
 
-/** Vision-call latency one critique backend reported for a context, in
- * milliseconds over the tile calls it served. The percentiles are the
- * provider's own sample. When a context ran several scope commands, `count`
- * sums across them and `p50`/`p95` keep the slowest scope's values, so a
- * straggler survives the merge instead of averaging away. */
+/** Vision-call latency one critique backend reported over the judge pool,
+ * in milliseconds over the tile calls it served. The percentiles are the
+ * provider's own sample across every context (one pool, one sample). */
 export interface QaRunCritiqueLatency {
   count: number;
   p50: number;
@@ -155,13 +158,32 @@ export interface QaRunCritiqueOutcome {
   tiles_reviewed: number;
   tiles_reused: number;
   outcome: "passed" | "failed" | "unknown";
-  findings: Array<{ severity: string; summary: string; selector?: string }>;
-  /** Per-backend vision latency keyed by provider name (e.g. `claude-code`),
-   * lifted from the browse envelope's `provider_meta.providers`. Absent when
-   * the child died, critique was skipped, or no backend reported a call. */
-  latency_ms?: Record<string, QaRunCritiqueLatency>;
-  /** Tile coverage of the page. Absent when the child died or reported none. */
+  findings: Array<{ severity: string; summary: string; selector?: string; tile?: string }>;
+  /** Tile coverage of the page. Absent when the capture died or reported none. */
   coverage?: QaRunCritiqueCoverage;
+}
+
+/** The judge stage as one unit: every context's tiles through one bounded
+ * pool of vision calls, with no browser open. `latency_ms` is the backends'
+ * own per-call sample over the whole pool, keyed by backend name. */
+export interface QaRunCritiquePool {
+  concurrency: number;
+  tiles_total: number;
+  tiles_reviewed: number;
+  tiles_reused: number;
+  wall_time_ms: number;
+  provider: string;
+  latency_ms?: Record<string, QaRunCritiqueLatency>;
+}
+
+/** Where the run's page review pack lives: the on-disk evidence an agent can
+ * review without a browser (tiles, DOM, coverage, `review.md`, and the
+ * reviewer-owned `findings.json`). */
+export interface QaRunReviewPack {
+  schema: string;
+  dir: string;
+  review: string;
+  findings: string;
 }
 
 export interface QaRunBlocker {
@@ -171,6 +193,7 @@ export interface QaRunBlocker {
     | "plan"
     | "gates"
     | "interactions"
+    | "capture"
     | "critique"
     | "snapshot"
     | "deadline"
@@ -183,7 +206,14 @@ export type QaRunVerdict = "passed" | "failed" | "incomplete";
 
 /** Runner stages in execution order. `last_completed_stage` names the last
  * one that finished without contributing a blocker. */
-export const QA_RUN_STAGES = ["plan", "gates", "interactions", "critique", "snapshot"] as const;
+export const QA_RUN_STAGES = [
+  "plan",
+  "gates",
+  "interactions",
+  "capture",
+  "critique",
+  "snapshot",
+] as const;
 export type QaRunStage = (typeof QA_RUN_STAGES)[number];
 
 /** Identity of one runner invocation. This block is what makes a result
@@ -278,11 +308,19 @@ export interface QaRunResult {
   contexts: QaRunContext[];
   commands: QaRunCommandOutcome[];
   critique: QaRunCritiqueOutcome[];
+  /** Present once the judge stage ran (even when it skipped for lack of a
+   * provider); absent when the run stopped before it. */
+  critique_pool?: QaRunCritiquePool;
+  /** Present once the capture stage wrote at least one context. */
+  review_pack?: QaRunReviewPack;
   snapshot: { saved: boolean; path?: string };
   wall_time_ms: {
     plan: number;
     gates: number;
     interactions: number;
+    /** Browser time: rendering every context into the review pack. */
+    capture: number;
+    /** Judge time: vision calls over the pack, no browser open. */
     critique: number;
     snapshot: number;
     /** Runner stages only — admission queue wait is deliberately excluded
@@ -464,6 +502,12 @@ export function validateQaRunJob(value: unknown): QaRunJobValidation {
       const n = p.critique_max_tiles;
       if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 200) {
         errors.push("policy.critique_max_tiles must be an integer between 1 and 200");
+      }
+    }
+    if (p?.critique_pool !== undefined) {
+      const n = p.critique_pool;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 16) {
+        errors.push("policy.critique_pool must be an integer between 1 and 16");
       }
     }
   }

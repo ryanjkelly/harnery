@@ -148,7 +148,7 @@ describe("recordManualQa", () => {
     if (!result) return;
     expect(result.verdict).toBe("incomplete");
     expect(result.evidence_source).toBe("manual");
-    expect(result.schema_version).toBe(3);
+    expect(result.schema_version).toBe(4);
     expect(result.last_completed_stage).toBeNull();
     expect(result.qa_plan).toBeNull();
     expect(result.snapshot).toEqual({ saved: false });

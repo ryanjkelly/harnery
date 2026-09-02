@@ -2,6 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PNG } from "pngjs";
+import type { CritiqueProvider, CritiqueTile } from "./critique.ts";
+import {
+  PAGE_REVIEW_PACK_DIRNAME,
+  readPackManifest,
+  writePackContext,
+} from "./page-review-pack.ts";
 import type { QaManifest } from "./qa-plan.ts";
 import {
   defaultQaRunExec,
@@ -22,6 +29,7 @@ import {
   QA_RUN_JOB_SCHEMA_VERSION,
   type QaRunJob,
 } from "./qa-run-contracts.ts";
+import { loadQaSnapshot } from "./qa-snapshot.ts";
 
 const BROWSE_ARGV = ["node", "/cli/harn.ts", "browse"];
 
@@ -77,23 +85,55 @@ interface FakeExecConfig {
   gateEnvelope?: Record<string, Record<string, unknown>>;
   /** Async delay per gate context id, to exercise the pool. */
   gateDelayMs?: Record<string, number>;
-  /** Critique envelope written for --check-critique invocations. */
+  /** The in-process judge provider. `skipped` means no provider at all. */
   critique?: {
     outcome: "pass" | "fail" | "skipped";
-    findings?: Array<{ severity: string; category: string; description: string }>;
+    findings?: Array<{
+      severity: "high" | "medium" | "low";
+      category: string;
+      description: string;
+    }>;
     error?: string;
-    /** Host provider_meta to place on the envelope; a function receives the
-     * scope selector (undefined for full-page) so scopes can differ. */
-    provider_meta?:
-      | Record<string, unknown>
-      | ((selector: string | undefined) => Record<string, unknown> | undefined);
-    /** Coverage block the child reports for the page. */
+    /** Host provider_meta the fake provider reports after the pool ran. */
+    provider_meta?: Record<string, unknown>;
+    /** Coverage block the capture child records for every context. */
     coverage?: Record<string, unknown>;
+    /** Async delay per tile call, to exercise the pool and the deadline. */
+    delayMs?: number;
+    /** Provider-declared concurrency (default 4). */
+    concurrency?: number;
+    /** Throw on every tile call with this message. */
+    throws?: string;
   };
-  /** Whether signoff critique/snapshot envelopes report a persisted snapshot. */
+  /** Per-capture hard failure by context id (spawn error / timeout). */
+  captureError?: Record<string, string>;
+  /** Full-page bands the fake capture writes per context (default 3). */
+  captureTiles?: number;
+  /** Whether signoff snapshot envelopes (visual "none" path) report a persisted snapshot. */
   snapshotSaved?: boolean;
-  /** Async delay before every critique invocation, to exercise the deadline. */
-  critiqueDelayMs?: number;
+}
+
+function blankPng(width: number, height: number): Buffer {
+  return PNG.sync.write(new PNG({ width, height }));
+}
+
+function fakeTiles(count: number, label: string): CritiqueTile[] {
+  const png = blankPng(8, 8).toString("base64");
+  return Array.from({ length: count }, (_, index) => ({
+    index,
+    label: `${label} ${index + 1}`,
+    scrollY: index * 1280,
+    x: 0,
+    width: 8,
+    height: 8,
+    pngBase64: png,
+  }));
+}
+
+interface ProviderCall {
+  tile: string;
+  url: string;
+  headlessOnlyEnv: string | undefined;
 }
 
 interface FakeExecRecord {
@@ -105,10 +145,52 @@ function makeFakeExec(config: FakeExecConfig): {
   exec: QaRunExec;
   calls: FakeExecRecord[];
   maxInFlight: () => number;
+  provider: CritiqueProvider | undefined;
+  providerCalls: ProviderCall[];
+  maxProviderInFlight: () => number;
+  snapshotRoot: string;
 } {
   const calls: FakeExecRecord[] = [];
   let inFlight = 0;
   let peak = 0;
+  const snapshotRoot = mkdtempSync(join(tmpdir(), "qa-run-snapshots-"));
+
+  // The judge runs in-process: the fake provider stands in for the host's
+  // vision call and records what it saw.
+  const critique = config.critique ?? { outcome: "pass" as const };
+  const providerCalls: ProviderCall[] = [];
+  let providerInFlight = 0;
+  let providerPeak = 0;
+  let provider: CritiqueProvider | undefined;
+  if (critique.outcome !== "skipped") {
+    const call: CritiqueProvider = async ({ url, tile }) => {
+      providerInFlight += 1;
+      providerPeak = Math.max(providerPeak, providerInFlight);
+      try {
+        providerCalls.push({
+          tile: tile.label,
+          url,
+          headlessOnlyEnv: process.env[QA_RUN_HEADLESS_ONLY_ENV],
+        });
+        if (critique.delayMs) {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, critique.delayMs));
+        }
+        if (critique.throws) throw new Error(critique.throws);
+        const findings =
+          critique.findings ??
+          (critique.outcome === "fail"
+            ? [{ severity: "high" as const, category: "text-clipping", description: "cut off" }]
+            : []);
+        // One finding set per context: attach to the first tile only.
+        return tile.index === 0 ? findings.map((f) => ({ ...f, tile: tile.index })) : [];
+      } finally {
+        providerInFlight -= 1;
+      }
+    };
+    call.concurrency = critique.concurrency ?? 4;
+    call.meta = () => critique.provider_meta;
+    provider = call;
+  }
   const exec: QaRunExec = async (argv: string[], options: QaRunExecOptions) => {
     calls.push({ argv, env: options.env });
     inFlight += 1;
@@ -126,35 +208,59 @@ function makeFakeExec(config: FakeExecConfig): {
       }
       const outPrefix = argvValue(argv, "--out");
       if (!outPrefix) return { exitCode: 1, stdout: "", stderr: "", error: "missing --out" };
-      if (argv.includes("--check-critique")) {
-        if (config.critiqueDelayMs) {
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, config.critiqueDelayMs));
-        }
-        const critique = config.critique ?? { outcome: "pass" as const };
-        const scopeIndex = argv.indexOf("--check-critique");
-        const scopeArg = argv[scopeIndex + 1];
-        const scopeSelector = scopeArg && !scopeArg.startsWith("--") ? scopeArg : undefined;
-        const providerMeta =
-          typeof critique.provider_meta === "function"
-            ? critique.provider_meta(scopeSelector)
-            : critique.provider_meta;
-        const envelope: Record<string, unknown> = {
-          critique: {
-            rule: "critique",
-            tiles: 3,
-            provider: critique.outcome !== "skipped",
-            findings: critique.findings ?? [],
-            outcome: critique.outcome,
-            ...(critique.error ? { error: critique.error } : {}),
-            ...(providerMeta ? { provider_meta: providerMeta } : {}),
-            ...(critique.coverage ? { coverage: critique.coverage } : {}),
-          },
-          ...(argv.includes("--qa-snapshot") && config.snapshotSaved !== false
-            ? { qaPlan: { snapshotSaved: { path: `${outPrefix}.snapshot.json` } } }
-            : {}),
+      if (argv.includes("--review-pack")) {
+        const packDir = argvValue(argv, "--review-pack") ?? "";
+        const contextId = argvValue(argv, "--review-pack-context") ?? "";
+        const hardError = config.captureError?.[contextId];
+        if (hardError) return { exitCode: null, stdout: "", stderr: "", error: hardError };
+        const withBands = !argv.includes("--no-review-pack-bands");
+        const scopes = argv.flatMap((arg, i) =>
+          arg === "--review-pack-scope" ? [argv[i + 1] ?? ""] : [],
+        );
+        const bandCount = withBands ? (config.captureTiles ?? 3) : 0;
+        const coverage = (critique.coverage as
+          | {
+              page_height_px: number;
+              reviewed_height_px: number;
+              bands_total: number;
+              bands_reviewed: number;
+              capped: boolean;
+            }
+          | undefined) ?? {
+          page_height_px: Math.max(1, bandCount) * 1400,
+          reviewed_height_px: Math.max(1, bandCount) * 1400,
+          bands_total: bandCount,
+          bands_reviewed: bandCount,
+          capped: false,
         };
-        writeFileSync(`${outPrefix}.json`, JSON.stringify(envelope));
-        return { exitCode: critique.outcome === "pass" ? 0 : 2, stdout: "", stderr: "" };
+        const record = writePackContext(packDir, {
+          context: {
+            id: contextId,
+            viewport: argvValue(argv, "--viewport") ?? "desktop",
+            theme: argvValue(argv, "--qa-theme") === "dark" ? "dark" : "light",
+            state: argvValue(argv, "--qa-state") ?? "default",
+          },
+          url: "http://localhost:4276/page",
+          title: "fixture",
+          fullPage: blankPng(64, 64),
+          pageWidth: 64,
+          pageHeight: 64,
+          tiles: fakeTiles(bandCount, "band"),
+          coverage,
+          scopeTiles: scopes.map((selector) => ({ selector, tiles: fakeTiles(2, selector) })),
+          signature: {
+            url: "http://localhost:4276/page",
+            capturedAt: new Date().toISOString(),
+            nodes: [],
+            stylesheets: [],
+          },
+          domHtml: "<html><body>fixture</body></html>",
+        });
+        writeFileSync(
+          `${outPrefix}.json`,
+          JSON.stringify({ reviewPack: { context_id: record.id, tiles: record.tiles.length } }),
+        );
+        return ok();
       }
       if (argv.includes("--qa-snapshot")) {
         const envelope =
@@ -185,7 +291,15 @@ function makeFakeExec(config: FakeExecConfig): {
       inFlight -= 1;
     }
   };
-  return { exec, calls, maxInFlight: () => peak };
+  return {
+    exec,
+    calls,
+    maxInFlight: () => peak,
+    provider,
+    providerCalls,
+    maxProviderInFlight: () => providerPeak,
+    snapshotRoot,
+  };
 }
 
 describe("runQaMatrix", () => {
@@ -204,6 +318,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("passed");
     expect(fake.maxInFlight()).toBeLessThanOrEqual(2);
@@ -228,6 +344,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("passed");
     const gate = fake.calls.find((call) => call.argv.includes("--out"));
@@ -259,10 +377,13 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("failed");
     expect(result.commands[1]?.failures).toContain("console: uncaught fixture error");
-    expect(fake.calls.some((call) => call.argv.includes("--check-critique"))).toBe(false);
+    expect(fake.calls.some((call) => call.argv.includes("--review-pack"))).toBe(false);
+    expect(fake.providerCalls).toHaveLength(0);
   });
 
   test("an unmapped planner deterministic check stops incomplete", async () => {
@@ -276,6 +397,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("incomplete");
     expect(fake.calls).toHaveLength(1);
@@ -291,6 +414,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(fake.calls).toHaveLength(1);
     expect(result.verdict).toBe("incomplete");
@@ -306,6 +431,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(fake.calls).toHaveLength(1);
     expect(result.verdict).toBe("incomplete");
@@ -325,9 +452,12 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("failed");
-    expect(fake.calls.some((call) => call.argv.includes("--check-critique"))).toBe(false);
+    expect(fake.calls.some((call) => call.argv.includes("--review-pack"))).toBe(false);
+    expect(fake.providerCalls).toHaveLength(0);
     const failedGate = result.commands.find((c) => c.context_id === "mobile-light-default");
     expect(failedGate?.outcome).toBe("failed");
     expect(failedGate?.failures.some((f) => f.includes("overflow"))).toBe(true);
@@ -343,6 +473,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("incomplete");
     const blocker = result.blockers.find((b) => b.context_id === "desktop-dark-default");
@@ -366,6 +498,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.contexts.map((c) => c.id)).toEqual([
       "desktop-light-default",
@@ -389,6 +523,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     const darkGate = fake.calls.find(
       (call) => call.argv.includes("desktop") && call.argv.includes("--color-scheme"),
@@ -399,7 +535,7 @@ describe("runQaMatrix", () => {
     expect(lightGate?.argv.includes("--color-scheme")).toBe(false);
   });
 
-  test("critique rows carry per-backend vision latency from provider_meta", async () => {
+  test("the critique pool carries per-backend vision latency from provider_meta", async () => {
     const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
     const fake = makeFakeExec({
       planManifest: manifest({
@@ -429,14 +565,18 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.critique).toHaveLength(1);
-    expect(result.critique[0]?.latency_ms).toEqual({
+    expect(result.critique_pool?.latency_ms).toEqual({
       "claude-code": { count: 3, p50: 4_200, p95: 9_100 },
     });
+    expect(result.critique_pool?.tiles_total).toBe(3);
+    expect(result.critique_pool?.tiles_reviewed).toBe(3);
   });
 
-  test("critique rows omit latency_ms when the provider reported none", async () => {
+  test("the critique pool omits latency_ms when the provider reported none", async () => {
     const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
     const fake = makeFakeExec({
       planManifest: manifest({
@@ -450,12 +590,15 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.critique).toHaveLength(1);
-    expect("latency_ms" in (result.critique[0] ?? {})).toBe(false);
+    expect(result.critique_pool).toBeDefined();
+    expect("latency_ms" in (result.critique_pool ?? {})).toBe(false);
   });
 
-  test("scoped critique merges latency across scopes: counts add, percentiles keep the slowest", async () => {
+  test("a scoped manifest captures every scope in one browser session and judges only scope tiles", async () => {
     const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
     const fake = makeFakeExec({
       planManifest: manifest({
@@ -467,17 +610,8 @@ describe("runQaMatrix", () => {
         checks: { deterministic: [], interaction: [], visual: "scoped" },
       }),
       critique: {
-        outcome: "pass",
-        provider_meta: (selector) => ({
-          providers: {
-            "claude-code": {
-              latency_ms:
-                selector === "#hero"
-                  ? { count: 2, p50: 3_000, p95: 3_500 }
-                  : { count: 4, p50: 2_000, p95: 48_000 },
-            },
-          },
-        }),
+        outcome: "fail",
+        findings: [{ severity: "high", category: "overlap", description: "hero text collides" }],
       },
     });
     const result = await runQaMatrix({
@@ -485,11 +619,23 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
-    expect(fake.calls.filter((call) => call.argv.includes("--check-critique"))).toHaveLength(2);
-    expect(result.critique[0]?.latency_ms).toEqual({
-      "claude-code": { count: 6, p50: 3_000, p95: 48_000 },
-    });
+    const captures = fake.calls.filter((call) => call.argv.includes("--review-pack"));
+    expect(captures).toHaveLength(1);
+    const argv = captures[0]?.argv ?? [];
+    expect(argv.filter((arg) => arg === "--review-pack-scope")).toHaveLength(2);
+    expect(argv.includes("--no-review-pack-bands")).toBe(true);
+    // Two scopes × two tiles, no bands.
+    expect(result.critique[0]?.tiles_total).toBe(4);
+    expect(fake.providerCalls).toHaveLength(4);
+    // Findings name the pack tile and the scope it was cut for.
+    expect(result.critique[0]?.outcome).toBe("failed");
+    const finding = result.critique[0]?.findings[0];
+    expect(finding?.tile).toBe("desktop-light-default/T001");
+    expect(finding?.selector).toBe("#hero");
+    expect(result.verdict).toBe("failed");
   });
 
   const CAPPED_COVERAGE = {
@@ -515,6 +661,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.critique[0]?.coverage).toEqual(CAPPED_COVERAGE);
     expect(result.critique[0]?.outcome).toBe("unknown");
@@ -540,6 +688,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.critique[0]?.coverage?.capped).toBe(true);
     expect(result.critique[0]?.outcome).toBe("passed");
@@ -570,12 +720,14 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.critique[0]?.coverage?.capped).toBe(false);
     expect(result.verdict).toBe("passed");
   });
 
-  test("policy.critique_max_tiles reaches the planner and every critique child", async () => {
+  test("policy.critique_max_tiles reaches the planner and every capture child", async () => {
     const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
     const fake = makeFakeExec({
       planManifest: manifest({
@@ -589,21 +741,23 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     const planCall = fake.calls.find((call) => call.argv.includes("--qa-plan"));
     expect(argvValue(planCall?.argv ?? [], "--check-critique-max-tiles")).toBe("60");
-    const critiqueCalls = fake.calls.filter((call) => call.argv.includes("--check-critique"));
-    expect(critiqueCalls.length).toBeGreaterThan(0);
-    for (const call of critiqueCalls) {
+    const captureCalls = fake.calls.filter((call) => call.argv.includes("--review-pack"));
+    expect(captureCalls.length).toBeGreaterThan(0);
+    for (const call of captureCalls) {
       expect(argvValue(call.argv, "--check-critique-max-tiles")).toBe("60");
     }
     const gateCall = fake.calls.find(
-      (call) => !call.argv.includes("--qa-plan") && !call.argv.includes("--check-critique"),
+      (call) => !call.argv.includes("--qa-plan") && !call.argv.includes("--review-pack"),
     );
     expect(gateCall?.argv.includes("--check-critique-max-tiles")).toBe(false);
   });
 
-  test("critique children carry the headless-only env var by default", async () => {
+  test("the judge runs under the headless-only env var by default; children never see it", async () => {
     const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
     const fake = makeFakeExec({
       planManifest: manifest({
@@ -617,15 +771,16 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("passed");
-    const critiqueCall = fake.calls.find((call) => call.argv.includes("--check-critique"));
-    expect(critiqueCall?.env[QA_RUN_HEADLESS_ONLY_ENV]).toBe("1");
-    // Gate children never carry it.
-    const gateCall = fake.calls.find(
-      (call) => argvValue(call.argv, "--out")?.endsWith("desktop-light-default") ?? false,
-    );
-    expect(gateCall?.env[QA_RUN_HEADLESS_ONLY_ENV]).toBeUndefined();
+    expect(fake.providerCalls.length).toBeGreaterThan(0);
+    for (const call of fake.providerCalls) expect(call.headlessOnlyEnv).toBe("1");
+    // Restored once the judge is done.
+    expect(process.env[QA_RUN_HEADLESS_ONLY_ENV]).toBeUndefined();
+    // Gate and capture children never carry it.
+    for (const call of fake.calls) expect(call.env[QA_RUN_HEADLESS_ONLY_ENV]).toBeUndefined();
   });
 
   test("allow_metered_critique drops the headless-only env var", async () => {
@@ -642,13 +797,14 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
-    const critiqueCall = fake.calls.find((call) => call.argv.includes("--check-critique"));
-    expect(critiqueCall).toBeDefined();
-    expect(critiqueCall?.env[QA_RUN_HEADLESS_ONLY_ENV]).toBeUndefined();
+    expect(fake.providerCalls.length).toBeGreaterThan(0);
+    for (const call of fake.providerCalls) expect(call.headlessOnlyEnv).toBeUndefined();
   });
 
-  test("signoff critique argv carries --qa-snapshot with the context labels", async () => {
+  test("signoff persists each context's snapshot from the pack, critique attached", async () => {
     const contexts = [{ viewport: "mobile", theme: "dark" as const, state: "default" }];
     const fake = makeFakeExec({
       planManifest: manifest({
@@ -663,16 +819,27 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
-    const critiqueCall = fake.calls.find((call) => call.argv.includes("--check-critique"));
-    expect(critiqueCall?.argv.includes("--qa-snapshot")).toBe(true);
-    expect(argvValue(critiqueCall?.argv ?? [], "--qa-theme")).toBe("dark");
-    expect(argvValue(critiqueCall?.argv ?? [], "--qa-state")).toBe("default");
+    // No child carries --qa-snapshot any more: the runner persists from the pack.
+    expect(fake.calls.some((call) => call.argv.includes("--qa-snapshot"))).toBe(false);
+    const captureCall = fake.calls.find((call) => call.argv.includes("--review-pack"));
+    expect(argvValue(captureCall?.argv ?? [], "--qa-theme")).toBe("dark");
+    expect(argvValue(captureCall?.argv ?? [], "--qa-state")).toBe("default");
     expect(result.snapshot.saved).toBe(true);
     expect(result.verdict).toBe("passed");
+    const stored = loadQaSnapshot(
+      job().target,
+      { viewport: "mobile", theme: "dark", state: "default" },
+      { root: fake.snapshotRoot },
+    );
+    expect(stored?.screenshotPath).toBeDefined();
+    expect(stored?.critique?.outcome).toBe("pass");
+    expect(stored?.critique?.tiles).toHaveLength(3);
   });
 
-  test("review critique argv never carries --qa-snapshot", async () => {
+  test("review mode never persists a snapshot", async () => {
     const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
     const fake = makeFakeExec({
       planManifest: manifest({
@@ -686,9 +853,16 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
-    const critiqueCall = fake.calls.find((call) => call.argv.includes("--check-critique"));
-    expect(critiqueCall?.argv.includes("--qa-snapshot")).toBe(false);
+    expect(fake.calls.some((call) => call.argv.includes("--qa-snapshot"))).toBe(false);
+    const stored = loadQaSnapshot(
+      job().target,
+      { viewport: "desktop", theme: "light", state: "default" },
+      { root: fake.snapshotRoot },
+    );
+    expect(stored).toBeNull();
   });
 
   test("a skipped critique under the headless-only policy names the escape hatch", async () => {
@@ -705,6 +879,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("incomplete");
     const blocker = result.blockers.find((b) => b.stage === "critique");
@@ -726,6 +902,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("incomplete");
     const blocker = result.blockers.find((b) => b.stage === "interactions");
@@ -747,6 +925,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     const interactionCall = fake.calls.find((call) =>
       (argvValue(call.argv, "--out") ?? "").endsWith("interaction-menu-open"),
@@ -756,6 +936,168 @@ describe("runQaMatrix", () => {
     expect(argv.filter((a) => a === "--assert")).toHaveLength(2);
     expect(argv.includes("--assert-fail")).toBe(true);
     expect(argvValue(argv, "--click")).toBe("#menu");
+  });
+
+  test("a visual run writes a page review pack and names it in the result", async () => {
+    const contexts = [
+      { viewport: "desktop", theme: "light" as const, state: "default" },
+      { viewport: "mobile", theme: "dark" as const, state: "default" },
+    ];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: {
+        outcome: "fail",
+        findings: [{ severity: "high", category: "text-clipping", description: "cut off" }],
+      },
+    });
+    const parent = outDir();
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+      runId: "packed",
+      reviewPackJudgeCommand: (dir) => `harn review-pack judge ${dir}`,
+    });
+    const packDir = join(parent, "run-packed", PAGE_REVIEW_PACK_DIRNAME);
+    expect(result.review_pack?.dir).toBe(packDir);
+    expect(existsSync(join(packDir, "review.md"))).toBe(true);
+    expect(existsSync(join(packDir, "findings.json"))).toBe(true);
+    expect(existsSync(join(packDir, "contexts", "mobile-dark-default", "tiles", "T001.png"))).toBe(
+      true,
+    );
+    const pack = readPackManifest(packDir);
+    expect(pack.contexts.map((ctx) => ctx.id)).toEqual([
+      "desktop-light-default",
+      "mobile-dark-default",
+    ]);
+    expect(pack.critique).toHaveLength(2);
+    expect(pack.critique?.[0]?.findings[0]?.tile_id).toBe("T001");
+    const review = readFileSync(join(packDir, "review.md"), "utf8");
+    expect(review).toContain("## Machine findings");
+    expect(review).toContain("text-clipping: cut off");
+    // The capture stage is a child per context; the judge is one pool.
+    expect(result.commands.filter((c) => c.check_id === "review-pack")).toHaveLength(2);
+    expect(result.critique_pool?.tiles_total).toBe(6);
+    expect(result.critique[0]?.findings[0]?.tile).toBe("desktop-light-default/T001");
+    expect(result.verdict).toBe("failed");
+    expect(result.wall_time_ms.capture).toBeGreaterThanOrEqual(0);
+  });
+
+  test("policy.critique_pool bounds vision calls across every context", async () => {
+    const contexts = [
+      { viewport: "desktop", theme: "light" as const, state: "default" },
+      { viewport: "mobile", theme: "light" as const, state: "default" },
+      { viewport: "desktop", theme: "dark" as const, state: "default" },
+    ];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass", delayMs: 10, concurrency: 1 },
+      captureTiles: 4,
+    });
+    const result = await runQaMatrix({
+      job: job({ policy: { critique_pool: 6 } }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("passed");
+    expect(fake.providerCalls).toHaveLength(12);
+    // The pool crosses context boundaries: more in flight than one context's
+    // tiles would allow under a per-context provider.
+    expect(fake.maxProviderInFlight()).toBeGreaterThan(4);
+    expect(fake.maxProviderInFlight()).toBeLessThanOrEqual(6);
+    expect(result.critique_pool?.concurrency).toBe(6);
+  });
+
+  test("a capture child that dies is a capture blocker; the other contexts are still judged", async () => {
+    const contexts = [
+      { viewport: "desktop", theme: "light" as const, state: "default" },
+      { viewport: "mobile", theme: "light" as const, state: "default" },
+    ];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      captureError: { "mobile-light-default": "killed by SIGTERM (timeout 120000ms)" },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("incomplete");
+    const blocker = result.blockers.find((b) => b.stage === "capture");
+    expect(blocker?.context_id).toBe("mobile-light-default");
+    expect(blocker?.reason).toContain("SIGTERM");
+    expect(result.critique.map((row) => row.context_id)).toEqual(["desktop-light-default"]);
+    expect(result.critique[0]?.outcome).toBe("passed");
+    expect(result.last_completed_stage).toBe("interactions");
+  });
+
+  test("a provider throw on one tile is a high provider-error finding, never a crash", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass", throws: "harness exited 1" },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.critique[0]?.findings.every((f) => f.summary.startsWith("provider-error"))).toBe(
+      true,
+    );
+  });
+
+  test("a scoped signoff persists the snapshot without a critique record", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        scopes: [{ selector: "#hero", reason: "test", matches: 1 }],
+        checks: { deterministic: [], interaction: [], visual: "scoped" },
+      }),
+      critique: { outcome: "pass" },
+    });
+    const result = await runQaMatrix({
+      job: job({ mode: "signoff" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("passed");
+    const stored = loadQaSnapshot(
+      job().target,
+      { viewport: "desktop", theme: "light", state: "default" },
+      { root: fake.snapshotRoot },
+    );
+    expect(stored?.screenshotPath).toBeDefined();
+    expect(stored?.critique).toBeUndefined();
   });
 
   test("signoff with visual none runs a dedicated snapshot pass", async () => {
@@ -769,6 +1111,8 @@ describe("runQaMatrix", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     const snapshotCall = fake.calls.find((call) => call.argv.includes("--qa-snapshot"));
     expect(snapshotCall).toBeDefined();
@@ -786,6 +1130,8 @@ describe("runQaMatrix run identity", () => {
       outParent: parent,
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
       runId: "fixed",
     });
     const runDir = join(parent, "run-fixed");
@@ -842,6 +1188,8 @@ describe("runQaMatrix run identity", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
       runId: "identity",
     });
     for (const stamp of [result.run.started_at, result.run.completed_at]) {
@@ -860,6 +1208,8 @@ describe("runQaMatrix run identity", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
       revisionProbe: { tested_revision: "zzz999", worktree_dirty: true },
     });
     expect(result.run.revision_source).toBe("job");
@@ -875,6 +1225,8 @@ describe("runQaMatrix run identity", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
       revisionProbe: { tested_revision: "def456", worktree_dirty: true },
     });
     expect(result.run.revision_source).toBe("git");
@@ -890,6 +1242,8 @@ describe("runQaMatrix run identity", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.run.revision_source).toBe("unknown");
     expect(result.run.tested_revision).toBeUndefined();
@@ -903,6 +1257,8 @@ describe("runQaMatrix run identity", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     for (const sample of [result.host.start, result.host.finish]) {
       expect(new Date(sample.captured_at).toISOString()).toBe(sample.captured_at);
@@ -924,6 +1280,8 @@ describe("runQaMatrix run identity", () => {
       outParent: parent,
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
       runId: "evidence",
     });
     const runDir = join(parent, "run-evidence");
@@ -959,6 +1317,8 @@ describe("runQaMatrix last_completed_stage", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.last_completed_stage).toBeNull();
   });
@@ -970,6 +1330,8 @@ describe("runQaMatrix last_completed_stage", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("passed");
     expect(result.last_completed_stage).toBe("interactions");
@@ -985,6 +1347,8 @@ describe("runQaMatrix last_completed_stage", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.blockers.some((b) => b.stage === "gates")).toBe(true);
     // Prefix semantics: the (empty) interactions stage executes after the
@@ -1008,6 +1372,8 @@ describe("runQaMatrix last_completed_stage", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.blockers.some((b) => b.stage === "interactions")).toBe(true);
     expect(result.last_completed_stage).toBe("gates");
@@ -1028,6 +1394,8 @@ describe("runQaMatrix last_completed_stage", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.blockers.some((b) => b.stage === "gates")).toBe(true);
     expect(result.blockers.some((b) => b.stage === "interactions")).toBe(true);
@@ -1048,6 +1416,8 @@ describe("runQaMatrix last_completed_stage", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("passed");
     expect(result.last_completed_stage).toBe("critique");
@@ -1064,6 +1434,8 @@ describe("runQaMatrix last_completed_stage", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("passed");
     expect(result.last_completed_stage).toBe("snapshot");
@@ -1170,7 +1542,7 @@ describe("runQaMatrix admission and status artifacts", () => {
   });
 });
 
-describe("runQaMatrix schema v3 diagnostics", () => {
+describe("runQaMatrix schema v4 diagnostics", () => {
   test("a runner result declares evidence_source runner", async () => {
     const parent = outDir();
     const { exec } = makeFakeExec({ planManifest: manifest() });
@@ -1181,7 +1553,7 @@ describe("runQaMatrix schema v3 diagnostics", () => {
       exec,
     });
     expect(result.evidence_source).toBe("runner");
-    expect(result.schema_version).toBe(3);
+    expect(result.schema_version).toBe(4);
   });
 
   test("each executed stage records the host pressure it started under", async () => {
@@ -1194,7 +1566,14 @@ describe("runQaMatrix schema v3 diagnostics", () => {
       exec,
     });
     const stages = result.host.stages ?? {};
-    for (const stage of ["plan", "gates", "interactions", "snapshot"] as const) {
+    for (const stage of [
+      "plan",
+      "gates",
+      "interactions",
+      "capture",
+      "critique",
+      "snapshot",
+    ] as const) {
       expect(stages[stage]?.captured_at).toBeString();
       expect(stages[stage]?.cpu_count).toBeGreaterThan(0);
     }
@@ -1356,6 +1735,8 @@ describe("runQaMatrix run deadline", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("incomplete");
     const blocker = result.blockers.find((entry) => entry.stage === "deadline");
@@ -1366,7 +1747,7 @@ describe("runQaMatrix run deadline", () => {
     expect(gates.length).toBeLessThan(contexts.length);
   });
 
-  test("deadline during critique breaks the context loop and never reports a partial pass", async () => {
+  test("deadline during the judge leaves tiles unjudged and never reports a partial pass", async () => {
     const contexts = [
       { viewport: "desktop", theme: "light" as const, state: "default" },
       { viewport: "mobile", theme: "light" as const, state: "default" },
@@ -1377,22 +1758,30 @@ describe("runQaMatrix run deadline", () => {
         contexts,
         checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
       }),
-      critiqueDelayMs: 200,
+      critique: { outcome: "pass", delayMs: 120, concurrency: 2 },
     });
     const result = await runQaMatrix({
       job: job({ policy: { run_deadline_ms: 150 } }),
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("incomplete");
-    expect(result.blockers.some((entry) => entry.stage === "deadline")).toBe(true);
-    // At least one critique context was cut off entirely.
-    expect(result.critique.length).toBeLessThan(contexts.length);
-    // No context row may claim a pass the deadline interrupted mid-scope.
+    // Every captured context has a row; the ones the pool never finished are
+    // unknown with a critique blocker naming the deadline.
+    expect(result.critique).toHaveLength(contexts.length);
+    const cutOff = result.blockers.filter(
+      (entry) => entry.stage === "critique" && entry.reason.includes("run deadline"),
+    );
+    expect(cutOff.length).toBeGreaterThan(0);
     for (const row of result.critique) {
       expect(["passed", "failed", "unknown"]).toContain(row.outcome);
+      const blocked = cutOff.some((b) => b.context_id === row.context_id);
+      if (blocked) expect(row.outcome).toBe("unknown");
     }
+    expect(fake.providerCalls.length).toBeLessThan(9);
   });
 
   test("a run under its deadline is unaffected", async () => {
@@ -1402,6 +1791,8 @@ describe("runQaMatrix run deadline", () => {
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("passed");
     expect(result.blockers).toHaveLength(0);

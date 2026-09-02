@@ -359,6 +359,27 @@ can produce false re-reviews, never false passes: a region with baseline
 findings is always re-reviewed, a rubric or contract change is a whole-run
 miss, and a partially-reused run is never persisted as the next baseline.
 
+### Page review pack capture
+
+`--review-pack` is the capture half of the capture-then-judge split behind
+[`harn review-pack`](/cli/review-pack/) and [`harn qa-run`](/cli/qa-run/).
+The page is rendered once; its full-page screenshot, critique tiles (as PNG
+files, cut with the `--check-critique-*` knobs), serialized DOM, and QA
+signature are written into `<dir>/contexts/<id>/`; and the browser closes.
+No vision call is made. A judge reads the tiles back later, with no browser
+open, through the same host-injected provider `--check-critique` uses.
+
+| Flag | Description |
+| --- | --- |
+| `--review-pack <dir>` | Write this render into the pack at `<dir>`. Pair with `--no-screenshot`: the pack holds the full-page image. |
+| `--review-pack-context <id>` | Context id inside the pack (default `<viewport>-<theme>-<state>` from `--viewport`, `--qa-theme`, `--qa-state`). |
+| `--review-pack-scope <selector>` | Also tile one screenshot per matching element (repeatable). Scope tiles follow the full-page bands in the tile order. |
+| `--no-review-pack-bands` | Keep only scope tiles; skip full-page bands (a scoped visual pass). |
+
+The JSON envelope gains `reviewPack` (`dir`, `context_id`, `tiles`, `scopes`,
+`coverage`, and the pack-relative `files`). The context's `coverage` is the
+band coverage when bands were kept, else the scopes folded together.
+
 ### Diagnostics
 
 | Flag | Description |

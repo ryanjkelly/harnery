@@ -1,0 +1,91 @@
+---
+title: harn review-pack
+description: Capture a page's rendering contexts into a directory an agent can review without a browser, and judge a pack from disk through one bounded pool of vision calls.
+sidebar:
+  order: 26
+---
+
+```
+harn review-pack create [options] <target>
+harn review-pack judge [options] <dir>
+```
+
+A **page review pack** is the on-disk evidence for reviewing one rendered page. For every rendering context (viewport × theme × state) it holds the full-page screenshot, the critique tiles as PNG files, the serialized DOM, and the QA signature. On top sit a `review.md` entry point, a bounded inspection plan, coverage, deterministic gate results, machine findings once a judge has run, and a reviewer-owned `findings.json`. An agent can review the page from the pack alone, with no browser and no third-party tool.
+
+The pack is also what makes judging cheap. Capture needs a browser and takes seconds; judging needs a vision model and takes minutes. Splitting them means every browser closes before the first model call, and one bounded pool judges every tile of every context. [`harn qa-run`](/cli/qa-run/) writes a pack in every run directory; this command builds or judges one directly.
+
+## `create <target>`
+
+Renders each context once through child [`harn browse --review-pack`](/cli/browse/) processes into `<out>/contexts/<id>/`, closes each browser as soon as its files are written, then writes `review.md`, the inspection plan, coverage, the manifest, and a `findings.json` skeleton. No vision call is made.
+
+| Flag | Description |
+| --- | --- |
+| `--out <dir>` | Pack directory. Default: a managed workspace under `.harnery/artifacts/`. |
+| `--context <spec>` | Rendering context `<viewport>[:<theme>[:<state>]]`, repeatable. Default: desktop and mobile, light and dark. |
+| `--scope <selector>` | Also tile one screenshot per element matching the selector (repeatable). |
+| `--no-bands` | Keep only `--scope` tiles; skip full-page bands. |
+| `--max-tiles <n>` | Full-page band cap per context (default 24). Coverage records what was kept. |
+| `--concurrency <n>` | Concurrent capture browsers (1–8; default 2). |
+| `--timeout <ms>` | Per-capture timeout (default 120000). |
+| `--json` | Print the pack manifest. |
+
+Exit 0 when every context was captured; 4 when at least one capture failed (the pack still holds the others and names the gap under warnings); 1 for usage errors.
+
+## `judge <dir>`
+
+Reads the pack's tiles back from disk and sends every tile of every context through one pool of vision calls. Findings cite the pack's stable tile ids. `evidence/critique.json` is written and `review.md` and the inspection plan are refreshed so the machine findings become primary tiles.
+
+| Flag | Description |
+| --- | --- |
+| `--pool <n>` | Vision calls in flight across the pack (1–16; default: the provider's own concurrency). |
+| `--allow-metered` | Permit the provider's metered-API fallback. Default: subscription-backed headless harnesses only (`HARNERY_CRITIQUE_HEADLESS_ONLY=1` is set while the judge runs). |
+| `--context <id>` | Judge only this context id (repeatable). |
+| `--json` | Print the judge result. |
+
+Exit 0 when every judged context passed; 2 on a high-severity finding; 4 when no provider judged (the host injected none, or the headless list was exhausted); 1 for usage errors.
+
+harnery ships no model client. The judge uses the same host-injected `critiqueProvider` as `browse --check-critique`; without one every context reports `skipped`, never a pass.
+
+## Pack layout
+
+```
+<pack>/
+  review.md                  # start here: protocol, contexts, coverage, findings, inspection plan
+  manifest.json              # harnery-page-review/v1
+  findings.json              # reviewer-owned output (harnery-page-review-findings/v1)
+  findings.schema.json
+  evidence/
+    inspection-plan.json     # the bounded complete-review budget per context
+    coverage.json            # bands kept vs page height, warnings, not_checked
+    critique.json            # machine findings per context and tile (after judge)
+    index.json  files.json   # small map, complete inventory
+  contexts/<context-id>/
+    context.json             # viewport, theme, state, url, page size, coverage, tile records
+    full-page.png            # orientation only; tiles are the evidence
+    tiles/T001.png …         # native-pixel tiles, ids stable within the context
+    tiles.json  dom.html  signature.json
+```
+
+Tile ids are `T001…` per context, bands first and then each scope's tiles in selector order; a finding cites `<context-id>/<tile-id>`. Every tile record carries its SHA-256, and the judge refuses a tile whose bytes no longer match, so a pack cannot be edited under a verdict.
+
+## Reviewing a pack
+
+`review.md` carries the protocol. The short version: read the context table and coverage, open the inspection plan's primary tiles (page top, page bottom, every scoped tile, every tile with a machine finding), treat machine findings as claims to confirm against the tile, cite deterministic gate failures rather than re-deriving them, do not invent evidence for anything under "not checked", and write findings into `findings.json` with `id`, `severity`, `category`, `context_id`, `evidence`, and `observation`.
+
+## Examples
+
+```bash
+# Build a pack for a local file at the default four contexts
+harn review-pack create file:///$PWD/dist/index.html --out ./pack
+
+# Only a desktop dark context, plus one tile per pricing card
+harn review-pack create http://localhost:3000/pricing --context desktop:dark --scope '.price-card'
+
+# Judge with eight vision calls in flight
+harn review-pack judge ./pack --pool 8
+```
+
+## See also
+
+- [`harn qa-run`](/cli/qa-run/): writes a pack in every run and judges it as its critique stage.
+- [`harn browse`](/cli/browse/): `--review-pack`, `--review-pack-context`, `--review-pack-scope`, and the `--check-critique-*` tiling knobs.

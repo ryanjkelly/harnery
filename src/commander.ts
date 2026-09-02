@@ -457,6 +457,17 @@ function harneryCommandBundles({
       { hasOptions: true },
     ),
     lazy(
+      "review-pack",
+      "Page review packs: capture a page's rendering contexts (tiles, DOM, signature) into a directory an agent can review without a browser, and judge a pack from disk through one bounded pool of vision calls.",
+      async (program) =>
+        (await import("./commands/review-pack.ts")).registerReviewPackCommand(
+          program,
+          emit,
+          context,
+        ),
+      { hasOptions: true },
+    ),
+    lazy(
       "qa-verify <path>",
       "Verify a qa-run result is fresh evidence for a specific invocation: match its run identity (run_id, job digest, tested revision, age, recorded output directory) against expectations. Fail-closed on missing identity.",
       async (program) =>

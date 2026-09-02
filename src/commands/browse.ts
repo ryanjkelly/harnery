@@ -35,6 +35,7 @@ import {
   writeNetscapeCookieFile,
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
+import { type PageReviewContextRecord, writePackContext } from "../lib/browser/page-review-pack.ts";
 import {
   buildQaManifest,
   classifySignatures,
@@ -212,6 +213,12 @@ interface BrowseOpts {
   qaStates?: string[];
   qaReuse?: boolean;
   qaReuseThreshold?: string;
+  // Page review pack capture (page-review-pack.ts): tiles + DOM to disk, no
+  // vision call; the judge stage reviews the pack after the browser closed.
+  reviewPack?: string;
+  reviewPackContext?: string;
+  reviewPackScope?: string[];
+  reviewPackBands?: boolean;
   // Next.js dev-overlay capture (auto-on; --no-dev-overlay opts out)
   devOverlay?: boolean;
 }
@@ -690,6 +697,29 @@ export function registerBrowseCommand(
         `(default ${DEFAULT_REUSE_MISMATCH_RATIO}; lower it toward 0 for stricter reuse).`,
     )
     .option(
+      "--review-pack <dir>",
+      "Capture this render into a page review pack at <dir> (contexts/<id>/: full-page " +
+        "screenshot, critique tiles as PNG files, serialized DOM, QA signature) and make no " +
+        "vision call. A judge stage (`review-pack judge`, or qa-run) reviews the tiles from disk " +
+        "after every browser has closed. Tiling knobs are the --check-critique-* flags.",
+    )
+    .option(
+      "--review-pack-context <id>",
+      "Context id inside the pack (default <viewport>-<theme>-<state> from --viewport, " +
+        "--qa-theme, --qa-state).",
+    )
+    .option(
+      "--review-pack-scope <selector>",
+      "Also tile one screenshot per element matching <selector> into the pack (repeatable).",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
+      "--no-review-pack-bands",
+      "Skip full-page bands in the pack and keep only --review-pack-scope tiles (a scoped " +
+        "visual pass).",
+    )
+    .option(
       "--no-dev-overlay",
       "Skip auto-capture of Next.js dev-overlay issues. Default: capture every queued error (kind/code/message/stack) when a <nextjs-portal> shadow root is present. Necessary because Next.js 16 + React 19 route hydration errors + most React warnings through onCaughtError → next-devtools' errorQueue, NOT through console.error, so Playwright's standard listener doesn't see them. Surfaces them in the JSON envelope under `devOverlay`.",
     )
@@ -1008,6 +1038,12 @@ async function runBrowse(
         coverage: captured.coverage,
       };
     }
+    // Page review pack capture: tiles, DOM, and signature to disk, no vision
+    // call. Also before annotations, for the same reason as the critique.
+    let reviewPack: ReviewPackReport | undefined;
+    if (opts.reviewPack !== undefined) {
+      reviewPack = await captureReviewPackContext(browser, url, navResult, opts, qaCapture);
+    }
     // Persist the QA baseline AFTER critique so a passing run's verdicts ride
     // along with the snapshot (still before annotations mutate the page).
     if (opts.qaSnapshot && qaCapture) {
@@ -1183,6 +1219,7 @@ async function runBrowse(
         batchResult,
         qaPlan,
         qaReuse ? summarizeReuse(qaReuse) : undefined,
+        reviewPack,
       );
     } else {
       await runTrioMode(
@@ -1203,6 +1240,7 @@ async function runBrowse(
         batchResult,
         qaPlan,
         qaReuse ? summarizeReuse(qaReuse) : undefined,
+        reviewPack,
       );
     }
 
@@ -1448,6 +1486,7 @@ async function runPrintMode(
   batchResult: BatchResult | undefined,
   qaPlan: QaPlanReport | undefined,
   qaReuse: Record<string, unknown> | undefined,
+  reviewPack: ReviewPackReport | undefined,
 ): Promise<void> {
   let body: string | null = null;
   if (opts.html) {
@@ -1484,6 +1523,7 @@ async function runPrintMode(
     if (devOverlay) result.devOverlay = devOverlay;
     if (qaPlan) result.qaPlan = qaPlan;
     if (qaReuse) result.qaReuse = qaReuse;
+    if (reviewPack) result.reviewPack = reviewPack;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
     }
@@ -1522,6 +1562,7 @@ async function runTrioMode(
   batchResult: BatchResult | undefined,
   qaPlan: QaPlanReport | undefined,
   qaReuse: Record<string, unknown> | undefined,
+  reviewPack: ReviewPackReport | undefined,
 ): Promise<void> {
   const prefix = resolveOutPrefix(opts.out);
   mkdirSync(dirname(prefix), { recursive: true });
@@ -1618,6 +1659,7 @@ async function runTrioMode(
   if (devOverlay) envelope.devOverlay = devOverlay;
   if (qaPlan) envelope.qaPlan = qaPlan;
   if (qaReuse) envelope.qaReuse = qaReuse;
+  if (reviewPack) envelope.reviewPack = reviewPack;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
   }
@@ -2111,12 +2153,14 @@ interface QaCaptureState {
  * supplies the live-page inputs (signature, page height, explicit scope match
  * counts). Classification and manifest math live in lib/browser/qa-plan.ts.
  */
-async function runQaPlanning(
+/** Capture the live page's QA signature and serialized DOM for the store key
+ * `--qa-target` (default: the url argument) and the labelled context. */
+async function captureQaState(
   browser: Browser,
   targetArg: string,
   renderedUrl: string,
   opts: BrowseOpts,
-): Promise<{ report: QaPlanReport; capture: QaCaptureState }> {
+): Promise<QaCaptureState> {
   const context: QaContext = {
     viewport: opts.viewport ?? "desktop",
     theme: opts.qaTheme === "dark" ? "dark" : "light",
@@ -2131,11 +2175,22 @@ async function runQaPlanning(
     stylesheets: captured.stylesheets,
     ...(captured.truncated ? { truncated: true } : {}),
   };
+  return { target, context, signature, domHtml: captured.domHtml };
+}
+
+async function runQaPlanning(
+  browser: Browser,
+  targetArg: string,
+  renderedUrl: string,
+  opts: BrowseOpts,
+): Promise<{ report: QaPlanReport; capture: QaCaptureState }> {
+  const capture = await captureQaState(browser, targetArg, renderedUrl, opts);
+  const { target, context, signature } = capture;
   const report: QaPlanReport = {
     signature: {
-      nodes: captured.nodes.length,
-      stylesheets: captured.stylesheets.length,
-      truncated: captured.truncated,
+      nodes: signature.nodes.length,
+      stylesheets: signature.stylesheets.length,
+      truncated: Boolean(signature.truncated),
     },
   };
 
@@ -2173,7 +2228,140 @@ async function runQaPlanning(
     });
   }
 
-  return { report, capture: { target, context, signature, domHtml: captured.domHtml } };
+  return { report, capture };
+}
+
+/** Tiling knobs shared by the critique and the review-pack capture. The
+ * routed provider's vision long-edge budget caps band height so tiles are
+ * never silently downscaled by the model. */
+function critiqueTilingKnobs(
+  opts: BrowseOpts,
+  tileBudgetPx?: number,
+): { maxTiles: number; band: number; overlap: number } {
+  const maxTiles = Math.max(1, Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10));
+  const bandFlag = Math.max(200, Number.parseInt(opts.checkCritiqueBand ?? "1400", 10));
+  const band = tileBudgetPx ? Math.max(200, Math.min(bandFlag, tileBudgetPx)) : bandFlag;
+  const overlap = Math.max(0, Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10));
+  return { maxTiles, band, overlap };
+}
+
+/** What `--review-pack` puts in the JSON envelope. */
+interface ReviewPackReport {
+  dir: string;
+  context_id: string;
+  tiles: number;
+  scopes: Array<{ selector: string; tiles: number }>;
+  coverage: CritiqueCoverage;
+  files: PageReviewContextRecord["files"];
+}
+
+/**
+ * Capture this render into a page review pack: one full-page screenshot,
+ * banded tiles (unless --no-review-pack-bands), one tile set per
+ * --review-pack-scope selector, the serialized DOM, and the QA signature —
+ * all written to disk, with no vision call. The judge stage reads them back
+ * once the browser is gone.
+ */
+async function captureReviewPackContext(
+  browser: Browser,
+  targetArg: string,
+  navResult: { url: string; title: string },
+  opts: BrowseOpts,
+  qaCapture: QaCaptureState | undefined,
+): Promise<ReviewPackReport> {
+  const packDir = opts.reviewPack as string;
+  const { maxTiles, band, overlap } = critiqueTilingKnobs(opts);
+  const buffer = await browser.fullPageScreenshotBuffer();
+  let atoms: Awaited<ReturnType<Browser["visualAtoms"]>> | undefined;
+  try {
+    atoms = await browser.visualAtoms();
+  } catch {
+    atoms = undefined;
+  }
+  const tiling = { bandHeight: band, overlap, maxTiles, atoms };
+  const withBands = opts.reviewPackBands !== false;
+  const banded = withBands ? tilesFromFullPage(buffer, tiling) : undefined;
+  if (banded?.coverage.capped) {
+    emit.log(
+      `review-pack: page banded to the ${maxTiles}-tile cap (raise --check-critique-max-tiles for full coverage)`,
+      "warn",
+    );
+  }
+  const scopeTiles: Array<{ selector: string; tiles: CritiqueTile[]; coverage: CritiqueCoverage }> =
+    [];
+  for (const selector of opts.reviewPackScope ?? []) {
+    const elementRects = await browser.elementTiles(selector);
+    const scoped = tilesFromFullPage(buffer, { ...tiling, elementRects });
+    if (elementRects.length > maxTiles) {
+      emit.log(
+        `review-pack: ${elementRects.length} elements matched ${selector}, capped to ${maxTiles} tiles`,
+        "warn",
+      );
+    }
+    scopeTiles.push({ selector, tiles: scoped.tiles, coverage: scoped.coverage });
+  }
+  // Coverage: the bands when present, else the scopes folded together
+  // (heights worst-case, band counts add, capped sticky).
+  let coverage: CritiqueCoverage | undefined = banded?.coverage;
+  if (!coverage) {
+    for (const scope of scopeTiles) {
+      coverage = coverage
+        ? {
+            page_height_px: Math.max(coverage.page_height_px, scope.coverage.page_height_px),
+            reviewed_height_px: Math.min(
+              coverage.reviewed_height_px,
+              scope.coverage.reviewed_height_px,
+            ),
+            bands_total: coverage.bands_total + scope.coverage.bands_total,
+            bands_reviewed: coverage.bands_reviewed + scope.coverage.bands_reviewed,
+            capped: coverage.capped || scope.coverage.capped,
+          }
+        : scope.coverage;
+    }
+  }
+  const page = await browser.currentPage.evaluate(() => ({
+    width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0),
+    height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
+  }));
+  const capture = qaCapture ?? (await captureQaState(browser, targetArg, navResult.url, opts));
+  const record = writePackContext(packDir, {
+    context: {
+      ...capture.context,
+      ...(opts.reviewPackContext ? { id: opts.reviewPackContext } : {}),
+    },
+    url: navResult.url,
+    title: navResult.title,
+    fullPage: buffer,
+    pageWidth: page.width,
+    pageHeight: page.height,
+    tiles: banded?.tiles ?? [],
+    coverage: coverage ?? {
+      page_height_px: page.height,
+      reviewed_height_px: 0,
+      bands_total: 0,
+      bands_reviewed: 0,
+      capped: false,
+    },
+    scopeTiles: scopeTiles.map(({ selector, tiles }) => ({ selector, tiles })),
+    signature: capture.signature,
+    domHtml: capture.domHtml,
+  });
+  emit.log(
+    `review-pack: ${record.id} → ${record.tiles.length} tile(s)` +
+      (record.scopes.length > 0
+        ? ` (${record.scopes.map((s) => `${s.selector}: ${s.tiles}`).join(", ")})`
+        : "") +
+      ` written to ${packDir}`,
+    "info",
+  );
+  return {
+    dir: packDir,
+    context_id: record.id,
+    tiles: record.tiles.length,
+    scopes: record.scopes,
+    coverage: record.coverage,
+    files: record.files,
+  };
 }
 
 async function captureCritiqueTiles(
@@ -2181,12 +2369,7 @@ async function captureCritiqueTiles(
   opts: BrowseOpts,
   tileBudgetPx?: number,
 ): Promise<{ tiles: CritiqueTile[]; fullPage: Buffer; coverage: CritiqueCoverage }> {
-  const maxTiles = Math.max(1, Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10));
-  // The routed provider's vision long-edge budget caps band height so tiles
-  // are never silently downscaled by the model.
-  const bandFlag = Math.max(200, Number.parseInt(opts.checkCritiqueBand ?? "1400", 10));
-  const band = tileBudgetPx ? Math.max(200, Math.min(bandFlag, tileBudgetPx)) : bandFlag;
-  const overlap = Math.max(0, Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10));
+  const { maxTiles, band, overlap } = critiqueTilingKnobs(opts, tileBudgetPx);
 
   // Capture the whole page ONCE, then crop tiles from the pixels. Playwright's
   // clip is viewport-relative, so a below-fold band clip throws ("clipped area

@@ -427,6 +427,7 @@ export function buildManualResult(input: BuildManualResultInput): QaRunResult {
       plan: 0,
       gates: 0,
       interactions: 0,
+      capture: 0,
       critique: 0,
       snapshot: 0,
       total,

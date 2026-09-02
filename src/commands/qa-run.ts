@@ -38,6 +38,7 @@ interface QaRunOpts {
   job?: string;
   mode: string;
   concurrency?: string;
+  pool?: string;
   allowMetered?: boolean;
   outDir?: string;
   json?: boolean;
@@ -59,8 +60,9 @@ export function registerQaRunCommand(
     .description(
       "Run the whole page-QA matrix in one command: QA planner, deterministic " +
         "gates per viewport/theme/state through a bounded process pool, serial " +
-        "interaction assertions, manifest-required vision critique, and the QA " +
-        "snapshot. Writes page-qa-result.json with a fail-closed verdict.",
+        "interaction assertions, capture of every context into a page review pack " +
+        "(browsers closed), one in-process pool of vision calls over the pack, and the " +
+        "QA snapshot. Writes page-qa-result.json with a fail-closed verdict.",
     )
     .option(
       "--job <file>",
@@ -75,8 +77,13 @@ export function registerQaRunCommand(
     )
     .option(
       "--concurrency <n>",
-      "Concurrent deterministic captures (1-8; default 2). Interactions and critique " +
-        "always run serially.",
+      "Concurrent deterministic gates and pack captures (1-8; default 2). Interactions " +
+        "always run serially; the judge pool is policy.critique_pool / --pool.",
+    )
+    .option(
+      "--pool <n>",
+      "Vision calls in flight during the judge stage, across every context (1-16; default: " +
+        "the provider's own concurrency). Sets policy.critique_pool.",
     )
     .option(
       "--allow-metered",
@@ -201,6 +208,18 @@ export function registerQaRunCommand(
         }
         policy.command_concurrency = n;
       }
+      if (opts.pool !== undefined) {
+        const n = Number.parseInt(opts.pool, 10);
+        if (!Number.isInteger(n) || n < 1 || n > 16) {
+          emit.error({
+            code: "qa_run_invalid_pool",
+            message: "--pool must be an integer between 1 and 16",
+          });
+          process.exitCode = 1;
+          return;
+        }
+        policy.critique_pool = n;
+      }
       if (opts.allowMetered) policy.allow_metered_critique = true;
       const job: QaRunJob = { ...validation.job, policy };
 
@@ -283,6 +302,7 @@ export function registerQaRunCommand(
           "--mode",
           job.mode,
           ...(opts.concurrency !== undefined ? ["--concurrency", opts.concurrency] : []),
+          ...(opts.pool !== undefined ? ["--pool", opts.pool] : []),
           ...(opts.allowMetered ? ["--allow-metered"] : []),
           "--out-dir",
           outParent,
@@ -382,6 +402,7 @@ export function registerQaRunCommand(
         }
       }
 
+      const binName = resolveBinName();
       const result = await runQaMatrix({
         job,
         outParent,
@@ -389,6 +410,13 @@ export function registerQaRunCommand(
         ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
         ...(revisionProbe ? { revisionProbe } : {}),
         ...(admission ? { admission } : {}),
+        // The judge runs in this process: the host's provider is loaded here,
+        // after the headless-only policy has been applied to the environment.
+        ...(context?.critiqueProvider ? { critiqueProvider: context.critiqueProvider } : {}),
+        ...(context?.critiqueProviderLoader
+          ? { critiqueProviderLoader: context.critiqueProviderLoader }
+          : {}),
+        reviewPackJudgeCommand: (packDir) => `${binName} review-pack judge ${packDir}`,
         onLog: (message) => emit.log(message, "info"),
       });
 
@@ -405,6 +433,7 @@ export function registerQaRunCommand(
           "warn",
         );
       }
+      if (result.review_pack) emit.log(`review pack: ${result.review_pack.review}`, "info");
       emit.log(
         `verdict: ${result.verdict} — run ${result.run.run_id}, ` +
           `${result.contexts.length} context${result.contexts.length === 1 ? "" : "s"}, ` +

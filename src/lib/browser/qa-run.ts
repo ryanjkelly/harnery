@@ -16,7 +16,24 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { basename, join } from "node:path";
+import { type CritiqueProvider, DEFAULT_CRITIQUE_RUBRIC } from "./critique.js";
+import { type JudgedContext, judgePageReviewPack, toCritiqueRecords } from "./page-review-judge.js";
+import {
+  finalizePageReviewPack,
+  PAGE_REVIEW_FINDINGS_FILENAME,
+  PAGE_REVIEW_PACK_DIRNAME,
+  PAGE_REVIEW_PACK_SCHEMA,
+  PAGE_REVIEW_REVIEW_FILENAME,
+  type PageReviewContextRecord,
+  type PageReviewCritiqueRecord,
+  type PageReviewGateRecord,
+  readPackContext,
+  readPackDom,
+  readPackFullPage,
+  readPackSignature,
+} from "./page-review-pack.js";
 import type { QaManifest } from "./qa-plan.js";
+import { type PersistedCritique, QA_CRITIQUE_CONTRACT_VERSION, rubricDigest } from "./qa-reuse.js";
 import {
   computeJobDigest,
   computeVerdict,
@@ -26,20 +43,23 @@ import {
   type QaRunBlocker,
   type QaRunCommandOutcome,
   type QaRunContext,
-  type QaRunCritiqueCoverage,
   type QaRunCritiqueLatency,
   type QaRunCritiqueOutcome,
+  type QaRunCritiquePool,
   type QaRunHostSample,
   type QaRunJob,
   type QaRunResult,
+  type QaRunReviewPack,
   type QaRunStage,
   type QaRunStatusDocument,
   type QaRunStatusState,
 } from "./qa-run-contracts.js";
+import { type QaSnapshotStoreOptions, saveQaSnapshot } from "./qa-snapshot.js";
 
-/** Set on critique children unless the job permits metered critique: the
- * host's critique provider must stay on subscription-backed headless
- * harnesses and surface exhaustion instead of falling back to a metered API. */
+/** Set on the runner's own environment before the host's critique provider is
+ * loaded for the judge stage, unless the job permits metered critique: the
+ * provider must stay on subscription-backed headless harnesses and surface
+ * exhaustion instead of falling back to a metered API. */
 export const QA_RUN_HEADLESS_ONLY_ENV = "HARNERY_CRITIQUE_HEADLESS_ONLY";
 
 /** Result document written into the run's output directory. */
@@ -314,6 +334,17 @@ export interface QaRunMatrixOptions {
      * pressure so an incomplete run names what it was competing with. */
     holders?: () => Array<{ label: string; pid: number }>;
   };
+  /** Host-injected vision call for the judge stage. The judge runs in this
+   * process over the pack on disk, after every capture browser has closed. */
+  critiqueProvider?: CritiqueProvider;
+  /** Lazy alternative to `critiqueProvider`; called once, after the
+   * headless-only environment has been applied. */
+  critiqueProviderLoader?: () => Promise<CritiqueProvider | undefined>;
+  /** QA snapshot store override (tests, host-managed cache locations). */
+  snapshotStore?: QaSnapshotStoreOptions;
+  /** Renders the command a reader can run to judge the pack later; shown in
+   * the pack's review.md when the judge did not run. */
+  reviewPackJudgeCommand?: (packDir: string) => string;
 }
 
 interface TimedExec {
@@ -449,64 +480,6 @@ function parseConsoleFailures(envelope: Record<string, unknown> | undefined): st
   return failures;
 }
 
-interface EnvelopeCritique {
-  tiles?: number;
-  provider?: boolean;
-  outcome?: string;
-  findings?: Array<{ severity?: string; category?: string; description?: string }>;
-  provider_meta?: Record<string, unknown>;
-  coverage?: Partial<QaRunCritiqueCoverage>;
-  error?: string;
-}
-
-/** Read the envelope's coverage block defensively; anything malformed is
- * treated as absent rather than as full coverage. */
-function critiqueCoverage(
-  critique: EnvelopeCritique | undefined,
-): QaRunCritiqueCoverage | undefined {
-  const c = critique?.coverage;
-  if (!c || typeof c !== "object") return undefined;
-  const { page_height_px, reviewed_height_px, bands_total, bands_reviewed, capped } = c;
-  if (
-    typeof page_height_px !== "number" ||
-    typeof reviewed_height_px !== "number" ||
-    typeof bands_total !== "number" ||
-    typeof bands_reviewed !== "number" ||
-    typeof capped !== "boolean"
-  ) {
-    return undefined;
-  }
-  return { page_height_px, reviewed_height_px, bands_total, bands_reviewed, capped };
-}
-
-/** Fold one scope command's coverage into the context's: heights keep the
- * worst case, band counts add, capped is sticky. */
-function mergeCritiqueCoverage(
-  prior: QaRunCritiqueCoverage | undefined,
-  next: QaRunCritiqueCoverage | undefined,
-): QaRunCritiqueCoverage | undefined {
-  if (!next) return prior;
-  if (!prior) return next;
-  return {
-    page_height_px: Math.max(prior.page_height_px, next.page_height_px),
-    reviewed_height_px: Math.min(prior.reviewed_height_px, next.reviewed_height_px),
-    bands_total: prior.bands_total + next.bands_total,
-    bands_reviewed: prior.bands_reviewed + next.bands_reviewed,
-    capped: prior.capped || next.capped,
-  };
-}
-
-function providerLabel(critique: EnvelopeCritique | undefined): string {
-  const meta = critique?.provider_meta;
-  if (meta) {
-    for (const key of ["provider", "route", "model"]) {
-      const value = meta[key];
-      if (typeof value === "string" && value.length > 0) return value;
-    }
-  }
-  return critique?.provider ? "host" : "none";
-}
-
 /**
  * Lift per-backend vision latency out of the envelope's provider_meta. The
  * shape is host-owned (`providers[name].latency_ms = {count, p50, p95}`), so
@@ -515,9 +488,9 @@ function providerLabel(critique: EnvelopeCritique | undefined): string {
  * visible in `ps` and nowhere in the result document.
  */
 function critiqueLatency(
-  critique: EnvelopeCritique | undefined,
+  providerMeta: Record<string, unknown> | undefined,
 ): Record<string, QaRunCritiqueLatency> | undefined {
-  const providers = critique?.provider_meta?.providers;
+  const providers = providerMeta?.providers;
   if (!providers || typeof providers !== "object" || Array.isArray(providers)) return undefined;
   const out: Record<string, QaRunCritiqueLatency> = {};
   for (const [name, state] of Object.entries(providers as Record<string, unknown>)) {
@@ -533,31 +506,15 @@ function critiqueLatency(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** Fold one scope command's latency into the context's record: counts add,
- * percentiles keep the slower scope (see QaRunCritiqueLatency). */
-function mergeCritiqueLatency(
-  into: Record<string, QaRunCritiqueLatency>,
-  next: Record<string, QaRunCritiqueLatency> | undefined,
-): void {
-  if (!next) return;
-  for (const [name, lat] of Object.entries(next)) {
-    const prior = into[name];
-    into[name] = prior
-      ? {
-          count: prior.count + lat.count,
-          p50: Math.max(prior.p50, lat.p50),
-          p95: Math.max(prior.p95, lat.p95),
-        }
-      : { ...lat };
-  }
-}
-
 /**
  * Execute the whole QA matrix for one validated job and return the result
  * (also written to `<outDir>/page-qa-result.json`). Stages: plan →
- * deterministic gates (bounded pool) → interactions (serial) → critique (one
- * context at a time; the critique provider owns tile concurrency) → snapshot.
- * The verdict is computeVerdict over everything recorded — fail-closed.
+ * deterministic gates (bounded pool) → interactions (serial) → capture (each
+ * context rendered once into the run's page review pack through the same
+ * pool, browser closed) → critique (one in-process pool of vision calls over
+ * every tile of every context, no browser open) → snapshot (persisted from
+ * the pack's files in signoff). The verdict is computeVerdict over
+ * everything recorded — fail-closed.
  */
 export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunResult> {
   const { job, outParent, browseArgv } = options;
@@ -644,6 +601,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     plan: 0,
     gates: 0,
     interactions: 0,
+    capture: 0,
     critique: 0,
     snapshot: 0,
     total: 0,
@@ -704,6 +662,8 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   let manifest: QaManifest | null = null;
   let contexts: QaRunContext[] = [];
   let snapshot: QaRunResult["snapshot"] = { saved: false };
+  let critiquePool: QaRunCritiquePool | undefined;
+  let reviewPack: QaRunReviewPack | undefined;
 
   const baseEnv: NodeJS.ProcessEnv = { ...process.env, ...options.childEnv };
 
@@ -761,6 +721,8 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       contexts,
       commands,
       critique,
+      ...(critiquePool ? { critique_pool: critiquePool } : {}),
+      ...(reviewPack ? { review_pack: reviewPack } : {}),
       snapshot,
       wall_time_ms: { ...wall },
       blockers,
@@ -1049,180 +1011,343 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   wall.interactions = Date.now() - interactionsStart;
   stagesRun.push("interactions");
 
-  // -------------------------------------------------------------- critique
+  // -------------------------------------------------------------- capture
+  // Each context is rendered ONCE into the run's page review pack (full-page
+  // screenshot, tiles as PNG files, DOM, signature) through the same bounded
+  // pool the gates used, and its browser closes before any vision call.
   const visual = manifest.checks.visual;
   const cleanSoFar =
     blockers.length === 0 && commands.every((command) => command.outcome === "passed");
-  enterStage("critique");
-  const critiqueStart = Date.now();
-  const savedSnapshots = new Map<string, string>();
-  if (cleanSoFar && visual !== "none") {
-    const critiqueEnv: NodeJS.ProcessEnv = job.policy?.allow_metered_critique
-      ? { ...baseEnv }
-      : { ...baseEnv, [QA_RUN_HEADLESS_ONLY_ENV]: "1" };
-    const scopeSelectors =
-      visual === "full-page" ? [undefined] : manifest.scopes.map((s) => s.selector);
-    for (const ctx of contexts) {
-      if (pastDeadline()) break;
-      let tilesTotal = 0;
-      let tilesReviewed = 0;
-      let tilesReused = 0;
-      let provider = "none";
-      let contextOutcome: QaRunCritiqueOutcome["outcome"] = "passed";
-      const findings: QaRunCritiqueOutcome["findings"] = [];
-      const latency: Record<string, QaRunCritiqueLatency> = {};
-      let coverage: QaRunCritiqueCoverage | undefined;
-      let scopesSkipped = false;
-      for (const [scopeIndex, selector] of scopeSelectors.entries()) {
-        if (pastDeadline()) {
-          scopesSkipped = true;
-          break;
-        }
-        const suffix = scopeSelectors.length > 1 ? `-scope${scopeIndex}` : "";
-        const outPrefix = join(outDir, `${ctx.id}-critique${suffix}`);
-        const argv = [
-          ...browseArgv,
-          job.target,
-          ...contextRenderArgs(ctx),
-          "--out",
-          outPrefix,
-          ...(selector !== undefined ? ["--check-critique", selector] : ["--check-critique"]),
-          "--check-critique-fail",
-          ...critiqueMaxTilesArgs,
-          ...(manifest.baseline_source !== "none" ? ["--qa-reuse"] : []),
-          ...(job.mode === "signoff"
-            ? ["--qa-snapshot", "--qa-theme", ctx.theme, "--qa-state", ctx.state]
-            : []),
-        ];
-        log(`critique ${ctx.id}${selector !== undefined ? ` [${selector}]` : ""}`);
-        const { res, wallTimeMs } = await timedExec(argv, critiqueEnv);
-        const jsonPath = `${outPrefix}.json`;
-        const envelope = readEnvelope(jsonPath);
-        const envelopeCritique = envelope?.critique as EnvelopeCritique | undefined;
-        const failures: string[] = [];
-        let commandOutcome: QaRunCommandOutcome["outcome"];
-        if (res.error || (res.exitCode !== 0 && res.exitCode !== 2) || !envelope) {
-          commandOutcome = "unknown";
-          const excerpt = execErrorExcerpt(res);
-          const base = res.error
-            ? res.error
-            : !envelope
-              ? `exit code ${res.exitCode ?? "null"}, missing JSON artifact ${jsonPath}`
-              : `exit code ${res.exitCode ?? "null"}`;
-          const reason = excerpt ? `${base}: ${excerpt}` : base;
+  const packDir = join(outDir, PAGE_REVIEW_PACK_DIRNAME);
+  const capturedRecords: PageReviewContextRecord[] = [];
+  const judgeCommand = options.reviewPackJudgeCommand?.(packDir);
+  const gateRecords = (): PageReviewGateRecord[] =>
+    commands
+      .filter((command) => command.check_id !== "plan" && command.check_id !== "review-pack")
+      .map((command) => ({
+        context_id: command.context_id,
+        check_id: command.check_id,
+        outcome: command.outcome,
+        failures: command.failures,
+      }));
+  const finalizePack = (
+    stage: QaRunStage,
+    critiqueRecords: PageReviewCritiqueRecord[] | null,
+    pool?: { concurrency: number; wall_time_ms: number; provider: string },
+  ): void => {
+    try {
+      finalizePageReviewPack({
+        packDir,
+        target: job.target,
+        ...(revision.tested_revision !== undefined
+          ? { tested_revision: revision.tested_revision }
+          : {}),
+        contexts: capturedRecords,
+        gates: gateRecords(),
+        critique: critiqueRecords,
+        ...(pool ? { pool } : {}),
+        ...(judgeCommand ? { judgeCommand } : {}),
+        createdAt: startedAtIso,
+      });
+      reviewPack = {
+        schema: PAGE_REVIEW_PACK_SCHEMA,
+        dir: packDir,
+        review: join(packDir, PAGE_REVIEW_REVIEW_FILENAME),
+        findings: join(packDir, PAGE_REVIEW_FINDINGS_FILENAME),
+      };
+    } catch (err: unknown) {
+      blockers.push({
+        stage,
+        reason: `page review pack could not be finalized: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  };
+
+  // The provider is loaded once, before capture, so the capture children can
+  // clamp band height to the routed model's vision budget (what browse does
+  // for --check-critique) and the judge reuses the same instance.
+  const priorHeadlessOnly = process.env[QA_RUN_HEADLESS_ONLY_ENV];
+  const restoreHeadlessOnly = (): void => {
+    if (priorHeadlessOnly === undefined) delete process.env[QA_RUN_HEADLESS_ONLY_ENV];
+    else process.env[QA_RUN_HEADLESS_ONLY_ENV] = priorHeadlessOnly;
+  };
+  let provider: CritiqueProvider | undefined;
+  const runsVisual = cleanSoFar && visual !== "none";
+  if (runsVisual) {
+    if (!job.policy?.allow_metered_critique) process.env[QA_RUN_HEADLESS_ONLY_ENV] = "1";
+    try {
+      provider =
+        options.critiqueProvider ??
+        (options.critiqueProviderLoader ? await options.critiqueProviderLoader() : undefined);
+    } catch (err: unknown) {
+      provider = undefined;
+      log(`critique provider failed to load: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  const bandArgs =
+    provider?.tileBudgetPx !== undefined
+      ? ["--check-critique-band", String(Math.max(200, Math.min(1400, provider.tileBudgetPx)))]
+      : [];
+  const scopeArgs =
+    visual === "full-page"
+      ? []
+      : manifest.scopes.flatMap((s) => ["--review-pack-scope", s.selector]);
+
+  enterStage("capture");
+  const captureStart = Date.now();
+  if (runsVisual) {
+    const captureOutcomes = new Array<QaRunCommandOutcome>(contexts.length);
+    const captureRecords = new Array<PageReviewContextRecord | undefined>(contexts.length);
+    await runPool(contexts, concurrency, async (ctx, index) => {
+      if (pastDeadline()) return;
+      const outPrefix = join(outDir, `${ctx.id}-capture`);
+      const argv = [
+        ...browseArgv,
+        job.target,
+        ...contextRenderArgs(ctx),
+        "--out",
+        outPrefix,
+        "--no-screenshot",
+        "--review-pack",
+        packDir,
+        "--review-pack-context",
+        ctx.id,
+        "--qa-theme",
+        ctx.theme,
+        "--qa-state",
+        ctx.state,
+        ...(visual === "scoped" ? ["--no-review-pack-bands"] : []),
+        ...scopeArgs,
+        ...critiqueMaxTilesArgs,
+        ...bandArgs,
+      ];
+      log(
+        `capture ${ctx.id}${scopeArgs.length > 0 ? ` [${manifest.scopes.map((s) => s.selector).join(",")}]` : ""}`,
+      );
+      const { res, wallTimeMs } = await timedExec(argv, baseEnv);
+      const jsonPath = `${outPrefix}.json`;
+      const envelope = readEnvelope(jsonPath);
+      const report = envelope?.reviewPack as { context_id?: string } | undefined;
+      const failures: string[] = [];
+      let outcome: QaRunCommandOutcome["outcome"];
+      let record: PageReviewContextRecord | undefined;
+      if (!res.error && res.exitCode === 0 && envelope && report?.context_id) {
+        try {
+          record = readPackContext(packDir, report.context_id);
+          outcome = "passed";
+        } catch (err: unknown) {
+          outcome = "unknown";
+          const reason = `pack context unreadable: ${err instanceof Error ? err.message : String(err)}`;
           failures.push(reason);
-          blockers.push({
-            stage: "critique",
-            context_id: ctx.id,
-            reason: `critique command did not complete: ${reason}`,
-          });
-          contextOutcome = "unknown";
-        } else {
-          tilesTotal += envelopeCritique?.tiles ?? 0;
-          const reuse = envelope.qaReuse as
-            | { tiles_reused?: number; tiles_reviewed?: number }
-            | undefined;
-          tilesReused += reuse?.tiles_reused ?? 0;
-          tilesReviewed += reuse?.tiles_reviewed ?? envelopeCritique?.tiles ?? 0;
-          provider = providerLabel(envelopeCritique);
-          mergeCritiqueLatency(latency, critiqueLatency(envelopeCritique));
-          coverage = mergeCritiqueCoverage(coverage, critiqueCoverage(envelopeCritique));
-          for (const finding of envelopeCritique?.findings ?? []) {
-            findings.push({
-              severity: finding.severity ?? "unknown",
-              summary: finding.category
-                ? `${finding.category}: ${finding.description ?? ""}`
-                : (finding.description ?? ""),
-              ...(selector !== undefined ? { selector } : {}),
-            });
-          }
-          if (envelopeCritique?.outcome === "pass" && res.exitCode === 0) {
-            commandOutcome = "passed";
-          } else if (envelopeCritique?.outcome === "fail") {
-            commandOutcome = "failed";
-            failures.push(`critique found ${envelopeCritique.findings?.length ?? 0} defect(s)`);
-            contextOutcome = "failed";
-          } else {
-            // "skipped" (no provider / exhausted headless list) or anything
-            // unrecognized: the review did not happen, so nothing is proven.
-            commandOutcome = "unknown";
-            const detail = envelopeCritique?.error ?? "critique reported no conclusive outcome";
-            failures.push(detail);
-            blockers.push({
-              stage: "critique",
-              context_id: ctx.id,
-              reason: job.policy?.allow_metered_critique
-                ? `critique did not complete: ${detail}`
-                : `critique did not complete under the headless-only policy ` +
-                  `(${QA_RUN_HEADLESS_ONLY_ENV}=1; permit metered fallback with ` +
-                  `policy.allow_metered_critique / --allow-metered): ${detail}`,
-            });
-            if (contextOutcome !== "failed") contextOutcome = "unknown";
-          }
-          if (job.mode === "signoff") {
-            const saved = (envelope.qaPlan as { snapshotSaved?: { path?: string } } | undefined)
-              ?.snapshotSaved;
-            if (saved?.path) savedSnapshots.set(ctx.id, saved.path);
-          }
+          blockers.push({ stage: "capture", context_id: ctx.id, reason });
         }
-        commands.push({
+      } else {
+        outcome = "unknown";
+        const excerpt = execErrorExcerpt(res);
+        const base = res.error
+          ? res.error
+          : !envelope
+            ? `exit code ${res.exitCode ?? "null"}, missing JSON artifact ${jsonPath}`
+            : !report?.context_id
+              ? `exit code ${res.exitCode ?? "null"}, envelope carries no reviewPack record`
+              : `exit code ${res.exitCode ?? "null"}`;
+        const reason = excerpt ? `${base}: ${excerpt}` : base;
+        failures.push(reason);
+        blockers.push({
+          stage: "capture",
           context_id: ctx.id,
-          check_id: "critique",
-          argv,
-          exit_code: res.exitCode,
-          outcome: commandOutcome,
-          failures,
-          artifacts: gatherArtifacts(outPrefix),
-          wall_time_ms: wallTimeMs,
+          reason: `capture command did not complete: ${reason}`,
         });
       }
-      // A context whose scope commands were cut off by the deadline proved
-      // nothing — never let its row read "passed".
-      if (scopesSkipped && contextOutcome === "passed") contextOutcome = "unknown";
-      // A capped critique reviewed the top of the page and nothing below it.
+      captureOutcomes[index] = {
+        context_id: ctx.id,
+        check_id: "review-pack",
+        argv,
+        exit_code: res.exitCode,
+        outcome,
+        failures,
+        artifacts: gatherArtifacts(outPrefix),
+        wall_time_ms: wallTimeMs,
+      };
+      captureRecords[index] = record;
+    });
+    commands.push(...captureOutcomes.filter((outcome) => outcome !== undefined));
+    capturedRecords.push(
+      ...captureRecords.filter((record): record is PageReviewContextRecord => Boolean(record)),
+    );
+    // The pack is readable from here on even if the judge never runs.
+    if (capturedRecords.length > 0) finalizePack("capture", null);
+  }
+  wall.capture = Date.now() - captureStart;
+  if (runsVisual) stagesRun.push("capture");
+
+  // -------------------------------------------------------------- critique
+  // One pool of vision calls across every captured context, from disk. No
+  // browser is open during this stage.
+  enterStage("critique");
+  const critiqueStart = Date.now();
+  const judgedById = new Map<string, JudgedContext>();
+  if (runsVisual && capturedRecords.length > 0 && !pastDeadline()) {
+    const judged = await judgePageReviewPack({
+      packDir,
+      provider,
+      rubric: DEFAULT_CRITIQUE_RUBRIC,
+      ...(job.policy?.critique_pool !== undefined ? { concurrency: job.policy.critique_pool } : {}),
+      contextIds: capturedRecords.map((record) => record.id),
+      ...(manifest.baseline_source !== "none"
+        ? {
+            reuse: {
+              target: job.target,
+              ...(options.snapshotStore ? { store: options.snapshotStore } : {}),
+            },
+          }
+        : {}),
+      deadlineAt: startedAt + runDeadlineMs,
+      onLog: log,
+    });
+    const latency = critiqueLatency(judged.provider_meta);
+    critiquePool = {
+      concurrency: judged.pool.concurrency,
+      tiles_total: judged.tiles_total,
+      tiles_reviewed: judged.tiles_reviewed,
+      tiles_reused: judged.tiles_reused,
+      wall_time_ms: judged.pool.wall_time_ms,
+      provider: judged.pool.provider,
+      ...(latency ? { latency_ms: latency } : {}),
+    };
+    for (const row of judged.contexts) {
+      judgedById.set(row.context_id, row);
+      let contextOutcome: QaRunCritiqueOutcome["outcome"] =
+        row.outcome === "pass" ? "passed" : row.outcome === "fail" ? "failed" : "unknown";
+      if (row.outcome === "skipped") {
+        const detail = row.error ?? "critique reported no conclusive outcome";
+        blockers.push({
+          stage: "critique",
+          context_id: row.context_id,
+          reason: job.policy?.allow_metered_critique
+            ? `critique did not complete: ${detail}`
+            : `critique did not complete under the headless-only policy ` +
+              `(${QA_RUN_HEADLESS_ONLY_ENV}=1; permit metered fallback with ` +
+              `policy.allow_metered_critique / --allow-metered): ${detail}`,
+        });
+      } else if (row.outcome === "incomplete") {
+        blockers.push({
+          stage: "critique",
+          context_id: row.context_id,
+          reason:
+            `judge did not review ${row.tiles_unjudged} of ${row.tiles_total} tile(s) before the ` +
+            "run deadline; nothing is proven for them",
+        });
+      }
+      // A capped capture holds the top of the page and nothing below it.
       // Signoff cannot rest on that; review mode keeps the row honest via
       // `coverage` and leaves the verdict to the tiles that were seen.
-      if (job.mode === "signoff" && coverage?.capped && contextOutcome !== "failed") {
+      if (job.mode === "signoff" && row.coverage.capped && contextOutcome !== "failed") {
         contextOutcome = "unknown";
         blockers.push({
           stage: "critique",
-          context_id: ctx.id,
+          context_id: row.context_id,
           reason:
-            `critique coverage capped: ${coverage.bands_reviewed} of ${coverage.bands_total} bands ` +
-            `reviewed (${coverage.reviewed_height_px} of ${coverage.page_height_px} px); raise ` +
+            `critique coverage capped: ${row.coverage.bands_reviewed} of ${row.coverage.bands_total} bands ` +
+            `reviewed (${row.coverage.reviewed_height_px} of ${row.coverage.page_height_px} px); raise ` +
             "policy.critique_max_tiles to review the whole page in signoff mode",
         });
       }
+      const scopeById = new Map(row.record.tiles.map((tile) => [tile.id, tile.scope]));
       critique.push({
-        context_id: ctx.id,
-        provider,
-        tiles_total: tilesTotal,
-        tiles_reviewed: tilesReviewed,
-        tiles_reused: tilesReused,
+        context_id: row.context_id,
+        provider: row.provider,
+        tiles_total: row.tiles_total,
+        tiles_reviewed: row.tiles_reviewed,
+        tiles_reused: row.tiles_reused,
         outcome: contextOutcome,
-        findings,
-        ...(Object.keys(latency).length > 0 ? { latency_ms: latency } : {}),
-        ...(coverage ? { coverage } : {}),
+        findings: row.findings.map((finding) => {
+          const selector = scopeById.get(finding.tile_id);
+          return {
+            severity: finding.severity,
+            summary: `${finding.category}: ${finding.description}`,
+            tile: `${row.context_id}/${finding.tile_id}`,
+            ...(selector !== undefined ? { selector } : {}),
+          };
+        }),
+        coverage: row.coverage,
       });
-      if (job.mode === "signoff" && contextOutcome === "passed" && !savedSnapshots.has(ctx.id)) {
+    }
+    finalizePack("critique", toCritiqueRecords(judged), judged.pool);
+  }
+  if (runsVisual) restoreHeadlessOnly();
+  wall.critique = Date.now() - critiqueStart;
+  if (runsVisual) stagesRun.push("critique");
+
+  // -------------------------------------------------------------- snapshot
+  // Signoff persists each context's baseline from the pack's own files (no
+  // browser). The critique rides along only when the whole tile set was
+  // freshly judged, uncapped, and unscoped — a partial or scoped review must
+  // never become the next baseline's finding record. When the manifest
+  // required no visual pass, a dedicated browse --qa-snapshot pass still runs.
+  enterStage("snapshot");
+  const snapshotStart = Date.now();
+  const savedSnapshots = new Map<string, string>();
+  if (job.mode === "signoff" && runsVisual) {
+    for (const record of capturedRecords) {
+      if (pastDeadline()) break;
+      const row = judgedById.get(record.id);
+      const persistCritique =
+        row !== undefined &&
+        (row.outcome === "pass" || row.outcome === "fail") &&
+        !record.coverage.capped &&
+        row.tiles_reused === 0 &&
+        row.tiles_unjudged === 0 &&
+        record.scopes.length === 0;
+      const persisted: PersistedCritique | undefined =
+        persistCritique && row
+          ? {
+              contract_version: QA_CRITIQUE_CONTRACT_VERSION,
+              rubric_digest: rubricDigest(DEFAULT_CRITIQUE_RUBRIC),
+              outcome: row.outcome as "pass" | "fail",
+              findings: row.findings.map(({ tile_id: _tileId, ...finding }) => finding),
+              tiles: record.tiles.map((tile) => ({
+                index: tile.index,
+                label: tile.label,
+                x: tile.x,
+                scrollY: tile.scrollY,
+                width: tile.width,
+                height: tile.height,
+              })),
+            }
+          : undefined;
+      try {
+        const saved = saveQaSnapshot(
+          job.target,
+          { viewport: record.viewport, theme: record.theme, state: record.state },
+          {
+            signature: readPackSignature(packDir, record),
+            domHtml: readPackDom(packDir, record),
+            screenshotPng: readPackFullPage(packDir, record),
+            ...(persisted ? { critique: persisted } : {}),
+          },
+          options.snapshotStore ?? {},
+        );
+        savedSnapshots.set(record.id, saved.path);
+        log(`snapshot ${record.id}: saved${persisted ? " with critique" : ""}`);
+      } catch (err: unknown) {
         blockers.push({
           stage: "snapshot",
-          context_id: ctx.id,
+          context_id: record.id,
+          reason: `snapshot could not be persisted from the pack: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+    for (const row of critique) {
+      if (row.outcome === "passed" && !savedSnapshots.has(row.context_id)) {
+        blockers.push({
+          stage: "snapshot",
+          context_id: row.context_id,
           reason: "signoff critique passed but no QA snapshot was persisted for the context",
         });
       }
     }
-  }
-  wall.critique = Date.now() - critiqueStart;
-  if (cleanSoFar && visual !== "none") stagesRun.push("critique");
-
-  // -------------------------------------------------------------- snapshot
-  // Critique invocations carry --qa-snapshot in signoff mode. When the
-  // manifest requires no visual pass (visual === "none"), a passing signoff
-  // still needs its baseline persisted, so a dedicated snapshot pass runs.
-  enterStage("snapshot");
-  const snapshotStart = Date.now();
-  if (job.mode === "signoff" && visual === "none" && blockers.length === 0) {
+  } else if (job.mode === "signoff" && visual === "none" && blockers.length === 0) {
     const stillClean = commands.every((command) => command.outcome === "passed");
     if (stillClean) {
       for (const ctx of contexts) {
