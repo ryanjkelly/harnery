@@ -30,6 +30,40 @@ export const PAGE_REVIEW_REVIEW_FILENAME = "review.md";
 export const PAGE_REVIEW_FINDINGS_FILENAME = "findings.json";
 export const PAGE_REVIEW_FINDINGS_SCHEMA_FILENAME = "findings.schema.json";
 
+/** How long a pack lives after its judge (or its capture, when no judge
+ * runs) before the whole directory is deleted. Ruled 2026-09-02. */
+export const PAGE_REVIEW_DEFAULT_RETENTION_MINUTES = 90;
+/** The only file left behind when an expired pack is deleted. */
+export const PAGE_REVIEW_EXPIRED_STUB_FILENAME = "pack-expired.json";
+
+/** Reviewer dispositions a machine finding can carry in `findings.json`. */
+export const PAGE_REVIEW_DISPOSITIONS = [
+  "confirmed",
+  "artifact",
+  "not-a-defect",
+  "duplicate-of-gate",
+] as const;
+export type PageReviewDisposition = (typeof PAGE_REVIEW_DISPOSITIONS)[number];
+
+/** How a context's tiles were cut: from one full-page screenshot (the
+ * default) or from per-band scrolled viewport captures (the fallback when the
+ * fidelity probe proved the full-page screenshot wrong). */
+export interface PageReviewCaptureFidelity {
+  source: "full-page" | "scrolled-bands";
+  /** Bands re-shot by scroll-and-clip and compared with the full-page capture. */
+  probed: Array<{ tile_id: string; scrollY: number; height: number; mismatch_ratio: number }>;
+  /** Tile ids whose probe exceeded the mismatch threshold. */
+  mismatched: string[];
+  mismatch_threshold: number;
+}
+
+/** Pack expiry as written into the manifest. `managed` is false for a pack
+ * written to an explicit `--out`; such a pack is never deleted automatically. */
+export interface PageReviewRetention {
+  expires_at: string;
+  managed: boolean;
+}
+
 /** One tile as stored in the pack. `id` is stable within its context
  * (`T001`, `T002`, …) and is what a finding cites. `file` is pack-relative. */
 export interface PageReviewTileRecord {
@@ -39,6 +73,11 @@ export interface PageReviewTileRecord {
   label: string;
   /** Selector the tile was cut for; absent for full-page bands. */
   scope?: string;
+  /** `band` (full-page band), `scope` (selector tile), or `hit-band` (a band
+   * captured past the tile cap because a gate hit lands in it). Absent on
+   * packs written before this field existed; treat as `band`/`scope` by
+   * whether `scope` is set. */
+  kind?: "band" | "scope" | "hit-band";
   x: number;
   scrollY: number;
   width: number;
@@ -104,6 +143,11 @@ export interface PageReviewContextRecord {
   expanded?: PageReviewExpandedTileRecord[];
   /** Downscaled grid of every tile (`contacts.png`); absent for a context with no tiles. */
   contact_sheet?: PageReviewContactSheetRecord;
+  /** Where the tiles came from and what the fidelity probe saw. Absent on
+   * packs written before the probe existed (tiles came from the full page). */
+  capture_fidelity?: PageReviewCaptureFidelity;
+  /** Bands captured past the tile cap because a gate hit lands in them. */
+  hit_bands?: number;
 }
 
 /** What a capture hands the pack for one context. `tiles` are the full-page
@@ -194,6 +238,10 @@ export interface PageReviewPackManifest {
   pool?: { concurrency: number; wall_time_ms: number; provider: string };
   not_checked: Array<{ check: string; reason: string }>;
   warnings: string[];
+  /** Pack expiry; absent until the writer knows when the judge finished. */
+  retention?: PageReviewRetention;
+  /** Bytes on disk across every file in the pack at finalize time. */
+  size_bytes?: number;
   files: {
     review: string;
     findings: string;
@@ -744,6 +792,8 @@ export interface FinalizePageReviewPackInput {
   /** Command the reader can run to judge the pack, shown in review.md. */
   judgeCommand?: string;
   createdAt?: string;
+  /** Pack expiry to record; omit to keep whatever the manifest already says. */
+  retention?: PageReviewRetention;
 }
 
 export function findingsSchemaDocument(): Record<string, unknown> {
@@ -790,6 +840,24 @@ export function findingsSchemaDocument(): Record<string, unknown> {
             observation: { type: "string", minLength: 1 },
             recommendation: { type: "string" },
             confidence: { type: "number", minimum: 0, maximum: 1 },
+          },
+        },
+      },
+      /** Reviewer verdicts on machine findings in `evidence/critique.json`.
+       * `target` is `<context-id>/<tile-id>#<n>`, n = position of the finding
+       * among that tile's findings in the critique record (0-based). */
+      dispositions: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["target", "disposition"],
+          properties: {
+            target: { type: "string", pattern: "^[^/#]+/T[0-9]{3}#[0-9]+$" },
+            disposition: { enum: [...PAGE_REVIEW_DISPOSITIONS] },
+            note: { type: "string" },
+            by: { type: "string" },
+            at: { type: "string", format: "date-time" },
           },
         },
       },
@@ -1160,7 +1228,19 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
       reviewer: null,
       reviewed_at: null,
       findings: [],
+      dispositions: [],
     });
+  }
+
+  // Retention: what the caller says, else what the manifest already carries.
+  let retention = input.retention;
+  if (!retention && existsSync(paths.manifest)) {
+    try {
+      const prior = JSON.parse(readFileSync(paths.manifest, "utf8")) as Partial<PageReviewPackManifest>;
+      if (prior.retention) retention = prior.retention;
+    } catch {
+      // A malformed prior manifest is rewritten below; retention starts absent.
+    }
   }
 
   const manifest: PageReviewPackManifest = {
@@ -1175,6 +1255,7 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
     ...(input.pool ? { pool: input.pool } : {}),
     not_checked: notChecked,
     warnings,
+    ...(retention ? { retention } : {}),
     files: {
       review: rel(paths.review),
       findings: rel(paths.findings),
@@ -1216,6 +1297,10 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
     schema: PAGE_REVIEW_PACK_SCHEMA,
     files: inventory.sort((a, b) => a.path.localeCompare(b.path)),
   });
+  // The manifest is rewritten once with the pack's size so `list` and the
+  // run result can report it without walking the tree again.
+  manifest.size_bytes = inventory.reduce((sum, file) => sum + file.bytes, 0);
+  writeJson(paths.manifest, manifest);
   return { manifest: paths.manifest, review: paths.review };
 }
 

@@ -90,6 +90,9 @@ export interface ArtifactCreateInput {
   slug: string;
   purpose: string;
   retentionDays: number;
+  /** Sub-day retention. When set, it replaces `retentionDays` for this unit
+   * (a page review pack expires in minutes, not days). 1 to 5,256,000. */
+  retentionMinutes?: number;
   actor?: ArtifactActor;
   now?: Date;
   id?: string;
@@ -139,7 +142,10 @@ export function createArtifact(
   if (!slug) throw new Error("slug must contain at least one ASCII letter or digit");
   const purpose = input.purpose.trim();
   if (!purpose) throw new Error("purpose must not be empty");
-  const retentionDays = positiveDays(input.retentionDays);
+  const expiresAt =
+    input.retentionMinutes !== undefined
+      ? addMinutes(now, positiveMinutes(input.retentionMinutes))
+      : addDays(now, positiveDays(input.retentionDays));
   const artifactId = input.id ?? randomUUID();
   if (!isSafeId(artifactId)) {
     throw new Error("artifact id must use ASCII letters, digits, hyphens, or underscores");
@@ -159,7 +165,7 @@ export function createArtifact(
     created_at: now.toISOString(),
     created_by: input.actor,
     retention: {
-      expires_at: addDays(now, retentionDays).toISOString(),
+      expires_at: expiresAt.toISOString(),
     },
     ...(input.big ? { oversize_acknowledged: true } : {}),
   };
@@ -813,6 +819,17 @@ function positiveDays(value: number): number {
 
 function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function positiveMinutes(value: number): number {
+  if (!Number.isInteger(value) || value <= 0 || value > 3650 * 24 * 60) {
+    throw new Error("retention minutes must be between 1 and 5256000");
+  }
+  return value;
+}
+
+function addMinutes(date: Date, minutes: number): Date {
+  return new Date(date.getTime() + minutes * 60 * 1000);
 }
 
 function isSafeId(value: unknown): value is string {

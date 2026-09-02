@@ -93,6 +93,11 @@ export interface QaRunPolicy {
    * capture stage closes every browser before judging starts, so this knob
    * costs model-call parallelism, never browser memory. */
   critique_pool?: number;
+  /** Minutes the run's page review pack lives after the judge finishes before
+   * the whole pack directory is deleted (default 90; 1 to 43200). The result
+   * document keeps every finding inline, so a run stays reportable after its
+   * pack is gone. */
+  review_pack_retention_minutes?: number;
 }
 
 export interface QaRunJob {
@@ -184,6 +189,11 @@ export interface QaRunReviewPack {
   dir: string;
   review: string;
   findings: string;
+  /** When the pack directory is deleted (ISO). Absent when the run never
+   * reached the point of knowing (capture failed before any context landed). */
+  expires_at?: string;
+  /** Bytes on disk at finalize time. */
+  size_bytes?: number;
 }
 
 export interface QaRunBlocker {
@@ -508,6 +518,12 @@ export function validateQaRunJob(value: unknown): QaRunJobValidation {
       const n = p.critique_pool;
       if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 16) {
         errors.push("policy.critique_pool must be an integer between 1 and 16");
+      }
+    }
+    if (p?.review_pack_retention_minutes !== undefined) {
+      const n = p.review_pack_retention_minutes;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 43_200) {
+        errors.push("policy.review_pack_retention_minutes must be an integer between 1 and 43200");
       }
     }
   }

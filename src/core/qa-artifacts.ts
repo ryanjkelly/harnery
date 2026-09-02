@@ -24,7 +24,11 @@ export function resolveQaRepoRoot(context?: HarneryProgramContext): string {
   return resolve(context?.repoRoot ?? monorepoRoot() ?? process.cwd());
 }
 
-export function createManagedQaOutParent(repoRoot: string, kind: QaArtifactKind): string {
+export function createManagedQaOutParent(
+  repoRoot: string,
+  kind: QaArtifactKind,
+  opts: { retentionMinutes?: number } = {},
+): string {
   return createArtifact(repoRoot, {
     slug: kind,
     purpose:
@@ -34,6 +38,9 @@ export function createManagedQaOutParent(repoRoot: string, kind: QaArtifactKind)
           ? "Page review pack"
           : "Hand-recorded page QA evidence",
     retentionDays: configuredArtifactRetentionDays(repoRoot),
+    // A standalone review-pack workspace IS the pack, so the artifact store's
+    // own expiry follows the pack's (90 minutes by default, ruled 2026-09-02).
+    ...(opts.retentionMinutes !== undefined ? { retentionMinutes: opts.retentionMinutes } : {}),
   }).path;
 }
 
