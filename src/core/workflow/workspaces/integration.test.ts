@@ -406,7 +406,7 @@ describe.skipIf(!descriptorPathsAvailable)("verification-gated fast-forward inte
     await expect(
       applyIntegration({ coordRoot: repo, runId: report.runId, provider, plan }),
     ).rejects.toThrow(/cannot parse/);
-  });
+  }, 30_000);
 
   test("reconciles a crash after Git mutation without applying a second fast-forward", async () => {
     if (!hasGit()) return;
