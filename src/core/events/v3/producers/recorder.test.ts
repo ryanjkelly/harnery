@@ -228,7 +228,9 @@ describe("event ledger V3 persistent hook recorder", () => {
     const turnTerminals = events.filter((event) => event.event_type === "turn.completed");
     expect(requests).toHaveLength(15);
     expect(toolTerminals).toHaveLength(15);
-    expect(turnTerminals).toHaveLength(2);
+    // The nine pre-boundary tools onboarded the session mid-flight, which now
+    // opens the turn they ran in; the first native prompt closes it.
+    expect(turnTerminals).toHaveLength(3);
 
     for (const terminal of turnTerminals) {
       if (terminal.event_type !== "turn.completed") continue;
@@ -250,7 +252,7 @@ describe("event ledger V3 persistent hook recorder", () => {
           ? terminal.payload.tool_call_count.value
           : undefined,
       ),
-    ).toEqual([4, 2]);
+    ).toEqual([9, 4, 2]);
     for (const turn of projectLatencyV3(ledger).turns) {
       if (turn.tool_ms.state === "unknown") {
         expect(turn.tool_ms.reasons).not.toContain("tool_terminal_count_mismatch");
@@ -4274,10 +4276,22 @@ describe("event ledger V3 hook intake spool", () => {
       state: "unknown",
       reason: "mid_flight_onboarding",
     });
+    // A tool signal proves a turn is executing, so onboarding opens one: the
+    // generation is joinable for command telemetry without a new prompt.
+    const turnStarted = rows.find((event) => event.event_type === "turn.started");
+    expect(turnStarted?.provenance.attestation).toBe("derived");
+    expect(turnStarted?.provenance.source_event).toBe("claude-code.recovery");
+    expect(rows.map((event) => event.event_type)).toEqual([
+      "ledger.genesis",
+      "session.started",
+      "turn.started",
+      "tool.requested",
+    ]);
 
     // Authoritative termination still refuses later signals.
     const state = readHookProducerStateV3(root, "claude-code", nativeSession);
     if (!state) throw new Error("missing state");
+    expect(state.current_turn_id).toBeDefined();
     recordHookSignalV3(baseInput(root, "stop", parsed({ session_id: nativeSession })));
     expect(
       recordApprovedSessionEndV3({

@@ -94,6 +94,23 @@ and a live session that re-publishes stale producer state after rotation is
 re-onboarded into a fresh generation while the successor ledger stays
 complete.
 
+A rotation that fires while a session is mid-turn exposed a second gap, this
+one in re-onboarding rather than in the archive. The session's next hook after
+rotation is usually a tool signal, not a prompt. Mid-flight onboarding opened a
+generation for it but no turn, because only a prompt opened turns, so command
+telemetry refused every join for the rest of the turn and the end-of-turn gate
+could not close. Onboarding also inherited the tool hook's deferred drain, so
+the derived `session.started` waited in the spool where the coordination view
+could not see it, and every authority command reported no live generation
+until some other writer drained. Recovery therefore depended on the next human
+prompt. Onboarding now commits its own events through the append path and,
+when the triggering signal is one an adapter can only deliver inside a turn,
+opens a derived turn that keeps the payload's native turn id. A regression
+drives a live session across a rotation on a deferred tool hook and proves the
+successor ledger holds the derived session and turn, the generation is
+authority eligible, a command joins the turn, and the next native prompt
+closes the derived turn before opening its own.
+
 Two storage follow-ups remain. Ready rows spooled with deferred drain in the
 final moments before rotation are archived undrained; their bytes are preserved
 in the archived spool, and rotation drains the spool first to keep that window

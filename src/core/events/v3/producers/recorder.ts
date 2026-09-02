@@ -754,7 +754,16 @@ function processHookSignalLocked(
       );
       const cursorPromptBootstrap = isCursorPromptBootstrap(input);
       const onboarding = buildMidFlightSessionStart(input, state, rootId, cursorPromptBootstrap);
-      commitEventLocked(input, state, path, onboarding);
+      // Onboarding commits eagerly even when the triggering hook defers its
+      // drain. The coordination view reads committed history only, so a
+      // spooled session.started leaves the session invisible to every
+      // authority command (set-task, status --end-turn, heal) until some other
+      // writer happens to drain the spool.
+      const onboardingInput = withEagerDrain(input);
+      commitEventLocked(onboardingInput, state, path, onboarding);
+      if (midFlightSignalImpliesOpenTurn(input.signal)) {
+        commitMidFlightTurnStart(onboardingInput, state, path, rootId);
+      }
       if (!cursorPromptBootstrap) {
         writeProducerDiagnosticV3(input.coordRoot, "mid_flight_onboarding", {
           adapter: input.adapter,
@@ -1797,6 +1806,109 @@ function commitRecoveredToolTurnStart(
     confidence: "medium",
     attribution: {
       method: "session_env",
+      state: "verified",
+      subject_instance_id: state.instance_id,
+    },
+  };
+  assertEventV3(event);
+  commitEventLocked(input, state, path, event);
+}
+
+/**
+ * Signals an adapter can only deliver while a turn is executing. A session
+ * onboarded mid-flight by one of these is provably inside a turn, so the
+ * generation opens with one instead of waiting for the next native prompt.
+ * The native prompt path opens its own turn, session boundaries carry no
+ * turn, and compaction can run between turns.
+ */
+function midFlightSignalImpliesOpenTurn(signal: HookSignalV3): boolean {
+  switch (signal) {
+    case "session-start":
+    case "session-end":
+    case "user-prompt-submit":
+    case "pre-compact":
+    case "post-compact":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/** Commit through the append path even when the hook asked to defer its drain. */
+function withEagerDrain(input: RecordHookSignalV3Input): RecordHookSignalV3Input {
+  if (!input.writerOptions?.deferDrain) return input;
+  return { ...input, writerOptions: { ...input.writerOptions, deferDrain: false } };
+}
+
+/**
+ * Open a derived turn for a session onboarded mid-flight (ADR 0078) by a
+ * signal that only an executing turn can deliver. Without it the fresh
+ * generation has no current turn: command telemetry refuses to join
+ * (`turn_not_started`), tool spans nest under the session span, and after an
+ * epoch rotation (ADR 0137) the live session cannot satisfy its end-of-turn
+ * gate until a human submits the next prompt. The payload's native turn id
+ * is kept when the adapter supplies one, so the turn already running keeps
+ * its identity across the boundary and later signals join it directly.
+ */
+function commitMidFlightTurnStart(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+): void {
+  const fingerprintContext = fingerprintContextV3(
+    input.coordRoot,
+    rootId,
+    state.generation_id,
+    state.privacy_epoch_id,
+  );
+  const clock = signalClock(input);
+  const span = openSpanStateV3({
+    span_id: spanIdV3(),
+    parent_span_id: state.session_span.span_id,
+    boot_id: state.boot_id,
+    clock,
+  });
+  state.current_turn_span = span;
+  const nativeTurnId = input.payload.turn_id;
+  state.current_native_turn_id = nativeTurnId;
+  const event = normalizeHookEventV3("user-prompt-submit", recoveryBoundaryPayload(input.payload), {
+    coordRoot: input.coordRoot,
+    adapter: input.adapter,
+    adapterVersion: input.adapterVersion,
+    harnessVersion: input.harnessVersion,
+    root_id: rootId,
+    run_id: input.run_id,
+    workflow_id: input.workflow_id,
+    workflow_agent_id: input.workflow_agent_id,
+    instance_id: state.instance_id,
+    generation_id: state.generation_id,
+    attestation_id: state.attestation_id,
+    producer_id: input.producer_id,
+    boot_id: state.boot_id,
+    sequence: state.next_sequence,
+    build_id: input.build_id,
+    platform: input.platform,
+    bridge: input.bridge,
+    capability_profile: state.capability_profile,
+    fingerprintContext,
+    turn_native_id: nativeTurnId ?? `mid-flight:${state.generation_id}:${state.turn_ordinal + 1}`,
+    span_id: span.span_id,
+    caused_by: state.last_event_id ? [state.last_event_id] : [],
+    observed_at: clock.observed_at,
+    monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
+    clock_id: state.clock_id,
+  });
+  if (event?.event_type !== "turn.started") {
+    throw new Error("mid-flight turn start could not be normalized");
+  }
+  event.provenance = {
+    ...event.provenance,
+    source_event: `${input.adapter}.recovery`,
+    attestation: "derived",
+    confidence: nativeTurnId ? "medium" : "low",
+    attribution: {
+      method: nativeTurnId ? "native_payload" : "session_env",
       state: "verified",
       subject_instance_id: state.instance_id,
     },

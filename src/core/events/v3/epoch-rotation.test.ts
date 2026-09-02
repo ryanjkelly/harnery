@@ -16,7 +16,14 @@ import { initializeEventLedgerV3, rotateOversizedEventLedgerV3 } from "./bootstr
 import { sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
 import { liveGenesisIdV3 } from "./control.ts";
-import { recordLiveHookSignalV3, resolveLiveEventLedgerRouteV3 } from "./live-routing.ts";
+import { readCoordinationViewV3 } from "./coordination-view.ts";
+import {
+  liveInstanceIdV3,
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "./live-routing.ts";
+import { recordCommandSignalV3 } from "./producers/command-recorder.ts";
+import { readHookProducerStateV3 } from "./producers/recorder.ts";
 import { readLedgerV3 } from "./reader.ts";
 import { drainReadyEventsV3, eventV3Paths, writeEventV3 } from "./writer.ts";
 
@@ -236,5 +243,115 @@ describe("event ledger V3 size rotation", () => {
     expect(ledger).toMatchObject({ complete: true, diagnostics: [] });
     const archivedLedger = readFileSync(join(rotated.archived_epoch!, "active.ndjson"), "utf8");
     expect(archivedLedger).toContain("session.started");
+  });
+  test("a mid-turn rotation re-onboards the live session with an open, visible turn", () => {
+    const root = activeRoot();
+    process.env.HARNERY_EVENT_V3_ROTATE_ACTIVE_BYTES = "0";
+    const instanceId = "agent-MidTurn";
+    const nativeSession = "native-mid-turn";
+    const record = (
+      eventName: string,
+      payload: Record<string, unknown>,
+      options: { defer_drain?: boolean } = {},
+    ) => {
+      const route = resolveLiveEventLedgerRouteV3(root);
+      if (route.state !== "v3") throw new Error("expected V3 route");
+      return recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName,
+        payload: { session_id: nativeSession, raw: {}, ...payload },
+        adapter: "claude-code",
+        instanceId,
+        ...options,
+      });
+    };
+
+    expect(record("session-start", {}).state).toBe("recorded");
+    expect(record("user-prompt-submit", { turn_id: "turn-one", prompt: "go" }).state).toBe(
+      "recorded",
+    );
+    expect(
+      record(
+        "pre-tool-use",
+        { turn_id: "turn-one", tool_use_id: "tool-1", tool_name: "Bash" },
+        { defer_drain: true },
+      ).state,
+    ).toBe("recorded");
+
+    // The active segment crosses the threshold while the turn is still running.
+    const rotated = rotateOversizedEventLedgerV3(root, { thresholdBytes: 1 });
+    expect(rotated.state).toBe("rotated");
+
+    // The next hook is a tool signal with a deferred drain, exactly as the
+    // adapter delivers it: not a user prompt, and nothing else drains for it.
+    const afterRotation = record(
+      "pre-tool-use",
+      { turn_id: "turn-one", tool_use_id: "tool-2", tool_name: "Bash" },
+      { defer_drain: true },
+    );
+    expect(afterRotation.state).toBe("recorded");
+
+    const state = readHookProducerStateV3(root, "claude-code", nativeSession);
+    expect(state?.current_turn_id).toBeDefined();
+    expect(state?.current_turn_span).toBeDefined();
+
+    // Onboarding committed eagerly: the successor ledger already holds the
+    // derived session.started and turn.started, while the tool request itself
+    // still waits in the spool as the deferring hook asked.
+    const ledger = readLedgerV3(root);
+    expect(ledger).toMatchObject({ complete: true, diagnostics: [] });
+    const types = ledger.events.map(({ event }) => event.event_type);
+    expect(types).toEqual([
+      "ledger.genesis",
+      "ledger.activated",
+      "session.started",
+      "turn.started",
+    ]);
+    const turnStarted = ledger.events.find(({ event }) => event.event_type === "turn.started");
+    expect(turnStarted?.event.provenance.attestation).toBe("derived");
+    expect(turnStarted?.event.provenance.source_event).toBe("claude-code.recovery");
+    expect(readdirSync(eventV3Paths(root).spool).filter((n) => n.endsWith(".ready"))).toHaveLength(
+      1,
+    );
+
+    // Authority commands can see the session again without a new prompt.
+    const view = readCoordinationViewV3(root);
+    expect(view.authority_safe).toBeTrue();
+    expect(view.instances[liveInstanceIdV3(instanceId)]?.authority_eligible).toBeTrue();
+
+    // Command telemetry joins the open turn instead of refusing turn_not_started.
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    const command = recordCommandSignalV3({
+      coordRoot: root,
+      mode: route.mode,
+      signal: "command.started",
+      observation: {
+        native_command_id: "cmd-after-rotation",
+        argv: ["toolkit", "agents", "status", "--end-turn"],
+        intent: "close the turn",
+        executable: "toolkit",
+        intent_kind: "status",
+        sensitive_argument_count: 0,
+      },
+      adapter: "claude-code",
+      instance_id: liveInstanceIdV3(instanceId),
+      producer_id: "prd_session-tee",
+      build_id: route.build_id,
+      platform: "linux",
+    });
+    expect(command.state).toBe("recorded");
+
+    // The next native prompt closes the derived turn and opens its own.
+    expect(record("user-prompt-submit", { turn_id: "turn-two", prompt: "next" }).state).toBe(
+      "recorded",
+    );
+    const settled = readLedgerV3(root);
+    expect(settled).toMatchObject({ complete: true, diagnostics: [] });
+    const settledTypes = settled.events.map(({ event }) => event.event_type);
+    expect(settledTypes.filter((type) => type === "turn.started")).toHaveLength(2);
+    expect(settledTypes).toContain("turn.completed");
+    expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.turn_ordinal).toBe(2);
   });
 });
