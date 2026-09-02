@@ -40,6 +40,7 @@ import {
   type OverflowResult,
   type WidthResult,
 } from "./layout.js";
+import { isBenignNextRscAbort } from "./request-diagnostics.js";
 import {
   buildClearRuntsAnnotationsScript,
   buildRuntsAnnotateScript,
@@ -439,11 +440,15 @@ export class Browser {
       this.pageErrors.push({ message: err.message, stack: err.stack });
     });
     page.on("requestfailed", (req: Request) => {
-      this.failedRequests.push({
+      const failedRequest = {
         url: req.url(),
         method: req.method(),
         failure: req.failure()?.errorText ?? "unknown",
         resourceType: req.resourceType(),
+      };
+      if (isBenignNextRscAbort(failedRequest)) return;
+      this.failedRequests.push({
+        ...failedRequest,
         status: null,
         kind: "network",
       });
