@@ -82,6 +82,11 @@ interface FakeExecConfig {
     outcome: "pass" | "fail" | "skipped";
     findings?: Array<{ severity: string; category: string; description: string }>;
     error?: string;
+    /** Host provider_meta to place on the envelope; a function receives the
+     * scope selector (undefined for full-page) so scopes can differ. */
+    provider_meta?:
+      | Record<string, unknown>
+      | ((selector: string | undefined) => Record<string, unknown> | undefined);
   };
   /** Whether signoff critique/snapshot envelopes report a persisted snapshot. */
   snapshotSaved?: boolean;
@@ -124,6 +129,13 @@ function makeFakeExec(config: FakeExecConfig): {
           await new Promise((resolveDelay) => setTimeout(resolveDelay, config.critiqueDelayMs));
         }
         const critique = config.critique ?? { outcome: "pass" as const };
+        const scopeIndex = argv.indexOf("--check-critique");
+        const scopeArg = argv[scopeIndex + 1];
+        const scopeSelector = scopeArg && !scopeArg.startsWith("--") ? scopeArg : undefined;
+        const providerMeta =
+          typeof critique.provider_meta === "function"
+            ? critique.provider_meta(scopeSelector)
+            : critique.provider_meta;
         const envelope: Record<string, unknown> = {
           critique: {
             rule: "critique",
@@ -132,6 +144,7 @@ function makeFakeExec(config: FakeExecConfig): {
             findings: critique.findings ?? [],
             outcome: critique.outcome,
             ...(critique.error ? { error: critique.error } : {}),
+            ...(providerMeta ? { provider_meta: providerMeta } : {}),
           },
           ...(argv.includes("--qa-snapshot") && config.snapshotSaved !== false
             ? { qaPlan: { snapshotSaved: { path: `${outPrefix}.snapshot.json` } } }
@@ -381,6 +394,99 @@ describe("runQaMatrix", () => {
     expect(argvValue(darkGate?.argv ?? [], "--color-scheme")).toBe("dark");
     const lightGate = fake.calls.find((call) => argvValue(call.argv, "--viewport") === "mobile");
     expect(lightGate?.argv.includes("--color-scheme")).toBe(false);
+  });
+
+  test("critique rows carry per-backend vision latency from provider_meta", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: {
+        outcome: "pass",
+        provider_meta: {
+          route: ["claude-code", "codex"],
+          providers: {
+            "claude-code": {
+              family: "headless",
+              attempts: 3,
+              latency_ms: { count: 3, p50: 4_200, p95: 9_100 },
+            },
+            // Never called: percentiles over an empty sample carry nothing.
+            codex: { family: "headless", attempts: 0, latency_ms: { count: 0, p50: 0, p95: 0 } },
+            // Malformed entry from a future host build must not throw or leak.
+            broken: { latency_ms: "fast" },
+          },
+        },
+      },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.critique).toHaveLength(1);
+    expect(result.critique[0]?.latency_ms).toEqual({
+      "claude-code": { count: 3, p50: 4_200, p95: 9_100 },
+    });
+  });
+
+  test("critique rows omit latency_ms when the provider reported none", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass" },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.critique).toHaveLength(1);
+    expect("latency_ms" in (result.critique[0] ?? {})).toBe(false);
+  });
+
+  test("scoped critique merges latency across scopes: counts add, percentiles keep the slowest", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        scopes: [
+          { selector: "#hero", reason: "test", matches: 1 },
+          { selector: "#footer", reason: "test", matches: 1 },
+        ],
+        checks: { deterministic: [], interaction: [], visual: "scoped" },
+      }),
+      critique: {
+        outcome: "pass",
+        provider_meta: (selector) => ({
+          providers: {
+            "claude-code": {
+              latency_ms:
+                selector === "#hero"
+                  ? { count: 2, p50: 3_000, p95: 3_500 }
+                  : { count: 4, p50: 2_000, p95: 48_000 },
+            },
+          },
+        }),
+      },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(fake.calls.filter((call) => call.argv.includes("--check-critique"))).toHaveLength(2);
+    expect(result.critique[0]?.latency_ms).toEqual({
+      "claude-code": { count: 6, p50: 3_000, p95: 48_000 },
+    });
   });
 
   test("critique children carry the headless-only env var by default", async () => {

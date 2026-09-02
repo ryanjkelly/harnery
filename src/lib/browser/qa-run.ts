@@ -26,6 +26,7 @@ import {
   type QaRunBlocker,
   type QaRunCommandOutcome,
   type QaRunContext,
+  type QaRunCritiqueLatency,
   type QaRunCritiqueOutcome,
   type QaRunHostSample,
   type QaRunJob,
@@ -465,6 +466,51 @@ function providerLabel(critique: EnvelopeCritique | undefined): string {
     }
   }
   return critique?.provider ? "host" : "none";
+}
+
+/**
+ * Lift per-backend vision latency out of the envelope's provider_meta. The
+ * shape is host-owned (`providers[name].latency_ms = {count, p50, p95}`), so
+ * read defensively: a malformed entry or one with zero calls is dropped.
+ * Without this the runner kept only the provider label, and a slow tile was
+ * visible in `ps` and nowhere in the result document.
+ */
+function critiqueLatency(
+  critique: EnvelopeCritique | undefined,
+): Record<string, QaRunCritiqueLatency> | undefined {
+  const providers = critique?.provider_meta?.providers;
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) return undefined;
+  const out: Record<string, QaRunCritiqueLatency> = {};
+  for (const [name, state] of Object.entries(providers as Record<string, unknown>)) {
+    const lat = (state as { latency_ms?: unknown } | null)?.latency_ms as
+      | { count?: unknown; p50?: unknown; p95?: unknown }
+      | undefined;
+    if (!lat || typeof lat !== "object") continue;
+    const { count, p50, p95 } = lat;
+    if (typeof count !== "number" || count <= 0) continue;
+    if (typeof p50 !== "number" || typeof p95 !== "number") continue;
+    out[name] = { count, p50, p95 };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Fold one scope command's latency into the context's record: counts add,
+ * percentiles keep the slower scope (see QaRunCritiqueLatency). */
+function mergeCritiqueLatency(
+  into: Record<string, QaRunCritiqueLatency>,
+  next: Record<string, QaRunCritiqueLatency> | undefined,
+): void {
+  if (!next) return;
+  for (const [name, lat] of Object.entries(next)) {
+    const prior = into[name];
+    into[name] = prior
+      ? {
+          count: prior.count + lat.count,
+          p50: Math.max(prior.p50, lat.p50),
+          p95: Math.max(prior.p95, lat.p95),
+        }
+      : { ...lat };
+  }
 }
 
 /**
@@ -977,6 +1023,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       let provider = "none";
       let contextOutcome: QaRunCritiqueOutcome["outcome"] = "passed";
       const findings: QaRunCritiqueOutcome["findings"] = [];
+      const latency: Record<string, QaRunCritiqueLatency> = {};
       let scopesSkipped = false;
       for (const [scopeIndex, selector] of scopeSelectors.entries()) {
         if (pastDeadline()) {
@@ -1029,6 +1076,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
           tilesReused += reuse?.tiles_reused ?? 0;
           tilesReviewed += reuse?.tiles_reviewed ?? envelopeCritique?.tiles ?? 0;
           provider = providerLabel(envelopeCritique);
+          mergeCritiqueLatency(latency, critiqueLatency(envelopeCritique));
           for (const finding of envelopeCritique?.findings ?? []) {
             findings.push({
               severity: finding.severity ?? "unknown",
@@ -1089,6 +1137,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         tiles_reused: tilesReused,
         outcome: contextOutcome,
         findings,
+        ...(Object.keys(latency).length > 0 ? { latency_ms: latency } : {}),
       });
       if (job.mode === "signoff" && contextOutcome === "passed" && !savedSnapshots.has(ctx.id)) {
         blockers.push({

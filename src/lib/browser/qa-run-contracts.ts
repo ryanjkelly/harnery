@@ -119,6 +119,17 @@ export interface QaRunCommandOutcome {
   wall_time_ms: number;
 }
 
+/** Vision-call latency one critique backend reported for a context, in
+ * milliseconds over the tile calls it served. The percentiles are the
+ * provider's own sample. When a context ran several scope commands, `count`
+ * sums across them and `p50`/`p95` keep the slowest scope's values, so a
+ * straggler survives the merge instead of averaging away. */
+export interface QaRunCritiqueLatency {
+  count: number;
+  p50: number;
+  p95: number;
+}
+
 export interface QaRunCritiqueOutcome {
   context_id: string;
   provider: string;
@@ -127,6 +138,10 @@ export interface QaRunCritiqueOutcome {
   tiles_reused: number;
   outcome: "passed" | "failed" | "unknown";
   findings: Array<{ severity: string; summary: string; selector?: string }>;
+  /** Per-backend vision latency keyed by provider name (e.g. `claude-code`),
+   * lifted from the browse envelope's `provider_meta.providers`. Absent when
+   * the child died, critique was skipped, or no backend reported a call. */
+  latency_ms?: Record<string, QaRunCritiqueLatency>;
 }
 
 export interface QaRunBlocker {
