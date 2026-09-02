@@ -10,7 +10,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Command } from "commander";
-import type { EmitContext } from "../commander.ts";
+import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { latestManagedQaRun, resolveQaRepoRoot } from "../core/qa-artifacts.ts";
 import {
   type AdmissionEntry,
   admissionBaseDir,
@@ -37,7 +38,6 @@ export const QA_STATUS_HEARTBEAT_STALE_MS = 120_000;
 /** Log file `qa-run --detach` leaves in the run directory. */
 const RUNNER_LOG_FILENAME = "runner.log";
 
-const DEFAULT_PATH = ".qa-run";
 const POLL_MS = 2_000;
 const DEFAULT_WAIT_TIMEOUT_MINUTES = 60;
 
@@ -106,10 +106,21 @@ function startedAtOf(dir: string): string | undefined {
  * document is the run directory itself; any other directory is treated as a
  * run PARENT: its `run-*` children are scanned and the one with the newest
  * started_at wins, falling back to the `latest.json` pointer when no child
- * carries a status or result. Default path: `.qa-run`.
+ * carries a status or result. Without a path, the newest managed QA artifact
+ * under the repository's `.harnery/artifacts/` store is used.
  */
-export function resolveRunDir(inputPath?: string): RunDirResolution {
-  const abs = resolve(inputPath ?? DEFAULT_PATH);
+export function resolveRunDir(inputPath?: string, repoRoot?: string): RunDirResolution {
+  if (inputPath === undefined) {
+    const latest = latestManagedQaRun(repoRoot ?? resolveQaRepoRoot());
+    if (!latest) {
+      return {
+        ok: false,
+        error: "no managed qa-run or qa-record output exists under .harnery/artifacts",
+      };
+    }
+    return { ok: true, runDir: latest };
+  }
+  const abs = resolve(inputPath);
   let stats: ReturnType<typeof statSync>;
   try {
     stats = statSync(abs);
@@ -493,7 +504,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
-export function registerQaStatusCommand(program: Command, emit: EmitContext): void {
+export function registerQaStatusCommand(
+  program: Command,
+  emit: EmitContext,
+  context?: HarneryProgramContext,
+): void {
   program
     .command("qa-status [path]")
     .description(
@@ -518,7 +533,7 @@ export function registerQaStatusCommand(program: Command, emit: EmitContext): vo
       `\n[path] may be a ${QA_RUN_RESULT_FILENAME} file, a run directory (containing ` +
         `${QA_RUN_STATUS_FILENAME} or ${QA_RUN_RESULT_FILENAME}), or a run parent directory ` +
         `(newest run-*/ child by started_at, falling back to the ${QA_RUN_LATEST_FILENAME} ` +
-        `pointer). Default: ${DEFAULT_PATH}` +
+        `pointer). Without [path], the newest managed run under .harnery/artifacts is used.` +
         "\n\nExit codes: 0 completed passed · 1 usage or unreadable state · " +
         "2 completed failed · 4 completed incomplete or dead · " +
         "5 still in progress (or --wait timeout).",
@@ -543,7 +558,7 @@ export function registerQaStatusCommand(program: Command, emit: EmitContext): vo
         waitTimeoutMinutes = minutes;
       }
 
-      const resolved = resolveRunDir(path);
+      const resolved = resolveRunDir(path, resolveQaRepoRoot(context));
       if (!resolved.ok) {
         emit.error({ code: "qa_status_unresolvable_path", message: resolved.error });
         process.exitCode = 1;

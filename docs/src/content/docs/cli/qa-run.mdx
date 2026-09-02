@@ -21,7 +21,7 @@ Every child is a real `browse` invocation of the same host CLI (argv arrays only
 | `--mode <mode>` | `signoff` persists a QA snapshot on a passing run; `review` never does. Default `signoff`. An explicit `--mode` overrides the job file's mode. |
 | `--concurrency <n>` | Concurrent deterministic captures (1–8; default 2). Interactions and critique always run serially. |
 | `--allow-metered` | Permit the critique provider's metered-API fallback. Default: subscription-backed headless harnesses only. |
-| `--out-dir <dir>` | **Parent** output directory. Default `.qa-run` under the current directory. Every invocation writes into its own `run-<run_id>/` beneath it and updates the parent's `latest.json` pointer; prior runs are never overwritten and never pass as current. |
+| `--out-dir <dir>` | **Parent** output directory. By default, each invocation creates a managed workspace under `.harnery/artifacts/`. An explicit parent is reused as given. Every invocation writes into its own `run-<run_id>/` beneath the parent and updates `latest.json`; prior runs are never overwritten and never pass as current. |
 | `--json` | Print the full result JSON to stdout (the file is written either way). |
 | `--detach` | Launch the run as a detached background process whose authoritative state lives on disk. Prints the run directory and returns immediately; reconnect with [`harn qa-status`](/cli/qa-status/). See "Detached runs" below. |
 | `--no-queue` | Skip machine-wide admission control. Default: the run waits for a `browser-qa` slot so simultaneous heavy runs take turns instead of thrashing the host. |
@@ -71,10 +71,11 @@ harn qa-status <run-dir> --wait
 
 ## Run identity and output layout
 
-Every invocation mints a fresh run and isolates its output. `--out-dir` names a **parent** directory; the run itself writes into `run-<run_id>/` beneath it:
+Every invocation mints a fresh run and isolates its output. Without `--out-dir`, the parent is a manifest-backed workspace subject to the artifact store's retention and size policies. An explicit `--out-dir` names a caller-owned **parent** directory instead. The run itself writes into `run-<run_id>/` beneath the parent:
 
 ```
-.qa-run/
+.harnery/artifacts/<date>_qa-run_<artifact-id>/
+  .harnery-artifact.json     # retention and cleanup metadata
   latest.json                 # pointer to the newest completed run
   run-<run_id>/
     page-qa-result.json       # the result document (schema version 2)
@@ -158,7 +159,7 @@ harn qa-run https://example.com/landing --concurrency 4 --allow-metered
 
 # Detach: launch in the background, reconnect later for the verdict
 harn qa-run http://localhost:3000/pricing --detach
-harn qa-status .qa-run/run-<run_id> --wait
+harn qa-status <printed-run-dir> --wait
 
 # Skip the machine-wide queue and cap this run's admission wait for peers
 harn qa-run http://localhost:3000/pricing --no-queue

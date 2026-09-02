@@ -7,9 +7,10 @@ import { randomUUID } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type Command, Option } from "commander";
-import type { EmitContext } from "../commander.ts";
+import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { recordQaSignal } from "../core/agents/qa-signal.ts";
 import { resolveBinName } from "../core/config.ts";
+import { createManagedQaOutParent, resolveQaRepoRoot } from "../core/qa-artifacts.ts";
 import { acquireAdmission, admissionBaseDir, admissionStatus } from "../lib/admission.ts";
 import {
   QA_RUN_JOB_FILENAME,
@@ -48,7 +49,11 @@ interface QaRunOpts {
   runId?: string;
 }
 
-export function registerQaRunCommand(program: Command, emit: EmitContext): void {
+export function registerQaRunCommand(
+  program: Command,
+  emit: EmitContext,
+  context?: HarneryProgramContext,
+): void {
   program
     .command("qa-run <target>")
     .description(
@@ -80,7 +85,7 @@ export function registerQaRunCommand(program: Command, emit: EmitContext): void 
     )
     .option(
       "--out-dir <dir>",
-      "PARENT output directory (default: .qa-run under the current directory). Every " +
+      "PARENT output directory (default: a managed .harnery/artifacts workspace). Every " +
         "invocation writes into its own run-<run_id>/ beneath it and updates the parent's " +
         "latest.json pointer — prior runs are never overwritten and never pass as current.",
     )
@@ -199,7 +204,20 @@ export function registerQaRunCommand(program: Command, emit: EmitContext): void 
       if (opts.allowMetered) policy.allow_metered_critique = true;
       const job: QaRunJob = { ...validation.job, policy };
 
-      const outParent = resolve(opts.outDir ?? ".qa-run");
+      let outParent: string;
+      try {
+        outParent =
+          opts.outDir !== undefined
+            ? resolve(opts.outDir)
+            : createManagedQaOutParent(resolveQaRepoRoot(context), "qa-run");
+      } catch (err: unknown) {
+        emit.error({
+          code: "qa_run_output_unavailable",
+          message: `cannot create managed QA output: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        process.exitCode = 1;
+        return;
+      }
       const cliScript = process.argv[1];
       if (!cliScript) {
         emit.error({

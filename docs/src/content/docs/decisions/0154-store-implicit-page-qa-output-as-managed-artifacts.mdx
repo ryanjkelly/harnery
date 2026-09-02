@@ -1,0 +1,63 @@
+---
+title: "ADR 0154: store implicit page-QA output as managed artifacts"
+description: Put default qa-run and qa-record evidence under the bounded artifact store while preserving explicit output destinations.
+sidebar:
+  order: 154
+---
+
+**Date:** 2026-09-01
+**Status:** Accepted
+
+## Context
+
+`qa-run` and `qa-record` wrote to `.qa-run/` under the current directory when
+the caller omitted `--out-dir`. Those screenshots, HTML captures, JSON
+documents, and logs are runtime evidence rather than project source. In an
+embedding repository, the unignored directory appeared as dozens of Git
+changes. It also grew outside the retention and byte budgets established by
+ADR 0048 and ADR 0150.
+
+The command contract also requires isolation. Each run records its absolute
+`out_dir`, detached runs must reconnect to the exact directory, and concurrent
+runs must not replace one another's evidence.
+
+## Alternatives considered
+
+- Add `.qa-run/` to every host's ignore file. Rejected as the complete fix
+  because it hides the Git noise but leaves output outside Harnery's retention
+  and size policies.
+- Use a fixed `.harnery/qa-run/` directory. Rejected because it would be
+  ignored but unmanaged, so the same unbounded-growth problem would move.
+- Reuse one fixed managed artifact workspace. Rejected because one long-lived
+  bundle weakens per-invocation retention and size accounting and complicates
+  concurrent cleanup authority.
+- Move old result trees automatically. Rejected because schema-v3 evidence
+  records its absolute output directory. Moving it makes `qa-verify` correctly
+  report that the evidence is no longer at its recorded location.
+
+## Decision
+
+When `--out-dir` is absent, `qa-run` and `qa-record` each create a fresh
+manifest-backed workspace through the artifact core. The workspace uses the
+configured artifact retention and byte budgets, and the command writes its
+existing `run-<run_id>/` directory and `latest.json` pointer inside it.
+
+An explicit `--out-dir` remains authoritative and receives no artifact
+manifest. This preserves automation that deliberately owns a durable or shared
+destination.
+
+`qa-status` without a path scans valid managed `qa-run` and `qa-record`
+workspaces and selects the run with the newest `started_at`. Detached callers
+continue to pass the printed run directory when reconnecting. The cutover has
+no fallback to `.qa-run`; pre-1.0 callers that need that location can request
+it explicitly.
+
+## Result
+
+Implicit QA output no longer enters the project source tree and now participates
+in guarded artifact cleanup. Focused tests cover manifest creation, selection
+across isolated workspaces, refusal to select unmanaged lookalikes, and no-path
+status resolution. One embedding host moved its existing `.qa-run` evidence
+into a managed migration workspace without rewriting the recorded absolute
+paths. Those historical runs remain readable, but `qa-verify` reports the
+location mismatch as expected. New runs remain verifiable in place.

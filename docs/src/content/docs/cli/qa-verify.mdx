@@ -56,14 +56,14 @@ Note that exit 0 means the evidence is authentic and current, not that the page 
 ## Examples
 
 ```bash
-# After a qa-run into .qa-run, verify its latest result is the run you made
-harn qa-verify .qa-run --run-id 6e1f0c3a-...
+# Verify the result path printed by qa-run is the run you made
+harn qa-verify <printed-result-path> --run-id 6e1f0c3a-...
 
 # Gate on the exact job and revision being shipped, no older than an hour
-harn qa-verify .qa-run --job pricing-qa.json --revision "$(git rev-parse HEAD)" --max-age 60
+harn qa-verify <printed-result-path> --job pricing-qa.json --revision "$(git rev-parse HEAD)" --max-age 60
 
 # Machine-readable assessment of one specific result file
-harn qa-verify .qa-run/run-6e1f0c3a-.../page-qa-result.json --json
+harn qa-verify <run-dir>/page-qa-result.json --json
 ```
 
 ## See also

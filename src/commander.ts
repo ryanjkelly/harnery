@@ -452,7 +452,8 @@ function harneryCommandBundles({
     lazy(
       "qa-run <target>",
       `Run the whole page-QA matrix in one command (planner, deterministic gates per context, interactions, critique, snapshot) via child \`${binName} browse\` processes; writes page-qa-result.json with a fail-closed verdict.`,
-      async (program) => (await import("./commands/qa-run.ts")).registerQaRunCommand(program, emit),
+      async (program) =>
+        (await import("./commands/qa-run.ts")).registerQaRunCommand(program, emit, context),
       { hasOptions: true },
     ),
     lazy(
@@ -466,14 +467,14 @@ function harneryCommandBundles({
       "qa-record <target>",
       "Record hand-performed page QA as a standard result document: same schema, run identity, stage timings, and freshness guarantees as qa-run, marked evidence_source manual so it can report a defect but never a pass.",
       async (program) =>
-        (await import("./commands/qa-record.ts")).registerQaRecordCommand(program, emit),
+        (await import("./commands/qa-record.ts")).registerQaRecordCommand(program, emit, context),
       { hasOptions: true },
     ),
     lazy(
       "qa-status [path]",
       "Report a qa-run's live state (queued/launching/running/completed/dead) from its run-status.json, PID liveness, and result document; --wait reconnects to a detached run and exits with its verdict; --queue shows the machine-wide browser-qa admission queue.",
       async (program) =>
-        (await import("./commands/qa-status.ts")).registerQaStatusCommand(program, emit),
+        (await import("./commands/qa-status.ts")).registerQaStatusCommand(program, emit, context),
       { hasOptions: true },
     ),
     lazy(

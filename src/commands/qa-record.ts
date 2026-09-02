@@ -16,8 +16,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Command } from "commander";
-import type { EmitContext } from "../commander.ts";
+import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { recordQaSignal } from "../core/agents/qa-signal.ts";
+import { createManagedQaOutParent, resolveQaRepoRoot } from "../core/qa-artifacts.ts";
 import {
   QA_RUN_RESULT_FILENAME,
   QA_RUN_STATUS_FILENAME,
@@ -509,6 +510,8 @@ export interface QaRecordInput {
   evidencePath: string;
   mode?: string;
   outDir?: string;
+  /** Lazy default so invalid evidence does not create an empty artifact workspace. */
+  defaultOutDir?: () => string;
   runId?: string;
   completedAt?: Date;
   /** Injectable for tests; default: the real git probe. */
@@ -556,11 +559,26 @@ export function recordManualQa(input: QaRecordInput): QaRecordOutcome {
   }
 
   const probe = (input.revisionProbe ?? probeRevision)();
+  let outParent = input.outDir;
+  if (!outParent && input.defaultOutDir) {
+    try {
+      outParent = input.defaultOutDir();
+    } catch (err: unknown) {
+      return {
+        exit: 1,
+        error: `cannot create managed QA output: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  if (!outParent) {
+    return { exit: 1, error: "qa-record requires outDir or defaultOutDir" };
+  }
+
   const result = buildManualResult({
     evidence: validation.evidence,
     target: input.target,
     mode,
-    outParent: input.outDir ?? ".qa-run",
+    outParent,
     baseDir,
     ...(input.runId !== undefined ? { runId: input.runId } : {}),
     ...(probe ? { revisionProbe: probe } : {}),
@@ -577,7 +595,11 @@ interface QaRecordOpts {
   json?: boolean;
 }
 
-export function registerQaRecordCommand(program: Command, emit: EmitContext): void {
+export function registerQaRecordCommand(
+  program: Command,
+  emit: EmitContext,
+  context?: HarneryProgramContext,
+): void {
   program
     .command("qa-record <target>")
     .description(
@@ -599,7 +621,7 @@ export function registerQaRecordCommand(program: Command, emit: EmitContext): vo
     )
     .option(
       "--out-dir <dir>",
-      "PARENT output directory (default: .qa-run under the current directory). The " +
+      "PARENT output directory (default: a managed .harnery/artifacts workspace). The " +
         "record lands in its own run-<run_id>/ beneath it and updates the parent's " +
         "latest.json pointer, exactly like a runner invocation.",
     )
@@ -627,6 +649,7 @@ export function registerQaRecordCommand(program: Command, emit: EmitContext): vo
         evidencePath: opts.evidence,
         mode: opts.mode,
         ...(opts.outDir !== undefined ? { outDir: opts.outDir } : {}),
+        defaultOutDir: () => createManagedQaOutParent(resolveQaRepoRoot(context), "qa-record"),
       });
       if (outcome.exit === 1 || !outcome.result || !outcome.paths) {
         for (const message of outcome.evidenceErrors ?? [])

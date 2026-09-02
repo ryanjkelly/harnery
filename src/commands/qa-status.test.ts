@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createManagedQaOutParent } from "../core/qa-artifacts.ts";
 import {
   classifyRun,
   QA_STATUS_HEARTBEAT_STALE_MS,
@@ -166,6 +167,27 @@ describe("classifyRun: terminal results", () => {
     const outcome = classifyRun(dir, ALIVE);
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.error).toContain("not valid JSON");
+  });
+});
+
+describe("resolveRunDir: managed default", () => {
+  test("no path resolves the newest managed QA run", () => {
+    const olderParent = createManagedQaOutParent(root, "qa-run");
+    const newerParent = createManagedQaOutParent(root, "qa-record");
+    const older = join(olderParent, "run-older");
+    const newer = join(newerParent, "run-newer");
+    mkdirSync(older, { recursive: true });
+    mkdirSync(newer, { recursive: true });
+    writeStatus(older, { started_at: "2026-09-01T10:00:00.000Z" });
+    writeStatus(newer, { started_at: "2026-09-01T11:00:00.000Z" });
+    expect(expectRunDir(resolveRunDir(undefined, root))).toBe(newer);
+  });
+
+  test("no path fails clearly when the managed store has no QA output", () => {
+    const resolution = resolveRunDir(undefined, root);
+    expect(resolution.ok).toBe(false);
+    if (resolution.ok) return;
+    expect(resolution.error).toContain("no managed qa-run or qa-record output");
   });
 });
 

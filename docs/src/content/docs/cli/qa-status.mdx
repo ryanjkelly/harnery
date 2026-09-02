@@ -30,7 +30,7 @@ Once the result document exists, the reported state is simply the run's verdict:
 
 ## Path resolution
 
-`[path]` may name any of three things (default: `.qa-run`):
+`[path]` may name any of three things. Without a path, Harnery finds the newest run across valid `qa-run` and `qa-record` workspaces under `.harnery/artifacts/`:
 
 - **A file**: its directory is treated as the run directory (pointing at a `page-qa-result.json` works).
 - **A run directory**: a directory containing `run-status.json` or `page-qa-result.json` directly.
@@ -60,14 +60,14 @@ The codes 0, 2, and 4 mirror `qa-run`'s own exit codes, so `qa-status --wait` is
 ## Examples
 
 ```bash
-# What is the newest run under the default parent doing?
+# What is the newest managed QA run doing?
 harn qa-status
 
 # Reconnect to a detached run and exit with its verdict
-harn qa-status .qa-run/run-6e1f0c3a-... --wait
+harn qa-status <printed-run-dir> --wait
 
 # Poll a specific run from a script, machine-readable
-harn qa-status .qa-run --json
+harn qa-status <run-dir> --json
 
 # Who is holding the browser-qa slots, and who is waiting?
 harn qa-status --queue
