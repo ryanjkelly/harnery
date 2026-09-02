@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { type CritiqueProvider, type CritiqueTile, runCritique } from "./critique.ts";
+import { PNG } from "pngjs";
+import {
+  type CritiqueProvider,
+  type CritiqueTile,
+  runCritique,
+  tilesFromFullPage,
+} from "./critique.ts";
 
 function tile(index: number): CritiqueTile {
   return {
@@ -13,6 +19,48 @@ function tile(index: number): CritiqueTile {
 }
 
 const TILES = [tile(0), tile(1), tile(2), tile(3), tile(4), tile(5)];
+
+function blankPage(width: number, height: number): Buffer {
+  const img = new PNG({ width, height });
+  img.data.fill(255);
+  return PNG.sync.write(img);
+}
+
+describe("tilesFromFullPage coverage", () => {
+  test("an uncapped page reports full coverage", () => {
+    const { tiles, coverage } = tilesFromFullPage(blankPage(400, 5000), {
+      bandHeight: 1400,
+      overlap: 120,
+      maxTiles: 24,
+    });
+    expect(coverage.capped).toBe(false);
+    expect(coverage.bands_total).toBe(tiles.length);
+    expect(coverage.bands_reviewed).toBe(tiles.length);
+    expect(coverage.page_height_px).toBe(5000);
+    expect(coverage.reviewed_height_px).toBe(5000);
+  });
+
+  test("a capped page reports the dropped bands and the unreviewed tail", () => {
+    const full = tilesFromFullPage(blankPage(400, 5000), {
+      bandHeight: 1400,
+      overlap: 120,
+      maxTiles: 24,
+    });
+    const { tiles, coverage } = tilesFromFullPage(blankPage(400, 5000), {
+      bandHeight: 1400,
+      overlap: 120,
+      maxTiles: 2,
+    });
+    expect(tiles).toHaveLength(2);
+    expect(coverage.capped).toBe(true);
+    expect(coverage.bands_total).toBe(full.coverage.bands_total);
+    expect(coverage.bands_reviewed).toBe(2);
+    expect(coverage.page_height_px).toBe(5000);
+    expect(coverage.reviewed_height_px).toBeLessThan(5000);
+    // Two bands of 1400 with a 120 overlap reach 1280 + 1400 px.
+    expect(coverage.reviewed_height_px).toBe(2680);
+  });
+});
 
 describe("runCritique concurrency", () => {
   test("runs tiles concurrently up to the provider's cap", async () => {

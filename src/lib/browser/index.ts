@@ -39,6 +39,7 @@ export type {
 } from "./content-checks.js";
 export {
   bandRects,
+  type CritiqueCoverage,
   type CritiqueFinding,
   type CritiqueProvider,
   type CritiqueResult,

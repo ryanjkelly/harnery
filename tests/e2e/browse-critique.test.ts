@@ -53,8 +53,14 @@ describe("critique tiling + orchestration", () => {
     // A 3000px-tall page far exceeds any viewport — the old viewport-relative
     // clip threw here; cropping from the full-page buffer must not.
     const buf = fakePagePng(400, 3000);
-    const tiles = tilesFromFullPage(buf, { bandHeight: 1400, overlap: 120, maxTiles: 24 });
+    const { tiles, coverage } = tilesFromFullPage(buf, {
+      bandHeight: 1400,
+      overlap: 120,
+      maxTiles: 24,
+    });
     expect(tiles.length).toBeGreaterThan(1);
+    expect(coverage.capped).toBe(false);
+    expect(coverage.reviewed_height_px).toBe(3000);
     expect(tiles[0]?.scrollY).toBe(0);
     // Tiles advance down the page and each crop decodes to its declared size.
     for (let i = 1; i < tiles.length; i++) {
@@ -72,8 +78,9 @@ describe("critique tiling + orchestration", () => {
       { label: "div.b", x: 0, y: 2500, width: 400, height: 100 }, // below fold
       { label: "div.c", x: 0, y: 2800, width: 400, height: 100 },
     ];
-    const tiles = tilesFromFullPage(buf, { elementRects: rects, maxTiles: 2 });
+    const { tiles, coverage } = tilesFromFullPage(buf, { elementRects: rects, maxTiles: 2 });
     expect(tiles).toHaveLength(2); // capped
+    expect(coverage).toMatchObject({ bands_total: 3, bands_reviewed: 2, capped: true });
     expect(tiles[0]?.label).toBe("div.a");
     expect(tiles[1]?.scrollY).toBe(2500); // below-fold element cropped fine
   });

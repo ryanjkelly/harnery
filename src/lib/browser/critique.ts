@@ -42,10 +42,27 @@ export interface CritiqueFinding {
   description: string;
 }
 
+/**
+ * How much of the page the tiles actually cover. The tiler keeps at most
+ * `maxTiles` bands and drops the rest, so on a tall page `capped` is true and
+ * `reviewed_height_px` stops short of `page_height_px`. Callers that turn a
+ * critique into a verdict must read this: a pass over the first 24 bands is
+ * not a pass over the page.
+ */
+export interface CritiqueCoverage {
+  page_height_px: number;
+  reviewed_height_px: number;
+  bands_total: number;
+  bands_reviewed: number;
+  capped: boolean;
+}
+
 export interface CritiqueResult {
   rule: "critique";
   /** Number of tiles the page was cut into. */
   tiles: number;
+  /** Tile coverage of the page; absent only for results built without tiles. */
+  coverage?: CritiqueCoverage;
   /** Whether a provider was available. False → outcome "skipped". */
   provider: boolean;
   findings: CritiqueFinding[];
@@ -147,7 +164,7 @@ export function tilesFromFullPage(
     maxTiles: number;
     atoms?: VisualAtom[];
   },
-): CritiqueTile[] {
+): { tiles: CritiqueTile[]; coverage: CritiqueCoverage } {
   const png = PNG.sync.read(fullPageBuffer);
   const snapOpts = {
     bandHeight: opts.bandHeight ?? 1400,
@@ -209,7 +226,18 @@ export function tilesFromFullPage(
       pngBase64: PNG.sync.write(dst).toString("base64"),
     });
   }
-  return tiles;
+  const kept = rects.slice(0, opts.maxTiles);
+  const coverage: CritiqueCoverage = {
+    page_height_px: png.height,
+    reviewed_height_px: kept.reduce(
+      (max, rect) => Math.max(max, Math.min(png.height, Math.round(rect.y + rect.height))),
+      0,
+    ),
+    bands_total: rects.length,
+    bands_reviewed: kept.length,
+    capped: rects.length > kept.length,
+  };
+  return { tiles, coverage };
 }
 
 /**

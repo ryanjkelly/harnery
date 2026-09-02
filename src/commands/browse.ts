@@ -11,6 +11,7 @@ import {
   browserProxyGateFromEnv,
   type ContentAnnotationBox,
   type ContentChecksResult,
+  type CritiqueCoverage,
   type CritiqueResult,
   type CritiqueTile,
   captureDevOverlay,
@@ -995,12 +996,17 @@ async function runBrowse(
           "info",
         );
       }
-      critique = await runCritique({
-        url: navResult.url,
-        rubric,
-        tiles: tilesToReview,
-        provider: critiqueProvider,
-      });
+      critique = {
+        ...(await runCritique({
+          url: navResult.url,
+          rubric,
+          tiles: tilesToReview,
+          provider: critiqueProvider,
+        })),
+        // Coverage rides on every envelope, skipped or not, so a reader can
+        // tell a pass over the whole page from a pass over its first N bands.
+        coverage: captured.coverage,
+      };
     }
     // Persist the QA baseline AFTER critique so a passing run's verdicts ride
     // along with the snapshot (still before annotations mutate the page).
@@ -2173,7 +2179,7 @@ async function captureCritiqueTiles(
   browser: Browser,
   opts: BrowseOpts,
   tileBudgetPx?: number,
-): Promise<{ tiles: CritiqueTile[]; fullPage: Buffer }> {
+): Promise<{ tiles: CritiqueTile[]; fullPage: Buffer; coverage: CritiqueCoverage }> {
   const maxTiles = Math.max(1, Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10));
   // The routed provider's vision long-edge budget caps band height so tiles
   // are never silently downscaled by the model.
@@ -2199,7 +2205,7 @@ async function captureCritiqueTiles(
   } catch {
     atoms = undefined;
   }
-  const tiles = tilesFromFullPage(buffer, {
+  const { tiles, coverage } = tilesFromFullPage(buffer, {
     elementRects,
     bandHeight: band,
     overlap,
@@ -2218,7 +2224,7 @@ async function captureCritiqueTiles(
       "warn",
     );
   }
-  return { tiles, fullPage: buffer };
+  return { tiles, fullPage: buffer, coverage };
 }
 function logCritiqueSummary(critique: CritiqueResult): void {
   if (critique.outcome === "skipped") {

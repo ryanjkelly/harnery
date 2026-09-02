@@ -78,6 +78,17 @@ function critiqueOutcome(
 }
 
 describe("validateQaRunJob", () => {
+  test("policy.critique_max_tiles must be an integer between 1 and 200", () => {
+    for (const bad of [0, 201, 2.5, "24"]) {
+      const result = validateQaRunJob(validJob({ policy: { critique_max_tiles: bad as number } }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.join("\n")).toContain("policy.critique_max_tiles");
+      }
+    }
+    expect(validateQaRunJob(validJob({ policy: { critique_max_tiles: 40 } })).ok).toBe(true);
+  });
+
   test("a valid job round-trips", () => {
     const job = validJob({
       contexts: [{ id: "hd-dark-default", viewport: "hd", theme: "dark", state: "default" }],

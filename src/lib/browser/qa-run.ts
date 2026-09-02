@@ -26,6 +26,7 @@ import {
   type QaRunBlocker,
   type QaRunCommandOutcome,
   type QaRunContext,
+  type QaRunCritiqueCoverage,
   type QaRunCritiqueLatency,
   type QaRunCritiqueOutcome,
   type QaRunHostSample,
@@ -454,7 +455,45 @@ interface EnvelopeCritique {
   outcome?: string;
   findings?: Array<{ severity?: string; category?: string; description?: string }>;
   provider_meta?: Record<string, unknown>;
+  coverage?: Partial<QaRunCritiqueCoverage>;
   error?: string;
+}
+
+/** Read the envelope's coverage block defensively; anything malformed is
+ * treated as absent rather than as full coverage. */
+function critiqueCoverage(
+  critique: EnvelopeCritique | undefined,
+): QaRunCritiqueCoverage | undefined {
+  const c = critique?.coverage;
+  if (!c || typeof c !== "object") return undefined;
+  const { page_height_px, reviewed_height_px, bands_total, bands_reviewed, capped } = c;
+  if (
+    typeof page_height_px !== "number" ||
+    typeof reviewed_height_px !== "number" ||
+    typeof bands_total !== "number" ||
+    typeof bands_reviewed !== "number" ||
+    typeof capped !== "boolean"
+  ) {
+    return undefined;
+  }
+  return { page_height_px, reviewed_height_px, bands_total, bands_reviewed, capped };
+}
+
+/** Fold one scope command's coverage into the context's: heights keep the
+ * worst case, band counts add, capped is sticky. */
+function mergeCritiqueCoverage(
+  prior: QaRunCritiqueCoverage | undefined,
+  next: QaRunCritiqueCoverage | undefined,
+): QaRunCritiqueCoverage | undefined {
+  if (!next) return prior;
+  if (!prior) return next;
+  return {
+    page_height_px: Math.max(prior.page_height_px, next.page_height_px),
+    reviewed_height_px: Math.min(prior.reviewed_height_px, next.reviewed_height_px),
+    bands_total: prior.bands_total + next.bands_total,
+    bands_reviewed: prior.bands_reviewed + next.bands_reviewed,
+    capped: prior.capped || next.capped,
+  };
 }
 
 function providerLabel(critique: EnvelopeCritique | undefined): string {
@@ -765,6 +804,13 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     ...(ctx.args ?? []),
   ];
 
+  // The planner's tile ceiling and every critique child must agree on the
+  // per-context band cap, or the predicted cost and the real coverage drift.
+  const critiqueMaxTilesArgs =
+    job.policy?.critique_max_tiles !== undefined
+      ? ["--check-critique-max-tiles", String(job.policy.critique_max_tiles)]
+      : [];
+
   // ------------------------------------------------------------------ plan
   const planArgv = [
     ...browseArgv,
@@ -772,6 +818,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     "--qa-plan",
     "--json",
     "--no-screenshot",
+    ...critiqueMaxTilesArgs,
     ...(job.qa_hints?.scopes ?? []).flatMap((selector) => ["--qa-scope", selector]),
     ...(job.qa_hints?.states?.length ? ["--qa-states", job.qa_hints.states.join(",")] : []),
   ];
@@ -1024,6 +1071,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       let contextOutcome: QaRunCritiqueOutcome["outcome"] = "passed";
       const findings: QaRunCritiqueOutcome["findings"] = [];
       const latency: Record<string, QaRunCritiqueLatency> = {};
+      let coverage: QaRunCritiqueCoverage | undefined;
       let scopesSkipped = false;
       for (const [scopeIndex, selector] of scopeSelectors.entries()) {
         if (pastDeadline()) {
@@ -1040,6 +1088,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
           outPrefix,
           ...(selector !== undefined ? ["--check-critique", selector] : ["--check-critique"]),
           "--check-critique-fail",
+          ...critiqueMaxTilesArgs,
           ...(manifest.baseline_source !== "none" ? ["--qa-reuse"] : []),
           ...(job.mode === "signoff"
             ? ["--qa-snapshot", "--qa-theme", ctx.theme, "--qa-state", ctx.state]
@@ -1077,6 +1126,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
           tilesReviewed += reuse?.tiles_reviewed ?? envelopeCritique?.tiles ?? 0;
           provider = providerLabel(envelopeCritique);
           mergeCritiqueLatency(latency, critiqueLatency(envelopeCritique));
+          coverage = mergeCritiqueCoverage(coverage, critiqueCoverage(envelopeCritique));
           for (const finding of envelopeCritique?.findings ?? []) {
             findings.push({
               severity: finding.severity ?? "unknown",
@@ -1129,6 +1179,20 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       // A context whose scope commands were cut off by the deadline proved
       // nothing — never let its row read "passed".
       if (scopesSkipped && contextOutcome === "passed") contextOutcome = "unknown";
+      // A capped critique reviewed the top of the page and nothing below it.
+      // Signoff cannot rest on that; review mode keeps the row honest via
+      // `coverage` and leaves the verdict to the tiles that were seen.
+      if (job.mode === "signoff" && coverage?.capped && contextOutcome !== "failed") {
+        contextOutcome = "unknown";
+        blockers.push({
+          stage: "critique",
+          context_id: ctx.id,
+          reason:
+            `critique coverage capped: ${coverage.bands_reviewed} of ${coverage.bands_total} bands ` +
+            `reviewed (${coverage.reviewed_height_px} of ${coverage.page_height_px} px); raise ` +
+            "policy.critique_max_tiles to review the whole page in signoff mode",
+        });
+      }
       critique.push({
         context_id: ctx.id,
         provider,
@@ -1138,6 +1202,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         outcome: contextOutcome,
         findings,
         ...(Object.keys(latency).length > 0 ? { latency_ms: latency } : {}),
+        ...(coverage ? { coverage } : {}),
       });
       if (job.mode === "signoff" && contextOutcome === "passed" && !savedSnapshots.has(ctx.id)) {
         blockers.push({

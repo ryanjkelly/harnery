@@ -87,6 +87,8 @@ interface FakeExecConfig {
     provider_meta?:
       | Record<string, unknown>
       | ((selector: string | undefined) => Record<string, unknown> | undefined);
+    /** Coverage block the child reports for the page. */
+    coverage?: Record<string, unknown>;
   };
   /** Whether signoff critique/snapshot envelopes report a persisted snapshot. */
   snapshotSaved?: boolean;
@@ -145,6 +147,7 @@ function makeFakeExec(config: FakeExecConfig): {
             outcome: critique.outcome,
             ...(critique.error ? { error: critique.error } : {}),
             ...(providerMeta ? { provider_meta: providerMeta } : {}),
+            ...(critique.coverage ? { coverage: critique.coverage } : {}),
           },
           ...(argv.includes("--qa-snapshot") && config.snapshotSaved !== false
             ? { qaPlan: { snapshotSaved: { path: `${outPrefix}.snapshot.json` } } }
@@ -487,6 +490,117 @@ describe("runQaMatrix", () => {
     expect(result.critique[0]?.latency_ms).toEqual({
       "claude-code": { count: 6, p50: 3_000, p95: 48_000 },
     });
+  });
+
+  const CAPPED_COVERAGE = {
+    page_height_px: 67_364,
+    reviewed_height_px: 30_840,
+    bands_total: 53,
+    bands_reviewed: 24,
+    capped: true,
+  };
+
+  test("signoff refuses a capped critique: blocker, unknown row, incomplete verdict", async () => {
+    const contexts = [{ viewport: "mobile", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass", coverage: CAPPED_COVERAGE },
+      snapshotSaved: true,
+    });
+    const result = await runQaMatrix({
+      job: job({ mode: "signoff" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.critique[0]?.coverage).toEqual(CAPPED_COVERAGE);
+    expect(result.critique[0]?.outcome).toBe("unknown");
+    const blocker = result.blockers.find((b) => b.reason.includes("critique coverage capped"));
+    expect(blocker?.stage).toBe("critique");
+    expect(blocker?.context_id).toBe("mobile-light-default");
+    expect(blocker?.reason).toContain("24 of 53 bands");
+    expect(blocker?.reason).toContain("policy.critique_max_tiles");
+    expect(result.verdict).toBe("incomplete");
+  });
+
+  test("review mode keeps a capped critique's pass but flags the row", async () => {
+    const contexts = [{ viewport: "mobile", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass", coverage: CAPPED_COVERAGE },
+    });
+    const result = await runQaMatrix({
+      job: job({ mode: "review" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.critique[0]?.coverage?.capped).toBe(true);
+    expect(result.critique[0]?.outcome).toBe("passed");
+    expect(result.blockers).toHaveLength(0);
+    expect(result.verdict).toBe("passed");
+  });
+
+  test("an uncapped critique row carries coverage and no blocker in signoff", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: {
+        outcome: "pass",
+        coverage: {
+          ...CAPPED_COVERAGE,
+          reviewed_height_px: 67_364,
+          bands_reviewed: 53,
+          capped: false,
+        },
+      },
+      snapshotSaved: true,
+    });
+    const result = await runQaMatrix({
+      job: job({ mode: "signoff" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    expect(result.critique[0]?.coverage?.capped).toBe(false);
+    expect(result.verdict).toBe("passed");
+  });
+
+  test("policy.critique_max_tiles reaches the planner and every critique child", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass" },
+    });
+    await runQaMatrix({
+      job: job({ policy: { critique_max_tiles: 60 } }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+    });
+    const planCall = fake.calls.find((call) => call.argv.includes("--qa-plan"));
+    expect(argvValue(planCall?.argv ?? [], "--check-critique-max-tiles")).toBe("60");
+    const critiqueCalls = fake.calls.filter((call) => call.argv.includes("--check-critique"));
+    expect(critiqueCalls.length).toBeGreaterThan(0);
+    for (const call of critiqueCalls) {
+      expect(argvValue(call.argv, "--check-critique-max-tiles")).toBe("60");
+    }
+    const gateCall = fake.calls.find(
+      (call) => !call.argv.includes("--qa-plan") && !call.argv.includes("--check-critique"),
+    );
+    expect(gateCall?.argv.includes("--check-critique-max-tiles")).toBe(false);
   });
 
   test("critique children carry the headless-only env var by default", async () => {

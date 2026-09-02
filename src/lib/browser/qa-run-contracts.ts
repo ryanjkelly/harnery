@@ -83,6 +83,11 @@ export interface QaRunPolicy {
    * recorded, and the result finalizes as incomplete — releasing the
    * admission slot instead of holding it open-endedly. */
   run_deadline_ms?: number;
+  /** Full-page critique bands per context (browse `--check-critique-max-tiles`,
+   * default 24). Raise it when a tall page must be reviewed end to end and the
+   * per-tile cost is accepted; each critique row's `coverage` records what the
+   * run actually saw, which is why this knob can stay out of the job digest. */
+  critique_max_tiles?: number;
 }
 
 export interface QaRunJob {
@@ -130,6 +135,19 @@ export interface QaRunCritiqueLatency {
   p95: number;
 }
 
+/** What share of the page the critique tiles covered, lifted from the browse
+ * envelope. `capped` means the tiler dropped bands past its per-context
+ * maximum; in signoff mode that is a blocker, in review mode a flag. Across
+ * several scope commands the heights take the worst case and the band counts
+ * add. */
+export interface QaRunCritiqueCoverage {
+  page_height_px: number;
+  reviewed_height_px: number;
+  bands_total: number;
+  bands_reviewed: number;
+  capped: boolean;
+}
+
 export interface QaRunCritiqueOutcome {
   context_id: string;
   provider: string;
@@ -142,6 +160,8 @@ export interface QaRunCritiqueOutcome {
    * lifted from the browse envelope's `provider_meta.providers`. Absent when
    * the child died, critique was skipped, or no backend reported a call. */
   latency_ms?: Record<string, QaRunCritiqueLatency>;
+  /** Tile coverage of the page. Absent when the child died or reported none. */
+  coverage?: QaRunCritiqueCoverage;
 }
 
 export interface QaRunBlocker {
@@ -438,6 +458,12 @@ export function validateQaRunJob(value: unknown): QaRunJobValidation {
       const n = p.run_deadline_ms;
       if (typeof n !== "number" || !Number.isInteger(n) || n < 10_000) {
         errors.push("policy.run_deadline_ms must be an integer ≥ 10000");
+      }
+    }
+    if (p?.critique_max_tiles !== undefined) {
+      const n = p.critique_max_tiles;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 200) {
+        errors.push("policy.critique_max_tiles must be an integer between 1 and 200");
       }
     }
   }
