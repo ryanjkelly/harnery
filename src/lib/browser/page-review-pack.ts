@@ -136,11 +136,36 @@ export interface PageReviewCritiqueRecord {
   error?: string;
 }
 
+export interface PageReviewRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** One gate finding that carries a document-space rectangle (CSS px at the
+ * capture's device scale factor 1, the same space as tile `x`/`scrollY`). */
+export interface PageReviewGateHit {
+  /** Check family the hit came from: runts, contrast, truncation, clip, … */
+  rule: string;
+  /** Short locator: the element label plus the check's own detail. */
+  label: string;
+  rect: PageReviewRect;
+}
+
 export interface PageReviewGateRecord {
   context_id: string;
   check_id: string;
   outcome: "passed" | "failed" | "unknown";
   failures: string[];
+  /** Rectangles the gate's envelope recorded; optional and additive. */
+  hits?: PageReviewGateHit[];
+}
+
+export interface PageReviewInspectionGateHit extends PageReviewGateHit {
+  check_id: string;
+  /** Tile ids whose rect intersects the hit; empty when no tile covers it. */
+  tiles: string[];
 }
 
 export interface PageReviewInspectionPlan {
@@ -152,6 +177,8 @@ export interface PageReviewInspectionPlan {
     /** Tiles to open for a complete review; everything else is drill-down. */
     primary_tiles: Array<{ id: string; file: string; reason: string }>;
     drilldown_tiles: number;
+    /** Every gate hit with a rectangle, mapped to the tiles that show it. */
+    gate_hits: PageReviewInspectionGateHit[];
   }>;
 }
 
@@ -770,9 +797,204 @@ export function findingsSchemaDocument(): Record<string, unknown> {
   };
 }
 
+/** Most hits one envelope contributes; a runaway sweep must not bloat the pack. */
+export const GATE_HITS_PER_ENVELOPE = 50;
+
+function asRect(value: unknown): PageReviewRect | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const r = value as Record<string, unknown>;
+  const x = r.x;
+  const y = r.y;
+  const width = r.width;
+  const height = r.height;
+  if (
+    typeof x !== "number" ||
+    typeof y !== "number" ||
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    ![x, y, width, height].every(Number.isFinite)
+  ) {
+    return undefined;
+  }
+  return { x, y, width, height };
+}
+
+function unionRect(a: PageReviewRect, b: PageReviewRect): PageReviewRect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.max(a.x + a.width, b.x + b.width) - x,
+    height: Math.max(a.y + a.height, b.y + b.height) - y,
+  };
+}
+
+function asArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((v): v is Record<string, unknown> => Boolean(v) && typeof v === "object")
+    : [];
+}
+
+function str(value: unknown, fallback = "?"): string {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+/**
+ * Pull every rectangle-bearing finding out of a `browse` JSON envelope so the
+ * inspection plan can point at the tiles that show it. Covers the checks
+ * whose results carry a document-space rect: runts, truncation, contrast,
+ * placeholder, image, clip, overlap, crowd, align, gap, overflow, and
+ * target-size (`hit`). Anything without a rect is skipped; the gate's
+ * `failures` lines still describe it. Capped at `GATE_HITS_PER_ENVELOPE`.
+ */
+export function gateHitsFromEnvelope(
+  envelope: Record<string, unknown> | undefined,
+): PageReviewGateHit[] {
+  if (!envelope) return [];
+  const hits: PageReviewGateHit[] = [];
+  const push = (rule: string, label: string, rect: PageReviewRect | undefined): void => {
+    if (rect && hits.length < GATE_HITS_PER_ENVELOPE) hits.push({ rule, label, rect });
+  };
+  const runts = envelope.runts as Record<string, unknown> | undefined;
+  for (const hit of asArray(runts?.runts)) {
+    push("runts", `${str(hit.block)}: "${str(hit.word, "")}"`, asRect(hit.rect));
+  }
+  const truncation = envelope.truncation as Record<string, unknown> | undefined;
+  for (const hit of asArray(truncation?.hits)) {
+    push(
+      "truncation",
+      `${str(hit.label)}: ${str(hit.how)} on ${str(hit.axis)}, +${String(hit.overflowPx ?? "?")}px`,
+      asRect(hit.rect),
+    );
+  }
+  const contrast = envelope.contrast as Record<string, unknown> | undefined;
+  for (const hit of asArray(contrast?.hits)) {
+    push(
+      "contrast",
+      `${str(hit.label)}: ${String(hit.ratio ?? "?")}:1 < ${String(hit.required ?? "?")}`,
+      asRect(hit.rect),
+    );
+  }
+  const placeholder = envelope.placeholder as Record<string, unknown> | undefined;
+  for (const hit of asArray(placeholder?.hits)) {
+    push(
+      "placeholder",
+      `${str(hit.label)}: ${str(hit.kind)} ${str(hit.token, "")}`,
+      asRect(hit.rect),
+    );
+  }
+  const image = envelope.image as Record<string, unknown> | undefined;
+  for (const hit of asArray(image?.issues)) {
+    push("image", `${str(hit.label)}: ${str(hit.reason)}`, asRect(hit.rect));
+  }
+  for (const result of asArray(envelope.clip)) {
+    for (const issue of asArray(result.issues)) {
+      const element = issue.element as Record<string, unknown> | undefined;
+      push(
+        "clip",
+        `${str(element?.label)} clipped by ${str(issue.clippedBy)}, ${String(issue.maxOverrunPx ?? "?")}px`,
+        asRect(element?.rect),
+      );
+    }
+  }
+  for (const result of asArray(envelope.overlap)) {
+    for (const issue of asArray(result.issues)) {
+      const first = issue.first as Record<string, unknown> | undefined;
+      const second = issue.second as Record<string, unknown> | undefined;
+      push(
+        "overlap",
+        `${str(first?.label)} × ${str(second?.label)}, ${String(issue.areaPx ?? "?")}px²`,
+        asRect(issue.intersection),
+      );
+    }
+  }
+  for (const result of asArray(envelope.crowd)) {
+    for (const issue of asArray(result.issues)) {
+      const before = asRect((issue.before as Record<string, unknown> | undefined)?.rect);
+      const after = asRect((issue.after as Record<string, unknown> | undefined)?.rect);
+      const rect = before && after ? unionRect(before, after) : (before ?? after);
+      push(
+        "crowd",
+        `${str((issue.before as Record<string, unknown> | undefined)?.label)} / ${str(
+          (issue.after as Record<string, unknown> | undefined)?.label,
+        )}: ${String(issue.separationPx ?? "?")}px apart`,
+        rect,
+      );
+    }
+  }
+  for (const result of asArray(envelope.align)) {
+    for (const cluster of asArray(result.clusters)) {
+      for (const child of asArray(cluster.children)) {
+        if (child.fail !== true) continue;
+        push(
+          "align",
+          `${str(child.label)}: off by ${String(child.deltaPx ?? "?")}px`,
+          asRect(child.rect),
+        );
+      }
+    }
+  }
+  for (const result of asArray(envelope.gap)) {
+    for (const cluster of asArray(result.clusters)) {
+      for (const pair of asArray(cluster.pairs)) {
+        if (pair.fail !== true) continue;
+        const before = pair.before as Record<string, unknown> | undefined;
+        const after = pair.after as Record<string, unknown> | undefined;
+        const a = asRect(before?.rect);
+        const b = asRect(after?.rect);
+        push(
+          "gap",
+          `${str(before?.label)} / ${str(after?.label)}: ${String(pair.observedGapPx ?? "?")}px`,
+          a && b ? unionRect(a, b) : (a ?? b),
+        );
+      }
+    }
+  }
+  const overflow = envelope.overflow as Record<string, unknown> | undefined;
+  for (const key of ["widerThanViewport", "rightOverflow"] as const) {
+    for (const element of asArray(overflow?.[key])) {
+      const tag = str(element.tagName, "element").toLowerCase();
+      const id = str(element.id, "");
+      const cls = str(element.className, "").trim().split(/\s+/)[0] ?? "";
+      const label = id ? `${tag}#${id}` : cls ? `${tag}.${cls}` : tag;
+      const px = key === "widerThanViewport" ? element.widthOverflowPx : element.rightOverflowPx;
+      push("overflow", `${label}: +${String(px ?? "?")}px past the viewport`, asRect(element.rect));
+    }
+  }
+  for (const result of asArray(envelope.hit)) {
+    for (const node of asArray(result.nodes)) {
+      if (node.outcome !== "fail") continue;
+      const target = Array.isArray(node.target) ? node.target.map(String).join(" ") : "target";
+      push(
+        "hit",
+        `${target}: ${str(node.message, "below the minimum target size")}`,
+        asRect(node.rect),
+      );
+    }
+  }
+  return hits;
+}
+
+/** Tile ids whose rect intersects `rect` (both in document-space px). */
+export function tilesCoveringRect(tiles: PageReviewTileRecord[], rect: PageReviewRect): string[] {
+  const x1 = rect.x + Math.max(rect.width, 1);
+  const y1 = rect.y + Math.max(rect.height, 1);
+  return tiles
+    .filter(
+      (tile) =>
+        tile.x < x1 &&
+        tile.x + tile.width > rect.x &&
+        tile.scrollY < y1 &&
+        tile.scrollY + tile.height > rect.y,
+    )
+    .map((tile) => tile.id);
+}
+
 export function buildInspectionPlan(
   contexts: PageReviewContextRecord[],
   critique: PageReviewCritiqueRecord[] | null | undefined,
+  gates?: PageReviewGateRecord[],
 ): PageReviewInspectionPlan {
   return {
     schema: PAGE_REVIEW_PACK_SCHEMA,
@@ -798,6 +1020,15 @@ export function buildInspectionPlan(
       for (const finding of row?.findings ?? []) {
         add(finding.tile_id, `machine finding (${finding.severity}): ${finding.category}`);
       }
+      const gateHits: PageReviewInspectionGateHit[] = [];
+      for (const gate of gates ?? []) {
+        if (gate.context_id !== ctx.id) continue;
+        for (const hit of gate.hits ?? []) {
+          const tiles = tilesCoveringRect(ctx.tiles, hit.rect);
+          gateHits.push({ ...hit, check_id: gate.check_id, tiles });
+          for (const id of tiles) add(id, `gate hit (${hit.rule}): ${hit.label}`);
+        }
+      }
       const byId = new Map(ctx.tiles.map((tile) => [tile.id, tile]));
       const primary = [...reasons.entries()]
         .map(([id, list]) => ({ id, file: byId.get(id)?.file ?? "", reason: list.join("; ") }))
@@ -808,6 +1039,7 @@ export function buildInspectionPlan(
         full_page: ctx.files.full_page,
         primary_tiles: primary,
         drilldown_tiles: Math.max(0, ctx.tiles.length - primary.length),
+        gate_hits: gateHits,
       };
     }),
   };
@@ -894,7 +1126,7 @@ export function finalizePageReviewPack(input: FinalizePageReviewPackInput): {
     }
   });
 
-  const plan = buildInspectionPlan(contexts, critique);
+  const plan = buildInspectionPlan(contexts, critique, gates);
   writeJson(paths.inspectionPlan, plan);
   writeJson(paths.coverage, {
     schema: PAGE_REVIEW_PACK_SCHEMA,
@@ -1016,7 +1248,7 @@ export function renderReviewMarkdown(
     "1. Read the context table and the coverage section below. A capped context has unreviewed page below its last tile.",
   );
   lines.push(
-    "2. Read `evidence/inspection-plan.json`. Its `primary_tiles` are the complete-review budget for each context: the top of the page, the bottom, every scoped tile, and every tile with a machine finding. Open those tile files. Open another tile only for a named layout, text, or image question.",
+    "2. Read `evidence/inspection-plan.json`. Its `primary_tiles` are the complete-review budget for each context: the top of the page, the bottom, every scoped tile, every tile with a machine finding, and every tile a gate hit lands on (`gate_hits` maps each gate rectangle to tile ids). Open those tile files. Open another tile only for a named layout, text, or image question.",
   );
   lines.push(
     "3. Use the contact sheet (`contacts.png`, every tile downscaled into one grid, ids stamped, row-major order) and the full-page screenshot for orientation only; both hide small defects a tile shows at native pixels.",
@@ -1066,9 +1298,32 @@ export function renderReviewMarkdown(
   if (manifest.gates.length === 0) {
     lines.push("- No gate results were recorded in this pack.");
   } else {
+    const shown = 20;
     for (const gate of manifest.gates) {
       const detail = gate.failures.length > 0 ? `: ${gate.failures.join("; ")}` : "";
       lines.push(`- ${gate.context_id} · ${gate.check_id} · **${gate.outcome}**${detail}`);
+      const ctx = contexts.find((c) => c.id === gate.context_id);
+      const planned = plan.contexts.find((c) => c.context_id === gate.context_id);
+      const hits = planned?.gate_hits.filter((hit) => hit.check_id === gate.check_id) ?? [];
+      for (const hit of hits.slice(0, shown)) {
+        const r = hit.rect;
+        const where = `(${Math.round(r.x)}, ${Math.round(r.y)}) ${Math.round(r.width)}×${Math.round(r.height)} px`;
+        const tiles =
+          hit.tiles.length > 0
+            ? hit.tiles
+                .map((id) => {
+                  const tile = ctx?.tiles.find((t) => t.id === id);
+                  return tile ? `[${id}](${tile.file})` : id;
+                })
+                .join(", ")
+            : "no tile covers this rect (outside the reviewed page area)";
+        lines.push(`  - ${hit.rule} · ${hit.label} · at ${where} → ${tiles}`);
+      }
+      if (hits.length > shown) {
+        lines.push(
+          `  - ${hits.length - shown} more hit(s) with rectangles in \`evidence/inspection-plan.json\``,
+        );
+      }
     }
   }
   lines.push("");

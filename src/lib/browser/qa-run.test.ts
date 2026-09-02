@@ -990,6 +990,74 @@ describe("runQaMatrix", () => {
     expect(result.wall_time_ms.capture).toBeGreaterThanOrEqual(0);
   });
 
+  test("gate rectangles reach the pack as gate hits mapped to the tiles that show them", async () => {
+    const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
+      }),
+      // The gate passes (a runts sweep can record rectangles without failing
+      // the overflow gate) so the run captures a pack; fake tiles are 8×8 at
+      // y = 0, 1280, 2560.
+      gateEnvelope: {
+        "desktop-light-default": {
+          runts: {
+            outcome: "pass",
+            runts: [
+              {
+                block: "p.lede",
+                word: "alone.",
+                snippet: "",
+                rect: { x: 2, y: 1283, width: 4, height: 3 },
+                lines: 2,
+              },
+            ],
+          },
+        },
+      },
+    });
+    const parent = outDir();
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+      runId: "gated",
+    });
+    expect(result.blockers).toEqual([]);
+    expect(result.verdict).toBe("passed");
+    const packDir = join(parent, "run-gated", PAGE_REVIEW_PACK_DIRNAME);
+    const pack = readPackManifest(packDir);
+    const gate = pack.gates.find((g) => g.check_id === "manifest:overflow");
+    expect(gate?.hits).toEqual([
+      { rule: "runts", label: 'p.lede: "alone."', rect: { x: 2, y: 1283, width: 4, height: 3 } },
+    ]);
+    const plan = JSON.parse(
+      readFileSync(join(packDir, "evidence", "inspection-plan.json"), "utf8"),
+    );
+    expect(plan.contexts[0].gate_hits).toEqual([
+      {
+        rule: "runts",
+        label: 'p.lede: "alone."',
+        rect: { x: 2, y: 1283, width: 4, height: 3 },
+        check_id: "manifest:overflow",
+        tiles: ["T002"],
+      },
+    ]);
+    expect(plan.contexts[0].primary_tiles.map((t: { id: string }) => t.id)).toEqual([
+      "T001",
+      "T002",
+      "T003",
+    ]);
+    const review = readFileSync(join(packDir, "review.md"), "utf8");
+    expect(review).toContain(
+      '  - runts · p.lede: "alone." · at (2, 1283) 4×3 px → [T002](contexts/desktop-light-default/tiles/T002.png)',
+    );
+  });
+
   test("policy.critique_pool bounds vision calls across every context", async () => {
     const contexts = [
       { viewport: "desktop", theme: "light" as const, state: "default" },

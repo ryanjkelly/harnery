@@ -20,6 +20,7 @@ import { type CritiqueProvider, DEFAULT_CRITIQUE_RUBRIC } from "./critique.js";
 import { type JudgedContext, judgePageReviewPack, toCritiqueRecords } from "./page-review-judge.js";
 import {
   finalizePageReviewPack,
+  gateHitsFromEnvelope,
   PAGE_REVIEW_FINDINGS_FILENAME,
   PAGE_REVIEW_PACK_DIRNAME,
   PAGE_REVIEW_PACK_SCHEMA,
@@ -1021,15 +1022,25 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   const packDir = join(outDir, PAGE_REVIEW_PACK_DIRNAME);
   const capturedRecords: PageReviewContextRecord[] = [];
   const judgeCommand = options.reviewPackJudgeCommand?.(packDir);
+  // Gate rectangles ride along from each gate's JSON artifact so the pack's
+  // inspection plan can point a runt, a contrast miss, or a clipped element
+  // at the tiles that show it. A missing or unparseable artifact simply
+  // contributes no hits; the gate's `failures` still carry the text.
   const gateRecords = (): PageReviewGateRecord[] =>
     commands
       .filter((command) => command.check_id !== "plan" && command.check_id !== "review-pack")
-      .map((command) => ({
-        context_id: command.context_id,
-        check_id: command.check_id,
-        outcome: command.outcome,
-        failures: command.failures,
-      }));
+      .map((command) => {
+        const hits = command.artifacts.json
+          ? gateHitsFromEnvelope(readEnvelope(command.artifacts.json))
+          : [];
+        return {
+          context_id: command.context_id,
+          check_id: command.check_id,
+          outcome: command.outcome,
+          failures: command.failures,
+          ...(hits.length > 0 ? { hits } : {}),
+        };
+      });
   const finalizePack = (
     stage: QaRunStage,
     critiqueRecords: PageReviewCritiqueRecord[] | null,

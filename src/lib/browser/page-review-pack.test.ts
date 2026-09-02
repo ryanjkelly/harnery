@@ -12,6 +12,8 @@ import {
   expandedTileFilename,
   finalizePageReviewPack,
   findPackTile,
+  GATE_HITS_PER_ENVELOPE,
+  gateHitsFromEnvelope,
   listPackContexts,
   PAGE_REVIEW_FINDINGS_SCHEMA,
   PAGE_REVIEW_PACK_SCHEMA,
@@ -19,6 +21,7 @@ import {
   readPackContext,
   readPackManifest,
   readPackTiles,
+  tilesCoveringRect,
   writePackContactSheet,
   writePackContext,
   writePackExpandedTile,
@@ -443,5 +446,209 @@ describe("contact sheets", () => {
     expect(review).toContain(
       "| mobile-light-default | mobile | light | default | 64×128 | 0 | complete | none |",
     );
+  });
+});
+
+describe("gate hits", () => {
+  test("gateHitsFromEnvelope lifts every rectangle-bearing finding and skips the rest", () => {
+    const rect = (y: number) => ({ x: 10, y, width: 100, height: 20 });
+    const hits = gateHitsFromEnvelope({
+      overflow: {
+        hasHorizontalOverflow: true,
+        overflowPx: 42,
+        widerThanViewport: [
+          { tagName: "TABLE", className: "wide grid", id: "", rect: rect(50), widthOverflowPx: 42 },
+        ],
+        rightOverflow: [],
+      },
+      runts: { runts: [{ block: "p.lede", word: "alone.", rect: rect(1290), lines: 3 }] },
+      truncation: {
+        hits: [{ label: "h2.title", axis: "x", how: "ellipsis", overflowPx: 18, rect: rect(2570) }],
+      },
+      contrast: { hits: [{ label: "span.muted", ratio: 3.1, required: 4.5, rect: rect(60) }] },
+      clip: [
+        {
+          issues: [
+            {
+              element: { label: "img.hero", rect: rect(70) },
+              clippedBy: "div.card",
+              maxOverrunPx: 6,
+            },
+          ],
+        },
+      ],
+      overlap: [
+        {
+          issues: [
+            {
+              first: { label: "a.cta" },
+              second: { label: "p.note" },
+              intersection: rect(80),
+              areaPx: 400,
+            },
+          ],
+        },
+      ],
+      crowd: [
+        {
+          issues: [
+            {
+              before: { label: "section.a", rect: { x: 0, y: 100, width: 50, height: 50 } },
+              after: { label: "section.b", rect: { x: 60, y: 120, width: 50, height: 50 } },
+              separationPx: 4,
+            },
+          ],
+        },
+      ],
+      align: [{ clusters: [{ children: [{ label: "li", rect: rect(90), fail: false }] }] }],
+      gap: [
+        {
+          clusters: [
+            {
+              pairs: [
+                {
+                  before: { label: "li.a", rect: rect(200) },
+                  after: { label: "li.b", rect: rect(240) },
+                  observedGapPx: 30,
+                  fail: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      hit: [
+        {
+          nodes: [
+            { outcome: "fail", target: ["a.tiny"], message: "too small", rect: rect(300) },
+            { outcome: "pass", target: ["a.ok"], message: "", rect: rect(310) },
+            { outcome: "fail", target: ["a.none"], message: "no rect", rect: null },
+          ],
+        },
+      ],
+      asserts: [{ op: "exists", selector: "#x", outcome: "fail" }],
+      critique: { outcome: "fail", findings: [{ severity: "high", description: "x" }] },
+    });
+    expect(hits.map((h) => h.rule)).toEqual([
+      "runts",
+      "truncation",
+      "contrast",
+      "clip",
+      "overlap",
+      "crowd",
+      "gap",
+      "overflow",
+      "hit",
+    ]);
+    expect(hits[0]?.label).toBe('p.lede: "alone."');
+    expect(hits.find((h) => h.rule === "crowd")?.rect).toEqual({
+      x: 0,
+      y: 100,
+      width: 110,
+      height: 70,
+    });
+    expect(hits.find((h) => h.rule === "gap")?.rect).toEqual({
+      x: 10,
+      y: 200,
+      width: 100,
+      height: 60,
+    });
+    expect(hits.find((h) => h.rule === "overflow")?.label).toBe(
+      "table.wide: +42px past the viewport",
+    );
+    expect(gateHitsFromEnvelope(undefined)).toEqual([]);
+    expect(gateHitsFromEnvelope({ overflow: { hasHorizontalOverflow: true } })).toEqual([]);
+    const many = gateHitsFromEnvelope({
+      runts: {
+        runts: Array.from({ length: GATE_HITS_PER_ENVELOPE + 10 }, (_, i) => ({
+          block: "p",
+          word: "w",
+          rect: rect(i),
+        })),
+      },
+    });
+    expect(many).toHaveLength(GATE_HITS_PER_ENVELOPE);
+  });
+
+  test("tilesCoveringRect intersects by y range and by x for scoped tiles", () => {
+    const dir = packDir();
+    const record = writePackContext(
+      dir,
+      capture({
+        tiles: tiles(3).map((t) => ({ ...t, width: 64, height: 1400 })),
+        scopeTiles: [
+          {
+            selector: "#side",
+            tiles: [{ ...tiles(1, "side")[0]!, x: 40, scrollY: 0, width: 20, height: 100 }],
+          },
+        ],
+      }),
+    );
+    // Bands: T001 y 0..1400, T002 1280..2680, T003 2560..3960 (all full width); T004 x 40..60, y 0..100.
+    expect(tilesCoveringRect(record.tiles, { x: 5, y: 1300, width: 10, height: 10 })).toEqual([
+      "T001",
+      "T002",
+    ]);
+    expect(tilesCoveringRect(record.tiles, { x: 45, y: 10, width: 5, height: 5 })).toEqual([
+      "T001",
+      "T004",
+    ]);
+    expect(tilesCoveringRect(record.tiles, { x: 5, y: 10, width: 5, height: 5 })).toEqual(["T001"]);
+    expect(tilesCoveringRect(record.tiles, { x: 5, y: 5000, width: 5, height: 5 })).toEqual([]);
+  });
+
+  test("gate hits become primary tiles, land in the plan, and render with tile links in review.md", () => {
+    const dir = packDir();
+    const record = writePackContext(
+      dir,
+      capture({ tiles: tiles(5).map((t) => ({ ...t, width: 64, height: 1400 })) }),
+    );
+    const gates = [
+      {
+        context_id: record.id,
+        check_id: "manifest:runts",
+        outcome: "failed" as const,
+        failures: ["runts: 1 hit"],
+        hits: [
+          {
+            rule: "runts",
+            label: 'p.lede: "alone."',
+            rect: { x: 4, y: 2700, width: 50, height: 16 },
+          },
+          { rule: "runts", label: "p.deep", rect: { x: 4, y: 9000, width: 50, height: 16 } },
+        ],
+      },
+      {
+        context_id: record.id,
+        check_id: "manifest:overflow",
+        outcome: "passed" as const,
+        failures: [],
+      },
+    ];
+    const plan = buildInspectionPlan([record], null, gates);
+    const ctx = plan.contexts[0];
+    expect(ctx?.gate_hits).toHaveLength(2);
+    expect(ctx?.gate_hits[0]).toMatchObject({ check_id: "manifest:runts", tiles: ["T003"] });
+    expect(ctx?.gate_hits[1]?.tiles).toEqual([]);
+    // Top, bottom, and the tile the runt lands on.
+    expect(ctx?.primary_tiles.map((t) => t.id)).toEqual(["T001", "T003", "T005"]);
+    expect(ctx?.primary_tiles[1]?.reason).toBe('gate hit (runts): p.lede: "alone."');
+    finalizePageReviewPack({
+      packDir: dir,
+      target: "http://localhost:4276/page",
+      contexts: [record],
+      gates,
+      critique: null,
+    });
+    const written = JSON.parse(readFileSync(join(dir, "evidence", "inspection-plan.json"), "utf8"));
+    expect(written.contexts[0].gate_hits[0].tiles).toEqual(["T003"]);
+    expect(readPackManifest(dir).gates[0]?.hits).toHaveLength(2);
+    const review = readFileSync(join(dir, "review.md"), "utf8");
+    expect(review).toContain(
+      '  - runts · p.lede: "alone." · at (4, 2700) 50×16 px → [T003](contexts/desktop-light-default/tiles/T003.png)',
+    );
+    expect(review).toContain("p.deep · at (4, 9000) 50×16 px → no tile covers this rect");
+    // A gate without hits keeps the single-line form.
+    expect(review).toContain("manifest:overflow · **passed**\n");
   });
 });
