@@ -156,4 +156,12 @@ describe("SKILLS", () => {
       expect(skill.render("acme")).toBe(skill.render("acme"));
     }
   });
+
+  test("council instructions resolve the project web port instead of assuming one", () => {
+    const council = SKILLS.find((skill) => skill.id === "harn-council");
+    expect(council).toBeDefined();
+    const content = council!.render("acme");
+    expect(content).toContain("configured `web.port`");
+    expect(content).not.toContain("localhost:4276");
+  });
 });

@@ -282,10 +282,13 @@ auto-route into contribute.
 ## Create (\`create <objective>\`)
 
 The web UI is the member + steward picker; don't create from the CLI (that skips
-the steward choice). Emit the link with the objective URL-encoded:
+the steward choice). Read the dashboard base URL from the active Harnery web
+status or start output, which resolves the project's configured \`web.port\`.
+Append the URL-encoded objective to this path; never assume a port or reuse a
+dashboard URL from another project:
 
 \`\`\`
-http://localhost:4276/councils/new?objective=<encoded>
+<configured-dashboard-base-url>/councils/new?objective=<encoded>
 \`\`\`
 
 If the dev server isn't up, start it with \`${b} web up\`.
