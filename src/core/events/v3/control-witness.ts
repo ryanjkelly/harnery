@@ -28,21 +28,44 @@ import {
 
 export { EVENT_V3_CONTROL_CHECKPOINT_RELATIVE_PATH, EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH };
 
-interface EventV3ControlWitnessPayload {
+/**
+ * A witness answers one question cheaply: does an authenticated record already
+ * name this exact control pair over this exact storage? Both control states get
+ * one, because a hook must never pay a whole-history parse for either.
+ *
+ * `control_state` is the discriminator, and it is authenticated with the rest of
+ * the payload. A candidate witness therefore cannot be replayed as an active
+ * one, and an active witness cannot survive its activation being removed.
+ */
+export type EventV3ControlWitnessControlStateV3 = "active" | "candidate";
+
+interface EventV3ControlWitnessPayloadCommonV3 {
   format: "harnery-event-v3-control-witness";
-  format_version: 1;
+  format_version: 2;
   genesis_id: `gex_${string}`;
-  activation_id: `act_${string}`;
   genesis_event_id: `evt_${string}`;
-  activation_event_id: `evt_${string}`;
   genesis_manifest_digest: `sha256:${string}`;
-  activation_manifest_digest: `sha256:${string}`;
   candidate_manifest_digest: `sha256:${string}`;
   privacy_key_epoch: `pep_${string}`;
   root_id: `root_${string}`;
   storage: EventV3AuthorityStorageVersionV3;
   checkpoint_digest: `sha256:${string}`;
 }
+
+interface EventV3ActiveControlWitnessPayloadV3 extends EventV3ControlWitnessPayloadCommonV3 {
+  control_state: "active";
+  activation_id: `act_${string}`;
+  activation_event_id: `evt_${string}`;
+  activation_manifest_digest: `sha256:${string}`;
+}
+
+interface EventV3CandidateControlWitnessPayloadV3 extends EventV3ControlWitnessPayloadCommonV3 {
+  control_state: "candidate";
+}
+
+type EventV3ControlWitnessPayload =
+  | EventV3ActiveControlWitnessPayloadV3
+  | EventV3CandidateControlWitnessPayloadV3;
 
 interface EventV3ControlWitness {
   payload: EventV3ControlWitnessPayload;
@@ -55,22 +78,43 @@ export interface ActiveControlWitnessBindingV3 {
   candidate_manifest_digest: `sha256:${string}`;
 }
 
+/** The candidate equivalent: a validated genesis with no activation yet. */
+export interface CandidateControlWitnessBindingV3 {
+  genesis: CandidateGenesisManifestV3;
+  candidate_manifest_digest: `sha256:${string}`;
+}
+
 /** True only when one authenticated witness names this exact active control pair and storage. */
 export function activeControlWitnessMatchesV3(
   coordRoot: string,
   binding: ActiveControlWitnessBindingV3,
 ): boolean {
-  try {
-    const before = eventV3AuthorityStorageVersionV3(coordRoot);
-    const witness = readAuthenticatedWitnessV3(coordRoot);
-    if (!witness) return false;
-    const expected = witnessPayloadV3(binding, before, witness.payload.checkpoint_digest);
-    if (canonicalJsonV3(witness.payload) !== canonicalJsonV3(expected)) return false;
-    const after = eventV3AuthorityStorageVersionV3(coordRoot);
-    return sameStorageVersion(before, after);
-  } catch {
-    return false;
-  }
+  return witnessMatchesV3(coordRoot, "active", (storage, checkpointDigest) =>
+    activeWitnessPayloadV3(binding, storage, checkpointDigest),
+  );
+}
+
+/**
+ * True only when one authenticated witness names this exact candidate control
+ * pair and storage.
+ *
+ * A candidate epoch is not a degraded active one: its gate is narrower, but a
+ * hook still has to resolve it, and paying a whole-history parse for that
+ * answer is what made a stranded epoch cost seconds and hundreds of megabytes
+ * per process. The tamper coverage is the active witness's, unchanged: the
+ * authenticated payload names the storage version, so a corrupt append, a
+ * same-size rewrite, a changed sealed segment, and a replaced inode all miss
+ * and fall back to canonical validation. Because `control_state` is inside the
+ * authenticated payload, an active witness can never answer here and a
+ * candidate witness can never answer the active gate.
+ */
+export function candidateControlWitnessMatchesV3(
+  coordRoot: string,
+  binding: CandidateControlWitnessBindingV3,
+): boolean {
+  return witnessMatchesV3(coordRoot, "candidate", (storage, checkpointDigest) =>
+    candidateWitnessPayloadV3(binding, storage, checkpointDigest),
+  );
 }
 
 /**
@@ -83,17 +127,31 @@ export function publishActiveControlWitnessV3(
   validatedStorage: EventV3AuthorityStorageVersionV3,
   checkpoint: EventV3AppendValidationCheckpointV3,
 ): boolean {
-  try {
-    const current = eventV3AuthorityStorageVersionV3(coordRoot);
-    if (!sameStorageVersion(validatedStorage, current)) return false;
-    return publishWitnessV3(
-      coordRoot,
-      witnessPayloadV3(binding, current, checkpointDigestV3(checkpoint)),
-      checkpoint,
-    );
-  } catch {
-    return false;
-  }
+  return publishControlWitnessV3(
+    coordRoot,
+    validatedStorage,
+    checkpoint,
+    (storage, checkpointDigest) => activeWitnessPayloadV3(binding, storage, checkpointDigest),
+  );
+}
+
+/**
+ * The candidate equivalent, published on the same terms: only when the storage
+ * the caller validated is still current, and silently skipped otherwise so the
+ * next read keeps the canonical full-scan fallback.
+ */
+export function publishCandidateControlWitnessV3(
+  coordRoot: string,
+  binding: CandidateControlWitnessBindingV3,
+  validatedStorage: EventV3AuthorityStorageVersionV3,
+  checkpoint: EventV3AppendValidationCheckpointV3,
+): boolean {
+  return publishControlWitnessV3(
+    coordRoot,
+    validatedStorage,
+    checkpoint,
+    (storage, checkpointDigest) => candidateWitnessPayloadV3(binding, storage, checkpointDigest),
+  );
 }
 
 /**
@@ -155,21 +213,87 @@ export function advanceControlWitnessV3(
   }
 }
 
-function witnessPayloadV3(
+type WitnessPayloadBuilderV3 = (
+  storage: EventV3AuthorityStorageVersionV3,
+  checkpointDigest: `sha256:${string}`,
+) => EventV3ControlWitnessPayload;
+
+/**
+ * One matcher for both control states. The witness on disk must authenticate,
+ * carry the requested `control_state`, and canonicalize identically to the
+ * payload this exact binding would produce over the storage observed both
+ * before and after the read.
+ */
+function witnessMatchesV3(
+  coordRoot: string,
+  controlState: EventV3ControlWitnessControlStateV3,
+  build: WitnessPayloadBuilderV3,
+): boolean {
+  try {
+    const before = eventV3AuthorityStorageVersionV3(coordRoot);
+    const witness = readAuthenticatedWitnessV3(coordRoot);
+    if (!witness || witness.payload.control_state !== controlState) return false;
+    const expected = build(before, witness.payload.checkpoint_digest);
+    if (canonicalJsonV3(witness.payload) !== canonicalJsonV3(expected)) return false;
+    const after = eventV3AuthorityStorageVersionV3(coordRoot);
+    return sameStorageVersion(before, after);
+  } catch {
+    return false;
+  }
+}
+
+function publishControlWitnessV3(
+  coordRoot: string,
+  validatedStorage: EventV3AuthorityStorageVersionV3,
+  checkpoint: EventV3AppendValidationCheckpointV3,
+  build: WitnessPayloadBuilderV3,
+): boolean {
+  try {
+    const current = eventV3AuthorityStorageVersionV3(coordRoot);
+    if (!sameStorageVersion(validatedStorage, current)) return false;
+    return publishWitnessV3(coordRoot, build(current, checkpointDigestV3(checkpoint)), checkpoint);
+  } catch {
+    return false;
+  }
+}
+
+function activeWitnessPayloadV3(
   binding: ActiveControlWitnessBindingV3,
   storage: EventV3AuthorityStorageVersionV3,
   checkpointDigest: `sha256:${string}`,
-): EventV3ControlWitnessPayload {
+): EventV3ActiveControlWitnessPayloadV3 {
+  return {
+    ...commonWitnessPayloadV3(binding, storage, checkpointDigest),
+    control_state: "active",
+    activation_id: binding.activation.activation_id,
+    activation_event_id: binding.activation.event.event_id as `evt_${string}`,
+    activation_manifest_digest: sha256V3(canonicalJsonV3(binding.activation)),
+  };
+}
+
+function candidateWitnessPayloadV3(
+  binding: CandidateControlWitnessBindingV3,
+  storage: EventV3AuthorityStorageVersionV3,
+  checkpointDigest: `sha256:${string}`,
+): EventV3CandidateControlWitnessPayloadV3 {
+  return {
+    ...commonWitnessPayloadV3(binding, storage, checkpointDigest),
+    control_state: "candidate",
+  };
+}
+
+function commonWitnessPayloadV3(
+  binding: CandidateControlWitnessBindingV3,
+  storage: EventV3AuthorityStorageVersionV3,
+  checkpointDigest: `sha256:${string}`,
+): EventV3ControlWitnessPayloadCommonV3 {
   const scope = binding.genesis.event.scope as { root_id: `root_${string}` };
   return {
     format: "harnery-event-v3-control-witness",
-    format_version: 1,
+    format_version: 2,
     genesis_id: binding.genesis.event.payload.genesis_id as `gex_${string}`,
-    activation_id: binding.activation.activation_id,
     genesis_event_id: binding.genesis.event.event_id as `evt_${string}`,
-    activation_event_id: binding.activation.event.event_id as `evt_${string}`,
     genesis_manifest_digest: sha256V3(canonicalJsonV3(binding.genesis)),
-    activation_manifest_digest: sha256V3(canonicalJsonV3(binding.activation)),
     candidate_manifest_digest: binding.candidate_manifest_digest,
     privacy_key_epoch: binding.genesis.profile.privacy_key_epoch,
     root_id: scope.root_id,
@@ -265,12 +389,14 @@ function parseWitnessV3(value: unknown): EventV3ControlWitness {
     throw new Error("control witness envelope is invalid");
   }
   const payload = object(envelope.payload);
-  const expectedPayloadKeys = [
-    "activation_event_id",
-    "activation_id",
-    "activation_manifest_digest",
+  const controlState = payload.control_state;
+  if (controlState !== "active" && controlState !== "candidate") {
+    throw new Error("control witness control state is invalid");
+  }
+  const commonPayloadKeys = [
     "candidate_manifest_digest",
     "checkpoint_digest",
+    "control_state",
     "format",
     "format_version",
     "genesis_event_id",
@@ -280,6 +406,10 @@ function parseWitnessV3(value: unknown): EventV3ControlWitness {
     "root_id",
     "storage",
   ];
+  const expectedPayloadKeys =
+    controlState === "active"
+      ? [...commonPayloadKeys, "activation_event_id", "activation_id", "activation_manifest_digest"]
+      : commonPayloadKeys;
   if (Object.keys(payload).sort().join("\0") !== expectedPayloadKeys.sort().join("\0")) {
     throw new Error("control witness payload shape is invalid");
   }
@@ -289,13 +419,14 @@ function parseWitnessV3(value: unknown): EventV3ControlWitness {
   }
   if (
     payload.format !== "harnery-event-v3-control-witness" ||
-    payload.format_version !== 1 ||
+    payload.format_version !== 2 ||
     !token(payload.genesis_id, "gex_") ||
-    !token(payload.activation_id, "act_") ||
     !token(payload.genesis_event_id, "evt_") ||
-    !token(payload.activation_event_id, "evt_") ||
+    (controlState === "active" &&
+      (!token(payload.activation_id, "act_") ||
+        !token(payload.activation_event_id, "evt_") ||
+        !digest(payload.activation_manifest_digest))) ||
     !digest(payload.genesis_manifest_digest) ||
-    !digest(payload.activation_manifest_digest) ||
     !digest(payload.candidate_manifest_digest) ||
     !digest(payload.checkpoint_digest) ||
     !token(payload.privacy_key_epoch, "pep_") ||

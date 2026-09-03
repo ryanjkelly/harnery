@@ -10,6 +10,7 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
@@ -19,6 +20,7 @@ import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { ADAPTER_CAPABILITY_PROFILES_V3 } from "./capabilities.ts";
 import {
+  type ActivationManifestV3,
   buildActivationManifestV3,
   buildCandidateGenesisManifestV3,
   type CandidateGenesisManifestV3,
@@ -42,6 +44,16 @@ export interface InitializeEventLedgerV3Input {
   configDigest: `sha256:${string}`;
   approvalRecordId: string;
   forceNewEpoch?: boolean;
+  /**
+   * Activate a candidate epoch that was already created for this root.
+   *
+   * Unset, this activates a candidate that carries this initializer's producer
+   * identity and refuses every other one. Creation and activation are one
+   * locked step here, so such a candidate is the residue of a crash or a
+   * failed activation, never work in progress; a candidate from another
+   * producer is a deliberate cutover state. Set it explicitly to force either
+   * answer.
+   */
   resumeCandidate?: boolean;
   now?: () => Date;
 }
@@ -58,6 +70,17 @@ export interface RefreshIncompatibleEventLedgerV3Result {
   archived_epoch?: string;
   control: Extract<EventV3ControlState, { state: "active" }>;
 }
+
+/**
+ * The control producer every epoch created by this initializer carries.
+ *
+ * It separates a stranded epoch from a deliberate one. A candidate minted here
+ * was always meant to be activated in the same locked step, so finishing it is
+ * a repair. A candidate published by any other producer (an operator cutover or
+ * rollback rehearsal) is a state someone chose, and automatic activation would
+ * overrule them.
+ */
+const BOOTSTRAP_CONTROL_PRODUCER_ID = "prd_harnery-init" as const;
 
 const BOOTSTRAP_LEASE_RETRIES = 12;
 const BOOTSTRAP_LEASE_RETRY_MS = 25;
@@ -141,6 +164,74 @@ export function refreshIncompatibleEventLedgerV3(
   });
 }
 
+export interface RepairStrandedEventLedgerV3CandidateResult {
+  state: "repaired" | "not_stranded" | "unavailable";
+  reason?: string;
+  control: EventV3ControlState;
+}
+
+/** The approval record every automatic stranded-candidate repair is bound to. */
+export const EVENT_V3_STRANDED_CANDIDATE_APPROVAL_RECORD_ID =
+  "harnery-runtime-v3-stranded-candidate" as const;
+
+/**
+ * Complete an epoch that was created but never activated.
+ *
+ * This initializer creates a candidate and activates it inside one lease, so a
+ * candidate carrying its producer identity is residue: some process published
+ * the genesis and died or failed before publishing the activation, and every
+ * hook afterwards served that half-built epoch with a candidate-only write
+ * gate. Finishing it is a repair, not a decision, and it is exactly as safe as
+ * the creation it completes: the same lease serializes it, the activation is
+ * derived from the immutable candidate packet, and no ledger row is edited or
+ * synthesized.
+ *
+ * A candidate from any other producer is a deliberate cutover state and is
+ * left untouched. A live bootstrap lease makes this a no-op rather than a
+ * failure, so the next boundary retries.
+ */
+export function repairStrandedEventLedgerV3Candidate(
+  coordRoot: string,
+): RepairStrandedEventLedgerV3CandidateResult {
+  const root = resolve(coordRoot);
+  const observed = readEventV3ControlState(root);
+  const deliberateCandidate = observed.state === "candidate";
+  if (!strandedBootstrapCandidate(observed)) {
+    return {
+      state: "not_stranded",
+      control: observed,
+      ...(deliberateCandidate ? { reason: "candidate_not_bootstrap_created" } : {}),
+    };
+  }
+  try {
+    return withBootstrapLease(root, () => {
+      const current = readEventV3ControlState(root);
+      if (!strandedBootstrapCandidate(current)) return { state: "not_stranded", control: current };
+      const activated = activateCandidateEpoch(
+        root,
+        current.genesis,
+        EVENT_V3_STRANDED_CANDIDATE_APPROVAL_RECORD_ID,
+      );
+      return { state: "repaired", control: activated.control };
+    });
+  } catch (error) {
+    return {
+      state: "unavailable",
+      reason: error instanceof Error ? error.message : String(error),
+      control: observed,
+    };
+  }
+}
+
+function strandedBootstrapCandidate(
+  control: EventV3ControlState,
+): control is Extract<EventV3ControlState, { state: "candidate" }> {
+  return (
+    control.state === "candidate" &&
+    control.genesis.event.producer.producer_id === BOOTSTRAP_CONTROL_PRODUCER_ID
+  );
+}
+
 export interface RotateOversizedEventLedgerV3Result {
   state: "rotated" | "not_oversized" | "not_active" | "disabled";
   active_bytes: number;
@@ -158,10 +249,13 @@ export interface RotateOversizedEventLedgerV3Result {
  * (events, spool, producer states, manifests) moves whole into the V3
  * archive, live sessions re-onboard into the new epoch on their next signal,
  * and the writer's epoch fence keeps in-flight producers of the old epoch
- * from ever committing into the new one. Only a currently valid, active
- * ledger rotates; integrity failures stay closed for the explicit recovery
- * command. The threshold comes from the isolated Event V3 config resolver
- * unless the caller pins one; a non-positive threshold disables rotation.
+ * from ever committing into the new one. A candidate epoch rotates on the same
+ * terms as an active one: its control pair is valid, every reader still
+ * validates all of its history, and refusing to bound it is how a stranded
+ * epoch grew to 100 MB. Integrity failures stay closed for the explicit
+ * recovery command. The threshold comes from the isolated Event V3 config
+ * resolver unless the caller pins one; a non-positive threshold disables
+ * rotation.
  */
 export function rotateOversizedEventLedgerV3(
   coordRoot: string,
@@ -189,7 +283,7 @@ export function rotateOversizedEventLedgerV3(
       return { state: "not_oversized", active_bytes: activeBytes, threshold_bytes: threshold };
     }
     const current = readEventV3ControlState(root);
-    if (current.state !== "active") {
+    if (current.state !== "active" && current.state !== "candidate") {
       return { state: "not_active", active_bytes: activeBytes, threshold_bytes: threshold };
     }
     // Flush durable ready rows into the epoch they were produced for, so the
@@ -235,13 +329,14 @@ function initializeEventLedgerV3Locked(
 ): InitializeEventLedgerV3Result {
   const root = resolve(input.coordRoot);
   let current = readEventV3ControlState(root);
-  if (input.resumeCandidate && current.state === "repairable") {
+  const resumeCandidate = input.resumeCandidate ?? strandedBootstrapCandidate(current);
+  if (resumeCandidate && current.state === "repairable") {
     current = repairEventV3ControlPair(root);
   }
   if (!input.forceNewEpoch && current.state === "active") {
     return { state: "active", initialized: false, control: current };
   }
-  if (!input.forceNewEpoch && input.resumeCandidate && current.state === "candidate") {
+  if (!input.forceNewEpoch && resumeCandidate && current.state === "candidate") {
     return activateCandidateEpoch(root, current.genesis, input.approvalRecordId);
   }
   if (!input.forceNewEpoch && current.state === "candidate") {
@@ -250,11 +345,10 @@ function initializeEventLedgerV3Locked(
 
   const now = input.now ?? (() => new Date());
   const createdAt = now().toISOString();
-  const archivedEpoch = archiveCurrentEpoch(root, createdAt);
   const keys = loadOrCreateFingerprintKeyStoreV3(root, now);
   const harneryBuild = safeBuild(input.harneryBuild);
   const hostBuild = safeBuild(input.hostBuild);
-  const producerId = "prd_harnery-init" as const;
+  const producerId = BOOTSTRAP_CONTROL_PRODUCER_ID;
   const bootId =
     `boot_${createHash("sha256").update(`${root}\0${createdAt}`).digest("hex")}` as const;
   const buildId = liveEventV3BuildId(harneryBuild);
@@ -288,16 +382,40 @@ function initializeEventLedgerV3Locked(
       platform: livePlatformV3(),
     },
   });
+  // Mint the complete control pair before any epoch bytes move. Every approval
+  // and validation failure then happens while the current epoch is still
+  // whole, so it can never leave a replaced epoch stranded in candidate state.
+  const activation = buildActivationManifestV3(activationInput(candidate, input.approvalRecordId));
+
+  const archivedEpoch = archiveCurrentEpoch(root, createdAt);
   publishControlFile(join(root, EVENT_V3_GENESIS_MANIFEST), candidate);
-  const candidateState = repairEventV3ControlPair(root);
-  if (candidateState.state !== "candidate") {
-    throw new Error(`event_v3_candidate_initialization_failed:${candidateState.state}`);
+  let activated: InitializeEventLedgerV3Result;
+  try {
+    activated = completeCandidateActivation(root, activation);
+  } catch (error) {
+    // The epoch has already been replaced, so returning here would strand it.
+    // Retry the completion inside the same lease and, failing that, name the
+    // stranded epoch rather than reporting a successful initialization.
+    activated = completeStrandedCandidateActivation(root, activation, error);
   }
-  const activated = activateCandidateEpoch(root, candidate, input.approvalRecordId);
   return {
     ...activated,
     ...(archivedEpoch ? { archived_epoch: archivedEpoch } : {}),
   };
+}
+
+function completeStrandedCandidateActivation(
+  root: string,
+  activation: ActivationManifestV3,
+  cause: unknown,
+): InitializeEventLedgerV3Result {
+  try {
+    return completeCandidateActivation(root, activation);
+  } catch {
+    throw new Error(
+      `event_v3_epoch_stranded_before_activation:${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
 }
 
 function runtimeCapabilityProfileCurrent(
@@ -355,8 +473,16 @@ function activateCandidateEpoch(
   candidate: CandidateGenesisManifestV3,
   approvalRecordId: string,
 ): InitializeEventLedgerV3Result {
+  return completeCandidateActivation(
+    root,
+    buildActivationManifestV3(activationInput(candidate, approvalRecordId)),
+  );
+}
+
+/** The activation packet one exact candidate deserves, derived and pure. */
+function activationInput(candidate: CandidateGenesisManifestV3, approvalRecordId: string) {
   const producer = candidate.event.producer;
-  const activation = buildActivationManifestV3({
+  return {
     candidate,
     approval_record_id: approvalRecordId,
     activation_approved_at: candidate.profile.candidate_created_at,
@@ -368,7 +494,23 @@ function activateCandidateEpoch(
       platform: producer.platform,
       ...(producer.bridge ? { bridge: producer.bridge } : {}),
     },
-  });
+  };
+}
+
+/**
+ * Bring a published candidate to active: append the pre-minted genesis event
+ * if a crash left it missing, publish the activation manifest, then append its
+ * pre-minted event. Every step is idempotent, so the caller may retry it, and
+ * anything short of `active` throws with the state that blocked it.
+ */
+function completeCandidateActivation(
+  root: string,
+  activation: ActivationManifestV3,
+): InitializeEventLedgerV3Result {
+  const candidateState = repairEventV3ControlPair(root);
+  if (candidateState.state !== "candidate") {
+    throw new Error(`event_v3_candidate_initialization_failed:${candidateState.state}`);
+  }
   publishControlFile(join(root, EVENT_V3_ACTIVATION_MANIFEST), activation);
   const active = repairEventV3ControlPair(root);
   if (active.state !== "active") {
@@ -394,6 +536,10 @@ function archiveCurrentEpoch(root: string, createdAt: string): string | undefine
 function publishControlFile(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temp = `${path}.tmp.${process.pid}`;
+  // A prior failed publish by this same pid would otherwise make every retry
+  // fail on the exclusive create, which is exactly how one transient error
+  // turns into a permanently stranded epoch.
+  if (existsSync(temp)) unlinkSync(temp);
   const fd = openSync(temp, "wx", 0o600);
   try {
     writeFileSync(fd, `${canonicalJsonV3(value)}\n`, "utf8");

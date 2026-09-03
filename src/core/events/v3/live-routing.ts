@@ -1,6 +1,10 @@
 import type { Adapter } from "../../adapter.ts";
 import type { ParsedPayload } from "../../hooks/adapter/parse.ts";
-import { refreshIncompatibleEventLedgerV3, rotateOversizedEventLedgerV3 } from "./bootstrap.ts";
+import {
+  refreshIncompatibleEventLedgerV3,
+  repairStrandedEventLedgerV3Candidate,
+  rotateOversizedEventLedgerV3,
+} from "./bootstrap.ts";
 import type { EventV3 } from "./contract.ts";
 import { readEventV3ControlState } from "./control.ts";
 import { repairEventV3ControlPair } from "./control-writer.ts";
@@ -54,7 +58,15 @@ export function resolveLiveEventLedgerRouteV3(coordRoot: string): LiveEventLedge
       };
     }
   }
-  if (control.state === "active") {
+  if (control.state === "candidate") {
+    // An epoch is created and activated as one locked step, so a candidate on
+    // this boundary is a stranded epoch: a crashed or failed activation that
+    // every later hook would otherwise keep serving with a candidate-only
+    // write gate. Finish it here. A live bootstrap lease or any other refusal
+    // leaves the candidate serving and the next boundary retries.
+    control = repairStrandedEventLedgerV3Candidate(coordRoot).control;
+  }
+  if (control.state === "active" || control.state === "candidate") {
     // Bound the epoch every producer must re-validate: an oversized active
     // segment rotates into the archive here, on the shared route boundary.
     // Rotation failure never blocks recording; the current epoch stays live.

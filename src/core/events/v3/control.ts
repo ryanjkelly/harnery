@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { buildEventV3 } from "./builder.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
-import { activeControlWitnessMatchesV3, publishActiveControlWitnessV3 } from "./control-witness.ts";
+import {
+  activeControlWitnessMatchesV3,
+  candidateControlWitnessMatchesV3,
+  publishActiveControlWitnessV3,
+  publishCandidateControlWitnessV3,
+} from "./control-witness.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { activationIdV3, eventIdV3, genesisIdV3 } from "./ids.ts";
 import {
@@ -275,6 +280,19 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
       candidate_manifest_digest: candidateDigest,
     };
   }
+  // A candidate epoch answers from its own witness on the same terms. The
+  // absent activation manifest is part of the question, so the fast path is
+  // only taken when none is published: the moment one appears, this read goes
+  // back through canonical validation and can report the repairable window.
+  if (
+    !hasActivation &&
+    candidateControlWitnessMatchesV3(coordRoot, {
+      genesis,
+      candidate_manifest_digest: candidateDigest,
+    })
+  ) {
+    return { state: "candidate", genesis, candidate_manifest_digest: candidateDigest };
+  }
   const storageBeforeValidation = eventV3AuthorityStorageVersionV3(coordRoot);
   const ledger = readControlLedger(coordRoot);
   if (!ledger.complete) {
@@ -294,7 +312,21 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
     if (ledger.events.some(({ event }) => event.event_type === "ledger.activated")) {
       return { state: "invalid", reason: "activation_event_without_manifest" };
     }
-    return { state: "candidate", genesis, candidate_manifest_digest: candidateDigest };
+    const candidate: Extract<EventV3ControlState, { state: "candidate" }> = {
+      state: "candidate",
+      genesis,
+      candidate_manifest_digest: candidateDigest,
+    };
+    const candidateCheckpoint = readEventV3AppendValidationCheckpointV3(coordRoot);
+    if (candidateCheckpoint) {
+      publishCandidateControlWitnessV3(
+        coordRoot,
+        candidate,
+        storageBeforeValidation,
+        candidateCheckpoint,
+      );
+    }
+    return candidate;
   }
 
   const activationResult =

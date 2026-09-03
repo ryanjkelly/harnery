@@ -26,6 +26,10 @@ import {
 } from "./contract.ts";
 import type { SupervisorHookHealth } from "./hook-health.ts";
 import { evaluateHookHealthAlerts } from "./hook-health-alerts.ts";
+import {
+  type LedgerControlStateFindingInputV1,
+  ledgerControlStateFindingCandidateV1,
+} from "./ledger-state.ts";
 
 const GIB = 1_024 * 1_024 * 1_024;
 const MIB = 1_024 * 1_024;
@@ -65,6 +69,8 @@ export interface SupervisorFindingEvaluationInput {
   hookHealth?: SupervisorHookHealth;
   coordination?: CoordinationHealthSnapshot;
   activity?: SupervisorActivitySnapshot;
+  /** Event ledger control drift, when the caller observed the control state. */
+  ledgerControlState?: LedgerControlStateFindingInputV1;
   now?: Date;
 }
 
@@ -161,6 +167,7 @@ function evaluateCandidates(input: {
   hookHealth?: SupervisorHookHealth;
   coordination?: CoordinationHealthSnapshot;
   activity?: SupervisorActivitySnapshot;
+  ledgerControlState?: LedgerControlStateFindingInputV1;
 }): Candidate[] {
   const out: Candidate[] = [];
   const resourceCapability: SupervisorCapability = {
@@ -558,6 +565,10 @@ function evaluateCandidates(input: {
         ),
       );
     }
+  }
+  if (input.ledgerControlState) {
+    const ledger = ledgerControlStateFindingCandidateV1(input.ledgerControlState);
+    if (ledger) out.push(ledger);
   }
   return out;
 }

@@ -19,6 +19,7 @@ import { collectCoordinationHealthSnapshot } from "../agents/health.ts";
 import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
 import { pressureHistoryFromSupervisor } from "../diagnostics/advice.ts";
 import { assessPressure } from "../diagnostics/pressure.ts";
+import { readEventV3ControlState } from "../events/v3/control.ts";
 import type { ResourceSamplerState } from "../resources/contract.ts";
 import { sampleResources } from "../resources/sampler.ts";
 import { requestResourceServiceStop } from "../resources/service.ts";
@@ -31,6 +32,7 @@ import {
   SUPERVISOR_PRESSURE_SCHEMA_VERSION,
   SUPERVISOR_SNAPSHOT_SCHEMA_VERSION,
   SUPERVISOR_STATUS_SCHEMA_VERSION,
+  type SupervisorCapability,
   type SupervisorPressureRecord,
   type SupervisorServiceStatusRecord,
   type SupervisorSnapshot,
@@ -42,6 +44,10 @@ import { updateSupervisorHistory } from "./history.ts";
 import { projectHookHealth } from "./hook-health.ts";
 import { writeSupervisorHookHealth } from "./hook-health-storage.ts";
 import { collectHookHealth } from "./hooks.ts";
+import type {
+  LedgerControlStateFindingInputV1,
+  LedgerControlStateObservationV1,
+} from "./ledger-state.ts";
 import { SupervisorLogCollector } from "./log-feed.ts";
 import { collectServiceHealth } from "./services.ts";
 import { readSupervisorStatus } from "./status.ts";
@@ -214,6 +220,10 @@ export async function runSupervisor(
   // only writer of the pressure assessment. Trend needs recent samples and a
   // restart deliberately starts with none, which reports an unknown trend
   // rather than a guessed one.
+  // The control state is now a cheap witnessed read in both states, so the
+  // observer can watch it every cycle. A single non-active sample is a normal
+  // boundary between two appends; the finding needs two, so keep a short run.
+  const ledgerObservations: LedgerControlStateObservationV1[] = [];
   const priorPressure = readSupervisorPressure(coordRoot);
   let pressureHysteresis = priorPressure?.assessment.hysteresis ?? null;
   const observerGeneration = `${process.pid}:${startedAt}`;
@@ -268,6 +278,14 @@ export async function runSupervisor(
         if (historyResult.changed)
           coordination = collectCoordinationHealthSnapshot(coordRoot, cycleNow);
         writePrivateJsonAtomic(paths.coordination_health, coordination);
+        const ledgerControl = observeLedgerControlState(coordRoot, cycleNow);
+        const ledgerControlState: LedgerControlStateFindingInputV1 = {
+          current: ledgerControl.observation,
+          previous: [...ledgerObservations].reverse(),
+          capability: ledgerControl.capability,
+        };
+        ledgerObservations.push(ledgerControl.observation);
+        if (ledgerObservations.length > LEDGER_OBSERVATION_LIMIT) ledgerObservations.shift();
         const priorActiveFindingIds = new Set(findings?.active.map((finding) => finding.id) ?? []);
         const priorTransitionKeys = new Set(
           findings?.transitions.map((finding) => `${finding.id}:${finding.state}`) ?? [],
@@ -282,6 +300,7 @@ export async function runSupervisor(
           hookHealth,
           coordination,
           activity,
+          ledgerControlState,
           now: cycleNow,
         });
         writePrivateJsonAtomic(paths.findings, findings);
@@ -402,6 +421,45 @@ export async function runSupervisor(
     }
   }
   return status;
+}
+
+const LEDGER_OBSERVATION_LIMIT = 8;
+
+/**
+ * Read the control state without letting a broken ledger break observation.
+ * A failed read is reported as an unsupported capability with an `invalid`
+ * state, never as a healthy `active`.
+ */
+function observeLedgerControlState(
+  coordRoot: string,
+  now: Date,
+): { observation: LedgerControlStateObservationV1; capability: SupervisorCapability } {
+  const observedAt = now.toISOString();
+  try {
+    const control = readEventV3ControlState(coordRoot);
+    return {
+      observation: {
+        state: control.state,
+        ...("reason" in control && control.reason ? { reason: control.reason } : {}),
+        observed_at: observedAt,
+      },
+      capability: { source_kind: "event-ledger.control-state", state: "supported" },
+    };
+  } catch (error) {
+    return {
+      observation: {
+        state: "invalid",
+        reason: "control_state_unreadable",
+        observed_at: observedAt,
+      },
+      capability: {
+        source_kind: "event-ledger.control-state",
+        state: "error",
+        reason_code: "control-state-unreadable",
+        detail: error instanceof Error ? error.message.slice(0, 200) : "unknown error",
+      },
+    };
+  }
 }
 
 function acquireLease(coordRoot: string, now: Date): SupervisorLease {

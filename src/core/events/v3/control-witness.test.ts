@@ -8,6 +8,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -17,9 +18,15 @@ import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3Catalog, EventV3SegmentManifest } from "./catalog.ts";
 import type { EventV3 } from "./contract.ts";
-import { type EventV3ControlState, readEventV3ControlState } from "./control.ts";
+import {
+  EVENT_V3_ACTIVATION_MANIFEST,
+  type EventV3ControlState,
+  eventV3WriteGateOpen,
+  readEventV3ControlState,
+} from "./control.ts";
 import {
   activeControlWitnessMatchesV3,
+  candidateControlWitnessMatchesV3,
   EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH,
 } from "./control-witness.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
@@ -200,17 +207,194 @@ describe("event ledger V3 active-control witness", () => {
   });
 });
 
-function activeRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "harnery-v3-control-witness-"));
-  roots.push(root);
-  initializeEventLedgerV3({
+describe("event ledger V3 candidate-control witness", () => {
+  test("publishes an authenticated candidate witness and answers from it", () => {
+    const root = candidateRoot();
+    const control = candidateControl(root);
+
+    expect(witnessControlState(root)).toBe("candidate");
+    expect(
+      candidateControlWitnessMatchesV3(root, {
+        genesis: control.genesis,
+        candidate_manifest_digest: control.candidate_manifest_digest,
+      }),
+    ).toBeTrue();
+    // The second read is the one a hook pays: same answer, no full parse.
+    expect(readEventV3ControlState(root)).toEqual(control);
+  });
+
+  test("keeps the write gate exactly where the control state puts it", () => {
+    const root = candidateRoot();
+    candidateControl(root);
+
+    expect(eventV3WriteGateOpen(root, "candidate")).toBeTrue();
+    expect(eventV3WriteGateOpen(root, "active")).toBeFalse();
+  });
+
+  test("a candidate witness cannot answer the active gate", () => {
+    const root = candidateRoot();
+    const candidate = candidateControl(root);
+    const candidateWitness = readFileSync(witnessPath(root), "utf8");
+
+    const activated = initializeEventLedgerV3({
+      ...fixtureInput(root),
+      approvalRecordId: "fixture-candidate-activation",
+    });
+    expect(activated.control.state).toBe("active");
+
+    // Restore the pre-activation witness: it authenticates, but it names the
+    // candidate state, so the active read must validate canonically instead.
+    writeFileSync(witnessPath(root), candidateWitness, { mode: 0o600 });
+    const control = activeControl(root);
+    expect(control.genesis).toEqual(candidate.genesis);
+    expect(witnessControlState(root)).toBe("active");
+    expect(activeControlWitnessMatchesV3(root, control)).toBeTrue();
+  });
+
+  test("an active witness cannot answer the candidate gate", () => {
+    const root = activeRoot();
+    const activeWitness = readFileSync(witnessPath(root), "utf8");
+    strandActivation(root);
+    writeFileSync(witnessPath(root), activeWitness, { mode: 0o600 });
+
+    expect(readEventV3ControlState(root).state).toBe("candidate");
+    expect(witnessControlState(root)).toBe("candidate");
+  });
+
+  test("falls back and fails closed on a corrupt append", () => {
+    const root = candidateRoot();
+    candidateControl(root);
+    appendFileSync(activePath(root), "{}\n", "utf8");
+
+    expect(readEventV3ControlState(root)).toEqual({
+      state: "invalid",
+      reason: "ledger_integrity_failure",
+    });
+    expect(eventV3WriteGateOpen(root, "candidate")).toBeFalse();
+  });
+
+  test("falls back and fails closed on a same-size rewrite", () => {
+    const root = candidateRoot();
+    candidateControl(root);
+    const active = activePath(root);
+    const valid = readFileSync(active, "utf8");
+    const corrupt = valid.replace('"major":3', '"major":4');
+    expect(corrupt).not.toBe(valid);
+    expect(Buffer.byteLength(corrupt)).toBe(Buffer.byteLength(valid));
+    writeFileSync(active, corrupt, "utf8");
+    const changedAt = new Date(Date.now() + 1_000);
+    utimesSync(active, changedAt, changedAt);
+
+    expect(readEventV3ControlState(root)).toEqual({
+      state: "invalid",
+      reason: "ledger_integrity_failure",
+    });
+  });
+
+  test("falls back and fails closed on an active inode replacement", () => {
+    const root = candidateRoot();
+    catalogizeActive(root);
+    const control = candidateControl(root);
+    expect(
+      candidateControlWitnessMatchesV3(root, {
+        genesis: control.genesis,
+        candidate_manifest_digest: control.candidate_manifest_digest,
+      }),
+    ).toBeTrue();
+
+    const active = activePath(root);
+    const prior = readFileSync(active);
+    renameSync(active, `${active}.old`);
+    writeFileSync(active, prior, { mode: 0o600 });
+
+    expect(readEventV3ControlState(root)).toEqual({
+      state: "invalid",
+      reason: "ledger_integrity_failure",
+    });
+  });
+
+  test("falls back and fails closed on sealed-segment tampering", () => {
+    const root = candidateRoot();
+    const segment = sealControlHistory(root);
+    const control = candidateControl(root);
+    expect(
+      candidateControlWitnessMatchesV3(root, {
+        genesis: control.genesis,
+        candidate_manifest_digest: control.candidate_manifest_digest,
+      }),
+    ).toBeTrue();
+
+    appendFileSync(segment, "{}\n", "utf8");
+    expect(readEventV3ControlState(root)).toEqual({
+      state: "invalid",
+      reason: "ledger_integrity_failure",
+    });
+  });
+
+  test("ignores a forged candidate witness and replaces it after canonical validation", () => {
+    const root = candidateRoot();
+    candidateControl(root);
+    const path = witnessPath(root);
+    const valid = readFileSync(path, "utf8");
+    const forged = valid.replace(/sha256:[a-f0-9]{64}/, `sha256:${"0".repeat(64)}`);
+    expect(forged).not.toBe(valid);
+    writeFileSync(path, forged, { mode: 0o600 });
+
+    const control = candidateControl(root);
+    expect(readFileSync(path, "utf8")).not.toBe(forged);
+    expect(
+      candidateControlWitnessMatchesV3(root, {
+        genesis: control.genesis,
+        candidate_manifest_digest: control.candidate_manifest_digest,
+      }),
+    ).toBeTrue();
+  });
+});
+
+/** The exact residue of a crash between the genesis append and the activation publish. */
+function strandActivation(root: string): void {
+  const active = activePath(root);
+  const genesisRow = readFileSync(active, "utf8").split("\n")[0];
+  writeFileSync(active, `${genesisRow}\n`, "utf8");
+  unlinkSync(join(root, EVENT_V3_ACTIVATION_MANIFEST));
+}
+
+function candidateRoot(): string {
+  const root = activeRoot();
+  strandActivation(root);
+  return root;
+}
+
+function candidateControl(root: string): Extract<EventV3ControlState, { state: "candidate" }> {
+  const control = readEventV3ControlState(root);
+  if (control.state !== "candidate") {
+    throw new Error(`expected candidate control, got ${control.state}`);
+  }
+  return control;
+}
+
+function witnessControlState(root: string): string {
+  const witness = JSON.parse(readFileSync(witnessPath(root), "utf8")) as {
+    payload: { control_state: string };
+  };
+  return witness.payload.control_state;
+}
+
+function fixtureInput(root: string) {
+  return {
     coordRoot: root,
     harneryBuild: "fixture",
     hostBuild: "fixture-host",
     configDigest: sha256V3("fixture-config"),
     approvalRecordId: "fixture-control-witness",
     now: () => new Date("2026-08-30T09:00:00.000Z"),
-  });
+  };
+}
+
+function activeRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "harnery-v3-control-witness-"));
+  roots.push(root);
+  initializeEventLedgerV3(fixtureInput(root));
   return root;
 }
 
