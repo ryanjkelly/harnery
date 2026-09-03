@@ -6,7 +6,14 @@ sidebar:
 ---
 
 **Date:** 2026-08-31
-**Status:** Accepted
+**Status:** Superseded in part by [ADR 0160](/decisions/0160-derive-pressure-from-contention-evidence/)
+
+The decision to publish one deterministic, replayable, observer-only assessment
+stands. Its policy does not. Mapping the highest active finding severity to a
+machine-wide state let a finding that merely names who holds a resource stop
+every agent while the kernel reported no stalls. ADR 0160 replaces that mapping
+with contention evidence and hysteresis, and reclassifies those findings as
+contributors that cannot set state.
 
 ## Context
 

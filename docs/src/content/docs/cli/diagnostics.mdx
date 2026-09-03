@@ -32,30 +32,35 @@ state.
 
 ```json
 {
-  "pressure": "critical",
-  "fan_out_recommendation": "avoid-new-fan-out",
-  "observer_only": true
+  "schema_version": 2,
+  "observer_only": true,
+  "assessment": {
+    "state": "critical",
+    "scope": "guest",
+    "limiting_resource": "memory",
+    "recommended_action": "avoid-new-heavy-work"
+  }
 }
 ```
 
-The complete response includes the findings-source capability, active and
-contributing counts, up to eight severity-ordered contributing findings,
-omission counts, and stable reason codes. `--json` selects structured output in
-host CLIs; standalone `harn` already emits JSON.
+The complete response includes the assessment's evidence per dimension, its
+reason codes with the measured value and the threshold each was compared
+against, its contributors with attribution confidence, its per-workload
+guidance, and the hysteresis state this sample carries forward. `--json`
+selects structured output in host CLIs; standalone `harn` already emits JSON.
 
-The policy is deterministic:
+State is set only by contention evidence, and attribution findings are carried
+as contributors that can never change it. The dimensions and their thresholds
+are documented on the [resources page](/cli/resources/). Entry and exit use
+different thresholds with a dwell, which is why the advice carries
+`prior_hysteresis`: a frozen bundle replays a transition without needing the
+observer's memory.
 
-| Active evidence | Pressure | Fan-out recommendation |
-|---|---|---|
-| At least one critical finding | `critical` | `avoid-new-fan-out` |
-| Warnings and no critical finding | `elevated` | `use-caution` |
-| Supported projection with no warning or critical finding | `normal` | `proceed` |
-| Missing or unusable findings projection | `unknown` | `unknown` |
-
-Live advice requires both a findings file and a current supervisor heartbeat.
-If the daemon has exited or its heartbeat is stale, advice is unknown and does
-not count the lingering findings as active. Frozen bundle advice remains an
-explicit historical result tied to the bundle capture time.
+Live advice requires the observer's published assessment and a current
+supervisor heartbeat. If the daemon has exited or its heartbeat is stale, the
+assessment is unknown, every dimension reads unavailable, and no owner is
+named. A gap in the evidence is never reported as health. Frozen bundle advice
+remains an explicit historical result tied to the bundle capture time.
 
 Resolved and informational findings do not restrict fan-out. Pressure is
 calculated before the contributing-findings list is bounded, so truncation
@@ -179,9 +184,14 @@ Comparison is observer-only. It does not tune thresholds, deny or delay work,
 signal processes, restart hooks, or notify people.
 
 Diagnostic bundle and expected-output schemas are version 3. The input schema
-remains version 2, and the nested timeline schema is version 2. Harnery is
-pre-1.0, so this is a direct cutover: earlier bundle, expected-output, and
-timeline schemas are rejected rather than read through a compatibility path.
+remains version 2, the nested timeline schema is version 2, the advice schema is
+version 2, and the finding schema is version 3. Harnery is pre-1.0, so this is a
+direct cutover: earlier bundle, expected-output, timeline, advice, and finding
+schemas are rejected rather than read through a compatibility path.
+
+Every pressure threshold is included in the `threshold_digest`. Tuning any one
+of them therefore invalidates a frozen replay instead of silently changing the
+result it expects.
 
 Diagnostic bundles are local support artifacts, not durable records. A bundle
 that needs permanent retention must move into a tracked project location before

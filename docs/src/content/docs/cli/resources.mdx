@@ -25,22 +25,63 @@ The supervisor samples every two seconds and atomically replaces
 `.harnery/resources/snapshot.json`. Readers share that snapshot. The supervisor
 also keeps a 15-minute history of machine and process-group totals.
 
-The default status includes CPU usage, available RAM, available disk space,
-sample age, measurement scope, and diagnostic advice. JSON includes the
-underlying measurements and their support states. `--processes` adds up to
-20 processes ordered by resident memory, with proven ownership where available.
-Command lines are excluded from status output.
+The default status leads with the pressure assessment, then reports CPU usage,
+available RAM, available disk space, sample age, and measurement scope. JSON
+includes the assessment in full plus the underlying measurements and their
+support states. `--processes` adds up to 20 processes ordered by resident
+memory, with proven ownership where available. Command lines are excluded from
+status output.
 
-Agent status includes the same compact summary. Prompt context reports material
-changes in resource advice, with repeated states suppressed. Advice uses the
-existing diagnostic finding policy. It is advisory and cannot reserve capacity,
-block work, kill processes, or change coordination state.
+Agent status includes the same compact summary. Prompt context reports a
+material change in the assessment, keyed on scope, state, and recommended
+action, so a change in numbers alone does not repeat a notice. The assessment
+is advisory and cannot reserve capacity, block work, kill processes, or change
+coordination state.
 
 A snapshot older than 15 seconds is stale. Missing, malformed, oversized, or
 unsupported snapshots produce an explicit unavailable result. Unknown data is
-not zero. Advice stays unknown when the findings or writer cannot be verified,
-even when recent measurements can still be displayed. Windows-host readings have
-their own timestamps and expire after 30 seconds.
+not zero. The assessment stays unknown when the observer's published record or
+the writer cannot be verified, even when recent measurements can still be
+displayed. Windows-host readings have their own timestamps and expire after 30
+seconds.
+
+## What sets the pressure state
+
+State comes only from evidence that a shared resource is actually contended:
+
+| Dimension | Source | Raises state |
+|---|---|---|
+| Memory and I/O full stalls | Linux PSI `memory_full` and `io_full` | Yes |
+| New out-of-memory kill | An increase in the kernel `oom_kill` counter | Yes |
+| Swap-out rate | `/proc/vmstat` `pswpout` as bytes per second | Yes |
+| Direct reclaim | `/proc/vmstat` `pgscan_direct` as pages per second | Yes, with another memory signal |
+| Memory available with swap exhausted | Machine totals | Yes |
+| Disk space | Workspace and temporary filesystem capacity | Yes |
+| CPU stalls | Linux PSI `cpu` some-average | To elevated only |
+| A large process, group, or hook receipt | Attribution findings | No |
+
+The last row is the important one. A process holding a gibibyte, an
+unattributed group holding two, or a heavy hook receipt tells you who is using
+memory, not that anything is waiting for it. Those findings are carried as
+contributors so you can see the likely owner, and they can never raise or lower
+the state. The kernel already reports whether anything is waiting.
+
+Entry and exit use different thresholds with a dwell, so a state does not
+flip on one sample and does not clear the instant a reading dips. A counter
+reset or an observer restart starts a new baseline instead of reporting a
+spurious event. A dimension the platform does not expose is reported as
+unavailable and never read as spare capacity, so a partial platform cannot
+produce a falsely healthy answer. In WSL the Windows host is assessed
+separately and can only raise the combined state, never mask the guest.
+
+Guidance is given per kind of work, because the answer differs: reads and small
+edits, CPU-heavy builds and tests, memory-heavy browser and QA captures, and
+storage-heavy writes. It never states a safe number of agents, and it names an
+owner only when that finding's attribution is exact.
+
+Every threshold lives in one policy object that is included in a diagnostic
+bundle's threshold digest, so tuning any value invalidates a frozen replay
+rather than silently changing its expected result.
 
 ## Measurements and platforms
 
@@ -59,6 +100,7 @@ card. Load history begins when a supervisor with load-history support starts.
 | Workspace and temporary disk space | Filesystem capacity | Filesystem capacity | Filesystem capacity |
 | CPU, memory, I/O stall averages | Linux PSI when exposed | Explicitly unsupported | Explicitly unsupported |
 | Recent out-of-memory kills | Kernel counter changes | Explicitly unsupported | Explicitly unsupported |
+| Swap-out, swap-in, direct reclaim, major-fault rates | `/proc/vmstat` counter deltas | Explicitly unsupported | Explicitly unsupported |
 | Disk read/write rates | Whole-device counter deltas | Explicitly unsupported | Explicitly unsupported |
 | Process ownership | Validated PID ancestry or exact bridge identity | Explicitly unavailable | Explicitly unavailable |
 
@@ -71,11 +113,14 @@ and whether the 10-second average is rising or falling relative to the minute.
 
 The `oom` section reads the kernel's `oom_kill` counter. The first sample reports
 the historical total and leaves recent kills unknown. Later samples expose the
-increase and age of the last observed kill. A new kill produces a critical
-finding for one minute; the finding history retains the incident afterward.
+increase and age of the last observed kill. A new kill holds a critical
+state for one minute; the finding history retains the incident afterward.
 Counter resets or failed reads restart the baseline. This does not identify
-victims or grant permission to stop work. High memory occupancy and swap usage
-remain advisory capacity signals, not proof that tasks are stalled.
+victims or grant permission to stop work. High memory occupancy and swap
+occupancy on their own are capacity readings, not proof that tasks are
+stalled, and they do not set the state. Swap becomes a state-bearing signal
+only through its measured out rate, or when available memory is exhausted at
+the same time as swap.
 
 Disk I/O rates exclude partitions and stacked devices
 that would double-count the underlying disks. Initial or reset counters produce

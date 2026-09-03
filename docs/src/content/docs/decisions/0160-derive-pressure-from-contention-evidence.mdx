@@ -1,0 +1,111 @@
+---
+title: "ADR 0160: derive pressure from contention evidence"
+description: Separate machine state from resource attribution, add hysteresis, and witness candidate control epochs.
+sidebar:
+  order: 160
+---
+
+**Date:** 2026-09-03
+**Status:** Accepted
+
+## Context
+
+Two measured defects made local resource guidance wrong and made every hook
+expensive.
+
+Advisory pressure mapped the highest active finding severity straight to a
+machine-wide state. A single process holding one gibibyte, an unattributed
+process group holding two, or one heavy hook receipt therefore told every agent
+to stop starting new work. On one root this produced a `critical` assessment
+while kernel pressure-stall information reported no memory stalls at all and
+nine gibibytes of twenty-three were available. Findings also opened and resolved
+on a single two-second cycle with no hysteresis, so guidance oscillated, and
+residual swap occupancy after a recovery kept a warning open for hours. None of
+the signals that actually distinguish a stalled machine from a busy one were
+collected: swap-out rate, direct reclaim, and page-fault rate.
+
+Separately, reading the control state cost a full parse and validation of the
+whole active event-ledger segment in every state except `active` with a
+matching storage witness. A root left in `candidate` state therefore paid that
+cost on every hook. Measured: one control-state read took 2.55 seconds and 876
+mebibytes of peak resident memory against a 98.7 megabyte segment, and 49 of the
+last 50 hook receipts exceeded the high-memory threshold. Size-based rotation
+could not relieve it, because rotation refuses a candidate epoch, so a stranded
+epoch grows without bound.
+
+## Alternatives considered
+
+- Raise the process and group memory thresholds. Those findings are useful at
+  their current values. The error was letting attribution set machine state, not
+  where the thresholds sat.
+- Use a universal memory percentage or a process count. Measurement contradicts
+  both: one root was stalled with 7.3 gibibytes available, and healthy at 96
+  percent occupancy.
+- A fixed cap on concurrent heavy jobs. It would still have admitted both jobs
+  that exhausted swap in the observed incident.
+- A bounded hook ingress with a worker queue. The cost is one whole-segment read
+  per process, not optional enrichment, so a queue would make processes wait to
+  read the segment rather than read it concurrently.
+- A resident hook server with thin clients. Coordination is daemonless by
+  contract, and witnessing the candidate state removes the reason to want one.
+- Slim the hook import graph. Each imported subtree measures under 55 mebibytes
+  and 50 milliseconds, so the graph is not where the memory goes.
+
+## Decision
+
+Compute one assessment, in one pure module, and give every surface that same
+answer.
+
+State comes only from contention evidence: pressure-stall averages, a new
+out-of-memory kill, swap-out rate, direct reclaim, exhausted memory with
+exhausted swap, and exhausted storage. Findings that name who holds a resource
+are carried as contributors and can never raise or lower the state. The
+distinction is structural rather than advisory: every finding declares a class,
+and only the contention class is state-bearing.
+
+Entry and exit use different thresholds with a dwell, so recovery is not
+instant and oscillation is bounded. A counter reset or an observer restart
+starts a new baseline instead of reporting a spurious event. A dimension the
+platform does not expose is reported as unavailable and never read as spare
+capacity. The Windows host is assessed separately and may only raise the
+combined state, never mask the guest.
+
+Every numeric threshold lives in one exported policy object that is included in
+the diagnostic bundle threshold digest, so tuning any value invalidates a frozen
+replay instead of silently changing its expected result. The observer is the
+only writer of the assessment, because it is the only reader that sees
+consecutive samples; the command, the prompt notice, the dashboard, diagnostic
+bundles, and shadow admission all read the published record. The assessment
+remains observer-only and reaches no dispatch, concurrency, or queue decision.
+
+For control-state cost, extend the authenticated storage witness to cover a
+validated candidate epoch, with the same tamper classes as the active witness
+and the same full-validation fallback on any mismatch. The control state is
+authenticated as part of the witness payload, so a candidate witness cannot
+satisfy the active gate. Make candidate creation and activation one locked step,
+let initialization resume and activate a stranded candidate, let the route
+resolver repair a stranded candidate at its next boundary instead of serving it
+forever, and allow size-based rotation for a candidate epoch whose control pair
+is otherwise valid. Open a diagnostic finding whenever the control state is not
+active, so the drift is visible on the health surfaces rather than only in an
+initialization check.
+
+Advice moves to schema version 2 and carries the assessment plus the prior
+hysteresis state a replay needs to reproduce a transition. There is no version 1
+reader.
+
+## Result
+
+Hook cost no longer scales with history in either control state. A cheaper read
+does not weaken the writer gate: an unreadable or inconsistent control pair
+still closes it, and no ledger row is edited or synthesized. Guidance now names
+what is contended, what the measured value and threshold were, who is likely
+holding the resource, and what is unknown, and it distinguishes lightweight
+work from CPU-heavy, memory-heavy, and storage-heavy work rather than promising
+a safe agent count.
+
+One gotcha worth recording. Attribution findings are the most legible signal on
+the machine and the most tempting input to a state decision, because a two
+gibibyte process group looks exactly like a problem. It is only a problem when
+something is actually waiting, and the kernel already reports whether anything
+is waiting. Legibility is not evidence.
