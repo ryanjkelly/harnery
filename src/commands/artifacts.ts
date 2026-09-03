@@ -159,6 +159,7 @@ export function registerArtifactsCommand(
   root
     .command("capabilities")
     .description("Report artifact schema and hold capabilities for embedding clients.")
+    .option("--json", "Emit the capability document as JSON")
     .action(() => emit.data(artifactCapabilities()));
 
   root

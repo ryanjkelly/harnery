@@ -55,7 +55,7 @@ describe("artifacts command", () => {
         await program.parseAsync(["artifacts", ...args], { from: "user" });
         return { data, errors, exits };
       }
-      expect((await invoke(["capabilities"])).data[0]).toMatchObject({
+      expect((await invoke(["capabilities", "--json"])).data[0]).toMatchObject({
         schema_version: 2,
         holds: true,
       });
