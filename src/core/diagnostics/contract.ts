@@ -40,34 +40,6 @@ export const DIAGNOSTIC_SUMMARY_SCHEMA_VERSION = 1 as const;
 export const DIAGNOSTIC_ADVICE_SCHEMA_VERSION = 2 as const;
 export const DIAGNOSTIC_COMPARISON_SCHEMA_VERSION = 1 as const;
 
-export const DIAGNOSTIC_ADVICE_LIMITS = {
-  max_contributing_findings: 8,
-  max_reasons: 4,
-} as const;
-
-export interface DiagnosticAdviceFinding {
-  finding_id: string;
-  finding_kind: string;
-  severity: "warning" | "critical";
-  summary: string;
-  scope_kind: string;
-  scope_id: string;
-  occurrence_count: number;
-  owner_kind?: "agent" | "service";
-  owner_id?: string;
-  workload_relationship?: "active-work" | "unexpected-idle-growth" | "unknown";
-}
-
-export interface DiagnosticAdviceReason {
-  code:
-    | "critical_findings_active"
-    | "warning_findings_active"
-    | "findings_source_unavailable"
-    | "no_active_pressure_findings";
-  summary: string;
-  finding_ids: readonly string[];
-}
-
 /** Retained name for the pressure state union; `PressureState` is canonical. */
 export type DiagnosticPressure = PressureState;
 

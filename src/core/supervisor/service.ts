@@ -17,9 +17,9 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { collectCoordinationHealthSnapshot } from "../agents/health.ts";
 import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
+import { pressureHistoryFromSupervisor } from "../diagnostics/advice.ts";
 import { assessPressure } from "../diagnostics/pressure.ts";
-import { PRESSURE_POLICY, type PressureHistorySample } from "../diagnostics/pressure-contract.ts";
-import type { ResourceSamplerState, ResourceSnapshot } from "../resources/contract.ts";
+import type { ResourceSamplerState } from "../resources/contract.ts";
 import { sampleResources } from "../resources/sampler.ts";
 import { requestResourceServiceStop } from "../resources/service.ts";
 import { readResourceServiceStatus } from "../resources/service-status.ts";
@@ -216,7 +216,6 @@ export async function runSupervisor(
   // rather than a guessed one.
   const priorPressure = readSupervisorPressure(coordRoot);
   let pressureHysteresis = priorPressure?.assessment.hysteresis ?? null;
-  const pressureHistory: PressureHistorySample[] = [];
   const observerGeneration = `${process.pid}:${startedAt}`;
   const logs = new SupervisorLogCollector(coordRoot);
   const writeStatus = () => {
@@ -286,11 +285,9 @@ export async function runSupervisor(
           now: cycleNow,
         });
         writePrivateJsonAtomic(paths.findings, findings);
-        pressureHistory.push(pressureHistorySample(resource.snapshot));
-        if (pressureHistory.length > PRESSURE_POLICY.max_history_samples) pressureHistory.shift();
         const assessment = assessPressure({
           snapshot: resource.snapshot,
-          history: pressureHistory,
+          history: pressureHistoryFromSupervisor(history.points),
           findings: findings.active,
           findings_capability: { source_kind: "supervisor-findings", state: "supported" },
           prior: pressureHysteresis,
@@ -405,22 +402,6 @@ export async function runSupervisor(
     }
   }
   return status;
-}
-
-/** Only the dimensions the trend calculation reads, so history stays small. */
-function pressureHistorySample(snapshot: ResourceSnapshot): PressureHistorySample {
-  const machine = snapshot.machine;
-  const total = machine.memory_total_bytes;
-  const available = machine.memory_available_bytes;
-  return {
-    sampled_at: snapshot.sampled_at,
-    memory_full_avg10: snapshot.pressure?.memory_full?.avg10 ?? null,
-    io_full_avg10: snapshot.pressure?.io_full?.avg10 ?? null,
-    cpu_some_avg60: snapshot.pressure?.cpu?.avg60 ?? null,
-    memory_available_percent:
-      total && total > 0 && available !== null ? (available / total) * 100 : null,
-    swap_out_bytes_per_second: snapshot.vmstat?.swap_out_bytes_per_second ?? null,
-  };
 }
 
 function acquireLease(coordRoot: string, now: Date): SupervisorLease {
