@@ -1,0 +1,63 @@
+---
+title: "ADR 0157: protect working artifacts with durable holds"
+description: Preserve incomplete work across cleanup, sessions, and runtime upgrades with explicit owner-scoped holds.
+sidebar:
+  order: 157
+---
+
+**Date:** 2026-09-03
+**Status:** Accepted
+
+## Context
+
+Time and byte budgets can remove an inactive workspace even when it contains
+the only copy of an unfinished transfer. A live heartbeat is temporary, and
+renewing retention postpones deletion without expressing the pending condition.
+Several workflows can depend on one workspace at once.
+
+## Alternatives considered
+
+- Repeatedly renew retention. This still permits cleanup after a missed renewal.
+- Use the creating agent's heartbeat. Work can remain incomplete after that
+  agent ends, and another agent may finish it later.
+- Add an optional field to schema v1. Older runtimes would ignore the field
+  and delete the supposedly protected workspace.
+- Recheck the manifest immediately before deletion without a lock. A hold
+  could still be written between that check and directory removal.
+
+## Decision
+
+Use schema v2 with required `holds: [{id, reason, set_by, set_at}]`. At least
+one hold makes a workspace `managed-held`, overriding retention and byte
+budgets. Creation can write initial holds with the first manifest. Release
+changes owner-liveness protection only; it does not remove holds.
+
+Each hold has an exact ID and owner `instance_id`. Removal checks both and
+leaves every other hold alone. A caller can use a stable workflow binding
+identity across agent sessions. This is a guard against accidental removal,
+not access control over a writable local filesystem.
+
+All core manifest mutations and deletion use the same directory lock outside
+the artifact store. Review-pack expiry follows the same wire contract and
+lock without importing the product tier into the toolkit. Contention and
+crashed lock owners fail closed. Locks are never stolen on a timeout.
+
+Expose capabilities through the core API and CLI so clients can refuse an
+incompatible installed runtime. Read only v2 in normal operations. An explicit
+migration validates v1, preserves the exact preimage outside the artifact tree,
+and changes only the schema and initial empty hold array. Invalid and unknown
+manifests are retained. Older processes must finish before this migration.
+
+## Result
+
+Focused tests cover expired inactive held artifacts and deletable controls in
+manual and automatic cleanup, byte-budget pressure, hold-owner checks, lock
+contention, malformed manifests, migration failures, and nested review packs.
+Tests against the published 0.37.0 package confirm that both cleanup paths keep
+schema-v2 artifacts as unsupported while deleting expired schema-v1 controls.
+
+Migration preserves retention fields but writes a new manifest, which counts
+as activity under the existing rolling-retention rule. A crashed operation
+can require removal of its exact empty lock directory after other artifact
+operations have stopped; this favors retaining files over guessing that a
+lock has become safe to steal.

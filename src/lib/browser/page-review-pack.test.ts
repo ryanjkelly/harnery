@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -765,7 +766,10 @@ describe("deleteExpiredPacks", () => {
     const root = packDir();
     const dir = join(root, "review-pack_expired");
     makePack(dir, { expires_at: PAST, managed: true }, "fail");
-    writeFileSync(join(dir, ".harnery-artifact.json"), JSON.stringify({ schema_version: 1 }));
+    writeFileSync(
+      join(dir, ".harnery-artifact.json"),
+      JSON.stringify({ schema_version: 2, holds: [] }),
+    );
     const result = deleteExpiredPacks({ roots: [root], now: NOW, dryRun: false });
     expect(result.candidates).toHaveLength(1);
     expect(result.deleted).toHaveLength(1);
@@ -794,6 +798,40 @@ describe("deleteExpiredPacks", () => {
     });
     // A second sweep finds nothing: the stub is not a pack.
     expect(deleteExpiredPacks({ roots: [root], now: NOW, dryRun: false }).candidates).toEqual([]);
+  });
+
+  test("holds protect standalone and nested packs; unknown schemas and held mutation locks retain bytes", () => {
+    const root = packDir();
+    const store = join(root, ".harnery", "artifacts");
+    const workspace = join(store, "workspace");
+    const nested = join(workspace, "run-1", PAGE_REVIEW_PACK_DIRNAME);
+    makePack(workspace, { expires_at: PAST, managed: true });
+    makePack(nested, { expires_at: PAST, managed: true });
+    const manifestPath = join(workspace, ".harnery-artifact.json");
+    for (const manifest of [
+      { schema_version: 2, holds: [{ id: "pending" }] },
+      { schema_version: 1 },
+      { schema_version: 99 },
+      { schema_version: 2 },
+    ]) {
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      for (const dryRun of [true, false]) {
+        expect(
+          deleteExpiredPacks({ roots: [store], now: NOW, dryRun, includeUnmanaged: true }).deleted,
+        ).toEqual([]);
+      }
+      expect(existsSync(join(nested, "manifest.json"))).toBe(true);
+      expect(existsSync(join(workspace, "manifest.json"))).toBe(true);
+    }
+    writeFileSync(manifestPath, JSON.stringify({ schema_version: 2, holds: [] }));
+    const lock = join(root, ".harnery", "artifacts-mutation.lock");
+    mkdirSync(lock);
+    expect(deleteExpiredPacks({ roots: [store], now: NOW, dryRun: false }).deleted).toEqual([]);
+    rmSync(lock, { recursive: true });
+    expect(deleteExpiredPacks({ roots: [nested], now: NOW, dryRun: false }).deleted).toHaveLength(
+      1,
+    );
+    expect(existsSync(lock)).toBe(false);
   });
 
   test("leaves unmanaged, unexpired, and retention-less packs alone; --include-unmanaged takes the unmanaged one", () => {

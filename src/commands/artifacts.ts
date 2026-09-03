@@ -5,12 +5,16 @@ import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-
 import {
   type ArtifactActor,
   adoptUnmanagedArtifactFiles,
+  artifactCapabilities,
   cleanArtifacts,
   createArtifact,
+  holdArtifact,
   inventoryArtifacts,
+  migrateArtifacts,
   releaseArtifact,
   renewArtifact,
   showArtifact,
+  unholdArtifact,
 } from "../core/artifacts/index.ts";
 import { artifactDefaultRetentionDays, coordFreshnessSeconds } from "../core/config.ts";
 
@@ -30,28 +34,47 @@ export function registerArtifactsCommand(
     .requiredOption("--purpose <text>", "What the files are for")
     .option("--days <n>", "Retention in days (default from artifacts.default_retention_days)")
     .option("--big", "Acknowledge that this workspace may exceed the per-bundle size ceiling")
-    .action((slug: string, opts: { purpose: string; days?: string; big?: boolean }) => {
-      run(emit, () => {
-        const repoRoot = requireRepoRoot(context);
-        const actor = currentActor(repoRoot);
-        const retentionDays = opts.days
-          ? parseDays(opts.days)
-          : artifactDefaultRetentionDays(repoRoot);
-        const created = createArtifact(repoRoot, {
-          slug,
-          purpose: opts.purpose,
-          retentionDays,
-          actor,
-          big: opts.big,
+    .option("--hold <id>", "Create the workspace with this hold already present")
+    .option("--hold-reason <text>", "Why the initial hold is required")
+    .option("--actor <instance-id>", "Stable owner identity for the initial hold")
+    .action(
+      (
+        slug: string,
+        opts: {
+          purpose: string;
+          days?: string;
+          big?: boolean;
+          hold?: string;
+          holdReason?: string;
+          actor?: string;
+        },
+      ) => {
+        run(emit, () => {
+          const repoRoot = requireRepoRoot(context);
+          const actor = opts.actor ? { instance_id: opts.actor } : currentActor(repoRoot);
+          if (!!opts.hold !== !!opts.holdReason)
+            throw new Error("--hold and --hold-reason must be used together");
+          const retentionDays = opts.days
+            ? parseDays(opts.days)
+            : artifactDefaultRetentionDays(repoRoot);
+          const created = createArtifact(repoRoot, {
+            slug,
+            purpose: opts.purpose,
+            retentionDays,
+            actor,
+            big: opts.big,
+            holds: opts.hold ? [{ id: opts.hold, reason: opts.holdReason! }] : [],
+          });
+          emit.data({
+            path: created.path,
+            artifact_id: created.manifest.artifact_id,
+            expires_at: created.manifest.retention.expires_at,
+            owner_instance_id: actor?.instance_id ?? null,
+            holds: created.manifest.holds,
+          });
         });
-        emit.data({
-          path: created.path,
-          artifact_id: created.manifest.artifact_id,
-          expires_at: created.manifest.retention.expires_at,
-          owner_instance_id: actor?.instance_id ?? null,
-        });
-      });
-    });
+      },
+    );
 
   root
     .command("adopt-unmanaged")
@@ -134,6 +157,52 @@ export function registerArtifactsCommand(
     });
 
   root
+    .command("capabilities")
+    .description("Report artifact schema and hold capabilities for embedding clients.")
+    .action(() => emit.data(artifactCapabilities()));
+
+  root
+    .command("migrate")
+    .description("Preview the explicit v1 to v2 manifest migration, preserving preimages.")
+    .option("--yes", "Apply the migration to valid v1 manifests")
+    .action((opts: { yes?: boolean }) =>
+      run(emit, () => emit.data({ rows: migrateArtifacts(requireRepoRoot(context), opts) })),
+    );
+
+  root
+    .command("hold <ref>")
+    .description("Protect an artifact from cleanup until its owner removes this exact hold.")
+    .requiredOption("--id <id>", "Unique hold id within this artifact")
+    .requiredOption("--reason <text>", "Why cleanup must retain these files")
+    .option("--actor <instance-id>", "Stable hold owner; defaults to the current agent")
+    .action((ref: string, opts: { id: string; reason: string; actor?: string }) =>
+      run(emit, () => {
+        const repoRoot = requireRepoRoot(context);
+        emit.data(
+          holdArtifact(repoRoot, ref, {
+            id: opts.id,
+            reason: opts.reason,
+            actor: requireHoldActor(repoRoot, opts.actor),
+          }),
+        );
+      }),
+    );
+
+  root
+    .command("unhold <ref>")
+    .description("Remove one exact hold belonging to the supplied owner.")
+    .requiredOption("--id <id>", "Exact hold id to remove")
+    .option("--actor <instance-id>", "Stable hold owner; defaults to the current agent")
+    .action((ref: string, opts: { id: string; actor?: string }) =>
+      run(emit, () => {
+        const repoRoot = requireRepoRoot(context);
+        emit.data(
+          unholdArtifact(repoRoot, ref, opts.id, { actor: requireHoldActor(repoRoot, opts.actor) }),
+        );
+      }),
+    );
+
+  root
     .command("clean")
     .description("Preview expired artifact deletion; pass --yes to delete.")
     .option("--yes", "Permanently delete entries classified managed-expired")
@@ -147,6 +216,12 @@ export function registerArtifactsCommand(
         emit.data({ rows, meta: summarize(rows) });
       });
     });
+}
+
+function requireHoldActor(repoRoot: string, explicit?: string): ArtifactActor {
+  const actor = explicit ? { instance_id: explicit } : currentActor(repoRoot);
+  if (!actor) throw new Error("hold operations require --actor or a current agent identity");
+  return actor;
 }
 
 function currentActor(repoRoot: string): ArtifactActor | undefined {

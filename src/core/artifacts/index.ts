@@ -9,7 +9,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
 import {
   existsSync,
@@ -18,6 +18,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -40,8 +41,9 @@ export interface ArtifactActor {
   name?: string;
 }
 
-export interface ArtifactManifestV1 {
+export interface ArtifactManifestV2 {
   schema_version: typeof ARTIFACT_SCHEMA_VERSION;
+  holds: ArtifactHold[];
   artifact_id: string;
   slug: string;
   purpose: string;
@@ -57,7 +59,30 @@ export interface ArtifactManifestV1 {
   oversize_acknowledged?: boolean;
 }
 
+export interface ArtifactHold {
+  id: string;
+  reason: string;
+  set_by: ArtifactActor;
+  set_at: string;
+}
+
+export interface ArtifactHoldInput {
+  id: string;
+  reason: string;
+}
+
+export function artifactCapabilities() {
+  return {
+    schema_version: ARTIFACT_SCHEMA_VERSION,
+    holds: true,
+    atomic_create_holds: true,
+    owner_scoped_unhold: true,
+    explicit_v1_migration: true,
+  } as const;
+}
+
 export type ArtifactClassification =
+  | "managed-held"
   | "managed-active"
   | "managed-current"
   | "managed-expired"
@@ -94,6 +119,8 @@ export interface ArtifactCreateInput {
    * (a page review pack expires in minutes, not days). 1 to 5,256,000. */
   retentionMinutes?: number;
   actor?: ArtifactActor;
+  /** Holds are persisted with the first manifest; a valid actor is required. */
+  holds?: ArtifactHoldInput[];
   now?: Date;
   id?: string;
   big?: boolean;
@@ -115,7 +142,7 @@ export interface ArtifactAdoptionResult {
 
 interface ParsedManifest {
   ok: true;
-  manifest: ArtifactManifestV1;
+  manifest: ArtifactManifestV2;
 }
 
 interface ManifestError {
@@ -135,7 +162,14 @@ export function configuredArtifactRetentionDays(repoRoot: string): number {
 export function createArtifact(
   repoRoot: string,
   input: ArtifactCreateInput,
-): { path: string; manifest: ArtifactManifestV1 } {
+): { path: string; manifest: ArtifactManifestV2 } {
+  return withArtifactLock(repoRoot, () => createArtifactUnlocked(repoRoot, input));
+}
+
+function createArtifactUnlocked(
+  repoRoot: string,
+  input: ArtifactCreateInput,
+): { path: string; manifest: ArtifactManifestV2 } {
   const now = input.now ?? new Date();
   assertValidDate(now, "now");
   const slug = normalizeSlug(input.slug);
@@ -150,6 +184,10 @@ export function createArtifact(
   if (!isSafeId(artifactId)) {
     throw new Error("artifact id must use ASCII letters, digits, hyphens, or underscores");
   }
+  const holds = (input.holds ?? []).map((hold) => makeHold(hold, input.actor, now));
+  if (new Set(holds.map((hold) => hold.id)).size !== holds.length) {
+    throw new Error("duplicate hold id");
+  }
 
   const root = artifactsRoot(repoRoot);
   mkdirSync(root, { recursive: true });
@@ -157,8 +195,9 @@ export function createArtifact(
   const path = join(root, `${date}_${slug}_${artifactId.slice(0, 8)}`);
   mkdirSync(path);
 
-  const manifest: ArtifactManifestV1 = {
+  const manifest: ArtifactManifestV2 = {
     schema_version: ARTIFACT_SCHEMA_VERSION,
+    holds,
     artifact_id: artifactId,
     slug,
     purpose,
@@ -207,7 +246,7 @@ export function showArtifact(
   repoRoot: string,
   ref: string,
   opts: { now?: Date; freshnessSeconds?: number } = {},
-): { entry: ArtifactInventoryEntry; manifest: ArtifactManifestV1 } {
+): { entry: ArtifactInventoryEntry; manifest: ArtifactManifestV2 } {
   const path = resolveArtifactRef(repoRoot, ref);
   const entry = inventoryArtifacts(repoRoot, opts).find((row) => row.path === path);
   if (!entry) throw new Error(`artifact "${ref}" was not found`);
@@ -222,7 +261,19 @@ export function renewArtifact(
   days: number,
   reason: string,
   input: ArtifactMutationInput = {},
-): ArtifactManifestV1 {
+): ArtifactManifestV2 {
+  return withArtifactLock(repoRoot, () =>
+    renewArtifactUnlocked(repoRoot, ref, days, reason, input),
+  );
+}
+
+function renewArtifactUnlocked(
+  repoRoot: string,
+  ref: string,
+  days: number,
+  reason: string,
+  input: ArtifactMutationInput,
+): ArtifactManifestV2 {
   const now = input.now ?? new Date();
   assertValidDate(now, "now");
   const retentionDays = positiveDays(days);
@@ -231,7 +282,7 @@ export function renewArtifact(
   const path = resolveArtifactRef(repoRoot, ref);
   const parsed = readManifest(path);
   if (!parsed.ok) throw new Error(parsed.reason);
-  const manifest: ArtifactManifestV1 = {
+  const manifest: ArtifactManifestV2 = {
     ...parsed.manifest,
     retention: {
       expires_at: addDays(now, retentionDays).toISOString(),
@@ -247,13 +298,21 @@ export function releaseArtifact(
   repoRoot: string,
   ref: string,
   input: ArtifactMutationInput = {},
-): ArtifactManifestV1 {
+): ArtifactManifestV2 {
+  return withArtifactLock(repoRoot, () => releaseArtifactUnlocked(repoRoot, ref, input));
+}
+
+function releaseArtifactUnlocked(
+  repoRoot: string,
+  ref: string,
+  input: ArtifactMutationInput,
+): ArtifactManifestV2 {
   const now = input.now ?? new Date();
   assertValidDate(now, "now");
   const path = resolveArtifactRef(repoRoot, ref);
   const parsed = readManifest(path);
   if (!parsed.ok) throw new Error(parsed.reason);
-  const manifest: ArtifactManifestV1 = {
+  const manifest: ArtifactManifestV2 = {
     ...parsed.manifest,
     released_at: now.toISOString(),
     released_by: input.actor,
@@ -262,8 +321,76 @@ export function releaseArtifact(
   return manifest;
 }
 
+export function holdArtifact(
+  repoRoot: string,
+  ref: string,
+  input: ArtifactHoldInput & { actor: ArtifactActor; now?: Date },
+): ArtifactManifestV2 {
+  const hold = makeHold(input, input.actor, input.now ?? new Date());
+  return withArtifactLock(repoRoot, () => {
+    const path = resolveArtifactRef(repoRoot, ref);
+    const parsed = readManifest(path);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const previous = parsed.manifest.holds.find((item) => item.id === hold.id);
+    if (previous) {
+      if (
+        previous.set_by.instance_id !== input.actor.instance_id ||
+        previous.reason !== hold.reason
+      ) {
+        throw new Error("hold id already exists with a different owner or reason");
+      }
+      return parsed.manifest;
+    }
+    const manifest = { ...parsed.manifest, holds: [...parsed.manifest.holds, hold] };
+    atomicWriteManifest(path, manifest);
+    return manifest;
+  });
+}
+
+export function unholdArtifact(
+  repoRoot: string,
+  ref: string,
+  id: string,
+  input: { actor: ArtifactActor; now?: Date },
+): ArtifactManifestV2 {
+  if (!validHoldId(id)) throw new Error("invalid hold id");
+  if (!validActor(input.actor)) throw new Error("a valid hold actor is required");
+  return withArtifactLock(repoRoot, () => {
+    const path = resolveArtifactRef(repoRoot, ref);
+    const parsed = readManifest(path);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const hold = parsed.manifest.holds.find((item) => item.id === id);
+    if (!hold) return parsed.manifest;
+    if (hold.set_by.instance_id !== input.actor.instance_id) {
+      throw new Error("only the hold owner may remove this hold");
+    }
+    const manifest = {
+      ...parsed.manifest,
+      holds: parsed.manifest.holds.filter((item) => item.id !== id),
+    };
+    atomicWriteManifest(path, manifest);
+    return manifest;
+  });
+}
+
 /** Adopt untracked loose files and legacy directories without changing directory paths. */
 export function adoptUnmanagedArtifactFiles(
+  repoRoot: string,
+  input: {
+    yes?: boolean;
+    big?: boolean;
+    purpose: string;
+    retentionDays: number;
+    actor?: ArtifactActor;
+    now?: Date;
+  },
+): ArtifactAdoptionResult {
+  if (input.yes)
+    return withArtifactLock(repoRoot, () => adoptUnmanagedArtifactFilesUnlocked(repoRoot, input));
+  return adoptUnmanagedArtifactFilesUnlocked(repoRoot, input);
+}
+
+function adoptUnmanagedArtifactFilesUnlocked(
   repoRoot: string,
   input: {
     yes?: boolean;
@@ -332,7 +459,7 @@ export function adoptUnmanagedArtifactFiles(
   }
   const files = candidates.filter((candidate) => candidate.kind === "file");
   const created = files.length
-    ? createArtifact(repoRoot, {
+    ? createArtifactUnlocked(repoRoot, {
         slug: "adopted-unmanaged",
         purpose: input.purpose,
         retentionDays: input.retentionDays,
@@ -347,6 +474,7 @@ export function adoptUnmanagedArtifactFiles(
   for (const candidate of directories) {
     atomicWriteManifest(candidate.path, {
       schema_version: ARTIFACT_SCHEMA_VERSION,
+      holds: [],
       artifact_id: randomUUID(),
       slug: normalizeSlug(candidate.name),
       purpose: `${input.purpose}: ${candidate.name}`,
@@ -367,6 +495,27 @@ export function adoptUnmanagedArtifactFiles(
 export function cleanArtifacts(
   repoRoot: string,
   opts: { yes?: boolean; now?: Date; freshnessSeconds?: number } = {},
+): ArtifactInventoryEntry[] {
+  if (!opts.yes) return inventoryArtifacts(repoRoot, opts);
+  try {
+    return withArtifactLock(repoRoot, () => cleanArtifactsUnlocked(repoRoot, opts));
+  } catch (error) {
+    return inventoryArtifacts(repoRoot, opts).map((row) =>
+      row.action === "would-delete"
+        ? {
+            ...row,
+            classification: "unknown",
+            action: "keep",
+            reason: errorMessage("cleanup refused", error),
+          }
+        : row,
+    );
+  }
+}
+
+function cleanArtifactsUnlocked(
+  repoRoot: string,
+  opts: { yes?: boolean; now?: Date; freshnessSeconds?: number },
 ): ArtifactInventoryEntry[] {
   const now = opts.now ?? new Date();
   const freshnessSeconds = opts.freshnessSeconds ?? 600;
@@ -541,6 +690,14 @@ function classifyArtifactPath(
     oversize_acknowledged: manifest.oversize_acknowledged === true,
   });
 
+  if (manifest.holds.length > 0) {
+    return {
+      ...base,
+      classification: "managed-held",
+      reason: `held: ${manifest.holds.map((hold) => hold.id).join(", ")}`,
+      action: "keep",
+    };
+  }
   if (base.bytes === null || lastModifiedMs === null) {
     return {
       ...base,
@@ -645,16 +802,39 @@ function readManifest(path: string): ParsedManifest | ManifestError {
   }
   let value: unknown;
   try {
+    const unit = lstatSync(path);
+    const stat = lstatSync(manifestPath);
+    if (
+      !unit.isDirectory() ||
+      unit.isSymbolicLink() ||
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      stat.size > 1024 * 1024
+    ) {
+      return { ok: false, reason: "manifest must be a bounded regular file in a direct directory" };
+    }
     value = JSON.parse(readFileSync(manifestPath, "utf8"));
   } catch (error) {
     return { ok: false, reason: errorMessage("manifest is unreadable", error) };
   }
+  return parseArtifactManifest(value);
+}
+
+/** Validate only the current schema. Legacy conversion belongs to migrateArtifacts. */
+export function parseArtifactManifest(value: unknown): ParsedManifest | ManifestError {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, reason: "manifest must be a JSON object" };
   }
-  const m = value as Partial<ArtifactManifestV1>;
+  const m = value as Partial<ArtifactManifestV2>;
   if (m.schema_version !== ARTIFACT_SCHEMA_VERSION) {
     return { ok: false, reason: `unsupported schema_version ${String(m.schema_version)}` };
+  }
+  if (
+    !Array.isArray(m.holds) ||
+    m.holds.some((hold) => !validHold(hold)) ||
+    new Set(m.holds.map((hold) => hold.id)).size !== m.holds.length
+  ) {
+    return { ok: false, reason: "invalid holds" };
   }
   if (!isSafeId(m.artifact_id)) return { ok: false, reason: "invalid artifact_id" };
   if (typeof m.slug !== "string" || !m.slug || normalizeSlug(m.slug) !== m.slug) {
@@ -686,17 +866,169 @@ function readManifest(path: string): ParsedManifest | ManifestError {
   if (m.oversize_acknowledged !== undefined && typeof m.oversize_acknowledged !== "boolean") {
     return { ok: false, reason: "invalid oversize_acknowledged" };
   }
-  return { ok: true, manifest: m as ArtifactManifestV1 };
+  return { ok: true, manifest: m as ArtifactManifestV2 };
 }
 
-function atomicWriteManifest(path: string, manifest: ArtifactManifestV1): void {
+function atomicWriteManifest(path: string, manifest: ArtifactManifestV2): void {
   const target = join(path, ARTIFACT_MANIFEST);
   const tmp = `${target}.tmp.${process.pid}.${randomUUID().slice(0, 8)}`;
-  writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  renameSync(tmp, target);
+  try {
+    writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    renameSync(tmp, target);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+export interface ArtifactMigrationEntry {
+  path: string;
+  action: "keep" | "would-migrate" | "migrated";
+  reason: string;
+  preimage_path?: string;
+}
+
+/** Explicit, bounded v1 cutover. Preview never writes; every applied unit keeps its exact preimage. */
+export function migrateArtifacts(
+  repoRoot: string,
+  opts: { yes?: boolean } = {},
+): ArtifactMigrationEntry[] {
+  const migrate = (): ArtifactMigrationEntry[] => {
+    const root = artifactsRoot(repoRoot);
+    if (!existsSync(root)) return [];
+    return readdirSync(root)
+      .sort()
+      .map((name): ArtifactMigrationEntry => {
+        const path = join(root, name);
+        try {
+          const stat = lstatSync(path);
+          if (stat.isSymbolicLink() || !stat.isDirectory())
+            throw new Error("not a direct directory");
+          if (containsTrackedPath(repoRoot, path))
+            throw new Error("artifact contains tracked files");
+          const target = join(path, ARTIFACT_MANIFEST);
+          const manifestStat = lstatSync(target);
+          if (
+            !manifestStat.isFile() ||
+            manifestStat.isSymbolicLink() ||
+            manifestStat.size > 1024 * 1024
+          ) {
+            throw new Error("manifest is not a bounded regular file");
+          }
+          const preimage = readFileSync(target, "utf8");
+          const legacy = JSON.parse(preimage);
+          if (legacy?.schema_version !== 1) {
+            return {
+              path,
+              action: "keep",
+              reason: `schema_version ${String(legacy?.schema_version)} is not a migration source`,
+            };
+          }
+          if (Object.hasOwn(legacy, "holds"))
+            throw new Error("v1 manifest unexpectedly contains holds");
+          const parsed = parseArtifactManifest({
+            ...legacy,
+            schema_version: ARTIFACT_SCHEMA_VERSION,
+            holds: [],
+          });
+          if (!parsed.ok) throw new Error(parsed.reason);
+          const digest = createHash("sha256").update(preimage).digest("hex");
+          const preimagePath = join(
+            resolve(repoRoot),
+            ".harnery/artifact-migrations",
+            `${digest}.v1.json`,
+          );
+          if (!opts.yes)
+            return {
+              path,
+              action: "would-migrate",
+              reason: "valid v1 manifest",
+              preimage_path: preimagePath,
+            };
+          mkdirSync(dirname(preimagePath), { recursive: true });
+          try {
+            writeFileSync(preimagePath, preimage, { flag: "wx", mode: 0o600 });
+          } catch (error) {
+            if (
+              (error as NodeJS.ErrnoException).code !== "EEXIST" ||
+              lstatSync(preimagePath).isSymbolicLink() ||
+              readFileSync(preimagePath, "utf8") !== preimage
+            )
+              throw error;
+          }
+          if (readFileSync(target, "utf8") !== preimage)
+            throw new Error("manifest changed before migration");
+          atomicWriteManifest(path, parsed.manifest);
+          return {
+            path,
+            action: "migrated",
+            reason: "v1 preimage preserved; identity and retention unchanged",
+            preimage_path: preimagePath,
+          };
+        } catch (error) {
+          return { path, action: "keep", reason: errorMessage("migration refused", error) };
+        }
+      });
+  };
+  return opts.yes ? withArtifactLock(repoRoot, migrate) : migrate();
+}
+
+/** A persistent directory lock fails closed on contention or a crashed owner. */
+function withArtifactLock<T>(repoRoot: string, action: () => T): T {
+  const lock = join(resolve(repoRoot), ".harnery/artifacts-mutation.lock");
+  mkdirSync(dirname(lock), { recursive: true });
+  try {
+    mkdirSync(lock);
+  } catch (error) {
+    throw new Error(
+      errorMessage(
+        "artifact store mutation lock unavailable; retry after its owner finishes",
+        error,
+      ),
+    );
+  }
+  try {
+    return action();
+  } finally {
+    rmdirSync(lock);
+  }
+}
+
+function validHoldId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value);
+}
+
+function validHold(value: unknown): value is ArtifactHold {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const hold = value as Partial<ArtifactHold>;
+  return (
+    validHoldId(hold.id) &&
+    typeof hold.reason === "string" &&
+    !!hold.reason.trim() &&
+    validActor(hold.set_by) &&
+    validIso(hold.set_at)
+  );
+}
+
+function makeHold(
+  input: ArtifactHoldInput,
+  actor: ArtifactActor | undefined,
+  now: Date,
+): ArtifactHold {
+  assertValidDate(now, "now");
+  if (!validActor(actor)) throw new Error("a valid hold actor is required");
+  if (!validHoldId(input.id)) throw new Error("invalid hold id");
+  if (typeof input.reason !== "string" || !input.reason.trim())
+    throw new Error("hold reason must not be empty");
+  return {
+    id: input.id,
+    reason: input.reason.trim(),
+    set_by: { ...actor },
+    set_at: now.toISOString(),
+  };
 }
 
 function ownerLiveness(

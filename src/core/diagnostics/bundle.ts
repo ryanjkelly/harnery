@@ -11,15 +11,15 @@ import { dirname, join, resolve, sep } from "node:path";
 import type {
   ArtifactActor,
   ArtifactInventoryEntry,
-  ArtifactManifestV1,
+  ArtifactManifestV2,
 } from "../artifacts/index.ts";
 import {
   ARTIFACT_MANIFEST,
-  ARTIFACT_SCHEMA_VERSION,
   artifactsRoot,
   configuredArtifactRetentionDays,
   createArtifact,
   inventoryArtifacts,
+  parseArtifactManifest,
   releaseArtifact,
   resolveArtifactRef,
 } from "../artifacts/index.ts";
@@ -338,7 +338,7 @@ export function listDiagnosticBundleCandidates(repoRoot: string): DiagnosticBund
   const rows: DiagnosticBundleCandidateRow[] = [];
   for (const name of readdirSync(root).sort()) {
     const artifactPath = join(root, name);
-    let artifactManifest: ArtifactManifestV1;
+    let artifactManifest: ArtifactManifestV2;
     try {
       const stat = lstatSync(artifactPath);
       if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
@@ -378,41 +378,21 @@ export function listDiagnosticBundleCandidates(repoRoot: string): DiagnosticBund
   );
 }
 
-function readCandidateArtifactManifest(artifactPath: string): ArtifactManifestV1 {
+function readCandidateArtifactManifest(artifactPath: string): ArtifactManifestV2 {
   const manifestPath = join(artifactPath, ARTIFACT_MANIFEST);
   const stat = lstatSync(manifestPath);
   if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 64 * 1024) {
     throw new Error("artifact manifest is not a bounded regular file");
   }
-  let manifest: Partial<ArtifactManifestV1>;
+  let manifest: Partial<ArtifactManifestV2>;
   try {
-    manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Partial<ArtifactManifestV1>;
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Partial<ArtifactManifestV2>;
   } catch {
     throw new Error("artifact manifest is not valid JSON");
   }
-  if (manifest.schema_version !== ARTIFACT_SCHEMA_VERSION) {
-    throw new Error(`unsupported artifact schema_version ${String(manifest.schema_version)}`);
-  }
-  if (
-    typeof manifest.artifact_id !== "string" ||
-    !/^[A-Za-z0-9_-]{1,160}$/.test(manifest.artifact_id)
-  ) {
-    throw new Error("invalid artifact_id");
-  }
-  if (typeof manifest.slug !== "string" || !manifest.slug) {
-    throw new Error("invalid artifact slug");
-  }
-  if (typeof manifest.purpose !== "string" || !manifest.purpose.trim()) {
-    throw new Error("invalid artifact purpose");
-  }
-  if (!validIsoTimestamp(manifest.created_at)) throw new Error("invalid artifact created_at");
-  if (!manifest.retention || !validIsoTimestamp(manifest.retention.expires_at)) {
-    throw new Error("invalid artifact retention");
-  }
-  if (manifest.released_at !== undefined && !validIsoTimestamp(manifest.released_at)) {
-    throw new Error("invalid artifact released_at");
-  }
-  return manifest as ArtifactManifestV1;
+  const parsed = parseArtifactManifest(manifest);
+  if (!parsed.ok) throw new Error(parsed.reason);
+  return parsed.manifest;
 }
 
 function candidateArtifactId(artifactPath: string): string | undefined {
@@ -424,16 +404,13 @@ function candidateArtifactId(artifactPath: string): string | undefined {
 }
 
 function candidateClassification(
-  manifest: ArtifactManifestV1,
+  manifest: ArtifactManifestV2,
 ): ArtifactInventoryEntry["classification"] {
+  if (manifest.holds.length > 0) return "managed-held";
   if (!manifest.released_at) return "managed-active";
   return Date.parse(manifest.retention.expires_at) <= Date.now()
     ? "managed-expired"
     : "managed-current";
-}
-
-function validIsoTimestamp(value: unknown): value is string {
-  return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
 export function replayDiagnosticBundle(

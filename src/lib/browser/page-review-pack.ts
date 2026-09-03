@@ -15,14 +15,16 @@
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { PNG } from "pngjs";
 import type { CritiqueCoverage, CritiqueFinding, CritiqueTile } from "./critique.js";
@@ -2304,24 +2306,79 @@ export function deleteExpiredPacks(input: DeleteExpiredPacksInput): DeleteExpire
     const row = packRow(dir, manifest, nowMs);
     candidates.push(row);
     if (!isPackDeletable(row, input.includeUnmanaged === true)) continue;
-    if (!input.dryRun) {
-      const stub: PageReviewExpiredStub = {
-        schema: PAGE_REVIEW_EXPIRED_SCHEMA,
-        target: manifest.target,
-        created_at: manifest.created_at,
-        // Guarded by isPackDeletable: a deletable row always has expires_at.
-        expires_at: row.expires_at ?? "",
-        deleted_at: now.toISOString(),
-        contexts: Array.isArray(manifest.contexts) ? manifest.contexts.length : 0,
-        machine_outcome: aggregateMachineOutcome(manifest.critique),
-      };
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name === ARTIFACT_WORKSPACE_MANIFEST_FILENAME) continue;
-        rmSync(join(dir, entry.name), { recursive: true, force: true });
+    const protection = packArtifactProtection(dir);
+    if (protection.protected) continue;
+    let locked = false;
+    if (!input.dryRun && protection.lock) {
+      try {
+        mkdirSync(protection.lock);
+        locked = true;
+      } catch {
+        continue;
       }
-      writeJson(join(dir, PAGE_REVIEW_EXPIRED_STUB_FILENAME), stub);
     }
-    deleted.push(row);
+    try {
+      if (packArtifactProtection(dir).protected) continue;
+      if (!input.dryRun) {
+        const stub: PageReviewExpiredStub = {
+          schema: PAGE_REVIEW_EXPIRED_SCHEMA,
+          target: manifest.target,
+          created_at: manifest.created_at,
+          // Guarded by isPackDeletable: a deletable row always has expires_at.
+          expires_at: row.expires_at ?? "",
+          deleted_at: now.toISOString(),
+          contexts: Array.isArray(manifest.contexts) ? manifest.contexts.length : 0,
+          machine_outcome: aggregateMachineOutcome(manifest.critique),
+        };
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.name === ARTIFACT_WORKSPACE_MANIFEST_FILENAME) continue;
+          rmSync(join(dir, entry.name), { recursive: true, force: true });
+        }
+        writeJson(join(dir, PAGE_REVIEW_EXPIRED_STUB_FILENAME), stub);
+      }
+      deleted.push(row);
+    } finally {
+      if (locked) rmdirSync(protection.lock!);
+    }
   }
   return { candidates, deleted };
+}
+
+/** Read the artifact wire contract without importing the product tier. The same
+ * lock protocol covers core hold writes and pack payload deletion. Unknown or
+ * malformed manifests are retained, including legacy manifests awaiting migration. */
+function packArtifactProtection(dir: string): { protected: boolean; lock?: string } {
+  let current = resolve(dir);
+  let lock: string | undefined;
+  let protectedByManifest = false;
+  while (dirname(current) !== current) {
+    try {
+      if (lstatSync(current).isSymbolicLink()) return { protected: true };
+      if (
+        basename(dirname(current)) === "artifacts" &&
+        basename(dirname(dirname(current))) === ".harnery"
+      ) {
+        lock = join(dirname(dirname(current)), "artifacts-mutation.lock");
+        if (!existsSync(join(current, ARTIFACT_WORKSPACE_MANIFEST_FILENAME)))
+          protectedByManifest = true;
+      }
+      const path = join(current, ARTIFACT_WORKSPACE_MANIFEST_FILENAME);
+      if (existsSync(path)) {
+        const stat = lstatSync(path);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024)
+          return { protected: true };
+        const manifest = JSON.parse(readFileSync(path, "utf8"));
+        if (
+          manifest?.schema_version !== 2 ||
+          !Array.isArray(manifest.holds) ||
+          manifest.holds.length !== 0
+        )
+          protectedByManifest = true;
+      }
+    } catch {
+      return { protected: true };
+    }
+    current = dirname(current);
+  }
+  return { protected: protectedByManifest, lock };
 }

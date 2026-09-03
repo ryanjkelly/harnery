@@ -12,10 +12,11 @@ import type { HarneryProgramContext } from "../commander.ts";
 import { monorepoRoot } from "./agents/index.ts";
 import {
   ARTIFACT_MANIFEST,
-  type ArtifactManifestV1,
+  type ArtifactManifestV2,
   artifactsRoot,
   configuredArtifactRetentionDays,
   createArtifact,
+  parseArtifactManifest,
 } from "./artifacts/index.ts";
 
 export type QaArtifactKind = "qa-run" | "qa-record" | "review-pack";
@@ -90,24 +91,12 @@ export function latestManagedQaRun(repoRoot: string): string | null {
   return latest?.path ?? null;
 }
 
-function readQaManifest(path: string): ArtifactManifestV1 | null {
+function readQaManifest(path: string): ArtifactManifestV2 | null {
   try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<ArtifactManifestV1>;
-    if (value.schema_version !== 1) return null;
-    if (value.slug !== "qa-run" && value.slug !== "qa-record") return null;
-    if (typeof value.artifact_id !== "string" || value.artifact_id.length === 0) return null;
-    if (typeof value.purpose !== "string" || value.purpose.length === 0) return null;
-    if (typeof value.created_at !== "string" || Number.isNaN(Date.parse(value.created_at))) {
-      return null;
-    }
-    if (
-      !value.retention ||
-      typeof value.retention.expires_at !== "string" ||
-      Number.isNaN(Date.parse(value.retention.expires_at))
-    ) {
-      return null;
-    }
-    return value as ArtifactManifestV1;
+    const parsed = parseArtifactManifest(JSON.parse(readFileSync(path, "utf8")));
+    if (!parsed.ok) return null;
+    if (parsed.manifest.slug !== "qa-run" && parsed.manifest.slug !== "qa-record") return null;
+    return parsed.manifest;
   } catch {
     return null;
   }

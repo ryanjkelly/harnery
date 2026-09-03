@@ -23,6 +23,11 @@ harn artifacts list
 harn artifacts show <ref>
 harn artifacts renew <ref> --days <n> --reason <text>
 harn artifacts release <ref>
+harn artifacts capabilities --json
+harn artifacts create <slug> --purpose <text> --hold <id> --hold-reason <text> --actor <instance-id>
+harn artifacts hold <ref> --id <id> --reason <text> [--actor <instance-id>]
+harn artifacts unhold <ref> --id <id> [--actor <instance-id>]
+harn artifacts migrate [--yes]
 harn artifacts clean [--yes]
 ```
 
@@ -79,7 +84,7 @@ Managed artifacts have two byte limits by default:
   to exceed it. An inactive oversized workspace without that acknowledgement
   becomes a cleanup candidate even before its time window expires.
 
-Live owners, Git-tracked content, unreadable paths, and direct-child symlinks
+Holds, live owners, Git-tracked content, unreadable paths, and direct-child symlinks
 stay protected under pressure. The limits therefore bound eligible managed
 data, not storage Harnery cannot safely delete. Configure the limits in bytes:
 
@@ -140,6 +145,7 @@ Disable it per project or per process:
 
 | Classification | Meaning | `clean --yes` |
 | --- | --- | --- |
+| `managed-held` | At least one hold remains, regardless of expiry, owner activity, release, or size. | Keep |
 | `managed-active` | The creating agent has a fresh heartbeat and has not released the unit. | Keep |
 | `managed-current` | Retention has not expired. | Keep |
 | `managed-expired` | Retention expired and no protection remains. | Delete |
@@ -153,6 +159,62 @@ Disable it per project or per process:
 
 Cleanup previews by default. Even with `--yes`, Harnery rechecks every deletion
 candidate and refuses to delete entries that changed classification.
+
+## Hold work that is not ready for cleanup
+
+A hold protects files whose next step must finish before cleanup can remove
+them, such as an interrupted transfer or an unresolved handoff. Schema v2
+requires a `holds` array. Each hold records `id`, `reason`, `set_by` (an
+`ArtifactActor`), and `set_at`.
+
+Use `create --hold --hold-reason` to persist protection in the first manifest.
+Adding a hold after writing files leaves a cleanup window before protection
+exists. Manual cleanup, session-start cleanup, and review-pack expiry retain
+held workspaces and their nested evidence. Holds also override byte budgets.
+`release` and `renew` preserve every hold.
+
+`hold` and `unhold` use the current agent identity by default. A workflow that
+outlives an agent session can pass its stable binding identity with `--actor`.
+Keep that identity and the exact hold ID in the binding. A later agent acting
+for that binding can remove its hold; another binding's holds stay intact.
+These identities prevent accidental cross-workflow removal. They are local
+coordination records, not an authentication boundary against someone who can
+edit the files.
+
+Repeating an identical hold is idempotent and preserves its original timestamp.
+Reusing its ID with another owner or reason fails. `unhold` requires the recorded
+owner's `instance_id` and removes only the named hold. Repeating that removal
+after success is harmless. Remove a hold only after the workflow has verified
+its completion; artifact release alone does not establish that condition.
+
+Embedding clients can call `artifactCapabilities()` from `harnery/core/artifacts`
+or run `artifacts capabilities --json`. Require `schema_version: 2`, `holds: true`,
+`atomic_create_holds: true`, and `owner_scoped_unhold: true` before starting work
+that depends on holds. An unknown command or missing capability is a refusal,
+not permission to continue without protection.
+
+## Migrate existing manifests
+
+The runtime reads schema v2 only. Schema v1 and unknown versions stay on disk
+as `invalid-manifest`; normal operations do not convert them implicitly.
+`artifacts migrate` previews valid v1 manifests. `artifacts migrate --yes`
+converts each eligible unit to v2 with empty holds and saves its exact old
+manifest under `.harnery/artifact-migrations/<sha256>.v1.json` before replacement.
+IDs, paths, owner records, release state, and retention fields are preserved.
+The manifest write counts as filesystem activity under rolling retention.
+Tracked files, symlinks, malformed manifests, unexpected v1 hold fields, and
+unsupported schemas remain untouched. Check each returned row: failed units
+have `action: keep` and a reason. A repeated successful migration does nothing.
+
+Version 0.37.0 cleanup rejects schema v2 and therefore retains these workspaces,
+but it cannot manage their holds. Finish old runtime processes before migration;
+the new lock cannot coordinate with a cleanup process that predates it.
+
+Manifest mutation and deletion share `.harnery/artifacts-mutation.lock`.
+Contention causes writes to fail and cleanup to retain its candidates. Retry
+after the running operation ends. A crashed process leaves the lock in place
+deliberately: establish that artifact operations have stopped before removing
+that exact empty lock directory. Never remove it based on age alone.
 
 ## Journal, artifacts, and durable files
 
