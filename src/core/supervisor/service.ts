@@ -14,6 +14,7 @@ import {
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { fileURLToPath } from "node:url";
 import { collectCoordinationHealthSnapshot } from "../agents/health.ts";
 import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
 import type { ResourceSamplerState } from "../resources/contract.ts";
@@ -87,12 +88,15 @@ export async function spawnSupervisor(
   const paths = supervisorPaths(coordRoot);
   mkdirSync(paths.root, { recursive: true, mode: 0o700 });
   rmSync(paths.stop, { force: true });
-  const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
-  if (!existsSync(harnBin)) throw new Error(`cannot find harn executable at ${harnBin}`);
+  const cliPath = fileURLToPath(
+    new URL(import.meta.url.endsWith(".ts") ? "../../cli.ts" : "../../cli.js", import.meta.url),
+  );
+  if (!existsSync(cliPath)) throw new Error(`cannot find harn entrypoint at ${cliPath}`);
   let spawnError: Error | undefined;
   const child = spawn(
-    harnBin,
+    process.execPath,
     [
+      cliPath,
       "supervisor",
       "daemon",
       "--root",
@@ -106,6 +110,7 @@ export async function spawnSupervisor(
     {
       cwd: coordRoot,
       detached: true,
+      windowsHide: true,
       stdio: ["ignore", "ignore", "ignore"],
       env: {
         ...process.env,
@@ -153,7 +158,7 @@ export function requestSupervisorStop(coordRootRaw: string): SupervisorStatus {
     requested_at: new Date().toISOString(),
     requested_by_pid: process.pid,
   });
-  if (status.running && status.record?.host === hostname()) {
+  if (status.running && status.record?.host === hostname() && process.platform !== "win32") {
     try {
       process.kill(status.record.pid, "SIGTERM");
     } catch {
@@ -223,6 +228,7 @@ export async function runSupervisor(
         const cycleNow = now();
         const serviceHealth = collectServiceHealth(coordRoot, status);
         const resource = sampleResources(coordRoot, previousResource, {
+          backgroundHost: true,
           services: [
             { pid: process.pid, id: "supervisor" },
             ...serviceHealth.consumers.map((consumer) => ({

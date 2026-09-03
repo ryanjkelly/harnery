@@ -1,0 +1,241 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { collectSystemResources, type SystemResourceOptions } from "./system.ts";
+
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), "harnery-system-resources-"));
+  roots.push(root);
+  const procRoot = join(root, "proc");
+  const sysRoot = join(root, "sys");
+  mkdirSync(join(procRoot, "pressure"), { recursive: true });
+  mkdirSync(join(sysRoot, "block"), { recursive: true });
+  const options: SystemResourceOptions = {
+    platform: "linux",
+    procRoot,
+    sysRoot,
+    tmpPath: root,
+    statfs: () => ({ bsize: 4_096, blocks: 100, bfree: 40, bavail: 30 }),
+    nowMs: 1_000,
+  };
+  return { root, procRoot, sysRoot, options };
+}
+
+function addDevice(sysRoot: string, device: string, slaves: string[] = []) {
+  const path = join(sysRoot, "block", device, "slaves");
+  mkdirSync(path, { recursive: true });
+  for (const slave of slaves) writeFileSync(join(path, slave), "");
+}
+
+function diskLine(device: string, read: number, write: number, minor = 0): string {
+  return `8 ${minor} ${device} 1 0 ${read} 0 1 0 ${write} 0 0 0 0\n`;
+}
+
+describe("system resource collection", () => {
+  test("reports available capacity separately from reserved filesystem blocks", () => {
+    const { root, options } = fixture();
+    const sample = collectSystemResources(root, options);
+    expect(sample.disks).toEqual([
+      {
+        path: root,
+        state: "supported",
+        total_bytes: 409_600,
+        available_bytes: 122_880,
+        used_percent: 60,
+      },
+    ]);
+  });
+
+  test("deduplicates workspace and temporary paths on the same filesystem", () => {
+    const { root, options } = fixture();
+    options.tmpPath = join(root, "temp");
+    options.filesystemId = () => 42;
+    expect(collectSystemResources(root, options).disks).toHaveLength(1);
+    options.filesystemId = (path) => path;
+    expect(collectSystemResources(root, options).disks).toHaveLength(2);
+  });
+
+  test("does not mistake unavailable disk capacity for zero usage", () => {
+    const { root, options } = fixture();
+    options.tmpPath = join(root, "denied");
+    options.statfs = (path) => {
+      if (path === options.tmpPath) throw Object.assign(new Error("denied"), { code: "EACCES" });
+      return { bsize: 4_096n, blocks: 100n, bfree: 40n, bavail: 30n };
+    };
+    expect(collectSystemResources(root, options).disks[1]).toMatchObject({
+      state: "error",
+      reason: "EACCES",
+      total_bytes: null,
+      available_bytes: null,
+      used_percent: null,
+    });
+  });
+
+  test("clamps negative available blocks and rejects invalid capacity counters", () => {
+    const { root, options } = fixture();
+    options.statfs = () => ({ bsize: 4_096, blocks: 100, bfree: 40, bavail: -5 });
+    expect(collectSystemResources(root, options).disks[0]?.available_bytes).toBe(0);
+    options.statfs = () => ({ bsize: 4_096, blocks: 0, bfree: 0, bavail: 0 });
+    expect(collectSystemResources(root, options).disks[0]?.state).toBe("error");
+  });
+
+  test.each([
+    "darwin",
+    "win32",
+  ] as const)("collects disk capacity on %s without claiming Linux PSI support", (platform) => {
+    const { root, options } = fixture();
+    const result = collectSystemResources(root, { ...options, platform });
+    expect(result.disks[0]?.state).toBe("supported");
+    expect(result.pressure).toMatchObject({
+      state: "unsupported",
+      cpu: null,
+      memory: null,
+      io: null,
+    });
+    expect(result.io).toMatchObject({
+      state: "unsupported",
+      read_bytes_per_second: null,
+      write_bytes_per_second: null,
+    });
+  });
+
+  test("reads the kernel PSI some averages rather than full-stall averages", () => {
+    const { root, procRoot, options } = fixture();
+    for (const resource of ["cpu", "memory", "io"]) {
+      writeFileSync(
+        join(procRoot, "pressure", resource),
+        "some avg10=1.25 avg60=2.50 avg300=3.75 total=100000\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+      );
+    }
+    expect(collectSystemResources(root, options).pressure).toEqual({
+      state: "supported",
+      cpu: { avg10: 1.25, avg60: 2.5, avg300: 3.75 },
+      memory: { avg10: 1.25, avg60: 2.5, avg300: 3.75 },
+      io: { avg10: 1.25, avg60: 2.5, avg300: 3.75 },
+    });
+  });
+
+  test("distinguishes unsupported, malformed, and partly available PSI", () => {
+    const { root, procRoot, options } = fixture();
+    expect(collectSystemResources(root, options).pressure.state).toBe("unsupported");
+    writeFileSync(join(procRoot, "pressure", "cpu"), "some avg10=no avg60=0 avg300=0 total=0\n");
+    expect(collectSystemResources(root, options).pressure).toMatchObject({
+      state: "error",
+      cpu: null,
+    });
+    writeFileSync(join(procRoot, "pressure", "memory"), "some avg10=1 avg60=0 avg300=0 total=0\n");
+    const partial = collectSystemResources(root, options).pressure;
+    expect(partial.state).toBe("partial");
+    expect(partial.reason).toContain("Malformed PSI avg10");
+    expect(partial.memory?.avg10).toBe(1);
+  });
+
+  test.each([
+    "some avg10=101 avg60=0 avg300=0 total=0\n",
+    "some avg10=0 avg60=0 total=0\n",
+    "some avg10=0 avg60=0 avg300=0 total=0 avg10=0\n",
+    "some avg10=0 avg60=0 avg300=0 total=0\nsome avg10=0 avg60=0 avg300=0 total=0\n",
+  ])("rejects malformed PSI row %s", (text) => {
+    const { root, procRoot, options } = fixture();
+    writeFileSync(join(procRoot, "pressure", "cpu"), text);
+    expect(collectSystemResources(root, options).pressure.state).toBe("error");
+  });
+
+  test("calculates byte rates from whole underlying disks without partitions or stacked-device double counts", () => {
+    const { root, procRoot, sysRoot, options } = fixture();
+    addDevice(sysRoot, "sda");
+    addDevice(sysRoot, "dm-0", ["sda1"]);
+    addDevice(sysRoot, "loop0");
+    writeFileSync(
+      join(procRoot, "diskstats"),
+      diskLine("sda", 100, 200) +
+        diskLine("sda1", 100, 200, 1) +
+        diskLine("dm-0", 100, 200) +
+        diskLine("loop0", 100, 200),
+    );
+    expect(collectSystemResources(root, options).io).toMatchObject({
+      state: "supported",
+      read_bytes_per_second: null,
+    });
+    writeFileSync(
+      join(procRoot, "diskstats"),
+      diskLine("sda", 110, 220) +
+        diskLine("sda1", 110, 220, 1) +
+        diskLine("dm-0", 110, 220) +
+        diskLine("loop0", 110, 220),
+    );
+    expect(collectSystemResources(root, { ...options, nowMs: 3_000 }).io).toEqual({
+      state: "supported",
+      read_bytes_per_second: 2_560,
+      write_bytes_per_second: 5_120,
+    });
+  });
+
+  test("restarts the I/O baseline on counter reset, changed devices, and nonadvancing time", () => {
+    const { root, procRoot, sysRoot, options } = fixture();
+    addDevice(sysRoot, "sda");
+    const file = join(procRoot, "diskstats");
+    writeFileSync(file, diskLine("sda", 100, 200));
+    collectSystemResources(root, options);
+    writeFileSync(file, diskLine("sda", 10, 20));
+    expect(
+      collectSystemResources(root, { ...options, nowMs: 3_000 }).io.read_bytes_per_second,
+    ).toBeNull();
+    writeFileSync(file, diskLine("sda", 20, 40));
+    expect(
+      collectSystemResources(root, { ...options, nowMs: 5_000 }).io.read_bytes_per_second,
+    ).toBe(2_560);
+    addDevice(sysRoot, "sdb");
+    writeFileSync(file, diskLine("sda", 30, 60) + diskLine("sdb", 10, 20, 16));
+    expect(collectSystemResources(root, { ...options, nowMs: 7_000 }).io.reason).toContain(
+      "devices changed",
+    );
+    expect(collectSystemResources(root, { ...options, nowMs: 7_000 }).io.reason).toContain(
+      "did not advance",
+    );
+  });
+
+  test("does not reuse baselines across coordination roots or namespaces", () => {
+    const { root, procRoot, sysRoot, options } = fixture();
+    addDevice(sysRoot, "sda");
+    writeFileSync(join(procRoot, "diskstats"), diskLine("sda", 100, 200));
+    collectSystemResources(root, options);
+    const next = { ...options, nowMs: 3_000 };
+    expect(collectSystemResources(join(root, "another"), next).io.read_bytes_per_second).toBeNull();
+    expect(
+      collectSystemResources(root, { ...next, namespace: "wsl" }).io.read_bytes_per_second,
+    ).toBeNull();
+  });
+
+  test("reports malformed diskstats explicitly and clears the old baseline", () => {
+    const { root, procRoot, sysRoot, options } = fixture();
+    addDevice(sysRoot, "sda");
+    const file = join(procRoot, "diskstats");
+    writeFileSync(file, diskLine("sda", 100, 200));
+    collectSystemResources(root, options);
+    writeFileSync(file, "8 0 sda broken\n");
+    expect(collectSystemResources(root, { ...options, nowMs: 3_000 }).io).toMatchObject({
+      state: "error",
+      read_bytes_per_second: null,
+      reason: "Malformed diskstats for sda.",
+    });
+    writeFileSync(file, diskLine("sda", 200, 400));
+    expect(
+      collectSystemResources(root, { ...options, nowMs: 5_000 }).io.read_bytes_per_second,
+    ).toBeNull();
+  });
+
+  test("bounds counter file reads", () => {
+    const { root, procRoot, options } = fixture();
+    writeFileSync(join(procRoot, "pressure", "cpu"), "x".repeat(4_097));
+    const result = collectSystemResources(root, options);
+    expect(result.pressure.state).toBe("error");
+    expect(result.pressure.reason).toContain("collector limit");
+  });
+});

@@ -1,54 +1,88 @@
 ---
 title: resources
-description: Observe local CPU and memory pressure by agent and process tree.
+description: Read cached CPU, memory, disk capacity, and resource pressure.
 ---
 
-`harn resources` reads local machine and process resource use. It attributes a
-process tree to an agent only when parent-PID ancestry reaches a live Harnery
-PID-map row or an exact Codex WSL bridge identity resolves to one live,
-top-level Codex session. Expensive processes that cannot be attributed remain
-visible.
+`harn resources status` gives agents the latest measurements from the optional
+local supervisor. It reads cached measurements without scanning processes or
+starting a service. Writer liveness is checked separately.
+
+```bash
+harn supervisor start --keep-alive
+harn resources status
+harn resources status --json
+harn resources status --processes
+harn supervisor stop
+```
+
+Dashboard and managed-workflow startup also ensure the supervisor is running.
+Use `--keep-alive` for command-only monitoring that should remain available
+without a dashboard. Every resource command accepts `--root <path>`.
+
+## Cached status
+
+The supervisor samples every two seconds and atomically replaces
+`.harnery/resources/snapshot.json`. Readers share that snapshot. The supervisor
+also keeps a 15-minute history of machine and process-group totals.
+
+The default status includes CPU usage, available RAM, available disk space,
+sample age, measurement scope, and diagnostic advice. JSON includes the
+underlying measurements and their support states. `--processes` adds up to
+20 processes ordered by resident memory, with proven ownership where available.
+Command lines are excluded from status output.
+
+Agent status includes the same compact summary. Prompt context reports material
+changes in resource advice, with repeated states suppressed. Advice uses the
+existing diagnostic finding policy. It is advisory and cannot reserve capacity,
+block work, kill processes, or change coordination state.
+
+A snapshot older than 15 seconds is stale. Missing, malformed, oversized, or
+unsupported snapshots produce an explicit unavailable result. Unknown data is
+not zero. Advice stays unknown when the findings or writer cannot be verified,
+even when recent measurements can still be displayed. Windows-host readings have
+their own timestamps and expire after 30 seconds.
+
+## Measurements and platforms
+
+| Measurement | Linux / WSL | macOS | Windows |
+|---|---|---|---|
+| CPU utilization | Consecutive kernel counters | Consecutive OS counters | Consecutive OS counters |
+| RAM | Available memory from procfs | Available memory estimated from free, inactive, and speculative pages | OS free physical memory |
+| Swap | Kernel totals | Native swap totals | Pagefile totals when available |
+| Workspace and temporary disk space | Filesystem capacity | Filesystem capacity | Filesystem capacity |
+| CPU, memory, I/O stall averages | Linux PSI when exposed | Explicitly unsupported | Explicitly unsupported |
+| Disk read/write rates | Whole-device counter deltas | Explicitly unsupported | Explicitly unsupported |
+| Process ownership | Validated PID ancestry or exact bridge identity | Explicitly unavailable | Explicitly unavailable |
+
+Linux PSI reports time during which tasks stalled on a resource, averaged over
+10, 60, and 300 seconds. Disk I/O rates exclude partitions and stacked devices
+that would double-count the underlying disks. Initial or reset counters produce
+unknown rates until a second usable sample arrives. Disk capacity probes inspect
+only the workspace and temporary filesystems; they never walk directory contents.
+
+A WSL snapshot describes the Linux environment. It includes a separate Windows
+host section when Windows interop and CIM providers are available. That section
+reports CPU, memory, pagefiles, and fixed-volume capacity. The Windows probe is
+cached for 15 seconds, including failures. Supervisor probes run in the background
+and coalesce while one query is in flight, so WSL sampling does not wait for
+Windows. Pending host measurements are explicit. It does not allocate shared Windows
+processes to individual WSL tasks. A failed host query leaves WSL measurements
+usable and marks the host section unavailable.
+
+Native macOS and Windows snapshots are partial because process attribution and
+Linux PSI are unavailable. Their CPU, memory, and disk measurements remain
+usable. Native command probes are read-only, bounded, and hidden on Windows.
+The supervisor starts through its Node or Bun runtime on all supported platforms.
+Cgroup limits and GPU usage are not collected.
+
+## One-time snapshot
 
 ```bash
 harn resources snapshot
 ```
 
-## Snapshot
-
-`harn resources snapshot` performs one read without starting the resident
-observer. It reports memory, load, process RSS, process age, and ownership
-immediately. Current CPU needs two samples, so a one-shot response reports CPU
-as `null`.
-
-The optional [local supervisor](./supervisor/) samples repeatedly and writes one
-atomic current snapshot under `.harnery/resources/`. Its process table contains:
-
-- PID, parent PID, state, executable name, and process-start identity;
-- current CPU calculated from consecutive samples;
-- resident memory and process age;
-- agent, Harnery service, or unattributed ownership; and
-- the proof source for attributed ownership; and
-- a bounded command excerpt with common inline secret arguments redacted.
-
-The observer shows every attributed process tree. An unmatched process enters
-the snapshot when it crosses the CPU or memory visibility floor. The result is
-bounded to the highest-impact processes.
-
-The sampling interval defaults to 2,000 milliseconds. The dashboard starts the
-supervisor automatically. A startup or sampling failure never blocks
-coordination or the dashboard.
-
-## Platform support
-
-Linux and WSL procfs are supported. A WSL observer reports the Linux namespace;
-it does not claim to see unrelated Windows host processes. A shared Windows
-Codex host process is not allocated to individual WSL tasks. Codex WSL tool
-processes can be attributed only when all bridge identity fields agree and the
-session has one authority-safe live owner. Delegated tools inherit the
-top-level Codex task because the bridge does not expose a separate child-task
-identity. Other native platforms return an explicit unsupported state until a
-tested sampler ships.
-
-The current sampler does not report GPU use, process I/O, sockets, file
-descriptors, or cgroup limits. It does not provide kill, restart, renice, or
-pause controls.
+This command collects one fresh snapshot without starting the supervisor. Memory,
+load, and disk capacity are available immediately. Current CPU utilization and
+I/O rates need consecutive samples, so the first sample reports them as `null`.
+Linux process records include bounded, redacted command excerpts; prefer cached
+status for routine agent decisions.

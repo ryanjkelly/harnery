@@ -32,6 +32,93 @@ afterEach(() => {
 });
 
 describe("local supervisor collectors", () => {
+  test("reports low disk capacity and sustained PSI with replayable findings", () => {
+    const resource = resourceAt(Date.now());
+    resource.disks = [
+      {
+        path: "/workspace",
+        state: "supported",
+        total_bytes: 100 * 2 ** 30,
+        available_bytes: 0.5 * 2 ** 30,
+        used_percent: 99.5,
+      },
+    ];
+    resource.pressure = {
+      state: "partial",
+      cpu: null,
+      memory: { avg10: 1, avg60: 12, avg300: 8 },
+      io: null,
+    };
+    const input = {
+      resource,
+      services: [],
+      hooks: [],
+      history: updateSupervisorHistory(undefined, resource).history,
+      logFeed: emptyFeed(),
+    };
+    const findings = updateSupervisorFindings(input);
+    expect(findings.active).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          finding_kind: "machine.disk-space",
+          severity: "critical",
+          scope_id: "/workspace",
+        }),
+        expect.objectContaining({ finding_kind: "machine.memory-stall", severity: "critical" }),
+      ]),
+    );
+    resource.disks[0]!.state = "error";
+    resource.pressure.state = "unsupported";
+    const next = updateSupervisorFindings({ ...input, previous: findings });
+    expect(
+      next.active.some((f) =>
+        ["machine.disk-space", "machine.memory-stall"].includes(f.finding_kind),
+      ),
+    ).toBe(false);
+  });
+
+  test("keeps Windows host pressure separate and expires old host measurements", () => {
+    const resource = resourceAt(Date.now());
+    resource.namespace = "wsl";
+    resource.host = {
+      platform: "win32",
+      sampled_at: resource.sampled_at,
+      state: "supported",
+      disks: [],
+      machine: { ...resource.machine, memory_percent: 95 },
+    };
+    const input = {
+      resource,
+      services: [],
+      hooks: [],
+      history: updateSupervisorHistory(undefined, resource).history,
+      logFeed: emptyFeed(),
+    };
+    expect(updateSupervisorFindings(input).active).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          finding_kind: "machine.host-memory-pressure",
+          scope_id: "windows-host",
+          severity: "critical",
+        }),
+      ]),
+    );
+    resource.host.sampled_at = new Date(Date.parse(resource.sampled_at) + 1_000).toISOString();
+    resource.sample_duration_ms = 1_500;
+    expect(
+      updateSupervisorFindings(input).active.some(
+        (f) => f.finding_kind === "machine.host-memory-pressure",
+      ),
+    ).toBe(true);
+    resource.host.sampled_at = new Date(Date.parse(resource.sampled_at) - 31_000).toISOString();
+    resource.sample_duration_ms = 1;
+    expect(
+      updateSupervisorFindings(input).active.some(
+        (f) => f.finding_kind === "machine.host-memory-pressure",
+      ),
+    ).toBe(false);
+  });
+
   test("bounds 15-minute history at 90 ten-second points", () => {
     let history = updateSupervisorHistory(undefined, resourceAt(0)).history;
     expect(history.points).toHaveLength(1);

@@ -108,7 +108,7 @@ export interface SupervisorHistoryPoint {
     memory_percent: number | null;
     memory_used_bytes: number | null;
     swap_used_bytes: number | null;
-    process_count: number;
+    process_count: number | null;
   };
   groups: readonly ResourceProcessGroup[];
 }

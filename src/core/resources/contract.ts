@@ -29,6 +29,7 @@ export interface ResourceProcessGroup {
 }
 
 export interface ResourceMachineSample {
+  cpu_available_parallelism?: number;
   cpu_percent: number | null;
   cpu_logical_count: number;
   load_average: [number, number, number] | null;
@@ -38,7 +39,7 @@ export interface ResourceMachineSample {
   memory_percent: number | null;
   swap_total_bytes: number | null;
   swap_used_bytes: number | null;
-  process_count: number;
+  process_count: number | null;
 }
 
 export interface ResourceSnapshot {
@@ -51,15 +52,58 @@ export interface ResourceSnapshot {
   namespace: "host" | "wsl" | "unknown";
   support: {
     state: ResourceSupportState;
-    sampler: "procfs" | "unsupported";
+    sampler: "procfs" | "darwin" | "win32" | "unsupported";
     reason?: string;
   };
   machine: ResourceMachineSample;
+  disks?: ResourceDiskSample[];
+  pressure?: ResourcePressureSample;
+  io?: ResourceIoSample;
+  host?: ResourceHostSample;
   groups: ResourceProcessGroup[];
   processes: ResourceProcessSample[];
   visible_process_count: number;
   omitted_process_count: number;
   unattributed_process_count: number;
+}
+
+export interface ResourceDiskSample {
+  path: string;
+  state: ResourceSupportState;
+  total_bytes: number | null;
+  available_bytes: number | null;
+  used_percent: number | null;
+  reason?: string;
+}
+
+export interface ResourcePressureWindow {
+  avg10: number;
+  avg60: number;
+  avg300: number;
+}
+
+export interface ResourcePressureSample {
+  state: ResourceSupportState;
+  cpu: ResourcePressureWindow | null;
+  memory: ResourcePressureWindow | null;
+  io: ResourcePressureWindow | null;
+  reason?: string;
+}
+
+export interface ResourceIoSample {
+  state: ResourceSupportState;
+  read_bytes_per_second: number | null;
+  write_bytes_per_second: number | null;
+  reason?: string;
+}
+
+export interface ResourceHostSample {
+  platform: "win32";
+  sampled_at: string;
+  state: ResourceSupportState;
+  machine: ResourceMachineSample | null;
+  disks: ResourceDiskSample[];
+  reason?: string;
 }
 
 export interface ResourceServiceStatusRecord {

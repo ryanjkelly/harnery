@@ -137,7 +137,7 @@ export default function ResourcesPage() {
                 <MetricCard
                   icon={<Activity aria-hidden />}
                   label="Processes"
-                  value={snapshot.machine.process_count.toLocaleString()}
+                  value={snapshot.machine.process_count?.toLocaleString() ?? "Unknown"}
                   detail={`${snapshot.visible_process_count} shown · ${snapshot.unattributed_process_count} unattributed`}
                   tone={snapshot.unattributed_process_count > 0 ? "warning" : "success"}
                 />

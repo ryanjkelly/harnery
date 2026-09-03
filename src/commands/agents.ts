@@ -118,6 +118,7 @@ import {
   readRuntimeContextUsage,
 } from "../core/hooks/adapter/runtime-telemetry.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
+import { formatResourceSummary, readResourceStatus } from "../core/resources/status.ts";
 import { registerContextCommand } from "./context.ts";
 
 type LiveCoordinationRow = ReturnType<typeof readLiveCoordinationRows>[number];
@@ -2408,6 +2409,7 @@ function runStatus(opts: {
   // the QA run took 58 minutes. Best-effort by contract — no pointer, a
   // malformed one, or any read failure renders no row.
   const qaSignal = qaSignalStatusRow({ coordRoot: root, instanceId: hb.instance_id });
+  const resources = readResourceStatus(root);
 
   const data = {
     name: displayName,
@@ -2441,6 +2443,7 @@ function runStatus(opts: {
       })),
     })),
     pending_councils: pendingCouncils,
+    resources,
     context_used: ctxUsage && "used" in ctxUsage ? ctxUsage.used : null,
     context_window: ctxUsage && "window" in ctxUsage ? ctxUsage.window : null,
     timestamp_iso: new Date().toISOString(),
@@ -2462,6 +2465,7 @@ function runStatus(opts: {
     ["activity", activityOf(hb)],
     ["lifecycle", lifecycleLabel(hb)],
     ["context", ctxStr],
+    ["resources", formatResourceSummary(resources)],
     ["files", filesStr],
     ["peers", peersStr],
     ["time", timeStr],

@@ -1,5 +1,5 @@
 /**
- * Stale-sweep: prune dead heartbeats + orphaned pid-map + .last-peer-hash
+ * Stale-sweep: prune dead heartbeats + orphaned pid-map + prompt hash
  * files.
  *
  * Runs after session.started to clean up crashed-peer detritus before the new
@@ -83,10 +83,12 @@ export function staleSweep(coordRoot: string): {
   heartbeatsRemoved: string[];
   pidmapsRemoved: number;
   peerHashesRemoved: number;
+  resourceHashesRemoved: number;
 } {
   const heartbeatsRemoved: string[] = [];
   let pidmapsRemoved = 0;
   let peerHashesRemoved = 0;
+  let resourceHashesRemoved = 0;
 
   const freshness = coordFreshnessSeconds(coordRoot);
   const nowSec = Math.floor(Date.now() / 1000);
@@ -207,16 +209,26 @@ export function staleSweep(coordRoot: string): {
     }
   }
 
-  // 3. Prune .last-peer-hash files for dead owners.
+  // 3. Prune prompt hashes for dead owners. Resource hashes retain their own
+  // count so existing peer-hash telemetry keeps its original meaning.
   const agentsDir = join(coordRoot, ".harnery");
   if (existsSync(agentsDir)) {
     for (const f of readdirSync(agentsDir)) {
-      if (!f.startsWith(".last-peer-hash.")) continue;
-      const owner = f.slice(".last-peer-hash.".length);
+      const resourceHash = f.startsWith(".last-resource-hash.");
+      const prefix = resourceHash ? ".last-resource-hash." : ".last-peer-hash.";
+      if (!f.startsWith(prefix)) continue;
+      const owner = f.slice(prefix.length);
+      if (resourceHash) {
+        // Ignore atomic-write temporary files and preserve hashes when a
+        // retained heartbeat's liveness could not be determined safely.
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(owner)) continue;
+        if (existsSync(join(d, `${owner}.json`))) continue;
+      }
       if (!liveInstanceIds.has(owner)) {
         try {
           unlinkSync(join(agentsDir, f));
-          peerHashesRemoved += 1;
+          if (resourceHash) resourceHashesRemoved += 1;
+          else peerHashesRemoved += 1;
         } catch {
           /* swallow */
         }
@@ -224,5 +236,5 @@ export function staleSweep(coordRoot: string): {
     }
   }
 
-  return { heartbeatsRemoved, pidmapsRemoved, peerHashesRemoved };
+  return { heartbeatsRemoved, pidmapsRemoved, peerHashesRemoved, resourceHashesRemoved };
 }

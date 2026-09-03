@@ -50,8 +50,10 @@ import type { Adapter } from "../../adapter.ts";
 import { endOfTurnStatusCommand, hostPromptReminder, resolveBinName } from "../../config.ts";
 import { canReceiveContext } from "../../hooks/adapter/output.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
+import { formatResourceSummary, readResourceStatus } from "../../resources/status.ts";
 import { drainMailbox, formatMailboxDelivery } from "../mailbox.ts";
 import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
+import { heartbeatPath } from "../state/heartbeat-reader.ts";
 import {
   readLiveCoordinationRow,
   readLiveCoordinationRows,
@@ -157,6 +159,11 @@ export function renderPromptContext(opts: PromptContextOpts): string {
   const peerTable = computePeerTableIfChanged(coordRoot, instanceId, sessionId);
   if (peerTable) sections.push(peerTable);
 
+  if (canDeliverHere) {
+    const resources = resourceWarningIfChanged(coordRoot, instanceId);
+    if (resources) sections.push(resources);
+  }
+
   // 3. Council pending with hash dedup.
   if (resolvedName) {
     const councilMsg = computeCouncilPendingIfChanged(coordRoot, instanceId, resolvedName);
@@ -201,6 +208,42 @@ export function renderPromptContext(opts: PromptContextOpts): string {
   }
 
   return sections.join("\n\n");
+}
+
+/** Resource samples stay in the cache; prompts only receive meaningful changes. */
+export function resourceWarningIfChanged(coordRoot: string, instanceId: string): string {
+  try {
+    heartbeatPath(coordRoot, instanceId);
+    const status = readResourceStatus(coordRoot);
+    const hashFile = join(coordRoot, ".harnery", `.last-resource-hash.${instanceId}`);
+    const previous = safeRead(hashFile);
+    // Existing users without a writer should retain ordinary coordination.
+    if (status.reason === "snapshot_missing" && !previous) return "";
+    const key =
+      status.state === "fresh"
+        ? `${status.state}:${status.assessment}:${status.signals.join(",")}:${status.writer.running}`
+        : `${status.state}:${status.reason}`;
+    if (previous === key) return "";
+    writeHashFile(hashFile, key);
+    const warning =
+      status.state !== "fresh" ||
+      !status.writer.running ||
+      ["elevated", "critical"].includes(status.assessment);
+    const wasWarning =
+      previous && !previous.startsWith("fresh:normal:") && !previous.startsWith("fresh:unknown:");
+    if (!warning && !wasWarning) return "";
+    const guidance =
+      status.assessment === "critical"
+        ? "Avoid starting additional heavy work until the findings change."
+        : status.assessment === "elevated"
+          ? "Limit new parallel heavy work and inspect the findings."
+          : status.state !== "fresh" || !status.writer.running || status.assessment === "unknown"
+            ? "Resource headroom is unknown; continue normal coordination."
+            : "The previously reported resource warning has cleared.";
+    return `Resource update: ${formatResourceSummary(status)}. ${guidance} Read \`${resolveBinName(coordRoot)} resources status --json\` for details.`;
+  } catch {
+    return "";
+  }
 }
 
 function renderHostPromptReminder(coordRoot: string, selfInstanceId: string): string {

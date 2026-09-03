@@ -1,0 +1,66 @@
+---
+title: "ADR 0159: share resource awareness across agents and platforms"
+description: Extend supervisor measurements with a cached CLI reader and native platform collectors.
+sidebar:
+  order: 159
+---
+
+**Date:** 2026-09-03
+**Status:** Accepted
+
+## Context
+
+The supervisor already writes CPU and memory snapshots, but the resource CLI
+collects only a single sample. That sample cannot report current CPU utilization.
+Agents also need disk capacity and a clear distinction between a WSL environment
+and its Windows host. The existing procfs collector leaves native macOS and
+Windows without machine measurements.
+
+## Alternatives considered
+
+- Collect on every agent request. This repeats work, loses consecutive CPU
+  counters, and lets command latency depend on OS probes.
+- Add a second background writer. This duplicates the supervisor's lease,
+  lifecycle, history, and snapshot storage.
+- Add a separate warning policy to the CLI. It could disagree with diagnostic
+  advice and would not reproduce from the same captured findings.
+- Treat unavailable platform metrics as zero. That would mistake missing
+  evidence for spare capacity.
+
+## Decision
+
+Extend the existing supervisor and resource contract. Add a bounded, cache-only
+`resources status` reader with text and JSON output, plus an optional process
+list. Agent status and prompt context consume that reader. Advisory pressure
+uses the existing diagnostic advice function and validated current findings.
+
+Add workspace and temporary filesystem capacity, Linux PSI, and whole-device
+I/O rates. Use OS CPU counters and bounded native memory probes on macOS and
+Windows. WSL may collect a separately timestamped Windows host section; success
+and failure results are cached for 15 seconds. The supervisor refreshes that
+cache asynchronously with one query in flight, keeping host probe latency out
+of its sampling loop. Preserve partial capability
+states, null unknown measurements, independent host freshness, and sample age.
+
+Keep one writer per coordination root. Launch it through the current runtime
+and a file-URL-resolved CLI entrypoint so native Windows does not require a Bash
+wrapper. Windows stop uses the durable stop request so the writer can exit
+cleanly. Coordination continues when the supervisor is stopped or unavailable.
+
+Initial new diagnostic thresholds are 90% used or less than 5 GiB available for
+a disk warning, and 97% used or less than 1 GiB available for a critical finding.
+PSI findings use the one-minute average: CPU 20%, memory 5%, and I/O 10% warn;
+twice those values are critical. These observations advise callers and do not
+admit or deny work. Windows-host CPU and memory reuse the local thresholds.
+
+## Result and limits
+
+Fixture tests cover native output parsing, missing providers, counter resets,
+capacity errors, disk-device accounting, cache freshness, and warning delivery.
+Linux/WSL and native Windows probes can be exercised on the development host;
+macOS parser and CPU-delta fixtures do not constitute a live Mac verification.
+
+Process attribution remains Linux-only. macOS and Windows expose usable machine
+measurements with partial support, and explicitly lack Linux PSI and disk I/O
+rates. Cgroup limits, automatic resource reservations, scheduling, and process
+control remain outside this change.

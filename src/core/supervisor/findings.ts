@@ -213,6 +213,101 @@ function evaluateCandidates(input: {
       swapPercent!,
       "percent",
     );
+  for (const disk of input.resource.disks ?? []) {
+    if (disk.state !== "supported" || disk.available_bytes === null || disk.used_percent === null)
+      continue;
+    if (disk.used_percent < 90 && disk.available_bytes >= 5 * GIB) continue;
+    out.push(
+      candidate(
+        "machine.disk-space",
+        disk.used_percent >= 97 || disk.available_bytes < GIB ? "critical" : "warning",
+        "filesystem",
+        disk.path,
+        `Filesystem ${disk.path} has ${round1(disk.available_bytes / GIB)} GiB available (${disk.used_percent}% used).`,
+        source,
+        disk.used_percent,
+        "percent",
+        [resourceCapability],
+      ),
+    );
+  }
+  const pressure = input.resource.pressure;
+  if (pressure?.state === "supported" || pressure?.state === "partial") {
+    for (const [kind, value, threshold] of [
+      ["cpu", pressure.cpu, 20],
+      ["memory", pressure.memory, 5],
+      ["io", pressure.io, 10],
+    ] as const) {
+      if (!value || value.avg60 < threshold) continue;
+      addMachine(
+        `machine.${kind}-stall`,
+        value.avg60 >= threshold * 2 ? "critical" : "warning",
+        `Tasks stalled on ${kind} for ${value.avg60}% of the last minute.`,
+        value.avg60,
+        "percent",
+      );
+    }
+  }
+  const host = input.resource.host;
+  const hostAge = host
+    ? Date.parse(input.resource.sampled_at) +
+      input.resource.sample_duration_ms -
+      Date.parse(host.sampled_at)
+    : NaN;
+  if (
+    host?.machine &&
+    (host.state === "supported" || host.state === "partial") &&
+    hostAge >= 0 &&
+    hostAge <= 30_000
+  ) {
+    const hostSource = stableSource(
+      "resource.windows-host",
+      "windows-host",
+      host.sampled_at,
+      host.state,
+    );
+    for (const [kind, value, threshold, severity] of [
+      ["cpu", host.machine.cpu_percent, MACHINE_CPU_THRESHOLD, "warning"],
+      ["memory", host.machine.memory_percent, MACHINE_MEMORY_THRESHOLD, "critical"],
+    ] as const) {
+      if (value === null || value < threshold) continue;
+      out.push(
+        candidate(
+          `machine.host-${kind}-pressure`,
+          severity,
+          "machine",
+          "windows-host",
+          `Windows host ${kind} is ${value}%.`,
+          hostSource,
+          value,
+          "percent",
+          [{ source_kind: "resource.windows-host", state: host.state }],
+        ),
+      );
+    }
+    for (const disk of host.disks) {
+      if (
+        disk.state !== "supported" ||
+        disk.available_bytes === null ||
+        disk.used_percent === null ||
+        (disk.used_percent < 90 && disk.available_bytes >= 5 * GIB)
+      )
+        continue;
+      out.push(
+        candidate(
+          "machine.host-disk-space",
+          disk.used_percent >= 97 || disk.available_bytes < GIB ? "critical" : "warning",
+          "filesystem",
+          `windows-host:${disk.path}`,
+          `Windows filesystem ${disk.path} has ${round1(disk.available_bytes / GIB)} GiB available (${disk.used_percent}% used).`,
+          hostSource,
+          disk.used_percent,
+          "percent",
+          [{ source_kind: "resource.windows-host", state: host.state }],
+        ),
+      );
+    }
+  }
   if (input.resource.collector_cpu_ms >= COLLECTOR_CPU_THRESHOLD_MS)
     out.push(
       candidate(

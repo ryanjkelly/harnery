@@ -26,6 +26,36 @@ afterEach(() => {
 });
 
 describe("staleSweep V3 audit fallback", () => {
+  test("removes dead-session resource hashes separately from peer hash counts", () => {
+    const root = fixtureRoot();
+    seedV3Session(root, "live", { adapter: "codex" });
+    writeStaleHeartbeat(root, "dead", "dead-session", "codex");
+    const cache = join(root, ".harnery");
+    for (const owner of ["live", "dead", "missing"]) {
+      writeFileSync(join(cache, `.last-resource-hash.${owner}`), "fresh:normal::true");
+    }
+    writeFileSync(join(cache, ".last-peer-hash.dead"), "peer-hash");
+    writeFileSync(join(cache, ".last-resource-hash.live.123.tmp"), "write in progress");
+
+    expect(staleSweep(root)).toMatchObject({ peerHashesRemoved: 1, resourceHashesRemoved: 2 });
+    expect(existsSync(join(cache, ".last-resource-hash.live"))).toBeTrue();
+    expect(existsSync(join(cache, ".last-resource-hash.live.123.tmp"))).toBeTrue();
+    expect(existsSync(join(cache, ".last-resource-hash.dead"))).toBeFalse();
+    expect(existsSync(join(cache, ".last-resource-hash.missing"))).toBeFalse();
+    expect(staleSweep(root)).toMatchObject({ peerHashesRemoved: 0, resourceHashesRemoved: 0 });
+  });
+
+  test("keeps a resource hash when a fresh malformed heartbeat prevents a dead-owner determination", () => {
+    const root = fixtureRoot();
+    const heartbeat = join(root, ".harnery", "active", "uncertain.json");
+    mkdirSync(dirname(heartbeat), { recursive: true });
+    writeFileSync(heartbeat, "{");
+    const hash = join(root, ".harnery", ".last-resource-hash.uncertain");
+    writeFileSync(hash, "fresh:normal::true");
+    expect(staleSweep(root).resourceHashesRemoved).toBe(0);
+    expect(existsSync(hash)).toBeTrue();
+  });
+
   test("removes a terminal generation cache without appending after its terminal", () => {
     const root = fixtureRoot();
     seedV3Session(root, "terminal", { adapter: "codex", sessionId: "terminal-session" });

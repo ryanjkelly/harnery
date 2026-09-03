@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
-import { cpus, loadavg, platform, release } from "node:os";
+import { availableParallelism, cpus, loadavg, platform, release } from "node:os";
 import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
@@ -15,6 +15,12 @@ import {
   type ResourceSamplerState,
   type ResourceSnapshot,
 } from "./contract.ts";
+import {
+  collectWindowsHost,
+  collectWindowsHostInBackground,
+  sampleNativeResources,
+} from "./native.ts";
+import { collectSystemResources } from "./system.ts";
 
 const DEFAULT_CLOCK_TICKS = 100;
 const DEFAULT_PAGE_SIZE = 4_096;
@@ -41,7 +47,9 @@ interface LinuxCpuReading {
 }
 
 interface ResourceSamplerOptions {
+  backgroundHost?: boolean;
   procRoot?: string;
+  sysRoot?: string;
   nowMs?: number;
   clockTicks?: number;
   pageSize?: number;
@@ -63,6 +71,43 @@ let cachedClockTicks: number | undefined;
 let cachedPageSize: number | undefined;
 
 export function sampleResources(
+  coordRoot: string,
+  previous?: ResourceSamplerState,
+  options: ResourceSamplerOptions = {},
+): ResourceSampleResult {
+  const started = performance.now();
+  const cpuBefore = process.cpuUsage();
+  const currentPlatform = platform();
+  const result =
+    currentPlatform === "darwin" || currentPlatform === "win32"
+      ? sampleNativeResources(coordRoot, previous, {
+          nowMs: options.nowMs,
+          backgroundHost: options.backgroundHost,
+        })
+      : sampleProcessResources(coordRoot, previous, options);
+  Object.assign(
+    result.snapshot,
+    collectSystemResources(coordRoot, {
+      procRoot: options.procRoot,
+      sysRoot: options.sysRoot,
+      nowMs: options.nowMs,
+      namespace: result.snapshot.namespace,
+    }),
+  );
+  result.snapshot.machine.cpu_available_parallelism = availableParallelism();
+  // A fixture procfs has no relationship to the actual Windows host.
+  if (result.snapshot.namespace === "wsl" && !options.procRoot) {
+    result.snapshot.host = options.backgroundHost
+      ? collectWindowsHostInBackground()
+      : collectWindowsHost();
+  }
+  result.snapshot.sample_duration_ms = round1(performance.now() - started);
+  const cpuUsed = process.cpuUsage(cpuBefore);
+  result.snapshot.collector_cpu_ms = round1((cpuUsed.user + cpuUsed.system) / 1_000);
+  return result;
+}
+
+function sampleProcessResources(
   coordRoot: string,
   previous?: ResourceSamplerState,
   options: ResourceSamplerOptions = {},
