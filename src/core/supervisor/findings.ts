@@ -233,6 +233,21 @@ function evaluateCandidates(input: {
   }
   const pressure = input.resource.pressure;
   if (pressure?.state === "supported" || pressure?.state === "partial") {
+    for (const [kind, full] of [
+      ["memory", pressure.memory_full],
+      ["io", pressure.io_full],
+    ] as const) {
+      if (!full || (full.avg10 < 50 && !(full.avg10 >= 20 && full.avg10 > full.avg60))) continue;
+      const direction =
+        full.avg10 > full.avg60 ? "rising" : full.avg10 < full.avg60 ? "falling" : "steady";
+      addMachine(
+        `machine.${kind}-full-stall`,
+        full.avg10 >= 50 ? "critical" : "warning",
+        `All non-idle tasks stalled on ${kind} for ${full.avg10}% of the recent 10-second window (${direction}; 60s ${full.avg60}%, 300s ${full.avg300}%).`,
+        full.avg10,
+        "percent",
+      );
+    }
     for (const [kind, value, threshold] of [
       ["cpu", pressure.cpu, 20],
       ["memory", pressure.memory, 5],
@@ -242,11 +257,26 @@ function evaluateCandidates(input: {
       addMachine(
         `machine.${kind}-stall`,
         value.avg60 >= threshold * 2 ? "critical" : "warning",
-        `Tasks stalled on ${kind} for ${value.avg60}% of the last minute.`,
+        `At least one task stalled on ${kind} for ${value.avg60}% of the last minute.`,
         value.avg60,
         "percent",
       );
     }
+  }
+  const oom = input.resource.oom;
+  if (
+    oom?.state === "supported" &&
+    oom.last_kill_age_ms !== null &&
+    oom.last_kill_age_ms <= 60_000 &&
+    oom.total_kills !== null
+  ) {
+    addMachine(
+      "machine.oom-kill",
+      "critical",
+      `Kernel OOM kills increased ${Math.round(oom.last_kill_age_ms / 1000)}s ago; ${oom.total_kills} kills reported in total. Work may have been lost.`,
+      oom.total_kills,
+      "count",
+    );
   }
   const host = input.resource.host;
   const hostAge = host

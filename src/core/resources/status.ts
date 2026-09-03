@@ -12,6 +12,7 @@ import {
   type ResourceHostSample,
   type ResourceIoSample,
   type ResourceMachineSample,
+  type ResourceOomSample,
   type ResourcePressureSample,
   type ResourceProcessSample,
   type ResourceSnapshot,
@@ -41,6 +42,7 @@ export interface ResourceStatus {
   machine: ResourceMachineSample | null;
   disks: ResourceDiskSample[];
   pressure: ResourcePressureSample | null;
+  oom: ResourceOomSample | null;
   io: ResourceIoSample | null;
   host: ResourceHostSample | null;
   processes?: Array<
@@ -74,6 +76,7 @@ export function readResourceStatus(
     machine: null,
     disks: [],
     pressure: null,
+    oom: null,
     io: null,
     host: null,
   };
@@ -135,6 +138,17 @@ export function readResourceStatus(
         cpu: projectWindow(value.pressure.cpu),
         memory: projectWindow(value.pressure.memory),
         io: projectWindow(value.pressure.io),
+        memory_full: projectWindow(value.pressure.memory_full),
+        io_full: projectWindow(value.pressure.io_full),
+      }
+    : null;
+  result.oom = value.oom
+    ? {
+        state: value.oom.state,
+        total_kills: value.oom.total_kills,
+        kills_since_last_sample: value.oom.kills_since_last_sample,
+        last_kill_age_ms: value.oom.last_kill_age_ms,
+        ...reason(value.oom.reason),
       }
     : null;
   result.io = value.io
@@ -231,6 +245,23 @@ export function formatResourceStatus(status: ResourceStatus, bin: string): strin
     lines.push(
       `Pressure: ${status.pressure.state}${status.pressure.reason ? ` (${status.pressure.reason})` : ""}`,
     );
+  for (const [name, window] of [
+    ["memory", status.pressure?.memory_full],
+    ["I/O", status.pressure?.io_full],
+  ] as const) {
+    if (!window) continue;
+    const direction =
+      window.avg10 > window.avg60 ? "rising" : window.avg10 < window.avg60 ? "falling" : "steady";
+    lines.push(
+      `Full ${name} stalls: ${window.avg10}% / ${window.avg60}% / ${window.avg300}% (10s / 60s / 300s; ${direction}).`,
+    );
+  }
+  if (status.oom) {
+    const oom = status.oom;
+    lines.push(
+      `OOM kills: ${oom.total_kills ?? "unknown"} total; ${oom.kills_since_last_sample ?? "unknown"} since previous sample${oom.last_kill_age_ms === null ? "" : `; last increase ${Math.round(oom.last_kill_age_ms / 1000)}s ago`}${oom.reason ? ` (${oom.reason})` : ""}.`,
+    );
+  }
   if (status.io)
     lines.push(
       `Disk I/O: ${status.io.state}; read ${status.io.read_bytes_per_second === null ? "unknown" : `${formatBytes(status.io.read_bytes_per_second)}/s`}, write ${status.io.write_bytes_per_second === null ? "unknown" : `${formatBytes(status.io.write_bytes_per_second)}/s`}`,
@@ -415,7 +446,23 @@ function validSnapshot(v: unknown): v is ResourceSnapshot {
       !validWindow(v.pressure.cpu) ||
       !validWindow(v.pressure.memory) ||
       !validWindow(v.pressure.io) ||
+      !validWindow(v.pressure.memory_full) ||
+      !validWindow(v.pressure.io_full) ||
       (v.pressure.reason !== undefined && !string(v.pressure.reason)))
+  )
+    return false;
+  if (
+    v.oom !== undefined &&
+    (!object(v.oom) ||
+      !support(v.oom.state) ||
+      !["total_kills", "kills_since_last_sample"].every(
+        (key) =>
+          v.oom !== null &&
+          object(v.oom) &&
+          (v.oom[key] === null || (number(v.oom[key]) && Number.isSafeInteger(v.oom[key]))),
+      ) ||
+      !nullable(v.oom.last_kill_age_ms) ||
+      (v.oom.reason !== undefined && !string(v.oom.reason)))
   )
     return false;
   if (

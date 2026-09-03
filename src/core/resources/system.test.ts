@@ -105,7 +105,7 @@ describe("system resource collection", () => {
     });
   });
 
-  test("reads the kernel PSI some averages rather than full-stall averages", () => {
+  test("keeps some and full PSI distinct and omits undefined system-wide CPU full", () => {
     const { root, procRoot, options } = fixture();
     for (const resource of ["cpu", "memory", "io"]) {
       writeFileSync(
@@ -118,6 +118,8 @@ describe("system resource collection", () => {
       cpu: { avg10: 1.25, avg60: 2.5, avg300: 3.75 },
       memory: { avg10: 1.25, avg60: 2.5, avg300: 3.75 },
       io: { avg10: 1.25, avg60: 2.5, avg300: 3.75 },
+      memory_full: { avg10: 0, avg60: 0, avg300: 0 },
+      io_full: { avg10: 0, avg60: 0, avg300: 0 },
     });
   });
 
@@ -129,11 +131,15 @@ describe("system resource collection", () => {
       state: "error",
       cpu: null,
     });
-    writeFileSync(join(procRoot, "pressure", "memory"), "some avg10=1 avg60=0 avg300=0 total=0\n");
+    writeFileSync(
+      join(procRoot, "pressure", "memory"),
+      "some avg10=1 avg60=0 avg300=0 total=0\nfull avg10=0.5 avg60=0 avg300=0 total=0\n",
+    );
     const partial = collectSystemResources(root, options).pressure;
     expect(partial.state).toBe("partial");
     expect(partial.reason).toContain("Malformed PSI avg10");
     expect(partial.memory?.avg10).toBe(1);
+    expect(partial.memory_full?.avg10).toBe(0.5);
   });
 
   test.each([
@@ -175,6 +181,56 @@ describe("system resource collection", () => {
       read_bytes_per_second: 2_560,
       write_bytes_per_second: 5_120,
     });
+  });
+
+  test("detects new OOM kills without reporting historic totals or resets as new incidents", () => {
+    const { root, procRoot, options } = fixture();
+    const file = join(procRoot, "vmstat");
+    const sample = (kills: number, nowMs: number) => {
+      writeFileSync(file, `pgfault 100\noom_kill ${kills}\n`);
+      return collectSystemResources(root, { ...options, nowMs }).oom;
+    };
+    expect(sample(12, 1_000)).toMatchObject({
+      state: "supported",
+      total_kills: 12,
+      kills_since_last_sample: null,
+      last_kill_age_ms: null,
+    });
+    expect(sample(12, 3_000).kills_since_last_sample).toBe(0);
+    expect(sample(14, 5_000)).toMatchObject({ kills_since_last_sample: 2, last_kill_age_ms: 0 });
+    expect(sample(14, 7_000)).toMatchObject({
+      kills_since_last_sample: 0,
+      last_kill_age_ms: 2_000,
+    });
+    expect(
+      collectSystemResources(join(root, "other"), { ...options, nowMs: 9_000 }).oom
+        .last_kill_age_ms,
+    ).toBeNull();
+    expect(sample(1, 9_000)).toMatchObject({
+      kills_since_last_sample: null,
+      last_kill_age_ms: null,
+    });
+    expect(sample(2, 9_000).kills_since_last_sample).toBeNull();
+    expect(sample(2, 11_000).kills_since_last_sample).toBe(0);
+    writeFileSync(file, "oom_kill broken\n");
+    expect(collectSystemResources(root, { ...options, nowMs: 13_000 }).oom.state).toBe("error");
+    expect(sample(30, 15_000).kills_since_last_sample).toBeNull();
+    writeFileSync(file, "pgfault 200\n");
+    expect(collectSystemResources(root, options).oom.state).toBe("unsupported");
+  });
+
+  test("rejects missing or malformed full PSI instead of fabricating a healthy full-stall value", () => {
+    const { root, procRoot, options } = fixture();
+    for (const full of ["", "full avg10=NaN avg60=0 avg300=0 total=0\n"]) {
+      writeFileSync(
+        join(procRoot, "pressure", "memory"),
+        `some avg10=1 avg60=0 avg300=0 total=0\n${full}`,
+      );
+      expect(collectSystemResources(root, options).pressure).toMatchObject({
+        state: "error",
+        memory_full: null,
+      });
+    }
   });
 
   test("restarts the I/O baseline on counter reset, changed devices, and nonadvancing time", () => {

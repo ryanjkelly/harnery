@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import type {
   ResourceDiskSample,
   ResourceIoSample,
+  ResourceOomSample,
   ResourcePressureSample,
   ResourcePressureWindow,
   ResourceSupportState,
@@ -39,6 +40,10 @@ interface IoBaseline {
 }
 
 const ioBaselines = new Map<string, IoBaseline>();
+const oomBaselines = new Map<
+  string,
+  { sampledAt: number; kills: number; lastKillAt: number | null }
+>();
 const MAX_BASELINES = 64;
 const MAX_BLOCK_DEVICES = 1_024;
 
@@ -46,7 +51,12 @@ const MAX_BLOCK_DEVICES = 1_024;
 export function collectSystemResources(
   coordRoot: string,
   options: SystemResourceOptions = {},
-): { disks: ResourceDiskSample[]; pressure: ResourcePressureSample; io: ResourceIoSample } {
+): {
+  disks: ResourceDiskSample[];
+  pressure: ResourcePressureSample;
+  io: ResourceIoSample;
+  oom: ResourceOomSample;
+} {
   const currentPlatform = options.platform ?? platform();
   const procRoot = options.procRoot ?? "/proc";
   const sysRoot = options.sysRoot ?? "/sys";
@@ -59,9 +69,18 @@ export function collectSystemResources(
         cpu: null,
         memory: null,
         io: null,
+        memory_full: null,
+        io_full: null,
         reason: `Linux pressure stall information is unavailable on ${currentPlatform}.`,
       },
       io: unavailableIo("unsupported", `Disk I/O rates are not collected on ${currentPlatform}.`),
+      oom: {
+        state: "unsupported",
+        total_kills: null,
+        kills_since_last_sample: null,
+        last_kill_age_ms: null,
+        reason: `Kernel OOM kill counters are not collected on ${currentPlatform}.`,
+      },
     };
   }
   const key = JSON.stringify([
@@ -74,6 +93,7 @@ export function collectSystemResources(
     disks,
     pressure: collectPressure(procRoot),
     io: collectIo(procRoot, sysRoot, options.nowMs ?? performance.now(), key),
+    oom: collectOom(procRoot, options.nowMs ?? performance.now(), key),
   };
 }
 
@@ -129,13 +149,24 @@ function collectDisks(coordRoot: string, options: SystemResourceOptions): Resour
 }
 
 function collectPressure(procRoot: string): ResourcePressureSample {
-  const sample: ResourcePressureSample = { state: "supported", cpu: null, memory: null, io: null };
+  const sample: ResourcePressureSample = {
+    state: "supported",
+    cpu: null,
+    memory: null,
+    io: null,
+    memory_full: null,
+    io_full: null,
+  };
   const reasons: string[] = [];
   let supported = 0;
   let failures = 0;
   for (const resource of ["cpu", "memory", "io"] as const) {
     try {
-      sample[resource] = parsePressure(readBounded(join(procRoot, "pressure", resource), 4_096));
+      const raw = readBounded(join(procRoot, "pressure", resource), 4_096);
+      const some = parsePressure(raw, "some");
+      // System-wide CPU full is undefined. Memory and I/O full measure all non-idle tasks stalled.
+      if (resource !== "cpu") sample[`${resource}_full`] = parsePressure(raw, "full");
+      sample[resource] = some;
       supported++;
     } catch (error) {
       if (!missingError(error) && !unsupportedError(error)) failures++;
@@ -154,12 +185,12 @@ function collectPressure(procRoot: string): ResourcePressureSample {
   return sample;
 }
 
-function parsePressure(source: string): ResourcePressureWindow {
+function parsePressure(source: string, kind: "some" | "full"): ResourcePressureWindow {
   const lines = source
     .trim()
     .split(/\r?\n/)
-    .filter((line) => /^some\s/.test(line));
-  if (lines.length !== 1) throw new Error("Malformed PSI: expected one some row.");
+    .filter((line) => line.startsWith(`${kind} `));
+  if (lines.length !== 1) throw new Error(`Malformed PSI: expected one ${kind} row.`);
   const fields = new Map<string, string>();
   for (const token of lines[0]!.trim().split(/\s+/).slice(1)) {
     const [name, value, extra] = token.split("=");
@@ -176,8 +207,54 @@ function parsePressure(source: string): ResourcePressureWindow {
     return value;
   });
   if (!/^\d+$/.test(fields.get("total") ?? "")) throw new Error("Malformed PSI total.");
-  // The kernel's 'some' row reports time at least one task was stalled, as percentages.
   return { avg10: values[0]!, avg60: values[1]!, avg300: values[2]! };
+}
+
+function collectOom(procRoot: string, now: number, key: string): ResourceOomSample {
+  try {
+    const rows = readBounded(join(procRoot, "vmstat"), 65_536)
+      .split(/\r?\n/)
+      .filter((line) => /^oom_kill\s/.test(line));
+    if (rows.length === 0) {
+      oomBaselines.delete(key);
+      return {
+        state: "unsupported",
+        total_kills: null,
+        kills_since_last_sample: null,
+        last_kill_age_ms: null,
+        reason: "Kernel does not expose oom_kill.",
+      };
+    }
+    const match = rows.length === 1 ? /^oom_kill\s+(\d+)\s*$/.exec(rows[0]!) : null;
+    const kills = match ? Number(match[1]) : NaN;
+    if (!Number.isSafeInteger(kills) || kills < 0 || !Number.isFinite(now))
+      throw new Error("Malformed OOM kill counter or sample time.");
+    const previous = oomBaselines.get(key);
+    const consecutive = previous && now > previous.sampledAt && kills >= previous.kills;
+    const delta = consecutive ? kills - previous.kills : null;
+    const lastKillAt = delta !== null && delta > 0 ? now : consecutive ? previous.lastKillAt : null;
+    oomBaselines.delete(key);
+    oomBaselines.set(key, { sampledAt: now, kills, lastKillAt });
+    if (oomBaselines.size > MAX_BASELINES) oomBaselines.delete(oomBaselines.keys().next().value!);
+    return {
+      state: "supported",
+      total_kills: kills,
+      kills_since_last_sample: delta,
+      last_kill_age_ms: lastKillAt === null ? null : now - lastKillAt,
+      ...(delta === null
+        ? { reason: "Recent OOM kills need two consecutive counters; baseline started." }
+        : {}),
+    };
+  } catch (error) {
+    oomBaselines.delete(key);
+    return {
+      state: missingError(error) || unsupportedError(error) ? "unsupported" : "error",
+      total_kills: null,
+      kills_since_last_sample: null,
+      last_kill_age_ms: null,
+      reason: errorReason(error),
+    };
+  }
 }
 
 function collectIo(procRoot: string, sysRoot: string, now: number, key: string): ResourceIoSample {

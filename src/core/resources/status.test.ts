@@ -82,6 +82,19 @@ describe("cached resource status", () => {
       JSON.stringify({ ...snapshot, machine: { ...snapshot.machine, cpu_percent: 101 } }),
       JSON.stringify({
         ...snapshot,
+        pressure: { ...snapshot.pressure, memory_full: { avg10: 101, avg60: 0, avg300: 0 } },
+      }),
+      JSON.stringify({
+        ...snapshot,
+        oom: {
+          state: "supported",
+          total_kills: 1.5,
+          kills_since_last_sample: 0,
+          last_kill_age_ms: null,
+        },
+      }),
+      JSON.stringify({
+        ...snapshot,
         pressure: {
           state: "supported",
           cpu: { avg10: -1, avg60: 0, avg300: 0 },
@@ -100,6 +113,25 @@ describe("cached resource status", () => {
     }
     writeFileSync(resourcePaths(root).snapshot, " ".repeat(RESOURCE_STATUS_MAX_BYTES + 1));
     expect(readResourceStatus(root).reason).toBe("snapshot_too_large");
+  });
+
+  test("exposes full stall windows, direction, and recent OOM evidence in cached output", () => {
+    const snapshot = resourceStatusFixture(root, nowMs);
+    snapshot.pressure!.memory_full = { avg10: 70, avg60: 30, avg300: 5 };
+    snapshot.oom = {
+      state: "supported",
+      total_kills: 4,
+      kills_since_last_sample: 1,
+      last_kill_age_ms: 0,
+    };
+    writePrivateJsonAtomic(resourcePaths(root).snapshot, snapshot);
+    const status = readResourceStatus(root, { nowMs });
+    expect(status.pressure?.memory_full?.avg10).toBe(70);
+    expect(status.oom?.kills_since_last_sample).toBe(1);
+    const report = formatResourceStatus(status, "project");
+    expect(report).toContain("Full memory stalls: 70% / 30% / 5%");
+    expect(report).toContain("rising");
+    expect(report).toContain("OOM kills: 4 total; 1 since previous sample");
   });
 
   test("rejects future and unparseable timestamps, tolerating small clock skew", () => {
@@ -123,7 +155,14 @@ describe("cached resource status", () => {
       namespace: "host",
       machine: { ...snapshot.machine, process_count: null },
       support: { state: "partial", sampler: "darwin", reason: "process ownership unavailable" },
-      pressure: { state: "unsupported", cpu: null, memory: null, io: null },
+      pressure: {
+        state: "unsupported",
+        cpu: null,
+        memory: null,
+        io: null,
+        memory_full: null,
+        io_full: null,
+      },
     });
     expect(readResourceStatus(root, { nowMs })).toMatchObject({
       state: "fresh",

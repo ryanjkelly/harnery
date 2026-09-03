@@ -40,6 +40,8 @@ export function resourceStatusFixture(root: string, nowMs = Date.now()): Resourc
       cpu: { avg10: 1, avg60: 1, avg300: 1 },
       memory: null,
       io: null,
+      memory_full: null,
+      io_full: null,
     },
     io: { state: "supported", read_bytes_per_second: 1024, write_bytes_per_second: 2048 },
     groups: [],

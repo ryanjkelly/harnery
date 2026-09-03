@@ -32,6 +32,85 @@ afterEach(() => {
 });
 
 describe("local supervisor collectors", () => {
+  test("reports severe full stalls even with ample available RAM and a low one-minute average", () => {
+    const resource = resourceAt(Date.now());
+    resource.machine.memory_available_bytes = 8 * 2 ** 30;
+    resource.machine.memory_percent = 50;
+    resource.pressure = {
+      state: "supported",
+      cpu: null,
+      memory: { avg10: 75, avg60: 4, avg300: 1 },
+      io: null,
+      memory_full: { avg10: 70, avg60: 3, avg300: 1 },
+      io_full: null,
+    };
+    const input = {
+      resource,
+      services: [],
+      hooks: [],
+      history: updateSupervisorHistory(undefined, resource).history,
+      logFeed: emptyFeed(),
+    };
+    expect(updateSupervisorFindings(input).active).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          finding_kind: "machine.memory-full-stall",
+          severity: "critical",
+          summary: expect.stringContaining("rising"),
+        }),
+      ]),
+    );
+    resource.pressure.memory_full = { avg10: 30, avg60: 15, avg300: 5 };
+    expect(updateSupervisorFindings(input).active).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ finding_kind: "machine.memory-full-stall", severity: "warning" }),
+      ]),
+    );
+    resource.pressure.memory_full = { avg10: 30, avg60: 45, avg300: 55 };
+    expect(
+      updateSupervisorFindings(input).active.some(
+        (entry) => entry.finding_kind === "machine.memory-full-stall",
+      ),
+    ).toBe(false);
+  });
+
+  test("keeps a new OOM incident visible for one minute but never alerts on historic kills", () => {
+    const resource = resourceAt(Date.now());
+    resource.oom = {
+      state: "supported",
+      total_kills: 12,
+      kills_since_last_sample: null,
+      last_kill_age_ms: null,
+    };
+    const input = {
+      resource,
+      services: [],
+      hooks: [],
+      history: updateSupervisorHistory(undefined, resource).history,
+      logFeed: emptyFeed(),
+    };
+    const finding = () =>
+      updateSupervisorFindings(input).active.find(
+        (entry) => entry.finding_kind === "machine.oom-kill",
+      );
+    expect(finding()).toBeUndefined();
+    resource.oom = {
+      state: "supported",
+      total_kills: 13,
+      kills_since_last_sample: 1,
+      last_kill_age_ms: 0,
+    };
+    expect(finding()?.severity).toBe("critical");
+    resource.oom.kills_since_last_sample = 0;
+    resource.oom.last_kill_age_ms = 10_000;
+    expect(finding()?.severity).toBe("critical");
+    resource.oom.last_kill_age_ms = 60_001;
+    expect(finding()).toBeUndefined();
+    resource.oom.state = "error";
+    resource.oom.last_kill_age_ms = 0;
+    expect(finding()).toBeUndefined();
+  });
+
   test("reports low disk capacity and sustained PSI with replayable findings", () => {
     const resource = resourceAt(Date.now());
     resource.disks = [
@@ -48,6 +127,8 @@ describe("local supervisor collectors", () => {
       cpu: null,
       memory: { avg10: 1, avg60: 12, avg300: 8 },
       io: null,
+      memory_full: null,
+      io_full: null,
     };
     const input = {
       resource,

@@ -58,6 +58,7 @@ export interface ResourceSnapshot {
   machine: ResourceMachineSample;
   disks?: ResourceDiskSample[];
   pressure?: ResourcePressureSample;
+  oom?: ResourceOomSample;
   io?: ResourceIoSample;
   host?: ResourceHostSample;
   groups: ResourceProcessGroup[];
@@ -84,9 +85,20 @@ export interface ResourcePressureWindow {
 
 export interface ResourcePressureSample {
   state: ResourceSupportState;
+  /** The CPU, memory, and I/O fields contain the kernel's some-stall averages. */
   cpu: ResourcePressureWindow | null;
   memory: ResourcePressureWindow | null;
   io: ResourcePressureWindow | null;
+  memory_full: ResourcePressureWindow | null;
+  io_full: ResourcePressureWindow | null;
+  reason?: string;
+}
+
+export interface ResourceOomSample {
+  state: ResourceSupportState;
+  total_kills: number | null;
+  kills_since_last_sample: number | null;
+  last_kill_age_ms: number | null;
   reason?: string;
 }
 

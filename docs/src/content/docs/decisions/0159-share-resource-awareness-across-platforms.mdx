@@ -53,6 +53,20 @@ PSI findings use the one-minute average: CPU 20%, memory 5%, and I/O 10% warn;
 twice those values are critical. These observations advise callers and do not
 admit or deny work. Windows-host CPU and memory reuse the local thresholds.
 
+Keep Linux `some` and memory/I/O `full` stall windows separate. Full stalls of
+at least 50% over ten seconds produce a critical finding even when the longer
+averages and available RAM look comfortable. A full-stall average of at least
+20% warns when it exceeds the one-minute average. These initial policy defaults
+are not universal performance guarantees. Show the windows and their direction
+so readers can distinguish a new surge from recovery.
+
+Read the bounded kernel OOM counter alongside PSI. Establish a baseline before
+reporting new kills, restart it after failed reads or decreasing counters, and
+hold each newly observed incident in current findings for one minute. Preserve
+the transition in the existing finding history. This avoids losing a destructive
+event between agent reads without creating another event store. Historical
+totals alone never trigger the incident finding.
+
 ## Result and limits
 
 Fixture tests cover native output parsing, missing providers, counter resets,
@@ -64,3 +78,6 @@ Process attribution remains Linux-only. macOS and Windows expose usable machine
 measurements with partial support, and explicitly lack Linux PSI and disk I/O
 rates. Cgroup limits, automatic resource reservations, scheduling, and process
 control remain outside this change.
+The resident observer can itself stall or exit during severe guest pressure;
+stale data is reported as unavailable, not healthy. A Windows-side procfs reader
+for that failure mode and kernel-log victim attribution remain separate work.
