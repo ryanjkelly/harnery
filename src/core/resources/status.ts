@@ -75,7 +75,8 @@ export function readResourceStatus(
   options: { nowMs?: number; includeProcesses?: boolean } = {},
 ): ResourceStatus {
   const nowMs = options.nowMs ?? Date.now();
-  const published = readPublishedPressure(coordRoot, nowMs);
+  const writerState = readWriterState(coordRoot, nowMs);
+  const published = readPublishedPressure(coordRoot, nowMs, writerState);
   const result: ResourceStatus = {
     schema_version: 2,
     state: "unavailable",
@@ -86,7 +87,7 @@ export function readResourceStatus(
     platform: null,
     namespace: "unknown",
     support: null,
-    writer: { running: false, stale: false },
+    writer: writerState,
     assessment: published.assessment,
     prior_hysteresis: published.prior_hysteresis,
     assessment_capability: published.capability,
@@ -97,21 +98,6 @@ export function readResourceStatus(
     io: null,
     host: null,
   };
-  try {
-    // Keep malformed service metadata from making the read expensive. The shared
-    // status reader retains ownership of PID/start-token liveness checks.
-    if (statSync(supervisorPaths(coordRoot).service).size <= 65_536) {
-      const writer = readSupervisorStatus(coordRoot, nowMs);
-      const futureHeartbeat =
-        writer.record && Date.parse(writer.record.heartbeat_at) > nowMs + FUTURE_TOLERANCE_MS;
-      result.writer = {
-        running: writer.running && !futureHeartbeat,
-        stale: writer.stale || !!futureHeartbeat,
-      };
-    }
-  } catch {
-    /* A missing writer must not break normal coordination. */
-  }
   let value: unknown;
   try {
     value = readBoundedJson(resourcePaths(coordRoot).snapshot);
@@ -335,7 +321,11 @@ export interface PublishedPressure {
  * computation: a missing, stale, or malformed record yields `unknown` with the
  * reason stated, because a gap in the evidence is not a measurement of health.
  */
-export function readPublishedPressure(coordRoot: string, nowMs = Date.now()): PublishedPressure {
+export function readPublishedPressure(
+  coordRoot: string,
+  nowMs = Date.now(),
+  writer?: ResourceStatus["writer"],
+): PublishedPressure {
   const sourceKind = "supervisor.pressure";
   const observedAt = new Date(nowMs).toISOString();
   const gap = (
@@ -353,6 +343,15 @@ export function readPublishedPressure(coordRoot: string, nowMs = Date.now()): Pu
     capability: { source_kind: sourceKind, state, reason_code: reasonCode },
     record: null,
   });
+  // A record can only be trusted while its writer is alive. Every surface makes
+  // the same check here so none of them reports a state the others do not.
+  if (!(writer ?? readWriterState(coordRoot, nowMs)).running) {
+    return gap(
+      "expired",
+      "pressure_observer_not_running",
+      "Local resource pressure cannot be determined because the resource observer is not running.",
+    );
+  }
   const path = supervisorPaths(coordRoot).pressure;
   let record: unknown;
   try {
@@ -400,6 +399,27 @@ export function readPublishedPressure(coordRoot: string, nowMs = Date.now()): Pu
     capability: { source_kind: sourceKind, state: "supported" },
     record,
   };
+}
+
+/** Whether the observer that writes both the snapshot and the record is alive. */
+function readWriterState(coordRoot: string, nowMs: number): ResourceStatus["writer"] {
+  try {
+    // Keep malformed service metadata from making the read expensive. The shared
+    // status reader retains ownership of PID/start-token liveness checks.
+    if (statSync(supervisorPaths(coordRoot).service).size > 65_536) {
+      return { running: false, stale: false };
+    }
+    const writer = readSupervisorStatus(coordRoot, nowMs);
+    const futureHeartbeat =
+      writer.record && Date.parse(writer.record.heartbeat_at) > nowMs + FUTURE_TOLERANCE_MS;
+    return {
+      running: writer.running && !futureHeartbeat,
+      stale: writer.stale || !!futureHeartbeat,
+    };
+  } catch {
+    // A missing writer must not break normal coordination.
+    return { running: false, stale: false };
+  }
 }
 
 function validPressureRecord(v: unknown): v is SupervisorPressureRecord {

@@ -61,7 +61,7 @@ describe("cached resource status", () => {
       state: "unavailable",
       reason: "snapshot_missing",
       assessment: { state: "unknown", recommended_action: "unknown" },
-      assessment_capability: { state: "unsupported", reason_code: "pressure_record_missing" },
+      assessment_capability: { state: "expired", reason_code: "pressure_observer_not_running" },
       machine: null,
     });
     expect(formatResourceStatus(status, "project")).toContain("project supervisor start");
@@ -340,6 +340,13 @@ describe("cached resource status", () => {
       expect(status.assessment.state).toBe("unknown");
       expect(status.assessment_capability.state).toBe("malformed");
     }
+
+    resourceStatusFixture(root, nowMs);
+    rmSync(supervisorPaths(root).service);
+    expect(readResourceStatus(root, { nowMs }).assessment_capability).toMatchObject({
+      state: "expired",
+      reason_code: "pressure_observer_not_running",
+    });
   });
 
   test("does not turn a stopped writer into a healthy assessment", () => {

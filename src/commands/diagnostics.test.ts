@@ -96,8 +96,8 @@ describe("diagnostics command", () => {
           prior_hysteresis: null,
           source_capability: {
             source_kind: "supervisor.pressure",
-            state: "unsupported",
-            reason_code: "pressure_record_missing",
+            state: "expired",
+            reason_code: "pressure_observer_not_running",
           },
         },
       });
@@ -158,8 +158,8 @@ describe("diagnostics command", () => {
           assessment: { state: "unknown", recommended_action: "unknown" },
           active_finding_count: 0,
           source_capability: {
-            state: "unsupported",
-            reason_code: "pressure_record_missing",
+            state: "expired",
+            reason_code: "pressure_observer_not_running",
           },
         },
       });
