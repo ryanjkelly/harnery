@@ -3,8 +3,10 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
   pull-requests: write
   id-token: write   # for npm provenance attestation
@@ -16,7 +18,7 @@ jobs:
   release:
     name: Publish via changesets
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     # Map the secret to a job-level env so the publish step can be gated on it.
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -38,6 +40,40 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # A merged metadata PR can leave no push-triggered run. Manual replay
+      # uses this same path, but neither entry point may publish an untested,
+      # stale, or non-main snapshot. CI includes the packed Node and installer
+      # smoke jobs as well as the complete test suite.
+      - name: Require successful CI for the current main commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "Release requires the main branch." >&2
+            exit 1
+          fi
+          for attempt in $(seq 1 80); do
+            current_main=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+            if [ "$current_main" != "$GITHUB_SHA" ]; then
+              echo "Release snapshot is no longer the current main commit." >&2
+              exit 1
+            fi
+            ci_state=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f head_sha="$GITHUB_SHA" -f branch=main -f event=push -f per_page=20 \
+              --jq '.workflow_runs | map(select(.head_sha == env.GITHUB_SHA and .head_branch == "main" and .event == "push")) | sort_by(.run_number) | last | if . == null then "missing" else .status + ":" + (.conclusion // "") end')
+            case "$ci_state" in
+              completed:success) break ;;
+              completed:*) echo "Release refused: CI finished as $ci_state." >&2; exit 1 ;;
+            esac
+            if [ "$attempt" -eq 80 ]; then
+              echo "Release refused: successful CI was not available. Retry this workflow after CI passes." >&2
+              exit 1
+            fi
+            echo "Waiting for CI on $GITHUB_SHA ($ci_state)."
+            sleep 15
+          done
 
       # Skips cleanly (job stays green) until an NPM_TOKEN secret is configured.
       # Set NPM_TOKEN in repo secrets when you're ready to publish to npm.
