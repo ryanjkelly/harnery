@@ -58,6 +58,7 @@ try {
 
   // 3. Install into a throwaway dir, production deps only
   workdir = mkdtempSync(join(tmpdir(), "harnery-smoke-"));
+  execFileSync("git", ["init", "--quiet"], { cwd: workdir });
   writeFileSync(
     join(workdir, "package.json"),
     JSON.stringify({ name: "harnery-smoke", version: "1.0.0", private: true }, null, 2),
@@ -78,7 +79,7 @@ try {
       cwd: workdir,
       encoding: "utf8",
       input,
-      env: { ...process.env, PATH: "/usr/bin:/bin" },
+      env: { ...process.env, PATH: "/usr/bin:/bin", HARNERY_COORD_ROOT_OVERRIDE: workdir },
     });
 
   // 4. Assertions
@@ -297,6 +298,46 @@ try {
     fail("artifact CLI does not report schema-v2 hold capabilities");
   }
   log("artifact hold capabilities CLI OK");
+
+  // These commands emit JSON directly; only capabilities accepts --json.
+  // Exercise the real installed command parser, not just the exported API.
+  log("checking artifact hold lifecycle through the installed Node CLI ...");
+  const artifactRun = (...args) => JSON.parse(run(["artifacts", ...args]));
+  const actor = "binding_cli_smoke";
+  const createdArtifact = artifactRun("create", "cli-smoke", "--purpose", "Verify CLI holds",
+    "--hold", "pending-transfer", "--hold-reason", "Await upload", "--actor", actor);
+  const artifactId = createdArtifact.artifact_id;
+  if (!createdArtifact.path.startsWith(workdir) || createdArtifact.holds[0]?.id !== "pending-transfer") {
+    fail("artifact CLI create did not atomically hold the isolated workspace");
+  }
+  const heldArtifact = artifactRun("hold", artifactId, "--id", "other-transfer",
+    "--reason", "Another checkout", "--actor", "binding_other_cli");
+  if (heldArtifact.holds.length !== 2) fail("artifact CLI hold did not preserve the initial hold");
+  const shownArtifact = artifactRun("show", artifactId);
+  if (shownArtifact.entry.classification !== "managed-held") fail("artifact CLI show did not classify the held workspace");
+  if (artifactRun("release", artifactId).holds.length !== 2) fail("artifact CLI release removed holds");
+  let refusedOtherOwner = false;
+  try { artifactRun("unhold", artifactId, "--id", "pending-transfer", "--actor", "binding_other_cli"); }
+  catch { refusedOtherOwner = true; }
+  if (!refusedOtherOwner) fail("artifact CLI unhold accepted a different owner");
+  const unheldArtifact = artifactRun("unhold", artifactId, "--id", "pending-transfer", "--actor", actor);
+  if (unheldArtifact.holds.length !== 1 || unheldArtifact.holds[0].id !== "other-transfer") {
+    fail("artifact CLI unhold changed another checkout's hold");
+  }
+  artifactRun("unhold", artifactId, "--id", "other-transfer", "--actor", "binding_other_cli");
+  const manifestPath = join(createdArtifact.path, ".harnery-artifact.json");
+  const legacyManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  legacyManifest.schema_version = 1;
+  delete legacyManifest.holds;
+  const legacyPreimage = JSON.stringify(legacyManifest);
+  writeFileSync(manifestPath, legacyPreimage);
+  const migrationPreview = artifactRun("migrate");
+  if (!migrationPreview.rows.some((row) => row.action === "would-migrate") ||
+      readFileSync(manifestPath, "utf8") !== legacyPreimage) fail("artifact CLI migration preview changed its input");
+  const migrationApplied = artifactRun("migrate", "--yes");
+  if (!migrationApplied.rows.some((row) => row.action === "migrated") ||
+      JSON.parse(readFileSync(manifestPath, "utf8")).schema_version !== 2) fail("artifact CLI migration did not apply v2");
+  log("artifact CLI create, hold, show, release, owner-scoped unhold, and explicit migration OK");
 
   log("checking public `harnery/core/workflow` import ...");
   const workflowProbe = join(workdir, "workflow-import.mjs");
