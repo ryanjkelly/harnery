@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QaManifest } from "../lib/browser/qa-plan.ts";
+import { PAGE_REVIEW_CAPTURE_PLAN_SCHEMA } from "../lib/browser/page-review-contracts.ts";
 import {
   QA_RUN_RESULT_FILENAME,
   QA_RUN_STATUS_FILENAME,
@@ -94,7 +95,37 @@ function makeDisconnectingExec(
       return { exitCode: 0, stdout: "", stderr: "" };
     }
     if (stage === "gates") return { ...lost };
-    writeFileSync(`${outPrefix}.json`, JSON.stringify({}));
+    // The capture disconnect must occur after a valid gate-stage plan. An
+    // absent plan would exercise allocation refusal instead of a lost child.
+    writeFileSync(
+      `${outPrefix}.json`,
+      JSON.stringify({
+        review_pack_capture_plan: {
+          schema: PAGE_REVIEW_CAPTURE_PLAN_SCHEMA,
+          context_id: argvValue(argv, "--review-pack-context") ?? "desktop-light-default",
+          viewport: "desktop",
+          viewport_width: 1280,
+          viewport_height: 800,
+          dpr: 1,
+          theme: "light",
+          state: "default",
+          page_width: 1280,
+          page_height: 800,
+          source_digest: "a".repeat(64),
+          recipe_version: "fixture-v1",
+          required_scopes: [],
+          candidates: [
+            {
+              id: "B0",
+              index: 0,
+              label: "band",
+              rect: { x: 0, y: 0, width: 1280, height: 800 },
+              gate_hits: [],
+            },
+          ],
+        },
+      }),
+    );
     return { exitCode: 0, stdout: "", stderr: "" };
   };
   return { exec, calls };

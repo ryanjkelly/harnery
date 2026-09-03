@@ -40,11 +40,15 @@ const browserProcessFiles = new Set([
 // shared CI runner. Keep the core suite's strict default while giving this
 // isolated partition enough room to finish real browser work.
 const browserTestArgs = ["--max-concurrency", "1", "--timeout", "15000"];
+// Workflow integration creates and finalizes real child ledgers and worktrees.
+// Shared-machine filesystem latency can exceed Bun's five-second unit default;
+// use the same bounded allowance as browser integration, not a product deadline.
+const workflowTestArgs = ["--timeout", "15000"];
 const partitionTimings = [];
 
 // These suites repeatedly start workflow subprocesses. Give each lifecycle its
 // own process so a timed-out operation cannot leak into the other suite's
-// cleanup. Retain the ordinary timeout and every test.
+// cleanup. Retain every test and its assertions.
 const workflowProcessFiles = new Set([
   "src/core/governor/index.test.ts",
   "src/core/workflow/engine.test.ts",
@@ -138,9 +142,12 @@ const partitionPlan = [
   ...allFiles.filter((file) => workflowProcessFiles.has(file)).map((file) => ({
     label: `workflow process partition: ${file}`,
     files: [file],
-    extraArgs: [],
+    extraArgs: workflowTestArgs,
   })),
-  ...namedCoreFiles.map((partition) => ({ ...partition, extraArgs: [] })),
+  ...namedCoreFiles.map((partition) => ({
+    ...partition,
+    extraArgs: partition.label === "workflow and governor test partition" ? workflowTestArgs : [],
+  })),
   { label: "core test partition", files: coreFiles, extraArgs: [] },
 ];
 
