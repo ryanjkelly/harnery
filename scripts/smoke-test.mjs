@@ -271,10 +271,19 @@ try {
   writeFileSync(
     artifactsProbe,
     [
-      'import { ARTIFACT_SCHEMA_VERSION, createArtifact } from "harnery/core/artifacts";',
-      'if (ARTIFACT_SCHEMA_VERSION !== 1) throw new Error("unexpected artifact schema version");',
-      'const created = createArtifact(process.cwd(), { slug: "packed-smoke", purpose: "Verify the packed artifacts API", retentionDays: 1, id: "artifact_packed_smoke" });',
-      'if (created.manifest.schema_version !== 1 || !created.path.includes(".harnery")) throw new Error("artifact creation failed");',
+      'import { ARTIFACT_SCHEMA_VERSION, artifactCapabilities, createArtifact, holdArtifact, unholdArtifact, releaseArtifact } from "harnery/core/artifacts";',
+      'if (ARTIFACT_SCHEMA_VERSION !== 2) throw new Error("unexpected artifact schema version");',
+      'const capabilities = artifactCapabilities();',
+      'if (capabilities.schema_version !== 2 || !capabilities.holds || !capabilities.atomic_create_holds || !capabilities.owner_scoped_unhold || !capabilities.explicit_v1_migration) throw new Error("missing artifact hold capabilities");',
+      'const actor = { instance_id: "binding_packed_smoke" };',
+      'const created = createArtifact(process.cwd(), { slug: "packed-smoke", purpose: "Verify the packed artifacts API", retentionDays: 1, id: "artifact_packed_smoke", actor, holds: [{ id: "pending-transfer", reason: "pending verification" }] });',
+      'if (created.manifest.schema_version !== 2 || created.manifest.holds.length !== 1 || !created.path.includes(".harnery")) throw new Error("held artifact creation failed");',
+      'holdArtifact(process.cwd(), created.path, { id: "another-transfer", reason: "another workflow", actor: { instance_id: "binding_other_smoke" } });',
+      'if (releaseArtifact(process.cwd(), created.path).holds.length !== 2) throw new Error("release removed holds");',
+      'let refused = false; try { unholdArtifact(process.cwd(), created.path, "pending-transfer", { actor: { instance_id: "binding_other_smoke" } }); } catch { refused = true; }',
+      'if (!refused) throw new Error("unhold accepted another owner");',
+      'const remaining = unholdArtifact(process.cwd(), created.path, "pending-transfer", { actor });',
+      'if (remaining.holds.length !== 1 || remaining.holds[0].id !== "another-transfer") throw new Error("unhold changed another workflow hold");',
     ].join("\n"),
   );
   execFileSync(nodePath, [artifactsProbe], {
@@ -283,6 +292,11 @@ try {
     env: { ...process.env, PATH: "/usr/bin:/bin" },
   });
   log("harnery/core/artifacts import OK");
+  const artifactCapabilities = JSON.parse(run(["artifacts", "capabilities", "--json"]));
+  if (artifactCapabilities.schema_version !== 2 || artifactCapabilities.holds !== true) {
+    fail("artifact CLI does not report schema-v2 hold capabilities");
+  }
+  log("artifact hold capabilities CLI OK");
 
   log("checking public `harnery/core/workflow` import ...");
   const workflowProbe = join(workdir, "workflow-import.mjs");
