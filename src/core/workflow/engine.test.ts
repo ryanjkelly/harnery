@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { runWorkflow } from "./engine.ts";
+import * as childSessions from "./live-session-v3.ts";
 import { WORKFLOW_TRANSCRIPT_EVENT_BYTES } from "./transcript.ts";
 import type {
   Spawner,
@@ -388,29 +389,42 @@ describe("runWorkflow", () => {
   });
 
   test("parallel() bounds real concurrency to the shared pool", async () => {
-    let inFlight = 0;
-    let maxInFlight = 0;
-    let completed = 0;
-    const spawner: Spawner = async () => {
-      inFlight++;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      await new Promise((r) => setTimeout(r, 10));
-      inFlight--;
-      completed++;
-      return okSpawn("done");
-    };
-    const script = writeScript(`
+    // Child ledger IO is covered by live-session-v3.test.ts. This test measures
+    // the pool with real asynchronous spawners, independent of disk latency.
+    const start = spyOn(childSessions, "startWorkflowChildSessionV3").mockReturnValue(
+      {} as ReturnType<typeof childSessions.startWorkflowChildSessionV3>,
+    );
+    const end = spyOn(childSessions, "endWorkflowChildSessionV3").mockImplementation(() => {});
+    try {
+      let inFlight = 0;
+      let maxInFlight = 0;
+      let completed = 0;
+      const spawner: Spawner = async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 10));
+        inFlight--;
+        completed++;
+        return okSpawn("done");
+      };
+      const script = writeScript(`
       export default async ({ agent, parallel }) =>
-        parallel(Array.from({ length: 4 }, (_, i) => () => agent("job " + i)));
+        parallel(Array.from({ length: 6 }, (_, i) => () => agent("job " + i)));
     `);
-    await runWorkflow(script, {
-      coordRoot: root,
-      spawners: { "claude-code": spawner },
-      concurrency: 2,
-      ...quiet,
-    });
-    expect(maxInFlight).toBe(2);
-    expect(completed).toBe(4);
+      await runWorkflow(script, {
+        coordRoot: root,
+        spawners: { "claude-code": spawner },
+        concurrency: 2,
+        ...quiet,
+      });
+      expect(maxInFlight).toBe(2);
+      expect(completed).toBe(6);
+      expect(start).toHaveBeenCalledTimes(6);
+      expect(end).toHaveBeenCalledTimes(6);
+    } finally {
+      start.mockRestore();
+      end.mockRestore();
+    }
   });
 
   test("agent without schema returns raw text; transcript has stage + session id", async () => {
