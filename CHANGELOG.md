@@ -1,5 +1,236 @@
 # Changelog
 
+## 0.38.0
+
+### Minor Changes
+
+- 0580685: Add artifact schema v2 with durable, owner-scoped holds. Held work survives expiry,
+  byte-budget cleanup, release, and nested review-pack cleanup. Clients can create
+  an artifact with its initial holds already recorded and check hold capabilities
+  before starting work. Manifest changes and deletion share a filesystem lock.
+
+  Existing v1 manifests require the explicit, dry-run-first `artifacts migrate`
+  command, which preserves each original manifest before adding an empty holds
+  array. Unsupported manifests remain protected. The public manifest type is now
+  `ArtifactManifestV2`; clients must update their imports.
+
+- 032b457: Run any heavy command as a durable detached job. `admission run --detach` hands
+  the command to a supervisor that queues for its slot, runs it with output on
+  disk, and records the terminal exit code, so losing the client no longer loses
+  the job. `admission wait <job-dir>` reconnects and returns the command's own
+  exit code, `admission jobs` lists recent jobs with their state, and
+  `admission status` reports detached jobs in flight beside queue holders. A
+  supervisor that dies is classified dead rather than left ambiguous, which is
+  what lets a caller retry safely instead of guessing.
+- a50ae60: Export the admission toolkit so host CLIs can join the same machine-wide
+  queues as `qa-run` and `admission run`. `harnery/lib/admission` now ships
+  `acquireAdmission`, `admissionStatus`, and `admissionBaseDir` (the shared
+  `$TMPDIR/harnery-admission` / `HARNERY_ADMISSION_DIR` helper). Command
+  modules keep using that helper; they no longer own the path formula.
+- e3fd7fc: Add a synchronous `extraCookies` host hook so embedding CLIs can mint
+  session cookies into the shared jar before `fetch` and `browse` attach
+  it. `--no-cookies` skips the hook. `extraHeaders` cannot merge a Cookie
+  header once the jar has already set one.
+- 1b316b5: qa-run and qa-record now create isolated managed workspaces under
+  `.harnery/artifacts/` when `--out-dir` is omitted. The output participates in
+  artifact retention and byte budgets instead of leaking into the project source
+  tree. Explicit output directories are unchanged, and qa-status without a path
+  now finds the newest run across managed QA workspaces.
+- 021c67f: Page review pack follow-ups. `review-pack expand <dir> --tile T012 [--context <id>] [--dpr 2]`
+  re-captures one tile region of an existing pack at a higher device scale factor into
+  `contexts/<id>/tiles/<tile>@<dpr>x.png` and records it as an optional `expanded` entry on
+  the context record, leaving every existing tile untouched; `browse` gains
+  `--review-pack-expand <tile-id>` and `--device-scale-factor <n>` to do the render.
+  Every context with tiles now carries `contacts.png`, a box-filtered row-major grid of its
+  tiles with ids stamped, recorded as `contact_sheet` on the context record and linked from
+  `review.md`; `finalizePageReviewPack` builds a missing sheet from disk.
+  Gate records in a pack can carry `hits` (rectangle-bearing findings lifted from the gate's
+  browse envelope: runts, truncation, contrast, placeholder, image, clip, overlap, crowd, align,
+  gap, overflow, target size); the inspection plan maps each hit to the tiles covering it under
+  `gate_hits`, adds those tiles to `primary_tiles`, and `review.md` links them per gate line.
+  The pack schema stays `harnery-page-review/v1`: every new field is optional and additive.
+- 5940108: Page review pack hardening. Every pack now carries `retention` and expires 90
+  minutes after its judge finishes (after capture when no judge runs); the whole
+  pack directory is deleted by `review-pack clean` (preview by default, `--yes`
+  to delete) or, when `review_pack.auto_clean` is on, before the next `qa-run` or
+  `review-pack create`, leaving only `pack-expired.json`. `--retain <minutes>`
+  on `qa-run`, `review-pack create`, and `review-pack judge` overrides the
+  default; `policy.review_pack_retention_minutes` does the same in a job.
+  Capture fidelity is checked while the capture browser is open: two probe bands
+  are re-shot by scrolling and compared with the full-page screenshot, and a
+  context whose full-page capture is wrong is tiled from scrolled band captures
+  instead (`capture_fidelity` on the context record). The judge still opens no
+  browser; each tile's rubric now carries its band position and capture source.
+  Gate hits below the tile cap get their own `hit band` tiles
+  (`browse --review-pack-hit-rect`, wired from `qa-run`). Reviewer findings and
+  dispositions have a command surface: `review-pack findings add`,
+  `review-pack disposition`, and `review-pack verdict` (writes
+  `evidence/verdict.json` and a reviewed outcome beside the machine outcome).
+  `review-pack list` and `review-pack show` inspect packs on disk. The gate
+  stage skips its duplicate full-page PNG when a capture stage runs, and the
+  pack's DOM is stored gzip-compressed. The pack schema stays
+  `harnery-page-review/v1`; every new field is optional.
+- 551ea59: Split page QA into capture and judge through a page review pack. `qa-run`
+  now renders each context once into `run-<id>/pack/` (full-page screenshot,
+  tiles as PNG files, DOM, signature) and closes its browser, then judges every
+  tile of every context through one bounded in-process pool of vision calls
+  (`policy.critique_pool` / `--pool`), and persists signoff snapshots from the
+  pack's files. New `review-pack create|judge` command and `browse --review-pack`
+  capture flags. Result schema version 4: stage `capture`, `wall_time_ms.capture`,
+  `critique_pool`, `review_pack`; per-row `latency_ms` moved to `critique_pool`.
+- 607ded2: qa-run now takes turns and survives disconnects. Every run queues on the
+  machine-wide "browser-qa" admission resource by default (capacity 2, tunable
+  via HARNERY_QA_ADMISSION_CAPACITY or --queue-capacity, opt out with
+  --no-queue); the wait is recorded as wall_time_ms.queue and never counted in
+  total, and an admission timeout (--queue-timeout, default 20 minutes)
+  finalizes a normal incomplete result with an "admission" blocker so the
+  evidence trail survives a full queue. Runs are durable: every run directory
+  now carries job.json (the effective validated job, usable with qa-verify
+  --job) and run-status.json (live state, current stage, and a 15-second
+  heartbeat), and --detach launches the matrix as a detached background process
+  with output in runner.log, printing the run directory and returning
+  immediately. Two new commands complete the loop: qa-status reports a run's
+  live state (launching/queued/running/completed, plus derived dead), reconnects
+  to detached runs with --wait using the runner's own exit codes, and shows the
+  admission queue with --queue; admission is the generic wrapper (admission run
+  --resource <name> -- <command...>, admission status) that makes any heavy job
+  take turns on one machine via crash-safe FIFO file tickets with dead-PID and
+  TTL pruning under $TMPDIR/harnery-admission or HARNERY_ADMISSION_DIR.
+- 411be3d: Report critique tile coverage and refuse a capped signoff. Full-page
+  critique keeps at most `--check-critique-max-tiles` bands per context
+  (default 24) and drops the rest, so on a tall page the bottom was never
+  reviewed and nothing said so. `tilesFromFullPage` now returns
+  `{ tiles, coverage }`, `browse` records `coverage` (page height, reviewed
+  height, bands total and reviewed, `capped`) on the critique envelope, and
+  `qa-run` lifts it onto each critique row. A capped context in signoff mode
+  is a `critique` blocker and the run finalizes `incomplete`; review mode
+  keeps the outcome and carries the flag. New `policy.critique_max_tiles`
+  (1 to 200) reaches the planner and every critique child so the predicted
+  ceiling and the real coverage agree.
+- 42661cf: Record vision-call latency on each `qa-run` critique row. The critique
+  provider already reports per-backend call counts with p50/p95 latency in
+  the browse envelope's `provider_meta`; the runner read it only for the
+  provider label and dropped the timings. `QaRunCritiqueOutcome.latency_ms`
+  now carries them keyed by backend, so a straggling tile is visible in
+  `page-qa-result.json` rather than only to someone watching `ps`. When a
+  context runs several scope commands, counts sum and the percentiles keep
+  the slowest scope. Absent when no backend reported a call.
+- a1dd855: `agents status` now shows the session's latest page-QA verdict on the runner's
+  own clock, so runner time is never read off session age. A new `qa` line
+  renders as `passed 4m ago · 90s runner (2m queued)`, reporting the verdict, how
+  long ago the run completed, and how long the runner took, with admission-queue
+  wait shown separately because it is never part of runner total. Hand-recorded
+  evidence renders `manual 12m ago · not a pass` rather than a verdict and a
+  clock, and a result older than 24 hours collapses to `stale (2d)`. The line is
+  absent when the session has recorded no run. Backing this is a per-session
+  pointer at `.harnery/qa/<instance-id>.json`, written atomically by the command
+  layer (the matrix runner is toolkit tier and cannot reach the coordination
+  core). Every read is best-effort: a missing, unreadable, or partial pointer
+  renders no line and can never fail the status command.
+- 28a99f7: qa-run results are now verifiable evidence, and qa-verify checks them. Result
+  schema v2 gives every invocation a run identity block (run_id, start/finish
+  timestamps, tested revision with source and dirty-worktree flag, a SHA-256
+  digest of the effective job, and the recorded output directory), host-pressure
+  samples, and last_completed_stage. Output is isolated per run: --out-dir names
+  a parent and each invocation writes into run-<run_id>/ beneath it, maintaining
+  an atomically-renamed latest.json pointer, so a reused workspace can never
+  present a stale result as current. The new qa-verify command resolves a result
+  file, run directory, or parent (via latest.json), matches the identity block
+  against expectations (--run-id, --revision, --job digest reconstruction,
+  --max-age, and always the moved-result rule), and exits 0 fresh / 3 stale or
+  unverifiable / 1 on usage or invalid-job errors. Alpha cutover: no v1
+  compatibility reader.
+
+### Patch Changes
+
+- 5f50d3a: Serialize shared cookie-store updates across processes, replace the store
+  atomically, and report stable parse failures as a cookie-loading stage with the
+  exact store path while preserving the malformed file.
+- 19121bd: Codec keeps a declared task on stale sessions, and mid-flight sessions get a pool name instead of an 8-character id. Task prose still lives only in the generation cache; evidence panels now inherit it from that cache. Unnamed hook sessions stamp the same pool name onto the cache that SessionStart would have assigned.
+- 7fa35b8: Attribute Codex WSL tool process trees from exact bridge session identity validated against the live coordination projection.
+- df3a926: Generated council instructions now use the active project's configured dashboard port instead of assuming one fixed local URL.
+- 107b8b4: A correct session-name display now closes the latch on Cursor.
+
+  Three changes. A leading fenced block accepts any single-word fence label, so a
+  title shown in a `txt or `markdown fence counts; the block must still be the
+  reply's first content and hold exactly the title on one line, and a closing fence
+  must match the opening run. The title the agent was last instructed to display is
+  recorded and its display also satisfies the latch, so a suggestion that changes
+  after the instruction went out cannot strand a session. The hook log now
+  separates "no pending title" from "the reply did not open with the block", and
+  records every session-name denial.
+
+  Cursor sessions could previously stay latched for their whole life: its only
+  closing surfaces are one PreToolUse narration sample and one completed reply, and
+  when both missed nothing could reopen the window.
+
+- f2b5f77: Require page-review-pack instructions to delegate every primary-tile image read
+  to review subagents. The coordinating agent assigns tiles, serializes the
+  reports, and makes the final judgment without opening tile images itself.
+
+  Add `harn review-pack reviews add` and v2 findings/verdict contracts so a
+  verdict remains incomplete until completed subagent records cover every
+  primary tile in the inspection plan.
+
+  Pin review-subagent selection to GPT-5.6 Luna, then Composer 2.5, then Haiku
+  4.5, and record the chosen model with each delegated review.
+
+- 6d22675: Session-name gating now treats a readable transcript that omits the name-mint
+  tool result as unavailable evidence. Adapters with assistant-only transcripts
+  fail open instead of rejecting every later tool, while a transcript that
+  contains the mint followed by a malformed first reply still denies the tool.
+- 8074559: Diagnostic bundle pages now validate the selected managed artifacts directly
+  instead of inventorying every artifact in the repository first. Digest, schema,
+  path, symlink, and byte-limit checks remain unchanged.
+- e8fb020: Ignore canceled Next.js React Server Component prefetches in browser diagnostics
+  so Chromium's `net::ERR_ABORTED` event does not fail a healthy page. Other
+  aborted requests still count as failures.
+- 8c9479a: Keep a live session recoverable when the V3 ledger rotates mid-turn. A size
+  rotation (ADR 0137) archives every producer state, and the session re-onboards
+  on its next hook through mid-flight onboarding (ADR 0078). Two gaps left that
+  session stranded until a human submitted the next prompt. Onboarding only
+  opened a turn for a user prompt, so a session onboarded by a tool hook had a
+  generation with no current turn: command telemetry refused every join with
+  `turn_not_started` and the end-of-turn ritual could not close. And onboarding
+  inherited the hook's deferred drain, so the derived `session.started` sat in
+  the spool where the coordination view could not see it, and `set-task`,
+  `status --end-turn`, and `heal` all reported no live generation. Onboarding now
+  commits its own events eagerly and, when the triggering signal is one an
+  adapter can only deliver inside a turn, opens a derived turn that keeps the
+  payload's native turn id. The session recovers on its very next tool call.
+
+  This also closes a quieter loss on the same path. A session first observed at
+  a turn terminal had no turn to close, so the signal was ignored and that turn
+  never reached the ledger; it is now recorded as a derived pair. A permission
+  wait, which is only recorded inside a turn, is likewise no longer dropped.
+  Compaction signals still onboard without opening a turn, because they can run
+  between turns.
+
+- 996e53d: qa-run timeouts are now enforceable. The executor spawns each command detached into its own process group and escalates at the deadline (group SIGTERM, then SIGKILL after a 5s grace), settles on exit instead of waiting for pipes an orphaned grandchild may hold open, and reports a timed-out command as an error even if it later exited 0. A new `policy.run_deadline_ms` (default 900000) bounds the whole run: past it, remaining commands are skipped, a `deadline` blocker is recorded, the result finalizes incomplete, and the admission slot is released.
+- e9df266: Keep command telemetry joinable across a size-triggered V3 epoch rotation.
+  Rotation now uses the atomically archived producer directory to start a fresh
+  generation for every live session and to reopen any turn that was active at
+  the boundary. The successor therefore has joinable producer state before the
+  session's next adapter hook. Producer-state writes now carry the same epoch
+  fence as event writes, and an old-epoch hook that finishes after rotation
+  cannot overwrite the re-anchored state.
+- 795cab9: Keep an attributable coordination projection defect inside its own session.
+  The coordination view now partitions global diagnostics from diagnostics tied
+  to one generation, and unaffected sessions remain able to declare tasks, claim
+  files, and complete finalization. Canonical reader failures and shared claim or
+  decision-state failures still close the global authority gate. `agents health`
+  reports isolated diagnostics immediately, including the affected generation
+  IDs and diagnostic codes.
+- c3f1427: Recognize a session-name mint whose JSON reached the transcript cut short.
+  The PostToolUse announcer and the Stop inspector only accepted a tool result
+  that parsed as complete JSON, so `agents suggest-name --json | cut -c1-160`
+  (or any wrapper prose or tail window that clipped the object) hid the mint,
+  and the session-name latch could never close no matter how many times the
+  agent displayed the block. The detector now also accepts text that carries
+  the exact quoted name under `suggested_session_name` together with a true
+  `first_of_session`, `name_reminted`, or `session_name_retry` flag. Output
+  with the name but no flag, another name, or a longer name still never mints.
+
 ## 0.37.0
 
 ### Minor Changes
