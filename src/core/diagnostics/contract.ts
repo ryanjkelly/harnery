@@ -4,26 +4,46 @@ import type {
   SupervisorFindingExplanation,
   SupervisorTimeline,
 } from "../supervisor/contract.ts";
+import type {
+  PressureAssessment,
+  PressureHysteresisState,
+  PressureState,
+} from "./pressure-contract.ts";
+
+export type {
+  PressureAssessment,
+  PressureContributor,
+  PressureDimension,
+  PressureEvidenceDimension,
+  PressureHysteresisState,
+  PressureLimitingResource,
+  PressureReason,
+  PressureReasonCode,
+  PressureRecommendedAction,
+  PressureScope,
+  PressureState,
+  PressureTrend,
+  PressureUnit,
+  PressureWorkloadClass,
+  PressureWorkloadGuidance,
+} from "./pressure-contract.ts";
+export {
+  PRESSURE_ASSESSMENT_SCHEMA_VERSION,
+  PRESSURE_POLICY,
+} from "./pressure-contract.ts";
 
 export const DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 3 as const;
 export const DIAGNOSTIC_COMMAND_SCHEMA_VERSION = 1 as const;
 export const DIAGNOSTIC_INPUT_SCHEMA_VERSION = 2 as const;
 export const DIAGNOSTIC_EXPECTED_SCHEMA_VERSION = 3 as const;
 export const DIAGNOSTIC_SUMMARY_SCHEMA_VERSION = 1 as const;
-export const DIAGNOSTIC_ADVICE_SCHEMA_VERSION = 1 as const;
+export const DIAGNOSTIC_ADVICE_SCHEMA_VERSION = 2 as const;
 export const DIAGNOSTIC_COMPARISON_SCHEMA_VERSION = 1 as const;
 
 export const DIAGNOSTIC_ADVICE_LIMITS = {
   max_contributing_findings: 8,
   max_reasons: 4,
 } as const;
-
-export type DiagnosticPressure = "normal" | "elevated" | "critical" | "unknown";
-export type DiagnosticFanOutRecommendation =
-  | "proceed"
-  | "use-caution"
-  | "avoid-new-fan-out"
-  | "unknown";
 
 export interface DiagnosticAdviceFinding {
   finding_id: string;
@@ -48,19 +68,24 @@ export interface DiagnosticAdviceReason {
   finding_ids: readonly string[];
 }
 
+/** Retained name for the pressure state union; `PressureState` is canonical. */
+export type DiagnosticPressure = PressureState;
+
+/**
+ * Advice v2 is a thin envelope. The assessment carries the state, its evidence,
+ * its reasons, and its contributors; `prior_hysteresis` is the carried-forward
+ * input that produced this sample's transition, so a frozen bundle replays
+ * deterministically. There is no v1 reader.
+ */
 export interface DiagnosticAdvice {
   schema_version: typeof DIAGNOSTIC_ADVICE_SCHEMA_VERSION;
   evaluated_at: string;
-  pressure: DiagnosticPressure;
-  fan_out_recommendation: DiagnosticFanOutRecommendation;
   observer_only: true;
-  summary: string;
+  assessment: PressureAssessment;
+  prior_hysteresis: PressureHysteresisState | null;
   source_capability: SupervisorCapability;
   active_finding_count: number;
-  contributing_finding_count: number;
-  omitted_contributing_finding_count: number;
-  contributing_findings: readonly DiagnosticAdviceFinding[];
-  reasons: readonly DiagnosticAdviceReason[];
+  summary: string;
 }
 
 export const DIAGNOSTIC_BUNDLE_FILES = [

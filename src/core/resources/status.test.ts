@@ -3,9 +3,12 @@ import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  pressureAssessmentFixture,
+  pressureRecordFixture,
   resourceFindingFixture,
   resourceStatusFixture,
 } from "../../../tests/helpers/resource-status.ts";
+import { SUPERVISOR_FINDING_SCHEMA_VERSION } from "../supervisor/contract.ts";
 import { supervisorPaths } from "../supervisor/storage.ts";
 import {
   formatResourceStatus,
@@ -36,13 +39,15 @@ describe("cached resource status", () => {
       state: "fresh",
       sample_age_ms: 2000,
       namespace: "wsl",
-      assessment: "normal",
+      assessment: { state: "normal", scope: "guest" },
+      assessment_capability: { state: "supported" },
       writer: { running: true },
     });
     expect(status.machine?.cpu_percent).toBe(30);
     expect(status.processes).toBeUndefined();
     expect(JSON.stringify(status)).not.toContain("secret");
     expect(JSON.stringify(status)).not.toContain("should-not-appear");
+    expect(formatResourceSummary(status).startsWith(status.assessment.summary)).toBe(true);
     expect(formatResourceSummary(status)).toContain("CPU 30%");
     expect(formatResourceSummary(status)).toContain(
       "RAM 8.0 GiB available, disk 40.0 GiB available",
@@ -55,7 +60,8 @@ describe("cached resource status", () => {
     expect(status).toMatchObject({
       state: "unavailable",
       reason: "snapshot_missing",
-      assessment: "unknown",
+      assessment: { state: "unknown", recommended_action: "unknown" },
+      assessment_capability: { state: "unsupported", reason_code: "pressure_record_missing" },
       machine: null,
     });
     expect(formatResourceStatus(status, "project")).toContain("project supervisor start");
@@ -66,7 +72,7 @@ describe("cached resource status", () => {
     expect(readResourceStatus(root, { nowMs })).toMatchObject({
       state: "stale",
       sample_age_ms: 16000,
-      assessment: "unknown",
+      assessment: { state: "unknown" },
       machine: null,
       disks: [],
     });
@@ -107,7 +113,6 @@ describe("cached resource status", () => {
       expect(readResourceStatus(root, { nowMs })).toMatchObject({
         state: "unavailable",
         reason: "snapshot_invalid",
-        assessment: "unknown",
         machine: null,
       });
     }
@@ -211,37 +216,137 @@ describe("cached resource status", () => {
     expect(JSON.stringify(status)).not.toContain("should-not-appear");
   });
 
-  test("uses shared diagnostic severity, not independent numeric thresholds", () => {
+  test("reports the published assessment rather than deriving one from findings", () => {
     resourceStatusFixture(root, nowMs);
-    writePrivateJsonAtomic(supervisorPaths(root).findings, {
-      schema_version: 2,
-      active: [resourceFindingFixture("machine.disk-space", "critical")],
-      transitions: [],
+    pressureRecordFixture(root, {
+      nowMs,
+      assessment: {
+        state: "critical",
+        limiting_resource: "memory",
+        trend: "rising",
+        recommended_action: "avoid-new-heavy-work",
+        summary: "Memory is contended, so do not start new heavy work.",
+      },
     });
-    expect(readResourceStatus(root)).toMatchObject({
-      assessment: "critical",
-      signals: ["machine.disk-space"],
+    const status = readResourceStatus(root, { nowMs });
+    expect(status.assessment).toMatchObject({
+      state: "critical",
+      limiting_resource: "memory",
+      recommended_action: "avoid-new-heavy-work",
     });
-    writePrivateJsonAtomic(supervisorPaths(root).findings, {
-      schema_version: 2,
-      active: [{ state: "opened" }],
-      transitions: [],
-    });
-    expect(readResourceStatus(root).assessment).toBe("unknown");
+    expect(formatResourceSummary(status)).toContain(
+      "Memory is contended, so do not start new heavy work.",
+    );
+    expect(formatResourceStatus(status, "project")).toContain(
+      "Assessment: critical at guest scope; limiting resource memory; trend rising",
+    );
   });
 
-  test("does not turn expired findings or a stopped writer into a normal assessment", () => {
+  test("a critical attribution finding no longer changes the reported state", () => {
     resourceStatusFixture(root, nowMs);
-    utimesSync(supervisorPaths(root).findings, new Date(nowMs - 60_000), new Date(nowMs - 60_000));
-    expect(readResourceStatus(root).assessment).toBe("unknown");
+    writePrivateJsonAtomic(supervisorPaths(root).findings, {
+      schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
+      active: [resourceFindingFixture("process.memory-pressure", "critical")],
+      transitions: [],
+      max_findings: 200,
+    });
+    expect(readResourceStatus(root, { nowMs }).assessment.state).toBe("normal");
+  });
+
+  test("names an owner only when the contributor attribution is exact", () => {
+    resourceStatusFixture(root, nowMs);
+    pressureRecordFixture(root, {
+      nowMs,
+      assessment: {
+        contributors: [
+          {
+            finding_id: "finding:a",
+            finding_kind: "process.memory-pressure",
+            finding_class: "attribution",
+            severity: "warning",
+            summary: "One process holds 1.2 GiB.",
+            scope_kind: "process",
+            scope_id: "11",
+            occurrence_count: 1,
+            attribution_state: "attributed",
+            attribution_confidence: "exact",
+            owner_kind: "agent",
+            owner_id: "agent-Named",
+          },
+          {
+            finding_id: "finding:b",
+            finding_kind: "group.memory-pressure",
+            finding_class: "attribution",
+            severity: "warning",
+            summary: "An unowned group holds 2 GiB.",
+            scope_kind: "group",
+            scope_id: "22",
+            occurrence_count: 1,
+            attribution_state: "unattributed",
+            attribution_confidence: "none",
+            owner_kind: "agent",
+            owner_id: "agent-Guessed",
+          },
+        ],
+      },
+    });
+    const report = formatResourceStatus(readResourceStatus(root, { nowMs }), "project");
+    expect(report).toContain("agent agent-Named");
+    expect(report).not.toContain("agent-Guessed");
+    expect(report).toContain("no validated owner");
+  });
+
+  test("treats a stale, missing, or malformed pressure record as unknown, never healthy", () => {
+    resourceStatusFixture(root, nowMs);
+    utimesSync(supervisorPaths(root).pressure, new Date(nowMs - 60_000), new Date(nowMs - 60_000));
+    const stale = readResourceStatus(root, { nowMs });
+    expect(stale.assessment.state).toBe("unknown");
+    expect(stale.assessment_capability).toMatchObject({
+      state: "expired",
+      reason_code: "pressure_record_stale",
+    });
+    expect(stale.assessment.summary).toContain("60 seconds old");
+
+    resourceStatusFixture(root, nowMs);
+    rmSync(supervisorPaths(root).pressure);
+    expect(readResourceStatus(root, { nowMs }).assessment_capability).toMatchObject({
+      state: "unsupported",
+      reason_code: "pressure_record_missing",
+    });
+
+    for (const payload of [
+      "{broken",
+      "[]",
+      JSON.stringify({ schema_version: 90 }),
+      JSON.stringify({
+        ...pressureRecordFixture(root, { nowMs }),
+        assessment: { state: "normal" },
+      }),
+      JSON.stringify({
+        ...pressureRecordFixture(root, { nowMs }),
+        assessment: {
+          ...pressureAssessmentFixture(),
+          state: "definitely-fine",
+        },
+      }),
+      JSON.stringify({
+        ...pressureRecordFixture(root, { nowMs }),
+        assessment: { ...pressureAssessmentFixture(), observer_only: false },
+      }),
+    ]) {
+      writeFileSync(supervisorPaths(root).pressure, payload);
+      utimesSync(supervisorPaths(root).pressure, new Date(nowMs), new Date(nowMs));
+      const status = readResourceStatus(root, { nowMs });
+      expect(status.assessment.state).toBe("unknown");
+      expect(status.assessment_capability.state).toBe("malformed");
+    }
+  });
+
+  test("does not turn a stopped writer into a healthy assessment", () => {
     resourceStatusFixture(root, nowMs);
     rmSync(supervisorPaths(root).service);
-    const status = readResourceStatus(root);
-    expect(status).toMatchObject({
-      state: "fresh",
-      assessment: "unknown",
-      writer: { running: false },
-    });
+    const status = readResourceStatus(root, { nowMs });
+    expect(status).toMatchObject({ state: "fresh", writer: { running: false } });
     expect(formatResourceSummary(status)).toContain("writer stopped");
   });
 

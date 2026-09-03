@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-
 import type { DiagnosticBundleComparison } from "../../../src/core/diagnostics/contract";
 import { SUPERVISOR_FINDING_SCHEMA_VERSION } from "../../../src/core/supervisor/contract";
+import { pressureAssessmentFixture } from "../../../tests/helpers/resource-status";
 import { DiagnosticsComparison } from "./DiagnosticsComparison";
 
 describe("DiagnosticsComparison", () => {
@@ -34,6 +34,7 @@ function fixtureComparison(): DiagnosticBundleComparison {
     fingerprint: "fp:memory",
     source_kind: "resource.snapshot",
     finding_kind: "machine.memory-pressure",
+    finding_class: "contention" as const,
     severity: "critical" as const,
     state: "opened" as const,
     scope_kind: "machine",
@@ -53,18 +54,20 @@ function fixtureComparison(): DiagnosticBundleComparison {
     capabilities: [],
   };
   const advice = {
-    schema_version: 1 as const,
+    schema_version: 2 as const,
     evaluated_at: observedAt,
-    pressure: "critical" as const,
-    fan_out_recommendation: "avoid-new-fan-out" as const,
     observer_only: true as const,
-    summary: "Critical local pressure is active.",
-    source_capability: { source_kind: "supervisor.findings", state: "supported" as const },
+    assessment: pressureAssessmentFixture({
+      state: "critical",
+      limiting_resource: "memory",
+      recommended_action: "avoid-new-heavy-work",
+      observed_at: observedAt,
+      summary: "Memory is contended, so do not start new heavy work.",
+    }),
+    prior_hysteresis: null,
+    source_capability: { source_kind: "supervisor.pressure", state: "supported" as const },
     active_finding_count: 1,
-    contributing_finding_count: 1,
-    omitted_contributing_finding_count: 0,
-    contributing_findings: [],
-    reasons: [],
+    summary: "Memory is contended, so do not start new heavy work.",
   };
   return {
     schema_version: 1,
@@ -95,7 +98,17 @@ function fixtureComparison(): DiagnosticBundleComparison {
       },
     ],
     advice: {
-      before: { ...advice, pressure: "elevated", fan_out_recommendation: "use-caution" },
+      before: {
+        ...advice,
+        assessment: pressureAssessmentFixture({
+          state: "elevated",
+          limiting_resource: "memory",
+          recommended_action: "limit-heavy-work",
+          observed_at: observedAt,
+          summary: "Memory stalls are rising, so limit new heavy work.",
+        }),
+        summary: "Memory stalls are rising, so limit new heavy work.",
+      },
       after: advice,
       direction: "escalated",
     },

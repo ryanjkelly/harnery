@@ -13,6 +13,7 @@ import {
   replayDiagnosticBundle,
   showDiagnosticBundle,
 } from "../core/diagnostics/index.ts";
+import { readPublishedPressure } from "../core/resources/status.ts";
 import {
   buildSupervisorTimeline,
   explainSupervisorFinding,
@@ -112,14 +113,16 @@ export function registerDiagnosticsCommand(
         }
         const report = readSupervisorFindings(repoRoot);
         const findings = mergeFindings(report?.active ?? [], report?.transitions ?? []);
-        const sourceCapability = liveFindingsCapability(repoRoot, report !== undefined);
+        const published = readPublishedPressure(repoRoot);
         emit.data({
           schema_version: DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
           kind: "diagnostic_advice",
           source: { mode: "live" },
           advice: buildDiagnosticAdvice({
-            findings,
-            sourceCapability,
+            assessment: published.assessment,
+            priorHysteresis: published.prior_hysteresis,
+            sourceCapability: published.capability,
+            activeFindingCount: findings.filter((finding) => finding.state === "opened").length,
             evaluatedAt: new Date().toISOString(),
           }),
         });

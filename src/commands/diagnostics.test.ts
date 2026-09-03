@@ -90,9 +90,15 @@ describe("diagnostics command", () => {
         kind: "diagnostic_advice",
         source: { mode: "live" },
         advice: {
-          pressure: "unknown",
-          fan_out_recommendation: "unknown",
+          schema_version: 2,
           observer_only: true,
+          assessment: { state: "unknown", recommended_action: "unknown" },
+          prior_hysteresis: null,
+          source_capability: {
+            source_kind: "supervisor.pressure",
+            state: "unsupported",
+            reason_code: "pressure_record_missing",
+          },
         },
       });
 
@@ -120,14 +126,14 @@ describe("diagnostics command", () => {
           artifact_id: captured.manifest.artifact_id,
           captured_at: "2026-08-31T09:00:00.000Z",
         },
-        advice: { pressure: "unknown", observer_only: true },
+        advice: { assessment: { state: "unknown" }, observer_only: true },
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("marks a lingering findings file expired when the supervisor is not running", async () => {
+  test("marks a lingering findings file expired and refuses to assess without a record", async () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-diagnostics-command-"));
     try {
       const paths = supervisorPaths(root);
@@ -149,13 +155,21 @@ describe("diagnostics command", () => {
       expect(captured.payloads[0]).toMatchObject({
         kind: "diagnostic_advice",
         advice: {
-          pressure: "unknown",
+          assessment: { state: "unknown", recommended_action: "unknown" },
           active_finding_count: 0,
           source_capability: {
-            state: "expired",
-            reason_code: "supervisor_status_missing",
+            state: "unsupported",
+            reason_code: "pressure_record_missing",
           },
         },
+      });
+
+      const listed = capturedEmit();
+      const listProgram = new Command();
+      registerDiagnosticsCommand(listProgram, listed.emit, { repoRoot: root });
+      await listProgram.parseAsync(["node", "harn", "diagnostics", "list"]);
+      expect(listed.payloads[0]).toMatchObject({
+        capability: { state: "expired", reason_code: "supervisor_status_missing" },
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

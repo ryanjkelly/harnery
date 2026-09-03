@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  hysteresisFixture,
+  pressureAssessmentFixture,
+} from "../../../tests/helpers/resource-status.ts";
+import type { PublishedPressure } from "../resources/status.ts";
+import {
   SUPERVISOR_FINDING_SCHEMA_VERSION,
   type SupervisorFinding,
   type SupervisorServiceStatusRecord,
@@ -25,11 +30,12 @@ describe("observeWorkflowDiagnosticAdmission", () => {
       unregisterConsumer: () => events.push("unregistered"),
       readStatus: () => status(nowMs >= requestedAt + 50 ? nowMs : requestedAt - 1_000),
       readFindings: () => ({
-        schema_version: 2,
+        schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
         max_findings: 100,
         active: [finding("warning", "warning")],
         transitions: [],
       }),
+      readPressure: () => published("elevated"),
     });
 
     const observation = await observeWorkflowDiagnosticAdmission({
@@ -41,7 +47,10 @@ describe("observeWorkflowDiagnosticAdmission", () => {
     expect(observation.freshness).toBe("fresh");
     expect(observation.service_state).toBe("running");
     expect(observation.wait_ms).toBe(50);
-    expect(observation.advice.pressure).toBe("elevated");
+    expect(observation.advice.assessment.state).toBe("elevated");
+    expect(observation.advice.assessment.observer_only).toBe(true);
+    expect(observation.advice.prior_hysteresis?.state).toBe("normal");
+    expect(observation.advice.active_finding_count).toBe(1);
     expect(events).toEqual(["registered", "unregistered"]);
   });
 
@@ -65,7 +74,7 @@ describe("observeWorkflowDiagnosticAdmission", () => {
 
     expect(observation.freshness).toBe("unavailable");
     expect(observation.service_state).toBe("unavailable");
-    expect(observation.advice.pressure).toBe("unknown");
+    expect(observation.advice.assessment.state).toBe("unknown");
     expect(observation.advice.source_capability.reason_code).toBe("supervisor_unavailable");
     expect(events).toEqual(["registered", "unregistered"]);
   });
@@ -89,7 +98,7 @@ describe("observeWorkflowDiagnosticAdmission", () => {
 
     expect(observation.freshness).toBe("unavailable");
     expect(observation.wait_ms).toBe(100);
-    expect(observation.advice.pressure).toBe("unknown");
+    expect(observation.advice.assessment.state).toBe("unknown");
     expect(observation.advice.source_capability.reason_code).toBe("fresh_cycle_timeout");
   });
 });
@@ -105,12 +114,25 @@ function fakeRuntime(
     ensureSupervisor: async () => ({ state: "running", status: status() }),
     readStatus: () => status(requestedAt),
     readFindings: () => ({
-      schema_version: 2,
+      schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
       max_findings: 100,
       active: [],
       transitions: [],
     }),
+    readPressure: () => published("normal"),
     ...overrides,
+  };
+}
+
+function published(state: "normal" | "elevated"): PublishedPressure {
+  return {
+    assessment: pressureAssessmentFixture({
+      state,
+      observed_at: "2026-08-31T12:00:00.050Z",
+    }),
+    prior_hysteresis: hysteresisFixture(),
+    capability: { source_kind: "supervisor.pressure", state: "supported" },
+    record: null,
   };
 }
 
@@ -145,6 +167,7 @@ function finding(id: string, severity: SupervisorFinding["severity"]): Superviso
     fingerprint: `fingerprint-${id}`,
     source_kind: "resources.process-group",
     finding_kind: "memory-growth",
+    finding_class: "attribution",
     severity,
     state: "opened",
     scope_kind: "agent",

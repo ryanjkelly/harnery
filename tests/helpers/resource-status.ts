@@ -1,11 +1,27 @@
+import { utimesSync } from "node:fs";
 import { hostname } from "node:os";
-import type { ResourceSnapshot } from "../../src/core/resources/contract.ts";
-import { resourcePaths, writePrivateJsonAtomic } from "../../src/core/resources/storage.ts";
-import { supervisorPaths } from "../../src/core/supervisor/storage.ts";
+import {
+  PRESSURE_ASSESSMENT_SCHEMA_VERSION,
+  PRESSURE_POLICY,
+  type PressureAssessment,
+  type PressureHysteresisState,
+  type PressureState,
+} from "../../src/core/diagnostics/contract";
+import {
+  RESOURCE_SNAPSHOT_SCHEMA_VERSION,
+  type ResourceSnapshot,
+} from "../../src/core/resources/contract";
+import { resourcePaths, writePrivateJsonAtomic } from "../../src/core/resources/storage";
+import {
+  SUPERVISOR_FINDING_SCHEMA_VERSION,
+  SUPERVISOR_PRESSURE_SCHEMA_VERSION,
+  type SupervisorPressureRecord,
+} from "../../src/core/supervisor/contract";
+import { supervisorPaths } from "../../src/core/supervisor/storage";
 
 export function resourceStatusFixture(root: string, nowMs = Date.now()): ResourceSnapshot {
   const snapshot: ResourceSnapshot = {
-    schema_version: 1,
+    schema_version: RESOURCE_SNAPSHOT_SCHEMA_VERSION,
     sampled_at: new Date(nowMs).toISOString(),
     interval_ms: 2000,
     sample_duration_ms: 12,
@@ -43,6 +59,14 @@ export function resourceStatusFixture(root: string, nowMs = Date.now()): Resourc
       memory_full: null,
       io_full: null,
     },
+    vmstat: {
+      state: "supported",
+      swap_in_bytes_per_second: 0,
+      swap_out_bytes_per_second: 0,
+      direct_reclaim_pages_per_second: 0,
+      major_faults_per_second: 0,
+      counters_reset: false,
+    },
     io: { state: "supported", read_bytes_per_second: 1024, write_bytes_per_second: 2048 },
     groups: [],
     processes: [
@@ -77,21 +101,137 @@ export function resourceStatusFixture(root: string, nowMs = Date.now()): Resourc
     keep_alive: true,
   });
   writePrivateJsonAtomic(supervisorPaths(root).findings, {
-    schema_version: 2,
+    schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
     active: [],
     transitions: [],
     max_findings: 200,
   });
+  pressureRecordFixture(root, { nowMs });
   return snapshot;
+}
+
+export function hysteresisFixture(
+  overrides: Partial<PressureHysteresisState> = {},
+): PressureHysteresisState {
+  return {
+    state: "normal",
+    state_since: "2026-09-03T09:00:00.000Z",
+    consecutive_clear_samples: 5,
+    dimension_streaks: {},
+    oom_baseline_total_kills: 6,
+    oom_hold_until: null,
+    observer_generation: "observer-1",
+    ...overrides,
+  };
+}
+
+/** One complete assessment, shaped like the observer's, for fixtures and fakes. */
+export function pressureAssessmentFixture(
+  overrides: Partial<PressureAssessment> = {},
+): PressureAssessment {
+  const state: PressureState = overrides.state ?? "normal";
+  return {
+    schema_version: PRESSURE_ASSESSMENT_SCHEMA_VERSION,
+    observer_only: true,
+    state,
+    scope: "guest",
+    limiting_resource: "none",
+    trend: "steady",
+    observed_at: "2026-09-03T09:00:10.000Z",
+    sample_age_ms: 2_000,
+    evidence_state: "complete",
+    evidence: [
+      {
+        dimension: "memory_stall",
+        state: "supported",
+        observed_value: 0,
+        unit: "percent",
+        sample_count: 5,
+      },
+    ],
+    reasons: [
+      {
+        code: "no_contention_evidence",
+        dimension: null,
+        summary: "No kernel stall, reclaim, or capacity signal crossed its threshold.",
+        observed_value: null,
+        threshold_value: null,
+        unit: null,
+        sample_count: 5,
+        contributes_to: "normal",
+      },
+    ],
+    contributors: [],
+    omitted_contributor_count: 0,
+    unattributed_memory_percent: 4,
+    recommended_action: "proceed",
+    summary: "Local resources are not contended, so heavy work can proceed.",
+    guidance: [
+      {
+        workload_class: "lightweight",
+        recommendation: "proceed",
+        summary: "Reads and edits can proceed.",
+      },
+      {
+        workload_class: "cpu-heavy",
+        recommendation: "proceed",
+        summary: "Builds and test runs can proceed.",
+      },
+      {
+        workload_class: "memory-heavy",
+        recommendation: "proceed",
+        summary: "Browser captures and page QA can proceed.",
+      },
+      {
+        workload_class: "storage-heavy",
+        recommendation: "proceed",
+        summary: "Large writes and exports can proceed.",
+      },
+    ],
+    hysteresis: hysteresisFixture({ state }),
+    policy_version: PRESSURE_POLICY.policy_version,
+    ...overrides,
+  };
+}
+
+/** Publish a pressure record the way the observer does. */
+export function pressureRecordFixture(
+  root: string,
+  options: {
+    nowMs?: number;
+    assessment?: Partial<PressureAssessment>;
+    prior?: PressureHysteresisState | null;
+    record?: Partial<SupervisorPressureRecord>;
+  } = {},
+): SupervisorPressureRecord {
+  const nowMs = options.nowMs ?? Date.now();
+  const record: SupervisorPressureRecord = {
+    schema_version: SUPERVISOR_PRESSURE_SCHEMA_VERSION,
+    published_at: new Date(nowMs).toISOString(),
+    observer_generation: "observer-1",
+    assessment: pressureAssessmentFixture({
+      observed_at: new Date(nowMs).toISOString(),
+      ...options.assessment,
+    }),
+    prior_hysteresis: options.prior ?? null,
+    ...options.record,
+  };
+  writePrivateJsonAtomic(supervisorPaths(root).pressure, record);
+  // Keep the record's modification time consistent with its stated sample time,
+  // so a fixture that backdates the snapshot also backdates the assessment.
+  const stamp = new Date(nowMs);
+  utimesSync(supervisorPaths(root).pressure, stamp, stamp);
+  return record;
 }
 
 export function resourceFindingFixture(kind = "machine.cpu-pressure", severity = "warning") {
   return {
-    schema_version: 2,
+    schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
     id: `finding:${kind}`,
     fingerprint: kind,
     source_kind: "resource-snapshot",
     finding_kind: kind,
+    finding_class: kind.startsWith("machine.") ? "contention" : "attribution",
     severity,
     state: "opened",
     scope_kind: "machine",

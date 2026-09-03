@@ -11,12 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ARTIFACT_MANIFEST } from "../artifacts/index.ts";
-import { RESOURCE_SNAPSHOT_SCHEMA_VERSION } from "../resources/contract.ts";
+import { RESOURCE_SNAPSHOT_SCHEMA_VERSION, type ResourceSnapshot } from "../resources/contract.ts";
 import {
   SUPERVISOR_ACTIVITY_SCHEMA_VERSION,
   SUPERVISOR_FINDING_SCHEMA_VERSION,
   SUPERVISOR_HISTORY_SCHEMA_VERSION,
   SUPERVISOR_LOG_FEED_SCHEMA_VERSION,
+  SUPERVISOR_PRESSURE_SCHEMA_VERSION,
   SUPERVISOR_SNAPSHOT_SCHEMA_VERSION,
 } from "../supervisor/contract.ts";
 import { explainSupervisorFinding } from "../supervisor/explanations.ts";
@@ -29,7 +30,9 @@ import {
   replayDiagnosticBundle,
   validateDiagnosticBundle,
 } from "./bundle.ts";
+import { PRESSURE_POLICY, type PressureHysteresisState } from "./contract.ts";
 import { pseudonymousMachineId } from "./identity.ts";
+import { assessPressure } from "./pressure.ts";
 import { sha256 } from "./replay.ts";
 import { sanitizeDiagnosticValue } from "./sanitize.ts";
 
@@ -102,6 +105,72 @@ describe("diagnostic bundles", () => {
       captured.manifest.artifact_id,
       new Date("2026-08-30T12:11:00.000Z"),
     );
+    expect(replay.matched).toBeTrue();
+    expect(replay.expected_digest).toBe(replay.actual_digest);
+  });
+
+  test("replays the published assessment identically across a hysteresis transition", () => {
+    const root = repo();
+    const sampledAt = "2026-08-30T12:10:00.000Z";
+    writeReplaySources(root, sampledAt);
+    writeSource(root, "supervisor/findings.json", {
+      schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
+      active: [],
+      transitions: [],
+    });
+    const snapshot = JSON.parse(
+      readFileSync(join(root, ".harnery", "resources", "snapshot.json"), "utf8"),
+    ) as ResourceSnapshot;
+    // The previous sample was critical, so the recovery dwell is the thing that
+    // has to survive freezing. Without `prior_hysteresis` a replay would start
+    // cold and report `normal` where the observer reported a recovery.
+    const prior: PressureHysteresisState = {
+      state: "critical",
+      state_since: "2026-08-30T12:09:00.000Z",
+      consecutive_clear_samples: PRESSURE_POLICY.recovery.critical_exit_samples - 1,
+      dimension_streaks: {},
+      oom_baseline_total_kills: null,
+      oom_hold_until: null,
+      observer_generation: "observer-1",
+    };
+    const assessment = assessPressure({
+      snapshot,
+      history: [],
+      findings: [],
+      findings_capability: { source_kind: "supervisor.findings", state: "supported" },
+      prior,
+      observer_generation: "observer-1",
+      now_ms: Date.parse(sampledAt) + 1_500,
+    });
+    expect(assessment.state).not.toBe(prior.state);
+    writeSource(root, "supervisor/pressure.json", {
+      schema_version: SUPERVISOR_PRESSURE_SCHEMA_VERSION,
+      published_at: sampledAt,
+      observer_generation: "observer-1",
+      assessment,
+      prior_hysteresis: prior,
+    });
+
+    const captured = captureDiagnosticBundle(root, {
+      now: new Date(sampledAt),
+      machineLabel: "diagnostic-test-machine",
+      engineVersion: "test-build-v1",
+    });
+    expect(
+      captured.manifest.sources.find((source) => source.source_kind === "supervisor.pressure"),
+    ).toMatchObject({ capability: "supported" });
+    const thresholds = JSON.parse(
+      readFileSync(join(captured.path, "inputs", "thresholds.json"), "utf8"),
+    );
+    // Tuning any pressure threshold must invalidate a frozen replay.
+    expect(thresholds.values.pressure_policy).toEqual(PRESSURE_POLICY);
+    const frozen = JSON.parse(readFileSync(join(captured.path, "expected.json"), "utf8"));
+    expect(frozen.advice.assessment).toEqual(assessment);
+    expect(frozen.advice.prior_hysteresis).toEqual(prior);
+
+    rmSync(join(root, ".harnery", "supervisor"), { recursive: true, force: true });
+    rmSync(join(root, ".harnery", "resources"), { recursive: true, force: true });
+    const replay = replayDiagnosticBundle(root, captured.manifest.artifact_id);
     expect(replay.matched).toBeTrue();
     expect(replay.expected_digest).toBe(replay.actual_digest);
   });

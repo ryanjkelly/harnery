@@ -48,9 +48,10 @@ import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
 import type { Adapter } from "../../adapter.ts";
 import { endOfTurnStatusCommand, hostPromptReminder, resolveBinName } from "../../config.ts";
+import type { PressureWorkloadClass } from "../../diagnostics/contract.ts";
 import { canReceiveContext } from "../../hooks/adapter/output.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
-import { formatResourceSummary, readResourceStatus } from "../../resources/status.ts";
+import { readResourceStatus } from "../../resources/status.ts";
 import { drainMailbox, formatMailboxDelivery } from "../mailbox.ts";
 import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
 import { heartbeatPath } from "../state/heartbeat-reader.ts";
@@ -210,41 +211,66 @@ export function renderPromptContext(opts: PromptContextOpts): string {
   return sections.join("\n\n");
 }
 
-/** Resource samples stay in the cache; prompts only receive meaningful changes. */
+/**
+ * Prompts receive the published assessment, and only when it changes in a way
+ * that changes what an agent should do. The dedupe key is scope, state, and
+ * recommended action, so a moving number or a different contributor does not
+ * re-emit the same advice.
+ */
 export function resourceWarningIfChanged(coordRoot: string, instanceId: string): string {
   try {
     heartbeatPath(coordRoot, instanceId);
     const status = readResourceStatus(coordRoot);
+    const assessment = status.assessment;
     const hashFile = join(coordRoot, ".harnery", `.last-resource-hash.${instanceId}`);
     const previous = safeRead(hashFile);
-    // Existing users without a writer should retain ordinary coordination.
-    if (status.reason === "snapshot_missing" && !previous) return "";
-    const key =
-      status.state === "fresh"
-        ? `${status.state}:${status.assessment}:${status.signals.join(",")}:${status.writer.running}`
-        : `${status.state}:${status.reason}`;
+    // Existing users without an observer should retain ordinary coordination.
+    if (status.assessment_capability.reason_code === "pressure_record_missing" && !previous) {
+      return "";
+    }
+    const key = `${assessment.scope}:${assessment.state}:${assessment.recommended_action}`;
     if (previous === key) return "";
     writeHashFile(hashFile, key);
-    const warning =
-      status.state !== "fresh" ||
-      !status.writer.running ||
-      ["elevated", "critical"].includes(status.assessment);
+    const warning = assessment.state === "elevated" || assessment.state === "critical";
     const wasWarning =
-      previous && !previous.startsWith("fresh:normal:") && !previous.startsWith("fresh:unknown:");
+      !!previous && (previous.includes(":elevated:") || previous.includes(":critical:"));
     if (!warning && !wasWarning) return "";
-    const guidance =
-      status.assessment === "critical"
-        ? "Avoid starting additional heavy work until the findings change."
-        : status.assessment === "elevated"
-          ? "Limit new parallel heavy work and inspect the findings."
-          : status.state !== "fresh" || !status.writer.running || status.assessment === "unknown"
-            ? "Resource headroom is unknown; continue normal coordination."
-            : "The previously reported resource warning has cleared.";
-    return `Resource update: ${formatResourceSummary(status)}. ${guidance} Read \`${resolveBinName(coordRoot)} resources status --json\` for details.`;
+    const lines = [`Resource update: ${assessment.summary}`];
+    if (assessment.state === "unknown") {
+      lines.push(
+        "Resource headroom cannot be measured right now, so continue normal coordination and judge heavy work yourself.",
+      );
+    } else if (!warning && wasWarning) {
+      lines.push("The previously reported resource warning has cleared.");
+    }
+    for (const item of assessment.guidance) {
+      lines.push(`${WORKLOAD_LABEL[item.workload_class]}: ${item.summary}`);
+    }
+    const owners = assessment.contributors
+      .filter((row) => row.attribution_confidence === "exact" && row.owner_id)
+      .slice(0, 3)
+      .map((row) => `${row.owner_kind ?? "owner"} ${row.owner_id}`);
+    if (owners.length) {
+      lines.push(
+        `Measured owners of the contended resource: ${owners.join(", ")}. That says who is holding it, not what the machine as a whole can take.`,
+      );
+    }
+    lines.push(
+      `Read \`${resolveBinName(coordRoot)} resources status --json\` for the evidence behind this.`,
+    );
+    return lines.join("\n");
   } catch {
     return "";
   }
 }
+
+/** How an agent recognizes the work each guidance entry is about. */
+const WORKLOAD_LABEL: Readonly<Record<PressureWorkloadClass, string>> = {
+  lightweight: "Reads and small edits",
+  "cpu-heavy": "Builds and test runs",
+  "memory-heavy": "Browser captures and page QA",
+  "storage-heavy": "Large writes and exports",
+};
 
 function renderHostPromptReminder(coordRoot: string, selfInstanceId: string): string {
   const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);

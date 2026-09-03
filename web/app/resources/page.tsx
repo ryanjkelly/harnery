@@ -2,6 +2,7 @@ import { CircleAlert, HeartPulse, History, ServerCog, Workflow } from "lucide-re
 import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
+import { PressureSummaryCard } from "@/components/resources/PressureSummaryCard";
 import { ResourceLiveRefresher } from "@/components/resources/ResourceLiveRefresher";
 import { ResourceMetricCharts } from "@/components/resources/ResourceMetricCharts";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +15,7 @@ import {
 import { coordRoot, readAgents, readInstanceIdentities } from "@/lib/coord-reader";
 import { readResourceDashboard } from "@/lib/resource-reader";
 import { readSupervisorDashboard } from "@/lib/supervisor-reader";
+import { readPublishedPressure } from "../../../src/core/resources/status";
 import type {
   ObservedServiceHealth,
   SupervisorFinding,
@@ -28,6 +30,9 @@ export const metadata = { title: "Resources · Harnery" };
 export default function ResourcesPage() {
   const root = coordRoot();
   const report = readResourceDashboard(root);
+  // The observer publishes one assessment; the page renders it rather than
+  // reading numbers off the snapshot and judging them again here.
+  const pressure = readPublishedPressure(root);
   const supervisor = readSupervisorDashboard(root);
   const snapshot = report.snapshot;
   const agents = readAgents();
@@ -79,6 +84,8 @@ export default function ResourcesPage() {
               )}
             </div>
           </header>
+
+          <PressureSummaryCard assessment={pressure.assessment} capability={pressure.capability} />
 
           {!snapshot ? (
             <Card className="border-amber-500/30 bg-amber-500/5">

@@ -92,6 +92,9 @@ export function DiagnosticsComparison({
             <Badge variant="outline">{comparison.advice.direction}</Badge>
           </div>
           <p className="text-xs text-muted-foreground">{comparison.advice.after.summary}</p>
+          <p className="text-xs text-muted-foreground">
+            {`Recommended action ${comparison.advice.before.assessment.recommended_action} to ${comparison.advice.after.assessment.recommended_action}; limiting resource ${comparison.advice.before.assessment.limiting_resource} to ${comparison.advice.after.assessment.limiting_resource}.`}
+          </p>
         </CardContent>
       </Card>
 

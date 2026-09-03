@@ -483,7 +483,8 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                     <span className="cursor-help font-medium">Shadow admission</span>
                   </Tooltip>
                   <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                    {run.proof.diagnostic_admission.observation?.advice.pressure ?? "not needed"}
+                    {run.proof.diagnostic_admission.observation?.advice.assessment.state ??
+                      "not needed"}
                   </span>
                   <span className="text-xs text-muted-foreground">action none</span>
                 </div>

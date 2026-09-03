@@ -112,7 +112,10 @@ export function compareValidatedDiagnosticBundles(
     advice: {
       before: before.expected.advice,
       after: after.expected.advice,
-      direction: adviceDirection(before.expected.advice.pressure, after.expected.advice.pressure),
+      direction: adviceDirection(
+        before.expected.advice.assessment.state,
+        after.expected.advice.assessment.state,
+      ),
     },
     findings: {
       total: rows.length,
@@ -138,6 +141,7 @@ export function renderDiagnosticBundleComparison(comparison: DiagnosticBundleCom
   const lines = [
     `diagnostic comparison: ${comparison.before.artifact_id} -> ${comparison.after.artifact_id}`,
     `comparability: ${comparison.comparability}; pressure: ${comparison.before.pressure} -> ${comparison.after.pressure} (${comparison.advice.direction})`,
+    `recommended action: ${comparison.advice.before.assessment.recommended_action} -> ${comparison.advice.after.assessment.recommended_action}; limiting resource: ${comparison.advice.before.assessment.limiting_resource} -> ${comparison.advice.after.assessment.limiting_resource}`,
     `findings: ${comparison.findings.regressions} regression, ${comparison.findings.worsened} worsened, ${comparison.findings.changed} changed, ${comparison.findings.improved} improved, ${comparison.findings.recoveries} recovery, ${comparison.findings.unchanged} unchanged`,
   ];
   if (comparison.warnings.length > 0) {
@@ -170,7 +174,7 @@ function bundleRef(bundle: ValidatedDiagnosticBundle): DiagnosticBundleCompariso
     engine_version: bundle.manifest.engine_version,
     threshold_digest: bundle.manifest.threshold_digest,
     finding_count: bundle.expected.findings.length,
-    pressure: bundle.expected.advice.pressure,
+    pressure: bundle.expected.advice.assessment.state,
   };
 }
 

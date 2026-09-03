@@ -6,11 +6,13 @@ import type {
   ObservedHookHealth,
   ObservedServiceHealth,
   SupervisorActivitySnapshot,
+  SupervisorCapability,
   SupervisorFinding,
   SupervisorFindingExplanation,
   SupervisorFindings,
   SupervisorHistory,
   SupervisorLogFeed,
+  SupervisorPressureRecord,
   SupervisorSnapshot,
   SupervisorTimeline,
 } from "../supervisor/contract.ts";
@@ -23,14 +25,24 @@ import { explainSupervisorFinding } from "../supervisor/explanations.ts";
 import { updateSupervisorFindings } from "../supervisor/findings.ts";
 import { projectHookHealth } from "../supervisor/hook-health.ts";
 import { buildSupervisorTimeline } from "../supervisor/timeline.ts";
-import { buildDiagnosticAdvice } from "./advice.ts";
+import {
+  buildDiagnosticAdvice,
+  pressureHistoryFromSupervisor,
+  unknownPressureAssessment,
+} from "./advice.ts";
 import {
   DIAGNOSTIC_EXPECTED_SCHEMA_VERSION,
+  type DiagnosticAdvice,
   type DiagnosticExpected,
   type DiagnosticObservations,
   type DiagnosticSelection,
   type DiagnosticThresholds,
 } from "./contract.ts";
+import { assessPressure } from "./pressure.ts";
+import type { PressureFindingInput } from "./pressure-contract.ts";
+
+const PRESSURE_SOURCE = "supervisor.pressure";
+const FINDINGS_SOURCE = "supervisor.findings";
 
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortValue(value));
@@ -60,7 +72,7 @@ export function deriveCapturedExpected(
     findings,
     findings.map((finding) => diagnosticTimeline(finding, relatedSources)),
     findings.map(explainSupervisorFinding),
-    observations,
+    capturedAdvice(observations, findings),
   );
 }
 
@@ -115,8 +127,98 @@ export function replayDiagnosticInputs(
     findings,
     findings.map((finding) => diagnosticTimeline(finding, relatedSources)),
     findings.map(explainSupervisorFinding),
-    observations,
+    replayedAdvice(observations, resource, history, evaluated),
   );
+}
+
+/**
+ * The live assessment, exactly as the observer published it. Nothing is
+ * recomputed here, because `expected.json` freezes what the machine actually
+ * reported at capture time.
+ */
+function capturedAdvice(
+  observations: DiagnosticObservations,
+  findings: readonly SupervisorFinding[],
+): DiagnosticAdvice {
+  const record = optionalSource<SupervisorPressureRecord>(observations, PRESSURE_SOURCE);
+  const capability = capturedSourceCapability(observations, PRESSURE_SOURCE);
+  if (!record?.assessment) {
+    return unavailableAdvice(observations.captured_at, capability);
+  }
+  return buildDiagnosticAdvice({
+    assessment: record.assessment,
+    priorHysteresis: record.prior_hysteresis ?? null,
+    sourceCapability: capability,
+    activeFindingCount: openedCount(findings),
+    evaluatedAt: observations.captured_at,
+  });
+}
+
+/**
+ * Recompute the assessment from frozen inputs. `prior_hysteresis` comes from
+ * the captured record, so a transition that depended on the previous sample is
+ * reproduced instead of restarting from a cold state.
+ */
+function replayedAdvice(
+  observations: DiagnosticObservations,
+  resource: ResourceSnapshot,
+  history: SupervisorHistory,
+  evaluated: SupervisorFindings,
+): DiagnosticAdvice {
+  const record = optionalSource<SupervisorPressureRecord>(observations, PRESSURE_SOURCE);
+  const capability = capturedSourceCapability(observations, PRESSURE_SOURCE);
+  if (!record?.assessment) {
+    return unavailableAdvice(observations.captured_at, capability);
+  }
+  const snapshotAvailable = optionalSource<ResourceSnapshot>(observations, "resources.snapshot");
+  const findingsCapability = capturedSourceCapability(observations, FINDINGS_SOURCE);
+  const active = [...evaluated.active, ...evaluated.transitions].filter(
+    (finding) => finding.state === "opened",
+  );
+  const assessment = assessPressure({
+    snapshot: snapshotAvailable ? resource : null,
+    snapshot_reason: snapshotAvailable ? null : "captured_source_unavailable",
+    history: pressureHistoryFromSupervisor(history.points),
+    findings: active as readonly PressureFindingInput[],
+    findings_capability: {
+      source_kind: findingsCapability.source_kind,
+      state: findingsCapability.state,
+      ...(findingsCapability.reason_code ? { reason_code: findingsCapability.reason_code } : {}),
+    },
+    prior: record.prior_hysteresis ?? null,
+    observer_generation: record.observer_generation,
+    // Recover the observer's exact clock. `observed_at` is the sample instant
+    // and `sample_age_ms` is how far past it the observer read, so the sum is
+    // the original `now`, which staleness and the OOM hold both depend on.
+    now_ms: Date.parse(record.assessment.observed_at) + (record.assessment.sample_age_ms ?? 0),
+  });
+  return buildDiagnosticAdvice({
+    assessment,
+    priorHysteresis: record.prior_hysteresis ?? null,
+    sourceCapability: capability,
+    activeFindingCount: openedCount(
+      filterFindings(findingsProjection(evaluated), observations.selection),
+    ),
+    evaluatedAt: observations.captured_at,
+  });
+}
+
+function unavailableAdvice(capturedAt: string, capability: SupervisorCapability): DiagnosticAdvice {
+  return buildDiagnosticAdvice({
+    assessment: unknownPressureAssessment({
+      observedAt: capturedAt,
+      reasonCode: "evidence_unavailable",
+      summary: `Local resource pressure cannot be determined because the published assessment is ${capability.state}${capability.reason_code ? ` (${capability.reason_code})` : ""}.`,
+    }),
+    priorHysteresis: null,
+    sourceCapability: capability,
+    activeFindingCount: 0,
+    evaluatedAt: capturedAt,
+  });
+}
+
+function openedCount(findings: readonly SupervisorFinding[]): number {
+  return findings.filter((finding) => finding.state === "opened").length;
 }
 
 function diagnosticTimeline(
@@ -138,7 +240,7 @@ function expected(
   findings: readonly SupervisorFinding[],
   timelines: readonly SupervisorTimeline[],
   explanations: readonly SupervisorFindingExplanation[],
-  observations: DiagnosticObservations,
+  advice: DiagnosticAdvice,
 ): DiagnosticExpected {
   return {
     schema_version: DIAGNOSTIC_EXPECTED_SCHEMA_VERSION,
@@ -151,18 +253,14 @@ function expected(
     explanations: [...explanations].sort((left, right) =>
       left.finding_id.localeCompare(right.finding_id),
     ),
-    advice: buildDiagnosticAdvice({
-      findings,
-      sourceCapability: capturedSourceCapability(observations, "supervisor.findings"),
-      evaluatedAt: observations.captured_at,
-    }),
+    advice,
   };
 }
 
 function capturedSourceCapability(
   observations: DiagnosticObservations,
   sourceKind: string,
-): import("../supervisor/contract.ts").SupervisorCapability {
+): SupervisorCapability {
   const source = observations.sources.find((candidate) => candidate.source_kind === sourceKind);
   return source
     ? {

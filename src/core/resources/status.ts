@@ -1,8 +1,15 @@
 import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
-import { buildDiagnosticAdvice } from "../diagnostics/advice.ts";
+import { unknownPressureAssessment } from "../diagnostics/advice.ts";
 import {
-  SUPERVISOR_FINDING_SCHEMA_VERSION,
-  type SupervisorFinding,
+  PRESSURE_ASSESSMENT_SCHEMA_VERSION,
+  PRESSURE_POLICY,
+  type PressureAssessment,
+  type PressureHysteresisState,
+} from "../diagnostics/contract.ts";
+import {
+  SUPERVISOR_PRESSURE_SCHEMA_VERSION,
+  type SupervisorCapability,
+  type SupervisorPressureRecord,
 } from "../supervisor/contract.ts";
 import { readSupervisorStatus } from "../supervisor/status.ts";
 import { supervisorPaths } from "../supervisor/storage.ts";
@@ -27,7 +34,7 @@ export const RESOURCE_HOST_STATUS_STALE_MS = 30_000;
 const FUTURE_TOLERANCE_MS = 1_000;
 
 export interface ResourceStatus {
-  schema_version: 1;
+  schema_version: 2;
   state: "fresh" | "stale" | "unavailable";
   reason: string | null;
   sampled_at: string | null;
@@ -37,8 +44,16 @@ export interface ResourceStatus {
   namespace: ResourceSnapshot["namespace"];
   support: ResourceSnapshot["support"] | null;
   writer: { running: boolean; stale: boolean };
-  assessment: "normal" | "elevated" | "critical" | "unknown";
-  signals: string[];
+  /**
+   * The one published pressure assessment, read from the observer's record so
+   * this surface, the prompt notice, the dashboard, and a diagnostic bundle all
+   * report the same answer for the same input.
+   */
+  assessment: PressureAssessment;
+  /** The state the sample before the published one carried forward. */
+  prior_hysteresis: PressureHysteresisState | null;
+  /** Where the assessment came from, and why it is missing when it is. */
+  assessment_capability: SupervisorCapability;
   machine: ResourceMachineSample | null;
   disks: ResourceDiskSample[];
   pressure: ResourcePressureSample | null;
@@ -60,8 +75,9 @@ export function readResourceStatus(
   options: { nowMs?: number; includeProcesses?: boolean } = {},
 ): ResourceStatus {
   const nowMs = options.nowMs ?? Date.now();
+  const published = readPublishedPressure(coordRoot, nowMs);
   const result: ResourceStatus = {
-    schema_version: 1,
+    schema_version: 2,
     state: "unavailable",
     reason: "snapshot_missing",
     sampled_at: null,
@@ -71,8 +87,9 @@ export function readResourceStatus(
     namespace: "unknown",
     support: null,
     writer: { running: false, stale: false },
-    assessment: "unknown",
-    signals: [],
+    assessment: published.assessment,
+    prior_hysteresis: published.prior_hysteresis,
+    assessment_capability: published.capability,
     machine: null,
     disks: [],
     pressure: null,
@@ -180,9 +197,6 @@ export function readResourceStatus(
             ...reason(value.host.reason),
           };
   }
-  const assessment = assess(coordRoot, result, nowMs);
-  result.assessment = assessment.assessment;
-  result.signals = assessment.signals;
   if (options.includeProcesses) {
     result.processes = [...value.processes]
       .sort((a, b) => b.rss_bytes - a.rss_bytes)
@@ -202,10 +216,11 @@ export function readResourceStatus(
 }
 
 export function formatResourceSummary(status: ResourceStatus): string {
+  const lead = status.assessment.summary;
   if (status.state !== "fresh" || !status.machine) {
     const age =
       status.sample_age_ms === null ? "" : ` (${Math.round(status.sample_age_ms / 1_000)}s old)`;
-    return `${status.state}${age}: ${status.reason?.replaceAll("_", " ") ?? "no measurements"}`;
+    return `${lead} Measurements are ${status.state}${age}: ${status.reason?.replaceAll("_", " ") ?? "no measurements"}.`;
   }
   const m = status.machine;
   const disk = status.disks
@@ -221,14 +236,31 @@ export function formatResourceSummary(status: ResourceStatus): string {
       ? "unknown"
       : `${formatBytes(m.memory_available_bytes)} available`;
   const diskText = disk ? `${formatBytes(disk.available_bytes as number)} available` : "unknown";
-  const condition = status.signals.length
-    ? `; ${status.assessment}: ${status.signals.slice(0, 3).join(", ")}${status.signals.length > 3 ? ` (+${status.signals.length - 3})` : ""}`
-    : "";
-  return `${status.namespace}/${status.platform}: CPU ${cpu}, RAM ${ram}, disk ${diskText}; ${Math.round((status.sample_age_ms ?? 0) / 1_000)}s old${status.support?.state === "partial" ? "; partial" : ""}${!status.writer.running ? "; writer stopped" : ""}${condition}`;
+  return `${lead} ${status.namespace}/${status.platform}: CPU ${cpu}, RAM ${ram}, disk ${diskText}; ${Math.round((status.sample_age_ms ?? 0) / 1_000)}s old${status.support?.state === "partial" ? "; partial" : ""}${!status.writer.running ? "; writer stopped" : ""}.`;
 }
 
 export function formatResourceStatus(status: ResourceStatus, bin: string): string {
+  const a = status.assessment;
   const lines = [formatResourceSummary(status)];
+  lines.push(
+    `Assessment: ${a.state} at ${a.scope} scope; limiting resource ${a.limiting_resource}; trend ${a.trend}; evidence ${a.evidence_state}; recommended action ${a.recommended_action}.`,
+  );
+  lines.push(
+    `Evidence age: ${a.sample_age_ms === null ? "unknown" : `${Math.round(a.sample_age_ms / 1_000)}s`}; assessment source ${status.assessment_capability.state}${status.assessment_capability.reason_code ? ` (${status.assessment_capability.reason_code})` : ""}.`,
+  );
+  for (const item of a.reasons) lines.push(`Reason ${item.code}: ${item.summary}`);
+  for (const item of a.guidance)
+    lines.push(`Guidance for ${item.workload_class} work: ${item.summary}`);
+  if (a.contributors.length) {
+    lines.push("Contributors (who is using the resource, never the machine state):");
+    for (const item of a.contributors) lines.push(`  ${formatContributor(item)}`);
+    if (a.omitted_contributor_count)
+      lines.push(`  ${a.omitted_contributor_count} other contributors omitted.`);
+  }
+  if (a.unattributed_memory_percent !== null)
+    lines.push(
+      `Unattributed memory: ${Math.round(a.unattributed_memory_percent)}% of machine memory has no validated owner.`,
+    );
   if (status.state !== "fresh" || !status.writer.running)
     lines.push(
       `Start or inspect the writer with ${bin} supervisor start --keep-alive and ${bin} supervisor status.`,
@@ -278,62 +310,182 @@ export function formatResourceStatus(status: ResourceStatus, bin: string): strin
   return lines.join("\n");
 }
 
-function assess(
-  coordRoot: string,
-  status: ResourceStatus,
-  nowMs: number,
-): Pick<ResourceStatus, "assessment" | "signals"> {
-  const unknown = { assessment: "unknown" as const, signals: [] };
-  if (!status.writer.running) return unknown;
-  try {
-    const path = supervisorPaths(coordRoot).findings;
-    const age = nowMs - statSync(path).mtimeMs;
-    if (age > RESOURCE_STATUS_STALE_MS || age < -FUTURE_TOLERANCE_MS) return unknown;
-    const report = readBoundedJson(path);
-    if (
-      !object(report) ||
-      report.schema_version !== SUPERVISOR_FINDING_SCHEMA_VERSION ||
-      !Array.isArray(report.active) ||
-      report.active.length > 2000 ||
-      !report.active.every(validFinding)
-    )
-      return unknown;
-    const advice = buildDiagnosticAdvice({
-      findings: report.active,
-      sourceCapability: { source_kind: "supervisor-findings", state: "supported" },
-      evaluatedAt: new Date(nowMs).toISOString(),
-    });
-    return {
-      assessment: advice.pressure,
-      signals: [...new Set(advice.contributing_findings.map((f) => text(f.finding_kind)))].sort(),
-    };
-  } catch {
-    return unknown;
-  }
+/** Ownership is stated only when attribution is exact. */
+function formatContributor(item: PressureAssessment["contributors"][number]): string {
+  const owner =
+    item.attribution_confidence === "exact" && item.owner_id
+      ? `${item.owner_kind ?? "owner"} ${item.owner_id}`
+      : item.attribution_state === "unattributed"
+        ? "no validated owner"
+        : "owner not confirmed";
+  return `${item.finding_kind} ${item.scope_kind}:${item.scope_id} (${owner}): ${item.summary}`;
 }
 
-function validFinding(v: unknown): v is SupervisorFinding {
+export const PRESSURE_RECORD_MAX_BYTES = 256 * 1024;
+
+export interface PublishedPressure {
+  assessment: PressureAssessment;
+  prior_hysteresis: PressureHysteresisState | null;
+  capability: SupervisorCapability;
+  record: SupervisorPressureRecord | null;
+}
+
+/**
+ * Read the assessment the observer published. Bounded, cache only, and never a
+ * computation: a missing, stale, or malformed record yields `unknown` with the
+ * reason stated, because a gap in the evidence is not a measurement of health.
+ */
+export function readPublishedPressure(coordRoot: string, nowMs = Date.now()): PublishedPressure {
+  const sourceKind = "supervisor.pressure";
+  const observedAt = new Date(nowMs).toISOString();
+  const gap = (
+    state: Exclude<SupervisorCapability["state"], "supported">,
+    reasonCode: string,
+    summary: string,
+    stale = false,
+  ): PublishedPressure => ({
+    assessment: unknownPressureAssessment({
+      observedAt,
+      reasonCode: stale ? "snapshot_stale" : "evidence_unavailable",
+      summary,
+    }),
+    prior_hysteresis: null,
+    capability: { source_kind: sourceKind, state, reason_code: reasonCode },
+    record: null,
+  });
+  const path = supervisorPaths(coordRoot).pressure;
+  let record: unknown;
+  try {
+    const age = nowMs - statSync(path).mtimeMs;
+    if (age > PRESSURE_POLICY.sample_staleness_ms || age < -FUTURE_TOLERANCE_MS) {
+      return gap(
+        "expired",
+        "pressure_record_stale",
+        `Local resource pressure cannot be determined because the published assessment is ${Math.round(Math.abs(age) / 1_000)} seconds old.`,
+        true,
+      );
+    }
+    record = readBoundedJson(path, PRESSURE_RECORD_MAX_BYTES);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return gap(
+        "unsupported",
+        "pressure_record_missing",
+        "Local resource pressure cannot be determined because the observer has not published an assessment yet.",
+      );
+    }
+    if (error instanceof Error && error.message === "snapshot_too_large") {
+      return gap(
+        "error",
+        "pressure_record_too_large",
+        "Local resource pressure cannot be determined because the published assessment is larger than the read limit.",
+      );
+    }
+    return gap(
+      "malformed",
+      "pressure_record_malformed",
+      "Local resource pressure cannot be determined because the published assessment could not be parsed.",
+    );
+  }
+  if (!validPressureRecord(record)) {
+    return gap(
+      "malformed",
+      "pressure_record_malformed",
+      "Local resource pressure cannot be determined because the published assessment did not match the expected shape.",
+    );
+  }
+  return {
+    assessment: record.assessment,
+    prior_hysteresis: record.prior_hysteresis,
+    capability: { source_kind: sourceKind, state: "supported" },
+    record,
+  };
+}
+
+function validPressureRecord(v: unknown): v is SupervisorPressureRecord {
+  if (
+    !object(v) ||
+    v.schema_version !== SUPERVISOR_PRESSURE_SCHEMA_VERSION ||
+    !string(v.published_at) ||
+    !string(v.observer_generation) ||
+    !validAssessment(v.assessment) ||
+    !(v.prior_hysteresis === null || validHysteresis(v.prior_hysteresis))
+  )
+    return false;
+  return true;
+}
+
+function validAssessment(v: unknown): v is PressureAssessment {
+  if (
+    !object(v) ||
+    v.schema_version !== PRESSURE_ASSESSMENT_SCHEMA_VERSION ||
+    v.observer_only !== true ||
+    !["normal", "elevated", "critical", "unknown"].includes(v.state as string) ||
+    !["guest", "native", "windows-host"].includes(v.scope as string) ||
+    !["memory", "cpu", "io", "storage", "none", "unknown"].includes(
+      v.limiting_resource as string,
+    ) ||
+    !["rising", "steady", "falling", "unknown"].includes(v.trend as string) ||
+    !string(v.observed_at) ||
+    !nullable(v.sample_age_ms) ||
+    !["complete", "partial", "unavailable"].includes(v.evidence_state as string) ||
+    !boundedArray(v.evidence, PRESSURE_POLICY.limits.max_evidence) ||
+    !boundedArray(v.reasons, PRESSURE_POLICY.limits.max_reasons) ||
+    !boundedArray(v.contributors, PRESSURE_POLICY.limits.max_contributors) ||
+    !number(v.omitted_contributor_count) ||
+    !percent(v.unattributed_memory_percent) ||
+    !["proceed", "limit-heavy-work", "avoid-new-heavy-work", "unknown"].includes(
+      v.recommended_action as string,
+    ) ||
+    !string(v.summary) ||
+    !boundedArray(v.guidance, 8) ||
+    !validHysteresis(v.hysteresis) ||
+    !number(v.policy_version)
+  )
+    return false;
   return (
-    object(v) &&
-    ["id", "finding_kind", "summary", "scope_kind", "scope_id", "observed_at"].every((key) =>
-      string(v[key]),
+    (v.reasons as unknown[]).every(
+      (row) => object(row) && string(row.code) && string(row.summary),
     ) &&
-    ["info", "warning", "critical"].includes(v.severity as string) &&
-    ["opened", "resolved"].includes(v.state as string) &&
-    number(v.occurrence_count) &&
-    (v.attribution === undefined || object(v.attribution)) &&
-    (v.workload_context === undefined || object(v.workload_context))
+    (v.guidance as unknown[]).every(
+      (row) => object(row) && string(row.workload_class) && string(row.summary),
+    ) &&
+    (v.contributors as unknown[]).every(
+      (row) =>
+        object(row) &&
+        string(row.finding_id) &&
+        string(row.finding_kind) &&
+        string(row.summary) &&
+        ["exact", "none"].includes(row.attribution_confidence as string),
+    )
   );
 }
 
-function readBoundedJson(path: string): unknown {
+function validHysteresis(v: unknown): v is PressureHysteresisState {
+  return (
+    object(v) &&
+    ["normal", "elevated", "critical", "unknown"].includes(v.state as string) &&
+    string(v.state_since) &&
+    number(v.consecutive_clear_samples) &&
+    object(v.dimension_streaks) &&
+    (v.oom_baseline_total_kills === null || number(v.oom_baseline_total_kills)) &&
+    (v.oom_hold_until === null || string(v.oom_hold_until)) &&
+    (v.observer_generation === null || string(v.observer_generation))
+  );
+}
+
+function boundedArray(v: unknown, max: number): v is unknown[] {
+  return Array.isArray(v) && v.length <= max;
+}
+
+function readBoundedJson(path: string, maxBytes = RESOURCE_STATUS_MAX_BYTES): unknown {
   const fd = openSync(path, "r");
   try {
     const size = fstatSync(fd).size;
-    if (size > RESOURCE_STATUS_MAX_BYTES) throw new Error("snapshot_too_large");
-    const buffer = Buffer.alloc(Math.min(RESOURCE_STATUS_MAX_BYTES + 1, size + 1));
+    if (size > maxBytes) throw new Error("snapshot_too_large");
+    const buffer = Buffer.alloc(Math.min(maxBytes + 1, size + 1));
     const length = readSync(fd, buffer, 0, buffer.length, 0);
-    if (length > RESOURCE_STATUS_MAX_BYTES) throw new Error("snapshot_too_large");
+    if (length > maxBytes) throw new Error("snapshot_too_large");
     return JSON.parse(buffer.subarray(0, length).toString("utf8"));
   } finally {
     closeSync(fd);

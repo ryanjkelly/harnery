@@ -9,6 +9,7 @@ import type {
   ResourcePressureSample,
   ResourcePressureWindow,
   ResourceSupportState,
+  ResourceVmstatSample,
 } from "./contract.ts";
 
 interface FileSystemCapacity {
@@ -39,11 +40,31 @@ interface IoBaseline {
   devices: Map<string, IoCounters>;
 }
 
+/** The `/proc/vmstat` counters the reclaim rates are derived from, in report order. */
+const VMSTAT_COUNTERS = ["pswpin", "pswpout", "pgscan_direct", "pgmajfault"] as const;
+
+type VmstatCounterName = (typeof VMSTAT_COUNTERS)[number];
+type VmstatCounters = Record<VmstatCounterName, number | null>;
+
+interface VmstatBaseline {
+  sampledAt: number;
+  counters: VmstatCounters;
+}
+
+/**
+ * Linux reports `pswpin` and `pswpout` in pages, and the kernel does not
+ * publish the page size in `/proc/vmstat`. Every architecture Harnery runs on
+ * uses a 4096 byte base page, so that value converts pages to bytes here. A
+ * platform with a different base page would need its page size supplied.
+ */
+const VMSTAT_PAGE_SIZE_BYTES = 4_096;
+
 const ioBaselines = new Map<string, IoBaseline>();
 const oomBaselines = new Map<
   string,
   { sampledAt: number; kills: number; lastKillAt: number | null }
 >();
+const vmstatBaselines = new Map<string, VmstatBaseline>();
 const MAX_BASELINES = 64;
 const MAX_BLOCK_DEVICES = 1_024;
 
@@ -56,6 +77,7 @@ export function collectSystemResources(
   pressure: ResourcePressureSample;
   io: ResourceIoSample;
   oom: ResourceOomSample;
+  vmstat: ResourceVmstatSample;
 } {
   const currentPlatform = options.platform ?? platform();
   const procRoot = options.procRoot ?? "/proc";
@@ -81,6 +103,11 @@ export function collectSystemResources(
         last_kill_age_ms: null,
         reason: `Kernel OOM kill counters are not collected on ${currentPlatform}.`,
       },
+      vmstat: unavailableVmstat(
+        "unsupported",
+        `Kernel memory reclaim counters are not collected on ${currentPlatform}.`,
+        false,
+      ),
     };
   }
   const key = JSON.stringify([
@@ -94,6 +121,7 @@ export function collectSystemResources(
     pressure: collectPressure(procRoot),
     io: collectIo(procRoot, sysRoot, options.nowMs ?? performance.now(), key),
     oom: collectOom(procRoot, options.nowMs ?? performance.now(), key),
+    vmstat: collectVmstat(procRoot, options.nowMs ?? performance.now(), key),
   };
 }
 
@@ -257,6 +285,124 @@ function collectOom(procRoot: string, now: number, key: string): ResourceOomSamp
   }
 }
 
+/**
+ * Read the kernel reclaim counters and turn them into per-second rates. Only a
+ * pair of consecutive reads can express a rate, so the first read after a
+ * start, a restart, a stalled clock, or a counter reset reports
+ * `counters_reset` with null rates instead of inventing a baseline.
+ */
+function collectVmstat(procRoot: string, now: number, key: string): ResourceVmstatSample {
+  try {
+    if (!Number.isFinite(now)) throw new Error("Malformed reclaim sample time.");
+    const counters = parseVmstatCounters(readBounded(join(procRoot, "vmstat"), 65_536));
+    const missing = VMSTAT_COUNTERS.filter((name) => counters[name] === null);
+    if (missing.length === VMSTAT_COUNTERS.length) {
+      vmstatBaselines.delete(key);
+      return unavailableVmstat(
+        "unsupported",
+        "Kernel does not expose the memory reclaim counters.",
+        false,
+      );
+    }
+    const state: ResourceSupportState = missing.length > 0 ? "partial" : "supported";
+    const partialReason =
+      missing.length > 0 ? `Kernel does not expose ${missing.join(", ")}.` : undefined;
+    const previous = vmstatBaselines.get(key);
+    vmstatBaselines.delete(key);
+    vmstatBaselines.set(key, { sampledAt: now, counters });
+    if (vmstatBaselines.size > MAX_BASELINES)
+      vmstatBaselines.delete(vmstatBaselines.keys().next().value!);
+    const elapsedSeconds = previous ? (now - previous.sampledAt) / 1_000 : 0;
+    if (!previous || !Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) {
+      return unavailableVmstat(
+        state,
+        joinReasons(
+          partialReason,
+          previous
+            ? "The reclaim sample interval did not advance, so a new baseline started."
+            : "Reclaim rates need two consecutive counters, so a baseline started.",
+        ),
+      );
+    }
+    const decreased = VMSTAT_COUNTERS.some((name) => {
+      const current = counters[name];
+      const last = previous.counters[name];
+      return current !== null && last !== null && current < last;
+    });
+    if (decreased) {
+      return unavailableVmstat(
+        state,
+        joinReasons(partialReason, "Kernel reclaim counters decreased, so a new baseline started."),
+      );
+    }
+    const perSecond = (name: VmstatCounterName): number | null => {
+      const current = counters[name];
+      const last = previous.counters[name];
+      if (current === null || last === null) return null;
+      return (current - last) / elapsedSeconds;
+    };
+    const swapIn = perSecond("pswpin");
+    const swapOut = perSecond("pswpout");
+    return {
+      state,
+      swap_in_bytes_per_second: swapIn === null ? null : round(swapIn * VMSTAT_PAGE_SIZE_BYTES),
+      swap_out_bytes_per_second: swapOut === null ? null : round(swapOut * VMSTAT_PAGE_SIZE_BYTES),
+      direct_reclaim_pages_per_second: nullableRound(perSecond("pgscan_direct")),
+      major_faults_per_second: nullableRound(perSecond("pgmajfault")),
+      counters_reset: false,
+      ...(partialReason ? { reason: partialReason } : {}),
+    };
+  } catch (error) {
+    vmstatBaselines.delete(key);
+    return unavailableVmstat(
+      missingError(error) || unsupportedError(error) ? "unsupported" : "error",
+      errorReason(error),
+      false,
+    );
+  }
+}
+
+function parseVmstatCounters(source: string): VmstatCounters {
+  const counters: VmstatCounters = {
+    pswpin: null,
+    pswpout: null,
+    pgscan_direct: null,
+    pgmajfault: null,
+  };
+  for (const name of VMSTAT_COUNTERS) {
+    // Anchor on whitespace so pgscan_direct never absorbs pgscan_direct_throttle.
+    const rows = source.split(/\r?\n/).filter((line) => line.startsWith(`${name} `));
+    if (rows.length === 0) continue;
+    if (rows.length > 1) throw new Error(`Duplicate vmstat row for ${name}.`);
+    const match = new RegExp(`^${name}\\s+(\\d+)\\s*$`).exec(rows[0]!);
+    const value = match ? Number(match[1]) : NaN;
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new Error(`Malformed vmstat counter for ${name}.`);
+    counters[name] = value;
+  }
+  return counters;
+}
+
+function unavailableVmstat(
+  state: ResourceSupportState,
+  reason: string,
+  countersReset = true,
+): ResourceVmstatSample {
+  return {
+    state,
+    swap_in_bytes_per_second: null,
+    swap_out_bytes_per_second: null,
+    direct_reclaim_pages_per_second: null,
+    major_faults_per_second: null,
+    counters_reset: countersReset,
+    reason,
+  };
+}
+
+function joinReasons(...parts: (string | undefined)[]): string {
+  return parts.filter((part): part is string => Boolean(part)).join(" ");
+}
+
 function collectIo(procRoot: string, sysRoot: string, now: number, key: string): ResourceIoSample {
   try {
     const devices = readIoCounters(procRoot, sysRoot);
@@ -377,4 +523,8 @@ function unavailableIo(state: ResourceSupportState, reason: string): ResourceIoS
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function nullableRound(value: number | null): number | null {
+  return value === null ? null : round(value);
 }

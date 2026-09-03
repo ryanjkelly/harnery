@@ -128,6 +128,7 @@ function fixtureFinding(): SupervisorFinding {
     fingerprint: "memory",
     source_kind: "resource.snapshot",
     finding_kind: "machine.memory-pressure",
+    finding_class: "contention",
     severity: "critical",
     state: "opened",
     scope_kind: "machine",

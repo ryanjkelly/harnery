@@ -652,8 +652,8 @@ async function executeWorkflow(
         observation,
       });
       log(
-        `[admission] shadow pressure=${observation.advice.pressure} ` +
-          `recommendation=${observation.advice.fan_out_recommendation}; dispatch unchanged`,
+        `[admission] shadow pressure=${observation.advice.assessment.state} ` +
+          `action=${observation.advice.assessment.recommended_action}; dispatch unchanged`,
       );
     })();
     await diagnosticAdmissionPromise;

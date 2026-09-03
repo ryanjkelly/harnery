@@ -1,10 +1,15 @@
+import type {
+  PressureAssessment,
+  PressureHysteresisState,
+} from "../diagnostics/pressure-contract.ts";
 import type { ResourceProcessGroup } from "../resources/contract.ts";
 import type { HarneryLogRecordV1 } from "../storage/jsonl.ts";
 
 export const SUPERVISOR_STATUS_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_SNAPSHOT_SCHEMA_VERSION = 2 as const;
 export const SUPERVISOR_HISTORY_SCHEMA_VERSION = 1 as const;
-export const SUPERVISOR_FINDING_SCHEMA_VERSION = 2 as const;
+export const SUPERVISOR_FINDING_SCHEMA_VERSION = 3 as const;
+export const SUPERVISOR_PRESSURE_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_ACTIVITY_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_TIMELINE_SCHEMA_VERSION = 2 as const;
 export const SUPERVISOR_EXPLANATION_SCHEMA_VERSION = 1 as const;
@@ -130,6 +135,16 @@ export type SupervisorCapabilityState =
   | "malformed"
   | "redacted";
 export type SupervisorFindingSeverity = "info" | "warning" | "critical";
+/**
+ * Why a finding exists, and therefore what it may influence.
+ *
+ * `contention` findings report that a shared resource is actually contended,
+ * and are the only class the pressure assessment may read as machine state.
+ * `attribution` findings name who holds a resource; they are always carried as
+ * contributors and never set state. `diagnostic` findings report that an
+ * observation path itself is degraded.
+ */
+export type SupervisorFindingClass = "contention" | "attribution" | "diagnostic";
 export type SupervisorFindingState = "opened" | "resolved";
 
 export interface SupervisorCapability {
@@ -180,6 +195,7 @@ export interface SupervisorFinding {
   fingerprint: string;
   source_kind: string;
   finding_kind: string;
+  finding_class: SupervisorFindingClass;
   severity: SupervisorFindingSeverity;
   state: SupervisorFindingState;
   scope_kind: string;
@@ -216,6 +232,21 @@ export interface SupervisorActivitySnapshot {
   entries: readonly SupervisorDeclaredActivity[];
   omitted_entry_count: number;
   capability: SupervisorCapability;
+}
+
+/**
+ * The pressure assessment the observer published on its last cycle, with the
+ * hysteresis state that produced it. The observer is the only writer, because
+ * it is the only reader that sees consecutive samples; every other surface
+ * reads this record so all of them report the same assessment.
+ */
+export interface SupervisorPressureRecord {
+  schema_version: typeof SUPERVISOR_PRESSURE_SCHEMA_VERSION;
+  published_at: string;
+  /** Identity of the observer run, so a restart resets carried-forward streaks. */
+  observer_generation: string;
+  assessment: PressureAssessment;
+  prior_hysteresis: PressureHysteresisState | null;
 }
 
 export interface SupervisorFindings {

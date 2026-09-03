@@ -1,153 +1,139 @@
 import { describe, expect, test } from "bun:test";
 import {
-  SUPERVISOR_FINDING_SCHEMA_VERSION,
-  type SupervisorCapability,
-  type SupervisorFinding,
-} from "../supervisor/contract.ts";
-import { buildDiagnosticAdvice } from "./advice.ts";
-import { DIAGNOSTIC_ADVICE_LIMITS } from "./contract.ts";
+  hysteresisFixture,
+  pressureAssessmentFixture,
+} from "../../../tests/helpers/resource-status.ts";
+import type { SupervisorCapability, SupervisorHistoryPoint } from "../supervisor/contract.ts";
+import {
+  buildDiagnosticAdvice,
+  PRESSURE_DIMENSIONS,
+  pressureHistoryFromSupervisor,
+  unknownPressureAssessment,
+} from "./advice.ts";
+import { DIAGNOSTIC_ADVICE_SCHEMA_VERSION, PRESSURE_POLICY } from "./contract.ts";
 
 const supported: SupervisorCapability = {
-  source_kind: "supervisor.findings",
+  source_kind: "supervisor.pressure",
   state: "supported",
 };
 
 describe("diagnostic advice", () => {
-  test("allows fan-out when the supported projection has no active pressure findings", () => {
+  test("carries the assessment it was given without recomputing any state", () => {
+    const assessment = pressureAssessmentFixture({ state: "critical" });
+    const prior = hysteresisFixture({ state: "elevated" });
     const advice = buildDiagnosticAdvice({
-      findings: [finding("resolved", "critical", "resolved")],
+      assessment,
+      priorHysteresis: prior,
       sourceCapability: supported,
-      evaluatedAt: "2026-08-31T09:00:00.000Z",
+      activeFindingCount: 4,
+      evaluatedAt: "2026-09-03T09:00:12.000Z",
     });
-    expect(advice).toMatchObject({
-      pressure: "normal",
-      fan_out_recommendation: "proceed",
+    expect(advice).toEqual({
+      schema_version: DIAGNOSTIC_ADVICE_SCHEMA_VERSION,
+      evaluated_at: "2026-09-03T09:00:12.000Z",
       observer_only: true,
-      active_finding_count: 0,
-      contributing_finding_count: 0,
+      assessment,
+      prior_hysteresis: prior,
+      source_capability: supported,
+      active_finding_count: 4,
+      summary: assessment.summary,
     });
-    expect(advice.reasons.map((reason) => reason.code)).toEqual(["no_active_pressure_findings"]);
   });
 
-  test("turns warnings into caution and critical findings into an avoid recommendation", () => {
-    const elevated = buildDiagnosticAdvice({
-      findings: [finding("warning", "warning")],
-      sourceCapability: supported,
-      evaluatedAt: "2026-08-31T09:00:00.000Z",
+  test("does not let a critical attribution finding raise the reported state", () => {
+    // The defect this replaced: a 1 GiB process opened a critical finding and
+    // advice reported machine-wide critical while no kernel signal was set.
+    const assessment = pressureAssessmentFixture({
+      state: "normal",
+      contributors: [
+        {
+          finding_id: "finding:process.memory-pressure",
+          finding_kind: "process.memory-pressure",
+          finding_class: "attribution",
+          severity: "critical",
+          summary: "One process holds 1.2 GiB.",
+          scope_kind: "process",
+          scope_id: "4242",
+          occurrence_count: 3,
+          attribution_state: "attributed",
+          attribution_confidence: "exact",
+          owner_kind: "agent",
+          owner_id: "agent-Fixture",
+        },
+      ],
     });
-    expect(elevated).toMatchObject({
-      pressure: "elevated",
-      fan_out_recommendation: "use-caution",
-      contributing_finding_count: 1,
-    });
-    expect(elevated.reasons[0]?.summary).toBe(
-      "1 active warning finding indicates elevated pressure.",
-    );
-
-    const critical = buildDiagnosticAdvice({
-      findings: [finding("warning", "warning"), finding("critical", "critical")],
-      sourceCapability: supported,
-      evaluatedAt: "2026-08-31T09:00:00.000Z",
-    });
-    expect(critical).toMatchObject({
-      pressure: "critical",
-      fan_out_recommendation: "avoid-new-fan-out",
-      contributing_finding_count: 2,
-    });
-    expect(critical.contributing_findings.map((item) => item.finding_id)).toEqual([
-      "critical",
-      "warning",
-    ]);
-  });
-
-  test("reports unknown when the projection is unavailable", () => {
     const advice = buildDiagnosticAdvice({
-      findings: [],
+      assessment,
+      priorHysteresis: null,
+      sourceCapability: supported,
+      activeFindingCount: 1,
+      evaluatedAt: "2026-09-03T09:00:12.000Z",
+    });
+    expect(advice.assessment.state).toBe("normal");
+    expect(advice.assessment.recommended_action).toBe("proceed");
+    expect(advice.assessment.contributors[0]?.severity).toBe("critical");
+  });
+
+  test("reports an unknown assessment when the published source is unavailable", () => {
+    const assessment = unknownPressureAssessment({
+      observedAt: "2026-09-03T09:00:12.000Z",
+      reasonCode: "evidence_unavailable",
+      summary:
+        "Local resource pressure cannot be determined because the observer has not published an assessment yet.",
+    });
+    const advice = buildDiagnosticAdvice({
+      assessment,
+      priorHysteresis: null,
       sourceCapability: {
-        source_kind: "supervisor.findings",
+        source_kind: "supervisor.pressure",
         state: "unsupported",
-        reason_code: "source_missing",
+        reason_code: "pressure_record_missing",
       },
-      evaluatedAt: "2026-08-31T09:00:00.000Z",
+      activeFindingCount: 0,
+      evaluatedAt: "2026-09-03T09:00:12.000Z",
     });
-    expect(advice).toMatchObject({
-      pressure: "unknown",
-      fan_out_recommendation: "unknown",
-    });
-    expect(advice.reasons.map((reason) => reason.code)).toEqual(["findings_source_unavailable"]);
+    expect(advice.assessment.state).toBe("unknown");
+    expect(advice.assessment.recommended_action).toBe("unknown");
+    expect(advice.assessment.evidence_state).toBe("unavailable");
+    expect(advice.assessment.evidence).toHaveLength(PRESSURE_DIMENSIONS.length);
+    expect(advice.assessment.evidence.every((row) => row.state === "unavailable")).toBe(true);
+    expect(advice.assessment.contributors).toEqual([]);
+    expect(advice.assessment.guidance.map((row) => row.workload_class)).toEqual([
+      "lightweight",
+      "cpu-heavy",
+      "memory-heavy",
+      "storage-heavy",
+    ]);
+    expect(advice.summary).toContain("cannot be determined");
   });
 
-  test("does not treat findings from an expired projection as current pressure", () => {
-    const advice = buildDiagnosticAdvice({
-      findings: [finding("critical", "critical")],
-      sourceCapability: {
-        source_kind: "supervisor.findings",
-        state: "expired",
-        reason_code: "supervisor_not_running",
-      },
-      evaluatedAt: "2026-08-31T09:00:00.000Z",
+  test("keeps the unknown assessment inside the policy limits", () => {
+    const assessment = unknownPressureAssessment({
+      observedAt: "2026-09-03T09:00:12.000Z",
+      reasonCode: "snapshot_stale",
+      summary: "Local resource pressure cannot be determined because the sample is 40 seconds old.",
     });
-    expect(advice).toMatchObject({
-      pressure: "unknown",
-      fan_out_recommendation: "unknown",
-      active_finding_count: 0,
-      contributing_finding_count: 0,
-      source_capability: {
-        state: "expired",
-        reason_code: "supervisor_not_running",
-      },
-    });
-    expect(advice.reasons.map((reason) => reason.code)).toEqual(["findings_source_unavailable"]);
+    expect(assessment.evidence.length).toBeLessThanOrEqual(PRESSURE_POLICY.limits.max_evidence);
+    expect(assessment.reasons.length).toBeLessThanOrEqual(PRESSURE_POLICY.limits.max_reasons);
+    expect(assessment.hysteresis.state).toBe("unknown");
+    expect(assessment.policy_version).toBe(PRESSURE_POLICY.policy_version);
   });
 
-  test("bounds contributors after pressure is calculated", () => {
-    const findings = Array.from(
-      { length: DIAGNOSTIC_ADVICE_LIMITS.max_contributing_findings + 3 },
-      (_, index) => finding(`critical-${index}`, "critical"),
-    );
-    const advice = buildDiagnosticAdvice({
-      findings,
-      sourceCapability: supported,
-      evaluatedAt: "2026-08-31T09:00:00.000Z",
-    });
-    expect(advice.pressure).toBe("critical");
-    expect(advice.contributing_finding_count).toBe(findings.length);
-    expect(advice.contributing_findings).toHaveLength(
-      DIAGNOSTIC_ADVICE_LIMITS.max_contributing_findings,
-    );
-    expect(advice.omitted_contributing_finding_count).toBe(3);
+  test("projects bounded supervisor history into trend samples", () => {
+    const points: SupervisorHistoryPoint[] = Array.from({ length: 20 }, (_, index) => ({
+      sampled_at: new Date(Date.UTC(2026, 8, 3, 9, 0, index)).toISOString(),
+      machine: {
+        cpu_percent: 10,
+        memory_percent: 40 + index,
+        memory_used_bytes: null,
+        swap_used_bytes: null,
+        process_count: null,
+      },
+      groups: [],
+    }));
+    const samples = pressureHistoryFromSupervisor(points);
+    expect(samples).toHaveLength(PRESSURE_POLICY.max_history_samples);
+    expect(samples.at(-1)?.memory_available_percent).toBe(100 - 59);
+    expect(samples.at(-1)?.memory_full_avg10).toBeNull();
   });
 });
-
-function finding(
-  id: string,
-  severity: SupervisorFinding["severity"],
-  state: SupervisorFinding["state"] = "opened",
-): SupervisorFinding {
-  const observedAt = id === "critical" ? "2026-08-31T09:02:00.000Z" : "2026-08-31T09:01:00.000Z";
-  return {
-    schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
-    id,
-    fingerprint: `fingerprint-${id}`,
-    source_kind: "resources.process-group",
-    finding_kind: "memory-growth",
-    severity,
-    state,
-    scope_kind: "agent",
-    scope_id: id,
-    summary: `${severity} pressure for ${id}`,
-    opened_at: "2026-08-31T09:00:00.000Z",
-    observed_at: observedAt,
-    resolved_at: state === "resolved" ? observedAt : undefined,
-    occurrence_count: 1,
-    primary_source: {
-      id: `source-${id}`,
-      source_kind: "resources.snapshot",
-      source_id: id,
-      observed_at: observedAt,
-      capability: "supported",
-    },
-    evidence: [],
-    capabilities: [{ source_kind: "resources.snapshot", state: "supported" }],
-  };
-}

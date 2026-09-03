@@ -1,147 +1,175 @@
-import type { SupervisorCapability, SupervisorFinding } from "../supervisor/contract.ts";
+import type { SupervisorCapability, SupervisorHistoryPoint } from "../supervisor/contract.ts";
 import {
-  DIAGNOSTIC_ADVICE_LIMITS,
   DIAGNOSTIC_ADVICE_SCHEMA_VERSION,
   type DiagnosticAdvice,
-  type DiagnosticAdviceFinding,
-  type DiagnosticAdviceReason,
+  PRESSURE_ASSESSMENT_SCHEMA_VERSION,
+  PRESSURE_POLICY,
+  type PressureAssessment,
+  type PressureDimension,
+  type PressureEvidenceDimension,
+  type PressureHysteresisState,
+  type PressureReason,
+  type PressureReasonCode,
+  type PressureScope,
+  type PressureWorkloadGuidance,
 } from "./contract.ts";
+import type { PressureHistorySample } from "./pressure-contract.ts";
 
+/**
+ * Advice is an envelope around one already-computed assessment. It maps
+ * nothing: severity does not become pressure here, and no numeric threshold is
+ * read. `assessPressure` owns the judgement, the observer publishes it, and
+ * every surface renders this envelope so all of them agree.
+ */
 export interface BuildDiagnosticAdviceInput {
-  findings: readonly SupervisorFinding[];
+  assessment: PressureAssessment;
+  /** The state the previous sample carried forward, so a replay can reproduce a transition. */
+  priorHysteresis: PressureHysteresisState | null;
+  /** Where the assessment came from, and why it is missing when it is. */
   sourceCapability: SupervisorCapability;
+  activeFindingCount: number;
   evaluatedAt: string;
 }
 
-const SEVERITY_RANK: Readonly<Record<SupervisorFinding["severity"], number>> = {
-  info: 0,
-  warning: 1,
-  critical: 2,
-};
-
 export function buildDiagnosticAdvice(input: BuildDiagnosticAdviceInput): DiagnosticAdvice {
-  const sourceAvailable = input.sourceCapability.state === "supported";
-  const active = sourceAvailable
-    ? input.findings.filter((finding) => finding.state === "opened").sort(compareFindings)
-    : [];
-  const pressureFindings = active.filter(
-    (finding): finding is SupervisorFinding & { severity: "warning" | "critical" } =>
-      finding.severity === "warning" || finding.severity === "critical",
-  );
-  const critical = pressureFindings.filter((finding) => finding.severity === "critical");
-  const warning = pressureFindings.filter((finding) => finding.severity === "warning");
-  const pressure = critical.length
-    ? "critical"
-    : warning.length
-      ? "elevated"
-      : sourceAvailable
-        ? "normal"
-        : "unknown";
-  const fanOutRecommendation =
-    pressure === "critical"
-      ? "avoid-new-fan-out"
-      : pressure === "elevated"
-        ? "use-caution"
-        : pressure === "normal"
-          ? "proceed"
-          : "unknown";
-  const contributing = pressureFindings.slice(
-    0,
-    DIAGNOSTIC_ADVICE_LIMITS.max_contributing_findings,
-  );
   return {
     schema_version: DIAGNOSTIC_ADVICE_SCHEMA_VERSION,
     evaluated_at: input.evaluatedAt,
-    pressure,
-    fan_out_recommendation: fanOutRecommendation,
     observer_only: true,
-    summary: summaryFor(pressure),
+    assessment: input.assessment,
+    prior_hysteresis: input.priorHysteresis,
     source_capability: input.sourceCapability,
-    active_finding_count: active.length,
-    contributing_finding_count: pressureFindings.length,
-    omitted_contributing_finding_count: Math.max(0, pressureFindings.length - contributing.length),
-    contributing_findings: contributing.map(adviceFinding),
-    reasons: reasonsFor(critical, warning, input.sourceCapability),
+    active_finding_count: Math.max(0, Math.trunc(input.activeFindingCount)),
+    summary: input.assessment.summary,
   };
 }
 
-function adviceFinding(
-  finding: SupervisorFinding & { severity: "warning" | "critical" },
-): DiagnosticAdviceFinding {
+export const PRESSURE_DIMENSIONS: readonly PressureDimension[] = [
+  "memory_stall",
+  "io_stall",
+  "cpu_stall",
+  "oom_kills",
+  "swap_activity",
+  "direct_reclaim",
+  "memory_available",
+  "disk_available",
+  "host_memory",
+];
+
+export interface UnknownPressureAssessmentInput {
+  observedAt: string;
+  /** A stable code from the frozen union, normally `evidence_unavailable` or `snapshot_stale`. */
+  reasonCode: PressureReasonCode;
+  /** One plain sentence naming what is missing. Becomes the assessment summary. */
+  summary: string;
+  scope?: PressureScope;
+  sampleAgeMs?: number | null;
+  prior?: PressureHysteresisState | null;
+  observerGeneration?: string | null;
+}
+
+/**
+ * The assessment to publish when the source is absent, stale, or malformed.
+ * Every dimension reads `unavailable` and no owner is named, because a gap in
+ * the evidence is not a measurement of health.
+ */
+export function unknownPressureAssessment(
+  input: UnknownPressureAssessmentInput,
+): PressureAssessment {
+  const reason: PressureReason = {
+    code: input.reasonCode,
+    dimension: null,
+    summary: input.summary,
+    observed_value: null,
+    threshold_value: null,
+    unit: null,
+    sample_count: 0,
+    contributes_to: "unknown",
+  };
   return {
-    finding_id: finding.id,
-    finding_kind: finding.finding_kind,
-    severity: finding.severity,
-    summary: finding.summary,
-    scope_kind: finding.scope_kind,
-    scope_id: finding.scope_id,
-    occurrence_count: finding.occurrence_count,
-    owner_kind: finding.attribution?.owner_kind,
-    owner_id: finding.attribution?.owner_id,
-    workload_relationship: finding.workload_context?.relationship,
+    schema_version: PRESSURE_ASSESSMENT_SCHEMA_VERSION,
+    observer_only: true,
+    state: "unknown",
+    scope: input.scope ?? "native",
+    limiting_resource: "unknown",
+    trend: "unknown",
+    observed_at: input.observedAt,
+    sample_age_ms: input.sampleAgeMs ?? null,
+    evidence_state: "unavailable",
+    evidence: PRESSURE_DIMENSIONS.map(
+      (dimension): PressureEvidenceDimension => ({
+        dimension,
+        state: "unavailable",
+        observed_value: null,
+        unit: null,
+        sample_count: 0,
+        reason_code: input.reasonCode,
+      }),
+    ).slice(0, PRESSURE_POLICY.limits.max_evidence),
+    reasons: [reason],
+    contributors: [],
+    omitted_contributor_count: 0,
+    unattributed_memory_percent: null,
+    recommended_action: "unknown",
+    summary: input.summary,
+    guidance: unknownGuidance(),
+    hysteresis: {
+      state: "unknown",
+      state_since: input.observedAt,
+      consecutive_clear_samples: 0,
+      dimension_streaks: {},
+      oom_baseline_total_kills: input.prior?.oom_baseline_total_kills ?? null,
+      oom_hold_until: null,
+      observer_generation: input.observerGeneration ?? input.prior?.observer_generation ?? null,
+    },
+    policy_version: PRESSURE_POLICY.policy_version,
   };
 }
 
-function reasonsFor(
-  critical: readonly SupervisorFinding[],
-  warning: readonly SupervisorFinding[],
-  capability: SupervisorCapability,
-): DiagnosticAdviceReason[] {
-  const reasons: DiagnosticAdviceReason[] = [];
-  if (critical.length) {
-    reasons.push({
-      code: "critical_findings_active",
-      summary: `${critical.length} active critical finding${critical.length === 1 ? "" : "s"} ${critical.length === 1 ? "requires" : "require"} attention.`,
-      finding_ids: boundedIds(critical),
-    });
-  }
-  if (warning.length) {
-    reasons.push({
-      code: "warning_findings_active",
-      summary: `${warning.length} active warning finding${warning.length === 1 ? "" : "s"} ${warning.length === 1 ? "indicates" : "indicate"} elevated pressure.`,
-      finding_ids: boundedIds(warning),
-    });
-  }
-  if (capability.state !== "supported") {
-    reasons.push({
-      code: "findings_source_unavailable",
-      summary: `The findings source is ${capability.state}${capability.reason_code ? ` (${capability.reason_code})` : ""}.`,
-      finding_ids: [],
-    });
-  }
-  if (!critical.length && !warning.length && capability.state === "supported") {
-    reasons.push({
-      code: "no_active_pressure_findings",
-      summary: "No active warning or critical findings were observed.",
-      finding_ids: [],
-    });
-  }
-  return reasons.slice(0, DIAGNOSTIC_ADVICE_LIMITS.max_reasons);
+function unknownGuidance(): PressureWorkloadGuidance[] {
+  return [
+    {
+      workload_class: "lightweight",
+      recommendation: "unknown",
+      summary:
+        "Reads and small edits cost almost nothing, so continue them while the measurements are missing.",
+    },
+    {
+      workload_class: "cpu-heavy",
+      recommendation: "unknown",
+      summary:
+        "Builds and test runs cannot be judged from here. Start one only if you already know the machine is idle.",
+    },
+    {
+      workload_class: "memory-heavy",
+      recommendation: "unknown",
+      summary:
+        "Browser captures and page QA cannot be judged from here. Run one at a time until the measurements return.",
+    },
+    {
+      workload_class: "storage-heavy",
+      recommendation: "unknown",
+      summary:
+        "Large writes and exports cannot be judged from here. Check free disk space yourself before starting one.",
+    },
+  ];
 }
 
-function boundedIds(findings: readonly SupervisorFinding[]): string[] {
-  return findings
-    .slice(0, DIAGNOSTIC_ADVICE_LIMITS.max_contributing_findings)
-    .map((finding) => finding.id);
-}
-
-function summaryFor(pressure: DiagnosticAdvice["pressure"]): string {
-  switch (pressure) {
-    case "critical":
-      return "Critical local pressure is active. Avoid starting additional agent work until the findings change.";
-    case "elevated":
-      return "Elevated local pressure is active. Limit new fan-out and inspect the contributing findings.";
-    case "normal":
-      return "No active warning or critical findings were observed. Diagnostics do not restrict new fan-out.";
-    case "unknown":
-      return "Local pressure cannot be determined because the findings source is unavailable.";
-  }
-}
-
-function compareFindings(left: SupervisorFinding, right: SupervisorFinding): number {
-  return (
-    SEVERITY_RANK[right.severity] - SEVERITY_RANK[left.severity] ||
-    right.observed_at.localeCompare(left.observed_at) ||
-    left.id.localeCompare(right.id)
-  );
+/**
+ * Project bounded supervisor history into the trend input the assessment reads.
+ * The observer and a bundle replay both call this, so the trend they compute
+ * from the same stored history is the same trend.
+ */
+export function pressureHistoryFromSupervisor(
+  points: readonly SupervisorHistoryPoint[],
+): PressureHistorySample[] {
+  return points.slice(-PRESSURE_POLICY.max_history_samples).map((point) => ({
+    sampled_at: point.sampled_at,
+    memory_full_avg10: null,
+    io_full_avg10: null,
+    cpu_some_avg60: null,
+    memory_available_percent:
+      point.machine.memory_percent === null ? null : 100 - point.machine.memory_percent,
+    swap_out_bytes_per_second: null,
+  }));
 }

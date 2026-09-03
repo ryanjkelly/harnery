@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  hysteresisFixture,
+  pressureAssessmentFixture,
+} from "../../../tests/helpers/resource-status.ts";
+import {
   SUPERVISOR_FINDING_SCHEMA_VERSION,
   type SupervisorCapability,
   type SupervisorFinding,
@@ -185,11 +189,16 @@ function bundle(
     state: "supported" as const,
   };
   const advice = buildDiagnosticAdvice({
-    findings,
+    assessment: pressureAssessmentFixture({
+      state: options.pressure ?? "normal",
+      observed_at: capturedAt,
+    }),
+    priorHysteresis: hysteresisFixture({ state: options.pressure ?? "normal" }),
     sourceCapability: findingsCapability,
+    activeFindingCount: findings.filter((row) => row.state === "opened").length,
     evaluatedAt: capturedAt,
   });
-  const forcedAdvice = options.pressure ? { ...advice, pressure: options.pressure } : advice;
+  const forcedAdvice = advice;
   return {
     path: `/managed/${artifactId}`,
     manifest: {
@@ -260,6 +269,7 @@ function finding(
     fingerprint: `fp:${key}`,
     source_kind: "resource.snapshot",
     finding_kind: `test.${key}`,
+    finding_class: "contention",
     severity: options.severity ?? "warning",
     state: options.state ?? "opened",
     scope_kind: "machine",

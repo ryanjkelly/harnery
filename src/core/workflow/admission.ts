@@ -1,5 +1,6 @@
-import { buildDiagnosticAdvice } from "../diagnostics/advice.ts";
+import { buildDiagnosticAdvice, unknownPressureAssessment } from "../diagnostics/advice.ts";
 import type { DiagnosticAdvice } from "../diagnostics/contract.ts";
+import { type PublishedPressure, readPublishedPressure } from "../resources/status.ts";
 import {
   type EnsureSupervisorResult,
   ensureSupervisorRunning,
@@ -25,6 +26,8 @@ export interface WorkflowDiagnosticAdmissionRuntime {
   ensureSupervisor: (coordRoot: string) => Promise<EnsureSupervisorResult>;
   readStatus: (coordRoot: string, nowMs?: number) => SupervisorStatus;
   readFindings: (coordRoot: string) => SupervisorFindings | undefined;
+  /** The observer's published assessment. Admission never computes one itself. */
+  readPressure: (coordRoot: string, nowMs?: number) => PublishedPressure;
 }
 
 export interface ObserveWorkflowDiagnosticAdmissionInput {
@@ -77,6 +80,7 @@ export async function observeWorkflowDiagnosticAdmission(
           );
         }
         const observedAt = runtime.now().toISOString();
+        const published = runtime.readPressure(input.coordRoot, runtime.now().getTime());
         return {
           requested_at: requestedAt,
           observed_at: observedAt,
@@ -85,8 +89,12 @@ export async function observeWorkflowDiagnosticAdmission(
           freshness: "fresh",
           sampled_at: sampledAt,
           advice: buildDiagnosticAdvice({
-            findings: mergeFindings(report),
-            sourceCapability: supportedCapability(),
+            assessment: published.assessment,
+            priorHysteresis: published.prior_hysteresis,
+            sourceCapability: published.capability,
+            activeFindingCount: mergeFindings(report).filter(
+              (finding) => finding.state === "opened",
+            ).length,
             evaluatedAt: observedAt,
           }),
         };
@@ -139,12 +147,27 @@ export function failedWorkflowDiagnosticAdmissionObservation(
     wait_ms: Math.max(0, observedAt.getTime() - requestedAt.getTime()),
     service_state: "unavailable",
     freshness: "unavailable",
-    advice: buildDiagnosticAdvice({
-      findings: [],
-      sourceCapability: capability,
-      evaluatedAt: observedAt.toISOString(),
-    }),
+    advice: unavailableAdvice(capability, observedAt.toISOString()),
   };
+}
+
+/**
+ * Shadow admission records what the observer published. When it published
+ * nothing, the record carries `unknown` with the gap stated, never a state the
+ * observer did not measure. Either way no value reaches a dispatch decision.
+ */
+function unavailableAdvice(capability: SupervisorCapability, observedAt: string): DiagnosticAdvice {
+  return buildDiagnosticAdvice({
+    assessment: unknownPressureAssessment({
+      observedAt,
+      reasonCode: "evidence_unavailable",
+      summary: `Local resource pressure cannot be determined because the assessment source is ${capability.state}${capability.reason_code ? ` (${capability.reason_code})` : ""}.`,
+    }),
+    priorHysteresis: null,
+    sourceCapability: capability,
+    activeFindingCount: 0,
+    evaluatedAt: observedAt,
+  });
 }
 
 function unavailableObservation(
@@ -163,11 +186,7 @@ function unavailableObservation(
     reason_code: reasonCode,
     ...(detail ? { detail: detail.slice(0, 500) } : {}),
   };
-  const advice: DiagnosticAdvice = buildDiagnosticAdvice({
-    findings: [],
-    sourceCapability: capability,
-    evaluatedAt: observedAt,
-  });
+  const advice: DiagnosticAdvice = unavailableAdvice(capability, observedAt);
   return {
     requested_at: requestedAt,
     observed_at: observedAt,
@@ -183,10 +202,6 @@ function mergeFindings(report: SupervisorFindings): SupervisorFinding[] {
   for (const finding of report.transitions) byId.set(finding.id, finding);
   for (const finding of report.active) byId.set(finding.id, finding);
   return [...byId.values()];
-}
-
-function supportedCapability(): SupervisorCapability {
-  return { source_kind: "supervisor.findings", state: "supported" };
 }
 
 function normalizeWait(value: number | undefined): number {
@@ -210,6 +225,7 @@ function admissionRuntime(
     ensureSupervisor: ensureSupervisorRunning,
     readStatus: readSupervisorStatus,
     readFindings: readSupervisorFindings,
+    readPressure: readPublishedPressure,
     ...overrides,
   };
 }

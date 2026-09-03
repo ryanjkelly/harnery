@@ -77,6 +77,39 @@ describe("resource sampler", () => {
     expect(second.snapshot.processes[0]?.rss_bytes).toBe(40_960);
   });
 
+  test("carries kernel reclaim rates onto the snapshot", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-resources-vmstat-"));
+    roots.push(root);
+    const procRoot = join(root, "proc");
+    mkdirSync(procRoot, { recursive: true });
+    writeProcSnapshot(procRoot, { total: 1_000, idle: 500, processTicks: 20 });
+    const options = { procRoot, clockTicks: 100, pageSize: 4_096, unattributedRssFloor: 0 };
+    writeFileSync(
+      join(procRoot, "vmstat"),
+      "pswpin 0\npswpout 100\npgscan_direct 1000\npgmajfault 10\n",
+    );
+    const first = sampleResources(root, undefined, { ...options, nowMs: 1_000 });
+    expect(first.snapshot.schema_version).toBe(2);
+    expect(first.snapshot.vmstat).toMatchObject({
+      state: "supported",
+      swap_out_bytes_per_second: null,
+      counters_reset: true,
+    });
+    writeFileSync(
+      join(procRoot, "vmstat"),
+      "pswpin 0\npswpout 200\npgscan_direct 3000\npgmajfault 30\n",
+    );
+    const second = sampleResources(root, first.state, { ...options, nowMs: 3_000 });
+    expect(second.snapshot.vmstat).toMatchObject({
+      state: "supported",
+      swap_in_bytes_per_second: 0,
+      swap_out_bytes_per_second: 204_800,
+      direct_reclaim_pages_per_second: 1_000,
+      major_faults_per_second: 10,
+      counters_reset: false,
+    });
+  });
+
   test("attributes descendants to the nearest live service anchor", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-resources-service-"));
     roots.push(root);

@@ -17,7 +17,9 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { collectCoordinationHealthSnapshot } from "../agents/health.ts";
 import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
-import type { ResourceSamplerState } from "../resources/contract.ts";
+import { assessPressure } from "../diagnostics/pressure.ts";
+import { PRESSURE_POLICY, type PressureHistorySample } from "../diagnostics/pressure-contract.ts";
+import type { ResourceSamplerState, ResourceSnapshot } from "../resources/contract.ts";
 import { sampleResources } from "../resources/sampler.ts";
 import { requestResourceServiceStop } from "../resources/service.ts";
 import { readResourceServiceStatus } from "../resources/service-status.ts";
@@ -26,8 +28,10 @@ import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { collectSupervisorActivitySnapshot } from "./activity.ts";
 import {
+  SUPERVISOR_PRESSURE_SCHEMA_VERSION,
   SUPERVISOR_SNAPSHOT_SCHEMA_VERSION,
   SUPERVISOR_STATUS_SCHEMA_VERSION,
+  type SupervisorPressureRecord,
   type SupervisorServiceStatusRecord,
   type SupervisorSnapshot,
   type SupervisorStatus,
@@ -41,7 +45,12 @@ import { collectHookHealth } from "./hooks.ts";
 import { SupervisorLogCollector } from "./log-feed.ts";
 import { collectServiceHealth } from "./services.ts";
 import { readSupervisorStatus } from "./status.ts";
-import { readSupervisorFindings, readSupervisorHistory, supervisorPaths } from "./storage.ts";
+import {
+  readSupervisorFindings,
+  readSupervisorHistory,
+  readSupervisorPressure,
+  supervisorPaths,
+} from "./storage.ts";
 import { buildSupervisorTimeline } from "./timeline.ts";
 
 export const SUPERVISOR_DEFAULT_INTERVAL_MS = 2_000;
@@ -201,6 +210,14 @@ export async function runSupervisor(
   let history = readSupervisorHistory(coordRoot);
   let findings = readSupervisorFindings(coordRoot);
   let coordination = collectCoordinationHealthSnapshot(coordRoot, now());
+  // The observer is the only reader that sees consecutive samples, so it is the
+  // only writer of the pressure assessment. Trend needs recent samples and a
+  // restart deliberately starts with none, which reports an unknown trend
+  // rather than a guessed one.
+  const priorPressure = readSupervisorPressure(coordRoot);
+  let pressureHysteresis = priorPressure?.assessment.hysteresis ?? null;
+  const pressureHistory: PressureHistorySample[] = [];
+  const observerGeneration = `${process.pid}:${startedAt}`;
   const logs = new SupervisorLogCollector(coordRoot);
   const writeStatus = () => {
     status.heartbeat_at = now().toISOString();
@@ -269,6 +286,25 @@ export async function runSupervisor(
           now: cycleNow,
         });
         writePrivateJsonAtomic(paths.findings, findings);
+        pressureHistory.push(pressureHistorySample(resource.snapshot));
+        if (pressureHistory.length > PRESSURE_POLICY.max_history_samples) pressureHistory.shift();
+        const assessment = assessPressure({
+          snapshot: resource.snapshot,
+          history: pressureHistory,
+          findings: findings.active,
+          findings_capability: { source_kind: "supervisor-findings", state: "supported" },
+          prior: pressureHysteresis,
+          observer_generation: observerGeneration,
+          now_ms: cycleNow.getTime(),
+        });
+        writePrivateJsonAtomic(paths.pressure, {
+          schema_version: SUPERVISOR_PRESSURE_SCHEMA_VERSION,
+          published_at: cycleNow.toISOString(),
+          observer_generation: observerGeneration,
+          assessment,
+          prior_hysteresis: pressureHysteresis,
+        } satisfies SupervisorPressureRecord);
+        pressureHysteresis = assessment.hysteresis;
         mkdirSync(paths.timelines, { recursive: true, mode: 0o700 });
         mkdirSync(paths.explanations, { recursive: true, mode: 0o700 });
         const projectionUpdates = [
@@ -369,6 +405,22 @@ export async function runSupervisor(
     }
   }
   return status;
+}
+
+/** Only the dimensions the trend calculation reads, so history stays small. */
+function pressureHistorySample(snapshot: ResourceSnapshot): PressureHistorySample {
+  const machine = snapshot.machine;
+  const total = machine.memory_total_bytes;
+  const available = machine.memory_available_bytes;
+  return {
+    sampled_at: snapshot.sampled_at,
+    memory_full_avg10: snapshot.pressure?.memory_full?.avg10 ?? null,
+    io_full_avg10: snapshot.pressure?.io_full?.avg10 ?? null,
+    cpu_some_avg60: snapshot.pressure?.cpu?.avg60 ?? null,
+    memory_available_percent:
+      total && total > 0 && available !== null ? (available / total) * 100 : null,
+    swap_out_bytes_per_second: snapshot.vmstat?.swap_out_bytes_per_second ?? null,
+  };
 }
 
 function acquireLease(coordRoot: string, now: Date): SupervisorLease {

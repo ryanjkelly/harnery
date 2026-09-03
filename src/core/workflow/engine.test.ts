@@ -11,7 +11,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  hysteresisFixture,
+  pressureAssessmentFixture,
+} from "../../../tests/helpers/resource-status.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
+import { buildDiagnosticAdvice } from "../diagnostics/advice.ts";
 import { runWorkflow } from "./engine.ts";
 import * as childSessions from "./live-session-v3.ts";
 import { WORKFLOW_TRANSCRIPT_EVENT_BYTES } from "./transcript.ts";
@@ -890,7 +895,11 @@ describe("runWorkflow", () => {
 
     expect(spawnCalls).toBe(1);
     expect(report.diagnosticAdmission?.action).toBe("none");
-    expect(report.diagnosticAdmission?.observation?.advice.pressure).toBe("critical");
+    expect(report.diagnosticAdmission?.observation?.advice.assessment.state).toBe("critical");
+    expect(report.diagnosticAdmission?.observation?.advice.assessment.observer_only).toBe(true);
+    expect(report.diagnosticAdmission?.observation?.advice.prior_hysteresis?.state).toBe(
+      "elevated",
+    );
     const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
     expect(proof.diagnostic_admission).toEqual(report.diagnosticAdmission);
     const manifest = JSON.parse(
@@ -960,20 +969,19 @@ function criticalObservation(): WorkflowDiagnosticAdmissionObservation {
     service_state: "running",
     freshness: "fresh",
     sampled_at: evaluatedAt,
-    advice: {
-      schema_version: 1,
-      evaluated_at: evaluatedAt,
-      pressure: "critical",
-      fan_out_recommendation: "avoid-new-fan-out",
-      observer_only: true,
-      summary: "Critical local pressure is active.",
-      source_capability: { source_kind: "supervisor.findings", state: "supported" },
-      active_finding_count: 1,
-      contributing_finding_count: 1,
-      omitted_contributing_finding_count: 0,
-      contributing_findings: [],
-      reasons: [],
-    },
+    advice: buildDiagnosticAdvice({
+      assessment: pressureAssessmentFixture({
+        state: "critical",
+        limiting_resource: "memory",
+        recommended_action: "avoid-new-heavy-work",
+        observed_at: evaluatedAt,
+        summary: "Memory is contended, so do not start new heavy work.",
+      }),
+      priorHysteresis: hysteresisFixture({ state: "elevated" }),
+      sourceCapability: { source_kind: "supervisor.pressure", state: "supported" },
+      activeFindingCount: 1,
+      evaluatedAt,
+    }),
   };
 }
 

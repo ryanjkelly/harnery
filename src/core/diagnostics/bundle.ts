@@ -37,7 +37,6 @@ import {
 } from "../supervisor/contract.ts";
 import { readWorkflowProof } from "../workflow/proof.ts";
 import {
-  DIAGNOSTIC_ADVICE_LIMITS,
   DIAGNOSTIC_ADVICE_SCHEMA_VERSION,
   DIAGNOSTIC_BUNDLE_FILES,
   DIAGNOSTIC_BUNDLE_SCHEMA_VERSION,
@@ -53,6 +52,8 @@ import {
   type DiagnosticSelection,
   type DiagnosticSummary,
   type DiagnosticThresholds,
+  PRESSURE_ASSESSMENT_SCHEMA_VERSION,
+  PRESSURE_POLICY,
   type ValidatedDiagnosticBundle,
 } from "./contract.ts";
 import { pseudonymousMachineId } from "./identity.ts";
@@ -71,6 +72,7 @@ const SOURCE_SPECS = [
   ["supervisor.snapshot", ".harnery/supervisor/snapshot.json"],
   ["supervisor.history", ".harnery/supervisor/history.json"],
   ["supervisor.findings", ".harnery/supervisor/findings.json"],
+  ["supervisor.pressure", ".harnery/supervisor/pressure.json"],
   ["supervisor.activity", ".harnery/supervisor/activity.json"],
   ["supervisor.timelines", ".harnery/supervisor/timelines"],
   ["supervisor.explanations", ".harnery/supervisor/explanations"],
@@ -147,6 +149,9 @@ export function captureDiagnosticBundle(
       diagnostic_limits: SUPERVISOR_DIAGNOSTIC_LIMITS,
       finding_policy: SUPERVISOR_FINDING_POLICY,
       resource_budget: SUPERVISOR_RESOURCE_BUDGET,
+      // Every numeric pressure threshold is part of the digest, so tuning one
+      // invalidates a frozen replay instead of silently changing its result.
+      pressure_policy: PRESSURE_POLICY,
     },
   };
   const expected = deriveCapturedExpected(observations, thresholds);
@@ -513,8 +518,10 @@ function readShadowAdmissionSource(
           ...(admission.reason_code ? { reason_code: admission.reason_code } : {}),
           ...(admission.observation
             ? {
-                pressure: admission.observation.advice.pressure,
-                fan_out_recommendation: admission.observation.advice.fan_out_recommendation,
+                pressure: admission.observation.advice.assessment.state,
+                recommended_action: admission.observation.advice.assessment.recommended_action,
+                scope: admission.observation.advice.assessment.scope,
+                limiting_resource: admission.observation.advice.assessment.limiting_resource,
                 freshness: admission.observation.freshness,
                 service_state: admission.observation.service_state,
                 wait_ms: admission.observation.wait_ms,
@@ -1036,16 +1043,12 @@ function validateAdvice(advice: ValidatedDiagnosticBundle["expected"]["advice"])
     [
       "schema_version",
       "evaluated_at",
-      "pressure",
-      "fan_out_recommendation",
       "observer_only",
-      "summary",
+      "assessment",
+      "prior_hysteresis",
       "source_capability",
       "active_finding_count",
-      "contributing_finding_count",
-      "omitted_contributing_finding_count",
-      "contributing_findings",
-      "reasons",
+      "summary",
     ],
     [],
     "diagnostic advice",
@@ -1053,73 +1056,156 @@ function validateAdvice(advice: ValidatedDiagnosticBundle["expected"]["advice"])
   if (
     advice.schema_version !== DIAGNOSTIC_ADVICE_SCHEMA_VERSION ||
     !validIso(advice.evaluated_at) ||
-    !["normal", "elevated", "critical", "unknown"].includes(advice.pressure) ||
-    !["proceed", "use-caution", "avoid-new-fan-out", "unknown"].includes(
-      advice.fan_out_recommendation,
-    ) ||
     advice.observer_only !== true ||
     typeof advice.summary !== "string" ||
-    advice.summary.length > SUPERVISOR_DIAGNOSTIC_LIMITS.max_summary_chars
+    advice.summary.length > SUPERVISOR_DIAGNOSTIC_LIMITS.max_summary_chars ||
+    !boundedInteger(advice.active_finding_count, 0, SUPERVISOR_DIAGNOSTIC_LIMITS.max_findings)
   ) {
     throw new Error("invalid diagnostic advice contract");
   }
   validateCapabilities([advice.source_capability], "diagnostic advice capability");
-  for (const count of [
-    advice.active_finding_count,
-    advice.contributing_finding_count,
-    advice.omitted_contributing_finding_count,
-  ]) {
-    if (!boundedInteger(count, 0, SUPERVISOR_DIAGNOSTIC_LIMITS.max_findings))
-      throw new Error("invalid diagnostic advice count");
-  }
+  validateAssessment(advice.assessment);
+  if (advice.prior_hysteresis !== null) validateHysteresis(advice.prior_hysteresis);
+}
+
+function validateAssessment(assessment: unknown): void {
+  if (!assessment || typeof assessment !== "object" || Array.isArray(assessment))
+    throw new Error("invalid pressure assessment");
+  const value = assessment as Record<string, unknown>;
+  assertKeys(
+    value,
+    [
+      "schema_version",
+      "observer_only",
+      "state",
+      "scope",
+      "limiting_resource",
+      "trend",
+      "observed_at",
+      "sample_age_ms",
+      "evidence_state",
+      "evidence",
+      "reasons",
+      "contributors",
+      "omitted_contributor_count",
+      "unattributed_memory_percent",
+      "recommended_action",
+      "summary",
+      "guidance",
+      "hysteresis",
+      "policy_version",
+    ],
+    [],
+    "pressure assessment",
+  );
   if (
-    !Array.isArray(advice.contributing_findings) ||
-    advice.contributing_findings.length > DIAGNOSTIC_ADVICE_LIMITS.max_contributing_findings ||
-    !Array.isArray(advice.reasons) ||
-    advice.reasons.length > DIAGNOSTIC_ADVICE_LIMITS.max_reasons
+    value.schema_version !== PRESSURE_ASSESSMENT_SCHEMA_VERSION ||
+    value.observer_only !== true ||
+    !["normal", "elevated", "critical", "unknown"].includes(value.state as string) ||
+    !["guest", "native", "windows-host"].includes(value.scope as string) ||
+    !["memory", "cpu", "io", "storage", "none", "unknown"].includes(
+      value.limiting_resource as string,
+    ) ||
+    !["rising", "steady", "falling", "unknown"].includes(value.trend as string) ||
+    !validIso(value.observed_at) ||
+    !(value.sample_age_ms === null || boundedInteger(value.sample_age_ms, 0, 86_400_000)) ||
+    !["complete", "partial", "unavailable"].includes(value.evidence_state as string) ||
+    !["proceed", "limit-heavy-work", "avoid-new-heavy-work", "unknown"].includes(
+      value.recommended_action as string,
+    ) ||
+    typeof value.summary !== "string" ||
+    value.summary.length > SUPERVISOR_DIAGNOSTIC_LIMITS.max_summary_chars ||
+    !boundedInteger(value.policy_version, 0, 10_000) ||
+    !boundedInteger(
+      value.omitted_contributor_count,
+      0,
+      SUPERVISOR_DIAGNOSTIC_LIMITS.max_findings,
+    ) ||
+    !(
+      value.unattributed_memory_percent === null ||
+      (typeof value.unattributed_memory_percent === "number" &&
+        value.unattributed_memory_percent >= 0 &&
+        value.unattributed_memory_percent <= 100)
+    )
   ) {
-    throw new Error("diagnostic advice entries exceed the limit");
+    throw new Error("invalid pressure assessment contract");
   }
-  for (const finding of advice.contributing_findings) {
+  for (const [key, max] of [
+    ["evidence", PRESSURE_POLICY.limits.max_evidence],
+    ["reasons", PRESSURE_POLICY.limits.max_reasons],
+    ["contributors", PRESSURE_POLICY.limits.max_contributors],
+    ["guidance", 8],
+  ] as const) {
+    const rows = value[key];
+    if (!Array.isArray(rows) || rows.length > max)
+      throw new Error("pressure assessment entries exceed the limit");
+  }
+  for (const row of value.contributors as Record<string, unknown>[]) {
     assertKeys(
-      finding,
+      row,
       [
         "finding_id",
         "finding_kind",
+        "finding_class",
         "severity",
         "summary",
         "scope_kind",
         "scope_id",
         "occurrence_count",
+        "attribution_state",
+        "attribution_confidence",
       ],
       ["owner_kind", "owner_id", "workload_relationship"],
-      "diagnostic advice finding",
+      "pressure contributor",
     );
     if (
-      !["warning", "critical"].includes(finding.severity) ||
-      typeof finding.finding_id !== "string" ||
-      typeof finding.summary !== "string" ||
-      !boundedInteger(finding.occurrence_count, 1, 50_000)
+      !["contention", "attribution", "diagnostic"].includes(row.finding_class as string) ||
+      !["info", "warning", "critical"].includes(row.severity as string) ||
+      !["attributed", "unattributed", "unknown"].includes(row.attribution_state as string) ||
+      !["exact", "none"].includes(row.attribution_confidence as string) ||
+      typeof row.finding_id !== "string" ||
+      typeof row.summary !== "string" ||
+      !boundedInteger(row.occurrence_count, 0, 50_000)
     ) {
-      throw new Error("invalid diagnostic advice finding");
+      throw new Error("invalid pressure contributor");
     }
   }
-  for (const reason of advice.reasons) {
-    assertKeys(reason, ["code", "summary", "finding_ids"], [], "diagnostic advice reason");
-    if (
-      ![
-        "critical_findings_active",
-        "warning_findings_active",
-        "findings_source_unavailable",
-        "no_active_pressure_findings",
-      ].includes(reason.code) ||
-      typeof reason.summary !== "string" ||
-      !Array.isArray(reason.finding_ids) ||
-      reason.finding_ids.length > DIAGNOSTIC_ADVICE_LIMITS.max_contributing_findings ||
-      reason.finding_ids.some((id: unknown) => typeof id !== "string")
-    ) {
-      throw new Error("invalid diagnostic advice reason");
-    }
+  validateHysteresis(value.hysteresis);
+}
+
+function validateHysteresis(hysteresis: unknown): void {
+  if (!hysteresis || typeof hysteresis !== "object" || Array.isArray(hysteresis))
+    throw new Error("invalid pressure hysteresis state");
+  const value = hysteresis as Record<string, unknown>;
+  assertKeys(
+    value,
+    [
+      "state",
+      "state_since",
+      "consecutive_clear_samples",
+      "dimension_streaks",
+      "oom_baseline_total_kills",
+      "oom_hold_until",
+      "observer_generation",
+    ],
+    [],
+    "pressure hysteresis state",
+  );
+  if (
+    !["normal", "elevated", "critical", "unknown"].includes(value.state as string) ||
+    !validIso(value.state_since) ||
+    !boundedInteger(value.consecutive_clear_samples, 0, 100_000) ||
+    !value.dimension_streaks ||
+    typeof value.dimension_streaks !== "object" ||
+    Array.isArray(value.dimension_streaks) ||
+    !(
+      value.oom_baseline_total_kills === null ||
+      boundedInteger(value.oom_baseline_total_kills, 0, Number.MAX_SAFE_INTEGER)
+    ) ||
+    !(value.oom_hold_until === null || validIso(value.oom_hold_until)) ||
+    !(value.observer_generation === null || typeof value.observer_generation === "string")
+  ) {
+    throw new Error("invalid pressure hysteresis state");
   }
 }
 

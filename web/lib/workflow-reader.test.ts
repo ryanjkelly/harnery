@@ -7,6 +7,7 @@ import {
   endWorkflowChildSessionV3,
   startWorkflowChildSessionV3,
 } from "../../src/core/workflow/live-session-v3";
+import { pressureAssessmentFixture } from "../../tests/helpers/resource-status";
 import {
   readWorkflowChildSessions,
   readWorkflowChildSessionsFromCache,
@@ -58,7 +59,7 @@ describe("workflow proof reader", () => {
     expect(run?.proof?.run.objective).toBe("Show proof in the dashboard");
     expect(run?.proof?.acceptance.summary.satisfied).toBe(1);
     expect(run?.proof?.policy?.decisions[0]?.verdict).toBe("allow");
-    expect(run?.proof?.diagnostic_admission?.observation?.advice.pressure).toBe("elevated");
+    expect(run?.proof?.diagnostic_admission?.observation?.advice.assessment.state).toBe("elevated");
   });
 
   test("uses total retry cost instead of only the final attempt cost", () => {
@@ -420,18 +421,19 @@ function sampleProof(): WorkflowProof {
         freshness: "fresh",
         sampled_at: "2026-07-21T12:00:00.150Z",
         advice: {
-          schema_version: 1,
+          schema_version: 2,
           evaluated_at: "2026-07-21T12:00:00.150Z",
-          pressure: "elevated",
-          fan_out_recommendation: "use-caution",
           observer_only: true,
-          summary: "Elevated local pressure is active.",
-          source_capability: { source_kind: "supervisor.findings", state: "supported" },
+          assessment: pressureAssessmentFixture({
+            state: "elevated",
+            recommended_action: "limit-heavy-work",
+            observed_at: "2026-07-21T12:00:00.150Z",
+            summary: "Memory stalls are rising, so limit new heavy work.",
+          }),
+          prior_hysteresis: null,
+          source_capability: { source_kind: "supervisor.pressure", state: "supported" },
           active_finding_count: 1,
-          contributing_finding_count: 1,
-          omitted_contributing_finding_count: 0,
-          contributing_findings: [],
-          reasons: [],
+          summary: "Memory stalls are rising, so limit new heavy work.",
         },
       },
     },

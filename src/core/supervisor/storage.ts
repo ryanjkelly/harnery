@@ -8,6 +8,7 @@ import type {
   SupervisorFindings,
   SupervisorHistory,
   SupervisorLogFeed,
+  SupervisorPressureRecord,
   SupervisorServiceStatusRecord,
   SupervisorSnapshot,
   SupervisorTimeline,
@@ -22,6 +23,7 @@ export interface SupervisorPaths {
   history: string;
   activity: string;
   findings: string;
+  pressure: string;
   timelines: string;
   explanations: string;
   coordination_health: string;
@@ -40,6 +42,7 @@ export function supervisorPaths(coordRootRaw: string): SupervisorPaths {
     history: join(root, "history.json"),
     activity: join(root, "activity.json"),
     findings: join(root, "findings.json"),
+    pressure: join(root, "pressure.json"),
     timelines: join(root, "timelines"),
     explanations: join(root, "explanations"),
     coordination_health: join(root, "coordination-health.json"),
@@ -72,6 +75,10 @@ export function readSupervisorActivity(coordRoot: string): SupervisorActivitySna
 
 export function readSupervisorFindings(coordRoot: string): SupervisorFindings | undefined {
   return readJson<SupervisorFindings>(supervisorPaths(coordRoot).findings);
+}
+
+export function readSupervisorPressure(coordRoot: string): SupervisorPressureRecord | undefined {
+  return readJson<SupervisorPressureRecord>(supervisorPaths(coordRoot).pressure);
 }
 
 export function readSupervisorTimeline(

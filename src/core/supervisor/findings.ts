@@ -15,6 +15,7 @@ import {
   type SupervisorCapability,
   type SupervisorFinding,
   type SupervisorFindingAttribution,
+  type SupervisorFindingClass,
   type SupervisorFindingEvidence,
   type SupervisorFindingSeverity,
   type SupervisorFindings,
@@ -42,6 +43,7 @@ const MEMORY_GROWTH_WINDOW_MS = 5 * 60_000;
 interface Candidate {
   source_kind: string;
   finding_kind: string;
+  finding_class: SupervisorFindingClass;
   severity: SupervisorFindingSeverity;
   scope_kind: string;
   scope_id: string;
@@ -110,6 +112,7 @@ export function updateSupervisorFindings(
       fingerprint,
       source_kind: candidate.source_kind,
       finding_kind: candidate.finding_kind,
+      finding_class: candidate.finding_class,
       severity: candidate.severity,
       state: "opened",
       scope_kind: candidate.scope_kind,
@@ -767,6 +770,7 @@ function candidate(
   return {
     source_kind: source.source_kind,
     finding_kind: findingKind,
+    finding_class: classifyFinding(findingKind),
     severity,
     scope_kind: scopeKind,
     scope_id: scopeId,
@@ -777,6 +781,25 @@ function candidate(
     ...(attribution ? { attribution } : {}),
     ...(workloadContext ? { workload_context: workloadContext } : {}),
   };
+}
+
+/**
+ * Which question a finding answers. Contention findings report a machine
+ * resource the kernel says is exhausted or stalling. Attribution findings name
+ * who is consuming a resource, which is useful for an operator but is never
+ * evidence that the machine is under contention. Diagnostic findings report
+ * that the observation path itself is degraded. Anything unrecognized is
+ * diagnostic, because only contention may ever bear machine state.
+ */
+function classifyFinding(findingKind: string): SupervisorFindingClass {
+  if (findingKind.startsWith("machine.")) return "contention";
+  if (
+    findingKind === "resource.memory-growth" ||
+    ["process.", "group.", "hook.", "service."].some((prefix) => findingKind.startsWith(prefix))
+  ) {
+    return "attribution";
+  }
+  return "diagnostic";
 }
 
 function resourceSource(

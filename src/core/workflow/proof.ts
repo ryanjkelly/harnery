@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { RepoSnapshot } from "../context/index.ts";
+import { DIAGNOSTIC_ADVICE_SCHEMA_VERSION } from "../diagnostics/contract.ts";
 import type {
   NormalizedPolicy,
   PolicyDecision,
@@ -445,7 +446,7 @@ function validDiagnosticAdmissionProof(
     ["running", "started", "unavailable"].includes(observation.service_state) &&
     ["fresh", "unavailable"].includes(observation.freshness) &&
     (observation.sampled_at === undefined || validTimestamp(observation.sampled_at)) &&
-    observation.advice?.schema_version === 1 &&
+    observation.advice?.schema_version === DIAGNOSTIC_ADVICE_SCHEMA_VERSION &&
     observation.advice.observer_only === true
   );
 }
@@ -506,8 +507,8 @@ export function renderWorkflowProof(proof: WorkflowProof): string {
     const observation = proof.diagnostic_admission.observation;
     lines.push(
       observation
-        ? `admission: shadow ${observation.advice.pressure}; ` +
-            `${observation.advice.fan_out_recommendation}; action none`
+        ? `admission: shadow ${observation.advice.assessment.state}; ` +
+            `${observation.advice.assessment.recommended_action}; action none`
         : "admission: shadow not needed; no real child dispatch",
     );
   }

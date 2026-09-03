@@ -32,6 +32,70 @@ afterEach(() => {
 });
 
 describe("local supervisor collectors", () => {
+  test("labels machine contention apart from attribution and diagnostic findings", () => {
+    const resource = resourceAt(Date.now());
+    resource.collector_cpu_ms = 80;
+    resource.pressure = {
+      state: "supported",
+      cpu: { avg10: 1, avg60: 1, avg300: 1 },
+      memory: { avg10: 1, avg60: 1, avg300: 1 },
+      io: { avg10: 1, avg60: 1, avg300: 1 },
+      memory_full: { avg10: 95, avg60: 40, avg300: 10 },
+      io_full: { avg10: 0, avg60: 0, avg300: 0 },
+    };
+    resource.oom = {
+      state: "supported",
+      total_kills: 6,
+      kills_since_last_sample: 1,
+      last_kill_age_ms: 1_000,
+    };
+    resource.disks = [
+      {
+        path: "/",
+        state: "supported",
+        total_bytes: 100 * 1_024 ** 3,
+        available_bytes: 1_024 ** 3 * 0.5,
+        used_percent: 99,
+      },
+    ];
+    resource.groups = [resourceGroup("agent-Big", 3 * 1_024 ** 3)];
+    resource.processes = [
+      {
+        pid: 42,
+        ppid: 1,
+        start_id: "42:100",
+        state: "S",
+        name: "bun",
+        command: "bun run build",
+        cpu_percent: 5,
+        rss_bytes: 2 * 1_024 ** 3,
+        age_seconds: 30,
+        owner_kind: "agent",
+        owner_id: "agent-Big",
+        owner_root_pid: 42,
+      },
+    ];
+    const active = updateSupervisorFindings({
+      resource,
+      services: [{ id: "supervisor", state: "stale", heartbeat_at: resource.sampled_at }],
+      hooks: [],
+      history: updateSupervisorHistory(undefined, resource).history,
+      logFeed: { ...emptyFeed(), unavailable_families: 1 },
+    }).active;
+    const classes = new Map(active.map((entry) => [entry.finding_kind, entry.finding_class]));
+    expect(classes.get("machine.memory-full-stall")).toBe("contention");
+    expect(classes.get("machine.oom-kill")).toBe("contention");
+    expect(classes.get("machine.disk-space")).toBe("contention");
+    expect(classes.get("process.memory-pressure")).toBe("attribution");
+    expect(classes.get("group.memory-pressure")).toBe("attribution");
+    expect(classes.get("service.stale")).toBe("attribution");
+    expect(classes.get("supervisor.collector-overhead")).toBe("diagnostic");
+    expect(classes.get("source.capability-degraded")).toBe("diagnostic");
+    // No finding may carry a class outside the frozen set.
+    for (const entry of active)
+      expect(["contention", "attribution", "diagnostic"]).toContain(entry.finding_class);
+  });
+
   test("reports severe full stalls even with ample available RAM and a low one-minute average", () => {
     const resource = resourceAt(Date.now());
     resource.machine.memory_available_bytes = 8 * 2 ** 30;
@@ -548,7 +612,7 @@ function statusRecord(): SupervisorServiceStatusRecord {
 
 function resourceAt(nowMs: number): ResourceSnapshot {
   return {
-    schema_version: 1,
+    schema_version: 2,
     sampled_at: new Date(nowMs).toISOString(),
     interval_ms: 2_000,
     sample_duration_ms: 4,

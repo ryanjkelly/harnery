@@ -37,6 +37,25 @@ function diskLine(device: string, read: number, write: number, minor = 0): strin
   return `8 ${minor} ${device} 1 0 ${read} 0 1 0 ${write} 0 0 0 0\n`;
 }
 
+function vmstatText(values: {
+  pswpin: number;
+  pswpout: number;
+  direct: number;
+  major: number;
+}): string {
+  return [
+    "pgfault 4096",
+    `pswpin ${values.pswpin}`,
+    `pswpout ${values.pswpout}`,
+    `pgscan_direct ${values.direct}`,
+    // A neighbouring counter whose name extends pgscan_direct must never be read as it.
+    "pgscan_direct_throttle 7",
+    `pgmajfault ${values.major}`,
+    "oom_kill 0",
+    "",
+  ].join("\n");
+}
+
 describe("system resource collection", () => {
   test("reports available capacity separately from reserved filesystem blocks", () => {
     const { root, options } = fixture();
@@ -285,6 +304,116 @@ describe("system resource collection", () => {
     expect(
       collectSystemResources(root, { ...options, nowMs: 5_000 }).io.read_bytes_per_second,
     ).toBeNull();
+  });
+
+  test("derives reclaim rates from two consecutive vmstat reads", () => {
+    const { root, procRoot, options } = fixture();
+    const file = join(procRoot, "vmstat");
+    writeFileSync(file, vmstatText({ pswpin: 5, pswpout: 100, direct: 1_000, major: 10 }));
+    expect(collectSystemResources(root, options).vmstat).toEqual({
+      state: "supported",
+      swap_in_bytes_per_second: null,
+      swap_out_bytes_per_second: null,
+      direct_reclaim_pages_per_second: null,
+      major_faults_per_second: null,
+      counters_reset: true,
+      reason: "Reclaim rates need two consecutive counters, so a baseline started.",
+    });
+    writeFileSync(file, vmstatText({ pswpin: 5, pswpout: 200, direct: 3_000, major: 30 }));
+    expect(collectSystemResources(root, { ...options, nowMs: 3_000 }).vmstat).toEqual({
+      state: "supported",
+      swap_in_bytes_per_second: 0,
+      swap_out_bytes_per_second: 204_800,
+      direct_reclaim_pages_per_second: 1_000,
+      major_faults_per_second: 10,
+      counters_reset: false,
+    });
+  });
+
+  test("starts a new reclaim baseline when a counter decreases or the clock stalls", () => {
+    const { root, procRoot, options } = fixture();
+    const file = join(procRoot, "vmstat");
+    writeFileSync(file, vmstatText({ pswpin: 5, pswpout: 400, direct: 1_000, major: 10 }));
+    collectSystemResources(root, options);
+    writeFileSync(file, vmstatText({ pswpin: 5, pswpout: 40, direct: 1_100, major: 12 }));
+    const reset = collectSystemResources(root, { ...options, nowMs: 3_000 }).vmstat;
+    expect(reset).toMatchObject({
+      state: "supported",
+      swap_out_bytes_per_second: null,
+      direct_reclaim_pages_per_second: null,
+      counters_reset: true,
+    });
+    expect(reset.reason).toContain("decreased");
+    writeFileSync(file, vmstatText({ pswpin: 5, pswpout: 60, direct: 1_200, major: 14 }));
+    expect(collectSystemResources(root, { ...options, nowMs: 3_000 }).vmstat.reason).toContain(
+      "did not advance",
+    );
+    expect(
+      collectSystemResources(root, { ...options, nowMs: 5_000 }).vmstat.swap_out_bytes_per_second,
+    ).toBe(0);
+  });
+
+  test("reports missing reclaim counters instead of reading them as zero activity", () => {
+    const { root, procRoot, options } = fixture();
+    const file = join(procRoot, "vmstat");
+    expect(collectSystemResources(root, options).vmstat).toMatchObject({
+      state: "unsupported",
+      swap_out_bytes_per_second: null,
+      counters_reset: false,
+      reason: "ENOENT",
+    });
+    writeFileSync(file, "pgfault 100\noom_kill 3\n");
+    expect(collectSystemResources(root, { ...options, nowMs: 3_000 }).vmstat).toMatchObject({
+      state: "unsupported",
+      counters_reset: false,
+      reason: "Kernel does not expose the memory reclaim counters.",
+    });
+    writeFileSync(file, "pswpout 100\npgmajfault 10\n");
+    const first = collectSystemResources(root, { ...options, nowMs: 5_000 }).vmstat;
+    expect(first.state).toBe("partial");
+    expect(first.reason).toContain("pswpin, pgscan_direct");
+    writeFileSync(file, "pswpout 200\npgmajfault 30\n");
+    expect(collectSystemResources(root, { ...options, nowMs: 7_000 }).vmstat).toEqual({
+      state: "partial",
+      swap_in_bytes_per_second: null,
+      swap_out_bytes_per_second: 204_800,
+      direct_reclaim_pages_per_second: null,
+      major_faults_per_second: 10,
+      counters_reset: false,
+      reason: "Kernel does not expose pswpin, pgscan_direct.",
+    });
+  });
+
+  test.each([
+    "pswpout notanumber\n",
+    "pswpout 100 200\n",
+    "pswpout -5\n",
+    "pswpout 100\npswpout 200\n",
+  ])("rejects malformed vmstat row %s", (text) => {
+    const { root, procRoot, options } = fixture();
+    writeFileSync(join(procRoot, "vmstat"), text);
+    expect(collectSystemResources(root, options).vmstat).toMatchObject({
+      state: "error",
+      swap_out_bytes_per_second: null,
+      counters_reset: false,
+    });
+  });
+
+  test("does not reuse reclaim baselines across coordination roots", () => {
+    const { root, procRoot, options } = fixture();
+    writeFileSync(
+      join(procRoot, "vmstat"),
+      vmstatText({ pswpin: 1, pswpout: 100, direct: 10, major: 1 }),
+    );
+    collectSystemResources(root, options);
+    writeFileSync(
+      join(procRoot, "vmstat"),
+      vmstatText({ pswpin: 1, pswpout: 200, direct: 20, major: 2 }),
+    );
+    expect(
+      collectSystemResources(join(root, "another"), { ...options, nowMs: 3_000 }).vmstat
+        .counters_reset,
+    ).toBe(true);
   });
 
   test("bounds counter file reads", () => {

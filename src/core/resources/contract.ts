@@ -1,4 +1,4 @@
-export const RESOURCE_SNAPSHOT_SCHEMA_VERSION = 1;
+export const RESOURCE_SNAPSHOT_SCHEMA_VERSION = 2;
 export const RESOURCE_SERVICE_STATUS_SCHEMA_VERSION = 1;
 
 export type ResourceSupportState = "supported" | "partial" | "unsupported" | "error";
@@ -59,6 +59,7 @@ export interface ResourceSnapshot {
   disks?: ResourceDiskSample[];
   pressure?: ResourcePressureSample;
   oom?: ResourceOomSample;
+  vmstat?: ResourceVmstatSample;
   io?: ResourceIoSample;
   host?: ResourceHostSample;
   groups: ResourceProcessGroup[];
@@ -99,6 +100,22 @@ export interface ResourceOomSample {
   total_kills: number | null;
   kills_since_last_sample: number | null;
   last_kill_age_ms: number | null;
+  reason?: string;
+}
+
+/**
+ * Kernel memory-reclaim activity as per-second rates, from one bounded
+ * `/proc/vmstat` read. Rates need two consecutive samples: the first sample
+ * after a start, an observer restart, or a counter reset reports
+ * `counters_reset` with null rates rather than inventing a baseline.
+ */
+export interface ResourceVmstatSample {
+  state: ResourceSupportState;
+  swap_in_bytes_per_second: number | null;
+  swap_out_bytes_per_second: number | null;
+  direct_reclaim_pages_per_second: number | null;
+  major_faults_per_second: number | null;
+  counters_reset: boolean;
   reason?: string;
 }
 
