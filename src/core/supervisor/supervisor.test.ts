@@ -211,6 +211,18 @@ describe("local supervisor collectors", () => {
     expect(history.points[0]?.sampled_at).toBe(new Date(110_000).toISOString());
   });
 
+  test("stores one-minute load with machine history and leaves unsupported load unknown", () => {
+    const resource = resourceAt(0);
+    resource.machine.load_average = [3.25, 2.5, 1.5];
+    expect(
+      updateSupervisorHistory(undefined, resource).history.points[0]?.machine.load_average_1,
+    ).toBe(3.25);
+    resource.machine.load_average = null;
+    expect(
+      updateSupervisorHistory(undefined, resource).history.points[0]?.machine.load_average_1,
+    ).toBeNull();
+  });
+
   test("labels hooks only after agent ownership and an exact entrypoint agree", () => {
     const resource = resourceAt(Date.now());
     resource.processes = [

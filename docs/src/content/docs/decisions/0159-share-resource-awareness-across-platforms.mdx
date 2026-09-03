@@ -69,6 +69,14 @@ totals alone never trigger the incident finding.
 
 ## Result and limits
 
+The dashboard places a chart beside each of its four machine totals. A client
+component filters the existing history to 1, 5, or 15 minutes, preserves the
+selection through shared live refreshes, and appends the current sample so the
+chart endpoint matches the card. Add the one-minute load average to stored
+history; earlier points without it remain unknown. Use timestamp-scaled SVG
+paths with gaps for missing samples, fixed percentage axes, and independent
+load/count axes. This requires no chart dependency or additional polling loop.
+
 Fixture tests cover native output parsing, missing providers, counter resets,
 capacity errors, disk-device accounting, cache freshness, and warning delivery.
 Linux/WSL and native Windows probes can be exercised on the development host;

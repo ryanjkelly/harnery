@@ -1,18 +1,9 @@
-import {
-  Activity,
-  CircleAlert,
-  Cpu,
-  Gauge,
-  HeartPulse,
-  History,
-  MemoryStick,
-  ServerCog,
-  Workflow,
-} from "lucide-react";
+import { CircleAlert, HeartPulse, History, ServerCog, Workflow } from "lucide-react";
 import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { ResourceLiveRefresher } from "@/components/resources/ResourceLiveRefresher";
+import { ResourceMetricCharts } from "@/components/resources/ResourceMetricCharts";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -101,47 +92,24 @@ export default function ResourcesPage() {
             </Card>
           ) : (
             <>
-              <section
-                aria-label="Machine pressure"
-                className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-              >
-                <MetricCard
-                  icon={<Cpu aria-hidden />}
-                  label="CPU"
-                  value={formatPercent(snapshot.machine.cpu_percent)}
-                  detail={`${snapshot.machine.cpu_logical_count} logical CPUs · ${formatMs(snapshot.sample_duration_ms)} sample`}
-                  tone={pressureTone(snapshot.machine.cpu_percent)}
-                />
-                <MetricCard
-                  icon={<MemoryStick aria-hidden />}
-                  label="Memory"
-                  value={formatPercent(snapshot.machine.memory_percent)}
-                  detail={`${formatBytes(snapshot.machine.memory_used_bytes)} of ${formatBytes(snapshot.machine.memory_total_bytes)}`}
-                  tone={pressureTone(snapshot.machine.memory_percent)}
-                />
-                <MetricCard
-                  icon={<Gauge aria-hidden />}
-                  label="Load average"
-                  value={
-                    snapshot.machine.load_average
-                      ? snapshot.machine.load_average[0].toFixed(2)
-                      : "Unknown"
-                  }
-                  detail={
-                    snapshot.machine.load_average
-                      ? `${snapshot.machine.load_average.map((value) => value.toFixed(2)).join(" · ")} over 1, 5, 15 minutes`
-                      : "Not reported"
-                  }
-                  tone="sky"
-                />
-                <MetricCard
-                  icon={<Activity aria-hidden />}
-                  label="Processes"
-                  value={snapshot.machine.process_count?.toLocaleString() ?? "Unknown"}
-                  detail={`${snapshot.visible_process_count} shown · ${snapshot.unattributed_process_count} unattributed`}
-                  tone={snapshot.unattributed_process_count > 0 ? "warning" : "success"}
-                />
-              </section>
+              <ResourceMetricCharts
+                machine={snapshot.machine}
+                sampledAt={snapshot.sampled_at}
+                history={(supervisor.history?.points ?? []).map(({ sampled_at, machine }) => ({
+                  sampled_at,
+                  machine,
+                }))}
+                nowMs={Date.now()}
+                live={report.service.running && (report.freshness_ms ?? Infinity) <= 15_000}
+                details={{
+                  cpu_percent: `${snapshot.machine.cpu_logical_count} logical CPUs · ${formatMs(snapshot.sample_duration_ms)} sample`,
+                  memory_percent: `${formatBytes(snapshot.machine.memory_used_bytes)} of ${formatBytes(snapshot.machine.memory_total_bytes)}`,
+                  load_average_1: snapshot.machine.load_average
+                    ? `${snapshot.machine.load_average.map((value) => value.toFixed(2)).join(" · ")} over 1, 5, 15 minutes`
+                    : "Not reported",
+                  process_count: `${snapshot.visible_process_count} shown · ${snapshot.unattributed_process_count} unattributed`,
+                }}
+              />
 
               <section aria-labelledby="supervisor-heading" className="mb-6">
                 <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
@@ -557,39 +525,6 @@ function Owner({
   return <span className="font-mono text-xs">{id}</span>;
 }
 
-function MetricCard({
-  icon,
-  label,
-  value,
-  detail,
-  tone,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  detail: string;
-  tone: "success" | "warning" | "danger" | "sky";
-}) {
-  const toneClass = {
-    success: "border-emerald-500/25 bg-emerald-500/5 text-emerald-600 dark:text-emerald-300",
-    warning: "border-amber-500/25 bg-amber-500/5 text-amber-600 dark:text-amber-300",
-    danger: "border-red-500/25 bg-red-500/5 text-red-600 dark:text-red-300",
-    sky: "border-sky-500/25 bg-sky-500/5 text-sky-600 dark:text-sky-300",
-  }[tone];
-  return (
-    <Card className={toneClass}>
-      <CardContent className="p-4">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <span className="[&>svg]:size-4">{icon}</span>
-          {label}
-        </div>
-        <div className="mt-3 text-3xl font-semibold tabular-nums text-foreground">{value}</div>
-        <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
-      </CardContent>
-    </Card>
-  );
-}
-
 function ObserverBadge({ running, stale }: { running: boolean; stale: boolean }) {
   return (
     <Badge variant={running ? "success" : stale ? "warning" : "secondary"}>
@@ -734,12 +669,6 @@ function chartPoints(values: readonly (number | null)[]): string | null {
 
 function SupportBadge({ state }: { state: string }) {
   return <Badge variant={state === "supported" ? "secondary" : "warning"}>{state}</Badge>;
-}
-
-function pressureTone(value: number | null): "success" | "warning" | "danger" {
-  if (value === null || value < 70) return "success";
-  if (value < 90) return "warning";
-  return "danger";
 }
 
 function formatPercent(value: number | null): string {

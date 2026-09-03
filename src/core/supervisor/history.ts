@@ -38,6 +38,7 @@ export function updateSupervisorHistory(
       memory_used_bytes: resource.machine.memory_used_bytes,
       swap_used_bytes: resource.machine.swap_used_bytes,
       process_count: resource.machine.process_count,
+      load_average_1: resource.machine.load_average?.[0] ?? null,
     },
     groups: resource.groups.map((group) => ({ ...group, root_pids: [...group.root_pids] })),
   };
