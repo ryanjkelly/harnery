@@ -96,3 +96,26 @@ export function stitchPngRows(pieces: readonly Buffer[]): Buffer {
 export function pngDimensions(buffer: Buffer): { width: number; height: number } {
   return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
 }
+
+/** Crop already decoded native pixels; callers reuse one decode across all selected rectangles. */
+export function cropNativePng(
+  png: PNG,
+  rect: { x: number; y: number; width: number; height: number },
+): Buffer {
+  if (
+    ![rect.x, rect.y, rect.width, rect.height].every(Number.isSafeInteger) ||
+    rect.x < 0 ||
+    rect.y < 0 ||
+    rect.width <= 0 ||
+    rect.height <= 0 ||
+    rect.x + rect.width > png.width ||
+    rect.y + rect.height > png.height
+  )
+    throw new Error("Native capture rectangle lies outside the image.");
+  const out = new PNG({ width: rect.width, height: rect.height });
+  for (let y = 0; y < rect.height; y++) {
+    const start = ((rect.y + y) * png.width + rect.x) * 4;
+    png.data.copy(out.data, y * rect.width * 4, start, start + rect.width * 4);
+  }
+  return PNG.sync.write(out);
+}

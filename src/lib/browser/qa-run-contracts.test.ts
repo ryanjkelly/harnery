@@ -78,8 +78,8 @@ function critiqueOutcome(
 }
 
 describe("validateQaRunJob", () => {
-  test("policy.critique_max_tiles must be an integer between 1 and 200", () => {
-    for (const bad of [0, 201, 2.5, "24"]) {
+  test("policy.critique_max_tiles must be an integer between 1 and 400", () => {
+    for (const bad of [0, 401, 2.5, "24"]) {
       const result = validateQaRunJob(validJob({ policy: { critique_max_tiles: bad as number } }));
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -87,6 +87,43 @@ describe("validateQaRunJob", () => {
       }
     }
     expect(validateQaRunJob(validJob({ policy: { critique_max_tiles: 40 } })).ok).toBe(true);
+  });
+
+  test("shared tile budget rejects impossible values before rendering", () => {
+    for (const bad of [0, 7, 401, 9.5, "96", null]) {
+      const result = validateQaRunJob(
+        validJob({ policy: { critique_tile_budget: bad as number } }),
+      );
+      expect(result.ok).toBe(false);
+    }
+    for (const value of [8, 96, 400]) {
+      expect(validateQaRunJob(validJob({ policy: { critique_tile_budget: value } })).ok).toBe(true);
+    }
+  });
+
+  test("disposition acceptance is an explicit boolean and changes the proof identity", () => {
+    for (const bad of ["false", "true", 0, 1, null]) {
+      expect(
+        validateQaRunJob(validJob({ policy: { accept_dispositions: bad as unknown as boolean } }))
+          .ok,
+      ).toBe(false);
+    }
+    const plain = validJob();
+    expect(computeJobDigest(validJob({ policy: { accept_dispositions: false } }))).toBe(
+      computeJobDigest(plain),
+    );
+    expect(computeJobDigest(validJob({ policy: { accept_dispositions: true } }))).not.toBe(
+      computeJobDigest(plain),
+    );
+    expect(validateQaRunJob(validJob({ policy: { accept_dispositions: true } })).ok).toBe(true);
+  });
+
+  test("non-object policy is rejected", () => {
+    for (const policy of [null, [], "", 3]) {
+      expect(
+        validateQaRunJob(validJob({ policy: policy as unknown as QaRunJob["policy"] })).ok,
+      ).toBe(false);
+    }
   });
 
   test("policy.review_pack_retention_minutes must be an integer between 1 and 43200", () => {
@@ -321,7 +358,7 @@ describe("computeJobDigest", () => {
     ).not.toBe(base);
   });
 
-  test("policy differences never change the digest", () => {
+  test("runtime policy differences never change the digest", () => {
     const base = computeJobDigest(validJob());
     expect(computeJobDigest(validJob({ policy: { command_concurrency: 8 } }))).toBe(base);
     expect(

@@ -1,0 +1,118 @@
+---
+title: "ADR 0158: budget native page-review evidence before capture"
+description: Reserve page edges, allocate exact native rectangles, and retain authoritative scroll probes while reducing duplicate storage.
+sidebar:
+  order: 158
+---
+
+**Date:** 2026-09-03
+**Status:** Accepted
+
+## Context
+
+A per-context tile cap favored the beginning of tall pages. Additional gate-hit
+bands could exceed that cap, while overlapping band heights overstated coverage.
+Full-page captures also sometimes omitted card content visible in native viewport
+references. A smaller screenshot cannot establish that native text or a thin
+clipping defect is unchanged.
+
+## Alternatives
+
+Reducing fidelity comparison to quarter scale would conceal some defects. A
+regression with displaced single-pixel rules differs at native resolution but
+becomes identical after averaging each 4 × 4 block. Native comparison remains
+the authority.
+
+Choosing scrolled capture by a fixed document-height threshold would avoid a
+second capture, but the investigation did not establish a reliable threshold.
+Removing scroll animations or pinned elements changed the observed discrepancy;
+it also changed the page being measured. Neither experiment is a production
+capture recipe.
+
+Capturing every gate-hit band after allocating a count would exceed the stated
+budget. The allocator instead selects exact candidate IDs before capture and
+records omissions.
+
+## Decision
+
+`allocateTileBudget` reserves each context's top and bottom bands, deduplicating
+one-band pages. An insufficient budget or context ceiling fails before capture
+and reports the minimum. Gate-hit bands follow in severity order, then remaining
+slots are distributed by candidate height with stable largest-remainder and
+context-ID tie breaks. Saturated contexts return unused slots to the pool.
+Scoped candidates consume the same budget.
+
+The gate render emits `review_pack_capture_plan` even when a deterministic gate
+fails. The capture render checks the content digest, viewport, DPR, recipe,
+page geometry, and all candidate rectangles before capturing the allocation's
+exact IDs. A changed plan or unavailable native probe fails capture. Coverage
+records the union of full-width reviewed intervals, uncovered intervals, omitted
+scopes, and omitted gate hits. Narrow scopes cannot fill full-width page gaps.
+
+Both renders wait for fonts and bounded DOM/layout convergence before measuring.
+Eight consecutive unchanged animation-frame samples establish readiness; failure
+to converge within 120 frames refuses capture. This prevents deferred page
+initialization from becoming a stale plan. Source serialization sorts attribute
+names in an inert document while preserving every value, text node, script, and
+stylesheet. Attribute insertion order cannot invalidate an otherwise identical
+render, and genuine source changes still do.
+
+`captureRegionsByScroll` inventories pinned elements once and captures the
+selected rectangles in document order. Native full-page and scrolled pixels are
+compared for every selected rectangle. If a comparison exceeds the existing
+threshold, the context uses its scrolled native tiles. Missing probes never
+become a successful empty comparison. No browser is opened during judging.
+
+Pinned-element normalization hides only elements that moved from their original
+document positions. Reader reference images retain the pinned elements. Capture
+restores opacity while transitions remain disabled, flushes that style, and only
+then restores the original transition declaration. This prevents a new fade from
+zero after capture. The scroll position is restored on success and failure.
+
+Final v2 packs preserve native tiles and store a half-scale orientation image.
+Native full-page pixels are temporary capture/crop inputs; the final pack has no
+additional native full-page copy. The orientation image is not comparison evidence.
+
+Reviewer decisions occupy a separate text-and-digest slot in the snapshot store,
+so replacing a baseline or expiring its image pack does not erase them. Carryover
+requires exact native pixels, normalized machine finding text, and identical
+target and rendering context. The verdict command validates complete delegated
+coverage and binding to the current immutable machine evidence before publishing
+that slot. Applying those decisions is opt-in and defaults to false; changed
+findings, incomplete review, and failed deterministic gates cannot inherit a pass.
+
+## Result
+
+The controlled investigation used Chromium 148.0.7778.96 at DPR 1, desktop
+1280 × 800 and mobile 390 × 844, in both light and dark themes. The original
+documents measured 50,207 and 92,459 CSS pixels high. Highest-mismatch desktop
+bands differed by 5.13% and 6.55%. Disabling scroll animations or pinned elements
+reduced those samples below the 0.1% threshold. Trimming the document near 8,000
+and 16,000 pixels produced different measured heights and no desktop mismatch in
+the sampled regions; these are diagnostic points, not browser limits.
+
+An independent GPT-5.6 Luna reviewer found missing card content in the desktop
+full-page crops that was present in the native scrolled tiles and reader
+references. The exact browser mechanism remains unresolved. A faint strip in
+one normalized mobile sample also prevents a broader claim that normalization
+is universally identical to the reader's viewport. The native comparison and
+fallback remain in place; no direct-scrolled height shortcut was added.
+
+A matched storage comparison preserved the exact same 96 native tile PNGs:
+85,038,542 tile bytes in both versions. Total pack storage fell from 154,944,068
+to 127,879,123 bytes, a 17.47% reduction. Orientation images fell from 60,535,287
+to 33,469,716 bytes. The original packs were retained only as managed experiment
+baselines. Snapshot storage was outside this capture-only measurement.
+
+The pre-change CLI captures took 25.931, 28.482, 22.220, and 20.934 seconds
+sequentially. The new grouped-capture harness took 21.729, 23.015, 14.972, and
+15.314 seconds for the same rectangles, including navigation and pack writing.
+Those harnesses differ in startup and serialization, so the totals do not prove
+an isolated optimization percentage. The 35-second four-context tuning goal was
+not demonstrated by these sequential measurements.
+
+Focused tests cover edge capacity, hit overflow, context ceilings, scopes,
+proportional selection, exact coverage gaps, stale source/geometry/DPR/recipe,
+native thin-rule sensitivity, and scrolled seams and state restoration at DPR 1
+and 2. A live CLI regression proves failed-gate plan emission, exact selected IDs,
+and rejection of changed source content.

@@ -4,14 +4,18 @@
 // composes the same two library halves; this command exposes them directly
 // so an agent can prepare a page for review, or review a pack, on its own.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { resolveOwner } from "../core/agents/index.ts";
+import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import { artifactsRoot } from "../core/artifacts/index.ts";
 import { resolveBinName, reviewPackAutoCleanEnabled } from "../core/config.ts";
 import { createManagedQaOutParent, resolveQaRepoRoot } from "../core/qa-artifacts.ts";
 import { DEFAULT_CRITIQUE_RUBRIC } from "../lib/browser/critique.ts";
+import { persistPackReviewDecisions } from "../lib/browser/page-review-evidence.ts";
 import { judgePageReviewPack, toCritiqueRecords } from "../lib/browser/page-review-judge.ts";
 import {
   aggregateMachineOutcome,
@@ -55,7 +59,6 @@ interface CreateOpts {
   out?: string;
   context?: string[];
   scope?: string[];
-  noBands?: boolean;
   maxTiles?: string;
   concurrency?: string;
   timeout?: string;
@@ -167,6 +170,9 @@ interface ReviewAddOpts {
 }
 
 interface DispositionOpts {
+  target?: string[];
+  allHigh?: boolean;
+  context?: string;
   note?: string;
   by?: string;
   json?: boolean;
@@ -174,6 +180,7 @@ interface DispositionOpts {
 
 interface VerdictOpts {
   json?: boolean;
+  snapshotStore?: string;
 }
 
 /** Next free review-subagent finding id in the `F001` series. */
@@ -373,10 +380,9 @@ export function registerReviewPackCommand(
       (value: string, previous: string[] = []) => [...previous, value],
       [] as string[],
     )
-    .option("--no-bands", "Keep only --scope tiles; skip full-page bands.")
     .option(
       "--max-tiles <n>",
-      "Full-page band cap per context (browse --check-critique-max-tiles).",
+      "Native tile cap per context, including required top and bottom bands.",
     )
     .option("--concurrency <n>", "Concurrent capture browsers (1-8; default 2).", "2")
     .option("--timeout <ms>", "Per-capture timeout in milliseconds (default 120000).", "120000")
@@ -465,7 +471,6 @@ export function registerReviewPackCommand(
             ctx.theme,
             "--qa-state",
             ctx.state,
-            ...(opts.noBands ? ["--no-review-pack-bands"] : []),
             ...(opts.scope ?? []).flatMap((selector) => ["--review-pack-scope", selector]),
             ...(opts.maxTiles !== undefined ? ["--check-critique-max-tiles", opts.maxTiles] : []),
           ];
@@ -637,13 +642,14 @@ export function registerReviewPackCommand(
 
       const merged = new Map((manifest.critique ?? []).map((row) => [row.context_id, row]));
       for (const row of toCritiqueRecords(result)) merged.set(row.context_id, row);
+      const judgedRecords = new Map(result.contexts.map((row) => [row.context_id, row.record]));
       finalizePageReviewPack({
         packDir,
         target: manifest.target,
         ...(manifest.tested_revision !== undefined
           ? { tested_revision: manifest.tested_revision }
           : {}),
-        contexts: manifest.contexts,
+        contexts: manifest.contexts.map((record) => judgedRecords.get(record.id) ?? record),
         gates: manifest.gates,
         critique: [...merged.values()],
         pool: result.pool,
@@ -931,6 +937,24 @@ export function registerReviewPackCommand(
     .option("--json", "Print the summary as JSON.")
     .action((dir: string, opts: { json?: boolean }) => {
       const packDir = resolve(dir);
+      const stubPath = resolve(packDir, "pack-expired.json");
+      if (existsSync(stubPath)) {
+        try {
+          const stub = JSON.parse(readFileSync(stubPath, "utf8"));
+          if (stub.schema !== "harnery-page-review-expired/v1")
+            throw new Error("Unknown expired pack schema");
+          if (opts.json) emit.data(stub);
+          else
+            emit.log(
+              `expired pack: ${stub.target}; machine ${stub.machine_outcome ?? "not judged"}; reviewed ${stub.result?.reviewed_outcome ?? "no verdict"}`,
+              "info",
+            );
+        } catch (error) {
+          emit.error({ code: "review_pack_invalid_stub", message: String(error) });
+          process.exitCode = 1;
+        }
+        return;
+      }
       let manifest: ReturnType<typeof readPackManifest>;
       try {
         manifest = readPackManifest(packDir);
@@ -1165,7 +1189,7 @@ export function registerReviewPackCommand(
     });
 
   root
-    .command("disposition <dir> <target> <disposition>")
+    .command("disposition <dir> <target-or-disposition> [disposition]")
     .description(
       "Record the reviewer's verdict on one machine finding. <target> is " +
         "<context-id>/<tile-id>#<n>, n the finding's 0-based position among that tile's " +
@@ -1174,62 +1198,117 @@ export function registerReviewPackCommand(
         "target is replaced. evidence/critique.json itself is never rewritten.",
     )
     .option("--note <text>", "Why; what the tile actually shows.")
-    .option("--by <name>", "Who dispositioned it.")
+    .option("--by <name>", "Who dispositioned it (default: current agent or local account).")
+    .option(
+      "--target <target>",
+      "Explicit target (repeatable); use disposition as the first positional argument.",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option("--all-high", "Disposition every high finding in --context.")
+    .option("--context <id>", "Required with --all-high.")
     .option("--json", "Print the written disposition as JSON.")
-    .action((dir: string, target: string, disposition: string, opts: DispositionOpts) => {
-      const pack = readReviewerPack(dir, emit);
-      if (!pack) return;
-      const { packDir, manifest, findings: doc } = pack;
-      if (!(PAGE_REVIEW_DISPOSITIONS as readonly string[]).includes(disposition)) {
-        emit.error({
-          code: "review_pack_invalid_disposition",
-          message: `disposition must be one of ${PAGE_REVIEW_DISPOSITIONS.join(", ")} (got ${JSON.stringify(disposition)})`,
-        });
-        process.exitCode = 1;
-        return;
-      }
-      if (manifest.critique === null) {
-        emit.error({
-          code: "review_pack_not_judged",
-          message: `the judge has not run for this pack, so there is no machine finding to disposition; run: ${judgeCommandFor(packDir)}`,
-        });
-        process.exitCode = 1;
-        return;
-      }
-      const targets = machineFindingTargets(manifest.critique);
-      const machine = targets.get(target.trim());
-      if (!machine) {
-        const sample = [...targets.keys()].slice(0, 8).join(", ");
-        emit.error({
-          code: "review_pack_unknown_finding",
-          message:
-            `${JSON.stringify(target)} names no machine finding in evidence/critique.json` +
-            (sample ? ` (known targets include: ${sample})` : " (the critique holds no findings)"),
-        });
-        process.exitCode = 1;
-        return;
-      }
-      const entry = {
-        target: target.trim(),
-        disposition: disposition as PageReviewDisposition,
-        ...(opts.note !== undefined ? { note: opts.note } : {}),
-        ...(opts.by !== undefined ? { by: opts.by } : {}),
-        at: new Date().toISOString(),
-      };
-      const kept = (doc.dispositions ?? []).filter((d) => d.target !== entry.target);
-      const next: PageReviewFindingsDocument = {
-        ...doc,
-        reviewed_at: new Date().toISOString(),
-        dispositions: [...kept, entry],
-      };
-      if (!commitFindings(packDir, next, emit)) return;
-      emit.log(
-        `${entry.target} · ${machine.severity} · ${machine.category} → ${entry.disposition}` +
-          (kept.length < (doc.dispositions ?? []).length ? " (replaced)" : ""),
-        "info",
-      );
-      if (opts.json) emit.data(entry as unknown as Record<string, unknown>);
-    });
+    .action(
+      (
+        dir: string,
+        targetOrDisposition: string,
+        positionalDisposition: string | undefined,
+        opts: DispositionOpts,
+      ) => {
+        const disposition = positionalDisposition ?? targetOrDisposition;
+        const pack = readReviewerPack(dir, emit);
+        if (!pack) return;
+        const { packDir, manifest, findings: doc } = pack;
+        if (!(PAGE_REVIEW_DISPOSITIONS as readonly string[]).includes(disposition)) {
+          emit.error({
+            code: "review_pack_invalid_disposition",
+            message: `disposition must be one of ${PAGE_REVIEW_DISPOSITIONS.join(", ")} (got ${JSON.stringify(disposition)})`,
+          });
+          process.exitCode = 1;
+          return;
+        }
+        if (manifest.critique === null) {
+          emit.error({
+            code: "review_pack_not_judged",
+            message: `the judge has not run for this pack, so there is no machine finding to disposition; run: ${judgeCommandFor(packDir)}`,
+          });
+          process.exitCode = 1;
+          return;
+        }
+        const targets = machineFindingTargets(manifest.critique);
+        if (opts.allHigh && (!opts.context || positionalDisposition || opts.target?.length)) {
+          emit.error({
+            code: "review_pack_invalid_selection",
+            message: "--all-high requires --context and cannot be combined with explicit targets",
+          });
+          process.exitCode = 1;
+          return;
+        }
+        if (opts.context && !manifest.contexts.some((ctx) => ctx.id === opts.context)) {
+          emit.error({
+            code: "review_pack_unknown_context",
+            message: "Unknown disposition context",
+          });
+          process.exitCode = 1;
+          return;
+        }
+        const selected = [
+          ...new Set(
+            opts.allHigh
+              ? [...targets]
+                  .filter(([, f]) => f.context_id === opts.context && f.severity === "high")
+                  .map(([key]) => key)
+              : [
+                  ...(positionalDisposition ? targetOrDisposition.split(",") : []),
+                  ...(opts.target ?? []),
+                ]
+                  .map((t) => t.trim())
+                  .filter(Boolean),
+          ),
+        ];
+        const invalid = selected.filter((target) => !targets.has(target));
+        if (!selected.length || invalid.length) {
+          emit.error({
+            code: "review_pack_unknown_finding",
+            message: `No valid selection, or unknown target(s): ${invalid.join(", ")} (known targets include: ${[...targets.keys()].slice(0, 8).join(", ")})`,
+          });
+          process.exitCode = 1;
+          return;
+        }
+        const owner = resolveOwner();
+        const by =
+          opts.by?.trim() ||
+          (owner
+            ? readLiveCoordinationRow(resolveQaRepoRoot(context), owner)?.name || owner
+            : userInfo().username);
+        const entries = selected.map((target) => ({
+          target,
+          disposition: disposition as PageReviewDisposition,
+          ...(opts.note === undefined ? {} : { note: opts.note }),
+          by,
+          at: new Date().toISOString(),
+        }));
+        const next: PageReviewFindingsDocument = {
+          ...doc,
+          reviewed_at: new Date().toISOString(),
+          dispositions: [
+            ...(doc.dispositions ?? []).filter((d) => !selected.includes(d.target)),
+            ...entries,
+          ],
+        };
+        if (!commitFindings(packDir, next, emit)) return;
+        emit.log(
+          `${entries.length} finding(s) dispositioned ${disposition} by ${by}${(doc.dispositions ?? []).some((d) => selected.includes(d.target)) ? " (replaced)" : ""}`,
+          "info",
+        );
+        if (opts.json)
+          emit.data(
+            entries.length === 1
+              ? (entries[0] as unknown as Record<string, unknown>)
+              : { dispositions: entries },
+          );
+      },
+    );
 
   root
     .command("verdict <dir>")
@@ -1240,6 +1319,10 @@ export function registerReviewPackCommand(
         "primary tile also needs completed delegated-review coverage. Writes evidence/verdict.json " +
         "and refreshes review.md. Exit 2 on fail, 4 when critique or delegated coverage is " +
         "skipped or incomplete, 1 on a findings.json validation error.",
+    )
+    .option(
+      "--snapshot-store <dir>",
+      "Native baseline and durable decision store (default: local QA cache).",
     )
     .option("--json", "Print the verdict as JSON.")
     .action((dir: string, opts: VerdictOpts) => {
@@ -1261,6 +1344,26 @@ export function registerReviewPackCommand(
         ...resolvePackVerdict(manifest, readPackInspectionPlan(packDir), doc),
         reviewed_at: new Date().toISOString(),
       };
+      try {
+        // Incomplete submissions may report their outcome, but cannot publish decisions.
+        if (
+          verdict.uncovered_primary_tiles.length === 0 &&
+          verdict.machine_outcome !== "skipped" &&
+          verdict.machine_outcome !== "incomplete"
+        ) {
+          persistPackReviewDecisions(
+            packDir,
+            opts.snapshotStore ? { root: resolve(opts.snapshotStore) } : {},
+          );
+        }
+      } catch (error) {
+        emit.error({
+          code: "review_pack_decisions_not_saved",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        process.exitCode = 1;
+        return;
+      }
       const paths = packPaths(packDir);
       mkdirSync(paths.evidenceDir, { recursive: true });
       writeFileSync(paths.verdict, `${JSON.stringify(verdict, null, 2)}\n`);

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -8,6 +9,7 @@ import { resolveBinName } from "../core/config.ts";
 import {
   CAPTURE_FIDELITY_MISMATCH_THRESHOLD,
   compareBand,
+  cropNativePng,
   decideFidelity,
   type FidelityProbe,
   pngDimensions,
@@ -44,7 +46,17 @@ import {
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
 import {
+  allocateTileBudget,
+  validatePageReviewAllocation,
+} from "../lib/browser/page-review-budget.ts";
+import {
+  PAGE_REVIEW_CAPTURE_PLAN_SCHEMA,
+  type PageReviewCapturePlan,
+  type PageReviewContextAllocation,
+} from "../lib/browser/page-review-contracts.ts";
+import {
   findPackTile,
+  gateHitsFromEnvelope,
   type PageReviewCaptureFidelity,
   type PageReviewContextRecord,
   type PageReviewExpandedTileRecord,
@@ -75,6 +87,7 @@ import {
   type BrowserSessionServer,
   startBrowserSessionServer,
 } from "../lib/browser/session-control.ts";
+import { reviewCandidateRects } from "../lib/browser/tiling.ts";
 import {
   type DiffResult,
   diffAgainstBaseline,
@@ -108,6 +121,9 @@ const DEFAULT_STORE = resolve(homedir(), ".cache", "harnery", "cookies.json");
 const FALLBACK_OUT_PREFIX = resolve(homedir(), ".cache", "harnery", "browse", "last");
 
 interface BrowseOpts {
+  reviewPackPlan?: boolean;
+  reviewPackAllocation?: string;
+  capturePlanResult?: PageReviewCapturePlan;
   out?: string;
   // Commander expands `--no-X` into `opts.x = false` (default true), not
   // `opts.noX`. So `--no-screenshot` toggles `screenshot`, `--no-full-page`
@@ -236,7 +252,7 @@ interface BrowseOpts {
   reviewPack?: string;
   reviewPackContext?: string;
   reviewPackScope?: string[];
-  reviewPackBands?: boolean;
+
   /** Re-capture ONE existing tile of --review-pack-context at --device-scale-factor. */
   reviewPackExpand?: string;
   /** Gate-hit rectangles (`x,y,w,h` strings) whose bands are captured past the tile cap. */
@@ -726,6 +742,14 @@ export function registerBrowseCommand(
         "after every browser has closed. Tiling knobs are the --check-critique-* flags.",
     )
     .option(
+      "--review-pack-plan",
+      "Emit all native capture candidates and gate associations without capturing tiles.",
+    )
+    .option(
+      "--review-pack-allocation <json-file>",
+      "Capture exactly the selected IDs in a verified context allocation.",
+    )
+    .option(
       "--review-pack-context <id>",
       "Context id inside the pack (default <viewport>-<theme>-<state> from --viewport, " +
         "--qa-theme, --qa-state).",
@@ -737,11 +761,6 @@ export function registerBrowseCommand(
       [] as string[],
     )
     .option(
-      "--no-review-pack-bands",
-      "Skip full-page bands in the pack and keep only --review-pack-scope tiles (a scoped " +
-        "visual pass).",
-    )
-    .option(
       "--review-pack-expand <tile-id>",
       "Instead of capturing a context, re-render ONE existing tile of --review-pack-context " +
         "(e.g. T012) at --device-scale-factor and write it beside the original as " +
@@ -749,9 +768,9 @@ export function registerBrowseCommand(
     )
     .option(
       "--review-pack-hit-rect <x,y,w,h>",
-      "Document-space rectangle (integer px) a deterministic gate already flagged. Every " +
-        "full-page band that contains it is captured even past --check-critique-max-tiles, " +
-        `labelled \`hit band N\` (repeatable, at most ${REVIEW_PACK_HIT_RECT_MAX}).`,
+      "Document-space rectangle (integer px) a deterministic gate already flagged. " +
+        "Intersecting bands are prioritized within the hard tile cap " +
+        `(repeatable, at most ${REVIEW_PACK_HIT_RECT_MAX}).`,
       (value: string, previous: string[] = []) => [...previous, value],
       [] as string[],
     )
@@ -815,6 +834,9 @@ async function runBrowse(
   const headed = opts.login || opts.headed;
   const viewport = parseViewport(opts.viewport ?? "desktop");
   const deviceScaleFactor = parseDeviceScaleFactor(opts.deviceScaleFactor);
+  if (opts.reviewPackAllocation && !opts.reviewPack) {
+    throw new Error("--review-pack-allocation requires --review-pack <dir>.");
+  }
   if (opts.reviewPackExpand !== undefined) {
     if (opts.reviewPack === undefined || opts.reviewPackContext === undefined) {
       throw new Error(
@@ -905,6 +927,8 @@ async function runBrowse(
       evalResult = await browser.evaluate<unknown>(opts.evaluate);
     }
 
+    if (opts.reviewPackPlan || opts.reviewPack) await browser.waitForReviewReady();
+
     // Run visibility checks AFTER any --batch interactions but BEFORE the
     // screenshot. Annotation injection happens between sampling and capture
     // so the boxes show on the saved PNG; they're cleared post-screenshot
@@ -914,7 +938,7 @@ async function runBrowse(
       visibility = await browser.checkVisibility(opts.checkVisible, {
         sampleGrid: Number.parseInt(opts.checkVisibleSampleGrid ?? "3", 10),
       });
-      if (opts.checkVisibleAnnotate !== false) {
+      if (opts.checkVisibleAnnotate !== false && !opts.reviewPackPlan && !opts.reviewPack) {
         await browser.annotateVisibility(visibility);
       }
     }
@@ -1023,6 +1047,30 @@ async function runBrowse(
             `contexts=${m.contexts.length} model-calls<=${m.predicted.model_calls_ceiling} baseline=${m.baseline_source}`,
           "info",
         );
+      }
+    }
+    if (opts.reviewPackPlan) {
+      const gateEnvelope: Record<string, unknown> = { runts, overflow, hit, ...layoutLint };
+      if (content) assignContent(gateEnvelope, content);
+      opts.capturePlanResult = await buildReviewCapturePlan(browser, opts);
+      const hits = gateHitsFromEnvelope(gateEnvelope, Number.POSITIVE_INFINITY);
+      for (const candidate of opts.capturePlanResult.candidates) {
+        const r = candidate.rect;
+        candidate.gate_hits = hits.flatMap((hit, index) => {
+          const dpr = opts.capturePlanResult!.dpr;
+          const h = {
+            x: hit.rect.x * dpr,
+            y: hit.rect.y * dpr,
+            width: Math.max(1, hit.rect.width * dpr),
+            height: Math.max(1, hit.rect.height * dpr),
+          };
+          return r.x < h.x + h.width &&
+            r.x + r.width > h.x &&
+            r.y < h.y + h.height &&
+            r.y + r.height > h.y
+            ? [{ check_id: `${hit.rule}:${index + 1}`, severity: "high" as const }]
+            : [];
+        });
       }
     }
     // Vision critique. Capture tiles BEFORE any annotation overlays are injected
@@ -1578,6 +1626,7 @@ async function runPrintMode(
     if (qaPlan) result.qaPlan = qaPlan;
     if (qaReuse) result.qaReuse = qaReuse;
     if (reviewPack) result.reviewPack = reviewPack;
+    if (opts.capturePlanResult) result.review_pack_capture_plan = opts.capturePlanResult;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
     }
@@ -1714,6 +1763,7 @@ async function runTrioMode(
   if (qaPlan) envelope.qaPlan = qaPlan;
   if (qaReuse) envelope.qaReuse = qaReuse;
   if (reviewPack) envelope.reviewPack = reviewPack;
+  if (opts.capturePlanResult) envelope.review_pack_capture_plan = opts.capturePlanResult;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
   }
@@ -2334,12 +2384,14 @@ async function expandReviewPackTile(
   const packDir = opts.reviewPack as string;
   const contextId = opts.reviewPackContext as string;
   const tileId = opts.reviewPackExpand as string;
-  const { tile } = findPackTile([readPackContext(packDir, contextId)], tileId, contextId);
+  const originalContext = readPackContext(packDir, contextId);
+  const { tile } = findPackTile([originalContext], tileId, contextId);
+  const originalDpr = originalContext.dpr;
   const region = await browser.captureRegionByScroll({
-    x: tile.x,
-    y: tile.scrollY,
-    width: tile.width,
-    height: tile.height,
+    x: tile.x / originalDpr,
+    y: tile.scrollY / originalDpr,
+    width: tile.width / originalDpr,
+    height: tile.height / originalDpr,
   });
   const { record, expanded } = writePackExpandedTile(packDir, contextId, {
     tileId,
@@ -2368,9 +2420,9 @@ async function expandReviewPackTile(
  * agree the tiles stand and the record says `full-page`; when any disagrees,
  * every band is re-cut from its scrolled capture (same rects, same ids, only
  * the pixels change) and the record says `scrolled-bands`. A probe that
- * cannot run, or a re-capture that comes back the wrong size (a page wider
- * than the viewport), keeps the full-page crop for that band and says so in a
- * warning. Runs while the capture browser is open; the judge never opens one.
+ * cannot run, or a re-capture with the wrong size, leaves a missing probe;
+ * the caller refuses to save that context. Runs while the capture browser
+ * is open; the judge never opens one.
  */
 async function reconcileCaptureFidelity(
   browser: Browser,
@@ -2388,31 +2440,23 @@ async function reconcileCaptureFidelity(
     height: tile.height / dpr,
   });
   const shots = new Map<number, Buffer | undefined>();
-  const shoot = async (position: number): Promise<Buffer | undefined> => {
-    if (shots.has(position)) return shots.get(position);
-    const tile = tiles[position] as CritiqueTile;
-    let shot: Buffer | undefined;
-    try {
-      const captured = await browser.captureRegionByScroll(cssRect(tile));
-      const size = pngDimensions(captured);
+  try {
+    const captured = await browser.captureRegionsByScroll(tiles.map(cssRect));
+    for (const [position, shot] of captured.entries()) {
+      const tile = tiles[position];
+      const size = pngDimensions(shot);
       if (Math.abs(size.width - tile.width) > 1 || Math.abs(size.height - tile.height) > 1) {
         warnings.push(
-          `review-pack: scrolled capture of ${tileId(position)} came back ` +
-            `${size.width}×${size.height} px for a ${tile.width}×${tile.height} px band; ` +
-            "its full-page crop was kept",
+          `Native scrolled capture of ${tileId(position)} has different dimensions; probe incomplete.`,
         );
-      } else {
-        shot = captured;
-      }
-    } catch (err: unknown) {
-      warnings.push(
-        `review-pack: scrolled capture of ${tileId(position)} failed ` +
-          `(${err instanceof Error ? err.message : String(err)}); its full-page crop was kept`,
-      );
+      } else shots.set(position, shot);
     }
-    shots.set(position, shot);
-    return shot;
-  };
+  } catch (error) {
+    warnings.push(
+      `Native scrolled capture failed: ${error instanceof Error ? error.message : String(error)}; probe incomplete.`,
+    );
+  }
+  const shoot = async (position: number) => shots.get(position);
   // Every band is probed. A two-band sample (top and middle) missed a raster
   // artifact that sat elsewhere on the page, and once every band has been
   // shot by scrolling, the fallback below costs nothing extra: the same shots
@@ -2452,11 +2496,93 @@ async function reconcileCaptureFidelity(
 
 /**
  * Capture this render into a page review pack: one full-page screenshot,
- * banded tiles (unless --no-review-pack-bands), one tile set per
+ * budgeted native tiles, one candidate set per
  * --review-pack-scope selector, the serialized DOM, and the QA signature —
  * all written to disk, with no vision call. The judge stage reads them back
  * once the browser is gone.
  */
+export const REVIEW_CAPTURE_RECIPE = "native-full-page-scroll-probe/v2";
+
+async function buildReviewCapturePlan(
+  browser: Browser,
+  opts: BrowseOpts,
+): Promise<PageReviewCapturePlan> {
+  await browser.currentPage.evaluate(() => document.fonts.ready);
+  const geometry = await browser.currentPage.evaluate(() => ({
+    dpr: window.devicePixelRatio || 1,
+    width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0),
+    height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+  }));
+  const { dpr } = geometry;
+  const signature = await browser.qaSignature();
+  // Attribute insertion order is serialization noise, not a source change.
+  // Parse an inert document so canonicalization cannot mutate the rendered page.
+  const canonicalDom = await browser.currentPage.evaluate((html) => {
+    const document = new DOMParser().parseFromString(html, "text/html");
+    for (const el of Array.from(document.querySelectorAll("*"))) {
+      const attrs = Array.from(el.attributes)
+        .map((a) => ({ name: a.name, value: a.value, ns: a.namespaceURI }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      for (const a of Array.from(el.attributes)) el.removeAttributeNode(a);
+      for (const a of attrs) el.setAttributeNS(a.ns, a.name, a.value);
+    }
+    return document.documentElement.outerHTML;
+  }, signature.domHtml);
+  const atoms = (await browser.visualAtoms()).map((a) => ({
+    ...a,
+    top: Math.round(a.top * dpr),
+    bottom: Math.round(a.bottom * dpr),
+  }));
+  const { band, overlap } = critiqueTilingKnobs(opts);
+  const scopes = [];
+  for (const selector of opts.reviewPackScope ?? []) {
+    const rects = (await browser.elementTiles(selector)).map((r) => ({
+      ...r,
+      x: Math.round(r.x * dpr),
+      y: Math.round(r.y * dpr),
+      width: Math.round(r.width * dpr),
+      height: Math.round(r.height * dpr),
+    }));
+    scopes.push({ selector, rects });
+  }
+  const theme = opts.qaTheme === "dark" ? "dark" : "light";
+  const viewport = opts.viewport ?? "desktop",
+    state = opts.qaState ?? "default";
+  return {
+    schema: PAGE_REVIEW_CAPTURE_PLAN_SCHEMA,
+    context_id: opts.reviewPackContext ?? `${viewport}--${theme}--${state}`,
+    viewport,
+    viewport_width: geometry.viewportWidth,
+    viewport_height: geometry.viewportHeight,
+    theme,
+    state,
+    dpr,
+    page_width: Math.round(geometry.width * dpr),
+    page_height: Math.round(geometry.height * dpr),
+    source_digest: createHash("sha256")
+      .update(
+        JSON.stringify({
+          nodes: signature.nodes,
+          stylesheets: signature.stylesheets,
+          dom: canonicalDom,
+        }),
+      )
+      .digest("hex"),
+    recipe_version: REVIEW_CAPTURE_RECIPE,
+    required_scopes: opts.reviewPackScope ?? [],
+    candidates: reviewCandidateRects({
+      width: Math.round(geometry.width * dpr),
+      height: Math.round(geometry.height * dpr),
+      bandHeight: band,
+      overlap,
+      atoms,
+      scopes,
+    }),
+  };
+}
+
 async function captureReviewPackContext(
   browser: Browser,
   targetArg: string,
@@ -2465,120 +2591,96 @@ async function captureReviewPackContext(
   qaCapture: QaCaptureState | undefined,
 ): Promise<ReviewPackReport> {
   const packDir = opts.reviewPack as string;
-  const { maxTiles, band, overlap } = critiqueTilingKnobs(opts);
-  const buffer = await browser.fullPageScreenshotBuffer();
-  let atoms: Awaited<ReturnType<Browser["visualAtoms"]>> | undefined;
-  try {
-    atoms = await browser.visualAtoms();
-  } catch {
-    atoms = undefined;
-  }
-  const tiling = { bandHeight: band, overlap, maxTiles, atoms };
-  const withBands = opts.reviewPackBands !== false;
-  // Gate-hit rectangles (qa-run lifts them from the gate stage, which runs
-  // first) pull the bands they land in past the cap; those tiles follow the
-  // kept bands as `hit band N`. Coverage still describes the kept prefix.
-  const hitRects = parseReviewPackHitRects(opts.reviewPackHitRect);
-  const banded = withBands
-    ? tilesFromFullPage(buffer, { ...tiling, hitRects, maxHitBands: REVIEW_PACK_HIT_RECT_MAX })
-    : undefined;
-  if (banded?.coverage.capped) {
-    emit.log(
-      `review-pack: page banded to the ${maxTiles}-tile cap (raise --check-critique-max-tiles for full coverage)`,
-      "warn",
+  const plan = await buildReviewCapturePlan(browser, opts);
+  let allocation: PageReviewContextAllocation;
+  if (opts.reviewPackAllocation) {
+    allocation = validatePageReviewAllocation(
+      JSON.parse(readFileSync(resolve(opts.reviewPackAllocation), "utf8")),
+      plan,
     );
-  }
-  if (banded && banded.hitBands > 0) {
-    emit.log(
-      `review-pack: ${banded.hitBands} band(s) below the tile cap captured for ${hitRects.length} gate-hit rect(s)`,
-      "info",
-    );
-  }
-  // Fidelity: prove the full-page screenshot against scrolled viewport
-  // renders while the browser is still open; on disagreement the bands are
-  // re-cut from scrolled captures (see reconcileCaptureFidelity).
-  let bandTiles = banded?.tiles ?? [];
-  let captureFidelity: PageReviewCaptureFidelity | undefined;
-  const fidelityWarnings: string[] = [];
-  if (bandTiles.length > 0) {
-    const reconciled = await reconcileCaptureFidelity(browser, bandTiles);
-    bandTiles = reconciled.tiles;
-    captureFidelity = reconciled.fidelity;
-    fidelityWarnings.push(...reconciled.warnings);
-    for (const warning of reconciled.warnings) emit.log(warning, "warn");
-    emit.log(
-      `review-pack: capture fidelity ${captureFidelity.source} ` +
-        `(${captureFidelity.probed.length} band(s) probed, ${captureFidelity.mismatched.length} mismatched)`,
-      "info",
-    );
-  }
-  const scopeTiles: Array<{ selector: string; tiles: CritiqueTile[]; coverage: CritiqueCoverage }> =
-    [];
-  for (const selector of opts.reviewPackScope ?? []) {
-    const elementRects = await browser.elementTiles(selector);
-    const scoped = tilesFromFullPage(buffer, { ...tiling, elementRects });
-    if (elementRects.length > maxTiles) {
-      emit.log(
-        `review-pack: ${elementRects.length} elements matched ${selector}, capped to ${maxTiles} tiles`,
-        "warn",
+  } else {
+    // Standalone capture retains its 24-tile default; it still obeys one hard total.
+    const maxTiles = critiqueTilingKnobs(opts).maxTiles;
+    const hits = parseReviewPackHitRects(opts.reviewPackHitRect);
+    for (const c of plan.candidates) {
+      c.gate_hits = hits.flatMap((h, i) =>
+        c.rect.x < (h.x + h.width) * plan.dpr &&
+        c.rect.x + c.rect.width > h.x * plan.dpr &&
+        c.rect.y < (h.y + h.height) * plan.dpr &&
+        c.rect.y + c.rect.height > h.y * plan.dpr
+          ? [{ check_id: `hit:${i + 1}`, severity: "high" as const }]
+          : [],
       );
     }
-    scopeTiles.push({ selector, tiles: scoped.tiles, coverage: scoped.coverage });
+    allocation = allocateTileBudget([plan], maxTiles).contexts[0];
   }
-  // Coverage: the bands when present, else the scopes folded together
-  // (heights worst-case, band counts add, capped sticky).
-  let coverage: CritiqueCoverage | undefined = banded?.coverage;
-  if (!coverage) {
-    for (const scope of scopeTiles) {
-      coverage = coverage
-        ? {
-            page_height_px: Math.max(coverage.page_height_px, scope.coverage.page_height_px),
-            reviewed_height_px: Math.min(
-              coverage.reviewed_height_px,
-              scope.coverage.reviewed_height_px,
-            ),
-            bands_total: coverage.bands_total + scope.coverage.bands_total,
-            bands_reviewed: coverage.bands_reviewed + scope.coverage.bands_reviewed,
-            capped: coverage.capped || scope.coverage.capped,
-          }
-        : scope.coverage;
+  const start = performance.now();
+  const buffer = await browser.fullPageScreenshotBuffer();
+  const size = pngDimensions(buffer);
+  if (size.width !== plan.page_width || size.height !== plan.page_height)
+    throw new Error("Page review image geometry changed after planning; rerun the review.");
+  const decoded = PNG.sync.read(buffer);
+  const fullPageMs = performance.now() - start;
+  const byId = new Map(plan.candidates.map((c) => [c.id, c]));
+  const selected = allocation.selected_ids.map((id) => byId.get(id)!);
+  const cropStart = performance.now();
+  const tiles: CritiqueTile[] = selected.map((c, index) => ({
+    index,
+    label: c.label,
+    x: c.rect.x,
+    scrollY: c.rect.y,
+    width: c.rect.width,
+    height: c.rect.height,
+    pngBase64: cropNativePng(decoded, c.rect).toString("base64"),
+  }));
+  const cropMs = performance.now() - cropStart;
+  const probeStart = performance.now();
+  const reconciled = await reconcileCaptureFidelity(browser, tiles);
+  const probeMs = performance.now() - probeStart;
+  if (reconciled.fidelity.probed.length !== tiles.length)
+    throw new Error(
+      "Page review native fidelity probe incomplete; no context was saved. " +
+        reconciled.warnings.join("; "),
+    );
+  const bandTiles: CritiqueTile[] = [];
+  const scopes = new Map<string, CritiqueTile[]>();
+  for (const [index, c] of selected.entries()) {
+    const tile = reconciled.tiles[index];
+    if (!c.scope) bandTiles.push(tile);
+    else {
+      const group = scopes.get(c.scope) ?? [];
+      group.push(tile);
+      scopes.set(c.scope, group);
     }
   }
-  const page = await browser.currentPage.evaluate(() => ({
-    width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0),
-    height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
-  }));
   const capture = qaCapture ?? (await captureQaState(browser, targetArg, navResult.url, opts));
   const record = writePackContext(packDir, {
-    context: {
-      ...capture.context,
-      ...(opts.reviewPackContext ? { id: opts.reviewPackContext } : {}),
-    },
+    context: { ...capture.context, id: plan.context_id },
     url: navResult.url,
     title: navResult.title,
     fullPage: buffer,
-    pageWidth: page.width,
-    pageHeight: page.height,
+    pageWidth: plan.page_width / plan.dpr,
+    pageHeight: plan.page_height / plan.dpr,
     tiles: bandTiles,
-    coverage: coverage ?? {
-      page_height_px: page.height,
-      reviewed_height_px: 0,
-      bands_total: 0,
-      bands_reviewed: 0,
-      capped: false,
-    },
-    scopeTiles: scopeTiles.map(({ selector, tiles }) => ({ selector, tiles })),
+    coverage: allocation.coverage,
+    scopeTiles: [...scopes].map(([selector, tiles]) => ({ selector, tiles })),
     signature: capture.signature,
     domHtml: capture.domHtml,
-    ...(captureFidelity ? { captureFidelity } : {}),
-    hitBands: banded?.hitBands ?? 0,
+    captureFidelity: reconciled.fidelity,
+    viewportSize: { width: plan.viewport_width, height: plan.viewport_height },
+    dpr: plan.dpr,
+    recipeVersion: plan.recipe_version,
+    allocationCoverage: allocation.coverage,
+    capturePlan: allocation.plan,
+    hitBands: 0,
   });
+  const warnings = [...reconciled.warnings];
+  if (allocation.coverage.capped)
+    warnings.push(
+      `Review coverage is incomplete: ${allocation.coverage.uncovered_intervals.length} uncovered intervals and ${allocation.coverage.omitted_scopes.length} omitted scopes.`,
+    );
   emit.log(
-    `review-pack: ${record.id} → ${record.tiles.length} tile(s)` +
-      (record.scopes.length > 0
-        ? ` (${record.scopes.map((s) => `${s.selector}: ${s.tiles}`).join(", ")})`
-        : "") +
-      ` written to ${packDir}`,
+    `review-pack: ${record.id} captured ${record.tiles.length} tiles; full-page ${Math.round(fullPageMs)} ms, crop ${Math.round(cropMs)} ms, native probe ${Math.round(probeMs)} ms`,
     "info",
   );
   return {
@@ -2588,9 +2690,8 @@ async function captureReviewPackContext(
     scopes: record.scopes,
     coverage: record.coverage,
     files: record.files,
-    ...(record.hit_bands !== undefined ? { hit_bands: record.hit_bands } : {}),
-    ...(record.capture_fidelity ? { capture_fidelity: record.capture_fidelity } : {}),
-    ...(fidelityWarnings.length > 0 ? { warnings: fidelityWarnings } : {}),
+    capture_fidelity: reconciled.fidelity,
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 
@@ -2735,7 +2836,7 @@ async function waitForTerminalEnter(signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Upper bound on --review-pack-hit-rect values (and on hit bands cut past the cap). */
+/** Upper bound on manually supplied --review-pack-hit-rect values. */
 const REVIEW_PACK_HIT_RECT_MAX = 50;
 
 /** `x,y,w,h` integer rectangles from repeated --review-pack-hit-rect flags. */

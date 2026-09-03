@@ -625,6 +625,28 @@ export class Browser {
     return await this.currentPage.screenshot({ type: "png", fullPage: true });
   }
 
+  /** Wait for font-driven DOM/layout initialization, with a bounded convergence check. */
+  async waitForReviewReady(): Promise<void> {
+    const settled = await this.currentPage.evaluate(async () => {
+      await document.fonts.ready;
+      let previous = "";
+      let consecutive = 0;
+      for (let frame = 0; frame < 120; frame++) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        const geometry = `${document.documentElement.scrollWidth},${document.documentElement.scrollHeight},${document.body?.scrollWidth},${document.body?.scrollHeight}`;
+        const current = geometry + document.documentElement.outerHTML;
+        consecutive = current === previous ? consecutive + 1 : 0;
+        if (consecutive >= 8) return true;
+        previous = current;
+      }
+      return false;
+    });
+    if (!settled)
+      throw new Error(
+        "Page review source or layout did not settle; rerun when page initialization completes.",
+      );
+  }
+
   /** Base64 PNG of a document-space clip rect. Used to capture one critique tile. */
   async screenshotClipBase64(rect: {
     x: number;
@@ -670,12 +692,22 @@ export class Browser {
     width: number;
     height: number;
   }): Promise<Buffer> {
+    const [image] = await this.captureRegionsByScroll([rect]);
+    return image;
+  }
+
+  /** Capture a document-ordered group with one pinned-element inventory and restore. */
+  async captureRegionsByScroll(
+    rects: Array<{ x: number; y: number; width: number; height: number }>,
+  ): Promise<Buffer[]> {
+    if (!rects.length) return [];
     const page = this.currentPage;
-    if (!(rect.width > 0) || !(rect.height > 0)) {
-      throw new Error(
-        `captureRegionByScroll: rect must have a positive size (got ${rect.width}×${rect.height})`,
-      );
-    }
+    for (const rect of rects)
+      if (!(rect.width > 0) || !(rect.height > 0)) {
+        throw new Error(
+          `captureRegionByScroll: rect must have a positive size (got ${rect.width}×${rect.height})`,
+        );
+      }
     const settle = (top: number) =>
       page.evaluate(async (target: number) => {
         window.scrollTo({ left: window.scrollX, top: target, behavior: "instant" });
@@ -695,7 +727,7 @@ export class Browser {
         };
       }, top);
     const original = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
-    const pieces: Buffer[] = [];
+    const captures: Buffer[] = [];
     // Viewport-pinned candidates, measured at scroll 0 so each later capture
     // can tell "still where the full page shows it" from "riding along".
     await settle(0);
@@ -735,7 +767,11 @@ export class Browser {
         async ([entries, action]) => {
           for (const entry of entries) {
             const restore = () => {
+              // Restore opacity while transitions are still disabled. Restoring both
+              // declarations in one style flush starts a new fade from zero.
+              entry.el.style.setProperty("transition", "none", "important");
               entry.el.style.setProperty("opacity", entry.priorOpacity, entry.priorOpacityPriority);
+              void getComputedStyle(entry.el).opacity;
               entry.el.style.setProperty(
                 "transition",
                 entry.priorTransition,
@@ -760,41 +796,45 @@ export class Browser {
         [pinned, mode] as const,
       );
     try {
-      const bottom = rect.y + rect.height;
-      let cursor = rect.y;
-      let first = true;
-      while (cursor < bottom) {
-        const remaining = bottom - cursor;
-        // Top-align the piece; a final partial piece is then re-anchored to
-        // the viewport bottom once the viewport height is known.
-        let view = await settle(cursor);
-        if (!first && remaining < view.innerHeight) {
-          view = await settle(Math.max(0, bottom - view.innerHeight));
-        }
-        await syncPinned("hide-moved");
-        const offset = cursor - view.scrollY;
-        if (offset < 0 || offset >= view.innerHeight) {
-          throw new Error(
-            `captureRegionByScroll: document y ${cursor} is not reachable in the viewport ` +
-              `(scrollY ${view.scrollY}, innerHeight ${view.innerHeight})`,
+      for (const rect of rects) {
+        const pieces: Buffer[] = [];
+        const bottom = rect.y + rect.height;
+        let cursor = rect.y;
+        let first = true;
+        while (cursor < bottom) {
+          const remaining = bottom - cursor;
+          // Top-align the piece; a final partial piece is then re-anchored to
+          // the viewport bottom once the viewport height is known.
+          let view = await settle(cursor);
+          if (!first && remaining < view.innerHeight) {
+            view = await settle(Math.max(0, bottom - view.innerHeight));
+          }
+          await syncPinned("hide-moved");
+          const offset = cursor - view.scrollY;
+          if (offset < 0 || offset >= view.innerHeight) {
+            throw new Error(
+              `captureRegionByScroll: document y ${cursor} is not reachable in the viewport ` +
+                `(scrollY ${view.scrollY}, innerHeight ${view.innerHeight})`,
+            );
+          }
+          const pieceHeight = Math.min(remaining, view.innerHeight - offset);
+          const clipX = Math.max(0, rect.x - view.scrollX);
+          const clipWidth = Math.min(rect.width, view.innerWidth - clipX);
+          if (!(clipWidth > 0)) {
+            throw new Error(
+              `captureRegionByScroll: document x ${rect.x} is outside the viewport (innerWidth ${view.innerWidth})`,
+            );
+          }
+          pieces.push(
+            await page.screenshot({
+              type: "png",
+              clip: { x: clipX, y: offset, width: clipWidth, height: pieceHeight },
+            }),
           );
+          cursor += pieceHeight;
+          first = false;
         }
-        const pieceHeight = Math.min(remaining, view.innerHeight - offset);
-        const clipX = Math.max(0, rect.x - view.scrollX);
-        const clipWidth = Math.min(rect.width, view.innerWidth - clipX);
-        if (!(clipWidth > 0)) {
-          throw new Error(
-            `captureRegionByScroll: document x ${rect.x} is outside the viewport (innerWidth ${view.innerWidth})`,
-          );
-        }
-        pieces.push(
-          await page.screenshot({
-            type: "png",
-            clip: { x: clipX, y: offset, width: clipWidth, height: pieceHeight },
-          }),
-        );
-        cursor += pieceHeight;
-        first = false;
+        captures.push(stitchPngRows(pieces));
       }
     } finally {
       try {
@@ -808,7 +848,7 @@ export class Browser {
         );
       }
     }
-    return stitchPngRows(pieces);
+    return captures;
   }
 
   /** Document-space rects + labels for each element matching `selector` (semantic tiling). */

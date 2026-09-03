@@ -9,18 +9,22 @@
 //
 // Toolkit tier: this module must not import src/core (layering check).
 
-import { readFileSync } from "node:fs";
 import type { CritiqueFinding, CritiqueProvider, CritiqueTile } from "./critique.js";
+import type { PageReviewNativeEvidence } from "./page-review-contracts.js";
+import {
+  buildPackNativeEvidence,
+  PAGE_REVIEW_CRITIQUE_SCHEMA,
+  planNativeTileReuse,
+} from "./page-review-evidence.js";
 import {
   listPackContexts,
   type PageReviewContextRecord,
   type PageReviewCritiqueRecord,
   readPackContext,
-  readPackFullPage,
   readPackTiles,
 } from "./page-review-pack.js";
 import type { QaContext } from "./qa-plan.js";
-import { type CritiqueReusePlan, planCritiqueReuse } from "./qa-reuse.js";
+import type { CritiqueReusePlan } from "./qa-reuse.js";
 import { loadQaSnapshot, type QaSnapshotStoreOptions } from "./qa-snapshot.js";
 
 export interface JudgePageReviewPackOptions {
@@ -100,7 +104,7 @@ export function tileRubricPreamble(record: PageReviewContextRecord, tileId: stri
       .sort((a, b) => a.scrollY - b.scrollY || a.index - b.index);
     const n = bands.findIndex((entry) => entry.id === tile.id);
     const capped = record.coverage.capped
-      ? ` (the page has ${record.coverage.bands_total} bands; those past the cap are not in this pack)`
+      ? ` (the page has ${record.coverage.bands_total} bands; unselected bands are not in this pack)`
       : "";
     lines.push(
       `Tile ${tile.id}: band ${n + 1} of ${bands.length}${capped}, ` +
@@ -114,7 +118,9 @@ export function tileRubricPreamble(record: PageReviewContextRecord, tileId: stri
       overlaps.push(
         above > 0
           ? `its top ${above} px repeat the bottom of ${prev.id}`
-          : `it starts where ${prev.id} ends, with no overlap`,
+          : prev.scrollY + prev.height === top
+            ? `it starts where ${prev.id} ends, with no overlap`
+            : `an unreviewed gap of ${top - prev.scrollY - prev.height} px separates it from ${prev.id}`,
       );
     }
     if (next) {
@@ -122,7 +128,9 @@ export function tileRubricPreamble(record: PageReviewContextRecord, tileId: stri
       overlaps.push(
         below > 0
           ? `its bottom ${below} px repeat the top of ${next.id}`
-          : `it ends where ${next.id} starts, with no overlap`,
+          : bottom === next.scrollY
+            ? `it ends where ${next.id} starts, with no overlap`
+            : `an unreviewed gap of ${next.scrollY - bottom} px separates it from ${next.id}`,
       );
     }
     if (overlaps.length > 0) {
@@ -136,15 +144,15 @@ export function tileRubricPreamble(record: PageReviewContextRecord, tileId: stri
     lines.push("This tile covers the whole page height.");
   } else if (touchesTop) {
     lines.push(
-      "This tile touches the page top; content cut at its bottom edge continues in the next band.",
+      "This tile touches the page top; the capture continues below its bottom edge, which alone does not prove clipping.",
     );
   } else if (touchesBottom) {
     lines.push(
-      "This tile touches the page bottom; content cut at its top edge continues in the previous band.",
+      "This tile touches the page bottom; the capture continues above its top edge, which alone does not prove clipping.",
     );
   } else {
     lines.push(
-      "This tile is interior: content cut at its top and bottom edges continues in the neighbouring bands.",
+      "This tile is interior: the page continues beyond both edges. Use document positions to distinguish overlapping bands from unreviewed gaps.",
     );
   }
   const source = record.capture_fidelity?.source ?? "full-page";
@@ -191,48 +199,51 @@ export async function judgePageReviewPack(
     review: Array<CritiqueTile & { id: string }>;
     reuse?: CritiqueReusePlan;
     findings: Array<CritiqueFinding & { tile_id: string }>;
+    evidence: PageReviewNativeEvidence;
     judged: Set<string>;
   }> = records.map((record) => {
     const tiles = readPackTiles(packDir, record);
     let review = tiles;
     let reuse: CritiqueReusePlan | undefined;
-    // Reuse only for unscoped captures: scope tiles share tiler indices with
-    // the bands, and a mixed set would mis-associate baseline findings.
-    // Never for a scrolled-bands context: its tiles were cut from scrolled
-    // viewport captures, not from the full-page PNG the band diff compares.
-    const scrolled = record.capture_fidelity?.source === "scrolled-bands";
-    if (options.reuse && provider && scrolled) {
-      log(`judge ${record.id}: band-diff reuse skipped (tiles came from scrolled bands)`);
-    }
-    if (options.reuse && provider && record.scopes.length === 0 && !scrolled) {
+    const evidence = buildPackNativeEvidence(record, tiles, rubric);
+    record.evidence_context = evidence.context;
+    if (
+      options.reuse &&
+      provider &&
+      record.scopes.length === 0 &&
+      !record.capture_incomplete &&
+      !record.coverage.capped
+    ) {
       const context: QaContext = {
         viewport: record.viewport,
         theme: record.theme,
         state: record.state,
       };
       const stored = loadQaSnapshot(options.reuse.target, context, options.reuse.store ?? {});
-      if (stored?.screenshotPath && stored.critique) {
-        reuse = planCritiqueReuse({
-          baselineScreenshot: readFileSync(stored.screenshotPath),
-          baselineCritique: stored.critique,
-          currentScreenshot: readPackFullPage(packDir, record),
-          tiles,
-          rubric,
-          ...(options.reuse.mismatchThreshold !== undefined
-            ? { mismatchThreshold: options.reuse.mismatchThreshold }
-            : {}),
-        });
-        const keep = new Set(reuse.review.map((tile) => tile.index));
-        // planCritiqueReuse returns CritiqueTile objects; re-attach ids by
-        // tiler index so the pool cites the pack's stable tile ids.
-        review = tiles.filter((tile) => keep.has(tile.index));
-        log(
-          `judge ${record.id}: ${reuse.tiles_reused}/${reuse.tiles_total} tiles reused (band-diff)` +
-            (reuse.invalidation ? ` — ${reuse.invalidation}` : ""),
-        );
-      }
+      reuse = planNativeTileReuse({
+        current: evidence,
+        baseline: stored?.tileEvidence,
+        critique: stored?.critique,
+        tiles,
+        ...(options.reuse.mismatchThreshold !== undefined
+          ? { mismatchThreshold: options.reuse.mismatchThreshold }
+          : {}),
+      });
+      review = tiles.filter((_, i) => !reuse?.decisions[i]?.reuse);
+      log(
+        `judge ${record.id}: ${reuse.tiles_reused}/${reuse.tiles_total} tiles reused (band-diff)` +
+          (reuse.invalidation ? ` — ${reuse.invalidation}` : ""),
+      );
     }
-    return { record, tiles, review, ...(reuse ? { reuse } : {}), findings: [], judged: new Set() };
+    return {
+      record,
+      tiles,
+      review,
+      evidence,
+      ...(reuse ? { reuse } : {}),
+      findings: [],
+      judged: new Set(),
+    };
   });
 
   const work: WorkItem[] = [];
@@ -297,7 +308,7 @@ export async function judgePageReviewPack(
       ? "skipped"
       : findings.some((f) => f.severity === "high")
         ? "fail"
-        : unjudged > 0
+        : unjudged > 0 || entry.record.capture_incomplete
           ? "incomplete"
           : "pass";
     return {
@@ -317,6 +328,11 @@ export async function judgePageReviewPack(
               "no critiqueProvider injected by the host (see HarneryProgramContext.critiqueProvider)",
           }),
       record: entry.record,
+      evidence: {
+        schema: PAGE_REVIEW_CRITIQUE_SCHEMA,
+        context: entry.evidence.context,
+        tiles: entry.evidence.tiles.map(({ png: _png, ...tile }) => tile),
+      },
       ...(entry.reuse
         ? {
             reuse: {

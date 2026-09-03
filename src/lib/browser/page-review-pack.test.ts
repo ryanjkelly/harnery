@@ -74,6 +74,9 @@ function capture(overrides: Partial<PageReviewContextCapture> = {}): PageReviewC
     url: "http://localhost:4276/page",
     title: "Fixture",
     fullPage: png(64, 128),
+    viewportSize: { width: 64, height: 128 },
+    dpr: 1,
+    recipeVersion: "fixture/v2",
     pageWidth: 64,
     pageHeight: 128,
     tiles: tiles(3),
@@ -217,7 +220,7 @@ describe("finalizePageReviewPack", () => {
     expect(review).toContain("[T001](contexts/desktop-light-default/tiles/T001.png)");
   });
 
-  test("a second finalize after the judge keeps a reviewer's findings and adds machine findings to the plan", () => {
+  test("the first judge archives a pre-judge review and adds machine findings to the plan", () => {
     const dir = packDir();
     const desktop = writePackContext(dir, capture({ tiles: tiles(5) }));
     const base = {
@@ -262,8 +265,15 @@ describe("finalizePageReviewPack", () => {
       pool: { concurrency: 8, wall_time_ms: 1234, provider: "claude-code" },
     });
     const kept = JSON.parse(readFileSync(join(dir, "findings.json"), "utf8"));
-    expect(kept.reviewer).toBe("agent-test");
-    expect(kept.findings).toHaveLength(1);
+    expect(kept.reviewer).toBeNull();
+    expect(kept.findings).toHaveLength(0);
+    const history = readdirSync(join(dir, "review-history"));
+    expect(history).toHaveLength(1);
+    const archived = JSON.parse(
+      readFileSync(join(dir, "review-history", history[0]!, "findings.json"), "utf8"),
+    );
+    expect(archived.reviewer).toBe("agent-test");
+    expect(archived.findings).toHaveLength(1);
     const manifest = readPackManifest(dir);
     expect(manifest.pool?.concurrency).toBe(8);
     expect(existsSync(join(dir, "evidence", "critique.json"))).toBe(true);
@@ -944,10 +954,7 @@ describe("hit bands", () => {
     expect(ctx?.primary_tiles.map((t) => [t.id, t.reason])).toEqual([
       ["T001", "page top: header, navigation, first fold"],
       ["T002", "page bottom: footer and final call to action"],
-      [
-        "T003",
-        "hit band: captured past the tile cap for a gate hit; gate hit (overflow): div.wide",
-      ],
+      ["T003", "hit band: selected for a gate hit; gate hit (overflow): div.wide"],
       ["T004", "scoped tile for #side"],
     ]);
 
@@ -960,7 +967,7 @@ describe("hit bands", () => {
     });
     const manifest = readPackManifest(dir);
     expect(manifest.warnings).toContain(
-      `${record.id}: 1 band(s) below the tile cap were captured because gate hits land in them.`,
+      `${record.id}: 1 band(s) were selected because gate hits land in them.`,
     );
     const review = readFileSync(join(dir, "review.md"), "utf8");
     expect(review).toContain("| Tile | Label | Kind | Scope |");
@@ -981,9 +988,9 @@ describe("hit bands", () => {
       contexts: [record],
       critique: null,
     });
-    expect(readPackManifest(dir).warnings.some((w) => w.includes("below the tile cap"))).toBe(
-      false,
-    );
+    expect(
+      readPackManifest(dir).warnings.some((w) => w.includes("because gate hits land in them")),
+    ).toBe(false);
   });
 });
 

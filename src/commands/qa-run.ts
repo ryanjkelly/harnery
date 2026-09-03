@@ -44,6 +44,8 @@ interface QaRunOpts {
   mode: string;
   concurrency?: string;
   pool?: string;
+  tileBudget?: string;
+  acceptDispositions?: boolean;
   allowMetered?: boolean;
   retain?: string;
   outDir?: string;
@@ -90,6 +92,14 @@ export function registerQaRunCommand(
       "--pool <n>",
       "Vision calls in flight during the judge stage, across every context (1-16; default: " +
         "the provider's own concurrency). Sets policy.critique_pool.",
+    )
+    .option(
+      "--tile-budget <n>",
+      "Maximum native tiles across the complete review pack (8-400; default 96).",
+    )
+    .option(
+      "--accept-dispositions",
+      "Apply fully reviewed prior decisions only to identical findings on identical native tiles.",
     )
     .option(
       "--allow-metered",
@@ -208,6 +218,19 @@ export function registerQaRunCommand(
       }
 
       const policy = { ...validation.job.policy };
+      if (opts.tileBudget !== undefined) {
+        const n = Number(opts.tileBudget);
+        if (!Number.isInteger(n) || n < 8 || n > 400) {
+          emit.error({
+            code: "qa_run_invalid_tile_budget",
+            message: "--tile-budget must be an integer between 8 and 400",
+          });
+          process.exitCode = 1;
+          return;
+        }
+        policy.critique_tile_budget = n;
+      }
+      if (opts.acceptDispositions) policy.accept_dispositions = true;
       if (opts.concurrency !== undefined) {
         const n = Number.parseInt(opts.concurrency, 10);
         if (!Number.isInteger(n) || n < 1 || n > 8) {
@@ -347,6 +370,8 @@ export function registerQaRunCommand(
           job.mode,
           ...(opts.concurrency !== undefined ? ["--concurrency", opts.concurrency] : []),
           ...(opts.pool !== undefined ? ["--pool", opts.pool] : []),
+          ...(opts.tileBudget !== undefined ? ["--tile-budget", opts.tileBudget] : []),
+          ...(opts.acceptDispositions ? ["--accept-dispositions"] : []),
           ...(opts.allowMetered ? ["--allow-metered"] : []),
           ...(opts.retain !== undefined ? ["--retain", opts.retain] : []),
           "--out-dir",

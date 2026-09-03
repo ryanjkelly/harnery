@@ -33,8 +33,7 @@ Renders each context once through child [`harn browse --review-pack`](/cli/brows
 | `--out <dir>` | Pack directory. Default: a managed workspace under `.harnery/artifacts/`. |
 | `--context <spec>` | Rendering context `<viewport>[:<theme>[:<state>]]`, repeatable. Default: desktop and mobile, light and dark. |
 | `--scope <selector>` | Also tile one screenshot per element matching the selector (repeatable). |
-| `--no-bands` | Keep only `--scope` tiles; skip full-page bands. |
-| `--max-tiles <n>` | Full-page band cap per context (default 24). Coverage records what was kept. |
+| `--max-tiles <n>` | Tile ceiling per context (default 96), including scopes and gate-hit priorities. Page edges remain required. Use `qa-run --tile-budget` for one shared budget across the complete matrix. |
 | `--concurrency <n>` | Concurrent capture browsers (1–8; default 2). |
 | `--timeout <ms>` | Per-capture timeout (default 120000). |
 | `--retain <minutes>` | Minutes until the pack expires and is deleted (default 90). |
@@ -42,9 +41,9 @@ Renders each context once through child [`harn browse --review-pack`](/cli/brows
 
 Exit 0 when every context was captured; 4 when at least one capture failed (the pack still holds the others and names the gap under warnings); 1 for usage errors.
 
-**Capture fidelity.** A full-page screenshot of a very tall page can differ from what a scrolling reader sees (a blank block where content should be, a callout cut mid-sentence). While its browser is still open, each capture re-shoots two probe bands (the top band and the middle band) by scrolling to them and compares the result with the same region of the full-page screenshot, using the band-diff mismatch threshold. When the probes agree, the tiles come from the full-page screenshot and the context records `capture_fidelity.source: "full-page"`. When a probe disagrees, every band is re-captured by scrolling, the tiles are cut from those captures instead, the record says `"scrolled-bands"`, and `review.md` carries a coverage warning. Band-diff reuse is skipped for a scrolled-bands context because its full-page PNG is no longer what the tiles came from.
+**Capture fidelity.** A full-page screenshot can differ from what a scrolling reader sees. Each capture compares native scrolled probes with the corresponding full-page regions. Agreement allows full-page tiles; disagreement selects scrolled bands and records `capture_fidelity.source: "scrolled-bands"`. A missing probe or incomplete fallback cannot establish a pass. Coarse images are diagnostic only. Snapshot reuse compares the saved native tiles, including valid scrolled tiles, within the same context, DPR, capture recipe, rubric, and critique version. The half-size overview never serves as native evidence.
 
-**Gate-hit bands.** When [`harn qa-run`](/cli/qa-run/) captures a context, it passes every rectangle its deterministic gates recorded (`browse --review-pack-hit-rect`). A band that contains one of those rectangles is captured even when it lies below the tile cap, labelled `hit band <n>` with `kind: "hit-band"`, so an assigned review subagent opens the tile that shows the overflow or the runt instead of reading "no tile covers this rect". Coverage still reports the regular band prefix honestly; `hit_bands` on the context record counts the extras.
+**Tile selection.** [`harn qa-run`](/cli/qa-run/) plans every context before capture, reserves page edges, prioritizes candidates containing gate findings, and distributes remaining slots by uncovered height. Scopes consume the same total. Capture validates and follows the exact allocation, with no extra gate-hit path. Coverage records native rectangles, the union of reviewed intervals, gaps, and omitted gate hits or scopes. A failed deterministic gate stays failed even when its tile cannot fit.
 
 ## `judge <dir>`
 
@@ -73,15 +72,17 @@ The reviewer half of the loop is delegated. The coordinating agent assigns every
 | `disposition <dir> <context>/<tile>#<n> <disposition> [--note <text>] [--by <name>]` | Record a verdict on one machine finding: `confirmed`, `artifact`, `not-a-defect`, or `duplicate-of-gate`. `<n>` is the finding's 0-based position among that tile's findings in `evidence/critique.json`. A target that does not exist is refused; a repeat replaces the earlier disposition. |
 | `verdict <dir> [--json]` | Compute the reviewed outcome and write `evidence/verdict.json` (`harnery-page-review-verdict/v2`), then refresh `review.md` with a "Reviewed outcome" section. A machine `high` counts unless dismissed; a review-subagent finding of severity `critical` or `high` counts. Missing completed subagent coverage for any primary tile keeps the outcome `incomplete`. Exit 2 on `fail`, 4 on `incomplete` or `skipped`, 1 on validation errors. |
 
-The reviewed outcome does not change what `qa-run` calls `passed`; it is the reviewer's record, reported beside the machine outcome.
+The reviewed outcome remains separate from the machine outcome. Later QA runs apply saved decisions only when disposition acceptance is explicitly enabled.
+
+`disposition <dir> <disposition> --all-high --context <id>` applies one decision to every machine high in that context. Every target is validated before any write. Reviewer identity defaults to the current agent at the CLI boundary; `--by` overrides it. A bulk decision still requires actual review of the findings it covers.
 
 ## `list`, `show`, `clean`
 
 | Command | Description |
 | --- | --- |
 | `list [--root <dir>] [--json]` | Every pack under the artifact store (or `--root`): path, age, size, contexts, machine outcome, reviewed outcome when a verdict exists, expiry, and whether it has expired. |
-| `show <dir> [--json]` | One pack's context table and finding counts from `manifest.json`, without opening `review.md`. |
-| `clean [--root <dir>] [--yes] [--include-unmanaged] [--json]` | Preview the expired packs under the store and, with `--yes`, delete them. Deletion empties the pack directory (keeping only a workspace's own artifact manifest) and writes `pack-expired.json`. A pack without `retention.managed: true` is skipped unless `--include-unmanaged` is passed. Hosts can run this sweep automatically before each `qa-run` and `review-pack create` by setting `review_pack.auto_clean: true` in the harnery config; it ships off. |
+| `show <dir> [--json]` | One live pack's context table and finding counts, or the retained summary from `pack-expired.json`. |
+| `clean [--root <dir>] [--yes] [--include-unmanaged] [--json]` | Preview the expired packs under the store and, with `--yes`, delete them. Deletion empties the pack directory (keeping only a workspace's own artifact manifest) and writes `pack-expired.json`. A pack without `retention.managed: true` is skipped unless `--include-unmanaged` is passed. Hosts can enable this sweep before `qa-run` and `review-pack create` with `review_pack.auto_clean: true`; it ships off. That setting also adds pack previews to `artifacts clean` and pack deletion to `artifacts clean --yes`. Artifact holds still protect pack payloads. |
 
 ## `expand <dir> --tile <id>`
 
@@ -102,7 +103,7 @@ Exit 0 when the region was written; 1 when the pack, context, or tile does not e
 ```
 <pack>/
   review.md                  # start here: protocol, contexts, coverage, findings, inspection plan
-  manifest.json              # harnery-page-review/v1; carries retention.expires_at and size_bytes
+  manifest.json              # harnery-page-review/v2; carries retention.expires_at and size_bytes
   findings.json              # delegated output (harnery-page-review-findings/v3): reviews + findings + dispositions
   findings.schema.json
   evidence/
@@ -113,14 +114,22 @@ Exit 0 when the region was written; 1 when the pack, context, or tile does not e
     index.json  files.json   # small map, complete inventory
   contexts/<context-id>/
     context.json             # viewport, theme, state, url, page size, coverage, capture_fidelity, tile records
-    full-page.png            # orientation only; tiles are the evidence
+    full-page.png            # half-size orientation (full_page_scale: 0.5); native tiles are evidence
     contacts.png             # every tile downscaled into one grid, ids stamped (orientation only)
     tiles/T001.png …         # native-pixel tiles, ids stable within the context (bands, hit bands, scopes)
     tiles/T012@2x.png        # one region re-captured at 2× (review-pack expand), optional
     tiles.json  dom.html.gz  signature.json
 ```
 
-After expiry the directory holds only `pack-expired.json`.
+After expiry the directory holds only `pack-expired.json`, plus a workspace manifest when present. The stub retains finding counts and the reviewed result, or `result: null` when no verdict existed. It cannot support another image review.
+
+Version 1 packs require recapture. The reader refuses them rather than inventing native context metadata. Older cached critique cannot satisfy native-tile reuse.
+
+`verdict` also saves the latest complete review in a separate `review-decisions.json` snapshot slot for each canonical target and context. The slot contains finding text, exact pixel and geometry digests, reviewer provenance, and version metadata; it contains no images or expired pack links. Baseline writes preserve it. The command validates delegated coverage and binding to the current machine evidence before saving, and a persistence failure fails the command. A fully reviewed failed outcome can be saved; an incomplete review cannot.
+
+If a new judge result changes the machine evidence, the pack archives its prior findings, critique, inspection plan, and verdict under `review-history/` and starts an empty review bound to the new result. An unchanged judge result keeps the existing review. If archiving fails, the prior review remains intact and the command fails.
+
+Subsequent QA runs can use these decisions only with `policy.accept_dispositions: true` or `--accept-dispositions`. Acceptance is off by default. Only `artifact` and `not-a-defect` match across runs, and only when the normalized finding text, severity, category, native geometry, pixels, and context versions all match. The result retains every machine finding and lists applied dismissals separately.
 
 Tile ids are `T001…` per context, bands first and then each scope's tiles in selector order; a finding cites `<context-id>/<tile-id>`. Every tile record carries its SHA-256, and the judge refuses a tile whose bytes no longer match, so a pack cannot be edited under a verdict.
 

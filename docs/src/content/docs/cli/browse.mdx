@@ -374,7 +374,8 @@ open, through the same host-injected provider `--check-critique` uses.
 | `--review-pack <dir>` | Write this render into the pack at `<dir>`. Pair with `--no-screenshot`: the pack holds the full-page image. |
 | `--review-pack-context <id>` | Context id inside the pack (default `<viewport>-<theme>-<state>` from `--viewport`, `--qa-theme`, `--qa-state`). |
 | `--review-pack-scope <selector>` | Also tile one screenshot per matching element (repeatable). Scope tiles follow the full-page bands in the tile order. |
-| `--no-review-pack-bands` | Keep only scope tiles; skip full-page bands (a scoped visual pass). |
+| `--review-pack-plan` | Emit all native tile candidates and stable capture metadata without capturing the pack. Known gate failures still emit a plan. |
+| `--review-pack-allocation <file>` | Capture exactly the selected IDs from a validated context allocation. Source or geometry changes require a new plan. Page edges remain required. |
 | `--review-pack-hit-rect <x,y,w,h>` | A document-space rectangle a deterministic gate flagged (repeatable, at most 50). A band that contains one is captured as a `hit band` even when it lies below the tile cap, so the reviewer gets the tile that shows the defect. `qa-run` passes each context's gate rectangles automatically. |
 | `--review-pack-expand <tile-id>` | Instead of capturing a context, re-render one existing tile of `--review-pack-context` at `--device-scale-factor` and write it beside the original as `tiles/<tile>@<dpr>x.png`. Existing tiles are untouched. This is the child [`harn review-pack expand`](/cli/review-pack/) runs. |
 | `--device-scale-factor <n>` | Device scale factor for the browser context (1 to 4; default 1). Every screenshot renders at that multiple of its CSS pixels. |

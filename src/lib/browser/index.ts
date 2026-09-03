@@ -86,6 +86,20 @@ export {
   serializeNetscapeCookies,
   writeNetscapeCookieFile,
 } from "./netscape-cookies.js";
+export type {
+  PageReviewBudgetCoverage,
+  PageReviewCandidate,
+  PageReviewCapturePlan,
+  PageReviewContextAllocation,
+  PageReviewDecisionSlot,
+  PageReviewDurableDecision,
+  PageReviewEvidenceContext,
+  PageReviewNativeEvidence,
+  PageReviewNativeTile,
+  PageReviewRect,
+  PageReviewTileBudgetAllocation,
+} from "./page-review-contracts.js";
+export { nativePixelDigest } from "./page-review-evidence.js";
 export {
   type JudgedContext,
   type JudgePageReviewPackOptions,
@@ -112,8 +126,8 @@ export {
   packPaths,
   readPackContext,
   readPackDom,
-  readPackFullPage,
   readPackManifest,
+  readPackOverview,
   readPackSignature,
   readPackTiles,
   renderReviewMarkdown,

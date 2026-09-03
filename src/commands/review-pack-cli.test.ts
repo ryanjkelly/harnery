@@ -3,7 +3,7 @@
 // drives the registered commander program; no browser and no vision call.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -11,9 +11,15 @@ import { PNG } from "pngjs";
 import type { EmitContext } from "../commander.ts";
 import type { CritiqueTile } from "../lib/browser/critique.ts";
 import {
+  buildPackNativeEvidence,
+  PAGE_REVIEW_CRITIQUE_SCHEMA,
+} from "../lib/browser/page-review-evidence.ts";
+import {
   finalizePageReviewPack,
   PAGE_REVIEW_VERDICT_SCHEMA,
   type PageReviewCritiqueRecord,
+  readPackInspectionPlan,
+  readPackTiles,
   writePackContext,
 } from "../lib/browser/page-review-pack.ts";
 import { registerReviewPackCommand } from "./review-pack.ts";
@@ -53,6 +59,7 @@ function captureEmit(): CapturedEmit {
 }
 
 async function run(args: string[]): Promise<CapturedEmit> {
+  if (args[0] === "verdict") args = [...args, "--snapshot-store", join(args[1]!, "test-store")];
   const captured = captureEmit();
   const program = new Command();
   program.exitOverride();
@@ -82,7 +89,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.exitCode = savedExitCode;
+  process.exitCode = savedExitCode ?? 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -134,6 +141,9 @@ function seedPack(judged = true): string {
     url: "http://localhost:4276/page",
     title: "Fixture",
     fullPage: png(64, 128),
+    viewportSize: { width: 64, height: 128 },
+    dpr: 1,
+    recipeVersion: "fixture/v2",
     pageWidth: 64,
     pageHeight: 128,
     tiles: tiles(4),
@@ -156,7 +166,25 @@ function seedPack(judged = true): string {
     packDir: dir,
     target: "http://localhost:4276/page",
     contexts: [record],
-    critique: judged ? [critiqueRow()] : null,
+    critique: judged
+      ? [
+          {
+            ...critiqueRow(),
+            evidence: (() => {
+              const evidence = buildPackNativeEvidence(
+                record,
+                readPackTiles(dir, record),
+                "test rubric",
+              );
+              return {
+                schema: PAGE_REVIEW_CRITIQUE_SCHEMA,
+                context: evidence.context,
+                tiles: evidence.tiles.map(({ png: _png, ...tile }) => tile),
+              };
+            })(),
+          },
+        ]
+      : null,
     createdAt: "2026-09-02T05:00:00.000Z",
   });
   return dir;
@@ -330,6 +358,41 @@ describe("review-pack reviews add", () => {
 });
 
 describe("review-pack disposition", () => {
+  test("bulk targets validate before one write and all-high is context bounded", async () => {
+    const dir = seedPack();
+    const path = join(dir, "findings.json");
+    const before = readFileSync(path, "utf8");
+    const invalid = await run([
+      "disposition",
+      dir,
+      "artifact",
+      "--target",
+      `${CTX}/T002#0`,
+      "--target",
+      `${CTX}/T009#0`,
+    ]);
+    expect(invalid.errors[0]?.code).toBe("review_pack_unknown_finding");
+    expect(readFileSync(path, "utf8")).toBe(before);
+    resetExitCode();
+    const missingContext = await run(["disposition", dir, "artifact", "--all-high"]);
+    expect(missingContext.errors[0]?.code).toBe("review_pack_invalid_selection");
+    expect(readFileSync(path, "utf8")).toBe(before);
+    resetExitCode();
+    const all = await run([
+      "disposition",
+      dir,
+      "artifact",
+      "--all-high",
+      "--context",
+      CTX,
+      "--json",
+    ]);
+    expect(all.errors).toEqual([]);
+    const doc = readJson(path);
+    const entries = doc.dispositions as Array<{ target: string; by: string }>;
+    expect(entries.map((d) => d.target)).toEqual([`${CTX}/T002#0`, `${CTX}/T003#1`]);
+    expect(entries.every((d) => Boolean(d.by))).toBe(true);
+  });
   test("writes a disposition for an existing machine finding and replaces a repeat", async () => {
     const dir = seedPack();
     const first = await run([
@@ -382,6 +445,36 @@ describe("review-pack disposition", () => {
 });
 
 describe("review-pack verdict", () => {
+  test("persistence failure is a command failure and does not write a saved verdict", async () => {
+    const dir = seedPack();
+    const primary = readPackInspectionPlan(dir).contexts.flatMap((c) =>
+      c.primary_tiles.map((t) => `${c.context_id}/${t.id}`),
+    );
+    const path = join(dir, "findings.json");
+    const doc = readJson(path);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...doc,
+        reviewer: "reviewer-1",
+        reviewed_at: "2026-09-03T00:00:00Z",
+        delegated_reviews: [
+          {
+            reviewer: "reviewer-1",
+            model: "GPT-5.6 Luna",
+            assigned_tiles: primary,
+            completed_tiles: primary,
+            status: "complete",
+          },
+        ],
+      }),
+    );
+    writeFileSync(join(dir, "test-store"), "cannot be a directory");
+    const result = await run(["verdict", dir, "--json"]);
+    expect(result.errors[0]?.code).toBe("review_pack_decisions_not_saved");
+    expect(exitCode()).toBe(1);
+    expect(existsSync(join(dir, "evidence", "verdict.json"))).toBe(false);
+  });
   test("fails while a high is open, passes once every high is dismissed, and refreshes review.md", async () => {
     const dir = seedPack();
     const open = await run(["verdict", dir, "--json"]);
@@ -480,6 +573,21 @@ describe("review-pack verdict", () => {
 });
 
 describe("review-pack list / show", () => {
+  test("show reads an expired stub without opening a live pack", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "review-stub-"));
+    roots.push(dir);
+    const stub = {
+      schema: "harnery-page-review-expired/v1",
+      target: "https://example.test",
+      machine_outcome: "fail",
+      result: { reviewed_outcome: "pass" },
+      findings_summary: { dispositions: 2 },
+    };
+    writeFileSync(join(dir, "pack-expired.json"), JSON.stringify(stub));
+    const result = await run(["show", dir, "--json"]);
+    expect(result.errors).toEqual([]);
+    expect(result.data[0]).toEqual(stub);
+  });
   test("list finds the pack under --root and reports outcome, tiles, and expiry", async () => {
     const dir = seedPack(true);
     const out = await run(["list", "--root", dir, "--json"]);

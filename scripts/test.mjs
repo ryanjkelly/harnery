@@ -12,6 +12,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 // stalls Chromium startup, even when launches are serialized. Keep the
 // stateful browser partition in a fresh process without dropping any tests.
 const browserFiles = new Set([
+  "src/lib/browser/client-capture.test.ts",
   "src/lib/browser/netscape-cookies.test.ts",
   "src/lib/browser/session-browser.test.ts",
   "src/lib/browser/session-control.test.ts",
@@ -29,6 +30,7 @@ const browserFiles = new Set([
 // Playwright operations even when Bun runs tests serially. Give them fresh Bun
 // processes so each suite starts with clean browser transport state.
 const browserProcessFiles = new Set([
+  "src/lib/browser/client-capture.test.ts",
   "src/lib/browser/session-browser.test.ts",
   "tests/e2e/browse-layout-lint.test.ts",
   "tests/e2e/browse-session.test.ts",
@@ -39,6 +41,14 @@ const browserProcessFiles = new Set([
 // isolated partition enough room to finish real browser work.
 const browserTestArgs = ["--max-concurrency", "1", "--timeout", "15000"];
 const partitionTimings = [];
+
+// These suites repeatedly start workflow subprocesses. Give each lifecycle its
+// own process so a timed-out operation cannot leak into the other suite's
+// cleanup. Retain the ordinary timeout and every test.
+const workflowProcessFiles = new Set([
+  "src/core/governor/index.test.ts",
+  "src/core/workflow/engine.test.ts",
+]);
 
 // The complete suite has several intentionally process-heavy families. Keep
 // them separate from ordinary unit tests so the timing summary identifies the
@@ -101,7 +111,7 @@ const nonBrowserFiles = allFiles.filter((file) => !browserFiles.has(file));
 const namedCoreFiles = namedCorePartitions
   .map((partition) => ({
     ...partition,
-    files: nonBrowserFiles.filter(partition.matches),
+    files: nonBrowserFiles.filter((file) => partition.matches(file) && !workflowProcessFiles.has(file)),
   }))
   .filter((partition) => partition.files.length > 0);
 const coreFiles = nonBrowserFiles.filter(
@@ -125,6 +135,11 @@ const partitionPlan = [
     extraArgs: browserTestArgs,
   })),
   { label: "browser test partition", files: isolatedBrowserFiles, extraArgs: browserTestArgs },
+  ...allFiles.filter((file) => workflowProcessFiles.has(file)).map((file) => ({
+    label: `workflow process partition: ${file}`,
+    files: [file],
+    extraArgs: [],
+  })),
   ...namedCoreFiles.map((partition) => ({ ...partition, extraArgs: [] })),
   { label: "core test partition", files: coreFiles, extraArgs: [] },
 ];

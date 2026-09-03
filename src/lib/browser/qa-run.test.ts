@@ -1,12 +1,27 @@
 import { describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
-import type { CritiqueProvider, CritiqueTile } from "./critique.ts";
+import { type CritiqueProvider, type CritiqueTile, DEFAULT_CRITIQUE_RUBRIC } from "./critique.ts";
+import {
+  PAGE_REVIEW_CAPTURE_PLAN_SCHEMA,
+  PAGE_REVIEW_DECISIONS_SCHEMA,
+  type PageReviewCapturePlan,
+  type PageReviewContextAllocation,
+} from "./page-review-contracts.ts";
+import { buildPackNativeEvidence, machineFindingKey } from "./page-review-evidence.ts";
 import {
   PAGE_REVIEW_PACK_DIRNAME,
   readPackManifest,
+  readPackTiles,
   writePackContext,
 } from "./page-review-pack.ts";
 import type { QaManifest } from "./qa-plan.ts";
@@ -29,7 +44,7 @@ import {
   QA_RUN_JOB_SCHEMA_VERSION,
   type QaRunJob,
 } from "./qa-run-contracts.ts";
-import { loadQaSnapshot } from "./qa-snapshot.ts";
+import { loadQaSnapshot, saveReviewDecisions } from "./qa-snapshot.ts";
 
 const BROWSE_ARGV = ["node", "/cli/harn.ts", "browse"];
 
@@ -109,6 +124,7 @@ interface FakeExecConfig {
   captureError?: Record<string, string>;
   /** Full-page bands the fake capture writes per context (default 3). */
   captureTiles?: number;
+  captureIncomplete?: boolean;
   /** Whether signoff snapshot envelopes (visual "none" path) report a persisted snapshot. */
   snapshotSaved?: boolean;
 }
@@ -118,16 +134,57 @@ function blankPng(width: number, height: number): Buffer {
 }
 
 function fakeTiles(count: number, label: string): CritiqueTile[] {
-  const png = blankPng(8, 8).toString("base64");
+  const png = blankPng(8, 1280).toString("base64");
   return Array.from({ length: count }, (_, index) => ({
     index,
     label: `${label} ${index + 1}`,
     scrollY: index * 1280,
     x: 0,
     width: 8,
-    height: 8,
+    height: 1280,
     pngBase64: png,
   }));
+}
+
+function fakeCapturePlan(argv: string[], count: number): PageReviewCapturePlan {
+  const scopes = argv.flatMap((arg, i) =>
+    arg === "--review-pack-scope" ? [argv[i + 1] ?? ""] : [],
+  );
+  const bands = fakeTiles(count, "band").map((tile) => ({
+    id: `B${tile.index}`,
+    index: tile.index,
+    label: tile.label,
+    rect: { x: 0, y: tile.scrollY, width: tile.width, height: tile.height },
+    gate_hits: [],
+  }));
+  return {
+    schema: PAGE_REVIEW_CAPTURE_PLAN_SCHEMA,
+    context_id: argvValue(argv, "--review-pack-context") ?? "",
+    viewport: argvValue(argv, "--viewport") ?? "desktop",
+    viewport_width: 8,
+    viewport_height: 800,
+    dpr: 1,
+    theme: argvValue(argv, "--qa-theme") === "dark" ? "dark" : "light",
+    state: argvValue(argv, "--qa-state") ?? "default",
+    page_width: 8,
+    page_height: Math.max(1, count) * 1280,
+    source_digest: "a".repeat(64),
+    recipe_version: "fixture-v1",
+    required_scopes: scopes,
+    candidates: [
+      ...bands,
+      ...scopes.flatMap((scope, n) =>
+        fakeTiles(2, scope).map((tile) => ({
+          id: `S${n}-${tile.index}`,
+          index: count + n * 2 + tile.index,
+          label: tile.label,
+          scope,
+          rect: { x: 0, y: tile.scrollY, width: tile.width, height: tile.height },
+          gate_hits: [],
+        })),
+      ),
+    ],
+  };
 }
 
 interface ProviderCall {
@@ -213,11 +270,19 @@ function makeFakeExec(config: FakeExecConfig): {
         const contextId = argvValue(argv, "--review-pack-context") ?? "";
         const hardError = config.captureError?.[contextId];
         if (hardError) return { exitCode: null, stdout: "", stderr: "", error: hardError };
-        const withBands = !argv.includes("--no-review-pack-bands");
         const scopes = argv.flatMap((arg, i) =>
           arg === "--review-pack-scope" ? [argv[i + 1] ?? ""] : [],
         );
-        const bandCount = withBands ? (config.captureTiles ?? 3) : 0;
+        const allocationFile = argvValue(argv, "--review-pack-allocation");
+        const allocation = allocationFile
+          ? (JSON.parse(readFileSync(allocationFile, "utf8")) as PageReviewContextAllocation)
+          : undefined;
+        const candidates = allocation?.plan.candidates.filter((candidate) =>
+          allocation.selected_ids.includes(candidate.id),
+        );
+        const bandCount = candidates
+          ? candidates.filter((candidate) => !candidate.scope).length
+          : (config.captureTiles ?? 3);
         const coverage = (critique.coverage as
           | {
               page_height_px: number;
@@ -227,8 +292,8 @@ function makeFakeExec(config: FakeExecConfig): {
               capped: boolean;
             }
           | undefined) ?? {
-          page_height_px: Math.max(1, bandCount) * 1400,
-          reviewed_height_px: Math.max(1, bandCount) * 1400,
+          page_height_px: Math.max(1, bandCount) * 1280,
+          reviewed_height_px: Math.max(1, bandCount) * 1280,
           bands_total: bandCount,
           bands_reviewed: bandCount,
           capped: false,
@@ -242,12 +307,47 @@ function makeFakeExec(config: FakeExecConfig): {
           },
           url: "http://localhost:4276/page",
           title: "fixture",
-          fullPage: blankPng(64, 64),
-          pageWidth: 64,
-          pageHeight: 64,
-          tiles: fakeTiles(bandCount, "band"),
-          coverage,
-          scopeTiles: scopes.map((selector) => ({ selector, tiles: fakeTiles(2, selector) })),
+          fullPage: blankPng(8, allocation?.plan.page_height ?? Math.max(1, bandCount) * 1280),
+          pageWidth: 8,
+          pageHeight: allocation?.plan.page_height ?? Math.max(1, bandCount) * 1280,
+          viewportSize: { width: 8, height: 800 },
+          dpr: 1,
+          recipeVersion: "fixture-v1",
+          captureIncomplete: config.captureIncomplete,
+          tiles: candidates
+            ? candidates
+                .filter((candidate) => !candidate.scope)
+                .map((candidate) => ({
+                  index: candidate.index,
+                  label: candidate.label,
+                  x: candidate.rect.x,
+                  scrollY: candidate.rect.y,
+                  width: candidate.rect.width,
+                  height: candidate.rect.height,
+                  pngBase64: blankPng(candidate.rect.width, candidate.rect.height).toString(
+                    "base64",
+                  ),
+                }))
+            : fakeTiles(bandCount, "band"),
+          coverage: critique.coverage ? coverage : (allocation?.coverage ?? coverage),
+          scopeTiles: scopes.map((selector) => ({
+            selector,
+            tiles: candidates
+              ? candidates
+                  .filter((candidate) => candidate.scope === selector)
+                  .map((candidate) => ({
+                    index: candidate.index,
+                    label: candidate.label,
+                    x: candidate.rect.x,
+                    scrollY: candidate.rect.y,
+                    width: candidate.rect.width,
+                    height: candidate.rect.height,
+                    pngBase64: blankPng(candidate.rect.width, candidate.rect.height).toString(
+                      "base64",
+                    ),
+                  }))
+              : fakeTiles(2, selector),
+          })),
           signature: {
             url: "http://localhost:4276/page",
             capturedAt: new Date().toISOString(),
@@ -277,7 +377,14 @@ function makeFakeExec(config: FakeExecConfig): {
       const hardError = config.gateError?.[contextId];
       if (hardError) return { exitCode: null, stdout: "", stderr: "", error: hardError };
       const exitCode = config.gateExit?.[contextId] ?? 0;
-      const gateEnvelope = config.gateEnvelope?.[contextId] ?? {};
+      const gateEnvelope = {
+        ...(argv.includes("--review-pack-plan")
+          ? {
+              review_pack_capture_plan: fakeCapturePlan(argv, config.captureTiles ?? 3),
+            }
+          : {}),
+        ...config.gateEnvelope?.[contextId],
+      };
       writeFileSync(
         `${outPrefix}.json`,
         JSON.stringify(
@@ -386,8 +493,8 @@ describe("runQaMatrix", () => {
     });
     expect(result.verdict).toBe("failed");
     expect(result.commands[1]?.failures).toContain("console: uncaught fixture error");
-    expect(fake.calls.some((call) => call.argv.includes("--review-pack"))).toBe(false);
-    expect(fake.providerCalls).toHaveLength(0);
+    expect(fake.calls.some((call) => call.argv.includes("--review-pack"))).toBe(true);
+    expect(fake.providerCalls.length).toBeGreaterThan(0);
   });
 
   test("an unmapped planner deterministic check stops incomplete", async () => {
@@ -444,7 +551,7 @@ describe("runQaMatrix", () => {
     expect(result.blockers[0]?.stage).toBe("plan");
   });
 
-  test("a failed gate prevents any critique execution", async () => {
+  test("a failed gate still captures planned evidence and cannot become a passing run", async () => {
     const fake = makeFakeExec({
       planManifest: manifest({
         checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
@@ -460,11 +567,11 @@ describe("runQaMatrix", () => {
       snapshotStore: { root: fake.snapshotRoot },
     });
     expect(result.verdict).toBe("failed");
-    expect(fake.calls.some((call) => call.argv.includes("--review-pack"))).toBe(false);
-    expect(fake.providerCalls).toHaveLength(0);
+    expect(fake.calls.some((call) => call.argv.includes("--review-pack"))).toBe(true);
+    expect(fake.providerCalls).toHaveLength(9);
     // A visual manifest means the pack would hold the full-page PNG, so every
     // gate child ran without a screenshot.
-    const gates = fake.calls.filter((call) => call.argv.includes("--out"));
+    const gates = fake.calls.filter((call) => call.argv.includes("--review-pack-plan"));
     expect(gates.length).toBeGreaterThan(0);
     expect(gates.every((call) => call.argv.includes("--no-screenshot"))).toBe(true);
     const failedGate = result.commands.find((c) => c.context_id === "mobile-light-default");
@@ -607,7 +714,7 @@ describe("runQaMatrix", () => {
     expect("latency_ms" in (result.critique_pool ?? {})).toBe(false);
   });
 
-  test("a scoped manifest captures every scope in one browser session and judges only scope tiles", async () => {
+  test("a scoped manifest captures scopes and page bands within one allocation", async () => {
     const contexts = [{ viewport: "desktop", theme: "light" as const, state: "default" }];
     const fake = makeFakeExec({
       planManifest: manifest({
@@ -635,15 +742,15 @@ describe("runQaMatrix", () => {
     expect(captures).toHaveLength(1);
     const argv = captures[0]?.argv ?? [];
     expect(argv.filter((arg) => arg === "--review-pack-scope")).toHaveLength(2);
-    expect(argv.includes("--no-review-pack-bands")).toBe(true);
-    // Two scopes × two tiles, no bands.
-    expect(result.critique[0]?.tiles_total).toBe(4);
-    expect(fake.providerCalls).toHaveLength(4);
+    expect(argv.includes("--no-review-pack-bands")).toBe(false);
+    // Both scopes and the full-page bands consume the shared allocation.
+    expect(result.critique[0]?.tiles_total).toBe(7);
+    expect(fake.providerCalls).toHaveLength(7);
     // Findings name the pack tile and the scope it was cut for.
     expect(result.critique[0]?.outcome).toBe("failed");
     const finding = result.critique[0]?.findings[0];
     expect(finding?.tile).toBe("desktop-light-default/T001");
-    expect(finding?.selector).toBe("#hero");
+    expect(finding?.selector).toBeUndefined();
     expect(result.verdict).toBe("failed");
   });
 
@@ -679,7 +786,7 @@ describe("runQaMatrix", () => {
     expect(blocker?.stage).toBe("critique");
     expect(blocker?.context_id).toBe("mobile-light-default");
     expect(blocker?.reason).toContain("24 of 53 bands");
-    expect(blocker?.reason).toContain("policy.critique_max_tiles");
+    expect(blocker?.reason).toContain("policy.critique_tile_budget");
     expect(result.verdict).toBe("incomplete");
   });
 
@@ -763,7 +870,7 @@ describe("runQaMatrix", () => {
     const gateCall = fake.calls.find(
       (call) => !call.argv.includes("--qa-plan") && !call.argv.includes("--review-pack"),
     );
-    expect(gateCall?.argv.includes("--check-critique-max-tiles")).toBe(false);
+    expect(argvValue(gateCall?.argv ?? [], "--check-critique-max-tiles")).toBe("60");
   });
 
   test("the judge runs under the headless-only env var by default; children never see it", async () => {
@@ -843,7 +950,8 @@ describe("runQaMatrix", () => {
       { viewport: "mobile", theme: "dark", state: "default" },
       { root: fake.snapshotRoot },
     );
-    expect(stored?.screenshotPath).toBeDefined();
+    expect(stored?.screenshotPath).toBeUndefined();
+    expect(stored?.tileEvidence?.tiles).toHaveLength(3);
     expect(stored?.critique?.outcome).toBe("pass");
     expect(stored?.critique?.tiles).toHaveLength(3);
   });
@@ -1074,7 +1182,7 @@ describe("runQaMatrix", () => {
     );
   });
 
-  test("gate-hit rectangles ride into the capture child as --review-pack-hit-rect; a run without hits sends none", async () => {
+  test("capture uses one validated allocation and never adds an extra gate-hit tile path", async () => {
     const contexts = [
       { viewport: "desktop", theme: "light" as const, state: "default" },
       { viewport: "mobile", theme: "light" as const, state: "default" },
@@ -1083,8 +1191,7 @@ describe("runQaMatrix", () => {
       contexts,
       checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
     });
-    // Only the desktop gate records rectangles (one fractional, rounded to
-    // integer px); the mobile capture must carry no hit-rect flag.
+    // Gate evidence stays in the pack. Only planned candidates may be captured.
     const fake = makeFakeExec({
       planManifest: plan,
       gateEnvelope: {
@@ -1130,9 +1237,16 @@ describe("runQaMatrix", () => {
     );
     const rectsOf = (argv: string[]): string[] =>
       argv.flatMap((arg, i) => (arg === "--review-pack-hit-rect" ? [argv[i + 1] ?? ""] : []));
-    expect(rectsOf(desktop?.argv ?? [])).toEqual(["2,40468,300,16", "10,90000,40,16"]);
+    expect(rectsOf(desktop?.argv ?? [])).toEqual([]);
     expect(rectsOf(mobile?.argv ?? [])).toEqual([]);
-    // Gate children never carry the flag; it belongs to the capture stage.
+    for (const capture of captures) {
+      const allocation = JSON.parse(
+        readFileSync(argvValue(capture.argv, "--review-pack-allocation")!, "utf8"),
+      );
+      expect(allocation.selected_ids).toHaveLength(3);
+      expect(allocation.context_id).toBe(argvValue(capture.argv, "--review-pack-context"));
+    }
+    // No stage carries the independent hit-rectangle capture flag.
     const gates = fake.calls.filter(
       (call) => !call.argv.includes("--qa-plan") && !call.argv.includes("--review-pack"),
     );
@@ -1258,7 +1372,8 @@ describe("runQaMatrix", () => {
       { viewport: "desktop", theme: "light", state: "default" },
       { root: fake.snapshotRoot },
     );
-    expect(stored?.screenshotPath).toBeDefined();
+    expect(stored?.screenshotPath).toBeUndefined();
+    expect(stored?.tileEvidence?.tiles.length).toBeGreaterThan(0);
     expect(stored?.critique).toBeUndefined();
   });
 
@@ -1281,6 +1396,187 @@ describe("runQaMatrix", () => {
     expect(result.snapshot.saved).toBe(true);
     expect(result.verdict).toBe("passed");
   });
+});
+
+describe("shared native evidence budget", () => {
+  const visual = { deterministic: [], interaction: [], visual: "full-page" as const };
+
+  test("a hard shared budget captures eight tiles across three contexts and preserves both edges", async () => {
+    const fake = makeFakeExec({ planManifest: manifest({ checks: visual }), captureTiles: 10 });
+    const result = await runQaMatrix({
+      job: job({ mode: "signoff", policy: { critique_tile_budget: 8 } }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(fake.providerCalls).toHaveLength(8);
+    expect(result.verdict).toBe("incomplete");
+    const captures = fake.calls.filter((call) => call.argv.includes("--review-pack"));
+    expect(captures).toHaveLength(3);
+    for (const capture of captures) {
+      const allocation = JSON.parse(
+        readFileSync(argvValue(capture.argv, "--review-pack-allocation")!, "utf8"),
+      );
+      expect(allocation.selected_ids).toContain("B0");
+      expect(allocation.selected_ids).toContain("B9");
+      expect(allocation.coverage.uncovered_intervals.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("a per-context ceiling that cannot hold both page edges refuses all capture", async () => {
+    const fake = makeFakeExec({ planManifest: manifest({ checks: visual }) });
+    const result = await runQaMatrix({
+      job: job({ policy: { critique_max_tiles: 1 } }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("incomplete");
+    expect(fake.calls.some((call) => call.argv.includes("--review-pack"))).toBe(false);
+    expect(fake.providerCalls).toHaveLength(0);
+    expect(result.blockers.some((blocker) => blocker.reason.includes("allocation"))).toBe(true);
+  });
+
+  test("a missing gate capture plan refuses allocation even when that gate passed", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest({ checks: visual }),
+      gateEnvelope: { "mobile-light-default": { review_pack_capture_plan: null } },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("incomplete");
+    expect(fake.calls.some((call) => call.argv.includes("--review-pack"))).toBe(false);
+    expect(result.blockers.some((blocker) => blocker.context_id === "mobile-light-default")).toBe(
+      true,
+    );
+  });
+
+  test("three unchanged signoffs keep native evidence and reuse the second run on the third", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts: [{ viewport: "desktop", theme: "light", state: "default" }],
+        baseline_source: "snapshot",
+        checks: visual,
+      }),
+    });
+    const results = [];
+    for (let index = 0; index < 3; index++) {
+      results.push(
+        await runQaMatrix({
+          job: job({ mode: "signoff" }),
+          outParent: outDir(),
+          browseArgv: BROWSE_ARGV,
+          exec: fake.exec,
+          critiqueProvider: fake.provider,
+          snapshotStore: { root: fake.snapshotRoot },
+        }),
+      );
+    }
+    expect(results.map((result) => result.verdict)).toEqual(["passed", "passed", "passed"]);
+    expect(results.map((result) => result.critique_pool?.tiles_reused)).toEqual([0, 3, 3]);
+    expect(fake.providerCalls).toHaveLength(3);
+    const stored = loadQaSnapshot(
+      job().target,
+      { viewport: "desktop", theme: "light", state: "default" },
+      { root: fake.snapshotRoot },
+    );
+    expect(stored?.tileEvidence?.tiles).toHaveLength(3);
+    expect(stored?.screenshotPath).toBeUndefined();
+  });
+});
+
+test("saved decisions survive their source pack and never clear new highs or failed gates", async () => {
+  const finding = { severity: "high" as const, category: "layout", description: "cut text" };
+  const config: FakeExecConfig = {
+    planManifest: manifest({
+      contexts: [{ viewport: "desktop", theme: "light", state: "default" }],
+      checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
+    }),
+    critique: { outcome: "fail", findings: [finding] },
+    gateExit: {},
+  };
+  const fake = makeFakeExec(config);
+  const run = (accept = false) =>
+    runQaMatrix({
+      job: job({ mode: "signoff", policy: { accept_dispositions: accept } }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+  const first = await run();
+  expect(first.verdict).toBe("failed");
+  const packDir = first.review_pack!.dir;
+  const record = readPackManifest(packDir).contexts[0]!;
+  const evidence = buildPackNativeEvidence(
+    record,
+    readPackTiles(packDir, record),
+    DEFAULT_CRITIQUE_RUBRIC,
+  );
+  const tile = evidence.tiles[0]!;
+  saveReviewDecisions(
+    job().target,
+    record,
+    {
+      schema: PAGE_REVIEW_DECISIONS_SCHEMA,
+      target: job().target,
+      context: evidence.context,
+      source_run: first.run.run_id,
+      source_revision: null,
+      reviewer: "fixture-reviewer",
+      reviewed_at: new Date().toISOString(),
+      complete: true,
+      decisions: [
+        {
+          finding_key: machineFindingKey(evidence.context, tile, finding),
+          tile_pixel_digest: tile.pixel_digest,
+          rect: tile.rect,
+          finding,
+          disposition: "artifact",
+          reviewer: "fixture-reviewer",
+          at: new Date().toISOString(),
+        },
+      ],
+    },
+    { root: fake.snapshotRoot },
+  );
+  rmSync(packDir, { recursive: true });
+  expect((await run()).verdict).toBe("failed");
+  const accepted = await run(true);
+  expect(accepted.verdict).toBe("passed");
+  expect(accepted.critique[0]?.findings).toHaveLength(1);
+  expect(accepted.critique[0]?.dismissed).toHaveLength(1);
+  config.captureIncomplete = true;
+  const incompleteCapture = await run(true);
+  expect(incompleteCapture.verdict).toBe("failed");
+  expect(incompleteCapture.critique[0]?.dismissed).toBeUndefined();
+  expect(incompleteCapture.blockers.some((blocker) => blocker.stage === "capture")).toBe(true);
+  const incompleteBaseline = loadQaSnapshot(job().target, record, { root: fake.snapshotRoot });
+  expect(incompleteBaseline?.critique).toBeUndefined();
+  config.captureIncomplete = false;
+  config.critique!.findings!.push({ ...finding, description: "new high" });
+  const newHigh = await run(true);
+  expect(newHigh.verdict).toBe("failed");
+  expect(newHigh.critique[0]?.dismissed).toHaveLength(1);
+  config.critique!.findings!.pop();
+  config.gateExit!["desktop-light-default"] = 2;
+  expect((await run(true)).verdict).toBe("failed");
+  config.gateExit!["desktop-light-default"] = 0;
+  config.critique!.throws = "provider unavailable";
+  const unavailable = await run(true);
+  expect(unavailable.verdict).toBe("failed");
+  expect(unavailable.critique[0]?.dismissed).toBeUndefined();
 });
 
 describe("runQaMatrix run identity", () => {

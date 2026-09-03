@@ -194,3 +194,66 @@ export function bandsCoveringRects(
   }
   return out;
 }
+
+/** All native-pixel candidates, before any per-pack allocation or cropping. */
+export function reviewCandidateRects(args: {
+  width: number;
+  height: number;
+  bandHeight: number;
+  overlap: number;
+  atoms?: VisualAtom[];
+  scopes?: Array<{
+    selector: string;
+    rects: Array<{ label: string; x: number; y: number; width: number; height: number }>;
+  }>;
+}): Array<{
+  id: string;
+  index: number;
+  label: string;
+  rect: { x: number; y: number; width: number; height: number };
+  scope?: string;
+  gate_hits: [];
+}> {
+  const opts = { bandHeight: args.bandHeight, overlap: args.overlap };
+  const bands = args.atoms?.length
+    ? snappedBandRects(0, args.height, 0, args.width, args.atoms, opts).rects
+    : Array.from(
+        {
+          length:
+            Math.ceil(
+              Math.max(0, args.height - args.bandHeight) /
+                Math.max(1, args.bandHeight - args.overlap),
+            ) + 1,
+        },
+        (_, i) => {
+          const y = i * Math.max(1, args.bandHeight - args.overlap);
+          return { x: 0, y, width: args.width, height: Math.min(args.bandHeight, args.height - y) };
+        },
+      );
+  const out: ReturnType<typeof reviewCandidateRects> = bands.map((r, i) => ({
+    id: `band-${i + 1}`,
+    index: i,
+    label: `band ${i + 1}`,
+    rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+    gate_hits: [],
+  }));
+  for (const [scopeIndex, scope] of (args.scopes ?? []).entries()) {
+    const expanded = scope.rects.flatMap((r) => bandOversizedRect(r, args.atoms ?? [], opts));
+    for (const [i, r] of expanded.entries()) {
+      const x = Math.max(0, Math.round(r.x)),
+        y = Math.max(0, Math.round(r.y));
+      const width = Math.min(Math.round(r.width), args.width - x),
+        height = Math.min(Math.round(r.height), args.height - y);
+      if (width <= 0 || height <= 0) continue;
+      out.push({
+        id: `scope-${scopeIndex + 1}-${i + 1}`,
+        index: out.length,
+        label: r.label,
+        scope: scope.selector,
+        rect: { x, y, width, height },
+        gate_hits: [],
+      });
+    }
+  }
+  return out;
+}

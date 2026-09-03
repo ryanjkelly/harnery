@@ -390,16 +390,18 @@ describe("runWorkflow", () => {
   test("parallel() bounds real concurrency to the shared pool", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
+    let completed = 0;
     const spawner: Spawner = async () => {
       inFlight++;
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise((r) => setTimeout(r, 10));
       inFlight--;
+      completed++;
       return okSpawn("done");
     };
     const script = writeScript(`
       export default async ({ agent, parallel }) =>
-        parallel(Array.from({ length: 6 }, (_, i) => () => agent("job " + i)));
+        parallel(Array.from({ length: 4 }, (_, i) => () => agent("job " + i)));
     `);
     await runWorkflow(script, {
       coordRoot: root,
@@ -408,6 +410,7 @@ describe("runWorkflow", () => {
       ...quiet,
     });
     expect(maxInFlight).toBe(2);
+    expect(completed).toBe(4);
   });
 
   test("agent without schema returns raw text; transcript has stage + session id", async () => {

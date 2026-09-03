@@ -117,3 +117,22 @@ describe("stitchPngRows", () => {
     expect(pngDimensions(PNG.sync.write(image(13, 7)))).toEqual({ width: 13, height: 7 });
   });
 });
+
+test("native comparison detects displaced thin rules erased by quarter-scale averaging", () => {
+  const a = image(80, 80, (x) => (x % 4 === 0 ? 0 : 255));
+  const b = image(80, 80, (x) => (x % 4 === 1 ? 0 : 255));
+  expect(compareBand(a, b).exceeds).toBe(true);
+  const quarter = (src: PNG) => {
+    const out = image(src.width / 4, src.height / 4);
+    for (let y = 0; y < out.height; y++)
+      for (let x = 0; x < out.width; x++) {
+        let sum = 0;
+        for (let j = 0; j < 4; j++)
+          for (let i = 0; i < 4; i++) sum += src.data[((y * 4 + j) * src.width + x * 4 + i) * 4];
+        const n = (y * out.width + x) * 4;
+        out.data[n] = out.data[n + 1] = out.data[n + 2] = Math.round(sum / 16);
+      }
+    return out;
+  };
+  expect(compareBand(quarter(a), quarter(b)).mismatch_ratio).toBe(0);
+});

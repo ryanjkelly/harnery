@@ -4,9 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import type { CritiqueProvider, CritiqueTile } from "./critique.ts";
+import {
+  buildPackNativeEvidence,
+  PAGE_REVIEW_CRITIQUE_CONTRACT_VERSION,
+  packRubricDigest,
+} from "./page-review-evidence.ts";
 import { judgePageReviewPack, tileRubricPreamble, toCritiqueRecords } from "./page-review-judge.ts";
-import { type PageReviewContextCapture, writePackContext } from "./page-review-pack.ts";
-import { QA_CRITIQUE_CONTRACT_VERSION, rubricDigest } from "./qa-reuse.ts";
+import {
+  type PageReviewContextCapture,
+  readPackTiles,
+  writePackContext,
+} from "./page-review-pack.ts";
 import { saveQaSnapshot } from "./qa-snapshot.ts";
 
 const RUBRIC = "fixture rubric";
@@ -35,9 +43,12 @@ function capture(
   return {
     context,
     url: `http://localhost:4276/${context.viewport}`,
-    fullPage: png(64, count * 32),
+    fullPage: png(64, Math.max(1, count * 32)),
+    viewportSize: { width: 64, height: 128 },
+    dpr: 1,
+    recipeVersion: "fixture/v2",
     pageWidth: 64,
-    pageHeight: count * 32,
+    pageHeight: Math.max(1, count * 32),
     tiles: tiles(count),
     coverage: {
       page_height_px: count * 32,
@@ -57,6 +68,19 @@ function pack(): string {
 }
 
 describe("judgePageReviewPack", () => {
+  test("separated selected bands are described as unreviewed gaps", () => {
+    const dir = pack();
+    const record = writePackContext(
+      dir,
+      capture({ viewport: "desktop", theme: "light", state: "default" }, 3),
+    );
+    record.tiles = record.tiles.map((tile, i) => ({ ...tile, scrollY: i * 100 }));
+    record.page.height = 232;
+    const preamble = tileRubricPreamble(record, "T002");
+    expect(preamble).toContain("unreviewed gap of 68 px");
+    expect(preamble).not.toContain("starts where T001 ends");
+    expect(preamble).not.toContain("ends where T003 starts");
+  });
   test("one pool spans every context; findings carry stable tile ids; order is deterministic", async () => {
     const dir = pack();
     writePackContext(dir, capture({ viewport: "desktop", theme: "light", state: "default" }, 3));
@@ -166,10 +190,10 @@ describe("judgePageReviewPack", () => {
       {
         signature: cap.signature,
         domHtml: cap.domHtml,
-        screenshotPng: cap.fullPage,
+        tileEvidence: buildPackNativeEvidence(record, readPackTiles(dir, record), RUBRIC),
         critique: {
-          contract_version: QA_CRITIQUE_CONTRACT_VERSION,
-          rubric_digest: rubricDigest(RUBRIC),
+          contract_version: PAGE_REVIEW_CRITIQUE_CONTRACT_VERSION,
+          rubric_digest: packRubricDigest(RUBRIC),
           outcome: "pass",
           findings: [{ tile: 2, severity: "low", category: "gap", description: "prior" }],
           tiles: record.tiles.map((t) => ({
@@ -216,10 +240,10 @@ describe("judgePageReviewPack", () => {
       {
         signature: cap.signature,
         domHtml: cap.domHtml,
-        screenshotPng: cap.fullPage,
+        tileEvidence: buildPackNativeEvidence(record, readPackTiles(dir, record), RUBRIC),
         critique: {
-          contract_version: QA_CRITIQUE_CONTRACT_VERSION,
-          rubric_digest: rubricDigest(RUBRIC),
+          contract_version: PAGE_REVIEW_CRITIQUE_CONTRACT_VERSION,
+          rubric_digest: packRubricDigest(RUBRIC),
           outcome: "pass",
           findings: [],
           tiles: record.tiles.map((t) => ({
@@ -300,7 +324,7 @@ describe("judgePageReviewPack", () => {
     expect(tileRubricPreamble(record, "nope")).toBe("");
   });
 
-  test("a scrolled-bands context names its capture source and skips band-diff reuse", async () => {
+  test("a scrolled-bands context names its capture source and rejects legacy screenshot baselines", async () => {
     const dir = pack();
     const root = mkdtempSync(join(tmpdir(), "page-review-judge-store-"));
     const cap = capture({ viewport: "desktop", theme: "light", state: "default" }, 3);
@@ -323,8 +347,8 @@ describe("judgePageReviewPack", () => {
         domHtml: cap.domHtml,
         screenshotPng: cap.fullPage,
         critique: {
-          contract_version: QA_CRITIQUE_CONTRACT_VERSION,
-          rubric_digest: rubricDigest(RUBRIC),
+          contract_version: PAGE_REVIEW_CRITIQUE_CONTRACT_VERSION,
+          rubric_digest: packRubricDigest(RUBRIC),
           outcome: "pass",
           findings: [],
           tiles: record.tiles.map((t) => ({
@@ -354,8 +378,8 @@ describe("judgePageReviewPack", () => {
     });
     expect(rubrics).toHaveLength(3);
     expect(result.contexts[0]?.tiles_reused).toBe(0);
-    expect(result.contexts[0]?.reuse).toBeUndefined();
-    expect(logs.some((line) => line.includes("reuse skipped"))).toBe(true);
+    expect(result.contexts[0]?.reuse?.invalidation).toBe("native-evidence-missing");
+    expect(logs.some((line) => line.includes("native-evidence-missing"))).toBe(true);
     for (const rubric of rubrics) expect(rubric).toContain("Capture source: scrolled-bands");
   });
 });

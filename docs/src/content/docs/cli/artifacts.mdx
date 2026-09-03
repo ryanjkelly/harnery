@@ -141,6 +141,13 @@ Disable it per project or per process:
 
 `HARNERY_ARTIFACT_AUTO_CLEAN=0` disables it for one process.
 
+The separate `review_pack.auto_clean` setting defaults to `false`. When enabled,
+`artifacts clean` also previews expired managed review packs inside the artifact
+store. `--yes` removes their payloads and leaves an expiry summary. Holds and
+invalid workspace manifests still protect those packs; unexpired and unmanaged
+packs remain untouched. This setting also enables the review-pack sweep before
+`qa-run` and `review-pack create`.
+
 ## Cleanup classes
 
 | Classification | Meaning | `clean --yes` |

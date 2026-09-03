@@ -83,11 +83,13 @@ export interface QaRunPolicy {
    * recorded, and the result finalizes as incomplete — releasing the
    * admission slot instead of holding it open-endedly. */
   run_deadline_ms?: number;
-  /** Full-page critique bands per context (browse `--check-critique-max-tiles`,
-   * default 24). Raise it when a tall page must be reviewed end to end and the
-   * per-tile cost is accepted; each critique row's `coverage` records what the
-   * run actually saw, which is why this knob can stay out of the job digest. */
+  /** Explicit per-context ceiling. When absent, a pack context may use the
+   * whole shared budget; independent browse commands keep their own default. */
   critique_max_tiles?: number;
+  /** Maximum native tiles across the complete pack (8-400, default 96). */
+  critique_tile_budget?: number;
+  /** Apply exact-match, fully reviewed prior dispositions. Default false. */
+  accept_dispositions?: boolean;
   /** Vision calls in flight during the judge stage, across every context of
    * the run (1 to 16). Default: the host provider's own concurrency. The
    * capture stage closes every browser before judging starts, so this knob
@@ -154,6 +156,11 @@ export interface QaRunCritiqueCoverage {
   bands_total: number;
   bands_reviewed: number;
   capped: boolean;
+  selected_rectangles?: Array<{ x: number; y: number; width: number; height: number }>;
+  reviewed_intervals?: Array<{ start: number; end: number }>;
+  uncovered_intervals?: Array<{ start: number; end: number }>;
+  omitted_gate_hits?: string[];
+  omitted_scopes?: string[];
 }
 
 export interface QaRunCritiqueOutcome {
@@ -164,6 +171,8 @@ export interface QaRunCritiqueOutcome {
   tiles_reused: number;
   outcome: "passed" | "failed" | "unknown";
   findings: Array<{ severity: string; summary: string; selector?: string; tile?: string }>;
+  /** Applied reviewer decisions; the machine findings above remain unchanged. */
+  dismissed?: Array<{ finding_key: string; target: string; disposition: string }>;
   /** Tile coverage of the page. Absent when the capture died or reported none. */
   coverage?: QaRunCritiqueCoverage;
 }
@@ -490,6 +499,18 @@ export function validateQaRunJob(value: unknown): QaRunJobValidation {
 
   if (job.policy !== undefined) {
     const p = job.policy as Record<string, unknown>;
+    if (p === null || typeof p !== "object" || Array.isArray(p)) {
+      errors.push("policy must be an object");
+    }
+    if (p?.accept_dispositions !== undefined && typeof p.accept_dispositions !== "boolean") {
+      errors.push("policy.accept_dispositions must be a boolean");
+    }
+    if (p?.critique_tile_budget !== undefined) {
+      const n = p.critique_tile_budget;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 8 || n > 400) {
+        errors.push("policy.critique_tile_budget must be an integer between 8 and 400");
+      }
+    }
     if (p?.command_concurrency !== undefined) {
       const n = p.command_concurrency;
       if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 8) {
@@ -510,8 +531,8 @@ export function validateQaRunJob(value: unknown): QaRunJobValidation {
     }
     if (p?.critique_max_tiles !== undefined) {
       const n = p.critique_max_tiles;
-      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 200) {
-        errors.push("policy.critique_max_tiles must be an integer between 1 and 200");
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 400) {
+        errors.push("policy.critique_max_tiles must be an integer between 1 and 400");
       }
     }
     if (p?.critique_pool !== undefined) {
@@ -599,12 +620,15 @@ function canonicalize(value: unknown): unknown {
 }
 
 /** SHA-256 hex digest over the effective validated job (after the CLI merges
- * its authoritative `target` and `mode`). `policy` is excluded: concurrency,
- * timeout, and metered-critique knobs change how the run executes, not what
- * it proves, and CLI flags mutate them after the job file is read — including
- * them would make the same job file verify differently across invocations. */
+ * its authoritative `target` and `mode`). Runtime policy knobs are excluded.
+ * Disposition acceptance changes what can establish a pass, so enabling it
+ * is identity-bearing; an ordinary run cannot verify as an accepting run. */
 export function computeJobDigest(job: QaRunJob): string {
-  const { policy: _policy, ...identityBearing } = job;
+  const { policy, ...rest } = job;
+  const identityBearing =
+    policy?.accept_dispositions === true
+      ? { ...rest, policy: { accept_dispositions: true } }
+      : rest;
   return createHash("sha256")
     .update(JSON.stringify(canonicalize(identityBearing)))
     .digest("hex");

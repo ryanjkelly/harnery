@@ -6,6 +6,7 @@ import {
   type ArtifactActor,
   adoptUnmanagedArtifactFiles,
   artifactCapabilities,
+  artifactsRoot,
   cleanArtifacts,
   createArtifact,
   holdArtifact,
@@ -16,7 +17,12 @@ import {
   showArtifact,
   unholdArtifact,
 } from "../core/artifacts/index.ts";
-import { artifactDefaultRetentionDays, coordFreshnessSeconds } from "../core/config.ts";
+import {
+  artifactDefaultRetentionDays,
+  coordFreshnessSeconds,
+  reviewPackAutoCleanEnabled,
+} from "../core/config.ts";
+import { deleteExpiredPacks } from "../lib/browser/page-review-pack.ts";
 
 export function registerArtifactsCommand(
   program: Command,
@@ -214,7 +220,14 @@ export function registerArtifactsCommand(
           yes: opts.yes,
           freshnessSeconds: coordFreshnessSeconds(repoRoot),
         });
-        emit.data({ rows, meta: summarize(rows) });
+        const reviewPacks = reviewPackAutoCleanEnabled(repoRoot)
+          ? deleteExpiredPacks({ roots: [artifactsRoot(repoRoot)], dryRun: !opts.yes })
+          : undefined;
+        emit.data({
+          rows,
+          meta: summarize(rows),
+          ...(reviewPacks ? { review_packs: reviewPacks } : {}),
+        });
       });
     });
 }
