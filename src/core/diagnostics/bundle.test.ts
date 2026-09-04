@@ -175,6 +175,76 @@ describe("diagnostic bundles", () => {
     expect(replay.expected_digest).toBe(replay.actual_digest);
   });
 
+  test("replays a bundle whose captured history predates the current point shape", () => {
+    const root = repo();
+    const sampledAt = "2026-08-30T12:10:00.000Z";
+    writeReplaySources(root, sampledAt);
+    writeSource(root, "supervisor/findings.json", {
+      schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
+      active: [],
+      transitions: [],
+    });
+    // A bundle captured before the history point carried its stall readings.
+    // Reading those points unchecked would reach the trend projection with no
+    // `pressure` field on them, so the guard must discard the stale history
+    // rather than let a replay fail on an older capture.
+    writeSource(root, "supervisor/history.json", {
+      schema_version: SUPERVISOR_HISTORY_SCHEMA_VERSION - 1,
+      interval_ms: 10_000,
+      max_points: 90,
+      points: [
+        {
+          sampled_at: sampledAt,
+          machine: {
+            cpu_percent: 5,
+            memory_percent: 40,
+            memory_used_bytes: 400,
+            swap_used_bytes: 0,
+            process_count: 10,
+          },
+          groups: [],
+        },
+      ],
+    });
+    // A published assessment has to be present, because a replay without one
+    // returns an unavailable verdict before it ever projects the history.
+    const snapshot = JSON.parse(
+      readFileSync(join(root, ".harnery", "resources", "snapshot.json"), "utf8"),
+    ) as ResourceSnapshot;
+    const assessment = assessPressure({
+      snapshot,
+      history: [],
+      findings: [],
+      findings_capability: { source_kind: "supervisor.findings", state: "supported" },
+      prior: null,
+      observer_generation: "observer-1",
+      now_ms: Date.parse(sampledAt) + 1_500,
+    });
+    writeSource(root, "supervisor/pressure.json", {
+      schema_version: SUPERVISOR_PRESSURE_SCHEMA_VERSION,
+      published_at: sampledAt,
+      observer_generation: "observer-1",
+      assessment,
+      prior_hysteresis: null,
+    });
+
+    const captured = captureDiagnosticBundle(root, {
+      now: new Date(sampledAt),
+      machineLabel: "diagnostic-test-machine",
+      engineVersion: "test-build-v1",
+    });
+    // Capture records any readable file as supported, so the stale points do
+    // reach the replay and the guard is what keeps them out of the projection.
+    expect(
+      captured.manifest.sources.find((source) => source.source_kind === "supervisor.history"),
+    ).toMatchObject({ capability: "supported" });
+    rmSync(join(root, ".harnery", "supervisor"), { recursive: true, force: true });
+    rmSync(join(root, ".harnery", "resources"), { recursive: true, force: true });
+    const replay = replayDiagnosticBundle(root, captured.manifest.artifact_id);
+    expect(replay.matched).toBeTrue();
+    expect(replay.expected_digest).toBe(replay.actual_digest);
+  });
+
   test("keeps unsupported replay sources explicit without reading live state", () => {
     const root = repo();
     const captured = captureDiagnosticBundle(root, {

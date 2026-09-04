@@ -87,8 +87,15 @@ export function replayDiagnosticInputs(
   const supervisor =
     optionalSource<SupervisorSnapshot>(observations, "supervisor.snapshot") ??
     neutralSupervisor(observations.captured_at);
+  // A captured history is untrusted JSON from a bundle that may predate the
+  // current point shape. Reading it unchecked would let an older capture reach
+  // the trend projection with no pressure readings on its points. The live
+  // observer and the dashboard validate the same way.
+  const capturedHistory = optionalSource<SupervisorHistory>(observations, "supervisor.history");
   const history =
-    optionalSource<SupervisorHistory>(observations, "supervisor.history") ?? neutralHistory();
+    capturedHistory?.schema_version === SUPERVISOR_HISTORY_SCHEMA_VERSION
+      ? capturedHistory
+      : neutralHistory();
   const logFeed =
     optionalSource<SupervisorLogFeed>(observations, "supervisor.log-feed") ??
     neutralLogFeed(observations.captured_at);
