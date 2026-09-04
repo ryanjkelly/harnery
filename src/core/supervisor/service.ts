@@ -311,7 +311,10 @@ export async function runSupervisor(
           findings_capability: { source_kind: "supervisor-findings", state: "supported" },
           prior: pressureHysteresis,
           observer_generation: observerGeneration,
-          now_ms: cycleNow.getTime(),
+          // Read the clock after sampling. `cycleNow` predates the snapshot, so
+          // using it here dates the sample in the future and publishes a
+          // negative age that the status reader rejects as malformed.
+          now_ms: now().getTime(),
         });
         writePrivateJsonAtomic(paths.pressure, {
           schema_version: SUPERVISOR_PRESSURE_SCHEMA_VERSION,

@@ -562,7 +562,15 @@ function carryPrior(
 function sampleAge(snapshot: ResourceSnapshot, nowMs: number): number | null {
   const sampledMs = Date.parse(snapshot.sampled_at);
   if (!Number.isFinite(sampledMs) || !Number.isFinite(nowMs)) return null;
-  return Math.round(nowMs - sampledMs);
+  const age = Math.round(nowMs - sampledMs);
+  // The observer samples and then assesses, so a sample time a few milliseconds
+  // ahead of the assessment clock is ordinary. Read that as zero. A larger jump
+  // means the clock cannot be trusted; report an unreadable age rather than a
+  // negative one, so the published record stays valid and says why it is unknown.
+  if (age < 0) {
+    return age >= -PRESSURE_POLICY.sample_future_tolerance_ms ? 0 : null;
+  }
+  return age;
 }
 
 function stalenessReason(ageMs: number | null): { code: "snapshot_stale"; summary: string } | null {
@@ -570,6 +578,12 @@ function stalenessReason(ageMs: number | null): { code: "snapshot_stale"; summar
     return {
       code: "snapshot_stale",
       summary: "The resource snapshot carries no readable sample time, so its age cannot be shown.",
+    };
+  }
+  if (ageMs < 0) {
+    return {
+      code: "snapshot_stale",
+      summary: `The resource snapshot is dated ${seconds(-ageMs)} in the future, so its age cannot be trusted.`,
     };
   }
   const limit = PRESSURE_POLICY.sample_staleness_ms;

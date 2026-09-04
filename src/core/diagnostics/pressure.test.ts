@@ -921,3 +921,24 @@ describe("pressure assessment: reported shape", () => {
     expect(assessment.summary.endsWith(".")).toBe(true);
   });
 });
+
+describe("sample age never goes negative", () => {
+  // The observer samples and then assesses, so the snapshot's time can sit a
+  // few milliseconds ahead of the assessment clock. Publishing that as a
+  // negative age made the status reader reject the whole record as malformed,
+  // and the reader reported unknown pressure on roughly half of all cycles.
+  test("reads a sample time slightly ahead of the clock as zero", () => {
+    const assessment = assess({ snapshot: snapshot({ sampled_at: AT(1) }) });
+    expect(assessment.sample_age_ms).toBe(0);
+    expect(assessment.state).not.toBe("unknown");
+  });
+
+  test("treats a sample time far ahead of the clock as untrustworthy", () => {
+    const assessment = assess({ snapshot: snapshot({ sampled_at: AT(60_000) }) });
+    expect(assessment.state).toBe("unknown");
+    expect(codes(assessment)).toContain("snapshot_stale");
+    // Unknown must still be publishable. A negative age is not, because the
+    // status reader rejects the record and loses the explanation with it.
+    expect(assessment.sample_age_ms).toBeNull();
+  });
+});

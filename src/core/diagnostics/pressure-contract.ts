@@ -175,6 +175,13 @@ export const PRESSURE_POLICY = {
   policy_version: 1,
   /** A snapshot older than this cannot support any state but `unknown`. */
   sample_staleness_ms: 15_000,
+  /**
+   * A snapshot may carry a sample time slightly ahead of the assessment clock,
+   * because the observer samples and then assesses. Within this tolerance the
+   * age reads as zero; beyond it the clock is untrustworthy and the state is
+   * `unknown`. A negative age is never published.
+   */
+  sample_future_tolerance_ms: 1_000,
   /** Samples of recent history the assessment may consider. */
   max_history_samples: 12,
   memory_stall: { critical_avg10: 50, elevated_avg10: 20, elevated_samples: 2, exit_avg10: 10 },
