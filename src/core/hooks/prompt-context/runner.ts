@@ -163,9 +163,8 @@ export async function runPromptContext(
     if (!validated.value.context) return finish("empty", auditFields);
 
     const contextFingerprint = fingerprintContext(coordRoot, validated.value.context);
-    const status = delivery === "consume" ? "staged" : "delivered";
     return finish(
-      status,
+      "delivered",
       { ...auditFields, context_fingerprint: contextFingerprint },
       validated.value.context,
     );

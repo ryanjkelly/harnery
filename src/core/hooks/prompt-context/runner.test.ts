@@ -154,7 +154,7 @@ describe("prompt-context provider runner", () => {
     expect(result.audit.context_fingerprint).toBeUndefined();
   });
 
-  test("preserves partial-success metadata for consume delivery", async () => {
+  test("preserves partial-success metadata for direct Cursor delivery", async () => {
     const fixture = createFixture();
     const providerResult = {
       schema: "harnery.prompt-context-result/v1",
@@ -173,10 +173,10 @@ describe("prompt-context provider runner", () => {
     const result = await runFixture(fixture, { adapter: "cursor" });
 
     expect(result.context).toBe(providerResult.context);
-    expect(result.delivery).toBe("consume");
+    expect(result.delivery).toBe("direct");
     expect(result.audit).toMatchObject({
-      status: "staged",
-      delivery: "consume",
+      status: "delivered",
+      delivery: "direct",
       provider_id: "fixture-provider",
       matched: 2,
       succeeded: 1,

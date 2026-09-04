@@ -1,0 +1,70 @@
+---
+title: "ADR 0166: deliver Cursor prompt context directly"
+description: Use Cursor's additional_context hook output for mailbox pings, host prompt context, and reminders.
+sidebar:
+  order: 166
+---
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+## Context
+
+Harnery had treated Cursor's `beforeSubmitPrompt` hook as an allow-or-block
+surface. Mailbox pings stayed queued until SessionStart, while host prompt
+context went through private staged state and an agent-run consume command.
+That route added a tool call and a Stop recovery path to every matching Cursor
+turn.
+
+Cursor's published hook schema did not list a field for model context. A live,
+isolated probe against Cursor Agent `2026.09.02-c22c1a3` established that the
+interactive `beforeSubmitPrompt` path accepts a top-level
+`additional_context` field. The hook received the submitted prompt, wrote its
+marker, and returned a unique sentinel as additional context. The model then
+answered with that sentinel. Cursor's noninteractive `--print` mode did not run
+the project prompt hook in the same build, so it is not a useful capability
+probe for this path.
+
+## Alternatives considered
+
+- Keep the consume route until Cursor documents `additional_context`. This
+  would retain private state, an extra tool call, and delayed mailbox delivery
+  after the capability had been proved in the interactive product.
+- Use direct delivery only for mailbox pings. That would leave two Cursor
+  transports for the same hook output shape.
+- Keep the consume command as a compatibility alias. Harnery is pre-1.0, and
+  this route had not shipped on a stable release. An alias would preserve dead
+  lifecycle and security-sensitive code without a caller that needs it.
+
+## Decision
+
+Cursor `UserPromptSubmit` output uses the same direct model-context transport
+as the other adapters. Harnery writes `{ "additional_context": "..." }` from
+`beforeSubmitPrompt`.
+
+The prompt renderer always checks the addressed agent's mailbox. It atomically
+claims unread messages, copies them to the delivered audit, records them in the
+recipient's journal when needed, and injects them into the next prompt. The
+same output carries the optional host prompt-context provider result and
+`instructions.promptReminder`. Claude Code keeps its native reminder instead
+of receiving a duplicate.
+
+Remove the Cursor consume command, session key, staged envelope store,
+generated consume instruction, and Stop recovery branch. Keep SessionStart
+mailbox delivery because it handles messages that were waiting before the
+session existed.
+
+The host provider contract remains unchanged. It is still disabled by default,
+project-owned, bounded, fully validated, and excluded from Harnery's
+coordination logs.
+
+## Result
+
+Cursor sessions now receive unread pings and fresh host context before the
+model answers the prompt that triggered the hook. Each mailbox message is
+delivered once. Focused hook integration tests cover direct delivery for all
+three adapters and a two-prompt Cursor sequence that proves the first prompt
+drains the ping and the second cannot replay it.
+
+This decision replaces only the Cursor delivery route in ADR 0107 and ADR
+0161. Their source-neutral configuration and privacy decisions still apply.

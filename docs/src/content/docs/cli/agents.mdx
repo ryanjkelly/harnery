@@ -366,15 +366,10 @@ The coordination-in-motion commands.
   write the payload to a managed artifact and send its path instead. Delivered
   messages are copied to `.harnery/mailbox/delivered/<name>.jsonl` for audit.
 
-  **When the recipient sees it depends on their adapter.** Claude Code and
-  Codex receive messages on their next prompt. Cursor does not: its
-  `beforeSubmitPrompt` hook can allow or block a turn but cannot inject model
-  context, so a Cursor session receives queued messages at SessionStart
-  instead, which can be much later. The delivery path checks this through
-  `canReceiveContext` and deliberately leaves the queue untouched for an
-  adapter that cannot receive, because draining would consume the messages
-  into output that is discarded. Senders need no adapter knowledge; the
-  message is never lost, only delayed.
+  Claude Code, Codex, and Cursor receive unread messages on their next prompt.
+  A message already waiting when a session starts may arrive with SessionStart
+  context instead. Delivery atomically claims the pending batch, so later
+  prompts cannot replay it. Senders need no adapter knowledge.
 - **`wait <name>`** blocks until a peer releases its files (its `files_touched`
   empties) or exits. Scope it to specific paths with `--file <path>`
   (repeatable), cap it with `--timeout <dur>` (suffix `s`/`m`/`h`/`d`; a bare

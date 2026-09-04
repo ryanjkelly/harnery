@@ -286,9 +286,8 @@ hook protocol or copied into operational logs.
 }
 ```
 
-Claude Code and Codex receive validated context directly. Cursor stages a
-session-bound envelope and uses [`prompt-context consume`](/cli/prompt-context/)
-because its current `beforeSubmitPrompt` hook cannot inject context.
+Claude Code, Codex, and Cursor receive validated context directly through the
+prompt hook.
 
 ## `instructions`
 
@@ -305,11 +304,9 @@ line must contain 1 to 500 characters and cannot contain a newline. Harnery
 reads it at emission time, passes only an enable flag through the hook process,
 and does not copy the text into coordination state.
 
-Harnery currently emits this line through Codex `UserPromptSubmit`. Claude Code
+Harnery emits this line through Codex and Cursor `UserPromptSubmit`. Claude Code
 already supplies native output-style reminders, so Harnery does not duplicate
-them. Cursor's `beforeSubmitPrompt` output can allow or block submission but
-cannot inject model context. Use an Always Apply Cursor rule for the same host
-policy.
+them.
 
 ```jsonc
 {

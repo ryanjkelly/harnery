@@ -410,16 +410,6 @@ function harneryCommandBundles({
       async (program) =>
         (await import("./commands/adapter.ts")).registerAdapterCommand(program, emit),
     ),
-    lazy(
-      "prompt-context",
-      "Consume host-provided context staged for the current prompt.",
-      async (program) =>
-        (await import("./commands/prompt-context.ts")).registerPromptContextCommand(
-          program,
-          emit,
-          context,
-        ),
-    ),
     lazy("policy", "Inspect host-enforced workflow policy documents.", async (program) =>
       (await import("./commands/policy.ts")).registerPolicyCommand(program, emit),
     ),

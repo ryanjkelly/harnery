@@ -6,7 +6,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -14,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { peekMailbox, queueMailboxMessage } from "../agents/mailbox.ts";
 import {
   listSessionFinalizationRequestsV3,
   requestSessionEndExplicitV3,
@@ -150,12 +150,12 @@ describe("agent-hook V3 hard cut", () => {
     }
   });
 
-  test("routes a fresh host prompt reminder only through the supported non-native adapter", () => {
+  test("routes a fresh host prompt reminder through supported non-native adapters", () => {
     const reminder = "HOST_REMINDER_SENTINEL: keep the reader-facing voice.";
     const cases = [
       { adapter: "claude-code" as const, sessionKey: "session_id", expected: false },
       { adapter: "codex" as const, sessionKey: "session_id", expected: true },
-      { adapter: "cursor" as const, sessionKey: "conversation_id", expected: false },
+      { adapter: "cursor" as const, sessionKey: "conversation_id", expected: true },
     ];
 
     for (const entry of cases) {
@@ -190,8 +190,8 @@ describe("agent-hook V3 hard cut", () => {
     }
   });
 
-  test("injects host prompt context directly for Claude Code and Codex", () => {
-    for (const adapter of ["claude-code", "codex"] as const) {
+  test("injects host prompt context directly for every adapter", () => {
+    for (const adapter of ["claude-code", "codex", "cursor"] as const) {
       const root = candidateRoot(adapter);
       enablePromptContextProvider(root);
       const owner = `${adapter}-prompt-context-owner`;
@@ -224,100 +224,64 @@ describe("agent-hook V3 hard cut", () => {
     }
   });
 
-  test("delivers Cursor prompt context through one-shot consume and one bounded recovery", () => {
+  test("injects an unread Cursor mailbox ping once at the next prompt", () => {
     const root = candidateRoot("cursor");
-    enablePromptContextProvider(root);
-    const owner = "cursor-prompt-context-owner";
+    const owner = "cursor-mailbox-owner";
     const env = { HARNERY_AGENT_COORD_BYPASS_STOP: "1" };
-    const started = run(
-      AGENT_HOOK,
-      ["session-start", "--adapter", "cursor"],
-      {
-        conversation_id: owner,
-        cwd: root,
-        source: "startup",
-        is_background_agent: false,
-        hook_event_name: "sessionStart",
-      },
-      root,
-      env,
-    );
-    const sessionKey = (
-      JSON.parse(started.stdout) as { env?: { HARNERY_PROMPT_CONTEXT_SESSION_KEY?: string } }
-    ).env?.HARNERY_PROMPT_CONTEXT_SESSION_KEY;
-    expect(sessionKey).toBeString();
 
-    const stage = (generationId: string) =>
+    expect(
       run(
         AGENT_HOOK,
-        ["user-prompt-submit", "--adapter", "cursor"],
-        {
-          conversation_id: owner,
-          generation_id: generationId,
-          cwd: root,
-          prompt: "lookup fixture",
-          is_background_agent: false,
-          hook_event_name: "beforeSubmitPrompt",
-        },
+        ["session-start", "--adapter", "cursor"],
+        { conversation_id: owner, cwd: root, source: "startup" },
         root,
         env,
-      );
-    const firstTurn = stage("cursor-context-turn-one");
-    expect(firstTurn.status).toBe(0);
-    expect(firstTurn.stdout).not.toContain("PROMPT_CONTEXT_FIXTURE");
-    // Cursor's prompt hook cannot inject, so the assertion above passes just as
-    // well when the provider never ran at all. Prove the staged file landed
-    // before consuming it, or a skipped stage would surface as an unexplained
-    // empty consume several steps later.
-    assertStagedPromptContext(root, 1);
+      ).status,
+    ).toBe(0);
+    const name = readLiveCoordinationRows(root)[0]?.name;
+    if (!name) throw new Error("Cursor session name was not projected");
 
-    const consume = spawnSync("bash", [HARN, "prompt-context", "consume"], {
-      cwd: root,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        // The hook pin must outrank an unrelated inherited web/dashboard root.
-        // The full Bun partition runs files in one process, so another test can
-        // expose exactly this production subprocess environment at spawn time.
-        HARNERY_COORD_ROOT: join(root, "unrelated-coord-root"),
-        HARNERY_COORD_ROOT_OVERRIDE: root,
-        HARNERY_PROMPT_CONTEXT_SESSION_KEY: sessionKey!,
-      },
+    queueMailboxMessage({
+      coordRoot: root,
+      toName: name,
+      fromName: "Talia",
+      fromInstanceId: "mailbox-probe-sender",
+      body: "CURSOR_MAILBOX_FIXTURE",
     });
-    expect(consume.status).toBe(0);
-    expect(consume.stdout).toContain("PROMPT_CONTEXT_FIXTURE");
 
-    expect(stage("cursor-context-turn-two").status).toBe(0);
-    const firstStop = run(
+    const first = run(
       AGENT_HOOK,
-      ["stop", "--adapter", "cursor"],
+      ["user-prompt-submit", "--adapter", "cursor"],
       {
         conversation_id: owner,
-        generation_id: "cursor-stop-one",
+        generation_id: `${owner}:1`,
+        hook_event_name: "beforeSubmitPrompt",
         cwd: root,
-        last_assistant_message: "done",
-        is_background_agent: false,
-        hook_event_name: "stop",
+        prompt: "first prompt",
       },
       root,
       env,
     );
-    expect(firstStop.stdout).toContain("prompt-context recovery");
-    const secondStop = run(
+    expect(first.status).toBe(0);
+    expect(first.stdout).toContain('"additional_context"');
+    expect(first.stdout).toContain("CURSOR_MAILBOX_FIXTURE");
+    expect(peekMailbox(root, name)).toHaveLength(0);
+
+    const second = run(
       AGENT_HOOK,
-      ["stop", "--adapter", "cursor"],
+      ["user-prompt-submit", "--adapter", "cursor"],
       {
         conversation_id: owner,
-        generation_id: "cursor-stop-two",
+        generation_id: `${owner}:2`,
+        hook_event_name: "beforeSubmitPrompt",
         cwd: root,
-        last_assistant_message: "done",
-        is_background_agent: false,
-        hook_event_name: "stop",
+        prompt: "second prompt",
       },
       root,
       env,
     );
-    expect(secondStop.stdout).not.toContain("prompt-context recovery");
+    expect(second.status).toBe(0);
+    expect(second.stdout).not.toContain("CURSOR_MAILBOX_FIXTURE");
   });
 
   test("PostToolUse injects and PreToolUse enforces the pending session-name display", () => {
@@ -1656,37 +1620,6 @@ process.stdin.on("end", () => {
     { mode: 0o755 },
   );
   chmodSync(executable, 0o755);
-}
-
-/**
- * Files the Cursor prompt-context stage left pending, asserted with the hook's
- * own diagnostics attached. A missing file means the stage was skipped or the
- * provider failed, which is a different defect from a consume that lost the
- * race, and the two are indistinguishable from the consume assertion alone.
- */
-function assertStagedPromptContext(root: string, expected: number): void {
-  const pendingDir = join(root, ".harnery", "runtime", "prompt-context", "pending");
-  const staged = existsSync(pendingDir)
-    ? readdirSync(pendingDir).filter((name) => name.endsWith(".json"))
-    : [];
-  if (staged.length === expected) return;
-  throw new Error(
-    `expected ${expected} staged prompt-context file(s), found ${staged.length}` +
-      `\nhook diagnostics:\n${hookDiagnostics(root)}`,
-  );
-}
-
-function hookDiagnostics(root: string): string {
-  const debugPath = join(root, ".harnery", "debug", "agent-hook.ndjson");
-  if (existsSync(debugPath)) return readFileSync(debugPath, "utf8").trimEnd();
-  const logDir = join(root, ".harnery", "logs");
-  if (!existsSync(logDir)) return "(none recorded)";
-  const lines: string[] = [];
-  for (const name of readdirSync(logDir)) {
-    if (!name.includes("agent-hook")) continue;
-    lines.push(`--- ${name}`, readFileSync(join(logDir, name), "utf8").trimEnd());
-  }
-  return lines.length > 0 ? lines.join("\n") : "(none recorded)";
 }
 
 function run(

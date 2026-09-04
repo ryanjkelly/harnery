@@ -61,3 +61,7 @@ line on each supported prompt without persisting it in runtime state. Tests
 cover config validation, project-only scope, repeated rendering,
 deduplication-state privacy, runtime-state privacy, and the Claude Code, Codex,
 and Cursor routing matrix.
+
+On 2026-09-04, a live Cursor Agent probe proved that `beforeSubmitPrompt`
+accepts `additional_context`. ADR 0166 enables the reminder for Cursor while
+leaving Claude Code on its native reminder path.

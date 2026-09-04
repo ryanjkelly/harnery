@@ -46,10 +46,8 @@ import {
 import { join } from "node:path";
 
 import { coordEnv } from "../../../lib/env.ts";
-import type { Adapter } from "../../adapter.ts";
 import { endOfTurnStatusCommand, hostPromptReminder, resolveBinName } from "../../config.ts";
 import type { PressureWorkloadClass } from "../../diagnostics/contract.ts";
-import { canReceiveContext } from "../../hooks/adapter/output.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { readResourceStatus } from "../../resources/status.ts";
 import { drainMailbox, formatMailboxDelivery } from "../mailbox.ts";
@@ -98,11 +96,6 @@ export interface PromptContextOpts {
   /** When true, append the non-deduplicated Codex status-footer reminder.
    * The caller enables this only for human-facing Codex sessions. */
   statusFooterNudge?: boolean;
-  /** Adapter id this prompt is being rendered for. Gates the mailbox drain:
-   * an adapter that cannot receive UserPromptSubmit context must not consume
-   * messages here, or they are removed from the queue and never shown. When
-   * omitted, delivery is attempted (the default route can receive). */
-  adapter?: string;
   /** Adapter id whose Stop hook ENFORCES the end-of-turn ritual (task_set +
    * status check). When set, append a fresh per-prompt reminder of that
    * contract so the model satisfies it before ending the turn instead of
@@ -130,7 +123,6 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     hostPromptReminder: promptReminderEnabled,
     statusFooterNudge,
     turnRitualNudge,
-    adapter,
   } = opts;
   const sections: string[] = [];
 
@@ -143,12 +135,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
   // exactly once, and it is the one section here that carries new information
   // from another agent rather than a reminder.
   //
-  // Draining is gated on the adapter being able to receive this event's
-  // context. Cursor cannot, so draining there would empty the queue into output
-  // that is discarded; those sessions get their messages at SessionStart, which
-  // Cursor does deliver.
-  const canDeliverHere = !adapter || canReceiveContext(adapter as Adapter, "UserPromptSubmit");
-  if (resolvedName && canDeliverHere) {
+  if (resolvedName) {
     const delivered = drainMailbox(coordRoot, resolvedName);
     if (delivered.length > 0) {
       recordDeliveredMessages(instanceId, delivered);
@@ -160,10 +147,8 @@ export function renderPromptContext(opts: PromptContextOpts): string {
   const peerTable = computePeerTableIfChanged(coordRoot, instanceId, sessionId);
   if (peerTable) sections.push(peerTable);
 
-  if (canDeliverHere) {
-    const resources = resourceWarningIfChanged(coordRoot, instanceId);
-    if (resources) sections.push(resources);
-  }
+  const resources = resourceWarningIfChanged(coordRoot, instanceId);
+  if (resources) sections.push(resources);
 
   // 3. Council pending with hash dedup.
   if (resolvedName) {

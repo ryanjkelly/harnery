@@ -12,7 +12,7 @@ const MAX_PROVIDER_ID_CHARS = 100;
 const MAX_REASON_CODES = 32;
 const MAX_REASON_CODE_CHARS = 80;
 
-export type PromptContextDelivery = "direct" | "consume" | "unsupported";
+export type PromptContextDelivery = "direct" | "unsupported";
 
 export interface PromptContextConfig {
   enabled: boolean;
@@ -52,8 +52,7 @@ export interface PromptContextAuditV1 {
     | "invalid_result"
     | "oversized_result"
     | "empty"
-    | "delivered"
-    | "staged";
+    | "delivered";
   delivery: PromptContextDelivery;
   elapsed_ms: number;
   matched?: number;
@@ -71,7 +70,7 @@ export type PromptContextResultValidation =
 const DELIVERY_BY_ADAPTER: Readonly<Record<Adapter, PromptContextDelivery>> = {
   "claude-code": "direct",
   codex: "direct",
-  cursor: "consume",
+  cursor: "direct",
 };
 
 export function promptContextDelivery(adapter: Adapter): PromptContextDelivery {

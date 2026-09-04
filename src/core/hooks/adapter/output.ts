@@ -8,16 +8,15 @@
  * - **Claude Code**: `{hookSpecificOutput: {hookEventName, additionalContext}}`
  *   for SessionStart / UserPromptSubmit / SubagentStart; deny uses
  *   `{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason}}`.
- * - **Cursor**: `{additional_context, env?}` flat for sessionStart and other
- *   context-capable events. Its current beforeSubmitPrompt schema can validate
- *   or block but cannot inject context, so UserPromptSubmit output is skipped.
- *   Deny uses `{permission: "deny", agent_message, user_message}`.
+ * - **Cursor**: `{additional_context}` flat for context-capable events,
+ *   including beforeSubmitPrompt. Deny uses
+ *   `{permission: "deny", agent_message, user_message}`.
  * - **Codex**: structurally identical to Claude Code for context and tool
  *   denials. Stop blocks are deliberately suppressed because their automatic
  *   continuation can replace a completed user-facing answer.
  *
  * Every helper writes to process.stdout + newline-terminates so callers can
- * fire-and-forget. Empty text with no supported environment output is a no-op.
+ * fire-and-forget. Empty text is a no-op.
  */
 
 import type { Adapter } from "../../adapter.ts";
@@ -31,40 +30,15 @@ export type SystemEvent =
   | "PreToolUse"
   | "PostToolUse";
 
-export interface ContextOutputOptions {
-  /** Cursor SessionStart environment values inherited by later hooks/tools. */
-  env?: Readonly<Record<string, string>>;
-}
-
 export interface StopOutputOptions {
   /** Existing coordination verdict. Omit when that check passed. */
   verdict?: { reason?: string; rule: string };
-  /** Add one payload-free recovery for unconsumed Cursor prompt context. */
-  promptContextRecovery?: boolean;
-}
-
-/**
- * Whether this adapter can actually receive injected context for an event.
- * Cursor's beforeSubmitPrompt hook can allow or block a turn but cannot inject
- * model context, so anything rendered for that event is discarded. A caller
- * that consumes state to build the text (draining a mailbox, for instance)
- * must check this first, or the state is spent on output nobody reads.
- */
-export function canReceiveContext(adapter: Adapter, event: SystemEvent): boolean {
-  return !(adapter === "cursor" && event === "UserPromptSubmit");
 }
 
 /** Emit a context-injection (peer table, wiring check, council pending, …). */
-export function emitContext(
-  adapter: Adapter,
-  event: SystemEvent,
-  text: string,
-  options: ContextOutputOptions = {},
-): boolean {
-  const env = adapter === "cursor" && event === "SessionStart" ? cleanEnv(options.env) : undefined;
-  const hasText = text.length > 0 && canReceiveContext(adapter, event);
-  if (!hasText && !env) return false;
-  const json = buildContextJson(adapter, event, hasText ? text : "", env);
+export function emitContext(adapter: Adapter, event: SystemEvent, text: string): boolean {
+  if (!text) return false;
+  const json = buildContextJson(adapter, event, text);
   process.stdout.write(`${JSON.stringify(json)}\n`);
   return true;
 }
@@ -107,11 +81,7 @@ export function emitStopBlock(
 }
 
 /**
- * Emit at most one adapter response for all Stop followups.
- *
- * Cursor accepts one JSON object from a hook invocation. Prompt-context
- * recovery therefore composes with the existing coordination remediation here
- * rather than letting two independent features write competing objects.
+ * Emit the adapter-specific response for one Stop outcome.
  */
 export function emitStopOutcome(
   adapter: Adapter,
@@ -121,23 +91,12 @@ export function emitStopOutcome(
   if (adapter === "codex") return 0;
 
   const verdict = options.verdict;
-  if (!verdict && !(adapter === "cursor" && options.promptContextRecovery)) return 0;
+  if (!verdict) return 0;
 
   if (adapter === "cursor") {
-    const messages: string[] = [];
-    if (verdict) messages.push(cursorCoordinationRemediation(verdict, coordRoot));
-    if (options.promptContextRecovery) {
-      const bin = resolveBinName(coordRoot);
-      messages.push(
-        [
-          "[harnery prompt-context recovery]",
-          "Prefetched context for this turn is still pending.",
-          `Run \`${bin} prompt-context consume\` now, use any returned context, then finish the turn.`,
-        ].join("\n"),
-      );
-    }
-    if (messages.length === 0) return 0;
-    process.stdout.write(`${JSON.stringify({ followup_message: messages.join("\n\n") })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ followup_message: cursorCoordinationRemediation(verdict, coordRoot) })}\n`,
+    );
     return 0;
   }
 
@@ -177,18 +136,9 @@ function buildContextJson(
   adapter: Adapter,
   event: SystemEvent,
   text: string,
-  env?: Record<string, string>,
 ): Record<string, unknown> {
   if (adapter === "cursor") {
-    // Cursor uses a flat top-level key + an env block that survives across the
-    // session. The dispatcher historically also wrote
-    // `env: {HARNERY_AGENT_COORD_ADAPTER, HARNERY_AGENT_COORD_PLATFORM}`. These are
-    // observer hints, not load-bearing; agent-hook + agent-coord recover the
-    // adapter from event metadata. Drop them.
-    return {
-      ...(text ? { additional_context: text } : {}),
-      ...(env ? { env } : {}),
-    };
+    return { additional_context: text };
   }
   // Claude Code + Codex share the `hookSpecificOutput` envelope.
   return {
@@ -197,16 +147,6 @@ function buildContextJson(
       additionalContext: text,
     },
   };
-}
-
-function cleanEnv(
-  value: Readonly<Record<string, string>> | undefined,
-): Record<string, string> | undefined {
-  if (!value) return undefined;
-  const entries = Object.entries(value).filter(
-    ([key, item]) => /^[A-Z_][A-Z0-9_]*$/.test(key) && typeof item === "string" && item.length > 0,
-  );
-  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function buildDenyJson(adapter: Adapter, reason: string): Record<string, unknown> {

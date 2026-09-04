@@ -20,19 +20,3 @@ export {
 } from "./contract.ts";
 export type { PromptContextRunResult, RunPromptContextInput } from "./runner.ts";
 export { runPromptContext } from "./runner.ts";
-export type {
-  CursorPromptContextConsumeResult,
-  CursorPromptContextRecoveryResult,
-  CursorPromptContextSession,
-  CursorPromptContextStageResult,
-} from "./state.ts";
-export {
-  clearCursorPromptContextSession,
-  consumeCursorPromptContext,
-  DEFAULT_PROMPT_CONTEXT_SESSION_TTL_MS,
-  DEFAULT_PROMPT_CONTEXT_TTL_MS,
-  markCursorPromptContextRecovery,
-  PROMPT_CONTEXT_SESSION_KEY_ENV,
-  stageCursorPromptContext,
-  startCursorPromptContextSession,
-} from "./state.ts";

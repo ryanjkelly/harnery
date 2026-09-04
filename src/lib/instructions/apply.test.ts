@@ -111,6 +111,7 @@ describe("applyInstructions (cursor)", () => {
     expect(read(".cursor/rules/harnery-turn-ritual.mdc")).toContain(
       "Append that command's stdout verbatim in a fenced code block",
     );
+    expect(read(".cursor/rules/harnery-turn-ritual.mdc")).not.toContain("prompt-context consume");
   });
 
   test("cursor block points at its installed skills", () => {
@@ -122,7 +123,7 @@ describe("applyInstructions (cursor)", () => {
     expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("fresh");
   });
 
-  test("cursor rule includes the interpolated consume command only when prompt context is enabled", () => {
+  test("cursor rule does not depend on prompt-context provider configuration", () => {
     mkdirSync(join(root, ".harnery"), { recursive: true });
     writeFileSync(
       join(root, ".harnery/config.jsonc"),
@@ -130,14 +131,11 @@ describe("applyInstructions (cursor)", () => {
     );
     applyInstructions(root, { binName: BIN, adapter: "cursor", dryRun: false });
     const rule = read(".cursor/rules/harnery-turn-ritual.mdc");
-    expect(rule).toContain("`acme prompt-context consume`");
-    expect(rule).toContain("makes the turn tool-using");
+    expect(rule).not.toContain("prompt-context consume");
     expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("fresh");
 
     writeFileSync(join(root, ".harnery/config.jsonc"), "{}");
-    expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("drift");
-    applyInstructions(root, { binName: BIN, adapter: "cursor", dryRun: false });
-    expect(read(".cursor/rules/harnery-turn-ritual.mdc")).not.toContain("prompt-context consume");
+    expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("fresh");
   });
 
   test("cursor rule drift is checked and deinit removes the owned file", () => {

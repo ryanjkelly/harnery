@@ -13,7 +13,7 @@ describe("prompt-context contract", () => {
   test("pins adapter delivery modes", () => {
     expect(promptContextDelivery("claude-code")).toBe("direct");
     expect(promptContextDelivery("codex")).toBe("direct");
-    expect(promptContextDelivery("cursor")).toBe("consume");
+    expect(promptContextDelivery("cursor")).toBe("direct");
   });
 
   test("defaults off and accepts bounded enabled config", () => {

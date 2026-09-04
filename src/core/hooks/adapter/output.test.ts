@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STOP_REMEDIATION_MARKER } from "../../agents/rules/stop-hook.ts";
-import { emitContext, emitStopBlock, emitStopOutcome } from "./output.ts";
+import { emitContext, emitStopBlock } from "./output.ts";
 
 let outChunks: string[] = [];
 let errChunks: string[] = [];
@@ -60,21 +60,21 @@ describe("emitContext PostToolUse", () => {
     }
   });
 
-  test("skips Cursor UserPromptSubmit because beforeSubmitPrompt cannot inject context", () => {
+  test("injects Cursor UserPromptSubmit context through beforeSubmitPrompt", () => {
     capture();
     const delivered = emitContext("cursor", "UserPromptSubmit", "fresh reminder");
     process.stdout.write = realOut;
     process.stderr.write = realErr;
-    expect(outChunks.join("")).toBe("");
+    expect(JSON.parse(outChunks.join("").trim())).toEqual({
+      additional_context: "fresh reminder",
+    });
     expect(errChunks.join("")).toBe("");
-    expect(delivered).toBe(false);
+    expect(delivered).toBe(true);
   });
 
-  test("combines Cursor SessionStart context and inherited environment in one JSON object", () => {
+  test("emits Cursor SessionStart context in the same flat shape", () => {
     capture();
-    const delivered = emitContext("cursor", "SessionStart", "existing session context", {
-      env: { HARNERY_PROMPT_CONTEXT_SESSION_KEY: "opaque-key" },
-    });
+    const delivered = emitContext("cursor", "SessionStart", "existing session context");
     process.stdout.write = realOut;
     process.stderr.write = realErr;
 
@@ -82,34 +82,7 @@ describe("emitContext PostToolUse", () => {
     expect(delivered).toBe(true);
     expect(JSON.parse(outChunks[0]!.trim())).toEqual({
       additional_context: "existing session context",
-      env: { HARNERY_PROMPT_CONTEXT_SESSION_KEY: "opaque-key" },
     });
-  });
-
-  test("emits Cursor SessionStart environment even when existing context is empty", () => {
-    capture();
-    const delivered = emitContext("cursor", "SessionStart", "", {
-      env: { HARNERY_PROMPT_CONTEXT_SESSION_KEY: "opaque-key" },
-    });
-    process.stdout.write = realOut;
-    process.stderr.write = realErr;
-
-    expect(outChunks).toHaveLength(1);
-    expect(delivered).toBe(true);
-    expect(JSON.parse(outChunks[0]!.trim())).toEqual({
-      env: { HARNERY_PROMPT_CONTEXT_SESSION_KEY: "opaque-key" },
-    });
-  });
-
-  test("does not emit environment values outside Cursor SessionStart", () => {
-    capture();
-    const delivered = emitContext("cursor", "UserPromptSubmit", "", {
-      env: { HARNERY_PROMPT_CONTEXT_SESSION_KEY: "opaque-key" },
-    });
-    process.stdout.write = realOut;
-    process.stderr.write = realErr;
-    expect(outChunks).toEqual([]);
-    expect(delivered).toBe(false);
   });
 });
 
@@ -218,33 +191,5 @@ describe("emitStopBlock", () => {
     expect(code).toBe(0);
     const payload = JSON.parse(outChunks.join("").trim()) as { followup_message?: string };
     expect((payload.followup_message ?? "").length).toBeGreaterThan(0);
-  });
-
-  test("cursor composes coordination and prompt-context recovery in one JSON object", () => {
-    capture();
-    const code = emitStopOutcome("cursor", { verdict, promptContextRecovery: true }, undefined);
-    process.stdout.write = realOut;
-    process.stderr.write = realErr;
-
-    expect(code).toBe(0);
-    expect(outChunks).toHaveLength(1);
-    const payload = JSON.parse(outChunks[0]!.trim()) as { followup_message?: string };
-    expect(payload.followup_message?.startsWith(STOP_REMEDIATION_MARKER)).toBe(true);
-    expect(payload.followup_message).toContain("harn agents status");
-    expect(payload.followup_message).toContain("harn prompt-context consume");
-    expect(errChunks).toEqual([]);
-  });
-
-  test("cursor can emit prompt-context recovery without a coordination failure", () => {
-    capture();
-    const code = emitStopOutcome("cursor", { promptContextRecovery: true });
-    process.stdout.write = realOut;
-    process.stderr.write = realErr;
-
-    expect(code).toBe(0);
-    expect(outChunks).toHaveLength(1);
-    const payload = JSON.parse(outChunks[0]!.trim()) as { followup_message?: string };
-    expect(payload.followup_message).toContain("harn prompt-context consume");
-    expect(payload.followup_message).not.toContain(STOP_REMEDIATION_MARKER);
   });
 });

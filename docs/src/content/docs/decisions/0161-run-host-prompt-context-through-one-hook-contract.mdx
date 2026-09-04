@@ -86,3 +86,8 @@ contain the prompt or provider payload.
 The hook path stays single-owner and source-neutral. A host owns detection,
 credentials, and lookups behind one executable, while Harnery owns lifecycle,
 validation, adapter routing, bounded state, and redacted audit behavior.
+
+Before this route reached a stable release, a live probe proved that Cursor
+accepts direct prompt context. ADR 0166 removes the consume route and sends the
+same validated provider result through `beforeSubmitPrompt`. The provider
+contract and its privacy limits are unchanged.
