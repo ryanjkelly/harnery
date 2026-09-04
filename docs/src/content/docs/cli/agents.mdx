@@ -142,8 +142,8 @@ The three orientation commands.
   `task_state` separate for local and remote agents. Older heartbeats read as
   `activity: unknown` and `task_state: active`.
 - **`status`** renders the end-of-turn status box: your name, session age,
-  current activity, task lifecycle, declared task, last turn summary, context
-  usage, files held, and a one-line peer roster. A blocked lifecycle includes
+  elapsed time for the current turn, current activity, task lifecycle, declared
+  task, context usage, files held, and a one-line peer roster. A blocked lifecycle includes
   its reason. `--json` returns the same data unformatted. `--session-id <id>`
   looks the heartbeat up by session id directly, for use from a hook whose
   process tree doesn't lead back to the agent's session pid. Add `--end-turn` for
@@ -494,8 +494,10 @@ glance:
 ```
 ┌─ agent-Foo ────────────────────────────────────────────────────────┐
 │ session    48m                                                      │
+│ turn       4m 12s                                                   │
 │ task       refactoring the ingest retry loop                        │
-│ last turn  reworked the backoff, added metrics, tests green         │
+│ activity   working                                                  │
+│ lifecycle  active                                                   │
 │ context    240K / 1M (24%)                                          │
 │ files      1 held                                                   │
 │ peers      Bar (CC), 3 files; Baz (CC)                              │
@@ -503,9 +505,18 @@ glance:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-`task` is what you declared with `set-task`; `last turn` is an auto-generated
-summary of your previous turn; `peers` lists the other active agents with their
-adapter and file counts.
+`session` is how long this session has been alive and `turn` is how long the
+turn the box closes has been running, so a long session and a short turn read
+differently at a glance. `task` is what you declared with `set-task`, and
+`peers` lists the other active agents with their adapter and file counts.
+
+The `turn` row measures from the `turn.started` event the operator's prompt
+recorded to the moment the box renders. A Stop-hook remediation restart is
+folded back into the turn it retried, because the operator experienced one
+turn. The row is best-effort: a session with no turn evidence in the ledger
+renders no `turn` line at all. `--json` carries the same measurement as
+`turn_elapsed_secs`, with `turn_complete` saying whether a `turn.completed`
+already closed it.
 
 When `coord.run_quality.mode` is `report`, status also performs a non-blocking
 due check and shows a `quality` line. A fresh snapshot can be `unknown`,

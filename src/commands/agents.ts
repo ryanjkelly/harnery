@@ -85,6 +85,7 @@ import {
   foldSessionState,
   type TaskState,
 } from "../core/agents/state/session-state.ts";
+import { turnElapsedStatusRow } from "../core/agents/turn-elapsed.ts";
 import {
   coordFreshnessSeconds,
   resolveBinName,
@@ -2409,6 +2410,11 @@ function runStatus(opts: {
   // the QA run took 58 minutes. Best-effort by contract — no pointer, a
   // malformed one, or any read failure renders no row.
   const qaSignal = qaSignalStatusRow({ coordRoot: root, instanceId: hb.instance_id });
+  // Duration of the turn this box closes. `session` is cumulative, so without
+  // this row an operator cannot tell a twelve-second turn from an eight-minute
+  // one inside the same session. Best-effort by contract — no turn evidence,
+  // no row.
+  const turnElapsed = turnElapsedStatusRow({ coordRoot: root, instanceId: hb.instance_id });
   const resources = readResourceStatus(root);
 
   const data = {
@@ -2416,6 +2422,8 @@ function runStatus(opts: {
     instance_id: hb.instance_id,
     kind: normalizeKind(hb.kind),
     session_age_secs: ageSecs,
+    turn_elapsed_secs: turnElapsed ? turnElapsed.elapsed.secs : null,
+    turn_complete: turnElapsed ? turnElapsed.elapsed.complete : null,
     activity: activityOf(hb),
     activity_updated_at: hb.activity_updated_at ?? null,
     activity_source: hb.activity_source ?? null,
@@ -2462,6 +2470,7 @@ function runStatus(opts: {
 
   const rows: Array<[string, string]> = [
     ["session", formatAge(ageSecs)],
+    ...(turnElapsed ? ([["turn", turnElapsed.value]] as Array<[string, string]>) : []),
     ["activity", activityOf(hb)],
     ["lifecycle", lifecycleLabel(hb)],
     ["context", ctxStr],
@@ -2470,9 +2479,15 @@ function runStatus(opts: {
     ["peers", peersStr],
     ["time", timeStr],
   ];
-  // Task gets full text; formatBox word-wraps to MAX_BOX_CONTENT_WIDTH.
+  // Task gets full text; formatBox word-wraps to MAX_BOX_CONTENT_WIDTH. It sits
+  // directly above `activity`, which keeps it under the session/turn clocks
+  // whether or not the turn row rendered.
   if (hb.task && hb.task.length > 0) {
-    rows.splice(1, 0, ["task", hb.task]);
+    rows.splice(
+      rows.findIndex((row) => row[0] === "activity"),
+      0,
+      ["task", hb.task],
+    );
   }
   if (pendingCouncils.length > 0) {
     // Slot the council line right before `time` so it stays in the "what's

@@ -1,0 +1,68 @@
+---
+title: "ADR 0163: show turn elapsed time in the status box"
+description: Add a `turn` row measuring the closing turn from its `turn.started` event, folding Stop-hook remediation restarts back into the turn they retried.
+sidebar:
+  order: 163
+---
+
+**Date:** 2026-09-03
+**Status:** Accepted
+
+## Context
+
+The closing status box reported `session`, a cumulative clock, and nothing
+about the turn it was closing. An operator reading "session 9m" could not tell
+whether the work just handed to them took twelve seconds or eight minutes, and
+comparing two boxes in the same session told them only that time had passed.
+The one number they most often want, the cost of the turn in front of them,
+was the number the box did not carry.
+
+The evidence already existed. A prompt records `turn.started` and the Stop hook
+records `turn.completed`, and the Stop hook's own policy already resolves a
+turn window from those events.
+
+## Alternatives considered
+
+- Store a turn-start timestamp on the heartbeat. That adds a second writer for
+  a fact the ledger already holds authoritatively, and the two would drift
+  after a crash or a resume.
+- Reuse the Stop hook's `resolveTurnStart` directly. It answers a policy
+  question, including a Claude recovery-continuation rule tied to
+  `stop_hook_active`, which the status command has no input for.
+- Measure from the last tool call instead of the prompt. That reports the tail
+  of a turn rather than the turn, and reads as a much cheaper turn than the
+  operator actually paid for.
+- Report the previous completed turn instead of the current one. The box is
+  issued inside the turn being measured, so the current turn is both available
+  and the one the operator is about to read.
+
+## Decision
+
+The box carries a `turn` row directly under `session`, and `--json` carries
+`turn_elapsed_secs` with a `turn_complete` flag. The measurement runs from the
+newest `turn.started` for this owner to the moment the box renders, or to a
+`turn.completed` once one has closed the turn.
+
+A Stop-hook bounce ends one turn and opens another carrying
+`stop_remediation`, so the walk back folds those restarts into the turn they
+retried and reports elapsed time since the operator's prompt. The walk stops at
+a generation boundary, so a resumed session never absorbs the previous
+generation's turn. A terminal counts only when it follows the newest start,
+which keeps a bounce's own `turn.completed` from ending the measurement
+mid-remediation.
+
+The row is best-effort in the same sense as the `qa` row. An unreadable
+ledger, a ledger that fails validation, or a session with no turn evidence
+renders no row rather than failing the status command.
+
+The format keeps seconds visible below an hour, because most turns land there
+and a bare `4m` cannot be compared with the turn before it.
+
+## Result
+
+`session` and `turn` now read as two different clocks, and a long session with
+a short turn is legible at a glance. The row costs one ledger read, which the
+reader already serves incrementally from its cache. Because remediation
+restarts are folded, a turn that the Stop hook bounced reports the whole cost
+of the retry cycle rather than the last attempt, which is the number worth
+seeing.
