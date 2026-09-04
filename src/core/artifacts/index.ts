@@ -42,11 +42,13 @@ export type {
   ArtifactDeliveryUrl,
 } from "./delivery-card.ts";
 export {
+  ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT,
   ARTIFACT_DELIVERY_MANIFEST,
   ARTIFACT_DELIVERY_SCHEMA_VERSION,
   parseArtifactDeliverySpec,
   readArtifactDeliveryManifest,
   renderArtifactDeliveryCard,
+  resolveArtifactDeliveryManifest,
   writeArtifactDeliveryManifest,
 } from "./delivery-card.ts";
 

@@ -14,10 +14,10 @@ import {
   inventoryArtifacts,
   migrateArtifacts,
   parseArtifactDeliverySpec,
-  readArtifactDeliveryManifest,
   releaseArtifact,
   renderArtifactDeliveryCard,
   renewArtifact,
+  resolveArtifactDeliveryManifest,
   showArtifact,
   unholdArtifact,
   writeArtifactDeliveryManifest,
@@ -144,7 +144,7 @@ export function registerArtifactsCommand(
 
   root
     .command("delivery-card <ref>")
-    .description("Save or render a reproducible Markdown delivery card for one artifact.")
+    .description("Discover or curate a reproducible Markdown delivery card for one artifact.")
     .option("--title <text>", "Card heading")
     .option("--url <label=url>", "Add a web destination; repeatable", collect, [])
     .option(
@@ -167,7 +167,7 @@ export function registerArtifactsCommand(
             items: suppliedItems,
           });
         } else {
-          manifest = readArtifactDeliveryManifest(repoRoot, ref);
+          manifest = resolveArtifactDeliveryManifest(repoRoot, ref);
           if (opts.title !== undefined) {
             manifest = writeArtifactDeliveryManifest(repoRoot, ref, {
               title: opts.title,

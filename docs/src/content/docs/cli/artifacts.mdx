@@ -56,8 +56,20 @@ harn artifacts clean --yes
 
 ## Deliver review files consistently
 
-Save the important destinations with the artifact and print a compact Markdown
-card for a chat handoff:
+Create a compact Markdown card with no setup:
+
+```bash
+harn artifacts delivery-card <artifact-id>
+```
+
+The card links the artifact folder and every remaining visible root-level
+directory and regular file. Directories appear first, then files, with each
+group sorted by name. Harnery skips its own metadata, hidden entries, symlinks,
+and special files. It lists up to 100 discovered entries and reports how many
+more are available in the artifact folder, which keeps pasted cards bounded.
+
+Add a manifest when the card needs a remote URL, a friendly label, or an
+important file below the root:
 
 ```bash
 harn artifacts delivery-card <artifact-id> \
@@ -68,19 +80,22 @@ harn artifacts delivery-card <artifact-id> \
   --path "Report=finished/report.json"
 ```
 
-The first call validates every local destination, saves
+Supplying items validates every local destination, saves
 `.harnery-delivery.json` in the workspace, and writes paste-ready Markdown to
-standard output. The card contains a short linked list followed by a fenced
-plain-text block. Both sections show the complete URL or filesystem path. The
-artifact folder is always included automatically.
+standard output. Manifest items appear before discovered root entries. Harnery
+does not repeat a root item already named by its exact path in the manifest.
+The card contains a linked list followed by a fenced plain-text block. Both
+sections show the complete URL or filesystem path. The artifact folder is
+always included automatically.
 
-Run the command again without item options to reproduce the saved card:
+Run the command again without item options to combine the saved selections with
+the current root inventory:
 
 ```bash
 harn artifacts delivery-card <artifact-id>
 ```
 
-`--url` and `--path` are repeatable. URL entries must use HTTP or HTTPS. Path
+The manifest is optional. `--url` and `--path` are repeatable. URL entries must use HTTP or HTTPS. Path
 entries must be relative to the artifact workspace, must already exist, and
 cannot escape through `..` or a symlink. Supplying new items replaces the saved
 delivery manifest. Supplying only `--title` changes the heading and preserves

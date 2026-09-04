@@ -1,11 +1,22 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { ARTIFACT_MANIFEST } from "./constants.ts";
 import { resolveArtifactRef, showArtifact } from "./index.ts";
 
 export const ARTIFACT_DELIVERY_MANIFEST = ".harnery-delivery.json";
 export const ARTIFACT_DELIVERY_SCHEMA_VERSION = 1 as const;
+export const ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT = 100;
 
 export interface ArtifactDeliveryUrl {
   kind: "url";
@@ -31,6 +42,8 @@ export interface ArtifactDeliveryCard {
   artifact_path: string;
   manifest_path: string;
   markdown: string;
+  auto_items: number;
+  omitted_auto_items: number;
 }
 
 interface DisplayEnvironment {
@@ -80,15 +93,31 @@ export function readArtifactDeliveryManifest(
   return validateManifest(artifactPath, parsed);
 }
 
+export function resolveArtifactDeliveryManifest(
+  repoRoot: string,
+  ref: string,
+): ArtifactDeliveryManifest {
+  const artifactPath = managedArtifactPath(repoRoot, ref);
+  if (!existsSync(resolve(artifactPath, ARTIFACT_DELIVERY_MANIFEST))) {
+    return {
+      schema_version: ARTIFACT_DELIVERY_SCHEMA_VERSION,
+      title: "Artifact delivery",
+      items: [],
+    };
+  }
+  return readArtifactDeliveryManifest(repoRoot, ref);
+}
+
 export function renderArtifactDeliveryCard(
   repoRoot: string,
   ref: string,
-  manifest = readArtifactDeliveryManifest(repoRoot, ref),
+  manifest = resolveArtifactDeliveryManifest(repoRoot, ref),
   environment: DisplayEnvironment = {},
 ): ArtifactDeliveryCard {
   const artifactPath = managedArtifactPath(repoRoot, ref);
   const valid = validateManifest(artifactPath, manifest);
   const rows: Array<{ label: string; target: string; icon: string }> = [];
+  const explicitPaths = new Set<string>();
 
   for (const item of valid.items.filter((candidate) => candidate.kind === "url")) {
     rows.push({ label: item.label, target: item.target, icon: "🌐" });
@@ -102,25 +131,44 @@ export function renderArtifactDeliveryCard(
 
   for (const item of valid.items.filter((candidate) => candidate.kind === "path")) {
     const absolute = resolveArtifactItem(artifactPath, item.path);
+    explicitPaths.add(absolute);
     rows.push({
       label: item.label,
       target: displayPath(absolute, environment),
-      icon: lstatSync(absolute).isDirectory() ? "📁" : imagePath(item.path) ? "🖼️" : "📄",
+      icon: iconForPath(absolute),
     });
   }
 
-  const links = rows
+  const discovered = discoverArtifactRootItems(artifactPath).filter(
+    (item) => !explicitPaths.has(item.path),
+  );
+  const autoItems = discovered.slice(0, ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT);
+  for (const item of autoItems) {
+    rows.push({
+      label: item.name,
+      target: displayPath(item.path, environment),
+      icon: iconForPath(item.path),
+    });
+  }
+  const omittedAutoItems = discovered.length - autoItems.length;
+
+  let links = rows
     .map(
       (row) =>
         `- ${row.icon} **${escapeMarkdown(row.label)}:** [${escapeMarkdown(row.target)}](<${linkTarget(row.target)}>)`,
     )
     .join("\n");
+  if (omittedAutoItems > 0) {
+    links += `\n- 📁 **More root items:** ${omittedAutoItems} additional ${omittedAutoItems === 1 ? "entry" : "entries"}; open the artifact folder.`;
+  }
   const plain = rows.map((row) => `${row.label.toUpperCase()}\n${row.target}`).join("\n\n");
 
   return {
     artifact_path: artifactPath,
     manifest_path: resolve(artifactPath, ARTIFACT_DELIVERY_MANIFEST),
     markdown: `### ${escapeMarkdown(valid.title)}\n\n${links}\n\n\`\`\`text\n${plain}\n\`\`\``,
+    auto_items: autoItems.length,
+    omitted_auto_items: omittedAutoItems,
   };
 }
 
@@ -152,9 +200,7 @@ function validateManifest(artifactPath: string, value: unknown): ArtifactDeliver
   }
   const title = typeof candidate.title === "string" ? candidate.title.trim() : "";
   if (!title) throw new Error("delivery title must not be empty");
-  if (!Array.isArray(candidate.items) || candidate.items.length === 0) {
-    throw new Error("delivery manifest must contain at least one item");
-  }
+  if (!Array.isArray(candidate.items)) throw new Error("delivery manifest items must be an array");
 
   const labels = new Set<string>();
   const items = candidate.items.map((raw): ArtifactDeliveryItem => {
@@ -229,6 +275,28 @@ function resolveArtifactItem(artifactPath: string, itemPath: string): string {
   return target;
 }
 
+function discoverArtifactRootItems(
+  artifactPath: string,
+): Array<{ name: string; path: string; directory: boolean }> {
+  return readdirSync(artifactPath, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        !entry.name.startsWith(".") &&
+        entry.name !== ARTIFACT_MANIFEST &&
+        entry.name !== ARTIFACT_DELIVERY_MANIFEST &&
+        (entry.isFile() || entry.isDirectory()),
+    )
+    .map((entry) => ({
+      name: entry.name,
+      path: resolveArtifactItem(artifactPath, entry.name),
+      directory: entry.isDirectory(),
+    }))
+    .sort((left, right) => {
+      if (left.directory !== right.directory) return left.directory ? -1 : 1;
+      return left.name.localeCompare(right.name, "en");
+    });
+}
+
 function displayPath(path: string, environment: DisplayEnvironment): string {
   const distro = environment.wslDistroName ?? process.env.WSL_DISTRO_NAME;
   const platform = environment.platform ?? process.platform;
@@ -255,6 +323,14 @@ function linkTarget(target: string): string {
     return `//${target.slice(2).replaceAll("\\", "/")}`;
   }
   return target.replaceAll("\\", "/");
+}
+
+function iconForPath(path: string): string {
+  if (lstatSync(path).isDirectory()) return "📁";
+  if (imagePath(path)) return "🖼️";
+  if (/\.(?:m4v|mkv|mov|mp4|webm)$/i.test(path)) return "🎬";
+  if (/\.(?:aac|flac|m4a|mp3|ogg|wav)$/i.test(path)) return "🎵";
+  return "📄";
 }
 
 function imagePath(path: string): boolean {

@@ -16,7 +16,9 @@ handed these files to an operator by composing links and copyable paths in chat.
 That manual step produced inconsistent labels, omitted the workspace path, and
 could not be reproduced after context compaction or a handoff to another agent.
 
-The artifact manifest owns lifecycle facts such as purpose, retention, and
+Most artifacts already have a useful root structure, so requiring a second
+manifest before the command can render anything would make the default path
+needlessly manual. The artifact lifecycle manifest owns purpose, retention, and
 holds. Adding presentation-specific destinations to that schema would couple a
 stable cleanup contract to a user-interface concern and would force a lifecycle
 schema migration whenever the card format changed.
@@ -26,9 +28,9 @@ schema migration whenever the card format changed.
 - Keep a prose template in agent instructions. A template describes the desired
   shape but still leaves every agent to locate, validate, order, and format the
   destinations.
-- Generate a card by scanning every file. A workspace can contain many
-  intermediates, and file names do not identify which result an operator should
-  review first.
+- Recursively scan every file. A workspace can contain many intermediates, and
+  a deep walk can produce an unbounded card. Root-level entries provide useful
+  navigation without flattening the workspace.
 - Store the destinations in the artifact lifecycle manifest. This would make
   cleanup and delivery evolve under one schema even though neither depends on
   the other.
@@ -38,11 +40,21 @@ schema migration whenever the card format changed.
 
 ## Decision
 
-Harnery adds `artifacts delivery-card <ref>`. A call with repeatable `--url` and
-`--path` options validates and saves the selected destinations, then prints the
-card. A call without item options reads the saved manifest and prints the same
-card again. `--title` sets the heading; when supplied alone, it updates the
-heading while preserving the saved items.
+Harnery adds `artifacts delivery-card <ref>`. With no delivery manifest, the
+command renders immediately from the managed artifact. It includes the artifact
+folder and discovers every visible root-level directory and regular file.
+Directories come first, followed by files, and each group is sorted by name.
+Harnery omits its own metadata, hidden entries, symlinks, and special files. The
+automatic list has a 100-entry ceiling and reports the omitted count so the
+output stays bounded.
+
+A call with repeatable `--url` and `--path` options validates and saves selected
+destinations, then prints the card. Saved URLs and paths appear before automatic
+root entries, and an exact path is not repeated. A later call without item
+options combines the saved selections with the current root inventory. `--title`
+sets the heading; when supplied alone, it updates the heading while preserving
+the saved items. A missing manifest defaults to the title `Artifact delivery`
+and an empty selected-item list.
 
 The delivery data lives in `.harnery-delivery.json` at the root of the managed
 workspace. It has its own versioned schema and contains a title plus ordered URL
@@ -62,10 +74,12 @@ uses a UNC display path and a forward-slash UNC link target derived from
 
 ## Result
 
-One small manifest now preserves the intentional review surface of an artifact.
-Any later agent can regenerate the handoff without reconstructing it from chat
-history, and broken or unsafe local destinations fail before the card is saved.
-The delivery schema can evolve separately from the lifecycle schema.
+Every managed artifact now has a useful delivery card without extra setup. An
+optional small manifest preserves the intentional review surface when a workflow
+needs remote or nested destinations. Any later agent can regenerate the handoff
+without reconstructing it from chat history, and broken or unsafe local
+destinations fail before the card is saved. The delivery schema can evolve
+separately from the lifecycle schema.
 
 The card does not extend retention or make a result durable. Existing artifact
 holds, release, and cleanup rules remain the authority for workspace lifetime.

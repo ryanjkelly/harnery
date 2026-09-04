@@ -112,6 +112,10 @@ describe("artifacts command", () => {
       const artifactPath = (created.data[0] as { path: string }).path;
       mkdirSync(join(artifactPath, "frames"));
       writeFileSync(join(artifactPath, "motion-map.png"), "image");
+      const automatic = await invoke(["delivery-card", id]);
+      expect(automatic.errors).toEqual([]);
+      expect(automatic.texts[0]).toContain("**frames:**");
+      expect(automatic.texts[0]).toContain("**motion-map.png:**");
       const saved = await invoke([
         "delivery-card",
         id,
