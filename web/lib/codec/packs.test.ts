@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { COORD_NAMES } from "../../../src/core/agents/state/names";
+
 import {
   allocateCharacters,
   defaultPacksDir,
@@ -47,6 +49,17 @@ function makePack(
 }
 
 const target = (instance_id: string, display_name?: string) => ({ instance_id, display_name });
+
+function rosterSlotId(ordinal: number): string {
+  let remainder = ordinal;
+  let label = "";
+  while (remainder > 0) {
+    remainder -= 1;
+    label = String.fromCharCode(97 + (remainder % 26)) + label;
+    remainder = Math.floor(remainder / 26);
+  }
+  return `${ordinal % 2 === 1 ? "f" : "m"}${String(ordinal).padStart(2, "0")}-${label}`;
+}
 
 beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), "codec-packs-"));
@@ -169,76 +182,72 @@ describe("allocateCharacters", () => {
     expect(i1[0].pack_id).toBe(first.get("i-1")?.pack_id);
   });
 
-  test("matches canonical agent-name gender and repairs a wrong live binding", () => {
+  test("binds canonical names permanently by first letter and gender", () => {
     makePack("f01-a");
     makePack("m02-b");
-    makePack("f03-c");
-    makePack("m04-d");
+    makePack("f27-aa");
+    makePack("m28-ab");
     mkdirSync(path.join(root, "codec"), { recursive: true });
     writeFileSync(
       path.join(root, "codec", "registry.json"),
       JSON.stringify({
         schema_version: 1,
-        bindings: [{ instance_id: "boris", pack_id: "f01-a", pack_version: "1", bound_at: NOW }],
+        bindings: [{ instance_id: "amelia", pack_id: "f27-aa", pack_version: "1", bound_at: NOW }],
       }),
     );
 
     const assigned = allocateCharacters(
-      [target("boris", "Boris"), target("esme", "Esme"), target("forrest", "Forrest")],
+      [
+        target("anna", "Anna"),
+        target("amelia", "Amelia"),
+        target("alex", "Alex"),
+        target("atticus", "Atticus"),
+        target("bob", "Bob"),
+        target("barnaby", "Barnaby"),
+        target("bertha", "Bertha"),
+        target("brenda", "Brenda"),
+      ],
       LATER,
       root,
     );
-    expect(assigned.get("boris")?.pack_id).toStartWith("m");
-    expect(assigned.get("esme")?.pack_id).toStartWith("f");
-    expect(assigned.get("forrest")?.pack_id).toStartWith("m");
+    expect(assigned.get("anna")?.pack_id).toBe("f01-a");
+    expect(assigned.get("amelia")?.pack_id).toBe("f01-a");
+    expect(assigned.get("alex")?.pack_id).toBe("m28-ab");
+    expect(assigned.get("atticus")?.pack_id).toBe("m28-ab");
+    expect(assigned.get("bob")?.pack_id).toBe("m02-b");
+    expect(assigned.get("barnaby")?.pack_id).toBe("m02-b");
+    expect(assigned.get("bertha")?.pack_id).toBe("f27-aa");
+    expect(assigned.get("brenda")?.pack_id).toBe("f27-aa");
 
     const registry = JSON.parse(readFileSync(path.join(root, "codec", "registry.json"), "utf8"));
-    const boris = registry.bindings.filter(
-      (binding: { instance_id: string }) => binding.instance_id === "boris",
+    const amelia = registry.bindings.filter(
+      (binding: { instance_id: string }) => binding.instance_id === "amelia",
     );
-    expect(boris).toHaveLength(2);
-    expect(boris[0]).toMatchObject({ pack_id: "f01-a", released_at: LATER });
-    expect(boris[1].pack_id).toStartWith("m");
-    expect(boris[1].released_at).toBeUndefined();
+    expect(amelia).toHaveLength(2);
+    expect(amelia[0]).toMatchObject({ pack_id: "f27-aa", released_at: LATER });
+    expect(amelia[1]).toMatchObject({ pack_id: "f01-a" });
+    expect(amelia[1].released_at).toBeUndefined();
   });
 
-  test("rotates new sessions through the least-used eligible characters", () => {
-    makePack("f01-a");
-    makePack("m02-b");
-    makePack("f03-c");
-    makePack("m04-d");
-    mkdirSync(path.join(root, "codec"), { recursive: true });
-    writeFileSync(
-      path.join(root, "codec", "registry.json"),
-      JSON.stringify({
-        schema_version: 1,
-        bindings: [
-          {
-            instance_id: "past-female",
-            pack_id: "f01-a",
-            pack_version: "1",
-            bound_at: NOW,
-            released_at: LATER,
-          },
-          {
-            instance_id: "past-male",
-            pack_id: "m02-b",
-            pack_version: "1",
-            bound_at: NOW,
-            released_at: LATER,
-          },
-        ],
-      }),
-    );
+  test("covers all 260 canonical names with exactly 52 letter-gender portraits", () => {
+    for (let ordinal = 1; ordinal <= 52; ordinal += 1) makePack(rosterSlotId(ordinal));
+    const targets = COORD_NAMES.map((name, index) => target(`instance-${index}`, name));
 
-    const assigned = allocateCharacters(
-      [target("esme", "Esme"), target("boris", "Boris")],
-      LATER,
-      root,
-    );
+    const assigned = allocateCharacters(targets, NOW, root);
+    const groupPacks = new Map<string, string>();
+    for (const [index, name] of COORD_NAMES.entries()) {
+      const packId = assigned.get(`instance-${index}`)?.pack_id;
+      expect(packId).toBeDefined();
+      const expectedGender = Math.floor(index / 26) % 2 === (index % 26) % 2 ? "f" : "m";
+      expect(packId?.startsWith(expectedGender)).toBe(true);
+      const group = `${name[0]}:${expectedGender}`;
+      const prior = groupPacks.get(group);
+      if (prior) expect(packId).toBe(prior);
+      else groupPacks.set(group, packId!);
+    }
 
-    expect(assigned.get("esme")?.pack_id).toBe("f03-c");
-    expect(assigned.get("boris")?.pack_id).toBe("m04-d");
+    expect(groupPacks).toHaveLength(52);
+    expect(new Set(groupPacks.values())).toHaveLength(52);
   });
 
   test("a pack upgrade preserves history and refreshes the live cache version", () => {

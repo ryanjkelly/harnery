@@ -305,6 +305,33 @@ function nameGender(displayName: string | undefined): CharacterGender | null {
   return startsFemale === evenLetter ? "female" : "male";
 }
 
+/**
+ * Resolve the permanent portrait slot for a canonical pool name.
+ *
+ * Slots 1-26 dress the female-first alphabet passes. Slots 27-52 dress the
+ * male-first passes; adjacent slots are paired in the opposite order so their
+ * portrait gender still matches the name. Each first-letter + gender group
+ * therefore shares one face across all five of its canonical names.
+ */
+function packForName(
+  displayName: string | undefined,
+  packs: readonly CodecPack[],
+): CodecPack | null {
+  if (!displayName) return null;
+  const nameIndex = COORD_NAMES.findIndex((name) => name === displayName);
+  if (nameIndex < 0) return null;
+  const letterIndex = nameIndex % 26;
+  const gender = nameGender(displayName);
+  const femaleFirstGender = letterIndex % 2 === 0 ? "female" : "male";
+  const ordinal = gender === femaleFirstGender ? letterIndex + 1 : 27 + (letterIndex ^ 1);
+  return (
+    packs.find(
+      (candidate) =>
+        packOrdinal(candidate.pack_id) === ordinal && packGender(candidate.pack_id) === gender,
+    ) ?? null
+  );
+}
+
 export function readPackRegistry(root = harneryDir()): PackRegistry {
   try {
     const parsed = JSON.parse(fs.readFileSync(registryPath(root), "utf8"));
@@ -385,6 +412,9 @@ export function allocateCharacters(
   const desiredGender = new Map(
     targets.map((target) => [target.instance_id, nameGender(target.display_name)]),
   );
+  const desiredPack = new Map(
+    targets.map((target) => [target.instance_id, packForName(target.display_name, packs)]),
+  );
   const byId = new Map(packs.map((p) => [p.pack_id, p]));
   const historicalUses = new Map<string, number>();
   for (const binding of registry.bindings) {
@@ -403,12 +433,15 @@ export function allocateCharacters(
       continue;
     }
     const currentPack = byId.get(binding.pack_id);
+    const expectedPack = desiredPack.get(binding.instance_id);
     const expectedGender = desiredGender.get(binding.instance_id);
     const currentGender = packGender(binding.pack_id);
-    if (expectedGender && currentGender && expectedGender !== currentGender) {
-      // The original allocator consumed lexical pack ids, which exhausted all
-      // f-prefixed packs before reaching m-prefixed packs. Preserve that
-      // history, but release the wrong live portrait so it can be corrected.
+    if (
+      (expectedPack && binding.pack_id !== expectedPack.pack_id) ||
+      (!expectedPack && expectedGender && currentGender && expectedGender !== currentGender)
+    ) {
+      // Canonical names own one first-letter + gender portrait permanently.
+      // Preserve the old binding as history, then correct the live portrait.
       binding.released_at = now;
       changed = true;
       continue;
@@ -445,6 +478,26 @@ export function allocateCharacters(
     const existing = activeByInstance.get(instanceId);
     if (existing && byId.has(existing.pack_id)) {
       out.set(instanceId, { pack_id: existing.pack_id, pack_version: existing.pack_version });
+      continue;
+    }
+    const canonicalPack = desiredPack.get(instanceId);
+    if (canonicalPack) {
+      const freeIndex = freePacks.findIndex(
+        (candidate) => candidate.pack_id === canonicalPack.pack_id,
+      );
+      if (freeIndex >= 0) freePacks.splice(freeIndex, 1);
+      registry.bindings.push({
+        instance_id: instanceId,
+        pack_id: canonicalPack.pack_id,
+        pack_version: canonicalPack.pack_version,
+        bound_at: now,
+      });
+      packInUse.add(canonicalPack.pack_id);
+      out.set(instanceId, {
+        pack_id: canonicalPack.pack_id,
+        pack_version: canonicalPack.pack_version,
+      });
+      changed = true;
       continue;
     }
     const upgradedPackId = upgradedPackByInstance.get(instanceId);
