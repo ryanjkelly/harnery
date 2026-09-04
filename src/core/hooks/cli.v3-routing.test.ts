@@ -276,6 +276,10 @@ describe("agent-hook V3 hard cut", () => {
       encoding: "utf8",
       env: {
         ...process.env,
+        // The hook pin must outrank an unrelated inherited web/dashboard root.
+        // The full Bun partition runs files in one process, so another test can
+        // expose exactly this production subprocess environment at spawn time.
+        HARNERY_COORD_ROOT: join(root, "unrelated-coord-root"),
         HARNERY_COORD_ROOT_OVERRIDE: root,
         HARNERY_PROMPT_CONTEXT_SESSION_KEY: sessionKey!,
       },

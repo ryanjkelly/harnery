@@ -65,7 +65,8 @@ export function registerPromptContextCommand(
 
 function resolveCoordRoot(context?: HarneryProgramContext): string {
   return resolve(
-    context?.resolveCoordRoot?.() ??
+    process.env.HARNERY_COORD_ROOT_OVERRIDE ??
+      context?.resolveCoordRoot?.() ??
       context?.repoRoot ??
       process.env.HARNERY_COORD_ROOT ??
       process.cwd(),
