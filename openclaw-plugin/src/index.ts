@@ -16,7 +16,13 @@ import {
 
 export interface PluginRuntimeDependencies {
   createQueue?: (config: HarneryOpenClawConfig) => RecordQueue;
-  bundleSha256?: () => string;
+  bundleHashes?: () => BundleHashes;
+}
+
+interface BundleHashes {
+  bundle_sha256: string;
+  index_sha256: string;
+  record_worker_sha256: string;
 }
 
 export function createPluginDefinition(dependencies: PluginRuntimeDependencies = {}) {
@@ -30,9 +36,10 @@ export function createPluginDefinition(dependencies: PluginRuntimeDependencies =
         dependencies.createQueue?.(config) ??
         createRecordQueue(config, { packageVersion: packageJson.version });
 
+      const bundleHashes = dependencies.bundleHashes?.() ?? currentBundleHashes();
       queue.boot({
         package_version: packageJson.version,
-        index_sha256: dependencies.bundleSha256?.() ?? currentBundleSha256(),
+        ...bundleHashes,
         ledger_root: config.ledgerRoot,
         log_root: config.logRoot,
         mode: config.mode,
@@ -79,14 +86,34 @@ export function createPluginDefinition(dependencies: PluginRuntimeDependencies =
   };
 }
 
-function currentBundleSha256(): string {
+function currentBundleHashes(): BundleHashes {
   try {
-    return createHash("sha256")
-      .update(readFileSync(fileURLToPath(import.meta.url)))
-      .digest("hex");
+    const indexBytes = readFileSync(fileURLToPath(import.meta.url));
+    const sourceExtension = import.meta.url.endsWith(".ts") ? "ts" : "js";
+    const workerBytes = readFileSync(
+      fileURLToPath(new URL(`./record-worker.${sourceExtension}`, import.meta.url)),
+    );
+    return {
+      bundle_sha256: createHash("sha256")
+        .update("index\0")
+        .update(indexBytes)
+        .update("\0record-worker\0")
+        .update(workerBytes)
+        .digest("hex"),
+      index_sha256: sha256(indexBytes),
+      record_worker_sha256: sha256(workerBytes),
+    };
   } catch {
-    return "unavailable";
+    return {
+      bundle_sha256: "unavailable",
+      index_sha256: "unavailable",
+      record_worker_sha256: "unavailable",
+    };
   }
+}
+
+function sha256(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export default definePluginEntry(createPluginDefinition());

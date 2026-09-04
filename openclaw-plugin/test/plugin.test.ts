@@ -28,6 +28,13 @@ describe("Harnery OpenClaw plugin", () => {
       { sessionKey: "session-a", runId: "run-a", agentId: "main" },
     );
     expect(result).toBeUndefined();
+    expect(harness.bootRows).toEqual([
+      expect.objectContaining({
+        bundle_sha256: "fixture-bundle-sha",
+        index_sha256: "fixture-index-sha",
+        record_worker_sha256: "fixture-worker-sha",
+      }),
+    ]);
     expect(harness.queued).toEqual([
       expect.objectContaining({ hook: "before_tool_call", signal: "pre-tool-use" }),
     ]);
@@ -83,6 +90,7 @@ function pluginHarness(
   >;
   queued: Array<{ hook: OpenClawHookName; signal: OpenClawTranslation["signal"] }>;
   logs: Array<{ event: string; detail?: Record<string, unknown> }>;
+  bootRows: Array<Record<string, unknown>>;
   service?: { id: string; stop(): void | Promise<void> };
   closed: number;
 } {
@@ -92,6 +100,7 @@ function pluginHarness(
   >();
   const queued: Array<{ hook: OpenClawHookName; signal: OpenClawTranslation["signal"] }> = [];
   const logs: Array<{ event: string; detail?: Record<string, unknown> }> = [];
+  const bootRows: Array<Record<string, unknown>> = [];
   let closed = 0;
   let service: { id: string; stop(): void | Promise<void> } | undefined;
   const queue: RecordQueue = {
@@ -106,7 +115,9 @@ function pluginHarness(
     log(event, detail) {
       logs.push({ event, detail });
     },
-    boot() {},
+    boot(row) {
+      bootRows.push(row);
+    },
     flush: () => Promise.resolve(),
     close: () => {
       closed += 1;
@@ -134,12 +145,17 @@ function pluginHarness(
   };
   createPluginDefinition({
     createQueue: () => queue,
-    bundleSha256: () => "fixture-sha",
+    bundleHashes: () => ({
+      bundle_sha256: "fixture-bundle-sha",
+      index_sha256: "fixture-index-sha",
+      record_worker_sha256: "fixture-worker-sha",
+    }),
   }).register(api);
   return {
     handlers,
     queued,
     logs,
+    bootRows,
     get service() {
       return service;
     },

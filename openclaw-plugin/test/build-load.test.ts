@@ -97,6 +97,16 @@ writeFileSync("record-result.json", JSON.stringify({ id: plugin.id, node: proces
       id: "harnery",
       node: expect.stringMatching(/^v24\./),
     });
+    const boot = JSON.parse(
+      readFileSync(join(logRoot, "boot.jsonl"), "utf8").trim().split("\n").at(-1)!,
+    ) as Record<string, unknown>;
+    expect(boot).toMatchObject({
+      bundle_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      index_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      record_worker_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(boot.bundle_sha256).not.toBe(boot.index_sha256);
+    expect(boot.bundle_sha256).not.toBe(boot.record_worker_sha256);
 
     const active = readFileSync(
       join(ledgerRoot, ".harnery", "ledgers", "v3", "active.ndjson"),
