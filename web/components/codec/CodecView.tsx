@@ -76,6 +76,7 @@ import {
 } from "@/lib/codec/semantic-usage";
 import { summarizeCodecTeam } from "@/lib/codec/team-summary";
 import { useLiveSignal } from "@/lib/useLiveSignal";
+import { CodecDurationStrip } from "./CodecDurationStrip";
 import { CodecEffectsLayer } from "./CodecEffectsLayer";
 import { CodecRuntimeStrip } from "./CodecRuntimeStrip";
 import styles from "./codec.module.css";
@@ -559,6 +560,7 @@ export function CodecView({
           panels={panels}
           parentNameFor={parentNameFor}
           effectEndpoints={effectEndpoints}
+          nowMs={clockNow}
         />
       ) : (
         <>
@@ -591,6 +593,7 @@ export function CodecView({
                   parentName={parentNameFor(panel)}
                   effect={effectEndpoints[panel.instance_id]}
                   balancedRowStart={layout.centering === "last-row" && index === layout.columns}
+                  nowMs={clockNow}
                 />
               ))}
             </div>
@@ -636,11 +639,13 @@ function MobileCodecDeck({
   panels,
   parentNameFor,
   effectEndpoints,
+  nowMs,
 }: {
   scene: CodecScene;
   panels: CodecPanelScene[];
   parentNameFor: (panel: CodecPanelScene) => string | undefined;
   effectEndpoints: CodecEffectEndpointMap;
+  nowMs: number | null;
 }) {
   const summary = summarizeCodecTeam(scene);
   const working = panels.filter((panel) => panel.activity.value === "working").length;
@@ -715,6 +720,7 @@ function MobileCodecDeck({
             effect={effectEndpoints[panel.instance_id]}
             position={index + 1}
             total={panels.length}
+            nowMs={nowMs}
           />
         ))}
       </div>
@@ -728,12 +734,14 @@ function MobileCodecPanel({
   effect,
   position,
   total,
+  nowMs,
 }: {
   panel: CodecPanelScene;
   parentName?: string;
   effect?: CodecEffectEndpoint;
   position: number;
   total: number;
+  nowMs: number | null;
 }) {
   const offline = panel.presence.value === "offline";
   const unknownPresence = panel.presence.value === "unknown";
@@ -813,6 +821,7 @@ function MobileCodecPanel({
       </div>
 
       <div className={styles.mobileCardDetails}>
+        <CodecDurationStrip panel={panel} nowMs={nowMs} />
         <IntentHistory intents={panel.intent_history ?? []} />
         <PanelStatusRail panel={panel} parentName={parentName} />
         <SemanticRead panel={panel} />
@@ -1190,11 +1199,13 @@ function CodecPanel({
   parentName,
   effect,
   balancedRowStart,
+  nowMs,
 }: {
   panel: CodecPanelScene;
   parentName?: string;
   effect?: CodecEffectEndpoint;
   balancedRowStart: boolean;
+  nowMs: number | null;
 }) {
   const offline = panel.presence.value === "offline";
   const unknownPresence = panel.presence.value === "unknown";
@@ -1297,6 +1308,7 @@ function CodecPanel({
         </div>
 
         <CodecRuntimeStrip panel={panel} />
+        <CodecDurationStrip panel={panel} nowMs={nowMs} />
         <FocusBubble panel={panel} />
         <OperationCue panel={panel} />
         <SemanticRead panel={panel} />

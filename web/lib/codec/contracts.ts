@@ -403,6 +403,16 @@ export interface CodecPanelScene {
   runtime?: Presented<CodecRuntimeValue>;
   /** Exact usage locally; percentage-only when sourced from a remote digest. */
   context_usage?: Presented<CodecContextUsage>;
+  /** Event-backed wall-clock accounting for this session generation. */
+  timing?: Presented<{
+    session_duration_ms: number;
+    last_turn_duration_ms?: number;
+    working_duration_ms: number;
+    idle_duration_ms: number;
+    session_active: boolean;
+    last_turn_active: boolean;
+    current_bucket: "working" | "idle" | "stopped";
+  }>;
   progress_rhythm: Presented<CodecProgressRhythm>;
   recent_actions: CodecRecentAction[];
   /** Newest first, capped at three; omitted from remote relay payloads. */

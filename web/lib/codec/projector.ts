@@ -39,6 +39,7 @@ import {
   type Presented,
 } from "./contracts";
 import { deriveExpressiveChannels, type ExpressiveAction } from "./expression";
+import { projectCodecTimings } from "./timing";
 
 /** Decay windows (ms) for rhythm cues; deterministic against `now`. */
 const JUST_STARTED_WINDOW_MS = 90_000;
@@ -677,6 +678,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   const events = alignEventInstanceIds(inputs.events, inputs.snapshot);
   const evidence = foldEvidence(events);
   const activityChannels = projectActivityChannels(events, now);
+  const timings = projectCodecTimings(events, now);
   const heartbeats = indexSnapshotHeartbeats(inputs.snapshot);
   const generationToInstance = new Map<string, string>();
   const childOf = new Map<string, { parent: string; event_id: string; ts: string }>();
@@ -799,6 +801,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       context_band: panelContextBand,
       runtime: runtimeInfo(hb, ev, hb.last_heartbeat),
       ...(usage ? { context_usage: usage } : {}),
+      ...(timings.get(hb.instance_id) ? { timing: timings.get(hb.instance_id) } : {}),
       progress_rhythm: progressRhythm(ev, nowMs, hb.last_heartbeat),
       recent_actions: ev?.recentActions ?? [],
       intent_history: ev?.intentHistory ?? [],
@@ -910,6 +913,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       context_band: evContextBand,
       runtime: runtimeInfo(undefined, ev, fallbackTs),
       ...(usage ? { context_usage: usage } : {}),
+      ...(timings.get(instanceId) ? { timing: timings.get(instanceId) } : {}),
       progress_rhythm: progressRhythm(ev, nowMs, fallbackTs),
       recent_actions: ev.recentActions,
       intent_history: ev.intentHistory,
