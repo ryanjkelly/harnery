@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -261,7 +262,14 @@ describe("agent-hook V3 hard cut", () => {
         root,
         env,
       );
-    expect(stage("cursor-context-turn-one").stdout).not.toContain("PROMPT_CONTEXT_FIXTURE");
+    const firstTurn = stage("cursor-context-turn-one");
+    expect(firstTurn.status).toBe(0);
+    expect(firstTurn.stdout).not.toContain("PROMPT_CONTEXT_FIXTURE");
+    // Cursor's prompt hook cannot inject, so the assertion above passes just as
+    // well when the provider never ran at all. Prove the staged file landed
+    // before consuming it, or a skipped stage would surface as an unexplained
+    // empty consume several steps later.
+    assertStagedPromptContext(root, 1);
 
     const consume = spawnSync("bash", [HARN, "prompt-context", "consume"], {
       cwd: root,
@@ -1644,6 +1652,37 @@ process.stdin.on("end", () => {
     { mode: 0o755 },
   );
   chmodSync(executable, 0o755);
+}
+
+/**
+ * Files the Cursor prompt-context stage left pending, asserted with the hook's
+ * own diagnostics attached. A missing file means the stage was skipped or the
+ * provider failed, which is a different defect from a consume that lost the
+ * race, and the two are indistinguishable from the consume assertion alone.
+ */
+function assertStagedPromptContext(root: string, expected: number): void {
+  const pendingDir = join(root, ".harnery", "runtime", "prompt-context", "pending");
+  const staged = existsSync(pendingDir)
+    ? readdirSync(pendingDir).filter((name) => name.endsWith(".json"))
+    : [];
+  if (staged.length === expected) return;
+  throw new Error(
+    `expected ${expected} staged prompt-context file(s), found ${staged.length}` +
+      `\nhook diagnostics:\n${hookDiagnostics(root)}`,
+  );
+}
+
+function hookDiagnostics(root: string): string {
+  const debugPath = join(root, ".harnery", "debug", "agent-hook.ndjson");
+  if (existsSync(debugPath)) return readFileSync(debugPath, "utf8").trimEnd();
+  const logDir = join(root, ".harnery", "logs");
+  if (!existsSync(logDir)) return "(none recorded)";
+  const lines: string[] = [];
+  for (const name of readdirSync(logDir)) {
+    if (!name.includes("agent-hook")) continue;
+    lines.push(`--- ${name}`, readFileSync(join(logDir, name), "utf8").trimEnd());
+  }
+  return lines.length > 0 ? lines.join("\n") : "(none recorded)";
 }
 
 function run(
