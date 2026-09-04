@@ -202,6 +202,45 @@ describe("allocateCharacters", () => {
     expect(boris[1].released_at).toBeUndefined();
   });
 
+  test("rotates new sessions through the least-used eligible characters", () => {
+    makePack("f01-a");
+    makePack("m02-b");
+    makePack("f03-c");
+    makePack("m04-d");
+    mkdirSync(path.join(root, "codec"), { recursive: true });
+    writeFileSync(
+      path.join(root, "codec", "registry.json"),
+      JSON.stringify({
+        schema_version: 1,
+        bindings: [
+          {
+            instance_id: "past-female",
+            pack_id: "f01-a",
+            pack_version: "1",
+            bound_at: NOW,
+            released_at: LATER,
+          },
+          {
+            instance_id: "past-male",
+            pack_id: "m02-b",
+            pack_version: "1",
+            bound_at: NOW,
+            released_at: LATER,
+          },
+        ],
+      }),
+    );
+
+    const assigned = allocateCharacters(
+      [target("esme", "Esme"), target("boris", "Boris")],
+      LATER,
+      root,
+    );
+
+    expect(assigned.get("esme")?.pack_id).toBe("f03-c");
+    expect(assigned.get("boris")?.pack_id).toBe("m04-d");
+  });
+
   test("a pack upgrade preserves history and refreshes the live cache version", () => {
     const dir = makePack("aurora");
     expect(allocateCharacters([target("i-1")], NOW, root).get("i-1")).toEqual({

@@ -386,6 +386,10 @@ export function allocateCharacters(
     targets.map((target) => [target.instance_id, nameGender(target.display_name)]),
   );
   const byId = new Map(packs.map((p) => [p.pack_id, p]));
+  const historicalUses = new Map<string, number>();
+  for (const binding of registry.bindings) {
+    historicalUses.set(binding.pack_id, (historicalUses.get(binding.pack_id) ?? 0) + 1);
+  }
   let changed = false;
 
   const activeByInstance = new Map<string, PackBinding>();
@@ -424,7 +428,17 @@ export function allocateCharacters(
   }
 
   const out = new Map<string, { pack_id: string; pack_version: string }>();
-  const freePacks = packs.filter((p) => !packInUse.has(p.pack_id));
+  // Prefer the least-used free characters instead of restarting at the front
+  // of the roster whenever a session ends. The stable pack order breaks ties,
+  // so a fresh registry remains deterministic while repeated sessions rotate
+  // through the complete eligible roster.
+  const freePacks = packs
+    .filter((p) => !packInUse.has(p.pack_id))
+    .sort((left, right) => {
+      const useDifference =
+        (historicalUses.get(left.pack_id) ?? 0) - (historicalUses.get(right.pack_id) ?? 0);
+      return useDifference || comparePackIds(left.pack_id, right.pack_id);
+    });
 
   for (const target of targets) {
     const instanceId = target.instance_id;
