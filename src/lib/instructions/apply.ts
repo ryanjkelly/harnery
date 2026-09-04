@@ -31,7 +31,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { endOfTurnStatusCommand, stripJsonComments } from "../../core/config.ts";
+import {
+  endOfTurnStatusCommand,
+  hostPromptContextConfig,
+  stripJsonComments,
+} from "../../core/config.ts";
 import { readHostAddendum } from "./host-addendum.ts";
 import {
   checkOwnedSkill,
@@ -77,9 +81,21 @@ function skillBody(render: (bin: string) => string, binName: string): string {
 
 function cursorRuleBody(projectRoot: string, binName: string): string {
   const statusCommand = endOfTurnStatusCommand(projectRoot);
+  const promptContextEnabled = hostPromptContextConfig(projectRoot)?.enabled === true;
   return [
     "# Harnery turn ritual",
     "",
+    ...(promptContextEnabled
+      ? [
+          "Before answering every user turn, run the following command once:",
+          "",
+          `\`${binName} prompt-context consume\``,
+          "",
+          "Use any context it returns when answering. Empty output means no context was staged, so continue normally.",
+          "The consume command makes the turn tool-using, so complete the turn ritual below.",
+          "",
+        ]
+      : []),
     "On every turn that uses tools:",
     "",
     `1. Run \`${binName} agents set-task "<short focus>"\` during the turn, even when the focus is unchanged.`,

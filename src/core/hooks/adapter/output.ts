@@ -17,7 +17,7 @@
  *   continuation can replace a completed user-facing answer.
  *
  * Every helper writes to process.stdout + newline-terminates so callers can
- * fire-and-forget. Empty text → no-op (no JSON written).
+ * fire-and-forget. Empty text with no supported environment output is a no-op.
  */
 
 import type { Adapter } from "../../adapter.ts";
@@ -31,6 +31,18 @@ export type SystemEvent =
   | "PreToolUse"
   | "PostToolUse";
 
+export interface ContextOutputOptions {
+  /** Cursor SessionStart environment values inherited by later hooks/tools. */
+  env?: Readonly<Record<string, string>>;
+}
+
+export interface StopOutputOptions {
+  /** Existing coordination verdict. Omit when that check passed. */
+  verdict?: { reason?: string; rule: string };
+  /** Add one payload-free recovery for unconsumed Cursor prompt context. */
+  promptContextRecovery?: boolean;
+}
+
 /**
  * Whether this adapter can actually receive injected context for an event.
  * Cursor's beforeSubmitPrompt hook can allow or block a turn but cannot inject
@@ -43,11 +55,18 @@ export function canReceiveContext(adapter: Adapter, event: SystemEvent): boolean
 }
 
 /** Emit a context-injection (peer table, wiring check, council pending, …). */
-export function emitContext(adapter: Adapter, event: SystemEvent, text: string): void {
-  if (!text || text.length === 0) return;
-  if (!canReceiveContext(adapter, event)) return;
-  const json = buildContextJson(adapter, event, text);
+export function emitContext(
+  adapter: Adapter,
+  event: SystemEvent,
+  text: string,
+  options: ContextOutputOptions = {},
+): boolean {
+  const env = adapter === "cursor" && event === "SessionStart" ? cleanEnv(options.env) : undefined;
+  const hasText = text.length > 0 && canReceiveContext(adapter, event);
+  if (!hasText && !env) return false;
+  const json = buildContextJson(adapter, event, hasText ? text : "", env);
   process.stdout.write(`${JSON.stringify(json)}\n`);
+  return true;
 }
 
 /** Emit a PreToolUse deny: blocks the tool call with `reason` shown to the model. */
@@ -84,25 +103,46 @@ export function emitStopBlock(
   verdict: { reason?: string; rule: string },
   coordRoot?: string,
 ): 0 | 2 {
+  return emitStopOutcome(adapter, { verdict }, coordRoot);
+}
+
+/**
+ * Emit at most one adapter response for all Stop followups.
+ *
+ * Cursor accepts one JSON object from a hook invocation. Prompt-context
+ * recovery therefore composes with the existing coordination remediation here
+ * rather than letting two independent features write competing objects.
+ */
+export function emitStopOutcome(
+  adapter: Adapter,
+  options: StopOutputOptions,
+  coordRoot?: string,
+): 0 | 2 {
   if (adapter === "codex") return 0;
 
-  const reason = verdict.reason ?? "End-of-turn coordination ritual incomplete.";
+  const verdict = options.verdict;
+  if (!verdict && !(adapter === "cursor" && options.promptContextRecovery)) return 0;
+
   if (adapter === "cursor") {
-    // The marker leads the message so the Stop verdict can recognize the turn
-    // Cursor opens from it (`STOP_REMEDIATION_MARKER`), and so the operator can
-    // see in chat that the message came from Harnery rather than from them.
-    // Both commands are named because one message that repairs the whole ritual
-    // ends the chain in a single followup; the failing rule is context.
-    const bin = resolveBinName(coordRoot);
-    const statusCommand = endOfTurnStatusCommand(coordRoot);
-    const message = [
-      `${STOP_REMEDIATION_MARKER} rule=${verdict.rule}]`,
-      reason,
-      `Repair the ritual in this turn: run \`${bin} agents set-task "<short focus>"\` and then \`${statusCommand}\` as your last tool call.`,
-    ].join("\n");
-    process.stdout.write(`${JSON.stringify({ followup_message: message })}\n`);
+    const messages: string[] = [];
+    if (verdict) messages.push(cursorCoordinationRemediation(verdict, coordRoot));
+    if (options.promptContextRecovery) {
+      const bin = resolveBinName(coordRoot);
+      messages.push(
+        [
+          "[harnery prompt-context recovery]",
+          "Prefetched context for this turn is still pending.",
+          `Run \`${bin} prompt-context consume\` now, use any returned context, then finish the turn.`,
+        ].join("\n"),
+      );
+    }
+    if (messages.length === 0) return 0;
+    process.stdout.write(`${JSON.stringify({ followup_message: messages.join("\n\n") })}\n`);
     return 0;
   }
+
+  if (!verdict) return 0;
+  const reason = verdict.reason ?? "End-of-turn coordination ritual incomplete.";
   // Claude Code re-prompts inside one native Stop remediation cycle, but tools
   // run after the first terminal are recorded in recovered telemetry turns.
   // Name the whole ritual so one continuation can repair every required signal.
@@ -113,10 +153,31 @@ export function emitStopBlock(
   return 2;
 }
 
+function cursorCoordinationRemediation(
+  verdict: { reason?: string; rule: string },
+  coordRoot?: string,
+): string {
+  const reason = verdict.reason ?? "End-of-turn coordination ritual incomplete.";
+  // The marker leads the message so the Stop verdict can recognize the turn
+  // Cursor opens from it (`STOP_REMEDIATION_MARKER`), and so the operator can
+  // see in chat that the message came from Harnery rather than from them.
+  // Both commands are named because one message that repairs the whole ritual
+  // ends the chain in a single followup; the failing rule is context.
+  const bin = resolveBinName(coordRoot);
+  const statusCommand = endOfTurnStatusCommand(coordRoot);
+  const message = [
+    `${STOP_REMEDIATION_MARKER} rule=${verdict.rule}]`,
+    reason,
+    `Repair the ritual in this turn: run \`${bin} agents set-task "<short focus>"\` and then \`${statusCommand}\` as your last tool call.`,
+  ].join("\n");
+  return message;
+}
+
 function buildContextJson(
   adapter: Adapter,
   event: SystemEvent,
   text: string,
+  env?: Record<string, string>,
 ): Record<string, unknown> {
   if (adapter === "cursor") {
     // Cursor uses a flat top-level key + an env block that survives across the
@@ -124,7 +185,10 @@ function buildContextJson(
     // `env: {HARNERY_AGENT_COORD_ADAPTER, HARNERY_AGENT_COORD_PLATFORM}`. These are
     // observer hints, not load-bearing; agent-hook + agent-coord recover the
     // adapter from event metadata. Drop them.
-    return { additional_context: text };
+    return {
+      ...(text ? { additional_context: text } : {}),
+      ...(env ? { env } : {}),
+    };
   }
   // Claude Code + Codex share the `hookSpecificOutput` envelope.
   return {
@@ -133,6 +197,16 @@ function buildContextJson(
       additionalContext: text,
     },
   };
+}
+
+function cleanEnv(
+  value: Readonly<Record<string, string>> | undefined,
+): Record<string, string> | undefined {
+  if (!value) return undefined;
+  const entries = Object.entries(value).filter(
+    ([key, item]) => /^[A-Z_][A-Z0-9_]*$/.test(key) && typeof item === "string" && item.length > 0,
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function buildDenyJson(adapter: Adapter, reason: string): Record<string, unknown> {

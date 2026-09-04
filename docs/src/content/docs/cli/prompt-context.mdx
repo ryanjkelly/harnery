@@ -1,0 +1,39 @@
+---
+title: harn prompt-context
+description: Consume host-provided prompt context when an adapter cannot inject it directly.
+sidebar:
+  order: 28
+---
+
+```
+harn prompt-context consume [--json]
+```
+
+`consume` is the compatibility path for adapters whose prompt-submission hook
+cannot inject model context. It reads one pending envelope for the current
+session, prints its context, and deletes it. No pending context is a successful
+empty result.
+
+You normally do not run this command by hand. When a project enables
+`hooks.promptContext`, `harn init --adapter cursor` adds the command to
+Harnery's machine-owned Always Apply rule. Claude Code and Codex receive the
+same provider result directly from their prompt hooks and do not call
+`consume`.
+
+The command requires the opaque session key that Harnery returns from Cursor's
+`sessionStart` hook. It refuses missing, expired, mismatched, or ambiguous
+state. A successful read uses an atomic claim, so two consumers cannot print
+the same context. Pending files use owner-only permissions and are deleted
+after consumption, expiry, or session cleanup.
+
+`--json` prints a result envelope for diagnostics. The default text form prints
+only model context. Avoid copying either form into logs because a host provider
+may return private records.
+
+The consume call is a tool call. Existing tool-using turn policy still applies
+while the compatibility path is enabled. Harnery does not exempt a command by
+matching its shell text.
+
+See [configuration](/reference/config-schema/#hooks) for provider setup and
+[ADR 0161](/decisions/0161-run-host-prompt-context-through-one-hook-contract/)
+for the trust boundary.

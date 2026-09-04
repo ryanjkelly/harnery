@@ -23,7 +23,7 @@ Settings resolve from these sources, lowest precedence first (later wins):
 2. `<project>/.harnery/config.jsonc`: the project settings file, which overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
 3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, `coord`, `logs`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. Three values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots` and `instructions.promptReminder`. A global setting cannot grant filesystem authority to a project or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
+The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, `coord`, `logs`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. Four values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `instructions.promptReminder`, and `hooks.promptContext`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
 
 ## Top-level fields
 
@@ -39,6 +39,7 @@ The config reader (`src/core/config.ts`) merges the two files and owns `binName`
 | `tools`        | object  | see below        | Managed-tool provisioning consent (`tools.ripgrep.autoInstall`) |
 | `workflow`     | object  | see below        | Workflow-engine defaults |
 | `skills`       | object  | see below        | Shipped-skill suppression (`skills.exclude`) |
+| `hooks`        | object  | see below        | Optional project-owned hook extensions |
 | `instructions` | object  | see below        | Host-owned agent instructions and prompt reminder |
 | `presence`     | object  | see below        | Cross-machine presence transports |
 | `files`        | object  | see below        | Web file-viewer path policy (additive deny/allow globs) |
@@ -250,6 +251,44 @@ Env override per process: `HARNERY_TOOLS_AUTOINSTALL=1|0`.
 | Field     | Type       | Default | Description |
 | --------- | ---------- | ------- | ----------- |
 | `exclude` | string[]   | `[]`    | Shipped Harnery skills this repo suppresses. The installed set is `harn-decide`, `harn-council`, `harn-end`, and `harn-team`; the injected AGENTS.md block uses the matching CLI command instead of an excluded skill |
+
+## `hooks`
+
+| Field                          | Type | Default | Description |
+| ------------------------------ | ---- | ------- | ----------- |
+| `promptContext.enabled`        | bool | `false` | Run the project prompt-context extension from the normalized prompt hook |
+| `promptContext.timeoutMs`      | int  | `15000` | Whole-provider deadline, from 1 to 120,000 milliseconds |
+| `promptContext.maxOutputBytes` | int  | `65536` | Maximum provider stdout, from 1 byte to 4 MiB |
+
+`promptContext` is project-only. Harnery ignores the user-global value because
+it authorizes an executable in the repository. Enabling it expects this file:
+
+```
+scripts/hooks/harness/extensions/prompt-context
+```
+
+The executable receives one `harnery.prompt-context-request/v1` JSON document
+on standard input and returns one `harnery.prompt-context-result/v1` document
+on standard output. Harnery validates the full response and fails open on a
+missing executable, timeout, signal, nonzero exit, malformed result, oversized
+output, or empty result. Provider stdout and stderr are never streamed into the
+hook protocol or copied into operational logs.
+
+```jsonc
+{
+  "hooks": {
+    "promptContext": {
+      "enabled": true,
+      "timeoutMs": 15000,
+      "maxOutputBytes": 65536
+    }
+  }
+}
+```
+
+Claude Code and Codex receive validated context directly. Cursor stages a
+session-bound envelope and uses [`prompt-context consume`](/cli/prompt-context/)
+because its current `beforeSubmitPrompt` hook cannot inject context.
 
 ## `instructions`
 

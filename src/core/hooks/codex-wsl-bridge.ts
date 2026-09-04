@@ -71,15 +71,27 @@ export function codexWslWorkspaceLinkMapping(
   const parsed = parseWslUncPath(workspaceCwd);
   const linuxRoot = trimTrailingSlash(coordRootRaw.replace(/\\/g, "/"));
   if (!parsed || !linuxRoot.startsWith("/")) return null;
-  const linuxCwd = trimTrailingSlash(parsed.linuxPath);
-  if (!isWithinOrEqual(linuxCwd, linuxRoot) && !isWithinOrEqual(linuxRoot, linuxCwd)) {
-    return null;
-  }
+  if (!codexWslWorkspaceLinuxPath(coordRootRaw, workspaceCwd)) return null;
   return {
     linuxRoot,
     hostRoot: `//${parsed.host}/${parsed.distro}${linuxRoot}`,
     distro: parsed.distro,
   };
+}
+
+/** Translate an overlapping WSL UNC workspace into its Linux-native path. */
+export function codexWslWorkspaceLinuxPath(
+  coordRootRaw: string,
+  workspaceCwd: unknown,
+): string | null {
+  const parsed = parseWslUncPath(workspaceCwd);
+  const linuxRoot = trimTrailingSlash(coordRootRaw.replace(/\\/g, "/"));
+  if (!parsed || !linuxRoot.startsWith("/")) return null;
+  const linuxCwd = trimTrailingSlash(parsed.linuxPath);
+  if (!isWithinOrEqual(linuxCwd, linuxRoot) && !isWithinOrEqual(linuxRoot, linuxCwd)) {
+    return null;
+  }
+  return linuxCwd;
 }
 
 /** Fresh adapter context for the model. Shell paths stay Linux-native; only

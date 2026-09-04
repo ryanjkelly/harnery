@@ -189,6 +189,125 @@ describe("agent-hook V3 hard cut", () => {
     }
   });
 
+  test("injects host prompt context directly for Claude Code and Codex", () => {
+    for (const adapter of ["claude-code", "codex"] as const) {
+      const root = candidateRoot(adapter);
+      enablePromptContextProvider(root);
+      const owner = `${adapter}-prompt-context-owner`;
+      const env = { HARNERY_AGENT_COORD_BYPASS_STOP: "1" };
+
+      expect(
+        run(
+          AGENT_HOOK,
+          ["session-start", "--adapter", adapter],
+          { session_id: owner, cwd: root, source: "startup" },
+          root,
+          env,
+        ).status,
+      ).toBe(0);
+      const prompt = run(
+        AGENT_HOOK,
+        ["user-prompt-submit", "--adapter", adapter],
+        { session_id: owner, turn_id: `${owner}-turn`, cwd: root, prompt: "lookup fixture" },
+        root,
+        env,
+      );
+
+      expect(prompt.status).toBe(0);
+      expect(prompt.stdout).toContain("PROMPT_CONTEXT_FIXTURE");
+      expect(JSON.stringify(readLedgerV3(root))).not.toContain("PROMPT_CONTEXT_FIXTURE");
+      const debugPath = join(root, ".harnery", "debug", "agent-hook.ndjson");
+      if (existsSync(debugPath)) {
+        expect(readFileSync(debugPath, "utf8")).not.toContain("PROMPT_CONTEXT_FIXTURE");
+      }
+    }
+  });
+
+  test("delivers Cursor prompt context through one-shot consume and one bounded recovery", () => {
+    const root = candidateRoot("cursor");
+    enablePromptContextProvider(root);
+    const owner = "cursor-prompt-context-owner";
+    const env = { HARNERY_AGENT_COORD_BYPASS_STOP: "1" };
+    const started = run(
+      AGENT_HOOK,
+      ["session-start", "--adapter", "cursor"],
+      {
+        conversation_id: owner,
+        cwd: root,
+        source: "startup",
+        is_background_agent: false,
+        hook_event_name: "sessionStart",
+      },
+      root,
+      env,
+    );
+    const sessionKey = (
+      JSON.parse(started.stdout) as { env?: { HARNERY_PROMPT_CONTEXT_SESSION_KEY?: string } }
+    ).env?.HARNERY_PROMPT_CONTEXT_SESSION_KEY;
+    expect(sessionKey).toBeString();
+
+    const stage = (generationId: string) =>
+      run(
+        AGENT_HOOK,
+        ["user-prompt-submit", "--adapter", "cursor"],
+        {
+          conversation_id: owner,
+          generation_id: generationId,
+          cwd: root,
+          prompt: "lookup fixture",
+          is_background_agent: false,
+          hook_event_name: "beforeSubmitPrompt",
+        },
+        root,
+        env,
+      );
+    expect(stage("cursor-context-turn-one").stdout).not.toContain("PROMPT_CONTEXT_FIXTURE");
+
+    const consume = spawnSync("bash", [HARN, "prompt-context", "consume"], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HARNERY_COORD_ROOT_OVERRIDE: root,
+        HARNERY_PROMPT_CONTEXT_SESSION_KEY: sessionKey!,
+      },
+    });
+    expect(consume.status).toBe(0);
+    expect(consume.stdout).toContain("PROMPT_CONTEXT_FIXTURE");
+
+    expect(stage("cursor-context-turn-two").status).toBe(0);
+    const firstStop = run(
+      AGENT_HOOK,
+      ["stop", "--adapter", "cursor"],
+      {
+        conversation_id: owner,
+        generation_id: "cursor-stop-one",
+        cwd: root,
+        last_assistant_message: "done",
+        is_background_agent: false,
+        hook_event_name: "stop",
+      },
+      root,
+      env,
+    );
+    expect(firstStop.stdout).toContain("prompt-context recovery");
+    const secondStop = run(
+      AGENT_HOOK,
+      ["stop", "--adapter", "cursor"],
+      {
+        conversation_id: owner,
+        generation_id: "cursor-stop-two",
+        cwd: root,
+        last_assistant_message: "done",
+        is_background_agent: false,
+        hook_event_name: "stop",
+      },
+      root,
+      env,
+    );
+    expect(secondStop.stdout).not.toContain("prompt-context recovery");
+  });
+
   test("PostToolUse injects and PreToolUse enforces the pending session-name display", () => {
     const root = candidateRoot();
     const owner = "session-name-latch-owner";
@@ -1493,6 +1612,38 @@ function candidateRoot(adapter: "claude-code" | "codex" | "cursor" = "claude-cod
   writeFileSync(manifestPath, `${canonicalJsonV3(manifest)}\n`, { mode: 0o600 });
   expect(repairEventV3ControlPair(root).state).toBe("candidate");
   return root;
+}
+
+function enablePromptContextProvider(root: string): void {
+  writeFileSync(
+    join(root, ".harnery", "config.jsonc"),
+    JSON.stringify({ hooks: { promptContext: { enabled: true } } }),
+    "utf8",
+  );
+  const executable = join(root, "scripts", "hooks", "harness", "extensions", "prompt-context");
+  mkdirSync(dirname(executable), { recursive: true });
+  writeFileSync(
+    executable,
+    `#!/usr/bin/env node
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  JSON.parse(input);
+  process.stdout.write(JSON.stringify({
+    schema: "harnery.prompt-context-result/v1",
+    provider_id: "fixture-provider",
+    context: "PROMPT_CONTEXT_FIXTURE",
+    matched: 1,
+    succeeded: 1,
+    failed: 0,
+    reason_codes: ["fixture_match"]
+  }));
+});
+`,
+    { mode: 0o755 },
+  );
+  chmodSync(executable, 0o755);
 }
 
 function run(

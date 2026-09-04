@@ -122,6 +122,24 @@ describe("applyInstructions (cursor)", () => {
     expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("fresh");
   });
 
+  test("cursor rule includes the interpolated consume command only when prompt context is enabled", () => {
+    mkdirSync(join(root, ".harnery"), { recursive: true });
+    writeFileSync(
+      join(root, ".harnery/config.jsonc"),
+      '{ "hooks": { "promptContext": { "enabled": true } } }',
+    );
+    applyInstructions(root, { binName: BIN, adapter: "cursor", dryRun: false });
+    const rule = read(".cursor/rules/harnery-turn-ritual.mdc");
+    expect(rule).toContain("`acme prompt-context consume`");
+    expect(rule).toContain("makes the turn tool-using");
+    expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("fresh");
+
+    writeFileSync(join(root, ".harnery/config.jsonc"), "{}");
+    expect(checkInstructions(root, { binName: BIN, adapter: "cursor" }).status).toBe("drift");
+    applyInstructions(root, { binName: BIN, adapter: "cursor", dryRun: false });
+    expect(read(".cursor/rules/harnery-turn-ritual.mdc")).not.toContain("prompt-context consume");
+  });
+
   test("cursor rule drift is checked and deinit removes the owned file", () => {
     applyInstructions(root, { binName: BIN, adapter: "cursor", dryRun: false });
     const rule = ".cursor/rules/harnery-turn-ritual.mdc";

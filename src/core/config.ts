@@ -7,7 +7,7 @@
  *   2. `<project-root>/.harnery/config.jsonc` — project override (authoritative)
  *
  * Fields owned here: `binName` (host CLI name for agent-facing strings),
- * `hooksSetupHint`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
+ * `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
  * `coord` (heartbeat freshness), `logs` (structured-log storage budgets),
  * `artifacts` (working-file retention),
  * `backup` (restic repo/password/prune policy), `sync` (rclone

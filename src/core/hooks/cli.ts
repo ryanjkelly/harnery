@@ -56,7 +56,11 @@ import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { assignName } from "../agents/state/names.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
-import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
+import {
+  agentsRequireGitFinalization,
+  hostPromptContextConfig,
+  resolveBinName,
+} from "../config.ts";
 import {
   checkpointContext,
   completeContextRecovery,
@@ -834,6 +838,11 @@ async function main(): Promise<number> {
 
   const sessionId = payload?.session_id ?? payload?.conversation_id ?? owner.instance_id;
   const priorCoordination = readHeartbeat(coordRoot, owner.instance_id);
+  const topLevelSession =
+    coordEnv("WORKFLOW_CHILD") !== "1" &&
+    priorCoordination?.kind !== "subagent" &&
+    priorCoordination?.kind !== "transient" &&
+    !priorCoordination?.workflow_run_id;
   if (
     norm.event_type !== "session.ended" &&
     coordEnv("WORKFLOW_CHILD") !== "1" &&
@@ -1133,6 +1142,26 @@ async function main(): Promise<number> {
         logError(coordRoot, err, { phase: "context-recovery-session-start" });
       }
     }
+    let promptContextEnv: Readonly<Record<string, string>> | undefined;
+    if (
+      adapter === "cursor" &&
+      payload?.cursor_mode === "local" &&
+      topLevelSession &&
+      hostPromptContextConfig(coordRoot)?.enabled
+    ) {
+      try {
+        const { PROMPT_CONTEXT_SESSION_KEY_ENV, startCursorPromptContextSession } = await import(
+          "./prompt-context/state.ts"
+        );
+        const session = startCursorPromptContextSession({
+          coordRoot,
+          conversationId: payload.conversation_id ?? sessionId,
+        });
+        promptContextEnv = { [PROMPT_CONTEXT_SESSION_KEY_ENV]: session.sessionKey };
+      } catch (err) {
+        logError(coordRoot, err, { phase: "prompt-context-session-start" });
+      }
+    }
     try {
       const injected = await emitSessionStartSystemMessage(
         coordRoot,
@@ -1141,6 +1170,7 @@ async function main(): Promise<number> {
         data,
         adapter,
         recovery?.briefing ?? "",
+        promptContextEnv,
       );
       if (injected && recovery) {
         completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
@@ -1163,6 +1193,17 @@ async function main(): Promise<number> {
   // Phase 8: SessionEnd cleanup: delete heartbeat + pid-map rows. Adapter-
   // agnostic since v0.5.0.
   if (norm.event_type === "session.ended") {
+    if (adapter === "cursor") {
+      try {
+        const { clearCursorPromptContextSession } = await import("./prompt-context/state.ts");
+        clearCursorPromptContextSession({
+          coordRoot,
+          conversationId: payload?.conversation_id ?? sessionId,
+        });
+      } catch (err) {
+        logError(coordRoot, err, { phase: "prompt-context-session-end" });
+      }
+    }
     try {
       cleanupSessionEnd(coordRoot, owner.instance_id);
     } catch (err) {
@@ -1240,6 +1281,48 @@ async function main(): Promise<number> {
         logError(coordRoot, err, { phase: "context-recovery-user-prompt" });
       }
     }
+    let hostPromptContext = "";
+    const hostPromptEnabled = hostPromptContextConfig(coordRoot)?.enabled === true;
+    const localDeliverySurface = adapter !== "cursor" || payload?.cursor_mode === "local";
+    if (hostPromptEnabled && localDeliverySurface && topLevelSession && !stopRemediation) {
+      try {
+        const { runPromptContext } = await import("./prompt-context/runner.ts");
+        const result = await runPromptContext({
+          coordRoot,
+          adapter,
+          sessionId,
+          turnId: payload?.turn_id ?? v3EventId ?? sessionId,
+          cwd: payload?.cwd ?? process.cwd(),
+          prompt: payload?.prompt ?? "",
+        });
+        appendDebug(coordRoot, {
+          ...debugBase,
+          effect: "prompt-context",
+          ...result.audit,
+        });
+        if (adapter === "cursor") {
+          const { stageCursorPromptContext } = await import("./prompt-context/state.ts");
+          const staged = stageCursorPromptContext({
+            coordRoot,
+            conversationId: payload?.conversation_id ?? sessionId,
+            turnId: payload?.turn_id ?? v3EventId ?? sessionId,
+            context: result.context ?? "",
+          });
+          if (!staged.staged && staged.reason !== "empty_context") {
+            appendDebug(coordRoot, {
+              ...debugBase,
+              effect: "prompt-context-delivery",
+              status: "failed",
+              reason: staged.reason,
+            });
+          }
+        } else {
+          hostPromptContext = result.context ?? "";
+        }
+      } catch (err) {
+        logError(coordRoot, err, { phase: "prompt-context-user-prompt" });
+      }
+    }
     try {
       const injected = await emitUserPromptSubmitSystemMessage(
         coordRoot,
@@ -1248,6 +1331,7 @@ async function main(): Promise<number> {
         adapter,
         payload?.cwd,
         recovery?.briefing ?? "",
+        hostPromptContext,
       );
       if (injected && recovery) {
         completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
@@ -1276,6 +1360,30 @@ async function main(): Promise<number> {
       ensureRelayDaemon(coordRoot);
     } catch (err) {
       logError(coordRoot, err, { phase: "stop-presence" });
+    }
+
+    let promptContextRecovery = false;
+    if (
+      adapter === "cursor" &&
+      payload?.cursor_mode === "local" &&
+      topLevelSession &&
+      hostPromptContextConfig(coordRoot)?.enabled
+    ) {
+      try {
+        const { markCursorPromptContextRecovery } = await import("./prompt-context/state.ts");
+        const recovery = markCursorPromptContextRecovery({
+          coordRoot,
+          conversationId: payload.conversation_id ?? sessionId,
+        });
+        promptContextRecovery = recovery.send;
+        appendDebug(coordRoot, {
+          ...debugBase,
+          effect: "prompt-context-recovery",
+          status: recovery.reason,
+        });
+      } catch (err) {
+        logError(coordRoot, err, { phase: "prompt-context-stop-recovery" });
+      }
     }
 
     // Stop verdict (V3 ritual + task/status gate). Direct in-process call: the
@@ -1311,10 +1419,10 @@ async function main(): Promise<number> {
       } else {
         // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr
         // as a turn block; Cursor ignores exit codes and re-prompts only via a
-        // `followup_message` it auto-submits. Codex returned observe-only above.
-        // emitStopBlock writes the right shape and returns the exit code to use.
-        const { emitStopBlock } = await import("./adapter/output.ts");
-        return emitStopBlock(adapter, verdict, coordRoot);
+        // `followup_message` it auto-submits. Prompt-context recovery shares
+        // that one Cursor response object with coordination remediation.
+        const { emitStopOutcome } = await import("./adapter/output.ts");
+        return emitStopOutcome(adapter, { verdict, promptContextRecovery }, coordRoot);
       }
     } else {
       const { clearRemediationCount } = await import("./remediation-cap.ts");
@@ -1334,6 +1442,10 @@ async function main(): Promise<number> {
       }
     } catch (err) {
       logError(coordRoot, err, { phase: "stop-explicit-session-finalization" });
+    }
+    if (promptContextRecovery) {
+      const { emitStopOutcome } = await import("./adapter/output.ts");
+      return emitStopOutcome(adapter, { promptContextRecovery: true }, coordRoot);
     }
     if (adapter === "codex") scheduleCodexRuntimeContextRetry(coordRoot, sessionId);
   }
@@ -1906,6 +2018,7 @@ async function emitUserPromptSubmitSystemMessage(
   adapter: Adapter,
   workspaceCwd?: string,
   recoveryBriefing = "",
+  hostPromptContext = "",
 ): Promise<boolean> {
   const { renderPromptContext } = await import("../agents/render/prompt-context.ts");
   let additionalContext = renderPromptContext({
@@ -1928,11 +2041,13 @@ async function emitUserPromptSubmitSystemMessage(
   if (recoveryBriefing) {
     additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
   }
+  if (hostPromptContext) {
+    additionalContext = [additionalContext, hostPromptContext].filter(Boolean).join("\n\n");
+  }
   if (!additionalContext) return false;
 
   const { emitContext } = await import("./adapter/output.ts");
-  emitContext(adapter, "UserPromptSubmit", additionalContext);
-  return true;
+  return emitContext(adapter, "UserPromptSubmit", additionalContext);
 }
 
 async function emitSubagentStartContext(
@@ -1989,6 +2104,7 @@ async function emitSessionStartSystemMessage(
   emittedData: Record<string, unknown>,
   adapter: Adapter,
   recoveryBriefing = "",
+  env?: Readonly<Record<string, string>>,
 ): Promise<boolean> {
   const workflowChild = coordEnv("WORKFLOW_CHILD") === "1";
   let additionalContext = "";
@@ -2041,11 +2157,8 @@ async function emitSessionStartSystemMessage(
         .join("\n\n");
     }
   }
-  if (!additionalContext) return false;
-
   const { emitContext } = await import("./adapter/output.ts");
-  emitContext(adapter, "SessionStart", additionalContext);
-  return true;
+  return emitContext(adapter, "SessionStart", additionalContext, { env });
 }
 
 function completeRecoveryInjection(

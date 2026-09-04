@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   codexWslFileLinkTelemetry,
   codexWslWorkspaceLinkMapping,
+  codexWslWorkspaceLinuxPath,
   inspectCodexWslBridge,
   isWslUncPath,
   renderCodexWslFileLinkContext,
@@ -96,6 +97,13 @@ describe("Codex WSL workspace file links", () => {
       hostRoot: "//wsl.localhost/Ubuntu-22.04/home/dev/projects/example",
       distro: "Ubuntu-22.04",
     });
+  });
+
+  test("derives the Linux cwd used by hook extensions", () => {
+    expect(codexWslWorkspaceLinuxPath(linuxRoot, `${uncRoot}\\src\\hooks`)).toBe(
+      `${linuxRoot}/src/hooks`,
+    );
+    expect(codexWslWorkspaceLinuxPath(linuxRoot, "C:\\projects\\example")).toBeNull();
   });
 
   test("normalizes extended UNC syntax", () => {

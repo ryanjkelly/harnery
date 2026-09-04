@@ -68,6 +68,11 @@ message, then records that recovery so it cannot loop. If Cursor later supports
 prompt-time context, its capability changes from `consume` to `direct`; the
 provider contract stays unchanged.
 
+The consume command makes the Cursor turn tool-using, so the existing task and
+status ritual applies. Harnery does not infer that a tool is housekeeping from
+its command string. An exemption would require a privacy-safe classification
+in the event contract and is outside this change.
+
 Provider context is sensitive regardless of content. The model-visible harness
 transcript necessarily contains delivered context. Harnery's extra audit keeps
 only provider id, delivery status, elapsed time, counts, reason codes, byte
