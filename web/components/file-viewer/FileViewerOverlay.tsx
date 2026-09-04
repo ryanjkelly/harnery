@@ -20,6 +20,7 @@ import {
 } from "@/lib/file-viewer/client";
 import type { FileMeta, FileViewerState } from "@/lib/file-viewer/types";
 import { RendererRegistry } from "./RendererRegistry";
+import { RevealInFileManagerButton } from "./RevealInFileManagerButton";
 import {
   DeniedState,
   LoadingState,
@@ -205,6 +206,7 @@ export default function FileViewerOverlay({
             </span>
           )}
           <div className={`flex items-center gap-1 ${inSequence ? "" : "ml-auto"}`}>
+            {m && <RevealInFileManagerButton path={m.relPath} />}
             {isHtmlPreviewPath(path) && (
               <IconLink
                 href={renderUrl(path)}

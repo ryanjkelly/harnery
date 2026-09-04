@@ -19,6 +19,7 @@ import {
 } from "@/lib/file-viewer/client";
 import type { FileMeta } from "@/lib/file-viewer/types";
 import { RendererRegistry } from "./RendererRegistry";
+import { RevealInFileManagerButton } from "./RevealInFileManagerButton";
 import {
   DeniedState,
   LoadingState,
@@ -60,8 +61,13 @@ export function FileViewerPane({ path }: { path: string | null }) {
           </span>
         )}
         <div className="ml-auto flex items-center gap-1">
+          {m && <RevealInFileManagerButton path={m.relPath} />}
           {isHtmlPreviewPath(path) && (
-            <IconLink href={renderUrl(path)} target="_blank" title="Open on files origin (HTML with scripts)">
+            <IconLink
+              href={renderUrl(path)}
+              target="_blank"
+              title="Open on files origin (HTML with scripts)"
+            >
               <Eye className="size-4" />
             </IconLink>
           )}

@@ -12,11 +12,12 @@
  * flex grid (a fixed `#` gutter + equal flex-1 cells) and stay aligned.
  */
 
-import type { FileText } from "@/lib/file-viewer/types";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import Papa from "papaparse";
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import type { FileText } from "@/lib/file-viewer/types";
 import TextRenderer from "./TextRenderer";
+import { useWrapPref, WrapToggle } from "./WrapToggle";
 
 const ROW_HEIGHT = 28;
 const GUTTER = "5ch";
@@ -27,6 +28,7 @@ function looksNumeric(cells: string[]): boolean {
 }
 
 export default function CsvRenderer({ file }: { file: FileText }) {
+  const [wrap, toggleWrap] = useWrapPref();
   const parsed = useMemo(() => {
     const delimiter = file.relPath.toLowerCase().endsWith(".tsv") ? "\t" : "";
     return Papa.parse<string[]>(file.content, { delimiter, skipEmptyLines: true });
@@ -51,6 +53,16 @@ export default function CsvRenderer({ file }: { file: FileText }) {
     overscan: 12,
   });
 
+  useEffect(() => {
+    if (wrap) {
+      virtualizer.measure();
+      return;
+    }
+    for (let index = 0; index < body.length; index++) {
+      virtualizer.resizeItem(index, ROW_HEIGHT);
+    }
+  }, [body.length, virtualizer, wrap]);
+
   // Zero usable rows → not really tabular; show raw text.
   if (rows.length === 0) return <TextRenderer file={file} />;
 
@@ -59,8 +71,13 @@ export default function CsvRenderer({ file }: { file: FileText }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col font-mono text-[11px]">
-      <div className="shrink-0 border-b border-border bg-muted/20 px-3 py-1 text-muted-foreground">
-        {body.length.toLocaleString()} rows · {colCount} cols
+      <div className="flex shrink-0 items-center border-b border-border bg-muted/20 px-3 py-1 text-muted-foreground">
+        <span>
+          {body.length.toLocaleString()} rows · {colCount} cols
+        </span>
+        <div className="ml-auto">
+          <WrapToggle wrap={wrap} onToggle={toggleWrap} />
+        </div>
       </div>
       {/* header row, same grid as body rows */}
       <div className="flex shrink-0 border-b border-border bg-muted/40">
@@ -69,7 +86,7 @@ export default function CsvRenderer({ file }: { file: FileText }) {
         </Cell>
         {cols.map((_, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: column index IS the identity
-          <Cell key={i} className="font-semibold text-foreground">
+          <Cell key={i} className="font-semibold text-foreground" wrap={wrap}>
             {header[i] ?? `col ${i + 1}`}
           </Cell>
         ))}
@@ -82,14 +99,19 @@ export default function CsvRenderer({ file }: { file: FileText }) {
               <div
                 key={vi.key}
                 className="absolute flex w-full border-b border-border/40"
-                style={{ transform: `translateY(${vi.start}px)`, height: `${ROW_HEIGHT}px` }}
+                data-index={vi.index}
+                ref={wrap ? virtualizer.measureElement : undefined}
+                style={{
+                  transform: `translateY(${vi.start}px)`,
+                  ...(wrap ? {} : { height: `${ROW_HEIGHT}px` }),
+                }}
               >
                 <Cell width={GUTTER} className="text-right tabular-nums text-muted-foreground/50">
                   {vi.index + 1}
                 </Cell>
                 {cols.map((_, ci) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: (row,col) index is the identity
-                  <Cell key={ci} className="text-foreground/90" title={row[ci] ?? ""}>
+                  <Cell key={ci} className="text-foreground/90" title={row[ci] ?? ""} wrap={wrap}>
                     {row[ci] ?? ""}
                   </Cell>
                 ))}
@@ -107,16 +129,18 @@ function Cell({
   className,
   width,
   title,
+  wrap = false,
 }: {
   children: React.ReactNode;
   className?: string;
   width?: string;
   title?: string;
+  wrap?: boolean;
 }) {
   return (
     <div
       title={title}
-      className={`truncate border-r border-border/50 px-2 py-1 ${width ? "shrink-0" : "flex-1 min-w-0"} ${className ?? ""}`}
+      className={`${wrap ? "whitespace-pre-wrap break-words" : "truncate"} border-r border-border/50 px-2 py-1 ${width ? "shrink-0" : "flex-1 min-w-0"} ${className ?? ""}`}
       style={width ? { width } : undefined}
     >
       {children}

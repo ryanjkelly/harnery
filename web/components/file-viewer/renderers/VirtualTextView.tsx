@@ -53,7 +53,7 @@ function highlight(line: string, query: string, activeInLine: boolean): ReactNod
   return parts.length ? parts : line || " ";
 }
 
-export default function VirtualTextView({ content }: { content: string }) {
+export default function VirtualTextView({ content, wrap }: { content: string; wrap: boolean }) {
   const lines = useMemo(() => toLines(content), [content]);
   const width = String(lines.length).length;
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -69,6 +69,18 @@ export default function VirtualTextView({ content }: { content: string }) {
     estimateSize: () => ROW_HEIGHT,
     overscan: 20,
   });
+
+  // Wrapped rows have dynamic heights. TanStack's element observer keeps them
+  // measured as the pane resizes; switching modes invalidates prior estimates.
+  useEffect(() => {
+    if (wrap) {
+      virtualizer.measure();
+      return;
+    }
+    for (let index = 0; index < lines.length; index++) {
+      virtualizer.resizeItem(index, ROW_HEIGHT);
+    }
+  }, [lines, virtualizer, wrap]);
 
   // Line indices containing the query (case-insensitive).
   const matches = useMemo(() => {
@@ -185,7 +197,12 @@ export default function VirtualTextView({ content }: { content: string }) {
               <div
                 key={vi.key}
                 className="absolute flex w-full"
-                style={{ transform: `translateY(${vi.start}px)`, height: `${ROW_HEIGHT}px` }}
+                data-index={vi.index}
+                ref={wrap ? virtualizer.measureElement : undefined}
+                style={{
+                  transform: `translateY(${vi.start}px)`,
+                  ...(wrap ? {} : { height: `${ROW_HEIGHT}px` }),
+                }}
               >
                 <span
                   className="shrink-0 select-none border-r border-border/60 px-3 text-right tabular-nums text-muted-foreground/50"
@@ -193,7 +210,11 @@ export default function VirtualTextView({ content }: { content: string }) {
                 >
                   {vi.index + 1}
                 </span>
-                <span className="whitespace-pre break-all px-3 text-foreground/90">
+                <span
+                  className={`px-3 text-foreground/90 ${
+                    wrap ? "min-w-0 flex-1 whitespace-pre-wrap break-words" : "whitespace-pre"
+                  }`}
+                >
                   {highlight(line, query, isActive)}
                 </span>
               </div>

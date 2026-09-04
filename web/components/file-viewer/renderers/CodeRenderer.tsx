@@ -59,11 +59,11 @@ export default function CodeRenderer({
     };
   }, [file.relPath, file.content]);
 
-  if (failed) return <TextRenderer file={file} />;
+  if (failed) return <TextRenderer file={file} wrap={wrap} />;
   if (html === null) {
     // Highlighting in flight, so show plain text immediately to avoid a flash
     // of empty (the grammar import can take a beat on first use).
-    return <TextRenderer file={file} />;
+    return <TextRenderer file={file} wrap={wrap} />;
   }
   const body = (
     <div

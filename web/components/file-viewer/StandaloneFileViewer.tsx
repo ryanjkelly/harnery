@@ -17,6 +17,7 @@ import {
 } from "@/lib/file-viewer/client";
 import type { FileMeta } from "@/lib/file-viewer/types";
 import { RendererRegistry } from "./RendererRegistry";
+import { RevealInFileManagerButton } from "./RevealInFileManagerButton";
 import {
   DeniedState,
   LoadingState,
@@ -65,6 +66,7 @@ export function StandaloneFileViewer({
           </span>
         )}
         <div className="ml-auto flex items-center gap-1">
+          {m && <RevealInFileManagerButton path={m.relPath} />}
           {isHtmlPreviewPath(path) && (
             <IconLink
               href={sandboxedRenderUrl(path)}

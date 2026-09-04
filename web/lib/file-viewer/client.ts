@@ -59,6 +59,41 @@ export function fetchText(path: string): Promise<FetchResult<FileText>> {
   return getJson<FileText>(`/api/file/text?${qs(path)}`);
 }
 
+export interface RevealResult {
+  manager: "Explorer" | "Finder" | "file manager";
+}
+
+/** Ask the local dashboard server to reveal a validated file in its native
+ * containing folder. The server chooses Explorer/Finder from its host OS. */
+export async function revealInFileManager(path: string): Promise<FetchResult<RevealResult>> {
+  let res: Response;
+  try {
+    res = await fetch("/api/file/reveal", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+  } catch (err) {
+    return { ok: false, status: 0, code: "transport", detail: (err as Error).message };
+  }
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return { ok: false, status: res.status, code: "bad_json", detail: null };
+  }
+  if (!res.ok) {
+    const e = body as FileError;
+    return {
+      ok: false,
+      status: res.status,
+      code: typeof e?.error === "string" ? e.error : "transport",
+      detail: typeof e?.detail === "string" ? e.detail : null,
+    };
+  }
+  return { ok: true, data: body as RevealResult };
+}
+
 /** List one directory's immediate children (repo-relative; "" = repo root). */
 export function fetchList(dir: string): Promise<FetchResult<DirListing>> {
   return getJson<DirListing>(`/api/file/list?dir=${encodeURIComponent(dir)}`);

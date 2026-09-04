@@ -15,6 +15,7 @@ import remarkGfm from "remark-gfm";
 import { markdownImageUrl } from "@/lib/file-viewer/client";
 import type { FileText } from "@/lib/file-viewer/types";
 import ShikiBlock from "./ShikiBlock";
+import { useWrapPref, WrapToggle } from "./WrapToggle";
 
 const PROSE = [
   "max-w-none px-5 py-4 text-[13px] leading-relaxed text-foreground/90",
@@ -35,37 +36,50 @@ const PROSE = [
 ].join(" ");
 
 export default function MarkdownRenderer({ file }: { file: FileText }) {
+  const [wrap, toggleWrap] = useWrapPref();
   return (
-    <div className={`overflow-auto ${PROSE}`}>
-      <Markdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeSanitize]}
-        components={{
-          // Pass-through <pre> so fenced code isn't double-wrapped; ShikiBlock
-          // (from the `code` override) supplies its own container.
-          pre: ({ children }) => <>{children}</>,
-          img({ src, alt, ...props }) {
-            const resolvedSrc = typeof src === "string" ? markdownImageUrl(file.relPath, src) : src;
-            return (
-              // biome-ignore lint/performance/noImgElement: repository images are already served at their source dimensions by the sandboxed file API
-              <img src={resolvedSrc} alt={alt ?? ""} {...props} />
-            );
-          },
-          code({ className, children, ...props }) {
-            const match = /language-([\w-]+)/.exec(className ?? "");
-            if (match) {
-              return <ShikiBlock code={String(children).replace(/\n$/, "")} lang={match[1]!} />;
-            }
-            return (
-              <code className={className} {...props}>
-                {children}
-              </code>
-            );
-          },
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="sticky top-0 z-10 flex shrink-0 items-center justify-end border-b border-border bg-card px-3 py-1.5">
+        <WrapToggle wrap={wrap} onToggle={toggleWrap} />
+      </div>
+      <div
+        className={`overflow-auto ${PROSE}`}
+        style={{
+          whiteSpace: wrap ? undefined : "nowrap",
+          overflowWrap: wrap ? "anywhere" : "normal",
         }}
       >
-        {file.content}
-      </Markdown>
+        <Markdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeSanitize]}
+          components={{
+            // Pass-through <pre> so fenced code isn't double-wrapped; ShikiBlock
+            // (from the `code` override) supplies its own container.
+            pre: ({ children }) => <>{children}</>,
+            img({ src, alt, ...props }) {
+              const resolvedSrc =
+                typeof src === "string" ? markdownImageUrl(file.relPath, src) : src;
+              return (
+                // biome-ignore lint/performance/noImgElement: repository images are already served at their source dimensions by the sandboxed file API
+                <img src={resolvedSrc} alt={alt ?? ""} {...props} />
+              );
+            },
+            code({ className, children, ...props }) {
+              const match = /language-([\w-]+)/.exec(className ?? "");
+              if (match) {
+                return <ShikiBlock code={String(children).replace(/\n$/, "")} lang={match[1]!} />;
+              }
+              return (
+                <code className={className} {...props}>
+                  {children}
+                </code>
+              );
+            },
+          }}
+        >
+          {file.content}
+        </Markdown>
+      </div>
     </div>
   );
 }

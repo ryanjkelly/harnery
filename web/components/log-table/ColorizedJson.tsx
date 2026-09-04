@@ -24,13 +24,17 @@ interface Props {
   /** Override the indent width. Default 2 spaces. */
   indentSize?: number;
   className?: string;
+  /** Whether long values soft-wrap. Existing call sites default to wrapped. */
+  wrap?: boolean;
 }
 
-export function ColorizedJson({ value, indentSize = 2, className }: Props) {
+export function ColorizedJson({ value, indentSize = 2, className, wrap = true }: Props) {
   const nodes = renderNode(value, 0, indentSize, 0);
   return (
     <pre
-      className={`font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all ${className ?? ""}`}
+      className={`font-mono text-[11px] leading-relaxed ${
+        wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"
+      } ${className ?? ""}`}
     >
       {nodes}
     </pre>
