@@ -172,7 +172,7 @@ const GIB = 1_024 * MIB;
  * instead of silently changing its expected result.
  */
 export const PRESSURE_POLICY = {
-  policy_version: 1,
+  policy_version: 2,
   /** A snapshot older than this cannot support any state but `unknown`. */
   sample_staleness_ms: 15_000,
   /**
@@ -184,8 +184,14 @@ export const PRESSURE_POLICY = {
   sample_future_tolerance_ms: 1_000,
   /** Samples of recent history the assessment may consider. */
   max_history_samples: 12,
-  memory_stall: { critical_avg10: 50, elevated_avg10: 20, elevated_samples: 2, exit_avg10: 10 },
-  io_stall: { critical_avg10: 50, elevated_avg10: 20, elevated_samples: 2, exit_avg10: 10 },
+  memory_stall: { critical_avg10: 50, elevated_avg10: 20, elevated_samples: 2 },
+  /**
+   * Full I/O stalls are noisier than memory stalls on virtual disks, where a
+   * checkout or a bundler cache write alone can hold `avg10` in the twenties
+   * for several seconds. Elevated therefore needs a higher bar held across a
+   * longer streak than memory does.
+   */
+  io_stall: { critical_avg10: 50, elevated_avg10: 30, elevated_samples: 5 },
   cpu_stall: { elevated_some_avg60: 40, elevated_samples: 3 },
   oom: { critical_hold_ms: 60_000 },
   swap_activity: {
@@ -207,6 +213,12 @@ export const PRESSURE_POLICY = {
     elevated_available_bytes: 5 * GIB,
     elevated_used_percent: 90,
   },
+  /**
+   * A state leaves only after this many consecutive samples in which no
+   * dimension sits at or above its entry threshold. The dwell is the whole of
+   * the exit hysteresis: there is no lower exit threshold, because one would
+   * hold a state open indefinitely on a reading the policy itself calls normal.
+   */
   recovery: { critical_exit_samples: 3, elevated_exit_samples: 5 },
   limits: { max_reasons: 6, max_contributors: 8, max_evidence: 12 },
 } as const;

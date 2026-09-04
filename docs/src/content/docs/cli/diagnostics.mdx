@@ -51,10 +51,10 @@ selects structured output in host CLIs; standalone `harn` already emits JSON.
 
 State is set only by contention evidence, and attribution findings are carried
 as contributors that can never change it. The dimensions and their thresholds
-are documented on the [resources page](/cli/resources/). Entry and exit use
-different thresholds with a dwell, which is why the advice carries
-`prior_hysteresis`: a frozen bundle replays a transition without needing the
-observer's memory.
+are documented on the [resources page](/cli/resources/). Entry needs a streak
+of hot samples and exit needs a dwell of clear samples, which is why the advice
+carries `prior_hysteresis`: a frozen bundle replays a transition without
+needing the observer's memory.
 
 Live advice requires the observer's published assessment and a current
 supervisor heartbeat. If the daemon has exited or its heartbeat is stale, the

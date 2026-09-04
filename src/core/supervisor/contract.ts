@@ -7,7 +7,7 @@ import type { HarneryLogRecordV1 } from "../storage/jsonl.ts";
 
 export const SUPERVISOR_STATUS_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_SNAPSHOT_SCHEMA_VERSION = 2 as const;
-export const SUPERVISOR_HISTORY_SCHEMA_VERSION = 1 as const;
+export const SUPERVISOR_HISTORY_SCHEMA_VERSION = 2 as const;
 export const SUPERVISOR_FINDING_SCHEMA_VERSION = 3 as const;
 export const SUPERVISOR_PRESSURE_SCHEMA_VERSION = 1 as const;
 export const SUPERVISOR_ACTIVITY_SCHEMA_VERSION = 1 as const;
@@ -115,6 +115,16 @@ export interface SupervisorHistoryPoint {
     swap_used_bytes: number | null;
     process_count: number | null;
     load_average_1?: number | null;
+  };
+  /**
+   * The contention readings the pressure trend follows. Null when the platform
+   * does not expose a dimension, never zero, so a gap cannot read as calm.
+   */
+  pressure: {
+    memory_full_avg10: number | null;
+    io_full_avg10: number | null;
+    cpu_some_avg60: number | null;
+    swap_out_bytes_per_second: number | null;
   };
   groups: readonly ResourceProcessGroup[];
 }

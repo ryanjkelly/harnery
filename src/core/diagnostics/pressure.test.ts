@@ -391,6 +391,42 @@ describe("pressure assessment: contention decision table", () => {
     expect(assessment.limiting_resource).toBe("io");
     expect(codes(assessment)).toContain("io_full_stall_critical");
   });
+
+  test("an input and output stall in the twenties is a checkout, not contention", () => {
+    // A virtual disk holds `io_full` avg10 in the twenties through an ordinary
+    // checkout or bundler write. That must read normal however long it lasts.
+    const machine = snapshot();
+    let carried: PressureHysteresisState | null = null;
+    for (let index = 0; index < 8; index += 1) {
+      machine.pressure!.io_full = { avg10: 25, avg60: 15, avg300: 5 };
+      machine.sampled_at = AT(index * 2_000);
+      const assessment = assess({ snapshot: machine, prior: carried, now_ms: NOW + index * 2_000 });
+      carried = assessment.hysteresis;
+      expect(assessment.state).toBe("normal");
+    }
+    // A sustained full stall at the entry bar for the whole streak is elevated on I/O.
+    const states: string[] = [];
+    for (let index = 0; index < PRESSURE_POLICY.io_stall.elevated_samples; index += 1) {
+      machine.pressure!.io_full = { avg10: 30, avg60: 25, avg300: 10 };
+      machine.sampled_at = AT(20_000 + index * 2_000);
+      const assessment = assess({
+        snapshot: machine,
+        prior: carried,
+        now_ms: NOW + 20_000 + index * 2_000,
+      });
+      carried = assessment.hysteresis;
+      states.push(assessment.state);
+    }
+    expect(states.slice(0, -1).every((state) => state === "normal")).toBe(true);
+    expect(states.at(-1)).toBe("elevated");
+    const last = assess({
+      snapshot: machine,
+      prior: carried,
+      now_ms: NOW + 20_000 + PRESSURE_POLICY.io_stall.elevated_samples * 2_000,
+    });
+    expect(last.limiting_resource).toBe("io");
+    expect(codes(last)).toContain("io_full_stall_elevated");
+  });
 });
 
 describe("pressure assessment: kernel kills", () => {
@@ -712,6 +748,54 @@ describe("pressure assessment: oscillation and observer restarts", () => {
       recovery.push(assessment.state);
     }
     expect(recovery).toEqual(["elevated", "elevated", "elevated", "elevated", "normal", "normal"]);
+  });
+
+  test("a reading that settles below the entry bar clears after the dwell instead of holding forever", () => {
+    const machine = snapshot();
+    let carried: PressureHysteresisState | null = null;
+    const states: string[] = [];
+    // Two hot samples enter elevated; the signal then settles at 15, which the
+    // policy calls normal. Five clear samples later the state must follow.
+    const series = [21, 21, 15, 15, 15, 15, 15, 15];
+    for (const [index, avg10] of series.entries()) {
+      machine.pressure!.memory_full = { avg10, avg60: 10, avg300: 5 };
+      machine.sampled_at = AT(index * 2_000);
+      const assessment = assess({ snapshot: machine, prior: carried, now_ms: NOW + index * 2_000 });
+      carried = assessment.hysteresis;
+      states.push(assessment.state);
+    }
+    expect(states).toEqual([
+      "normal",
+      "elevated",
+      "elevated",
+      "elevated",
+      "elevated",
+      "elevated",
+      "normal",
+      "normal",
+    ]);
+  });
+
+  test("a state held only by the dwell says so instead of claiming contention", () => {
+    const assessment = assess({
+      prior: hysteresis({ state: "elevated", consecutive_clear_samples: 1 }),
+    });
+    expect(assessment.state).toBe("elevated");
+    expect(assessment.limiting_resource).toBe("unknown");
+    expect(assessment.recommended_action).toBe("limit-heavy-work");
+    expect(codes(assessment)).toEqual(["recovering_within_dwell"]);
+    expect(assessment.summary).toContain("reads clear of contention");
+    expect(assessment.summary).toContain(
+      `${PRESSURE_POLICY.recovery.elevated_exit_samples} clear samples in a row`,
+    );
+    expect(assessment.summary).toContain("2 so far");
+    expect(assessment.summary).not.toContain("contention.");
+    expect(assessment.summary).not.toContain("resource contention");
+
+    const live = snapshot();
+    live.pressure!.memory_full = { avg10: 60, avg60: 30, avg300: 10 };
+    const contended = assess({ snapshot: live, prior: hysteresis({ state: "elevated" }) });
+    expect(contended.summary).toContain("is under critical memory contention");
   });
 
   test("state_since only moves when the state changes", () => {

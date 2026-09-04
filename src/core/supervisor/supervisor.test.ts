@@ -287,6 +287,40 @@ describe("local supervisor collectors", () => {
     ).toBeNull();
   });
 
+  test("stores the stall and swap readings the pressure trend follows", () => {
+    const resource = resourceAt(0);
+    resource.pressure = {
+      state: "supported",
+      cpu: { avg10: 5, avg60: 4, avg300: 3 },
+      memory: { avg10: 0, avg60: 0, avg300: 0 },
+      io: { avg10: 12, avg60: 8, avg300: 4 },
+      memory_full: { avg10: 7, avg60: 2, avg300: 1 },
+      io_full: { avg10: 11, avg60: 6, avg300: 3 },
+    };
+    resource.vmstat = {
+      state: "supported",
+      swap_in_bytes_per_second: 0,
+      swap_out_bytes_per_second: 2_048,
+      direct_reclaim_pages_per_second: 0,
+      major_faults_per_second: 0,
+      counters_reset: false,
+    };
+    expect(updateSupervisorHistory(undefined, resource).history.points[0]?.pressure).toEqual({
+      memory_full_avg10: 7,
+      io_full_avg10: 11,
+      cpu_some_avg60: 4,
+      swap_out_bytes_per_second: 2_048,
+    });
+    // An unsupported sampler is a gap, not a calm reading.
+    const bare = resourceAt(0);
+    expect(updateSupervisorHistory(undefined, bare).history.points[0]?.pressure).toEqual({
+      memory_full_avg10: null,
+      io_full_avg10: null,
+      cpu_some_avg60: null,
+      swap_out_bytes_per_second: null,
+    });
+  });
+
   test("labels hooks only after agent ownership and an exact entrypoint agree", () => {
     const resource = resourceAt(Date.now());
     resource.processes = [

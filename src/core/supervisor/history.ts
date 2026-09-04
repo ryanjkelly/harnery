@@ -40,6 +40,7 @@ export function updateSupervisorHistory(
       process_count: resource.machine.process_count,
       load_average_1: resource.machine.load_average?.[0] ?? null,
     },
+    pressure: pressurePoint(resource),
     groups: resource.groups.map((group) => ({ ...group, root_pids: [...group.root_pids] })),
   };
   return {
@@ -50,6 +51,19 @@ export function updateSupervisorHistory(
       points: [...prior, point].slice(-SUPERVISOR_HISTORY_MAX_POINTS),
     },
     changed: true,
+  };
+}
+
+function pressurePoint(resource: ResourceSnapshot): SupervisorHistoryPoint["pressure"] {
+  const pressure = resource.pressure;
+  const usable = pressure?.state === "supported" || pressure?.state === "partial";
+  const vmstat = resource.vmstat;
+  const vmstatUsable = vmstat?.state === "supported" || vmstat?.state === "partial";
+  return {
+    memory_full_avg10: usable ? (pressure.memory_full?.avg10 ?? null) : null,
+    io_full_avg10: usable ? (pressure.io_full?.avg10 ?? null) : null,
+    cpu_some_avg60: usable ? (pressure.cpu?.avg60 ?? null) : null,
+    swap_out_bytes_per_second: vmstatUsable ? vmstat.swap_out_bytes_per_second : null,
   };
 }
 

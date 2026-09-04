@@ -323,6 +323,19 @@ export async function runSupervisor(
           assessment,
           prior_hysteresis: pressureHysteresis,
         } satisfies SupervisorPressureRecord);
+        const priorPressureState = pressureHysteresis?.state ?? null;
+        if (assessment.state !== priorPressureState) {
+          // The sample log carries only cycle timings, so without this record
+          // a past elevated episode cannot be explained after it clears.
+          log(coordRoot, "supervisor.pressure_transition", {
+            from_state: priorPressureState ?? "none",
+            to_state: assessment.state,
+            scope: assessment.scope,
+            limiting_resource: assessment.limiting_resource,
+            recommended_action: assessment.recommended_action,
+            reasons: assessment.reasons.map((reason) => `${reason.code}: ${reason.summary}`),
+          });
+        }
         pressureHysteresis = assessment.hysteresis;
         mkdirSync(paths.timelines, { recursive: true, mode: 0o700 });
         mkdirSync(paths.explanations, { recursive: true, mode: 0o700 });

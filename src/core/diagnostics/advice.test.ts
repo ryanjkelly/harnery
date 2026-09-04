@@ -129,11 +129,22 @@ describe("diagnostic advice", () => {
         swap_used_bytes: null,
         process_count: null,
       },
+      pressure: {
+        memory_full_avg10: index * 2,
+        io_full_avg10: 1,
+        cpu_some_avg60: null,
+        swap_out_bytes_per_second: 0,
+      },
       groups: [],
     }));
     const samples = pressureHistoryFromSupervisor(points);
     expect(samples).toHaveLength(PRESSURE_POLICY.max_history_samples);
     expect(samples.at(-1)?.memory_available_percent).toBe(100 - 59);
-    expect(samples.at(-1)?.memory_full_avg10).toBeNull();
+    // The stall readings ride along, so the trend has a series to compare.
+    expect(samples.at(-1)?.memory_full_avg10).toBe(38);
+    expect(samples.at(0)?.memory_full_avg10).toBe(16);
+    expect(samples.at(-1)?.io_full_avg10).toBe(1);
+    expect(samples.at(-1)?.cpu_some_avg60).toBeNull();
+    expect(samples.at(-1)?.swap_out_bytes_per_second).toBe(0);
   });
 });

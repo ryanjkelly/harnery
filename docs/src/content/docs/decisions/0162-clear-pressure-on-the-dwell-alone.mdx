@@ -1,0 +1,78 @@
+---
+title: "ADR 0162: clear pressure on the dwell alone"
+description: Drop the lower exit thresholds, raise the I/O entry bar, name a dwell-held state, and log every transition.
+sidebar:
+  order: 162
+---
+
+**Date:** 2026-09-03
+**Status:** Accepted
+
+## Context
+
+A WSL guest with 14.7 GiB of memory available, no swap-out, and a processor a
+quarter busy reported "elevated resource contention" and told agents to limit
+heavy work. Nothing was over a threshold. The state had entered on a short
+full I/O stall while two sessions ran a rebase and a bundler rewrote its cache,
+and it then stayed elevated for over a minute.
+
+Three defects lined up. Exit required the stall average to fall under a lower
+exit threshold for five samples in a row, and every sample between that exit
+bar and the entry bar reset the count, so a machine doing steady moderate disk
+work could stay elevated indefinitely on a reading the policy itself called
+normal. The summary named no cause for a dwell-held state, so the generic word
+"resource" was the only clue. And the supervisor log recorded cycle timings
+only, so the trigger could not be reconstructed after the state cleared.
+
+Two smaller gaps sat beside them. The I/O entry rule, twenty percent for two
+samples, is a checkout on a virtual disk rather than contention. And the trend
+always read unknown, because supervisor history stored no stall readings for
+the trend to compare.
+
+## Alternatives considered
+
+- Keep the lower exit thresholds and stop resetting the count on a sample
+  between the two bars. A machine hovering between them would still never
+  clear.
+- Raise the exit thresholds to the entry thresholds and keep them as a second
+  set of numbers. That is the dwell-only rule with a redundant constant that
+  could drift.
+- Suppress the prompt notice while a state is dwell-held. The state is still
+  published to every other surface, so a hidden reason is worse than a stated
+  one.
+- Record stall readings in a new file instead of the history points. Replay
+  reads the same history the observer wrote, so a second source would have to
+  be captured and versioned on its own.
+
+## Decision
+
+A sample is clear when no dimension sits at or above its entry threshold. Exit
+is the recovery dwell alone: three clear samples leave critical and five leave
+elevated. The `exit_avg10` thresholds are removed and the policy version moves
+to 2, which invalidates frozen replays by design.
+
+Full I/O stalls enter elevated at thirty percent held for five samples. Memory
+stalls keep twenty percent for two samples, because a memory stall is the
+hazard the assessment exists to catch and its exit is now clean.
+
+When only the dwell holds a state, the summary says the evidence reads clear
+and counts the samples left, and the action clause tells running work to finish
+rather than claiming contention. The recommended action itself is unchanged.
+
+Supervisor history points carry the memory and I/O full-stall averages, the
+processor some-stall average, and the swap-out rate, so the trend the observer
+and a replay compute has a series to follow. The history schema moves to 2 and
+an older file is discarded rather than read through a fallback.
+
+Every change of assessment state writes a `supervisor.pressure_transition` log
+record carrying the prior state, the new state, the scope, the limiting
+resource, the recommended action, and the reasons that set it.
+
+## Result
+
+A signal that settles below the entry bar clears after the dwell, and a
+reading in the twenties on I/O never enters at all. A dwell-held state reads
+as recovery in the agent status box and the prompt notice. The transition log
+makes a past episode a grep rather than an inference. The oscillation test is
+unchanged: a signal hovering at the entry bar still produces one notice, and
+the dwell bounds the flapping on its own.

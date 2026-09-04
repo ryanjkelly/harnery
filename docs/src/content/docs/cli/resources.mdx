@@ -66,10 +66,19 @@ memory, not that anything is waiting for it. Those findings are carried as
 contributors so you can see the likely owner, and they can never raise or lower
 the state. The kernel already reports whether anything is waiting.
 
-Entry and exit use different thresholds with a dwell, so a state does not
-flip on one sample and does not clear the instant a reading dips. A counter
-reset or an observer restart starts a new baseline instead of reporting a
-spurious event. A dimension the platform does not expose is reported as
+Entry needs a streak of hot samples and exit needs a dwell of clear samples,
+so a state does not flip on one sample and does not clear the instant a reading
+dips. A sample is clear when no dimension sits at or above its entry threshold;
+there is no lower exit threshold, so a reading the policy calls normal can never
+hold a state open. While only the dwell holds a state, the summary says the
+evidence reads clear and counts down the samples left, rather than reporting
+contention that the kernel no longer shows. Full I/O stalls need a higher bar
+and a longer streak than memory stalls, because a virtual disk holds `io_full`
+in the twenties through an ordinary checkout. A counter reset or an observer
+restart starts a new baseline instead of reporting a spurious event. Every
+change of state is written to the supervisor log as a
+`supervisor.pressure_transition` record carrying the reasons that set it, so a
+past episode can be explained after it clears. A dimension the platform does not expose is reported as
 unavailable and never read as spare capacity, so a partial platform cannot
 produce a falsely healthy answer. In WSL the Windows host is assessed
 separately and can only raise the combined state, never mask the guest.

@@ -14,6 +14,11 @@
  *
  * Every numeric threshold is read from `PRESSURE_POLICY`. The only literals
  * here are unit conversions used to phrase a summary in readable units.
+ *
+ * Exit is a dwell, not a second threshold. A sample counts as clear when no
+ * dimension sits at or above its entry threshold, and a state leaves after the
+ * policy's run of consecutive clear samples. A reading below the entry bar is
+ * normal by definition, so it can never hold a state open on its own.
  */
 
 import type { ResourceSnapshot } from "../resources/contract.ts";
@@ -414,11 +419,12 @@ export const assessPressure: AssessPressure = (input) => {
   const hostRaw = worstState(hostReasons);
   const rawState = STATE_RANK[hostRaw] > STATE_RANK[guestRaw] ? hostRaw : guestRaw;
 
+  // A clear sample has no dimension at or above its entry threshold. A hot
+  // reading that has not yet completed its entry streak is not clear, so the
+  // dwell cannot be shortened by a single sample of relief.
   const exitClear =
     rawState === "normal" &&
-    (readings.memory_stall === null ||
-      readings.memory_stall.avg10 < policy.memory_stall.exit_avg10) &&
-    (readings.io_stall === null || readings.io_stall.avg10 < policy.io_stall.exit_avg10) &&
+    !Object.values(hot).some(Boolean) &&
     !oom.hold_active &&
     !oom.new_kill;
   const transition = applyHysteresis(prior.state, rawState, exitClear, prior);
@@ -502,6 +508,16 @@ export const assessPressure: AssessPressure = (input) => {
       scope,
       limiting,
       action,
+      dwell:
+        dominant === undefined && STATE_RANK[transition.state] > STATE_RANK[rawState]
+          ? {
+              clear: transition.consecutive_clear_samples,
+              required:
+                transition.state === "critical"
+                  ? policy.recovery.critical_exit_samples
+                  : policy.recovery.elevated_exit_samples,
+            }
+          : null,
       evidenceState,
       findingsCapabilityState: input.findings_capability.state,
       unattributed,
@@ -1181,6 +1197,8 @@ function buildSummary(view: {
   scope: PressureScope;
   limiting: PressureLimitingResource;
   action: PressureRecommendedAction;
+  /** Set when no dimension is hot and only the recovery dwell holds the state. */
+  dwell: { clear: number; required: number } | null;
   evidenceState: PressureAssessment["evidence_state"];
   findingsCapabilityState: string;
   unattributed: number | null;
@@ -1203,16 +1221,24 @@ function buildSummary(view: {
           : view.limiting === "storage"
             ? "storage"
             : "resource";
+  // A dwell-held state must say so. Reporting it as live contention sends
+  // every reader looking for a cause that the evidence no longer shows.
   const stateClause =
     view.state === "normal"
       ? `${subject} shows no contention evidence.`
-      : `${subject} is under ${view.state} ${resource} contention.`;
+      : view.dwell
+        ? `${subject} reads clear of contention and is leaving the ${view.state} state once ${view.dwell.required} clear samples in a row are seen, ${view.dwell.clear} so far.`
+        : `${subject} is under ${view.state} ${resource} contention.`;
   const actionClause =
     view.action === "proceed"
       ? "Ordinary work can proceed."
-      : view.action === "limit-heavy-work"
-        ? "Limit heavy work until the evidence clears."
-        : "Do not start new heavy work until the evidence clears.";
+      : view.dwell
+        ? view.action === "limit-heavy-work"
+          ? "Let running heavy work finish and start new heavy work once the state clears."
+          : "Do not start new heavy work until the state clears."
+        : view.action === "limit-heavy-work"
+          ? "Limit heavy work until the evidence clears."
+          : "Do not start new heavy work until the evidence clears.";
   const parts = [stateClause, actionClause];
   if (view.evidenceState === "partial")
     parts.push("Some dimensions are unavailable, so this reading rests on partial evidence.");

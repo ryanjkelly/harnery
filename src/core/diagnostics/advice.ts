@@ -165,11 +165,11 @@ export function pressureHistoryFromSupervisor(
 ): PressureHistorySample[] {
   return points.slice(-PRESSURE_POLICY.max_history_samples).map((point) => ({
     sampled_at: point.sampled_at,
-    memory_full_avg10: null,
-    io_full_avg10: null,
-    cpu_some_avg60: null,
+    memory_full_avg10: point.pressure.memory_full_avg10,
+    io_full_avg10: point.pressure.io_full_avg10,
+    cpu_some_avg60: point.pressure.cpu_some_avg60,
     memory_available_percent:
       point.machine.memory_percent === null ? null : 100 - point.machine.memory_percent,
-    swap_out_bytes_per_second: null,
+    swap_out_bytes_per_second: point.pressure.swap_out_bytes_per_second,
   }));
 }
