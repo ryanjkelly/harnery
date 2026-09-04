@@ -44,6 +44,13 @@ const browserTestArgs = ["--max-concurrency", "1", "--timeout", "15000"];
 // Shared-machine filesystem latency can exceed Bun's five-second unit default;
 // use the same bounded allowance as browser integration, not a product deadline.
 const workflowTestArgs = ["--timeout", "15000"];
+// The recorder partition drives durable recovery boundaries and real
+// filesystem transactions rather than in-memory units. On a shared machine one
+// of those boundaries can pass Bun's five-second unit default while the code
+// under test is healthy, so it gets the same bounded allowance as the browser
+// and workflow partitions. This is wall-clock room for a loaded host, not a
+// product deadline.
+const recorderTestArgs = ["--timeout", "15000"];
 const partitionTimings = [];
 
 // These suites repeatedly start workflow subprocesses. Give each lifecycle its
@@ -61,6 +68,7 @@ const namedCorePartitions = [
   {
     label: "CLI integration test partition",
     matches: (file) => file.startsWith("tests/integration/"),
+    extraArgs: [],
   },
   {
     label: "workflow and governor test partition",
@@ -68,10 +76,12 @@ const namedCorePartitions = [
       file.startsWith("src/core/workflow/") ||
       file.startsWith("src/core/work/") ||
       file.startsWith("src/core/governor/"),
+    extraArgs: workflowTestArgs,
   },
   {
     label: "event recorder test partition",
     matches: (file) => file.startsWith("src/core/events/v3/producers/"),
+    extraArgs: recorderTestArgs,
   },
 ];
 
@@ -79,6 +89,34 @@ function formatDuration(durationMs) {
   if (durationMs < 1_000) return `${Math.round(durationMs)}ms`;
   if (durationMs < 10_000) return `${(durationMs / 1_000).toFixed(2)}s`;
   return `${(durationMs / 1_000).toFixed(1)}s`;
+}
+
+/**
+ * Warn when a second copy of this suite is already running on the machine.
+ *
+ * Two full runs in one checkout compete for processor, disk, and file handles,
+ * and the timing-sensitive partitions then fail in ways that look like product
+ * defects. Naming the other run turns an afternoon of chasing a phantom flake
+ * into one line of context. Advisory only: a developer may have a good reason
+ * to run two suites, and a machine without `pgrep` simply gets no warning.
+ */
+function warnOnConcurrentSuite() {
+  try {
+    const found = spawnSync("pgrep", ["-f", "scripts/test.mjs"], { encoding: "utf8" });
+    if (found.error || typeof found.stdout !== "string") return;
+    const mine = new Set([process.pid, process.ppid]);
+    const others = found.stdout
+      .split("\n")
+      .map((line) => Number.parseInt(line.trim(), 10))
+      .filter((pid) => Number.isInteger(pid) && !mine.has(pid));
+    if (others.length === 0) return;
+    process.stdout.write(
+      `\n!!! another test suite is already running on this machine (pid ${others.join(", ")}).\n` +
+        "!!! Timing-sensitive partitions can fail spuriously while both runs compete.\n",
+    );
+  } catch {
+    /* advisory only */
+  }
 }
 
 function discoverTests(dir) {
@@ -144,10 +182,7 @@ const partitionPlan = [
     files: [file],
     extraArgs: workflowTestArgs,
   })),
-  ...namedCoreFiles.map((partition) => ({
-    ...partition,
-    extraArgs: partition.label === "workflow and governor test partition" ? workflowTestArgs : [],
-  })),
+  ...namedCoreFiles,
   { label: "core test partition", files: coreFiles, extraArgs: [] },
 ];
 
@@ -157,6 +192,8 @@ if (process.argv.includes("--list")) {
   }
   process.exit(0);
 }
+
+warnOnConcurrentSuite();
 
 for (const partition of partitionPlan) {
   run(partition.label, partition.files, partition.extraArgs);
