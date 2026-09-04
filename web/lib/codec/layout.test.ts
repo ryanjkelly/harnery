@@ -60,6 +60,18 @@ describe("Codec layout director", () => {
       expected: { composition: "dense", viewport: "desktop", rows: 3, columns: 2 },
     },
     {
+      name: "dense desktop grid that keeps its first two rows in view",
+      input: { panelCount: 11, viewportWidth: 2_232, viewportHeight: 923, stageWidth: 2_184 },
+      expected: {
+        composition: "dense",
+        viewport: "desktop",
+        rows: 3,
+        columns: 4,
+        cardHeight: "fit-two-rows",
+        bodyOverflow: "card",
+      },
+    },
+    {
       name: "five-card balanced grid",
       input: { panelCount: 5, stageWidth: 1_328 },
       expected: {
@@ -87,6 +99,13 @@ describe("Codec layout director", () => {
       cardHeight: "content",
       centering: "last-card",
       bodyOverflow: "page",
+    });
+    expect(
+      layout({ panelCount: 11, viewportWidth: 2_232, viewportHeight: 923, stageWidth: 2_184 }),
+    ).toMatchObject({
+      composition: "dense",
+      cardHeight: "fit-two-rows",
+      bodyOverflow: "card",
     });
   });
 

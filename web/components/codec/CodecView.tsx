@@ -402,6 +402,7 @@ export function CodecView({
       data-codec-layout={layout.viewport}
       data-codec-layout-rows={layout.rows}
       data-codec-layout-columns={layout.columns}
+      data-codec-card-height={layout.cardHeight}
       data-codec-feed-state={
         mode === "replay"
           ? "replay"

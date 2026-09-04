@@ -1,6 +1,6 @@
 export const CODEC_MOBILE_MAX_VIEWPORT_PX = 720;
 export const CODEC_DESKTOP_MIN_VIEWPORT_PX = 1_200;
-export const CODEC_BALANCED_MIN_VIEWPORT_HEIGHT_REM = 56;
+export const CODEC_TWO_ROW_MIN_VIEWPORT_HEIGHT_REM = 56;
 export const CODEC_CARD_TARGET_WIDTH_REM = 27;
 export const CODEC_GRID_GAP_REM = 1;
 
@@ -60,11 +60,10 @@ export function deriveCodecLayout(input: CodecLayoutInput): CodecLayout {
   const targetCardWidth = CODEC_CARD_TARGET_WIDTH_REM * rootFontSize;
   const balancedColumns = Math.ceil(panelCount / 2);
   const balancedWidth = balancedColumns * targetCardWidth + Math.max(0, balancedColumns - 1) * gap;
-  const balanced =
-    panelCount >= 3 &&
+  const canFitTwoRows =
     viewport === "desktop" &&
-    viewportHeight >= CODEC_BALANCED_MIN_VIEWPORT_HEIGHT_REM * rootFontSize &&
-    stageWidth >= balancedWidth;
+    viewportHeight >= CODEC_TWO_ROW_MIN_VIEWPORT_HEIGHT_REM * rootFontSize;
+  const balanced = panelCount >= 3 && canFitTwoRows && stageWidth >= balancedWidth;
 
   let composition: CodecLayoutComposition;
   let columns: number;
@@ -104,6 +103,11 @@ export function deriveCodecLayout(input: CodecLayoutInput): CodecLayout {
           );
     rows = Math.ceil(panelCount / columns);
     if (viewport === "tablet" && panelCount === 5) centering = "last-card";
+  }
+
+  if (panelCount >= 3 && rows >= 2 && canFitTwoRows) {
+    cardHeight = "fit-two-rows";
+    bodyOverflow = "card";
   }
 
   return {
