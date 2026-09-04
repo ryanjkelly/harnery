@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildEventV3 } from "../../../src/core/events/v3/builder";
 import { attestationIdV3, eventIdV3, generationIdV3 } from "../../../src/core/events/v3/ids";
 import { type LiveDisplayRowV3, writeLiveDisplayV3 } from "../../../src/core/events/v3/live-feed";
+import { eventV3Fixture } from "../../../tests/helpers/event-v3";
 import {
   CODEC_SCHEMA_VERSION,
   type CodecScene,
@@ -23,6 +24,14 @@ import {
 import { codecSemantic, setCodecSemantic } from "./semantic-contract";
 
 const roots: string[] = [];
+
+function fixtureLine(eventType: string, sequence: number): { eventId: string; line: string } {
+  const event = eventV3Fixture(eventType, sequence);
+  return {
+    eventId: String(event.event_id),
+    line: `${JSON.stringify(event)}\n`,
+  };
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -114,6 +123,105 @@ describe("Codec V3 ledger tail", () => {
     appendFileSync(v3Path, `${JSON.stringify(second)}\n`);
     const appended = await readIncrementalSanitizedTail(v3Path);
     expect(appended.map((row) => row.event_id)).toEqual([eventId, secondEventId]);
+  });
+
+  test("retains an evicted session boundary outside the byte window", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codec-v3-lifecycle-boundary-"));
+    roots.push(root);
+    const v3Path = join(root, "v3.ndjson");
+    const started = fixtureLine("session.started", 1);
+    const progress = fixtureLine("progress.observed", 2);
+    writeFileSync(v3Path, "");
+
+    await readIncrementalSanitizedTail(v3Path, 1);
+    appendFileSync(v3Path, started.line);
+    await readIncrementalSanitizedTail(v3Path, 1);
+    appendFileSync(v3Path, progress.line);
+
+    const rows = await readIncrementalSanitizedTail(v3Path, 1);
+    expect(rows.map((row) => row.event_id)).toEqual([started.eventId, progress.eventId]);
+  });
+
+  test("keeps terminal session, turn, and wait rows with the earlier boundary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codec-v3-lifecycle-terminal-"));
+    roots.push(root);
+    const v3Path = join(root, "v3.ndjson");
+    const started = fixtureLine("session.started", 1);
+    const turnStarted = fixtureLine("turn.started", 2);
+    const waitStarted = fixtureLine("wait.started", 3);
+    const waitEnded = fixtureLine("wait.ended", 4);
+    const turnCompleted = fixtureLine("turn.completed", 5);
+    const ended = fixtureLine("session.ended", 6);
+    const progress = fixtureLine("progress.observed", 7);
+    writeFileSync(v3Path, "");
+
+    await readIncrementalSanitizedTail(v3Path, 1);
+    appendFileSync(v3Path, started.line);
+    await readIncrementalSanitizedTail(v3Path, 1);
+    appendFileSync(
+      v3Path,
+      turnStarted.line +
+        waitStarted.line +
+        waitEnded.line +
+        turnCompleted.line +
+        ended.line +
+        progress.line,
+    );
+
+    const rows = await readIncrementalSanitizedTail(v3Path, 1);
+    expect(rows.map((row) => row.event_id)).toEqual([
+      started.eventId,
+      turnStarted.eventId,
+      waitStarted.eventId,
+      waitEnded.eventId,
+      turnCompleted.eventId,
+      ended.eventId,
+      progress.eventId,
+    ]);
+  });
+
+  test("deduplicates retained lifecycle rows against the byte window", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codec-v3-lifecycle-dedupe-"));
+    roots.push(root);
+    const v3Path = join(root, "v3.ndjson");
+    const started = fixtureLine("session.started", 1);
+    const progress = fixtureLine("progress.observed", 2);
+    writeFileSync(v3Path, "");
+
+    await readIncrementalSanitizedTail(v3Path, 1);
+    appendFileSync(v3Path, started.line);
+    await readIncrementalSanitizedTail(v3Path, 1);
+    appendFileSync(v3Path, started.line + progress.line);
+
+    const rows = await readIncrementalSanitizedTail(v3Path, 1);
+    expect(rows.map((row) => row.event_id)).toEqual([started.eventId, progress.eventId]);
+  });
+
+  test("drops retained lifecycle rows when the active file is replaced", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codec-v3-lifecycle-replace-"));
+    roots.push(root);
+    const v3Path = join(root, "v3.ndjson");
+    const replacementPath = join(root, "replacement.ndjson");
+    const started = fixtureLine("session.started", 1);
+    const filler = Array.from({ length: 20 }, (_, index) =>
+      fixtureLine("progress.observed", index + 2),
+    );
+    const replacement = fixtureLine("progress.observed", 100);
+    const byteLimit = 4_096;
+    writeFileSync(v3Path, "");
+
+    await readIncrementalSanitizedTail(v3Path, byteLimit);
+    appendFileSync(v3Path, started.line);
+    await readIncrementalSanitizedTail(v3Path, byteLimit);
+    appendFileSync(v3Path, filler.map(({ line }) => line).join(""));
+    const beforeReplacement = await readIncrementalSanitizedTail(v3Path, byteLimit);
+    expect(beforeReplacement.some((row) => row.event_id === started.eventId)).toBe(true);
+
+    writeFileSync(replacementPath, replacement.line);
+    renameSync(replacementPath, v3Path);
+
+    const afterReplacement = await readIncrementalSanitizedTail(v3Path, byteLimit);
+    expect(afterReplacement.map((row) => row.event_id)).toEqual([replacement.eventId]);
   });
 });
 

@@ -38,6 +38,7 @@ describe("projectCodecTimings", () => {
       last_turn_duration_ms: 300_000,
       working_duration_ms: 240_000,
       idle_duration_ms: 360_000,
+      boundary_source: "event",
       session_active: true,
       last_turn_active: false,
       current_bucket: "idle",
@@ -92,5 +93,117 @@ describe("projectCodecTimings", () => {
       "2026-09-04T10:05:00.000Z",
     );
     expect(timings.has(INSTANCE)).toBe(false);
+  });
+
+  test("uses a valid heartbeat boundary when no event boundary remains", () => {
+    const timing = projectCodecTimings(
+      [],
+      "2026-09-04T10:05:00.000Z",
+      new Map([[INSTANCE, "2026-09-04T10:00:00.000Z"]]),
+    ).get(INSTANCE);
+
+    expect(timing).toMatchObject({
+      value: {
+        session_duration_ms: 300_000,
+        working_duration_ms: 0,
+        idle_duration_ms: 0,
+        boundary_source: "heartbeat",
+        session_active: true,
+        last_turn_active: false,
+        current_bucket: "unknown",
+      },
+      provenance: "projection",
+      confidence: "medium",
+      evidence_event_ids: [],
+    });
+    expect(timing?.value.last_turn_duration_ms).toBeUndefined();
+    expect(timing?.value.observed_from).toBe("2026-09-04T10:05:00.000Z");
+  });
+
+  test("counts lower-bound buckets from the first observed lifecycle transition", () => {
+    const timing = projectCodecTimings(
+      [
+        event("turn.started", "2026-09-04T10:02:00.000Z", { turn_id: "turn-1" }),
+        event("wait.started", "2026-09-04T10:04:00.000Z"),
+        event("wait.ended", "2026-09-04T10:05:00.000Z"),
+      ],
+      "2026-09-04T10:07:00.000Z",
+      new Map([[INSTANCE, "2026-09-04T10:00:00.000Z"]]),
+    ).get(INSTANCE);
+
+    expect(timing?.value).toEqual({
+      session_duration_ms: 420_000,
+      last_turn_duration_ms: 300_000,
+      working_duration_ms: 240_000,
+      idle_duration_ms: 60_000,
+      boundary_source: "heartbeat",
+      observed_from: "2026-09-04T10:02:00.000Z",
+      session_active: true,
+      last_turn_active: true,
+      current_bucket: "working",
+    });
+  });
+
+  test("does not use non-lifecycle evidence to invent bucket coverage", () => {
+    const timing = projectCodecTimings(
+      [event("tool.completed", "2026-09-04T10:03:00.000Z")],
+      "2026-09-04T10:05:00.000Z",
+      new Map([[INSTANCE, "2026-09-04T10:00:00.000Z"]]),
+    ).get(INSTANCE);
+
+    expect(timing?.value).toMatchObject({
+      session_duration_ms: 300_000,
+      working_duration_ms: 0,
+      idle_duration_ms: 0,
+      current_bucket: "unknown",
+    });
+    expect(timing?.value.observed_from).toBe("2026-09-04T10:05:00.000Z");
+  });
+
+  test("leaves last-turn duration unavailable without an observed turn start", () => {
+    const timing = projectCodecTimings(
+      [event("wait.started", "2026-09-04T10:02:00.000Z")],
+      "2026-09-04T10:04:00.000Z",
+      new Map([[INSTANCE, "2026-09-04T10:00:00.000Z"]]),
+    ).get(INSTANCE);
+
+    expect(timing?.value).toMatchObject({
+      working_duration_ms: 0,
+      idle_duration_ms: 120_000,
+      observed_from: "2026-09-04T10:02:00.000Z",
+      current_bucket: "idle",
+    });
+    expect(timing?.value.last_turn_duration_ms).toBeUndefined();
+  });
+
+  test("ignores invalid and future heartbeat boundaries", () => {
+    const timings = projectCodecTimings(
+      [],
+      "2026-09-04T10:05:00.000Z",
+      new Map([
+        [INSTANCE, "not-a-timestamp"],
+        ["inst-future", "2026-09-04T10:06:00.000Z"],
+      ]),
+    );
+
+    expect(timings.size).toBe(0);
+  });
+
+  test("prefers an exact event boundary over a heartbeat seed", () => {
+    const timing = projectCodecTimings(
+      [event("session.started", "2026-09-04T10:01:00.000Z")],
+      "2026-09-04T10:05:00.000Z",
+      new Map([[INSTANCE, "2026-09-04T10:00:00.000Z"]]),
+    ).get(INSTANCE);
+
+    expect(timing).toMatchObject({
+      value: {
+        session_duration_ms: 240_000,
+        boundary_source: "event",
+      },
+      provenance: "event",
+      confidence: "high",
+    });
+    expect(timing?.value.observed_from).toBeUndefined();
   });
 });

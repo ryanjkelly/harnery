@@ -409,9 +409,13 @@ export interface CodecPanelScene {
     last_turn_duration_ms?: number;
     working_duration_ms: number;
     idle_duration_ms: number;
+    /** Event when exact; heartbeat when the bounded event tail lost the boundary. */
+    boundary_source: "event" | "heartbeat";
+    /** Bucket accounting begins here when the earlier lifecycle is unavailable. */
+    observed_from?: string;
     session_active: boolean;
     last_turn_active: boolean;
-    current_bucket: "working" | "idle" | "stopped";
+    current_bucket: "working" | "idle" | "stopped" | "unknown";
   }>;
   progress_rhythm: Presented<CodecProgressRhythm>;
   recent_actions: CodecRecentAction[];

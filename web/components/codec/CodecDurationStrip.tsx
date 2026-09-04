@@ -40,6 +40,17 @@ export function CodecDurationStrip({
     >
       {(Object.keys(LABELS) as DurationField[]).map((field) => {
         const value = values[field];
+        const formattedValue = value === undefined ? undefined : formatCodecDuration(value);
+        const isPartialLifecycleDuration =
+          timing.value.observed_from !== undefined && (field === "working" || field === "idle");
+        const visibleValue =
+          formattedValue === undefined
+            ? "—"
+            : `${isPartialLifecycleDuration ? "≥ " : ""}${formattedValue}`;
+        const accessibleValue =
+          formattedValue === undefined
+            ? "unavailable"
+            : `${isPartialLifecycleDuration ? "at least " : ""}${formattedValue}`;
         return (
           <li key={field} className={styles.runtimeListItem}>
             <Tooltip
@@ -49,10 +60,18 @@ export function CodecDurationStrip({
               content={
                 <div className="space-y-1">
                   <p className="font-semibold">
-                    {LABELS[field]} ·{" "}
-                    {value === undefined ? "unavailable" : formatCodecDuration(value)}
+                    {LABELS[field]} · {formattedValue === undefined ? "unavailable" : visibleValue}
                   </p>
                   <p>{DETAILS[field]}</p>
+                  {isPartialLifecycleDuration && (
+                    <p>
+                      This is a lower bound because only lifecycle time observed since{" "}
+                      <time dateTime={timing.value.observed_from}>
+                        {timing.value.observed_from}
+                      </time>{" "}
+                      is counted. Earlier working and idle time is not included.
+                    </p>
+                  )}
                   <p className="text-muted-foreground">
                     {timing.provenance} · {timing.confidence} confidence
                   </p>
@@ -64,12 +83,10 @@ export function CodecDurationStrip({
                 data-duration-field={field}
                 data-runtime-missing={value === undefined ? "true" : undefined}
                 className={styles.runtimeField}
-                aria-label={`${LABELS[field]} duration: ${value === undefined ? "unavailable" : formatCodecDuration(value)}`}
+                aria-label={`${LABELS[field]} duration: ${accessibleValue}`}
               >
                 <span className={styles.runtimeLabel}>{LABELS[field]}</span>
-                <strong className={styles.runtimeValue}>
-                  {value === undefined ? "—" : formatCodecDuration(value)}
-                </strong>
+                <strong className={styles.runtimeValue}>{visibleValue}</strong>
               </button>
             </Tooltip>
           </li>

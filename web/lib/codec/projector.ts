@@ -678,7 +678,22 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   const events = alignEventInstanceIds(inputs.events, inputs.snapshot);
   const evidence = foldEvidence(events);
   const activityChannels = projectActivityChannels(events, now);
-  const timings = projectCodecTimings(events, now);
+  const startedAtByInstance = new Map<string, string>();
+  for (const heartbeat of [
+    ...inputs.snapshot.active,
+    ...inputs.snapshot.stale,
+    ...inputs.snapshot.terminal,
+  ]) {
+    const startedAtMs = ms(heartbeat.started_at);
+    if (
+      !startedAtByInstance.has(heartbeat.instance_id) &&
+      Number.isFinite(startedAtMs) &&
+      startedAtMs <= nowMs
+    ) {
+      startedAtByInstance.set(heartbeat.instance_id, heartbeat.started_at!);
+    }
+  }
+  const timings = projectCodecTimings(events, now, startedAtByInstance);
   const heartbeats = indexSnapshotHeartbeats(inputs.snapshot);
   const generationToInstance = new Map<string, string>();
   const childOf = new Map<string, { parent: string; event_id: string; ts: string }>();

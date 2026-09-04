@@ -899,17 +899,34 @@ describe("projectScene", () => {
             instance_id: "inst-done",
             name: "Done",
             ledger_state: "terminal",
+            started_at: "2026-08-16T10:00:00.000Z",
             last_heartbeat: "2026-08-16T10:00:00.000Z",
             age_seconds: 300,
           }),
         ],
       ),
-      events: [],
+      events: [
+        ev({
+          instance_id: "inst-done",
+          event_type: "session.ended",
+          ts: "2026-08-16T10:04:00.000Z",
+        }),
+      ],
       now: NOW,
     });
     expect(scene.panels).toHaveLength(1);
     expect(scene.panels[0]?.presence.value).toBe("offline");
     expect(scene.panels[0]?.ledger_state?.value).toBe("terminal");
+    expect(scene.panels[0]?.timing).toMatchObject({
+      value: {
+        session_duration_ms: 240_000,
+        boundary_source: "heartbeat",
+        session_active: false,
+        current_bucket: "stopped",
+      },
+      provenance: "projection",
+      confidence: "medium",
+    });
   });
 
   test("recovery-required ledger state presents as recovering", () => {
@@ -1013,8 +1030,21 @@ describe("canonical and native instance ids", () => {
 
   test("evidence keyed canonically lands on the aliased row's own panel", () => {
     const scene = projectScene({
-      snapshot: snapshot([hb({ instance_id: NATIVE, v3_instance_id: CANONICAL, name: "Yvonne" })]),
+      snapshot: snapshot([
+        hb({
+          instance_id: NATIVE,
+          v3_instance_id: CANONICAL,
+          name: "Yvonne",
+          started_at: "2026-08-16T10:00:00.000Z",
+        }),
+      ]),
       events: [
+        ev({
+          event_type: "turn.started",
+          instance_id: CANONICAL,
+          turn_id: "turn-yvonne",
+          ts: "2026-08-16T10:04:00.000Z",
+        }),
         ev({
           event_type: "coord.task_changed",
           instance_id: CANONICAL,
@@ -1041,6 +1071,19 @@ describe("canonical and native instance ids", () => {
     // The evidence attached rather than folding under a second key.
     expect(panel.identity.task?.value).toBe("Fix the codec panels");
     expect(panel.recent_actions.length).toBeGreaterThan(0);
+    expect(panel.timing).toMatchObject({
+      value: {
+        session_duration_ms: 300_000,
+        last_turn_duration_ms: 60_000,
+        working_duration_ms: 60_000,
+        idle_duration_ms: 0,
+        boundary_source: "heartbeat",
+        observed_from: "2026-08-16T10:04:00.000Z",
+        current_bucket: "working",
+      },
+      provenance: "projection",
+      confidence: "medium",
+    });
   });
 
   test("ping endpoints join through the alias", () => {

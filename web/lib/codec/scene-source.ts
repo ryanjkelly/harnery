@@ -41,7 +41,7 @@ import { sanitizeLine } from "./sanitize";
 import { applySemanticReadModel } from "./semantic";
 import { stripCodecSemantic } from "./semantic-contract";
 
-/** How much of the log tail to fold. ~1KB/row → a few thousand recent rows. */
+/** How much of the log tail to fold. ~2KB/row → a few thousand recent rows. */
 const TAIL_BYTES = 4_000_000;
 
 interface SanitizedTailRow {
@@ -53,9 +53,11 @@ interface SanitizedTailCache {
   device: bigint;
   inode: bigint;
   size: number;
+  byteLimit: number;
   partial: string;
   rows: SanitizedTailRow[];
   rowBytes: number;
+  lifecycle: Map<string, SanitizedTailRow[]>;
 }
 
 const sanitizedTailCache = new Map<string, SanitizedTailCache>();
@@ -149,21 +151,58 @@ function sanitizedRows(text: string): SanitizedTailRow[] {
   return rows;
 }
 
+function isLifecycleRow(row: SanitizedTailRow): boolean {
+  return /^(session|turn|wait)\./.test(row.event.event_type);
+}
+
+function retainLifecycleRow(cache: SanitizedTailCache, row: SanitizedTailRow): void {
+  if (!isLifecycleRow(row)) return;
+  const retained = cache.lifecycle.get(row.event.instance_id) ?? [];
+  if (!retained.some(({ event }) => event.event_id === row.event.event_id)) retained.push(row);
+  cache.lifecycle.set(row.event.instance_id, retained);
+}
+
 function trimTail(cache: SanitizedTailCache): void {
-  while (cache.rowBytes > TAIL_BYTES && cache.rows.length > 1) {
-    cache.rowBytes -= cache.rows.shift()?.sourceBytes ?? 0;
+  while (cache.rowBytes > cache.byteLimit && cache.rows.length > 1) {
+    const evicted = cache.rows.shift();
+    if (!evicted) break;
+    cache.rowBytes -= evicted.sourceBytes;
+    retainLifecycleRow(cache, evicted);
   }
+}
+
+function mergedTailRows(cache: SanitizedTailCache): CodecSourceEvidence[] {
+  const rows = [...cache.lifecycle.values()].flat().concat(cache.rows);
+  rows.sort(
+    (left, right) =>
+      Date.parse(left.event.ts) - Date.parse(right.event.ts) ||
+      left.event.event_id.localeCompare(right.event.event_id),
+  );
+  const seen = new Set<string>();
+  return rows.flatMap(({ event }) => {
+    if (seen.has(event.event_id)) return [];
+    seen.add(event.event_id);
+    return [event];
+  });
 }
 
 /** Read a bounded validated tail once, then validate only newly appended
  * complete rows while the active file keeps the same identity. */
 export async function readIncrementalSanitizedTail(
   filePath: string,
+  byteLimit: number = TAIL_BYTES,
 ): Promise<CodecSourceEvidence[]> {
+  const effectiveByteLimit = Math.max(1, Math.floor(byteLimit));
   const stat = await fs.promises.stat(filePath, { bigint: true });
   const size = Number(stat.size);
   const cached = sanitizedTailCache.get(filePath);
-  if (cached && cached.device === stat.dev && cached.inode === stat.ino && size >= cached.size) {
+  if (
+    cached &&
+    cached.device === stat.dev &&
+    cached.inode === stat.ino &&
+    cached.byteLimit === effectiveByteLimit &&
+    size >= cached.size
+  ) {
     if (size > cached.size) {
       const appended = await readRange(filePath, cached.size, size - cached.size);
       const text = cached.partial + appended.toString("utf8");
@@ -180,10 +219,10 @@ export async function readIncrementalSanitizedTail(
       }
       cached.size = size;
     }
-    return cached.rows.map((row) => row.event);
+    return mergedTailRows(cached);
   }
 
-  const start = Math.max(0, size - TAIL_BYTES);
+  const start = Math.max(0, size - effectiveByteLimit);
   let text = (await readRange(filePath, start, size - start)).toString("utf8");
   if (start > 0) {
     const firstNewline = text.indexOf("\n");
@@ -197,13 +236,15 @@ export async function readIncrementalSanitizedTail(
     device: stat.dev,
     inode: stat.ino,
     size,
+    byteLimit: effectiveByteLimit,
     partial,
     rows,
     rowBytes: rows.reduce((sum, row) => sum + row.sourceBytes, 0),
+    lifecycle: new Map(),
   };
   trimTail(next);
   sanitizedTailCache.set(filePath, next);
-  return next.rows.map((row) => row.event);
+  return mergedTailRows(next);
 }
 
 async function readOneSanitizedTail(filePath: string): Promise<CodecSourceEvidence[]> {

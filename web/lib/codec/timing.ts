@@ -33,6 +33,7 @@ function timingBucket(event: CodecSourceEvidence): Exclude<TimingBucket, "stoppe
 export function projectCodecTimings(
   events: readonly CodecSourceEvidence[],
   now: string,
+  startedAtByInstance: ReadonlyMap<string, string> = new Map(),
 ): Map<string, CodecTiming> {
   const nowMs = Date.parse(now);
   if (!Number.isFinite(nowMs)) return new Map();
@@ -49,7 +50,9 @@ export function projectCodecTimings(
   }
 
   const timings = new Map<string, CodecTiming>();
-  for (const [instanceId, unordered] of byInstance) {
+  const instanceIds = new Set([...byInstance.keys(), ...startedAtByInstance.keys()]);
+  for (const instanceId of instanceIds) {
+    const unordered = byInstance.get(instanceId) ?? [];
     const ordered = unordered.toSorted(
       (left, right) =>
         eventTime(left) - eventTime(right) || left.event_id.localeCompare(right.event_id),
@@ -58,31 +61,44 @@ export function projectCodecTimings(
     for (let index = 0; index < ordered.length; index += 1) {
       if (SESSION_BOUNDARIES.has(ordered[index]!.event_type)) boundaryIndex = index;
     }
-    if (boundaryIndex < 0) continue;
 
-    const scoped = ordered.slice(boundaryIndex);
-    const started = scoped[0]!;
-    const startedAt = eventTime(started);
+    const started = boundaryIndex >= 0 ? ordered[boundaryIndex] : undefined;
+    const heartbeatStartedAt = Date.parse(startedAtByInstance.get(instanceId) ?? "");
+    const boundarySource = started ? "event" : "heartbeat";
+    if (!started && (!Number.isFinite(heartbeatStartedAt) || heartbeatStartedAt > nowMs)) continue;
+
+    const startedAt = started ? eventTime(started) : heartbeatStartedAt;
+    const scoped = started
+      ? ordered.slice(boundaryIndex)
+      : ordered.filter((event) => eventTime(event) >= startedAt);
     const ended = scoped.find((event) => event.event_type === "session.ended");
     const endedAt = ended ? eventTime(ended) : nowMs;
     const measuredAt = Math.max(startedAt, Math.min(nowMs, endedAt));
 
     let cursor = startedAt;
-    let bucket: Exclude<TimingBucket, "stopped"> = "idle";
+    let bucket: Exclude<TimingBucket, "stopped"> = started ? "idle" : "unknown";
+    let observedFromEvent: CodecSourceEvidence | undefined;
     let workingMs = 0;
     let idleMs = 0;
     for (const event of scoped) {
       const ts = Math.max(cursor, Math.min(measuredAt, eventTime(event)));
       const elapsed = ts - cursor;
       if (bucket === "working") workingMs += elapsed;
-      else idleMs += elapsed;
+      else if (bucket === "idle") idleMs += elapsed;
       cursor = ts;
-      bucket = timingBucket(event) ?? bucket;
+      const nextBucket = timingBucket(event);
+      if (nextBucket) {
+        if (bucket === "unknown") observedFromEvent = event;
+        bucket = nextBucket;
+      }
       if (event === ended) break;
     }
     const remaining = measuredAt - cursor;
     if (bucket === "working") workingMs += remaining;
-    else idleMs += remaining;
+    else if (bucket === "idle") idleMs += remaining;
+    const observedFrom = started
+      ? undefined
+      : (observedFromEvent?.ts ?? new Date(measuredAt).toISOString());
 
     const turnStarts = scoped.filter(
       (event) => event.event_type === "turn.started" && eventTime(event) <= measuredAt,
@@ -104,24 +120,28 @@ export function projectCodecTimings(
       lastTurnActive = !turnTerminal && !ended;
     }
 
-    const evidenceIds = [started.event_id];
-    if (lastTurnStarted) evidenceIds.push(lastTurnStarted.event_id);
-    if (turnTerminal) evidenceIds.push(turnTerminal.event_id);
-    if (ended) evidenceIds.push(ended.event_id);
+    const evidenceIds = new Set<string>();
+    if (started) evidenceIds.add(started.event_id);
+    if (observedFromEvent) evidenceIds.add(observedFromEvent.event_id);
+    if (lastTurnStarted) evidenceIds.add(lastTurnStarted.event_id);
+    if (turnTerminal) evidenceIds.add(turnTerminal.event_id);
+    if (ended) evidenceIds.add(ended.event_id);
     timings.set(instanceId, {
       value: {
         session_duration_ms: Math.max(0, measuredAt - startedAt),
         ...(lastTurnDurationMs === undefined ? {} : { last_turn_duration_ms: lastTurnDurationMs }),
         working_duration_ms: workingMs,
         idle_duration_ms: idleMs,
+        boundary_source: boundarySource,
+        ...(observedFrom ? { observed_from: observedFrom } : {}),
         session_active: !ended,
         last_turn_active: lastTurnActive,
         current_bucket: ended ? "stopped" : bucket,
       },
-      provenance: "event",
-      confidence: "high",
+      provenance: started ? "event" : "projection",
+      confidence: started ? "high" : "medium",
       observed_at: new Date(measuredAt).toISOString(),
-      evidence_event_ids: evidenceIds,
+      evidence_event_ids: [...evidenceIds],
     });
   }
   return timings;
