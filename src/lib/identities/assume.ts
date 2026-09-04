@@ -16,7 +16,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { recordLiveIdentityChangeV3 } from "../../core/agents/live-authority-v3.ts";
 import { recordLiveSweepObservationV3 } from "../../core/agents/live-lifecycle-v3.ts";
 import type { Heartbeat } from "../../core/agents/state/heartbeat-writer.ts";
@@ -27,6 +26,7 @@ import {
 import { resolveForkAncestry } from "../../core/agents/state/names.ts";
 import { instanceHasLivePid, removePidmapRowsForInstance } from "../../core/agents/state/pidmap.ts";
 import { coordFreshnessSeconds } from "../../core/config.ts";
+import type { EventAdapterIdV3 } from "../../core/events/v3/adapter-id.ts";
 import { readRemoteMachines } from "../../core/presence/index.ts";
 import { type AgentIdentity, bareName, ensureIdentity, lookupById, lookupByName } from "./index.ts";
 
@@ -133,7 +133,7 @@ export function reclaimAbandonedLocalConflict(
   if (instanceHasLivePid(coordRoot, conflict.instance_id)) return false;
 
   const hbPath = join(coordRoot, ".harnery", "active", `${conflict.instance_id}.json`);
-  let adapter: "claude-code" | "cursor" | "codex" = "claude-code";
+  let adapter: EventAdapterIdV3 = "claude-code";
   let sessionId = conflict.instance_id;
   let ageSecs: number | undefined;
   const liveRow = readLiveCoordinationRow(coordRoot, conflict.instance_id);
@@ -236,9 +236,10 @@ function acquireLock(coordRoot: string): () => void {
   );
 }
 
-function adapterOf(platform: string | undefined): "claude-code" | "cursor" | "codex" {
+function adapterOf(platform: string | undefined): EventAdapterIdV3 {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
+  if (platform === "openclaw") return "openclaw";
   return "claude-code";
 }
 
@@ -328,11 +329,18 @@ export function assumeIdentity(
       };
     }
 
+    const adapter = adapterOf(hb.platform);
+    if (adapter === "openclaw") {
+      throw new IdentityAssumeError(
+        "not_session",
+        "identity assumption is unavailable for observer-only OpenClaw generations",
+      );
+    }
     const emitted = recordLiveIdentityChangeV3({
       coordRoot,
       owner: instanceId,
       nativeSessionId: hb.native_session_id ?? hb.session_id,
-      adapter: adapterOf(hb.platform),
+      adapter,
       name: identity.name,
       identityId: identity.agent_id,
     });

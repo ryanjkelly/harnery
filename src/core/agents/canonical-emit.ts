@@ -11,6 +11,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import type { EventAdapterIdV3 } from "../events/v3/adapter-id.ts";
 import type { LiveCoordinationObservationV3 } from "../events/v3/live-observation.ts";
 import { coordBinPath } from "./coord-bin.ts";
 import { resolveCoordRoot } from "./coord-client.ts";
@@ -28,7 +29,7 @@ export type EventV3EmitObservation =
 export interface EventV3EmitInput {
   owner: string;
   session: string;
-  adapter: "claude-code" | "cursor" | "codex";
+  adapter: EventAdapterIdV3;
   observation: EventV3EmitObservation;
 }
 
@@ -92,9 +93,10 @@ export function emitEventV3(input: EventV3EmitInput): boolean {
 /**
  * Normalize the heartbeat's `platform` field to the canonical Adapter type.
  */
-export function normalizeAdapter(platform: string | undefined): "claude-code" | "cursor" | "codex" {
+export function normalizeAdapter(platform: string | undefined): EventAdapterIdV3 {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
+  if (platform === "openclaw") return "openclaw";
   return "claude-code";
 }
 

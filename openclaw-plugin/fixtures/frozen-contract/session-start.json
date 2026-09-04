@@ -1,0 +1,14 @@
+{
+  "source": {
+    "kind": "synthetic",
+    "contract": "openclaw-2026.7.1-2",
+    "authored_at": "2026-09-03"
+  },
+  "hook": "session_start",
+  "event": {},
+  "context": {
+    "sessionKey": "fixture-session-a",
+    "agentId": "main",
+    "workspaceDir": "/workspace/project"
+  }
+}

@@ -12,8 +12,8 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import type { Adapter } from "../adapter.ts";
 import { sessionFinalizationConfig } from "../config.ts";
+import type { EventAdapterIdV3 } from "../events/v3/adapter-id.ts";
 import { buildEventV3 } from "../events/v3/builder.ts";
 import { normalizeNativeIdV3 } from "../events/v3/canonical.ts";
 import type { EventV3 } from "../events/v3/contract.ts";
@@ -55,7 +55,7 @@ export {
 const EXPLICIT_END_PENDING_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 export interface SessionArchiveObservationV3 {
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   native_session_id: string;
   archived: boolean;
   observed_at: string;

@@ -1,4 +1,4 @@
-import type { Adapter } from "../../adapter.ts";
+import type { EventAdapterIdV3 } from "./adapter-id.ts";
 import {
   type AdapterSignalV3,
   adapterSignalSupportV3,
@@ -66,7 +66,7 @@ export interface HarnessTimingAccumulatorV3 {
 
 /** Extract only telemetry explicitly reported by a hook/status payload. */
 export function extractTurnTelemetryV3(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   payload: Record<string, unknown>,
   observedAt = new Date().toISOString(),
   support: TurnTelemetryCapabilitySupportV3 = {},
@@ -162,7 +162,7 @@ export function extractTurnTelemetryV3(
 }
 
 function contextObservation(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   usedTokens: number | undefined,
   limitTokens: number | undefined,
   usedPercent: number | undefined,
@@ -269,7 +269,7 @@ export function harnessObservationV3(
 }
 
 function missing(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   signal: "model_usage" | "inference_timing" | "context_usage",
   override: CapabilitySupportV3 | undefined,
 ) {

@@ -1,0 +1,15 @@
+{
+  "source": {
+    "kind": "synthetic",
+    "contract": "openclaw-2026.7.1-2",
+    "authored_at": "2026-09-03"
+  },
+  "hook": "before_prompt_build",
+  "event": { "prompt": "fixture prompt must be redacted" },
+  "context": {
+    "sessionKey": "fixture-session-a",
+    "runId": "fixture-run-a",
+    "agentId": "main",
+    "workspaceDir": "/workspace/project"
+  }
+}

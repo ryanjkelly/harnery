@@ -1,7 +1,9 @@
-import type { Adapter } from "../../adapter.ts";
+import type { EventAdapterIdV3 } from "./adapter-id.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 
 export type CapabilitySupportV3 = "native" | "derived" | "conditional" | "unsupported";
+
+export type AdapterDurationCapabilityV3 = "turn_duration" | "tool_duration";
 
 export type CursorExecutionModeV3 = "local" | "cloud" | "unknown";
 
@@ -59,7 +61,7 @@ export type AdapterSignalV3 =
 export interface AdapterCapabilityProfileV3 {
   format: "harnery-v3-adapter-capabilities";
   format_version: 1;
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   signals: Record<AdapterSignalV3, CapabilitySupportV3>;
 }
 
@@ -79,7 +81,10 @@ const SHARED_SIGNAL_SUPPORT = {
   model_identity: "conditional",
 } as const;
 
-const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, CapabilitySupportV3>> = {
+const BASE_SIGNAL_SUPPORT: Record<
+  EventAdapterIdV3,
+  Record<BaseAdapterSignalV3, CapabilitySupportV3>
+> = {
   "claude-code": {
     ...SHARED_SIGNAL_SUPPORT,
     session_end: "native",
@@ -110,11 +115,32 @@ const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, Capabilit
     post_compaction: "unsupported",
     context_usage: "conditional",
   },
+  openclaw: {
+    session_start: "native",
+    session_end: "native",
+    prompt: "native",
+    turn_id: "native",
+    turn_completion: "native",
+    assistant_reply_text: "unsupported",
+    tool_request: "native",
+    tool_result: "native",
+    tool_failure: "conditional",
+    tool_call_id: "native",
+    tool_duration: "unsupported",
+    permission: "unsupported",
+    subagent: "unsupported",
+    shell: "native",
+    pre_compaction: "unsupported",
+    post_compaction: "unsupported",
+    context_usage: "unsupported",
+    model_identity: "unsupported",
+  },
 };
 
 function profile(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   economics: Pick<Record<AdapterSignalV3, CapabilitySupportV3>, "model_usage" | "inference_timing">,
+  harnessTiming: CapabilitySupportV3 = "derived",
 ): AdapterCapabilityProfileV3 {
   return {
     format: "harnery-v3-adapter-capabilities",
@@ -123,40 +149,64 @@ function profile(
     signals: {
       ...BASE_SIGNAL_SUPPORT[adapter],
       ...economics,
-      harness_timing: "derived",
+      harness_timing: harnessTiming,
       capability_drift: "derived",
     },
   };
 }
 
-export const ADAPTER_CAPABILITY_PROFILES_V3: Record<Adapter, AdapterCapabilityProfileV3> = {
-  "claude-code": profile("claude-code", {
-    model_usage: "conditional",
-    inference_timing: "unsupported",
-  }),
-  codex: profile("codex", {
-    model_usage: "conditional",
-    inference_timing: "unsupported",
-  }),
-  cursor: profile("cursor", {
-    model_usage: "unsupported",
-    inference_timing: "unsupported",
-  }),
-};
+export const ADAPTER_CAPABILITY_PROFILES_V3: Record<EventAdapterIdV3, AdapterCapabilityProfileV3> =
+  {
+    "claude-code": profile("claude-code", {
+      model_usage: "conditional",
+      inference_timing: "unsupported",
+    }),
+    codex: profile("codex", {
+      model_usage: "conditional",
+      inference_timing: "unsupported",
+    }),
+    cursor: profile("cursor", {
+      model_usage: "unsupported",
+      inference_timing: "unsupported",
+    }),
+    openclaw: profile(
+      "openclaw",
+      {
+        model_usage: "unsupported",
+        inference_timing: "unsupported",
+      },
+      "unsupported",
+    ),
+  };
 
-export function adapterCapabilityProfileV3(adapter: Adapter): AdapterCapabilityProfileV3 {
+export function adapterCapabilityProfileV3(adapter: EventAdapterIdV3): AdapterCapabilityProfileV3 {
   return ADAPTER_CAPABILITY_PROFILES_V3[adapter];
 }
 
-export function adapterCapabilityProfileDigestV3(adapter: Adapter): `cap_${string}` {
+export function adapterCapabilityProfileDigestV3(adapter: EventAdapterIdV3): `cap_${string}` {
   return `cap_${sha256V3(canonicalJsonV3(adapterCapabilityProfileV3(adapter))).slice(7)}`;
 }
 
 export function adapterSignalSupportV3(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   signal: AdapterSignalV3,
 ): CapabilitySupportV3 {
   return adapterCapabilityProfileV3(adapter).signals[signal];
+}
+
+/**
+ * Duration support for terminal spans. Tool duration is part of the digested
+ * adapter profile. Turn duration predates that profile dimension, so keep its
+ * compatibility-preserving classification here until the next contract major.
+ */
+export function adapterDurationSupportV3(
+  adapter: EventAdapterIdV3,
+  capability: AdapterDurationCapabilityV3,
+): CapabilitySupportV3 {
+  if (capability === "tool_duration") {
+    return adapterSignalSupportV3(adapter, "tool_duration");
+  }
+  return adapter === "openclaw" ? "unsupported" : "derived";
 }
 
 /**
@@ -165,14 +215,14 @@ export function adapterSignalSupportV3(
  * adapter's native turn channel.
  */
 export function adapterWaitKindSupportV3(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   kind: AdapterWaitKindV3,
 ): CapabilitySupportV3 {
   return kind === "permission" ? adapterSignalSupportV3(adapter, "permission") : "unsupported";
 }
 
 /** No current adapter supplies an independent completed-turn wait aggregate. */
-export function adapterTurnWaitCountSupportV3(_adapter: Adapter): CapabilitySupportV3 {
+export function adapterTurnWaitCountSupportV3(_adapter: EventAdapterIdV3): CapabilitySupportV3 {
   return "unsupported";
 }
 
@@ -182,7 +232,7 @@ export function adapterTurnWaitCountSupportV3(_adapter: Adapter): CapabilitySupp
  * never proves that an absent span means zero.
  */
 export function adapterWaitCoverageMatrixV3(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
 ): Record<AdapterWaitKindV3, WaitKindCapabilityV3> {
   return Object.fromEntries(
     ADAPTER_WAIT_KINDS_V3.map((kind) => [

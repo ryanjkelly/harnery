@@ -1,0 +1,46 @@
+{
+  "id": "harnery",
+  "name": "Harnery",
+  "description": "Records OpenClaw lifecycle and tool hooks into Harnery Event Ledger V3.",
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": ["capture", "record"],
+        "default": "capture"
+      },
+      "ledgerRoot": {
+        "type": "string",
+        "description": "Optional Event Ledger project root. Defaults under OPENCLAW_STATE_DIR or the runtime user's home."
+      },
+      "logRoot": {
+        "type": "string",
+        "description": "Optional adapter log directory. Defaults under OPENCLAW_STATE_DIR or the runtime user's home."
+      },
+      "agents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["main"]
+      },
+      "debug": {
+        "type": "boolean",
+        "default": true
+      },
+      "recorderFault": {
+        "type": "boolean",
+        "default": false
+      },
+      "queueCapacity": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4096,
+        "default": 128
+      }
+    }
+  }
+}

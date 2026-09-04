@@ -1,0 +1,16 @@
+{
+  "name": "@harnery/openclaw",
+  "version": "0.1.0",
+  "description": "OpenClaw event adapter for Harnery Event Ledger V3.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.js",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1"
+  }
+}

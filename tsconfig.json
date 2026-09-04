@@ -25,6 +25,6 @@
 
     "verbatimModuleSyntax": false
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "examples/**/*.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "examples/**/*.ts", "openclaw-plugin/**/*.ts"],
   "exclude": ["node_modules", "dist", "docs", "src/web"]
 }

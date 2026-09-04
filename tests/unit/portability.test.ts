@@ -16,7 +16,9 @@ describe("portability", () => {
     const root = join(import.meta.dir, "..", "..");
     const violations = scanPortability(root);
     if (violations.length > 0) {
-      const report = violations.map((v) => `  ${v.file}:${v.line} [${v.label}] ${v.text}`).join("\n");
+      const report = violations
+        .map((v) => `  ${v.file}:${v.line} [${v.label}] ${v.text}`)
+        .join("\n");
       throw new Error(`Found ${violations.length} host-specific token(s):\n${report}`);
     }
     expect(violations).toEqual([]);
@@ -48,6 +50,47 @@ describe("portability", () => {
       writeFileSync(join(root, "docs", "tracked.md"), "merchant BARTN\n");
       expect(scanPortability(root, "worktree")).toHaveLength(2);
       expect(scanPortability(root, "index")).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("allows the public OpenClaw integration while retaining vendor denials", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-portability-openclaw-"));
+    try {
+      mkdirSync(join(root, "docs"));
+      writeFileSync(join(root, "docs", "integration.md"), "OpenClaw event adapter\n");
+      expect(scanPortability(root)).toEqual([]);
+
+      writeFileSync(join(root, "docs", "consumer.md"), "UltraCart merchant\n");
+      expect(scanPortability(root)).toEqual([
+        expect.objectContaining({
+          file: "docs/consumer.md",
+          line: 1,
+          label: "host vendor name",
+        }),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("scans OpenClaw plugin sources and rejects fixed host home directories", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-portability-plugin-"));
+    try {
+      const sourceRoot = join(root, "openclaw-plugin", "src");
+      mkdirSync(sourceRoot, { recursive: true });
+      writeFileSync(join(sourceRoot, "portable.ts"), 'export const root = "/home/gateway/logs";\n');
+      expect(scanPortability(root)).toEqual([
+        expect.objectContaining({
+          file: "openclaw-plugin/src/portable.ts",
+          line: 1,
+          label: "host-specific absolute home path",
+        }),
+      ]);
+
+      writeFileSync(join(sourceRoot, "portable.ts"), "export const root = process.env.HOME;\n");
+      expect(scanPortability(root)).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

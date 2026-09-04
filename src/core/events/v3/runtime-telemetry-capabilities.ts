@@ -1,4 +1,4 @@
-import type { Adapter } from "../../adapter.ts";
+import type { EventAdapterIdV3 } from "./adapter-id.ts";
 import {
   adapterSignalSupportV3,
   type CapabilitySupportV3,
@@ -47,7 +47,7 @@ export type RuntimeContextCapabilityEvidenceV3 =
   | { state: "unsupported" };
 
 export interface RuntimeTelemetryCapabilityEvidenceV3 {
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   cursor_mode?: CursorExecutionModeV3;
   context: RuntimeContextCapabilityEvidenceV3;
   canonical_turn_boundaries: boolean;
@@ -102,7 +102,7 @@ function contextCapability(
 }
 
 function waitSpanCapability(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   cursorMode: CursorExecutionModeV3 | undefined,
 ): RuntimeTelemetryCapabilityObservationV3 {
   if (adapter === "cursor" && cursorMode === "cloud") {

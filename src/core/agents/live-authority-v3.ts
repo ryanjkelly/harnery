@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Adapter } from "../adapter.ts";
+import { EVENT_ADAPTER_IDS_V3 } from "../events/v3/adapter-id.ts";
 import type { AuthorityMutationV3 } from "../events/v3/authority-outbox.ts";
 import { canonicalJsonV3, normalizeNativeIdV3, sha256V3 } from "../events/v3/canonical.ts";
 import { type EventV3WriteMode, readEventV3ControlState } from "../events/v3/control.ts";
@@ -246,9 +247,9 @@ function readSessionProducerStatesForBootstrap(
   nativeSessionId: string,
 ): HookProducerStateV3[] {
   try {
-    return (["claude-code", "codex", "cursor"] as const)
-      .map((adapter) => readHookProducerStateV3(coordRoot, adapter, nativeSessionId))
-      .filter((state): state is HookProducerStateV3 => state !== undefined);
+    return EVENT_ADAPTER_IDS_V3.map((adapter) =>
+      readHookProducerStateV3(coordRoot, adapter, nativeSessionId),
+    ).filter((state): state is HookProducerStateV3 => state !== undefined);
   } catch {
     throw new LiveCoordinationAuthorityV3Error("producer_state_unsafe");
   }
@@ -423,6 +424,9 @@ export function reopenLiveCoordinationGenerationV3(input: {
   const terminalView = view.terminal_generations[terminal.generation_id];
   if (!terminalView || terminalView.instance_id !== instanceId) {
     throw new LiveCoordinationAuthorityV3Error("terminal_generation_authority_missing");
+  }
+  if (terminal.adapter === "openclaw") {
+    throw new LiveCoordinationAuthorityV3Error("lifecycle_not_human_facing");
   }
   if (terminalView.parent_generation_id || terminalView.delegation_id || terminalView.workflow_id) {
     throw new LiveCoordinationAuthorityV3Error("lifecycle_not_human_facing");

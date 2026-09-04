@@ -13,7 +13,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Adapter } from "../../../adapter.ts";
 import { readCodexArchiveObservationsV3 } from "../../../agents/codex-archive-v3.ts";
 import {
   listSessionFinalizationRequestsV3,
@@ -3506,7 +3505,9 @@ describe("event ledger V3 persistent hook recorder", () => {
   });
 });
 
-function candidateRoot(adapter: Adapter = "claude-code"): string {
+function candidateRoot(
+  adapter: Parameters<typeof recordHookSignalV3>[0]["adapter"] = "claude-code",
+): string {
   const root = temporaryRoot();
   const keyStore = loadOrCreateFingerprintKeyStoreV3(
     root,
@@ -3575,7 +3576,7 @@ function baseInput(
   root: string,
   signal: Parameters<typeof recordHookSignalV3>[0]["signal"],
   payload: ParsedPayload,
-  adapter: Adapter = "claude-code",
+  adapter: Parameters<typeof recordHookSignalV3>[0]["adapter"] = "claude-code",
 ) {
   return {
     coordRoot: root,
@@ -3874,6 +3875,39 @@ describe("event ledger V3 hook intake spool", () => {
     expect((requested?.event.scope as { turn_id?: string }).turn_id).toBe(
       (turn?.event.scope as { turn_id?: string }).turn_id,
     );
+  });
+
+  test("memory-only delivery never writes raw hook payloads to the intake spool", () => {
+    const root = candidateRoot("openclaw");
+    const nativeSession = "memory-only-session";
+    const start = recordHookSignalV3({
+      ...baseInput(root, "session-start", parsed({ session_id: nativeSession }), "openclaw"),
+      intake: "memory_only",
+    });
+    expect(start.state).toBe("recorded");
+    expect(intakeEntryCount(root, "openclaw")).toBe(0);
+
+    const statePath = statePathFor(root, "openclaw");
+    const lease = holdStateLease(root, statePath);
+    try {
+      const contended = recordHookSignalV3({
+        ...baseInput(
+          root,
+          "user-prompt-submit",
+          parsed({
+            session_id: nativeSession,
+            turn_id: "memory-only-turn",
+            prompt: "RAW_MEMORY_ONLY_SECRET",
+          }),
+          "openclaw",
+        ),
+        intake: "memory_only",
+      });
+      expect(contended).toEqual({ state: "busy" });
+      expect(intakeEntryCount(root, "openclaw")).toBe(0);
+    } finally {
+      lease.release();
+    }
   });
 
   test("reconcile-style drain records a marooned final signal with no later hook", () => {

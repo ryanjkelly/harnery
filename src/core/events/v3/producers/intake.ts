@@ -13,9 +13,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { Adapter } from "../../../adapter.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
+import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../adapter-id.ts";
 import type { EventV3WriteMode } from "../control.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../writer.ts";
 import {
@@ -90,7 +90,7 @@ export interface HookIntakeRecordV3 {
   mode: EventV3WriteMode;
   signal: HookSignalV3;
   payload: ParsedPayload;
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   instance_id: `inst_${string}`;
   producer_id: `prd_${string}`;
   build_id: `build_${string}`;
@@ -113,7 +113,7 @@ export interface HookIntakeRecordV3 {
 }
 
 export interface HookIntakeGroupV3 {
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   session_hash: `hid_${string}`;
   directory: string;
 }
@@ -135,7 +135,7 @@ function diagnosticsRoot(coordRoot: string): string {
 
 export function hookIntakeGroupDirV3(
   coordRoot: string,
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   sessionHash: `hid_${string}`,
 ): string {
   return join(intakeRoot(coordRoot), adapter, sessionHash);
@@ -187,7 +187,7 @@ export function listHookIntakeGroupsV3(coordRoot: string): HookIntakeGroupV3[] {
   const root = intakeRoot(coordRoot);
   if (!existsSync(root)) return [];
   const groups: HookIntakeGroupV3[] = [];
-  for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+  for (const adapter of EVENT_ADAPTER_IDS_V3) {
     const adapterDir = join(root, adapter);
     if (!existsSync(adapterDir)) continue;
     const metadata = lstatSync(adapterDir);
@@ -254,7 +254,7 @@ function readIntakeRecord(path: string): HookIntakeRecordV3 | undefined {
     !HOOK_SIGNALS.has(record.signal) ||
     !record.payload ||
     typeof record.payload !== "object" ||
-    !["claude-code", "codex", "cursor"].includes(record.adapter) ||
+    !(EVENT_ADAPTER_IDS_V3 as readonly string[]).includes(record.adapter) ||
     !/^inst_[a-zA-Z0-9._-]{1,128}$/.test(record.instance_id) ||
     !/^prd_[a-zA-Z0-9._-]{1,64}$/.test(record.producer_id) ||
     !/^build_[a-zA-Z0-9._-]{1,127}$/.test(record.build_id) ||

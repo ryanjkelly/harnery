@@ -3,6 +3,8 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
+import { ensureEventLedgerV3 } from "../core/events/v3/bootstrap.ts";
+import { recordHookSignalV3 } from "../core/events/v3/producers/recorder.ts";
 
 const roots: string[] = [];
 
@@ -65,6 +67,52 @@ describe("ledger-v3 command", () => {
       "--root",
     ]);
   }, 15_000);
+
+  test("status reports OpenClaw producer state from an explicit root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-ledger-v3-openclaw-"));
+    roots.push(root);
+    ensureEventLedgerV3(root, "ledger-v3-openclaw-status-test");
+    expect(
+      recordHookSignalV3({
+        coordRoot: root,
+        mode: "active",
+        signal: "session-start",
+        payload: { raw: {}, session_id: "openclaw-session" },
+        adapter: "openclaw",
+        instance_id: "inst_openclaw-status",
+        producer_id: "prd_openclaw-status",
+        build_id: "build_openclaw-status",
+        platform: "linux",
+      }).state,
+    ).toBe("recorded");
+
+    const result = await runSupport(["status", "--root", root]);
+    expect(result.error).toBeUndefined();
+    expect(result.data).toMatchObject({
+      state: "active",
+      summary: {
+        adapters: ["openclaw"],
+        producer_states: 1,
+        producer_states_by_adapter: { openclaw: 1 },
+      },
+    });
+  });
+
+  test("the environment override wins over the program context root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-ledger-v3-override-"));
+    roots.push(root);
+    ensureEventLedgerV3(root, "ledger-v3-override-status-test");
+    const previous = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    try {
+      const result = await runSupport(["status"]);
+      expect(result.error).toBeUndefined();
+      expect(result.data).toMatchObject({ state: "active" });
+    } finally {
+      if (previous === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+      else process.env.HARNERY_COORD_ROOT_OVERRIDE = previous;
+    }
+  });
 
   test("plans from exact evidence and produces a transaction consumable by support-shadow", async () => {
     const fixture = supportPlanFixture();

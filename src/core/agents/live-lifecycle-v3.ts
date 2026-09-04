@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Adapter } from "../adapter.ts";
+import type { EventAdapterIdV3 } from "../events/v3/adapter-id.ts";
 import { buildEventV3 } from "../events/v3/builder.ts";
 import { normalizeNativeIdV3 } from "../events/v3/canonical.ts";
 import type { EventV3 } from "../events/v3/contract.ts";
@@ -21,7 +21,7 @@ interface LiveLifecycleObservationBaseV3 {
   coordRoot: string;
   owner: string;
   nativeSessionId: string;
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   observedAt?: string;
 }
 

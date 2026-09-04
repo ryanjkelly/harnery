@@ -1,5 +1,6 @@
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import type { EventV3Base } from "../base-contract.ts";
+import { adapterDurationSupportV3, adapterSignalSupportV3 } from "../capabilities.ts";
 import type { EventOfTypeV3, EventTypeV3, SpanSummaryV3 } from "../contract.ts";
 import { EVENT_V3_CONTRACT_MAJOR, EVENT_V3_CONTRACT_NAME } from "../contract.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
@@ -95,9 +96,22 @@ function terminalPayload(
   context: HookProducerContextV3,
 ): object {
   if (!TERMINAL_EVENT_TYPES.has(eventType)) return basePayload;
-  const span = context.terminal_span as SpanSummaryV3;
+  const sourceSpan = context.terminal_span as SpanSummaryV3;
+  const durationCapability =
+    eventType === "turn.completed"
+      ? "turn_duration"
+      : eventType === "tool.completed"
+        ? "tool_duration"
+        : undefined;
+  const duration =
+    durationCapability &&
+    adapterDurationSupportV3(context.adapter, durationCapability) === "unsupported"
+      ? { state: "unsupported" as const, capability: durationCapability }
+      : sourceSpan.duration_ms;
+  const span =
+    duration === sourceSpan.duration_ms ? sourceSpan : { ...sourceSpan, duration_ms: duration };
   if (eventType === "tool.completed") {
-    return { ...basePayload, duration_ms: span.duration_ms, span };
+    return { ...basePayload, duration_ms: duration, span };
   }
   if (eventType !== "turn.completed") return { ...basePayload, span };
 
@@ -110,10 +124,13 @@ function terminalPayload(
     );
   return {
     ...basePayload,
-    duration_ms: span.duration_ms,
+    duration_ms: duration,
     span,
     usage: telemetry.usage,
     inference: telemetry.inference,
-    harness: harnessObservationV3(context.harness_timing ?? emptyHarnessTimingV3()),
+    harness:
+      adapterSignalSupportV3(context.adapter, "harness_timing") === "unsupported"
+        ? { state: "unsupported", capability: "harness_timing" }
+        : harnessObservationV3(context.harness_timing ?? emptyHarnessTimingV3()),
   };
 }

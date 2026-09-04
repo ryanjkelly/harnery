@@ -15,7 +15,6 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
-import type { Adapter } from "../../../adapter.ts";
 import { extractBashCommand, type ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import {
   discoverCodexSessionTranscript,
@@ -26,6 +25,7 @@ import {
 } from "../../../hooks/adapter/runtime-telemetry.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
+import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../adapter-id.ts";
 import type { RuntimeAttestationV3Base } from "../base-contract.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
@@ -108,7 +108,7 @@ const APPROVED_END_RUNTIME_CONTEXT_RETRY_DELAYS_MS = [0, 250, 250] as const;
  * Kept in code, outside the digested capability profiles, so tuning recovery
  * never changes an adapter capability digest (ADR 0078).
  */
-const RECOVERY_ENABLED_ADAPTERS: ReadonlySet<Adapter> = new Set(["claude-code", "codex", "cursor"]);
+const RECOVERY_ENABLED_ADAPTERS: ReadonlySet<string> = new Set(["claude-code", "codex", "cursor"]);
 
 interface SpanStateV3 extends OpenSpanStateV3 {
   source_id: `hid_${string}`;
@@ -187,7 +187,7 @@ interface DelegationStateV3 extends OpenSpanStateV3 {
 export interface HookProducerStateV3 {
   format: typeof STATE_FORMAT;
   format_version: typeof STATE_VERSION;
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   instance_id: `inst_${string}`;
   session_id: `sid_${string}`;
   generation_id: `gen_${string}`;
@@ -263,7 +263,7 @@ export interface RecordHookSignalV3Input {
   mode: EventV3WriteMode;
   signal: HookSignalV3;
   payload: ParsedPayload;
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   instance_id: `inst_${string}`;
   run_id?: `run_${string}`;
   workflow_id?: `wf_${string}`;
@@ -290,6 +290,13 @@ export interface RecordHookSignalV3Input {
   /** Optional roots and read budgets for runtime telemetry adapters. */
   runtimeTelemetryOptions?: RuntimeTelemetryOptions;
   writerOptions?: WriteEventV3Options;
+  /**
+   * Skip the crash-recovery intake file when the caller already owns a
+   * bounded, drainable queue. This prevents raw hook payloads from touching
+   * disk before normalization. The default remains the durable spool used by
+   * interactive harness hooks.
+   */
+  intake?: "durable" | "memory_only";
 }
 
 export type RecordHookSignalV3Result =
@@ -308,6 +315,8 @@ export type RecordHookSignalV3Result =
     }
   /** Durably queued in the intake spool; a lease holder or drain hook records it. */
   | { state: "spooled" }
+  /** Memory-only delivery could not acquire the producer lease and was dropped. */
+  | { state: "busy" }
   | { state: "recorded"; event: EventV3; durability: WriteEventV3Result; recovered: boolean };
 
 export type ApprovedSessionEndReasonV3 =
@@ -387,6 +396,16 @@ export function recordHookSignalV3(input: RecordHookSignalV3Input): RecordHookSi
   const rootFingerprintContext = fingerprintContextV3(input.coordRoot, rootId, undefined, epochId);
   const sessionHash = sessionHashForSignal(input, rootFingerprintContext);
   const path = producerStatePath(input.coordRoot, input.adapter, sessionHash);
+  if (input.intake === "memory_only") {
+    const lease = acquireStateLeaseWithRetry(input.coordRoot, path, STATE_LEASE_RETRY_ATTEMPTS);
+    if (!lease) return { state: "busy" };
+    try {
+      drainSessionIntakeLocked(input.coordRoot, control, input.adapter, sessionHash, path);
+      return processHookSignalLocked(control, input, sessionHash, path);
+    } finally {
+      lease.release();
+    }
+  }
   const spoolPath = appendHookIntakeRecordV3(input.coordRoot, sessionHash, intakeRecord(input));
   const lease = acquireStateLeaseWithRetry(input.coordRoot, path, STATE_LEASE_RETRY_ATTEMPTS);
   if (!lease) return { state: "spooled" };
@@ -404,7 +423,7 @@ export function recordHookSignalV3(input: RecordHookSignalV3Input): RecordHookSi
 
 function hookSignalGate(
   control: OpenHookControlStateV3,
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   signal: HookSignalV3,
 ): RecordHookSignalV3Result | undefined {
   const expectedCapabilityDigest = `sha256:${adapterCapabilityProfileDigestV3(adapter).slice(4)}`;
@@ -531,7 +550,7 @@ interface OwnIntakeRecordV3 {
 function drainSessionIntakeLocked(
   coordRoot: string,
   control: OpenHookControlStateV3,
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   sessionHash: `hid_${string}`,
   statePath: string,
   own?: OwnIntakeRecordV3,
@@ -2128,6 +2147,10 @@ function maybeCommitActiveRuntimeContextObservation(
     publishProducerState(input.coordRoot, path, state);
     return;
   }
+  if (input.adapter === "openclaw") {
+    publishProducerState(input.coordRoot, path, state);
+    return;
+  }
 
   const transcriptPath = runtimeTranscriptPath(input, state);
   if (!transcriptPath && input.adapter !== "cursor") {
@@ -2472,6 +2495,7 @@ function turnTelemetryForTerminal(
 ): TurnTelemetryV3 {
   const native = extractTurnTelemetryV3(input.adapter, input.payload.raw, observedAt);
   if (native.context.state === "observed") return native;
+  if (input.adapter === "openclaw") return native;
   if (input.adapter === "cursor" && state.cursor_mode === "cloud") {
     return {
       ...native,
@@ -2848,10 +2872,10 @@ function commitRuntimeAttestationChange(
   commitEventLocked(input, state, path, event);
 }
 
-function modelProviderFor(adapter: Adapter): string {
+function modelProviderFor(adapter: EventAdapterIdV3): string {
   if (adapter === "claude-code") return "anthropic";
   if (adapter === "codex") return "openai";
-  return "cursor";
+  return adapter;
 }
 
 function recordRuntimeTelemetryTiming(state: HookProducerStateV3, durationMs: number): void {
@@ -3436,7 +3460,7 @@ export function listHookProducerStateRecordsV3(
   const producerRoot = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT, "private-producers");
   if (!existsSync(producerRoot)) return [];
   const records: HookProducerStateRecordV3[] = [];
-  for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+  for (const adapter of EVENT_ADAPTER_IDS_V3) {
     const directory = join(producerRoot, adapter);
     if (!existsSync(directory)) continue;
     const metadata = lstatSync(directory);
@@ -3588,7 +3612,7 @@ function listArchivedHookProducerStatesV3(
   const producerRoot = join(resolve(archivedEpoch), "private-producers");
   if (!existsSync(producerRoot)) return [];
   const records: Array<{ sessionHash: `hid_${string}`; state: HookProducerStateV3 }> = [];
-  for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+  for (const adapter of EVENT_ADAPTER_IDS_V3) {
     const directory = join(producerRoot, adapter);
     if (!existsSync(directory)) continue;
     const metadata = lstatSync(directory);
@@ -3644,7 +3668,7 @@ function hookSignalCapability(signal: HookSignalV3): AdapterSignalV3 {
 
 export function readHookProducerStateV3(
   coordRoot: string,
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   nativeSessionId: string,
 ): HookProducerStateV3 | undefined {
   const control = readEventV3ControlState(coordRoot);
@@ -3761,12 +3785,12 @@ export function readTerminalHookProducerStateV3(
   nativeSessionId: string,
   instanceId: `inst_${string}`,
 ): HookProducerStateV3 | undefined {
-  const matches = (["claude-code", "codex", "cursor"] as const)
-    .map((adapter) => readHookProducerStateV3(coordRoot, adapter, nativeSessionId))
-    .filter(
-      (state): state is HookProducerStateV3 =>
-        state?.terminal === true && state.instance_id === instanceId,
-    );
+  const matches = EVENT_ADAPTER_IDS_V3.map((adapter) =>
+    readHookProducerStateV3(coordRoot, adapter, nativeSessionId),
+  ).filter(
+    (state): state is HookProducerStateV3 =>
+      state?.terminal === true && state.instance_id === instanceId,
+  );
   return matches.length === 1 ? matches[0] : undefined;
 }
 
@@ -3779,7 +3803,7 @@ export function readHookProducerStateByInstanceV3(
   const producerRoot = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT, "private-producers");
   if (!existsSync(producerRoot)) return undefined;
   const matches: HookProducerStateV3[] = [];
-  for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+  for (const adapter of EVENT_ADAPTER_IDS_V3) {
     const directory = join(producerRoot, adapter);
     if (!existsSync(directory)) continue;
     const metadata = lstatSync(directory);
@@ -3807,7 +3831,7 @@ export function readHookProducerStateByInstanceV3(
  */
 export function readJoinableHookProducerStateV3(
   coordRoot: string,
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   nativeSessionId: string,
   instanceId: `inst_${string}`,
 ): HookProducerStateV3 | undefined {
@@ -4171,7 +4195,7 @@ function safeTokenOrUndefined(value: unknown): string | undefined {
 
 function producerStatePath(
   coordRoot: string,
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   sessionHash: `hid_${string}`,
 ): string {
   return join(
@@ -4335,7 +4359,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     Object.keys(state).some((key) => !allowedKeys.has(key)) ||
     state.format !== STATE_FORMAT ||
     state.format_version !== STATE_VERSION ||
-    !["claude-code", "codex", "cursor"].includes(state.adapter) ||
+    !(EVENT_ADAPTER_IDS_V3 as readonly string[]).includes(state.adapter) ||
     (state.cursor_mode !== undefined &&
       !["local", "cloud", "unknown"].includes(state.cursor_mode)) ||
     !/^inst_[a-zA-Z0-9._-]{1,128}$/.test(state.instance_id) ||

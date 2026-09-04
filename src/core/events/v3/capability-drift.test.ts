@@ -50,6 +50,33 @@ describe("event ledger V3 capability drift", () => {
       ]),
     );
   });
+
+  test("keeps a complete OpenClaw turn free of false timing drift", () => {
+    const events = [
+      event("session.started", {
+        runtime_attestation: { model: { state: "unsupported" } },
+      }),
+      event("turn.started"),
+      event("tool.requested"),
+      event("tool.completed", {
+        span: { duration_ms: { state: "expected_but_missing" } },
+      }),
+      event("turn.completed", {
+        harness: { state: "unsupported", capability: "harness_timing" },
+        usage: { state: "unsupported", capability: "model_usage" },
+        inference: { state: "unsupported", capability: "inference_timing" },
+      }),
+      event("session.ended"),
+    ];
+
+    expect(capabilityDriftPayloadsV3("openclaw", events)).toEqual([]);
+    expect(measurableDeliveriesV3(events)).toEqual(
+      expect.arrayContaining([
+        { signal: "tool_duration", expected_count: 1, observed_count: 0 },
+        { signal: "harness_timing", expected_count: 1, observed_count: 0 },
+      ]),
+    );
+  });
 });
 
 function healthyGeneration(): EventV3[] {

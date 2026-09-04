@@ -1,6 +1,6 @@
 ---
 title: harn adapter
-description: Inspect the registered Claude, Codex, and Cursor adapter capabilities and run the offline conformance bench.
+description: Inspect workflow adapter capabilities and understand the separate Event Ledger V3 adapter identities.
 sidebar:
   order: 29
 ---
@@ -16,6 +16,13 @@ harn adapter attestations [--json]
 `harn adapter` is the executable source of truth for Harnery's workflow
 adapters. The built-in registry intentionally contains three adapters:
 `claude-code`, `codex`, and `cursor`.
+
+That workflow registry is separate from the Event Ledger V3 adapter list. The
+event list identifies runtimes that can produce evidence, even when Harnery
+cannot launch them as workflow children. It contains `claude-code`, `codex`,
+`cursor`, and `openclaw`. The `openclaw` id is available through the
+[OpenClaw plugin](/guides/openclaw/); it is not accepted by `harn adapter`,
+`harn run`, or the workflow engine.
 
 The registry describes the Harnery adapter boundary, not every feature in the
 vendor product. For example, Cursor Agent can stream JSON, but Harnery's

@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
@@ -561,7 +562,7 @@ function safeBuild(value: string): string {
 }
 
 function rootOfHarnery(): string {
-  return resolve(import.meta.dir, "../../../..");
+  return resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 }
 
 function repositoryBuild(root: string): string {

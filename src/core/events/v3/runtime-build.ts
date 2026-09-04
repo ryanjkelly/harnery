@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export { liveEventV3BuildId, livePlatformV3 } from "./runtime-identity.ts";
 
@@ -37,5 +38,5 @@ export function currentHarneryRuntimeBuild(): string {
 }
 
 export function harneryPackageRoot(): string {
-  return resolve(import.meta.dir, "../../../..");
+  return resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 }

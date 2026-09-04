@@ -15,10 +15,10 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import type { Adapter } from "../../../adapter.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { selectCommandParentSpan } from "../../span-parent.ts";
+import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../adapter-id.ts";
 import { buildEventV3 } from "../builder.ts";
 import { normalizeNativeIdV3 } from "../canonical.ts";
 import { markObservedClockRegressionV3 } from "../clock-order.ts";
@@ -59,7 +59,7 @@ interface PendingCommandEventV3 {
 interface CommandRecorderStateV3 {
   format: typeof COMMAND_STATE_FORMAT;
   format_version: typeof COMMAND_STATE_VERSION;
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   instance_id: `inst_${string}`;
   session_id: `sid_${string}`;
   generation_id: `gen_${string}`;
@@ -86,7 +86,7 @@ export interface RecordCommandSignalV3Input {
   mode: EventV3WriteMode;
   signal: CommandSignalV3;
   observation: CommandObservationV3;
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   instance_id: `inst_${string}`;
   producer_id: `prd_${string}`;
   build_id: `build_${string}`;
@@ -576,7 +576,7 @@ function readCommandState(path: string): CommandRecorderStateV3 {
     Object.keys(state).some((key) => !allowed.has(key)) ||
     state.format !== COMMAND_STATE_FORMAT ||
     state.format_version !== COMMAND_STATE_VERSION ||
-    !["claude-code", "codex", "cursor"].includes(state.adapter) ||
+    !(EVENT_ADAPTER_IDS_V3 as readonly string[]).includes(state.adapter) ||
     !/^inst_[a-zA-Z0-9._-]{1,128}$/.test(state.instance_id) ||
     !/^sid_[a-f0-9]{64}$/.test(state.session_id) ||
     !/^gen_[0-9a-f-]{36}$/.test(state.generation_id) ||

@@ -15,9 +15,9 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
-import type { Adapter } from "../../../adapter.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
+import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../adapter-id.ts";
 import {
   type AuthorityReceiptV3,
   type AuthorityReconcilerV3,
@@ -60,7 +60,7 @@ interface PendingCoordinationTransactionV3 {
 interface CoordinationRecorderStateV3 {
   format: typeof COORDINATION_STATE_FORMAT;
   format_version: typeof COORDINATION_STATE_VERSION;
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   actor_instance_id: `inst_${string}`;
   session_id: `sid_${string}`;
   generation_id: `gen_${string}`;
@@ -92,7 +92,7 @@ export interface RecordCoordinationAuthorityV3Input<
   mode: EventV3WriteMode;
   signal: S;
   observation: CoordinationObservationBySignalV3[S];
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   native_actor_session_id: string;
   actor_instance_id: `inst_${string}`;
   subject_instance_id: `inst_${string}`;
@@ -562,7 +562,7 @@ function readCoordinationState(path: string): CoordinationRecorderStateV3 {
     Object.keys(state).some((key) => !allowed.has(key)) ||
     state.format !== COORDINATION_STATE_FORMAT ||
     state.format_version !== COORDINATION_STATE_VERSION ||
-    !["claude-code", "codex", "cursor"].includes(state.adapter) ||
+    !(EVENT_ADAPTER_IDS_V3 as readonly string[]).includes(state.adapter) ||
     !/^inst_[a-zA-Z0-9._-]{1,128}$/.test(state.actor_instance_id) ||
     !/^sid_[a-f0-9]{64}$/.test(state.session_id) ||
     !/^gen_[0-9a-f-]{36}$/.test(state.generation_id) ||

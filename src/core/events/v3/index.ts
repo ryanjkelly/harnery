@@ -1,3 +1,4 @@
+export { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "./adapter-id.ts";
 export {
   type SchemaAdvanceEligibilityV3,
   validateAdditiveSchemaAdvanceV3,
@@ -45,10 +46,12 @@ export {
   ADAPTER_CAPABILITY_PROFILES_V3,
   ADAPTER_WAIT_KINDS_V3,
   type AdapterCapabilityProfileV3,
+  type AdapterDurationCapabilityV3,
   type AdapterSignalV3,
   type AdapterWaitKindV3,
   adapterCapabilityProfileDigestV3,
   adapterCapabilityProfileV3,
+  adapterDurationSupportV3,
   adapterSignalSupportV3,
   adapterWaitCoverageMatrixV3,
   adapterWaitKindSupportV3,

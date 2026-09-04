@@ -1,9 +1,10 @@
-import type { Adapter } from "../../../adapter.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
+import type { EventAdapterIdV3 } from "../adapter-id.ts";
 import { buildEventV3Base } from "../base-builder.ts";
 import type { EventV3Base, RuntimeAttestationV3Base } from "../base-contract.ts";
 import { type FingerprintContextV3, fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
 import {
+  adapterDurationSupportV3,
   adapterSignalSupportV3,
   adapterTurnWaitCountSupportV3,
   type CursorExecutionModeV3,
@@ -33,7 +34,7 @@ export type HookSignalV3Base =
 
 export interface HookProducerContextV3Base {
   coordRoot: string;
-  adapter: Adapter;
+  adapter: EventAdapterIdV3;
   adapterVersion?: string;
   harnessVersion?: string;
   root_id: `root_${string}`;
@@ -191,7 +192,13 @@ export function normalizeHookEventV3Base(
               attestation: "native",
               confidence: "exact",
             }
-          : { state: "expected_but_missing", capability: "model_identity", reason: "not_reported" },
+          : adapterSignalSupportV3(context.adapter, "model_identity") === "unsupported"
+            ? { state: "unsupported", capability: "model_identity" }
+            : {
+                state: "expected_but_missing",
+                capability: "model_identity",
+                reason: "not_reported",
+              },
         tuning: tuningObservation(context, payload),
         telemetry: context.runtime_telemetry ?? initialTelemetryCapabilities(context),
         capability_profile: context.capability_profile,
@@ -263,11 +270,10 @@ export function normalizeHookEventV3Base(
         links: { caused_by: causedBy },
         payload: {
           outcome: signal === "stop" ? "succeeded" : "failed",
-          duration_ms: measuredOrMissing(
-            context.duration_ms,
-            "turn_duration",
-            "turn_timing_not_supplied",
-          ),
+          duration_ms:
+            adapterDurationSupportV3(context.adapter, "turn_duration") === "unsupported"
+              ? { state: "unsupported", capability: "turn_duration" }
+              : measuredOrMissing(context.duration_ms, "turn_duration", "turn_timing_not_supplied"),
           tool_call_count:
             context.tool_call_count_support === "unsupported"
               ? { state: "unsupported", capability: "turn_tool_call_count" }
@@ -338,11 +344,10 @@ export function normalizeHookEventV3Base(
         payload: {
           tool: { namespace: context.adapter, name: safeToolName(payload.tool_name) },
           outcome: signal === "post-tool-use" ? "succeeded" : "failed",
-          duration_ms: measuredOrMissing(
-            context.duration_ms,
-            "tool_duration",
-            "span_timing_not_supplied",
-          ),
+          duration_ms:
+            adapterDurationSupportV3(context.adapter, "tool_duration") === "unsupported"
+              ? { state: "unsupported", capability: "tool_duration" }
+              : measuredOrMissing(context.duration_ms, "tool_duration", "span_timing_not_supplied"),
           result: {
             storage: "omitted",
             media_type:
@@ -447,7 +452,7 @@ export function normalizeHookEventV3Base(
 }
 
 function turnRitualObservation(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   evidence: TurnRitualEvidenceV3,
 ): TurnRitualObservationV3 {
   if (adapter === "cursor") {
@@ -655,10 +660,10 @@ function observedIdentity(id: string, version: string | undefined) {
   };
 }
 
-function providerFor(adapter: Adapter): string {
+function providerFor(adapter: EventAdapterIdV3): string {
   if (adapter === "claude-code") return "anthropic";
   if (adapter === "codex") return "openai";
-  return "cursor";
+  return adapter;
 }
 
 function safeModelId(value: string): string {

@@ -4,7 +4,7 @@
  * source. harnery is published to npm and cloned by arbitrary hosts, so nothing
  * naming a specific consumer (its bin, business, submodules, data warehouse,
  * skills) may land in `src/`, `web/`, `docs/`, `schemas/`, `tests/`, `bin/`, or
- * `examples/`. This is the automated backstop for the "Portability is the prime
+ * `examples/`, or the OpenClaw plugin. This is the automated backstop for the "Portability is the prime
  * constraint" rule in AGENTS.md/CLAUDE.md.
  *
  * The leak that motivated this: the strangler-fig extraction from the original
@@ -36,23 +36,56 @@ const DENY: { re: RegExp; label: string }[] = [
   { re: /industrial-fx/i, label: "host GCP project id" },
   { re: /\bfct_[a-z]/i, label: "host dbt mart name ('fct_*')" },
   { re: /\/decide\b/, label: "host skill name ('/decide')" },
-  { re: /\b(ultracart|clickbank|maropost|openclaw)\b/i, label: "host vendor/agent name" },
+  { re: /\b(ultracart|clickbank|maropost)\b/i, label: "host vendor name" },
 ];
 
 const SCAN_EXT = new Set([
-  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-  ".md", ".mdx", ".json", ".jsonc", ".yaml", ".yml", ".sh", ".css", ".astro",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".md",
+  ".mdx",
+  ".json",
+  ".jsonc",
+  ".yaml",
+  ".yml",
+  ".sh",
+  ".css",
+  ".astro",
 ]);
 // Agent-facing surfaces (AGENTS.md block, .claude/ skills + settings) are
 // scanned too: `init` renders them with resolveBinName(), and a host-embedded
 // checkout can silently re-stamp a host bin name into them (it happened —
 // see ADR 0010's adoption notes). File entries are allowed alongside dirs.
 const SCAN_ROOTS = [
-  "src", "web", "docs", "schemas", "tests", "bin", "examples", ".changeset",
-  "AGENTS.md", "CLAUDE.md", ".claude", ".harnery/config.jsonc",
+  "src",
+  "web",
+  "docs",
+  "schemas",
+  "tests",
+  "bin",
+  "examples",
+  "openclaw-plugin",
+  ".changeset",
+  "AGENTS.md",
+  "CLAUDE.md",
+  ".claude",
+  ".harnery/config.jsonc",
 ];
 const SKIP_DIR = new Set([
-  "node_modules", "dist", ".git", "coverage", ".next", "build", "out", ".astro", ".turbo", ".vercel",
+  "node_modules",
+  "dist",
+  ".git",
+  "coverage",
+  ".next",
+  "build",
+  "out",
+  ".astro",
+  ".turbo",
+  ".vercel",
 ]);
 /** The guard + its test embed the patterns/examples by nature; never scan them. */
 const SELF = new Set(["scripts/check-portability.ts", "tests/unit/portability.test.ts"]);
@@ -125,16 +158,25 @@ function scanFiles(files: { path: string; content: string }[]): Violation[] {
           violations.push({ file: rel, line: i + 1, label, text: line.trim().slice(0, 120) });
         }
       }
+      if (
+        rel.startsWith("openclaw-plugin/") &&
+        /\/home\/[A-Za-z0-9._-]+/.test(line) &&
+        !line.includes(ALLOW)
+      ) {
+        violations.push({
+          file: rel,
+          line: i + 1,
+          label: "host-specific absolute home path",
+          text: line.trim().slice(0, 120),
+        });
+      }
     }
   }
   return violations.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
 }
 
 /** Scan committable source under `root` for host-specific tokens. */
-export function scanPortability(
-  root: string,
-  source: PortabilitySource = "worktree",
-): Violation[] {
+export function scanPortability(root: string, source: PortabilitySource = "worktree"): Violation[] {
   if (source === "index") {
     const paths = git(root, ["ls-files", "--cached", "-z"])
       .split("\0")

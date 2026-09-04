@@ -1,0 +1,98 @@
+---
+title: OpenClaw event adapter
+description: Install the Harnery-owned OpenClaw plugin and record gateway hook evidence in Event Ledger V3.
+---
+
+`@harnery/openclaw` is a hook-only OpenClaw plugin. It records gateway session,
+prompt, tool, and turn lifecycle events through Harnery's Event Ledger V3
+recorder. It does not install the `harn` CLI or add OpenClaw to Harnery's
+workflow adapter registry.
+
+## Install and activate
+
+Install the package in an OpenClaw external-plugin directory, add that
+directory to `plugins.load.paths`, and add a `plugins.entries.harnery` entry.
+Keep the entry disabled until the configuration has been reviewed.
+
+```json
+{
+  "plugins": {
+    "load": { "paths": ["/opt/openclaw-plugins/harnery"] },
+    "entries": {
+      "harnery": {
+        "enabled": false,
+        "config": {
+          "mode": "capture",
+          "agents": ["main"],
+          "debug": true,
+          "recorderFault": false,
+          "queueCapacity": 128
+        }
+      }
+    }
+  }
+}
+```
+
+The config keys are:
+
+| Key | Purpose |
+| --- | --- |
+| `mode` | `capture` writes redacted hook shapes; `record` writes V3 evidence. |
+| `ledgerRoot` | Optional project root under which the plugin creates `.harnery/ledgers/v3`. The default is `harnery/` under `OPENCLAW_STATE_DIR`, or under the runtime user's `.openclaw/` directory when that variable is unset. |
+| `logRoot` | Optional debug and boot log directory. It uses the same portable state-directory lookup as `ledgerRoot`. |
+| `agents` | Agent ids allowed to produce evidence. An empty list allows all agents. |
+| `debug` | Enables the JSONL debug log. |
+| `recorderFault` | Test switch that forces recorder failures without failing the OpenClaw turn. |
+| `queueCapacity` | Maximum outstanding worker messages. The default is 128 and the accepted range is 1 to 4096. |
+
+## Capture before recording
+
+Start with `mode: "capture"`, enable the plugin, restart the gateway, and run a
+representative turn. Capture rows retain field names, value types, lengths, and
+correlation ids only in their trusted envelope locations:
+`context.sessionKey`, `context.runId`, `context.agentId`, and
+`event.toolCallId`. An identity-shaped key nested in tool parameters or content
+is redacted like any other string. Prompt text, tool arguments, tool output,
+and message bodies are not written.
+
+Review the captured shapes against the installed OpenClaw version before
+switching to `mode: "record"`. The plugin then translates six hooks:
+`session_start`, `before_prompt_build`, `before_tool_call`, `after_tool_call`,
+`agent_end`, and `session_end`. A missing correlation id is logged and skipped.
+A bounded worker thread owns ledger initialization, recording, and adapter log
+writes. Hook handlers only translate and enqueue. When the queue is full, the
+new event is dropped and one overload warning is written to stderr. Worker
+failures are also visible on stderr and remain fail-open. OpenClaw's plugin
+service stop hook drains the queue before it terminates the worker.
+Record mode uses the recorder's memory-only intake path because the worker is
+already bounded and drainable. Raw hook payloads therefore never enter the
+durable crash-recovery spool.
+
+The checked-in frozen-contract fixtures are synthetic and say so in their
+`source.kind`. A coordinator can export redacted native capture rows, then
+intake them without copying raw gateway content into the repository:
+
+```bash
+bun run fixtures:openclaw:intake -- \
+  --input ./capture.jsonl \
+  --output-dir ./openclaw-plugin/fixtures/native/2026.7.1-2 \
+  --openclaw-version 2026.7.1-2
+```
+
+The intake rejects malformed rows, raw strings outside trusted identity
+locations, and existing output filenames.
+
+## Read the ledger
+
+Point Harnery at the configured root and inspect its control state and producer
+summary:
+
+```bash
+HARNERY_COORD_ROOT_OVERRIDE="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}/harnery" harn ledger-v3 status
+```
+
+The status summary includes `openclaw` when that root contains an OpenClaw
+producer state. Event files remain under
+`<ledgerRoot>/.harnery/ledgers/v3/` and use the same validation and privacy
+rules as other V3 producers.

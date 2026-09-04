@@ -214,6 +214,52 @@ describe("event ledger V3 hook producer", () => {
     });
   });
 
+  test("does not manufacture unsupported OpenClaw model or duration evidence", () => {
+    const session = normalizeHookEventV3(
+      "session-start",
+      parsed({ session_id: "native-session" }),
+      { ...producerContext(), adapter: "openclaw" },
+    );
+    const toolSpanId = spanIdV3();
+    const tool = normalizeHookEventV3(
+      "post-tool-use",
+      parsed({
+        session_id: "native-session",
+        turn_id: "native-turn",
+        tool_name: "exec",
+        tool_use_id: "native-tool",
+      }),
+      {
+        ...producerContext(),
+        adapter: "openclaw",
+        span_id: toolSpanId,
+        terminal_span: terminalSpan(toolSpanId),
+      },
+    );
+    const event = normalizeHookEventV3("stop", parsed({ session_id: "native-session" }), {
+      ...producerContext(),
+      adapter: "openclaw",
+      terminal_span: terminalSpan(spanIdV3()),
+      harness_timing: emptyHarnessTimingV3(),
+    });
+
+    expect(session?.payload).toMatchObject({
+      runtime_attestation: {
+        model: { state: "unsupported", capability: "model_identity" },
+      },
+    });
+    expect(tool?.payload).toMatchObject({
+      duration_ms: { state: "unsupported", capability: "tool_duration" },
+      span: { duration_ms: { state: "unsupported", capability: "tool_duration" } },
+    });
+    expect(event?.event_type).toBe("turn.completed");
+    expect(event?.payload).toMatchObject({
+      duration_ms: { state: "unsupported", capability: "turn_duration" },
+      span: { duration_ms: { state: "unsupported", capability: "turn_duration" } },
+      harness: { state: "unsupported", capability: "harness_timing" },
+    });
+  });
+
   test("records Cursor remediation and observed response-text status evidence", () => {
     const prompt = normalizeHookEventV3(
       "user-prompt-submit",

@@ -1,0 +1,19 @@
+{
+  "source": {
+    "kind": "synthetic",
+    "contract": "openclaw-2026.7.1-2",
+    "authored_at": "2026-09-03"
+  },
+  "hook": "after_tool_call",
+  "event": {
+    "toolCallId": "fixture-tool-a",
+    "toolName": "exec",
+    "params": { "command": "fixture secret argument" },
+    "result": "fixture secret output"
+  },
+  "context": {
+    "sessionKey": "fixture-session-a",
+    "runId": "fixture-run-a",
+    "agentId": "main"
+  }
+}

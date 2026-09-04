@@ -62,6 +62,30 @@ describe("public-surface provenance guard", () => {
     ).toEqual([]);
   });
 
+  test("scans the OpenClaw plugin public package", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-public-openclaw-plugin-"));
+    try {
+      const sourceRoot = join(root, "openclaw-plugin", "src");
+      mkdirSync(sourceRoot, { recursive: true });
+      writeFileSync(join(sourceRoot, "adapter.ts"), "source-neutral adapter\n");
+      expect(scanPublicSurface(root)).toEqual([]);
+
+      writeFileSync(
+        join(sourceRoot, "adapter.ts"),
+        "This adapter was copied from an internal prototype.\n",
+      );
+      expect(scanPublicSurface(root)).toEqual([
+        {
+          scope: "openclaw-plugin/src/adapter.ts",
+          line: 1,
+          kind: "provenance_language",
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("index mode ignores peer worktree files but blocks the staged snapshot", () => {
     const repo = mkdtempSync(join(tmpdir(), "harnery-public-index-"));
     const git = (...args: string[]) =>

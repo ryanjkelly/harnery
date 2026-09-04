@@ -51,6 +51,7 @@ const workflowTestArgs = ["--timeout", "15000"];
 // and workflow partitions. This is wall-clock room for a loaded host, not a
 // product deadline.
 const recorderTestArgs = ["--timeout", "15000"];
+const openClawPluginTestArgs = ["--timeout", "30000"];
 const partitionTimings = [];
 
 // These suites repeatedly start workflow subprocesses. Give each lifecycle its
@@ -65,6 +66,11 @@ const workflowProcessFiles = new Set([
 // them separate from ordinary unit tests so the timing summary identifies the
 // source of a slowdown instead of reporting one opaque core bucket.
 const namedCorePartitions = [
+  {
+    label: "OpenClaw plugin test partition",
+    matches: (file) => file.startsWith("openclaw-plugin/test/"),
+    extraArgs: openClawPluginTestArgs,
+  },
   {
     label: "CLI integration test partition",
     matches: (file) => file.startsWith("tests/integration/"),
@@ -148,12 +154,15 @@ function run(label, files, extraArgs = []) {
 const allFiles = [
   ...discoverTests(join(repoRoot, "src")),
   ...discoverTests(join(repoRoot, "tests")),
+  ...discoverTests(join(repoRoot, "openclaw-plugin", "test")),
 ].sort();
 const nonBrowserFiles = allFiles.filter((file) => !browserFiles.has(file));
 const namedCoreFiles = namedCorePartitions
   .map((partition) => ({
     ...partition,
-    files: nonBrowserFiles.filter((file) => partition.matches(file) && !workflowProcessFiles.has(file)),
+    files: nonBrowserFiles.filter(
+      (file) => partition.matches(file) && !workflowProcessFiles.has(file),
+    ),
   }))
   .filter((partition) => partition.files.length > 0);
 const coreFiles = nonBrowserFiles.filter(
@@ -177,11 +186,13 @@ const partitionPlan = [
     extraArgs: browserTestArgs,
   })),
   { label: "browser test partition", files: isolatedBrowserFiles, extraArgs: browserTestArgs },
-  ...allFiles.filter((file) => workflowProcessFiles.has(file)).map((file) => ({
-    label: `workflow process partition: ${file}`,
-    files: [file],
-    extraArgs: workflowTestArgs,
-  })),
+  ...allFiles
+    .filter((file) => workflowProcessFiles.has(file))
+    .map((file) => ({
+      label: `workflow process partition: ${file}`,
+      files: [file],
+      extraArgs: workflowTestArgs,
+    })),
   ...namedCoreFiles,
   { label: "core test partition", files: coreFiles, extraArgs: [] },
 ];

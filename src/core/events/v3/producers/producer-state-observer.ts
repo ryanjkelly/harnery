@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { EVENT_ADAPTER_IDS_V3 } from "../adapter-id.ts";
 import { readEventV3ControlState } from "../control.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../reader.ts";
 
@@ -16,7 +17,7 @@ export function listHookProducerStateSummariesV3(coordRoot: string): HookProduce
   const producerRoot = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT, "private-producers");
   if (!existsSync(producerRoot)) return [];
   const summaries: HookProducerStateSummaryV3[] = [];
-  for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+  for (const adapter of EVENT_ADAPTER_IDS_V3) {
     const directory = join(producerRoot, adapter);
     if (!existsSync(directory)) continue;
     const directoryMetadata = lstatSync(directory);

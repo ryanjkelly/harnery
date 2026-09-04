@@ -64,6 +64,7 @@ const SCAN_ROOTS = [
   ".claude",
   "scripts",
   "relay",
+  "openclaw-plugin",
   "AGENTS.md",
   "CLAUDE.md",
   "README.md",

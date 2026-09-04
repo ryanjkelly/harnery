@@ -13,13 +13,15 @@
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
+import type { EventAdapterIdV3 } from "../../events/v3/adapter-id.ts";
 import { writeProducerDiagnosticV3 } from "../../events/v3/producers/intake.ts";
 import { recordLiveSweepObservationV3 } from "../live-lifecycle-v3.ts";
 
 /** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
-function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
+function adapterFromPlatform(platform: unknown): EventAdapterIdV3 {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
+  if (platform === "openclaw") return "openclaw";
   return "claude-code";
 }
 
@@ -35,7 +37,7 @@ function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "cod
 function emitSwept(
   coordRoot: string,
   instanceId: string,
-  adapter: "claude-code" | "cursor" | "codex",
+  adapter: EventAdapterIdV3,
   sessionId: string,
   reason: "stale" | "unparseable" | "missing_ts",
   ageSecs?: number,

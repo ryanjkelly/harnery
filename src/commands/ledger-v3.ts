@@ -15,6 +15,7 @@ import {
   cleanEventV3Archives,
   initializeEventLedgerV3,
   inventoryEventV3Archives,
+  listHookProducerStateRecordsV3,
   readEventV3ControlState,
   recoverInvalidEventLedgerV3,
   sha256V3,
@@ -54,9 +55,24 @@ export function registerLedgerV3Command(
   command
     .command("status")
     .description("Read the V3 control boundary without changing it")
-    .action(() => {
+    .option("--root <path>", "Explicit coordination root")
+    .action((options: { root?: string }) => {
       try {
-        emit.data(readEventV3ControlState(coordRoot(context)));
+        const root = resolve(options.root ?? coordRoot(context));
+        const control = readEventV3ControlState(root);
+        const producers = listHookProducerStateRecordsV3(root, { includeTerminal: true });
+        const counts = producers.reduce<Record<string, number>>((summary, record) => {
+          summary[record.state.adapter] = (summary[record.state.adapter] ?? 0) + 1;
+          return summary;
+        }, {});
+        emit.data({
+          ...control,
+          summary: {
+            adapters: Object.keys(counts).sort(),
+            producer_states: producers.length,
+            producer_states_by_adapter: counts,
+          },
+        });
       } catch (error) {
         emitFailure(emit, "ledger_v3_status_failed", error);
       }
@@ -467,7 +483,8 @@ export function registerLedgerV3Command(
 
 function coordRoot(context: HarneryProgramContext | undefined): string {
   return resolve(
-    context?.resolveCoordRoot?.() ??
+    process.env.HARNERY_COORD_ROOT_OVERRIDE ??
+      context?.resolveCoordRoot?.() ??
       context?.repoRoot ??
       process.env.HARNERY_COORD_ROOT ??
       process.cwd(),

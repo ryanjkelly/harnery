@@ -1,0 +1,108 @@
+---
+title: "0164: Record OpenClaw gateway hooks through a self-contained event adapter"
+description: "ADR: add an OpenClaw Event Ledger V3 identity and ship its canonical recorder in a Harnery-owned plugin."
+---
+
+**Status:** accepted (2026-09-04) · **Scope:** Event Ledger V3 adapter identity, OpenClaw plugin packaging, hook translation, and portability classification
+
+## Context
+
+[ADR 0125](/decisions/0125-separate-event-adapters-from-workflow-adapters/)
+separates evidence producers from workflow backends. OpenClaw is a resident
+gateway with in-process lifecycle hooks, not a CLI backend that `harn run` can
+launch. Reusing the workflow `Adapter` type would claim launch support that
+does not exist.
+
+[ADR 0126](/decisions/0126-ship-resident-gateway-telemetry-as-a-first-class-plugin/)
+requires a Harnery-owned host plugin and one canonical writer. The gateway host
+does not need Harnery's workflow CLI. The plugin therefore needs the recorder
+runtime in its build artifact, plus a fail-open boundary around every hook.
+
+OpenClaw was also present in the portability guard's host-vendor pattern. That
+classification became inaccurate once OpenClaw became a supported public
+integration. The remaining vendor and consumer names must stay denied.
+
+## Alternatives considered
+
+**Add OpenClaw to the workflow adapter union.** Rejected because Harnery cannot
+launch or normalize an OpenClaw workflow child. The event identity exists for
+evidence only.
+
+**Run `agent-hook` as a child process for every gateway event.** Rejected
+because process startup and timeout behavior would sit on the response path.
+
+**Call the synchronous recorder from a promise continuation.** Rejected because
+`Promise.then` changes scheduling but still runs ledger initialization and
+filesystem calls on the gateway thread.
+
+**Install the complete `harnery` package and CLI on the gateway host.** Rejected
+because the host needs one plugin entry point, not the workflow command tree.
+
+**Write into the sandbox's existing ledger root immediately.** Deferred. The
+sandbox and gateway have different process and mount namespaces. Sharing
+writer leases before intake exists would violate ADR 0126's single-writer rule.
+
+## Decision
+
+Add `EventAdapterIdV3 = Adapter | "openclaw"` and
+`EVENT_ADAPTER_IDS_V3`. V3 capability profiles, hook producer state, intake,
+command and coordination state validation, archived and live state scans,
+terminal lookup, and passive readers use this event identity. Workflow launch,
+hook wiring, and instruction registries continue to use `Adapter`.
+
+The OpenClaw profile reports only the frozen contract. Session start and end,
+prompt delivery, turn ids and completion, tool request and result, tool call
+ids, and shell calls are native. Tool failure is conditional. Permission,
+subagent, compaction, context, model identity, model usage, inference timing,
+assistant reply text, and tool duration are unsupported. The three prior
+profile digests remain byte-identical and are pinned by a regression fixture.
+
+Ship `@harnery/openclaw` as a self-contained ESM plugin. Bun bundles the V3
+runtime for Node 24 while leaving `openclaw` external. The plugin registers the
+following frozen hook table from OpenClaw 2026.7.1-2:
+
+| OpenClaw hook | V3 recorder signal |
+| --- | --- |
+| `session_start` | `session-start` |
+| `before_prompt_build` | `user-prompt-submit` |
+| `before_tool_call` | `pre-tool-use` |
+| `after_tool_call` | `post-tool-use`, or `post-tool-use-failure` when an error is present |
+| `agent_end` | `stop` |
+| `session_end` | `session-end` |
+
+Handlers enqueue onto one bounded worker-thread queue and return immediately.
+`before_tool_call` always returns `undefined`. Missing identities, recorder
+errors, and debug-log failures are logged or skipped without changing the
+OpenClaw turn. The queue admits at most 128 outstanding messages by default,
+drops new evidence under overload, and reports overload or worker failure to
+stderr without including content. The plugin service stop hook drains queued
+work before terminating the worker. Capture mode keeps correlation ids only at
+their trusted top-level event or context locations. Record mode sends parsed
+payloads to `recordHookSignalV3` inside the worker with memory-only intake.
+The queue, logs, and durable crash-recovery spool never persist raw prompt,
+tool input, or tool output.
+
+The portability guard now scans `openclaw-plugin/`, allows `openclaw` while
+retaining its other host vendor denials, and rejects fixed `/home/<user>` paths
+in the plugin. Runtime defaults derive from `OPENCLAW_STATE_DIR` or the runtime
+user's home directory.
+
+For the first sprint, the gateway plugin writes a host root while the sandbox
+command tee keeps its existing root. Sprint 2 changes the tee to publish intake
+envelopes that the gateway drains, then retires the sandbox root. Nobody should
+merge the two roots or read them as one authority during the transition.
+
+## Result
+
+OpenClaw can produce native V3 session, prompt, tool, and turn evidence without
+becoming a workflow adapter. The built entry and recorder worker run a complete
+record-mode turn in a real Node 24 subprocess test. That test proves an event is
+written, a completed turn reports unsupported harness timing, no false
+capability drift appears, and raw prompt or tool content is absent from the
+ledger and adapter logs. Live gateway fixture capture remains an embedding-host
+operation; the repository provides a rejecting intake command for those
+redacted rows and labels its current contract fixtures as synthetic.
+
+This decision follows the adapter separation in ADR 0125, the resident plugin
+and single-writer boundary in ADR 0126, and the adapter integration precedent
+in [ADR 0074](/decisions/0074-antigravity-adapter-and-hook-contract/).

@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import type { Adapter } from "../core/adapter.ts";
 import { coordBinPath } from "../core/agents/coord-bin.ts";
 import {
   checkGitFinalization,
@@ -91,6 +92,7 @@ import {
   resolveBinName,
   sessionFinalizationConfig,
 } from "../core/config.ts";
+import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../core/events/v3/adapter-id.ts";
 import type { EventTypeV3 } from "../core/events/v3/contract.ts";
 import { readEventV3ControlState } from "../core/events/v3/control.ts";
 import {
@@ -241,6 +243,7 @@ function spawnFailureMessage(
 function formatPlatformLabel(platform?: string | null): string {
   if (platform === "cursor") return "Cursor";
   if (platform === "codex") return "Codex";
+  if (platform === "openclaw") return "OpenClaw";
   return "CC";
 }
 
@@ -671,7 +674,7 @@ function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome:
   const byInstance = listHookProducerStateRecordsV3(root, { includeTerminal: false }).filter(
     ({ state }) => state.instance_id === target,
   );
-  const byNative = (["claude-code", "codex", "cursor"] as const).flatMap((adapter) => {
+  const byNative = EVENT_ADAPTER_IDS_V3.flatMap((adapter) => {
     const state = readHookProducerStateV3(root, adapter, target);
     return state && !state.terminal ? [{ path: "", modified_at_ms: 0, state }] : [];
   });
@@ -788,10 +791,13 @@ function runObserveArchive(opts: {
 }) {
   const root = monorepoRoot();
   if (!root) return failCommand("not_in_repo", "not in an agent session");
-  if (!(["claude-code", "codex", "cursor"] as string[]).includes(opts.adapter)) {
-    return failCommand("invalid_adapter", "adapter must be claude-code, codex, or cursor");
+  if (!(EVENT_ADAPTER_IDS_V3 as readonly string[]).includes(opts.adapter)) {
+    return failCommand(
+      "invalid_adapter",
+      "adapter must be claude-code, codex, cursor, or openclaw",
+    );
   }
-  const adapter = opts.adapter as "claude-code" | "codex" | "cursor";
+  const adapter = opts.adapter as EventAdapterIdV3;
   const observedAt = opts.observedAt ?? new Date().toISOString();
   if (Number.isNaN(Date.parse(observedAt))) {
     return failCommand("invalid_observed_at", "observed-at must be an ISO timestamp");
@@ -2774,6 +2780,7 @@ function adapterToPlatform(adapter: string | undefined): string {
   if (adapter === "claude-code") return "claude-code";
   if (adapter === "cursor") return "cursor";
   if (adapter === "codex") return "codex";
+  if (adapter === "openclaw") return "openclaw";
   return "unknown";
 }
 
@@ -5080,13 +5087,20 @@ function runHeal(opts: {
   const inferredAdapter = normalizeAdapter(
     opts.adapter?.trim() || currentRow?.platform || commandSessionBootstrap()?.adapter,
   );
+  if (inferredAdapter === "openclaw") {
+    emitHealFailure(
+      "unsupported_adapter",
+      "coordination cache healing is unavailable for observer-only OpenClaw generations",
+    );
+  }
+  const healAdapter: Adapter = inferredAdapter;
   const sessionId =
     opts.sessionId?.trim() ||
     (currentSessionRepair ? sessionIdentityFromEnv() : null) ||
     nativeSessionIdentity(currentRow, owner);
 
   if (kind === "cache") {
-    const refusal = cacheHealAuthorityRefusal(root, owner, sessionId, inferredAdapter, currentRow);
+    const refusal = cacheHealAuthorityRefusal(root, owner, sessionId, healAdapter, currentRow);
     if (refusal) {
       emitHealFailure(refusal.reason, refusal.message);
     }
@@ -5202,7 +5216,7 @@ function runHeal(opts: {
 
   if (proc.status !== 0) {
     emitHealFailure(
-      healFailureReason(root, owner, sessionId, inferredAdapter),
+      healFailureReason(root, owner, sessionId, healAdapter),
       spawnFailureMessage(proc, `agent-coord ${action}`),
     );
   }
@@ -5325,7 +5339,7 @@ function missingAuthorityForCurrentSessionBootstrap(
 ): boolean {
   if (readLiveCoordinationRow(root, owner)) return false;
   try {
-    const nativeSessionHasProducer = (["claude-code", "codex", "cursor"] as const).some(
+    const nativeSessionHasProducer = EVENT_ADAPTER_IDS_V3.some(
       (adapter) => readHookProducerStateV3(root, adapter, sessionId) !== undefined,
     );
     if (nativeSessionHasProducer) return false;

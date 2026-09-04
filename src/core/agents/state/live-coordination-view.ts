@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Adapter } from "../../adapter.ts";
+import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../../events/v3/adapter-id.ts";
 import {
   type CoordinationGenerationViewV3,
   type CoordinationViewV3,
@@ -94,7 +94,7 @@ export function readLiveCoordinationRow(
 export function liveCoordinationAdapterV3(
   coordRoot: string,
   nativeInstanceId: string,
-): Adapter | null {
+): EventAdapterIdV3 | null {
   const route = observeLiveEventLedgerRouteV3(coordRoot);
   if (route.state === "blocked") throw new Error(`event_v3_coordination_view:${route.reason}`);
   const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
@@ -213,8 +213,8 @@ export function observedAdapterV3(generation: CoordinationGenerationViewV3): str
   return observation.state === "observed" ? observation.value.id : undefined;
 }
 
-export function isAdapterV3(value: string | undefined): value is Adapter {
-  return value === "claude-code" || value === "cursor" || value === "codex";
+export function isAdapterV3(value: string | undefined): value is EventAdapterIdV3 {
+  return (EVENT_ADAPTER_IDS_V3 as readonly string[]).includes(value ?? "");
 }
 
 function observedModel(generation: CoordinationGenerationViewV3): string | undefined {

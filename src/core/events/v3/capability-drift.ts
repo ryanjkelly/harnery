@@ -1,4 +1,4 @@
-import type { Adapter } from "../../adapter.ts";
+import type { EventAdapterIdV3 } from "./adapter-id.ts";
 import {
   type AdapterSignalV3,
   adapterSignalSupportV3,
@@ -23,7 +23,7 @@ export type CapabilityDriftPayloadV3 = EventPayloadV3<"health.capability_drift">
  * failures.
  */
 export function capabilityDriftPayloadsV3(
-  adapter: Adapter,
+  adapter: EventAdapterIdV3,
   events: readonly EventV3[],
   options: { generation_ended?: boolean } = {},
 ): CapabilityDriftPayloadV3[] {
