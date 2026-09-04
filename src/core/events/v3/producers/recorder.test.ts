@@ -3910,6 +3910,41 @@ describe("event ledger V3 hook intake spool", () => {
     }
   });
 
+  test("OpenClaw onboards a message session when the gateway omits session_start", () => {
+    const root = candidateRoot("openclaw");
+    const nativeSession = "agent:main:slack:channel:fixture";
+    const result = recordHookSignalV3({
+      ...baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({
+          session_id: nativeSession,
+          turn_id: "native-run-id",
+          prompt: "private prompt",
+        }),
+        "openclaw",
+      ),
+      intake: "memory_only",
+    });
+
+    expect(result.state).toBe("recorded");
+    const rows = readLedgerV3(root).events.map((entry) => entry.event);
+    const started = rows.find((event) => event.event_type === "session.started");
+    expect(started?.provenance.attestation).toBe("derived");
+    if (started?.event_type !== "session.started") throw new Error("derived start missing");
+    expect(started.payload.resume).toEqual({
+      state: "unknown",
+      reason: "mid_flight_onboarding",
+    });
+    expect(rows.map((event) => event.event_type)).toEqual([
+      "ledger.genesis",
+      "session.started",
+      "turn.started",
+    ]);
+    expect(JSON.stringify(rows)).not.toContain("private prompt");
+    expect(intakeEntryCount(root, "openclaw")).toBe(0);
+  });
+
   test("reconcile-style drain records a marooned final signal with no later hook", () => {
     const root = candidateRoot();
     const nativeSession = "marooned-session";

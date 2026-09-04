@@ -116,7 +116,7 @@ const BASE_SIGNAL_SUPPORT: Record<
     context_usage: "conditional",
   },
   openclaw: {
-    session_start: "native",
+    session_start: "conditional",
     session_end: "native",
     prompt: "native",
     turn_id: "native",

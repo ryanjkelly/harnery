@@ -49,6 +49,7 @@ describe("event ledger V3 adapter capabilities", () => {
   });
 
   test("does not claim timing that OpenClaw hooks do not emit", () => {
+    expect(adapterSignalSupportV3("openclaw", "session_start")).toBe("conditional");
     expect(adapterSignalSupportV3("openclaw", "harness_timing")).toBe("unsupported");
     expect(adapterSignalSupportV3("openclaw", "tool_duration")).toBe("unsupported");
     expect(adapterSignalSupportV3("openclaw", "inference_timing")).toBe("unsupported");

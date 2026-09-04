@@ -1,0 +1,221 @@
+{
+  "source": {
+    "kind": "native_capture",
+    "openclaw_version": "2026.7.1-2",
+    "captured_at": "2026-09-04T08:45:18.254Z",
+    "input": "capture-mode-debug"
+  },
+  "hook": "agent_end",
+  "skeleton": {
+    "event": {
+      "messages": {
+        "type": "array",
+        "length": 2,
+        "items": [
+          {
+            "role": {
+              "type": "string",
+              "length": 4
+            },
+            "content": {
+              "type": "array",
+              "length": 1,
+              "items": [
+                {
+                  "type": {
+                    "type": "string",
+                    "length": 4
+                  },
+                  "text": {
+                    "type": "string",
+                    "length": 91
+                  }
+                }
+              ]
+            },
+            "timestamp": {
+              "type": "number"
+            }
+          },
+          {
+            "role": {
+              "type": "string",
+              "length": 9
+            },
+            "content": {
+              "type": "array",
+              "length": 1,
+              "items": [
+                {
+                  "type": {
+                    "type": "string",
+                    "length": 4
+                  },
+                  "text": {
+                    "type": "string",
+                    "length": 142
+                  }
+                }
+              ]
+            },
+            "api": {
+              "type": "string",
+              "length": 18
+            },
+            "provider": {
+              "type": "string",
+              "length": 9
+            },
+            "model": {
+              "type": "string",
+              "length": 17
+            },
+            "usage": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "totalTokens": {
+                "type": "number"
+              },
+              "cost": {
+                "input": {
+                  "type": "number"
+                },
+                "output": {
+                  "type": "number"
+                },
+                "cacheRead": {
+                  "type": "number"
+                },
+                "cacheWrite": {
+                  "type": "number"
+                },
+                "total": {
+                  "type": "number"
+                }
+              },
+              "contextUsage": {
+                "state": {
+                  "type": "string",
+                  "length": 9
+                },
+                "promptTokens": {
+                  "type": "number"
+                },
+                "totalTokens": {
+                  "type": "number"
+                }
+              }
+            },
+            "stopReason": {
+              "type": "string",
+              "length": 4
+            },
+            "timestamp": {
+              "type": "number"
+            },
+            "responseId": {
+              "type": "string",
+              "length": 28
+            },
+            "responseModel": {
+              "type": "string",
+              "length": 17
+            }
+          }
+        ]
+      },
+      "success": {
+        "type": "boolean"
+      },
+      "error": {
+        "type": "undefined"
+      },
+      "durationMs": {
+        "type": "number"
+      },
+      "runId": {
+        "type": "string",
+        "length": 36
+      }
+    },
+    "context": {
+      "runId": "8390c920-2a46-43f9-9b08-d8b3d8b3062b",
+      "trace": {
+        "traceId": {
+          "type": "string",
+          "length": 32
+        },
+        "spanId": {
+          "type": "string",
+          "length": 16
+        },
+        "parentSpanId": {
+          "type": "string",
+          "length": 16
+        },
+        "traceFlags": {
+          "type": "string",
+          "length": 2
+        }
+      },
+      "agentId": "main",
+      "sessionKey": "agent:main:slack:channel:c0atg3dlbr6:thread:1788511510.507389",
+      "sessionId": {
+        "type": "string",
+        "length": 36
+      },
+      "workspaceDir": {
+        "type": "string",
+        "length": 34
+      },
+      "messageProvider": {
+        "type": "string",
+        "length": 5
+      },
+      "channel": {
+        "type": "string",
+        "length": 5
+      },
+      "trigger": {
+        "type": "string",
+        "length": 4
+      },
+      "channelId": {
+        "type": "string",
+        "length": 36
+      },
+      "senderId": {
+        "type": "string",
+        "length": 11
+      },
+      "chatId": {
+        "type": "string",
+        "length": 11
+      },
+      "channelContext": {
+        "sender": {
+          "id": {
+            "type": "string",
+            "length": 11
+          }
+        },
+        "chat": {
+          "id": {
+            "type": "string",
+            "length": 11
+          }
+        }
+      }
+    }
+  }
+}

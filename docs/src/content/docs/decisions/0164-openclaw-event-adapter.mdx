@@ -82,6 +82,10 @@ payloads to `recordHookSignalV3` inside the worker with memory-only intake.
 The queue, logs, and durable crash-recovery spool never persist raw prompt,
 tool input, or tool output.
 
+Checked-in host examples keep the plugin disabled. When a host enables it, the
+entry must also set `hooks.allowConversationAccess: true`; OpenClaw blocks
+`agent_end` from an external plugin without that narrow permission.
+
 The portability guard now scans `openclaw-plugin/`, allows `openclaw` while
 retaining its other host vendor denials, and rejects fixed `/home/<user>` paths
 in the plugin. Runtime defaults derive from `OPENCLAW_STATE_DIR` or the runtime
@@ -102,6 +106,12 @@ capability drift appears, and raw prompt or tool content is absent from the
 ledger and adapter logs. Live gateway fixture capture remains an embedding-host
 operation; the repository provides a rejecting intake command for those
 redacted rows and labels its current contract fixtures as synthetic.
+
+Live Slack verification found that OpenClaw does not always deliver
+`session_start` before `before_prompt_build`. The adapter therefore declares
+session-start support conditional and uses ADR 0078 mid-flight onboarding when
+the first delivered hook contains OpenClaw's native session identity. The
+derived boundary is marked as such and cannot resurrect a terminal generation.
 
 This decision follows the adapter separation in ADR 0125, the resident plugin
 and single-writer boundary in ADR 0126, and the adapter integration precedent

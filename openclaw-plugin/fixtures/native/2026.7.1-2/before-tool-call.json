@@ -1,0 +1,74 @@
+{
+  "source": {
+    "kind": "native_capture",
+    "openclaw_version": "2026.7.1-2",
+    "captured_at": "2026-09-04T08:42:26.723Z",
+    "input": "capture-mode-debug"
+  },
+  "hook": "before_tool_call",
+  "skeleton": {
+    "event": {
+      "toolName": {
+        "type": "string",
+        "length": 7
+      },
+      "params": {
+        "action": {
+          "type": "string",
+          "length": 4
+        },
+        "sessionId": {
+          "type": "string",
+          "length": 13
+        },
+        "timeout": {
+          "type": "number"
+        }
+      },
+      "runId": {
+        "type": "string",
+        "length": 36
+      },
+      "toolCallId": "toolu_01E8BZjBtMPgmE4DyU7zzEvA"
+    },
+    "context": {
+      "toolName": {
+        "type": "string",
+        "length": 7
+      },
+      "agentId": "main",
+      "sessionKey": "agent:main:slack:channel:c0atg3dlbr6:thread:1788511322.717279",
+      "sessionId": {
+        "type": "string",
+        "length": 36
+      },
+      "runId": "a10fe9ab-914f-4ab2-9c71-e89b4790e43d",
+      "trace": {
+        "traceId": {
+          "type": "string",
+          "length": 32
+        },
+        "spanId": {
+          "type": "string",
+          "length": 16
+        },
+        "parentSpanId": {
+          "type": "string",
+          "length": 16
+        },
+        "traceFlags": {
+          "type": "string",
+          "length": 2
+        }
+      },
+      "toolCallId": {
+        "type": "string",
+        "length": 30
+      },
+      "channelId": {
+        "type": "string",
+        "length": 11
+      }
+    }
+  }
+}

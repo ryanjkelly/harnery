@@ -190,12 +190,46 @@ function nativeFixtures(root: string): Fixture[] {
         {
           source: fixture.source,
           hook: fixture.hook,
-          event: fixture.skeleton.event,
-          context: fixture.skeleton.context,
+          event: materializeNativeSkeleton(fixture.skeleton.event) as OpenClawHookEvent,
+          context: materializeNativeSkeleton(fixture.skeleton.context) as OpenClawHookContext,
         },
       ];
     })
     .sort((left, right) => left.hook.localeCompare(right.hook));
+}
+
+function materializeNativeSkeleton(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(materializeNativeSkeleton);
+  if (!value || typeof value !== "object") return value;
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.type === "string") {
+    switch (record.type) {
+      case "undefined":
+        return undefined;
+      case "string":
+        return "captured-string";
+      case "number":
+        return 0;
+      case "boolean":
+        return false;
+      case "null":
+        return null;
+      case "array":
+        return Array.isArray(record.items) ? record.items.map(materializeNativeSkeleton) : [];
+      case "object":
+        return {};
+      case "bigint":
+        return 0n;
+      case "function":
+      case "symbol":
+        return record.type;
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(record).map(([key, child]) => [key, materializeNativeSkeleton(child)]),
+  );
 }
 
 function nativeFixture(hook: OpenClawHookName) {

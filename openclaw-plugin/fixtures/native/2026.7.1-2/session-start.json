@@ -1,0 +1,32 @@
+{
+  "source": {
+    "kind": "native_capture",
+    "openclaw_version": "2026.7.1-2",
+    "captured_at": "2026-09-04T08:39:42.537Z",
+    "input": "capture-mode-debug"
+  },
+  "hook": "session_start",
+  "skeleton": {
+    "event": {
+      "sessionId": {
+        "type": "string",
+        "length": 23
+      },
+      "sessionKey": {
+        "type": "string",
+        "length": 43
+      },
+      "resumedFrom": {
+        "type": "undefined"
+      }
+    },
+    "context": {
+      "sessionId": {
+        "type": "string",
+        "length": 23
+      },
+      "sessionKey": "agent:main:explicit:smoke-deploy-1788511158",
+      "agentId": "main"
+    }
+  }
+}

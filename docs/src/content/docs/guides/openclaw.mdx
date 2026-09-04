@@ -21,6 +21,9 @@ Keep the entry disabled until the configuration has been reviewed.
     "entries": {
       "harnery": {
         "enabled": false,
+        "hooks": {
+          "allowConversationAccess": true
+        },
         "config": {
           "mode": "capture",
           "agents": ["main"],
@@ -46,6 +49,10 @@ The config keys are:
 | `recorderFault` | Test switch that forces recorder failures without failing the OpenClaw turn. |
 | `queueCapacity` | Maximum outstanding worker messages. The default is 128 and the accepted range is 1 to 4096. |
 
+OpenClaw blocks `agent_end` for an external plugin unless the entry sets
+`hooks.allowConversationAccess: true`. This permission lets the adapter observe
+the turn terminal; it does not let Harnery change the conversation.
+
 ## Capture before recording
 
 Start with `mode: "capture"`, enable the plugin, restart the gateway, and run a
@@ -60,6 +67,10 @@ Review the captured shapes against the installed OpenClaw version before
 switching to `mode: "record"`. The plugin then translates six hooks:
 `session_start`, `before_prompt_build`, `before_tool_call`, `after_tool_call`,
 `agent_end`, and `session_end`. A missing correlation id is logged and skipped.
+A gateway may omit `session_start` for message-backed sessions. When the first
+observed hook carries the native session identity, the recorder opens that
+generation with a derived `session.started` event before recording the hook.
+A terminal generation is never reopened by this recovery path.
 A bounded worker thread owns ledger initialization, recording, and adapter log
 writes. Hook handlers only translate and enqueue. When the queue is full, the
 new event is dropped and one overload warning is written to stderr. Worker

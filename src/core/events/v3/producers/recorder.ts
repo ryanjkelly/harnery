@@ -108,7 +108,12 @@ const APPROVED_END_RUNTIME_CONTEXT_RETRY_DELAYS_MS = [0, 250, 250] as const;
  * Kept in code, outside the digested capability profiles, so tuning recovery
  * never changes an adapter capability digest (ADR 0078).
  */
-const RECOVERY_ENABLED_ADAPTERS: ReadonlySet<string> = new Set(["claude-code", "codex", "cursor"]);
+const RECOVERY_ENABLED_ADAPTERS: ReadonlySet<string> = new Set([
+  "claude-code",
+  "codex",
+  "cursor",
+  "openclaw",
+]);
 
 interface SpanStateV3 extends OpenSpanStateV3 {
   source_id: `hid_${string}`;
