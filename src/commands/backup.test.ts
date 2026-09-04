@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { backupConfig } from "../core/config.ts";
 import {
   backupCatalogCoverage,
+  newestSnapshotTime,
   parseBackupDuration,
+  readHostSnapshotCache,
   resolveBackupSelection,
   selectedLogicalBytes,
 } from "./backup.ts";
@@ -67,6 +69,14 @@ describe("backup selection", () => {
     expect(backupConfig(root).passwordFile).toBe(join(root, ".credentials", "restic.password"));
   });
 
+  test("reads the newest snapshot time from restic JSON", () => {
+    expect(
+      newestSnapshotTime('[{"time":"2026-01-01T00:00:00Z"},{"time":"2026-01-03T00:00:00Z"}]'),
+    ).toBe(Date.parse("2026-01-03T00:00:00Z"));
+    expect(newestSnapshotTime("[]")).toBeNull();
+    expect(newestSnapshotTime("not json")).toBeNull();
+  });
+
   test("parses bounded freshness durations", () => {
     expect(parseBackupDuration("24h")).toBe(86_400_000);
     expect(parseBackupDuration("7d")).toBe(604_800_000);
@@ -90,14 +100,10 @@ describe.skipIf(!hasRestic)("backup command with a local restic repository", () 
     expect(init.status, init.output).toBe(0);
     const snapshot = harn(root, ["backup", "snapshot", "--tag", "test"]);
     expect(snapshot.status, snapshot.output).toBe(0);
-    const throttled = harn(root, [
-      "backup",
-      "snapshot",
-      "--if-stale",
-      "24h",
-      "--tag",
-      "duplicate",
-    ]);
+    const cache = readHostSnapshotCache(join(root, ".harnery"));
+    expect(cache?.host).toBe(hostname());
+    expect(Date.now() - (cache?.snapshotAt ?? 0)).toBeLessThan(60_000);
+    const throttled = harn(root, ["backup", "snapshot", "--if-stale", "24h", "--tag", "duplicate"]);
     expect(throttled.status, throttled.output).toBe(0);
     expect(throttled.output).toContain("newer than 24h; skipped");
     const check = harn(root, ["backup", "check"]);

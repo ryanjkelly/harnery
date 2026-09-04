@@ -77,7 +77,17 @@ Use `backup.include` to add `.harnery`-relative paths and `backup.exclude` to re
 | `schedule` | unset | Optional session-start snapshot policy. |
 | `keep_daily`, `keep_weekly`, `keep_monthly` | `7`, `4`, `6` | Retention used by `prune`. |
 
-When `backup.schedule` is present, the session-start hook launches a snapshot in the background with the configured freshness duration and tags. The hook does not delay the agent session. It stays quiet on success. On failure it writes the hook's backup log under `.harnery/logs/` and prints one line on stderr.
+When `backup.schedule` is present, the session-start hook launches `snapshot --if-stale <duration>` in the background with the configured tags. The child owns none of the hook's stdio, so the harness never waits for restic or the remote provider. The hook stays quiet on success.
+
+Three small files under `.harnery/logs/` carry the schedule's state:
+
+| File | Writer | Purpose |
+| --- | --- | --- |
+| `backup-schedule.log` | the background runner | Timestamped output of every scheduled run; rotated when it passes 256 KiB. |
+| `backup-schedule.status.json` | the background runner | Exit code and finish time of the last scheduled run. |
+| `backup-host-snapshot.json` | `harn backup snapshot` | This host's newest known snapshot time. |
+
+The hook reads the status file first. When the last scheduled run failed, it adds one line naming the exit code, the finish time, and the log path to the session's start-up context, prints the same line on stderr, and relaunches the snapshot so a transient error heals on the next session. It then reads the host cache: when this host's newest snapshot is younger than `if_stale`, the hook launches nothing, so a machine with many session starts a day asks the remote repository about once per freshness window rather than on every start. A missing, stale, or foreign-host cache always launches the command, and the command still asks restic before deciding.
 
 ## Take a snapshot
 

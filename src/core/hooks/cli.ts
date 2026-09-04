@@ -1085,9 +1085,12 @@ async function main(): Promise<number> {
   // and the equivalent per-adapter bash session_start handlers.
   if (norm.event_type === "session.started") {
     // A configured backup runs out of process and is freshness-gated per host.
-    // Startup never waits for restic or a remote provider.
+    // Startup never waits for restic or a remote provider; the child owns no
+    // hook stdio, so the harness is not held open until it finishes. A failed
+    // previous run surfaces as one line in this session's context.
+    let backupCue = "";
     try {
-      scheduleBackupSnapshot(coordRoot);
+      backupCue = scheduleBackupSnapshot(coordRoot).cue ?? "";
     } catch (err) {
       logError(coordRoot, err, { phase: "backup-schedule" });
     }
@@ -1179,6 +1182,7 @@ async function main(): Promise<number> {
         adapter,
         recovery?.briefing ?? "",
         promptContextEnv,
+        backupCue,
       );
       if (injected && recovery) {
         completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
@@ -2113,6 +2117,7 @@ async function emitSessionStartSystemMessage(
   adapter: Adapter,
   recoveryBriefing = "",
   env?: Readonly<Record<string, string>>,
+  backupCue = "",
 ): Promise<boolean> {
   const workflowChild = coordEnv("WORKFLOW_CHILD") === "1";
   let additionalContext = "";
@@ -2149,6 +2154,9 @@ async function emitSessionStartSystemMessage(
   }
   if (recoveryBriefing && !workflowChild) {
     additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
+  }
+  if (backupCue && !workflowChild) {
+    additionalContext = [additionalContext, backupCue].filter(Boolean).join("\n\n");
   }
   if (adapter === "codex" && !workflowChild && isWslUncPath(emittedData.cwd)) {
     const fileLinkContext = renderCodexWslFileLinkContext(coordRoot, emittedData.cwd);

@@ -34,6 +34,8 @@ Projects may add `.harnery`-relative paths through `backup.include` and remove f
 
 `backup.schedule` is opt-in. When configured, the shared session-start hook launches `snapshot --if-stale <duration>` in the background with the configured tags. Freshness is checked against snapshots for the current restic host, so a snapshot from one machine cannot suppress another machine's backup. A cross-process lock makes the check and snapshot request single-writer on each machine. The hook stays quiet on success and records failures under `.harnery/logs/` without delaying session startup.
 
+The detached child inherits none of the hook's stdio. Every supported harness reads a hook's stdout and stderr through pipes and waits for those pipes to close, so a background child holding the hook's stderr would keep the session start waiting for restic and the remote provider. The child writes its output and exit status to files instead, and the next session start reads the status file and reports a failed run as one line of start-up context. `snapshot` also records this host's newest known snapshot time locally; the hook skips launching while that record is younger than the freshness window, which bounds remote round trips to about one per window per machine regardless of how many sessions start. Restic remains the authority whenever the local record is missing, stale, or from another host.
+
 Restore remains non-destructive. `harn backup restore` writes into a new directory and never replaces the live coordination root. Snapshot pruning also remains a manual command.
 
 ## Result

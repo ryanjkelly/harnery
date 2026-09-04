@@ -33,9 +33,21 @@ import { hostname } from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import {
+  newestSnapshotTime,
+  parseBackupDuration,
+  recordHostSnapshot,
+} from "../core/backup/host-snapshot.ts";
 import { type BackupConfig, backupConfig } from "../core/config.ts";
 import { createStorageCatalog } from "../core/storage/catalog.ts";
 import type { HarneryStorageClass } from "../core/storage/contract.ts";
+
+export {
+  hostSnapshotCachePath,
+  newestSnapshotTime,
+  parseBackupDuration,
+  readHostSnapshotCache,
+} from "../core/backup/host-snapshot.ts";
 
 export const DEFAULT_BACKUP_MAX_BYTES = 50 * 1_024 * 1_024;
 export const DEFAULT_BACKUP_CLASSES = new Set<HarneryStorageClass>([
@@ -199,30 +211,6 @@ export function selectedLogicalBytes(targets: readonly string[]): number {
     );
   };
   return targets.reduce((total, target) => total + measure(target), 0);
-}
-
-export function parseBackupDuration(value: string): number | null {
-  const match = /^([1-9][0-9]*)(ms|s|m|h|d)$/.exec(value.trim());
-  if (!match) return null;
-  const scalar = Number(match[1]);
-  const factor = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[
-    match[2] as "ms" | "s" | "m" | "h" | "d"
-  ];
-  const duration = scalar * factor;
-  return Number.isSafeInteger(duration) ? duration : null;
-}
-
-function snapshotIsFresh(output: string, thresholdMs: number, now = Date.now()): boolean {
-  try {
-    const rows = JSON.parse(output) as Array<{ time?: string }>;
-    const newest = rows.reduce((latest, row) => {
-      const time = typeof row.time === "string" ? Date.parse(row.time) : Number.NaN;
-      return Number.isFinite(time) ? Math.max(latest, time) : latest;
-    }, Number.NEGATIVE_INFINITY);
-    return Number.isFinite(newest) && now - newest < thresholdMs;
-  } catch {
-    return false;
-  }
 }
 
 function lockOwnerIsAlive(lockDir: string): boolean {
@@ -417,7 +405,9 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
               emit.setExitCode(latest.exitCode);
               return;
             }
-            if (snapshotIsFresh(latest.stdout, staleMs)) {
+            const newest = newestSnapshotTime(latest.stdout);
+            if (newest !== null && Date.now() - newest < staleMs) {
+              recordHostSnapshot(harneryDir, newest);
               emit.text(`latest snapshot for ${hostname()} is newer than ${opts.ifStale}; skipped`);
               return;
             }
@@ -448,12 +438,14 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
           }
           const passThrough: string[] = [];
           for (const tag of opts.tag) passThrough.push("--tag", tag);
+          const startedAt = Date.now();
           const result = runRestic(["backup", ...selection.targets], {
             repo: opts.repo,
             passwordFile: opts.passwordFile,
             stdio: "inherit",
             passThrough,
           });
+          if (result.exitCode === 0) recordHostSnapshot(harneryDir, startedAt);
           emit.setExitCode(result.exitCode);
         } finally {
           lock.release();
