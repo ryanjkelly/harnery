@@ -71,7 +71,10 @@ resource, the recommended action, and the reasons that set it.
 ## Result
 
 A signal that settles below the entry bar clears after the dwell, and a
-reading in the twenties on I/O never enters at all. A dwell-held state reads
+reading in the twenties on I/O never enters at all. Because the point shape is
+now load-bearing for the trend, the replay path validates a captured history's
+schema version the way the live observer and the dashboard already did, and
+falls back to an empty history rather than failing on an older bundle. A dwell-held state reads
 as recovery in the agent status box and the prompt notice. The transition log
 makes a past episode a grep rather than an inference. The oscillation test is
 unchanged: a signal hovering at the entry bar still produces one notice, and
