@@ -533,6 +533,10 @@ describe("backupConfig", () => {
     const c = backupConfig(root);
     expect(c.repo).toContain(join("harnery", "restic-repo"));
     expect(c.passwordFile).toContain(join("harnery", "restic-password"));
+    expect(c.include).toEqual([]);
+    expect(c.exclude).toEqual([]);
+    expect(c.maxBytes).toBe(50 * 1_024 * 1_024);
+    expect(c.schedule).toBeNull();
     expect([c.keepDaily, c.keepWeekly, c.keepMonthly]).toEqual([7, 4, 6]);
   });
 
@@ -552,6 +556,20 @@ describe("backupConfig", () => {
     const root = makeRoot(`{ "backup": { "repo": "/cfg/repo" } }`);
     roots.push(root);
     expect(backupConfig(root).repo).toBe("/env/repo");
+  });
+
+  test("reads selection, size, schedule, and a root-relative password file", () => {
+    const root = makeRoot(
+      `{ "backup": { "password_file": ".credentials/restic.password", "include": ["extra"], "exclude": ["workflow-run-history"], "max_bytes": 12345, "schedule": { "if_stale": "24h", "tags": ["daily"] } } }`,
+    );
+    roots.push(root);
+    expect(backupConfig(root)).toMatchObject({
+      passwordFile: join(root, ".credentials", "restic.password"),
+      include: ["extra"],
+      exclude: ["workflow-run-history"],
+      maxBytes: 12345,
+      schedule: { ifStale: "24h", tags: ["daily"] },
+    });
   });
 });
 

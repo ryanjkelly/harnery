@@ -20,11 +20,46 @@
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { hostname } from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { backupConfig } from "../core/config.ts";
+import { type BackupConfig, backupConfig } from "../core/config.ts";
+import { createStorageCatalog } from "../core/storage/catalog.ts";
+import type { HarneryStorageClass } from "../core/storage/contract.ts";
+
+export const DEFAULT_BACKUP_MAX_BYTES = 50 * 1_024 * 1_024;
+export const DEFAULT_BACKUP_CLASSES = new Set<HarneryStorageClass>([
+  "canonical-authority",
+  "durable-object-history",
+  "recovery-state",
+]);
+export const DEFAULT_BACKUP_EXCLUDED_CLASSES = new Set<HarneryStorageClass>([
+  "debug-log",
+  "managed-artifact",
+  "operational-log",
+  "repairable-cache",
+]);
+export const DEFAULT_BACKUP_EXCLUDED_FAMILY_IDS = new Set([
+  "event-v3-canonical-active",
+  "event-v3-canonical-archives",
+  "event-v3-support-active",
+  "event-v3-support-archives",
+  "event-v3-recovery-records",
+  "legacy-canonical-ledgers",
+  "managed-artifacts",
+  "captured-images",
+  "storage-exports",
+]);
 
 function defaultRepo(): string {
   return backupConfig().repo;
@@ -52,6 +87,194 @@ function ensurePasswordFile(file: string): void {
   mkdirSync(path.dirname(file), { recursive: true });
   const pw = randomBytes(24).toString("base64");
   writeFileSync(file, `${pw}\n`, { encoding: "utf-8", mode: 0o600 });
+}
+
+function isFilesystemRepository(repo: string): boolean {
+  if (/^[a-zA-Z]:[\\/]/.test(repo)) return true;
+  return !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(repo);
+}
+
+function inside(base: string, candidate: string): boolean {
+  const relative = path.relative(base, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function configPath(harneryDir: string, value: string): string | null {
+  if (path.isAbsolute(value)) return null;
+  const normalized = value.replaceAll("\\", "/").replace(/^\.harnery\//, "");
+  if (!normalized || normalized.split("/").some((part) => part === ".." || part === "")) {
+    return null;
+  }
+  const resolved = path.resolve(harneryDir, normalized);
+  return inside(harneryDir, resolved) ? resolved : null;
+}
+
+export interface BackupSelection {
+  targets: readonly string[];
+  familyIds: readonly string[];
+}
+
+export function resolveBackupSelection(
+  projectRoot: string,
+  config: BackupConfig = backupConfig(projectRoot),
+  includeArtifacts = false,
+): BackupSelection {
+  const root = path.resolve(projectRoot);
+  const harneryDir = path.join(root, ".harnery");
+  const catalog = createStorageCatalog({ coord_root: root, project_root: root });
+  const knownFamilyIds = new Set(catalog.families.map((family) => family.id));
+  const configuredFamilyExclusions = new Set(
+    config.exclude.filter((entry) => knownFamilyIds.has(entry)),
+  );
+  const configuredPathExclusions = config.exclude
+    .filter((entry) => !knownFamilyIds.has(entry))
+    .map((entry) => configPath(harneryDir, entry))
+    .filter((entry): entry is string => entry !== null);
+  const selectedFamilies = catalog.families.filter(
+    (family) =>
+      DEFAULT_BACKUP_CLASSES.has(family.storage_class) &&
+      !DEFAULT_BACKUP_EXCLUDED_FAMILY_IDS.has(family.id) &&
+      !configuredFamilyExclusions.has(family.id),
+  );
+  const excludedByPath = (candidate: string): boolean =>
+    configuredPathExclusions.some(
+      (excluded) => candidate === excluded || inside(excluded, candidate),
+    );
+  const targets = selectedFamilies
+    .flatMap((family) => family.resolved_roots.map((storageRoot) => storageRoot.path))
+    .filter((candidate) => inside(harneryDir, candidate))
+    .filter((candidate) => !excludedByPath(candidate));
+  for (const entry of config.include) {
+    const candidate = configPath(harneryDir, entry);
+    if (candidate && !excludedByPath(candidate)) targets.push(candidate);
+  }
+  if (includeArtifacts) targets.push(path.join(harneryDir, "artifacts"));
+  return {
+    targets: [...new Set(targets)].filter(existsSync).sort(),
+    familyIds: selectedFamilies.map((family) => family.id).sort(),
+  };
+}
+
+export function backupCatalogCoverage(projectRoot: string): {
+  uncovered: readonly string[];
+} {
+  const root = path.resolve(projectRoot);
+  const harneryDir = path.join(root, ".harnery");
+  const catalog = createStorageCatalog({ coord_root: root, project_root: root });
+  const uncovered = catalog.families
+    .filter((family) => {
+      const selected =
+        DEFAULT_BACKUP_CLASSES.has(family.storage_class) &&
+        !DEFAULT_BACKUP_EXCLUDED_FAMILY_IDS.has(family.id);
+      const excluded =
+        DEFAULT_BACKUP_EXCLUDED_CLASSES.has(family.storage_class) ||
+        DEFAULT_BACKUP_EXCLUDED_FAMILY_IDS.has(family.id);
+      const externalOnly =
+        family.resolved_roots.length === 0 ||
+        family.resolved_roots.every((storageRoot) => !inside(harneryDir, storageRoot.path));
+      return !selected && !excluded && !externalOnly;
+    })
+    .map((family) => family.id);
+  return { uncovered };
+}
+
+export function selectedLogicalBytes(targets: readonly string[]): number {
+  const visited = new Set<string>();
+  const measure = (candidate: string): number => {
+    let stat: ReturnType<typeof lstatSync>;
+    try {
+      stat = lstatSync(candidate);
+    } catch {
+      return 0;
+    }
+    const identity = `${stat.dev}:${stat.ino}`;
+    if (visited.has(identity)) return 0;
+    visited.add(identity);
+    if (stat.isSymbolicLink()) return 0;
+    if (stat.isFile()) return stat.size;
+    if (!stat.isDirectory()) return 0;
+    return readdirSync(candidate).reduce(
+      (total, entry) => total + measure(path.join(candidate, entry)),
+      0,
+    );
+  };
+  return targets.reduce((total, target) => total + measure(target), 0);
+}
+
+export function parseBackupDuration(value: string): number | null {
+  const match = /^([1-9][0-9]*)(ms|s|m|h|d)$/.exec(value.trim());
+  if (!match) return null;
+  const scalar = Number(match[1]);
+  const factor = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[
+    match[2] as "ms" | "s" | "m" | "h" | "d"
+  ];
+  const duration = scalar * factor;
+  return Number.isSafeInteger(duration) ? duration : null;
+}
+
+function snapshotIsFresh(output: string, thresholdMs: number, now = Date.now()): boolean {
+  try {
+    const rows = JSON.parse(output) as Array<{ time?: string }>;
+    const newest = rows.reduce((latest, row) => {
+      const time = typeof row.time === "string" ? Date.parse(row.time) : Number.NaN;
+      return Number.isFinite(time) ? Math.max(latest, time) : latest;
+    }, Number.NEGATIVE_INFINITY);
+    return Number.isFinite(newest) && now - newest < thresholdMs;
+  } catch {
+    return false;
+  }
+}
+
+function lockOwnerIsAlive(lockDir: string): boolean {
+  try {
+    const owner = JSON.parse(readFileSync(path.join(lockDir, "owner.json"), "utf8")) as {
+      pid?: number;
+      created_at?: string;
+    };
+    if (typeof owner.pid === "number" && owner.pid > 0) {
+      try {
+        process.kill(owner.pid, 0);
+        return true;
+      } catch {
+        // The owner is gone; the directory is reclaimable.
+      }
+    }
+    const createdAt = typeof owner.created_at === "string" ? Date.parse(owner.created_at) : 0;
+    return Number.isFinite(createdAt) && Date.now() - createdAt < 60 * 60 * 1_000;
+  } catch {
+    return false;
+  }
+}
+
+function acquireSnapshotLock(harneryDir: string): { acquired: boolean; release(): void } {
+  const locksDir = path.join(harneryDir, "locks");
+  const lockDir = path.join(locksDir, "backup-snapshot.lock");
+  mkdirSync(locksDir, { recursive: true });
+  const create = (): boolean => {
+    try {
+      mkdirSync(lockDir);
+      writeFileSync(
+        path.join(lockDir, "owner.json"),
+        `${JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() })}\n`,
+        "utf8",
+      );
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      return false;
+    }
+  };
+  if (!create()) {
+    if (lockOwnerIsAlive(lockDir)) return { acquired: false, release() {} };
+    rmSync(lockDir, { recursive: true, force: true });
+    if (!create()) return { acquired: false, release() {} };
+  }
+  return {
+    acquired: true,
+    release() {
+      rmSync(lockDir, { recursive: true, force: true });
+    },
+  };
 }
 
 interface RunOpts {
@@ -121,7 +344,7 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
       const repo = opts.repo ?? defaultRepo();
       const pwFile = opts.passwordFile ?? defaultPasswordFile();
       ensurePasswordFile(pwFile);
-      mkdirSync(path.dirname(repo), { recursive: true });
+      if (isFilesystemRepository(repo)) mkdirSync(path.dirname(repo), { recursive: true });
       const r = runRestic(["init"], { repo, passwordFile: pwFile, stdio: "inherit" });
       if (r.exitCode === 0) {
         emit.text(`restic repo initialized at ${repo}\npassword file: ${pwFile}`);
@@ -143,19 +366,23 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
       "--include-artifacts",
       "Include managed working artifacts (default: excluded; potentially large + ephemeral)",
     )
+    .option("--allow-large", "Permit a selected set larger than backup.max_bytes")
+    .option("--if-stale <duration>", "Skip when this host has a newer snapshot (for example 24h)")
     .action(
       (
         opts: BaseOpts & {
           tag: string[];
           includeArtifacts?: boolean;
+          allowLarge?: boolean;
+          ifStale?: string;
         },
       ) => {
         if (!checkRestic(emit)) {
           emit.setExitCode(1);
           return;
         }
-        const harnery = findHarneryDir();
-        if (!harnery) {
+        const harneryDir = findHarneryDir();
+        if (!harneryDir) {
           emit.error({
             code: "target_missing",
             message: "No .harnery/ found above cwd; run from an initialized project",
@@ -163,40 +390,74 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
           emit.setExitCode(1);
           return;
         }
-        const passThrough: string[] = [];
-        for (const t of opts.tag) {
-          passThrough.push("--tag", t);
-        }
-        const safeTargets = [
-          "ledgers",
-          "councils",
-          "journal",
-          "work",
-          "workflows",
-          "decisions",
-          "config.jsonc",
-          ".name-history",
-        ]
-          .map((entry) => path.join(harnery, entry))
-          .filter(existsSync);
-        if (opts.includeArtifacts && existsSync(path.join(harnery, "artifacts"))) {
-          safeTargets.push(path.join(harnery, "artifacts"));
-        }
-        if (safeTargets.length === 0) {
+        const staleMs = opts.ifStale ? parseBackupDuration(opts.ifStale) : null;
+        if (opts.ifStale && staleMs === null) {
           emit.error({
-            code: "backup_empty",
-            message: "No durable V3 state is available to back up",
+            code: "backup_invalid_duration",
+            message: `Invalid --if-stale duration: ${opts.ifStale}`,
+            hint: "Use an integer duration such as 30m, 24h, or 7d",
           });
           emit.setExitCode(1);
           return;
         }
-        const r = runRestic(["backup", ...safeTargets], {
-          repo: opts.repo,
-          passwordFile: opts.passwordFile,
-          stdio: "inherit",
-          passThrough,
-        });
-        emit.setExitCode(r.exitCode);
+        const lock = acquireSnapshotLock(harneryDir);
+        if (!lock.acquired) {
+          emit.text("backup snapshot already running; skipped");
+          return;
+        }
+        try {
+          if (staleMs !== null) {
+            const latest = runRestic(["snapshots", "--json", "--host", hostname()], {
+              repo: opts.repo,
+              passwordFile: opts.passwordFile,
+              stdio: "pipe",
+            });
+            if (latest.exitCode !== 0) {
+              emit.error({ code: "backup_snapshot_list_failed", message: latest.stdout.trim() });
+              emit.setExitCode(latest.exitCode);
+              return;
+            }
+            if (snapshotIsFresh(latest.stdout, staleMs)) {
+              emit.text(`latest snapshot for ${hostname()} is newer than ${opts.ifStale}; skipped`);
+              return;
+            }
+          }
+          const config = backupConfig(path.dirname(harneryDir));
+          const selection = resolveBackupSelection(
+            path.dirname(harneryDir),
+            config,
+            opts.includeArtifacts,
+          );
+          if (selection.targets.length === 0) {
+            emit.error({
+              code: "backup_empty",
+              message: "No durable Harnery state is available to back up",
+            });
+            emit.setExitCode(1);
+            return;
+          }
+          const logicalBytes = selectedLogicalBytes(selection.targets);
+          if (!opts.allowLarge && logicalBytes > config.maxBytes) {
+            emit.error({
+              code: "backup_too_large",
+              message: `Selected backup is ${logicalBytes} bytes; limit is ${config.maxBytes} bytes`,
+              hint: "Review backup.include/exclude or pass --allow-large for this snapshot",
+            });
+            emit.setExitCode(1);
+            return;
+          }
+          const passThrough: string[] = [];
+          for (const tag of opts.tag) passThrough.push("--tag", tag);
+          const result = runRestic(["backup", ...selection.targets], {
+            repo: opts.repo,
+            passwordFile: opts.passwordFile,
+            stdio: "inherit",
+            passThrough,
+          });
+          emit.setExitCode(result.exitCode);
+        } finally {
+          lock.release();
+        }
       },
     );
 

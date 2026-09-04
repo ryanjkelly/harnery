@@ -93,6 +93,7 @@ import {
   parsePayload,
 } from "./adapter/parse.ts";
 import { discoverCodexSessionTranscript } from "./adapter/runtime-telemetry.ts";
+import { scheduleBackupSnapshot } from "./backup-schedule.ts";
 import {
   codexWslFileLinkTelemetry,
   inspectCodexWslBridge,
@@ -1083,6 +1084,13 @@ async function main(): Promise<number> {
   // Adapter-agnostic since v0.5.0; replaces the previous bash UX layer
   // and the equivalent per-adapter bash session_start handlers.
   if (norm.event_type === "session.started") {
+    // A configured backup runs out of process and is freshness-gated per host.
+    // Startup never waits for restic or a remote provider.
+    try {
+      scheduleBackupSnapshot(coordRoot);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "backup-schedule" });
+    }
     // Effect (claude-code): prune stale journal archives + sweep orphans.
     // The recovery-cue is merged into the
     // session-start additionalContext inside emitSessionStartSystemMessage.

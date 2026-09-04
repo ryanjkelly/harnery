@@ -21,7 +21,7 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { coordEnv } from "../lib/env.ts";
 import { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 import { resolveEventLedgerRotateActiveBytesV3 } from "./events/v3/rotation-config.ts";
@@ -171,12 +171,18 @@ interface HarneryConfig {
     auto_clean?: boolean;
   };
   /**
-   * `harn backup` (restic) defaults: `repo` path/URL, `password_file`, and the
-   * `keep_daily`/`keep_weekly`/`keep_monthly` prune policy. Read via `backupConfig()`.
+   * `harn backup` (restic) defaults. Read via `backupConfig()`.
    */
   backup?: {
     repo?: string;
     password_file?: string;
+    include?: string[];
+    exclude?: string[];
+    max_bytes?: number;
+    schedule?: {
+      if_stale?: string;
+      tags?: string[];
+    };
     keep_daily?: number;
     keep_weekly?: number;
     keep_monthly?: number;
@@ -889,6 +895,10 @@ function booleanSetting(
 export interface BackupConfig {
   repo: string;
   passwordFile: string;
+  include: readonly string[];
+  exclude: readonly string[];
+  maxBytes: number;
+  schedule: { ifStale: string; tags: readonly string[] } | null;
   keepDaily: number;
   keepWeekly: number;
   keepMonthly: number;
@@ -898,6 +908,7 @@ export interface BackupConfig {
  * `harn backup` (restic) defaults. Per field, precedence is env → config → built-in:
  *   repo:          `HARNERY_RESTIC_REPO` → `backup.repo` → `~/.cache/harnery/restic-repo`
  *   passwordFile:  `HARNERY_RESTIC_PASSWORD_FILE` → `backup.password_file` → `~/.config/harnery/restic-password`
+ *   include/exclude/maxBytes/schedule: `backup.*` → catalog defaults / 50 MiB / disabled
  *   keepDaily/Weekly/Monthly: `backup.keep_*` → 7 / 4 / 6
  * `coordRoot` is resolved via `findCoordRoot()` when not passed.
  */
@@ -909,13 +920,36 @@ export function backupConfig(coordRoot?: string | null): BackupConfig {
     typeof v === "string" && v.trim() ? v.trim() : undefined;
   const repo =
     coordEnv("RESTIC_REPO") ?? cfgStr(b.repo) ?? join(home, ".cache", "harnery", "restic-repo");
-  const passwordFile =
-    coordEnv("RESTIC_PASSWORD_FILE") ??
-    cfgStr(b.password_file) ??
-    join(home, ".config", "harnery", "restic-password");
+  const envPasswordFile = coordEnv("RESTIC_PASSWORD_FILE");
+  const configuredPasswordFile = cfgStr(b.password_file);
+  const passwordFile = envPasswordFile
+    ? envPasswordFile
+    : configuredPasswordFile
+      ? root && !isAbsolute(configuredPasswordFile)
+        ? resolve(root, configuredPasswordFile)
+        : configuredPasswordFile
+      : join(home, ".config", "harnery", "restic-password");
+  const stringList = (value: unknown): readonly string[] =>
+    Array.isArray(value)
+      ? value.filter(
+          (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+        )
+      : [];
+  const schedule = isPlainObject(b.schedule)
+    ? (() => {
+        const ifStale = cfgStr(b.schedule?.if_stale);
+        return ifStale
+          ? { ifStale, tags: stringList(b.schedule?.tags).map((tag) => tag.trim()) }
+          : null;
+      })()
+    : null;
   return {
     repo,
     passwordFile,
+    include: stringList(b.include).map((entry) => entry.trim()),
+    exclude: stringList(b.exclude).map((entry) => entry.trim()),
+    maxBytes: posIntOr(b.max_bytes, 50 * 1_024 * 1_024),
+    schedule,
     keepDaily: posIntOr(b.keep_daily, 7),
     keepWeekly: posIntOr(b.keep_weekly, 4),
     keepMonthly: posIntOr(b.keep_monthly, 6),

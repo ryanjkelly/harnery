@@ -23,6 +23,9 @@ describe("source-owned storage descriptors", () => {
     );
     for (const id of [
       "coord-message-inbox",
+      "agent-mailbox-history",
+      "workflow-approval-history",
+      "agent-name-history",
       "storage-maintenance-transactions",
       "storage-maintenance-mutation-receipts",
       "storage-maintenance-run-log",

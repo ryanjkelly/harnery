@@ -1,0 +1,49 @@
+---
+title: "ADR 0165: derive bounded backups from the storage catalog"
+description: Select small recovery snapshots from registered durable storage families, exclude ledgers and artifacts by policy, and refuse unexpected growth.
+sidebar:
+  order: 165
+---
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+## Context
+
+`harn backup snapshot` used a second, hand-written list of directories. That list included the event ledger but missed several smaller recovery stores. In one active project, the ledger had grown to about 1.2 GB across roughly 80,000 files while the durable coordination records needed for routine recovery totaled about 23 MB.
+
+The source-owned storage catalog introduced by [ADR 0129](./0129-source-owned-storage-catalog/) now states which component owns each persistent family, how durable it is, and where its roots live. Maintaining another directory list in the backup command would let catalog and backup coverage drift apart.
+
+Backups also ran only when someone remembered the command. A project could have a valid repository and still have no recent snapshot. Multiple agent adapters already share the session-start hook, which provides a portable place to request a snapshot when the machine is in use.
+
+## Alternatives considered
+
+- Back up every file under `.harnery/`. This includes caches, logs, active projections, temporary artifacts, and locks. Those files are either reconstructable, governed by another lifecycle, unsafe to copy as live process state, or too large for a configuration backup.
+- Keep the hand-written include list and remove only `ledgers/`. This fixes today's size problem but still requires every future storage feature to update an unrelated command. A missed update would remain silent.
+- Keep event ledgers in the default set. They preserve useful history, but their size and file count can dominate the snapshot. Ledger archives need a separate opt-in policy tied to their own retention and recovery contract.
+- Use file synchronization instead of snapshots. Synchronization copies the newest state and can replicate a bad write. Restic keeps encrypted restore points and already supports local paths and remote backends.
+- Run a wall-clock scheduler. Laptops sleep and development machines differ in their service managers. Session start already runs through each supported adapter when a project is active.
+
+## Decision
+
+Harnery derives the default backup set from the source-owned storage catalog. It selects families classified as `canonical-authority`, `durable-object-history`, or `recovery-state` when their roots are inside the project's `.harnery/` directory. A named policy exclusion removes event ledger families and managed artifacts from that set.
+
+A test requires every catalog family to satisfy one of three states: selected by the backup policy, explicitly excluded by family ID, or rooted outside `.harnery/`. A new storage family with no backup treatment fails that test.
+
+Projects may add `.harnery`-relative paths through `backup.include` and remove family IDs or relative paths through `backup.exclude`. Harnery measures the selected files before invoking restic. `backup.max_bytes` defaults to 52,428,800 bytes (50 MiB), and `snapshot` refuses a larger set unless the caller passes `--allow-large` for that invocation.
+
+`backup.schedule` is opt-in. When configured, the shared session-start hook launches `snapshot --if-stale <duration>` in the background with the configured tags. Freshness is checked against snapshots for the current restic host, so a snapshot from one machine cannot suppress another machine's backup. A cross-process lock makes the check and snapshot request single-writer on each machine. The hook stays quiet on success and records failures under `.harnery/logs/` without delaying session startup.
+
+Restore remains non-destructive. `harn backup restore` writes into a new directory and never replaces the live coordination root. Snapshot pruning also remains a manual command.
+
+## Result
+
+The routine snapshot tracks Harnery's durable storage model instead of a duplicate directory list. It stays small enough to run during normal session startup, fails closed when selection grows unexpectedly, and produces independent recovery points for each machine using the project.
+
+The policy names event ledgers and managed artifacts as exclusions, and the catalog completeness test covers both. A future ledger-backup design can add an opt-in policy without weakening the minimal recovery snapshot.
+
+## Scope and promotion
+
+This decision governs Harnery's restic backup command and its session-start integration. It does not define retention for event ledgers, managed artifacts, Git repositories, or embedding-host data outside `.harnery/`.
+
+Widening the default set requires recovery evidence that the added family belongs in a routine configuration snapshot and remains within the default byte ceiling. Replacing the catalog-derived rule requires a mechanism that still makes newly registered durable families fail review or tests when their backup treatment is missing.
