@@ -21,6 +21,7 @@ harn artifacts create <slug> --purpose <text> [--days <n>] [--big]
 harn artifacts adopt-unmanaged [--days <n>] [--big] [--yes]
 harn artifacts list
 harn artifacts show <ref>
+harn artifacts delivery-card <ref> [--title <text>] [--url <label=url>...] [--path <label=path>...]
 harn artifacts renew <ref> --days <n> --reason <text>
 harn artifacts release <ref>
 harn artifacts capabilities --json
@@ -52,6 +53,43 @@ harn artifacts clean
 # Delete only entries still classified managed-expired after a final recheck.
 harn artifacts clean --yes
 ```
+
+## Deliver review files consistently
+
+Save the important destinations with the artifact and print a compact Markdown
+card for a chat handoff:
+
+```bash
+harn artifacts delivery-card <artifact-id> \
+  --title "Video review" \
+  --url "Video=https://media.example/render.mp4" \
+  --path "Motion map=finished/motion-map.png" \
+  --path "Frames=finished/frames" \
+  --path "Report=finished/report.json"
+```
+
+The first call validates every local destination, saves
+`.harnery-delivery.json` in the workspace, and writes paste-ready Markdown to
+standard output. The card contains a short linked list followed by a fenced
+plain-text block. Both sections show the complete URL or filesystem path. The
+artifact folder is always included automatically.
+
+Run the command again without item options to reproduce the saved card:
+
+```bash
+harn artifacts delivery-card <artifact-id>
+```
+
+`--url` and `--path` are repeatable. URL entries must use HTTP or HTTPS. Path
+entries must be relative to the artifact workspace, must already exist, and
+cannot escape through `..` or a symlink. Supplying new items replaces the saved
+delivery manifest. Supplying only `--title` changes the heading and preserves
+the existing destinations.
+
+On WSL, local destinations are rendered as Windows UNC paths so they open in
+Windows applications and remain directly copyable. Other systems receive their
+native absolute paths. A delivery manifest records navigation, not retention;
+move anything that must outlive the workspace into durable project storage.
 
 New workspaces expire after three inactive days by default. Creating, editing,
 renaming, or deleting anything in the workspace restarts that window. Harnery

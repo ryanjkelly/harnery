@@ -34,6 +34,21 @@ import {
 import { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
 
 export { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
+export type {
+  ArtifactDeliveryCard,
+  ArtifactDeliveryItem,
+  ArtifactDeliveryManifest,
+  ArtifactDeliveryPath,
+  ArtifactDeliveryUrl,
+} from "./delivery-card.ts";
+export {
+  ARTIFACT_DELIVERY_MANIFEST,
+  ARTIFACT_DELIVERY_SCHEMA_VERSION,
+  parseArtifactDeliverySpec,
+  readArtifactDeliveryManifest,
+  renderArtifactDeliveryCard,
+  writeArtifactDeliveryManifest,
+} from "./delivery-card.ts";
 
 export interface ArtifactActor {
   instance_id: string;

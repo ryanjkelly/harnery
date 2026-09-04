@@ -4,6 +4,7 @@ import { monorepoRoot, resolveOwner } from "../core/agents/index.ts";
 import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import {
   type ArtifactActor,
+  type ArtifactDeliveryManifest,
   adoptUnmanagedArtifactFiles,
   artifactCapabilities,
   artifactsRoot,
@@ -12,10 +13,14 @@ import {
   holdArtifact,
   inventoryArtifacts,
   migrateArtifacts,
+  parseArtifactDeliverySpec,
+  readArtifactDeliveryManifest,
   releaseArtifact,
+  renderArtifactDeliveryCard,
   renewArtifact,
   showArtifact,
   unholdArtifact,
+  writeArtifactDeliveryManifest,
 } from "../core/artifacts/index.ts";
 import {
   artifactDefaultRetentionDays,
@@ -134,6 +139,43 @@ export function registerArtifactsCommand(
             freshnessSeconds: coordFreshnessSeconds(repoRoot),
           }),
         );
+      });
+    });
+
+  root
+    .command("delivery-card <ref>")
+    .description("Save or render a reproducible Markdown delivery card for one artifact.")
+    .option("--title <text>", "Card heading")
+    .option("--url <label=url>", "Add a web destination; repeatable", collect, [])
+    .option(
+      "--path <label=path>",
+      "Add an artifact-relative file or directory; repeatable",
+      collect,
+      [],
+    )
+    .action((ref: string, opts: { title?: string; url: string[]; path: string[] }) => {
+      run(emit, () => {
+        const repoRoot = requireRepoRoot(context);
+        const suppliedItems = [
+          ...opts.url.map((spec) => parseArtifactDeliverySpec("url", spec)),
+          ...opts.path.map((spec) => parseArtifactDeliverySpec("path", spec)),
+        ];
+        let manifest: ArtifactDeliveryManifest;
+        if (suppliedItems.length > 0) {
+          manifest = writeArtifactDeliveryManifest(repoRoot, ref, {
+            title: opts.title ?? "Delivery",
+            items: suppliedItems,
+          });
+        } else {
+          manifest = readArtifactDeliveryManifest(repoRoot, ref);
+          if (opts.title !== undefined) {
+            manifest = writeArtifactDeliveryManifest(repoRoot, ref, {
+              title: opts.title,
+              items: manifest.items,
+            });
+          }
+        }
+        emit.text(renderArtifactDeliveryCard(repoRoot, ref, manifest).markdown);
       });
     });
 
@@ -261,6 +303,10 @@ function parseDays(value: string): number {
     throw new Error("--days must be between 1 and 3650");
   }
   return parsed;
+}
+
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 function summarize(

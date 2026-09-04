@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
@@ -17,6 +17,7 @@ describe("artifacts command", () => {
       "adopt-unmanaged",
       "list",
       "show",
+      "delivery-card",
       "renew",
       "release",
       "capabilities",
@@ -35,13 +36,16 @@ describe("artifacts command", () => {
         const data: unknown[] = [];
         const errors: unknown[] = [];
         const exits: number[] = [];
+        const texts: string[] = [];
         const emit: EmitContext = {
           config() {},
           data: (value) => {
             data.push(value);
           },
           rows() {},
-          text() {},
+          text: (value) => {
+            texts.push(value);
+          },
           file() {},
           error: (value) => {
             errors.push(value);
@@ -53,7 +57,7 @@ describe("artifacts command", () => {
         };
         const program = createHarneryProgram({ context: { repoRoot }, emit });
         await program.parseAsync(["artifacts", ...args], { from: "user" });
-        return { data, errors, exits };
+        return { data, errors, exits, texts };
       }
       expect((await invoke(["capabilities", "--json"])).data[0]).toMatchObject({
         schema_version: 2,
@@ -104,6 +108,31 @@ describe("artifacts command", () => {
       expect(showArtifact(repoRoot, id).manifest.holds.map((hold) => hold.id)).toEqual([
         "second-id",
       ]);
+
+      const artifactPath = (created.data[0] as { path: string }).path;
+      mkdirSync(join(artifactPath, "frames"));
+      writeFileSync(join(artifactPath, "motion-map.png"), "image");
+      const saved = await invoke([
+        "delivery-card",
+        id,
+        "--title",
+        "Review files",
+        "--url",
+        "Video=https://media.example/video.mp4",
+        "--path",
+        "Motion map=motion-map.png",
+        "--path",
+        "Frames=frames",
+      ]);
+      expect(saved.errors).toEqual([]);
+      expect(saved.texts[0]).toContain("### Review files");
+      expect(saved.texts[0]).toContain("https://media.example/video.mp4");
+      expect(saved.texts[0]).toContain("ARTIFACT FOLDER");
+      expect(saved.texts[0]).toContain("MOTION MAP");
+      expect(saved.texts[0]).toContain("FRAMES");
+      const reproduced = await invoke(["delivery-card", id]);
+      expect(reproduced.errors).toEqual([]);
+      expect(reproduced.texts).toEqual(saved.texts);
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }

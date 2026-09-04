@@ -1,0 +1,78 @@
+---
+title: "ADR 0167: render reproducible artifact delivery cards"
+description: Store validated destinations with a managed artifact and render one paste-ready Markdown handoff.
+sidebar:
+  order: 167
+---
+
+**Date:** 2026-09-04
+**Status:** Accepted
+
+## Context
+
+An artifact workspace often contains a primary result, visual review files,
+machine-readable reports, and directories with intermediate output. Agents
+handed these files to an operator by composing links and copyable paths in chat.
+That manual step produced inconsistent labels, omitted the workspace path, and
+could not be reproduced after context compaction or a handoff to another agent.
+
+The artifact manifest owns lifecycle facts such as purpose, retention, and
+holds. Adding presentation-specific destinations to that schema would couple a
+stable cleanup contract to a user-interface concern and would force a lifecycle
+schema migration whenever the card format changed.
+
+## Alternatives considered
+
+- Keep a prose template in agent instructions. A template describes the desired
+  shape but still leaves every agent to locate, validate, order, and format the
+  destinations.
+- Generate a card by scanning every file. A workspace can contain many
+  intermediates, and file names do not identify which result an operator should
+  review first.
+- Store the destinations in the artifact lifecycle manifest. This would make
+  cleanup and delivery evolve under one schema even though neither depends on
+  the other.
+- Build the formatter only in one embedding host. Other Harnery users and
+  adapters would continue to produce different handoffs for the same managed
+  artifact.
+
+## Decision
+
+Harnery adds `artifacts delivery-card <ref>`. A call with repeatable `--url` and
+`--path` options validates and saves the selected destinations, then prints the
+card. A call without item options reads the saved manifest and prints the same
+card again. `--title` sets the heading; when supplied alone, it updates the
+heading while preserving the saved items.
+
+The delivery data lives in `.harnery-delivery.json` at the root of the managed
+workspace. It has its own versioned schema and contains a title plus ordered URL
+and artifact-relative path items. The artifact folder does not need a manifest
+entry because the renderer includes it automatically.
+
+Local paths must exist inside the managed workspace. Validation resolves real
+paths and refuses absolute inputs, lexical traversal, and symlink escapes. Web
+destinations accept only HTTP and HTTPS. Labels are case-insensitively unique,
+and `Artifact folder` is reserved for the automatic row.
+
+The command writes Markdown to standard output so an agent can paste it without
+reformatting. The first section links every complete destination. The second is
+a fenced plain-text block with the same URLs and paths for copying. WSL output
+uses a UNC display path and a forward-slash UNC link target derived from
+`WSL_DISTRO_NAME`; other platforms use native absolute paths.
+
+## Result
+
+One small manifest now preserves the intentional review surface of an artifact.
+Any later agent can regenerate the handoff without reconstructing it from chat
+history, and broken or unsafe local destinations fail before the card is saved.
+The delivery schema can evolve separately from the lifecycle schema.
+
+The card does not extend retention or make a result durable. Existing artifact
+holds, release, and cleanup rules remain the authority for workspace lifetime.
+
+## Scope and promotion
+
+This decision governs operator-facing links to files already stored in a
+managed Harnery artifact. It does not choose which files a production workflow
+must generate, upload remote media, or replace a project's durable publication
+and storage rules.
