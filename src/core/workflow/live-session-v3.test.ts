@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveName } from "../agents/state/names.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { readCoordinationViewV3 } from "../events/v3/coordination-view.ts";
 import { liveInstanceIdV3 } from "../events/v3/live-routing.ts";
@@ -42,6 +43,7 @@ describe("workflow child V3 lifecycle", () => {
     expect(child).toMatchObject({
       schema_version: 2,
       instance_id: "workflow-run-a1",
+      name: "Anna",
       platform: "codex",
       kind: "workflow-child",
       task: "verify slice",
@@ -50,6 +52,36 @@ describe("workflow child V3 lifecycle", () => {
     expect(generation?.workflow_id).toStartWith("wf_");
     expect(generation?.run_id).toStartWith("run_");
     expect(generation?.phase).toBe("live");
+  });
+
+  test("allocates canonical names instead of promoting task labels into identities", () => {
+    const first = startWorkflowChildSessionV3({
+      coordRoot: root,
+      instanceId: "workflow-run-a1",
+      runId: "workflow-run",
+      agentId: "a1",
+      adapter: "codex",
+      label: "Re-review implementation corrections",
+    });
+    const second = startWorkflowChildSessionV3({
+      coordRoot: root,
+      instanceId: "workflow-run-a2",
+      runId: "workflow-run",
+      agentId: "a2",
+      adapter: "codex",
+      label: "Re-review integration corrections",
+    });
+
+    expect(first).toMatchObject({
+      name: "Anna",
+      kind: "workflow-child",
+      task: "Re-review implementation corrections",
+    });
+    expect(second).toMatchObject({
+      name: "Bob",
+      kind: "workflow-child",
+      task: "Re-review integration corrections",
+    });
   });
 
   test("records the authoritative terminal before removing the cache", () => {
@@ -64,6 +96,10 @@ describe("workflow child V3 lifecycle", () => {
     endWorkflowChildSessionV3({ ...input, cleanExit: true });
 
     expect(existsSync(join(root, ".harnery", "active", "workflow-run-a2.json"))).toBe(false);
+    expect(resolveName(root, "workflow-run-a2")).toEqual({
+      name: "Anna",
+      kind: "workflow-child",
+    });
     const events = readLedgerV3(root)
       .events.map(({ event }) => event)
       .filter((event) => event.scope.instance_id === liveInstanceIdV3("workflow-run-a2"));

@@ -8,6 +8,7 @@ import {
 } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
+import { assignName } from "../agents/state/names.ts";
 import { ensureEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import {
   recordLiveHookSignalV3,
@@ -58,6 +59,7 @@ export function startWorkflowChildSessionV3(input: WorkflowChildSessionV3Input):
     input.model,
   );
   if (!cache) throw new Error("workflow_child_v3_cache_missing");
+  const name = assignName(input.coordRoot, input.instanceId, "workflow-child");
   if (input.label) {
     recordLiveTaskChangeV3({
       coordRoot: input.coordRoot,
@@ -67,14 +69,7 @@ export function startWorkflowChildSessionV3(input: WorkflowChildSessionV3Input):
       task: input.label,
     });
   }
-  if (
-    !setIdentityCache(
-      input.coordRoot,
-      input.instanceId,
-      input.label ?? input.agentId,
-      input.agentId,
-    )
-  ) {
+  if (!setIdentityCache(input.coordRoot, input.instanceId, name, input.agentId)) {
     throw new Error("workflow_child_v3_identity_cache_failed");
   }
   const projected = readLiveCoordinationRow(input.coordRoot, input.instanceId);

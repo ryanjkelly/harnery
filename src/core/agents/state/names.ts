@@ -308,7 +308,7 @@ if (COORD_NAMES.length !== 260) {
   throw new Error(`COORD_NAMES table corrupt: expected 260 entries, got ${COORD_NAMES.length}`);
 }
 
-export type NameKind = "session" | "subagent" | "transient";
+export type NameKind = "session" | "subagent" | "transient" | "workflow-child";
 
 export interface NameHistoryRow {
   instance_id: string;
