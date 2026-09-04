@@ -25,6 +25,10 @@ import { join } from "node:path";
 import { coordEnv } from "../lib/env.ts";
 import { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 import { resolveEventLedgerRotateActiveBytesV3 } from "./events/v3/rotation-config.ts";
+import {
+  type PromptContextConfig,
+  parsePromptContextConfig,
+} from "./hooks/prompt-context/contract.ts";
 import { findCoordRoot } from "./hooks/resolve/coord-root.ts";
 
 export { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
@@ -73,6 +77,10 @@ interface HarneryConfig {
    * declares it here (e.g. "scripts/setup-hooks.sh"). Unset → a generic hint.
    */
   hooksSetupHint?: string;
+  /** Optional host prompt-context extension. Project config only. */
+  hooks?: {
+    promptContext?: unknown;
+  };
   /**
    * Agent-ritual policy owned by the host project. Git finalization is opt-in:
    * standalone Harnery and embedding hosts keep the ordinary status ritual
@@ -480,6 +488,18 @@ export function hostPromptReminder(coordRoot?: string | null): string | null {
     return null;
   }
   return reminder;
+}
+
+/**
+ * Project-owned prompt-context provider settings. The user-global config is
+ * ignored because one project's executable and data policy must not become a
+ * default for another project. Invalid values fail closed to `null`; callers
+ * treat that the same as a disabled provider and keep the prompt hook usable.
+ */
+export function hostPromptContextConfig(coordRoot?: string | null): PromptContextConfig | null {
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return null;
+  return parsePromptContextConfig(readProjectConfig(root).hooks?.promptContext);
 }
 
 /**

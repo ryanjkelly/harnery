@@ -14,6 +14,7 @@ import {
   DEFAULT_FRESHNESS_SECS,
   endOfTurnStatusCommand,
   eventLedgerArchivePolicy,
+  hostPromptContextConfig,
   hostPromptReminder,
   logStorageConfigSource,
   MAX_HOST_PROMPT_REMINDER_CHARS,
@@ -247,6 +248,55 @@ describe("hostPromptReminder", () => {
     );
     process.env.XDG_CONFIG_HOME = xdg;
     expect(hostPromptReminder(root)).toBeNull();
+  });
+});
+
+describe("hostPromptContextConfig", () => {
+  const roots: string[] = [];
+  const savedXdg = process.env.XDG_CONFIG_HOME;
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdg;
+  });
+
+  test("defaults off in project config", () => {
+    const root = makeRoot(`{}`);
+    roots.push(root);
+    expect(hostPromptContextConfig(root)).toEqual({
+      enabled: false,
+      timeoutMs: 15_000,
+      maxOutputBytes: 65_536,
+    });
+  });
+
+  test("reads bounded settings only from the project", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "harnery-prompt-context-xdg-"));
+    const root = makeRoot(
+      `{ "hooks": { "promptContext": { "enabled": true, "timeoutMs": 2500, "maxOutputBytes": 8192 } } }`,
+    );
+    roots.push(xdg, root);
+    mkdirSync(join(xdg, "harnery"), { recursive: true });
+    writeFileSync(
+      join(xdg, "harnery", "config.jsonc"),
+      `{ "hooks": { "promptContext": { "enabled": true, "timeoutMs": 9999 } } }`,
+    );
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    expect(hostPromptContextConfig(root)).toEqual({
+      enabled: true,
+      timeoutMs: 2_500,
+      maxOutputBytes: 8_192,
+    });
+  });
+
+  test("rejects malformed enabled settings", () => {
+    const root = makeRoot(
+      `{ "hooks": { "promptContext": { "enabled": true, "maxOutputBytes": 0 } } }`,
+    );
+    roots.push(root);
+    expect(hostPromptContextConfig(root)).toBeNull();
   });
 });
 

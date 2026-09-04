@@ -1,0 +1,62 @@
+[
+  {
+    "name": "no-match",
+    "result": {
+      "schema": "harnery.prompt-context-result/v1",
+      "provider_id": "fixture-provider",
+      "context": "",
+      "matched": 0,
+      "succeeded": 0,
+      "failed": 0,
+      "reason_codes": []
+    }
+  },
+  {
+    "name": "one-match",
+    "result": {
+      "schema": "harnery.prompt-context-result/v1",
+      "provider_id": "fixture-provider",
+      "context": "<record-context>{\"id\":\"REC-100\"}</record-context>\n",
+      "matched": 1,
+      "succeeded": 1,
+      "failed": 0,
+      "reason_codes": ["record_id"]
+    }
+  },
+  {
+    "name": "two-successes",
+    "result": {
+      "schema": "harnery.prompt-context-result/v1",
+      "provider_id": "fixture-provider",
+      "context": "<record-context>{\"id\":\"REC-200\"}</record-context>\n<stock-context>{\"available\":3}</stock-context>\n",
+      "matched": 2,
+      "succeeded": 2,
+      "failed": 0,
+      "reason_codes": ["record_id", "stock_name"]
+    }
+  },
+  {
+    "name": "named-party",
+    "result": {
+      "schema": "harnery.prompt-context-result/v1",
+      "provider_id": "fixture-provider",
+      "context": "<party-context>{\"name\":\"Example Partner\"}</party-context>\n",
+      "matched": 1,
+      "succeeded": 1,
+      "failed": 0,
+      "reason_codes": ["party_name"]
+    }
+  },
+  {
+    "name": "partial-failure",
+    "result": {
+      "schema": "harnery.prompt-context-result/v1",
+      "provider_id": "fixture-provider",
+      "context": "<record-context>{\"id\":\"REC-300\"}</record-context>\n",
+      "matched": 2,
+      "succeeded": 1,
+      "failed": 1,
+      "reason_codes": ["record_id", "party_name"]
+    }
+  }
+]

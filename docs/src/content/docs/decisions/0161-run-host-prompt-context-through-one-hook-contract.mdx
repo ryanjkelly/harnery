@@ -1,0 +1,83 @@
+---
+title: "ADR 0161: run host prompt context through one hook contract"
+description: Let a project add fresh, sensitive context at prompt time without putting host data access in Harnery.
+sidebar:
+  order: 161
+---
+
+**Date:** 2026-09-03
+**Status:** Accepted
+
+## Context
+
+Some projects can resolve identifiers in a submitted prompt into useful fresh
+context before the model starts. Harnery already receives the prompt, session,
+turn, working directory, and adapter through one normalized hook path, but it
+has no source-neutral way to ask the host project for that context.
+
+The adapter channels differ. Claude Code and Codex can accept context from the
+prompt-submission hook. Cursor's `beforeSubmitPrompt` hook can allow or block a
+turn but cannot inject model context. Cursor can preserve environment values
+returned by `sessionStart`, run a local command under an Always Apply rule, and
+send one bounded follow-up from `stop` when that command was skipped.
+
+Provider output may contain private records. The transport needs strict size
+and time limits, must not copy payloads into operational logs or coordination
+events, and must keep concurrent sessions from reading each other's data.
+
+## Alternatives considered
+
+- Add a provider hook command to each adapter's generated configuration. This
+  would create competing stdout envelopes and duplicate parsing, limits, and
+  audit behavior in three places.
+- Put provider-specific detection and lookup code in Harnery. That would make a
+  public coordination package depend on one host's data model and credentials.
+- Skip Cursor until its prompt hook supports context. This would leave the
+  adapter without the same facts even though a local consume path can preserve
+  session isolation today.
+- Store the latest context in one project file. Two concurrent sessions could
+  then consume the wrong prompt's records.
+
+## Decision
+
+Add one optional project-owned executable at
+`scripts/hooks/harness/extensions/prompt-context`. Harnery invokes it from the
+existing normalized prompt hook only when project config enables
+`hooks.promptContext`. The feature defaults off. The initial limits are 15
+seconds and 65,536 output bytes; malformed or out-of-range config disables the
+provider.
+
+Standard input uses `harnery.prompt-context-request/v1`. Standard output uses
+`harnery.prompt-context-result/v1`. The result carries one provider id, context,
+matched/succeeded/failed counts, and bounded reason codes. Harnery validates the
+whole result before using any field. A missing executable, timeout, signal,
+nonzero exit, malformed result, oversized output, or empty result leaves the
+ordinary turn usable.
+
+Claude Code and Codex use direct delivery. Cursor uses consume delivery. On a
+Cursor session start, Harnery returns an opaque key through the supported hook
+environment output. The prompt hook stages a mode-`0600` envelope indexed by a
+digest of that key and bound to the normalized conversation and turn. The
+`prompt-context consume` command atomically claims one envelope and deletes it
+after reading. Missing or ambiguous identity fails closed. Expired state is
+removed at session boundaries and ordinary cleanup.
+
+The generated Cursor Always Apply rule runs the consume command before an
+answer. A pending envelope at `stop` adds that command to one bounded recovery
+message, then records that recovery so it cannot loop. If Cursor later supports
+prompt-time context, its capability changes from `consume` to `direct`; the
+provider contract stays unchanged.
+
+Provider context is sensitive regardless of content. The model-visible harness
+transcript necessarily contains delivered context. Harnery's extra audit keeps
+only provider id, delivery status, elapsed time, counts, reason codes, byte
+count, and a keyed SHA-256 fingerprint. The key stays in owner-only project
+runtime state, so a copied audit row cannot be used to guess a low-entropy
+identifier. Hook logs, coordination events, snapshots, and error text do not
+contain the prompt or provider payload.
+
+## Result
+
+The hook path stays single-owner and source-neutral. A host owns detection,
+credentials, and lookups behind one executable, while Harnery owns lifecycle,
+validation, adapter routing, bounded state, and redacted audit behavior.

@@ -308,6 +308,37 @@
         }
       }
     },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional project-owned hook extensions. User-global values cannot enable project executables.",
+      "properties": {
+        "promptContext": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "description": "Run scripts/hooks/harness/extensions/prompt-context through the normalized prompt hook. Disabled by default and project config only.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 120000,
+              "default": 15000
+            },
+            "maxOutputBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4194304,
+              "default": 65536
+            }
+          }
+        }
+      }
+    },
     "instructions": {
       "type": "object",
       "additionalProperties": false,
