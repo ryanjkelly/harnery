@@ -10,7 +10,8 @@ export const VideoSelectionContext = createContext<VideoSelection | null>(null);
 
 export function videoAutoplayEnabled(): boolean {
   try {
-    return localStorage.getItem(KEY) !== "false";
+    const stored = localStorage.getItem(KEY);
+    return stored === null ? fallback : stored !== "false";
   } catch {
     return fallback;
   }

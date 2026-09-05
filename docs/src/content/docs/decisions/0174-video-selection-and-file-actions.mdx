@@ -1,0 +1,56 @@
+---
+title: "ADR 0174: video selection and file actions"
+description: Define automatic video playback, repeat selection, and accessible file menus in Browse.
+sidebar:
+  order: 174
+---
+
+**Date:** 2026-09-05
+**Status:** Accepted
+
+## Context
+
+Reviewing several video files required a separate Play click for each preview.
+File actions were concentrated in the preview header, so copying a path or
+downloading a file first required opening it.
+
+## Decision
+
+Video previews attempt playback when opened. An adjacent **Autoplay videos**
+switch defaults to on and persists in browser storage across file viewers and
+tabs. Changing the switch affects subsequent opens. Enabling it does not start
+an already paused video. Native video controls remain available, and a browser
+that refuses automatic playback gets a short instruction to press Play.
+
+Selecting the video already in the preview sends a pause request. It preserves
+the position and never resumes or restarts a paused video. Selection intent
+travels through React context so a repeat click before metadata or the renderer
+loads also suppresses the pending automatic start. A play/pause toggle on the
+file card was rejected because repeat clicks would unexpectedly resume playback.
+
+File cards and list rows expose the same actions through right-click, an
+always-visible ellipsis button, and the keyboard context-menu shortcut. Opening
+a menu does not open its target file or change playback. Menu actions cover
+previewing, opening another tab, downloads, path/name/link copying, containing
+folders, native file-manager reveal, folder pinning, and refresh. Folder menus
+omit file-only operations. Existing file endpoints continue to enforce access
+policy; this change adds no filesystem mutation endpoint.
+
+The menu is a viewport-clamped portal with arrow-key navigation, Home/End,
+Escape dismissal, and focus restoration. Keeping it outside the scrolling
+file list prevents clipping at pane boundaries. Triggers are separate buttons,
+so clicking the ellipsis cannot also activate the file card.
+
+## Scope
+
+This defines local file browsing behavior. Autoplay is a preference within the
+browser profile and origin, not an account setting synchronized between devices.
+
+## Result
+
+The production build passed 21 browser interaction checks with no runtime
+errors. Checks covered audible autoplay under normal browser policy, repeat
+selection while playing or paused, selection before metadata loaded, saved
+preferences, file and folder actions, keyboard navigation, and menu placement
+on desktop and mobile. TypeScript, formatting, and 10 adjacent browse and HTML
+preview tests also passed.

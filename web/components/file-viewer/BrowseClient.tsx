@@ -16,6 +16,7 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  MoreHorizontal,
   PanelRightClose,
   Pin,
   RefreshCw,
@@ -36,8 +37,10 @@ import { AgentChip } from "@/components/AgentChip";
 import { usePaletteFileOpenOverride } from "@/components/palette/PaletteProvider";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { BrowseSearchResult, BrowseWorkspaces } from "@/lib/browse-types";
+import { invalidatePreview } from "@/lib/file-viewer/client";
 import { createLiveRefreshScheduler } from "@/lib/live-refresh-scheduler";
 import { useLiveSignal } from "@/lib/useLiveSignal";
+import { browseFileActions } from "./browse-file-actions";
 import {
   addRecent,
   type BrowseLocation,
@@ -52,10 +55,12 @@ import {
   parentDirectory,
   readBrowseLocation,
 } from "./browse-model";
+import { FileActionsMenu } from "./FileActionsMenu";
 import { FileThumbnail } from "./FileThumbnail";
 import { FileViewerPane } from "./FileViewerPane";
 import { iconForFile } from "./file-icons";
 import { clearThumbnailCache } from "./thumbnail-cache";
+import { type VideoSelection, VideoSelectionContext } from "./video-playback";
 
 export interface BrowseScope {
   label: string;
@@ -132,6 +137,15 @@ export function BrowseClient({
   const [highlight, setHighlight] = useState<string | null>(initialPath);
   const [fullPreview, setFullPreview] = useState(false);
   const [previewWidth, setPreviewWidth] = useState(48);
+  const [videoSelection, setVideoSelection] = useState<VideoSelection | null>(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
+  const [fileMenu, setFileMenu] = useState<{
+    entry: BrowserEntry;
+    x: number;
+    y: number;
+    trigger: HTMLElement;
+  } | null>(null);
+  const [actionMessage, setActionMessage] = useState("");
   const cache = useRef(new Map<string, { at: number; data: Listing }>());
   const listArea = useRef<HTMLDivElement>(null);
   const folderMode = location.view === "folder" || location.view === "repository";
@@ -140,6 +154,7 @@ export function BrowseClient({
 
   useEffect(() => {
     const restore = () => {
+      setFileMenu(null);
       const next = readBrowseLocation(window.location.search);
       const params = new URLSearchParams(window.location.search);
       setLocation(next);
@@ -225,6 +240,7 @@ export function BrowseClient({
   }, [liveScheduler]);
 
   const navigate = useCallback((next: BrowseLocation, keepSearch = false) => {
+    setFileMenu(null);
     const url = new URL(window.location.href);
     if (!keepSearch) {
       url.searchParams.delete("q");
@@ -261,6 +277,12 @@ export function BrowseClient({
   }, [query, searchScope, ready]);
   const openFile = useCallback(
     (path: string, keepView = false) => {
+      setVideoSelection((previous) => ({
+        path,
+        action: location.file === path ? "pause" : "open",
+        sequence: (previous?.sequence ?? 0) + 1,
+      }));
+      if (location.file === path) return;
       navigate(
         keepView
           ? { ...location, file: path }
@@ -475,10 +497,34 @@ export function BrowseClient({
       save("pins", next);
       return next;
     });
+  const openMenu = useCallback(
+    (entry: BrowserEntry, x: number, y: number, trigger: HTMLElement) => {
+      setFileMenu({ entry, x, y, trigger });
+    },
+    [],
+  );
+  const closeMenu = useCallback(() => setFileMenu(null), []);
+  const menuActions = fileMenu
+    ? browseFileActions({
+        entry: fileMenu.entry,
+        selectedPath: location.file,
+        pins,
+        onOpen: openEntry,
+        onNavigate: navigate,
+        onPin: togglePin,
+        onRefresh: (path) => {
+          invalidatePreview(path);
+          refreshFiles();
+          if (location.file === path) setPreviewRevision((value) => value + 1);
+          setActionMessage("Files refreshed.");
+        },
+        notify: setActionMessage,
+      })
+    : [];
   const onListKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (
       event.target instanceof HTMLElement &&
-      event.target.closest("input,select,textarea,[contenteditable=true]")
+      event.target.closest("input,select,textarea,[contenteditable=true],[data-file-menu-trigger]")
     )
       return;
     if (event.key === "Escape" && location.file) {
@@ -892,6 +938,8 @@ export function BrowseClient({
                     showPath={remoteSearch || !folderMode}
                     onOpen={openEntry}
                     onFocus={setHighlight}
+                    onMenu={openMenu}
+                    menuOpen={fileMenu?.entry.relPath === entry.relPath}
                   />
                 ))}
               </div>
@@ -998,11 +1046,35 @@ export function BrowseClient({
                   <PanelRightClose className="size-4" />
                 </IconButton>
               </div>
-              <FileViewerPane path={location.file} />
+              <VideoSelectionContext.Provider value={videoSelection}>
+                <FileViewerPane key={previewRevision} path={location.file} />
+              </VideoSelectionContext.Provider>
             </section>
           </>
         )}
       </div>
+      <FileActionsMenu
+        anchor={fileMenu}
+        label={fileMenu ? `Actions for ${displayName(fileMenu.entry)}` : "File actions"}
+        actions={menuActions}
+        onClose={closeMenu}
+        returnFocus={fileMenu?.trigger}
+      />
+      {actionMessage && (
+        <div
+          role="status"
+          className="fixed bottom-4 left-1/2 z-50 flex max-w-[90vw] -translate-x-1/2 items-center gap-3 rounded-md border border-border bg-background px-4 py-2 text-sm shadow-lg"
+        >
+          {actionMessage}
+          <button
+            type="button"
+            aria-label="Dismiss notification"
+            onClick={() => setActionMessage("")}
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1044,6 +1116,8 @@ const EntryRow = memo(function EntryRow({
   showPath,
   onOpen,
   onFocus,
+  onMenu,
+  menuOpen,
 }: {
   entry: BrowserEntry;
   thumbnailGeneration: number;
@@ -1053,22 +1127,44 @@ const EntryRow = memo(function EntryRow({
   showPath: boolean;
   onOpen: (entry: BrowserEntry) => void;
   onFocus: (path: string) => void;
+  onMenu: (entry: BrowserEntry, x: number, y: number, trigger: HTMLElement) => void;
+  menuOpen: boolean;
 }) {
   const Icon = entry.kind === "dir" ? Folder : iconForFile(entry.name);
   const date = entry.mtime ? new Date(entry.mtime) : null;
   const formattedDate = date && !Number.isNaN(date.getTime()) ? MODIFIED_DATE.format(date) : null;
   const subtitle = entry.purpose || (showPath ? entry.relPath : null);
+  const menuKeyboard = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const trigger = event.currentTarget
+      .closest("[data-file-row]")!
+      .querySelector<HTMLButtonElement>("[data-file-menu-trigger]")!;
+    const bounds = trigger.getBoundingClientRect();
+    onMenu(entry, bounds.left, bounds.bottom, trigger);
+  };
   return (
-    <div
-      className={`${grid ? "overflow-hidden rounded-lg border border-border" : ""} ${selected ? "bg-muted ring-1 ring-inset ring-ring/40" : "hover:bg-muted/40"}`}
+    <fieldset
+      data-file-row
+      className={`relative min-w-0 ${grid ? "overflow-hidden rounded-lg border border-border" : ""} ${selected ? "bg-muted ring-1 ring-inset ring-ring/40" : "hover:bg-muted/40"}`}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        const trigger = event.currentTarget.querySelector<HTMLButtonElement>(
+          "[data-file-menu-trigger]",
+        )!;
+        const bounds = trigger.getBoundingClientRect();
+        onMenu(entry, event.clientX || bounds.left, event.clientY || bounds.bottom, trigger);
+      }}
     >
       <button
         type="button"
         data-entry-index={index}
         onClick={() => onOpen(entry)}
+        onKeyDown={menuKeyboard}
         onFocus={() => onFocus(entry.relPath)}
         aria-label={`${entry.kind === "dir" ? "Open folder" : "Preview"} ${displayName(entry)}`}
-        className={`w-full min-w-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${grid ? "block p-3" : "flex items-center gap-3 px-4 py-3 sm:px-5"}`}
+        className={`w-full min-w-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${grid ? "block p-3" : "flex items-center gap-3 py-3 pl-4 pr-12 sm:pl-5"}`}
       >
         <div
           className={
@@ -1109,6 +1205,27 @@ const EntryRow = memo(function EntryRow({
           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
         )}
       </button>
+      <Tooltip
+        content={`Actions for ${displayName(entry)}`}
+        triggerClassName={`absolute right-2 ${grid ? "top-2" : "top-3"}`}
+      >
+        <button
+          type="button"
+          data-file-menu-trigger
+          aria-label={`Actions for ${displayName(entry)}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onKeyDown={menuKeyboard}
+          onClick={(event) => {
+            event.stopPropagation();
+            const bounds = event.currentTarget.getBoundingClientRect();
+            onMenu(entry, bounds.left, bounds.bottom, event.currentTarget);
+          }}
+          className="rounded-md border border-border bg-background/90 p-1.5 text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          <MoreHorizontal className="size-4" />
+        </button>
+      </Tooltip>
       {(entry.owner || (grid && (formattedDate || entry.deliveryItems?.length))) && (
         <div
           className={`flex flex-wrap items-center gap-3 pb-3 text-xs text-muted-foreground ${grid ? "px-3" : "pl-16 pr-5"}`}
@@ -1120,7 +1237,7 @@ const EntryRow = memo(function EntryRow({
           ) : null}
         </div>
       )}
-    </div>
+    </fieldset>
   );
 });
 function formatBytes(size: number): string {
