@@ -34,6 +34,7 @@ import {
   useState,
 } from "react";
 import { AgentChip } from "@/components/AgentChip";
+import { useFormatDateTime } from "@/components/FormattedDateTime";
 import { usePaletteFileOpenOverride } from "@/components/palette/PaletteProvider";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { BrowseSearchResult, BrowseWorkspaces } from "@/lib/browse-types";
@@ -80,7 +81,6 @@ const BUTTON =
   "inline-flex items-center justify-center gap-2 rounded-md px-2.5 py-2 text-sm transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-40";
 const SELECT =
   "min-w-0 rounded-md border border-border bg-background px-2 py-2 text-xs outline-none focus:ring-2 focus:ring-ring";
-const MODIFIED_DATE = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 const LABELS: Record<BrowseView, string> = {
   recent: "Recent work",
   deliverables: "Deliverables",
@@ -1147,8 +1147,9 @@ const EntryRow = memo(function EntryRow({
   menuOpen: boolean;
 }) {
   const Icon = entry.kind === "dir" ? Folder : iconForFile(entry.name);
+  const formatDateTime = useFormatDateTime();
   const date = entry.mtime ? new Date(entry.mtime) : null;
-  const formattedDate = date && !Number.isNaN(date.getTime()) ? MODIFIED_DATE.format(date) : null;
+  const formattedDate = date && !Number.isNaN(date.getTime()) ? formatDateTime(date) : null;
   const subtitle = entry.purpose || (showPath ? entry.relPath : null);
   const menuKeyboard = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
