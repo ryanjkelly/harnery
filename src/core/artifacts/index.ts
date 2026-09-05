@@ -18,7 +18,6 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
-  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -41,6 +40,7 @@ import {
   validArtifactActivity,
 } from "./activity.ts";
 import { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
+import { withArtifactLock } from "./mutation-lock.ts";
 
 export { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
 export type {
@@ -605,20 +605,42 @@ export function cleanArtifacts(
 
 function cleanArtifactsUnlocked(
   repoRoot: string,
-  opts: { yes?: boolean; now?: Date; freshnessSeconds?: number },
+  opts: {
+    yes?: boolean;
+    now?: Date;
+    freshnessSeconds?: number;
+    maxDeletes?: number;
+    timeBudgetMs?: number;
+  },
 ): ArtifactInventoryEntry[] {
+  const started = performance.now();
   const now = opts.now ?? new Date();
   const freshnessSeconds = opts.freshnessSeconds ?? 600;
   const rows = inventoryArtifacts(repoRoot, { now, freshnessSeconds });
   if (!opts.yes) return rows;
 
+  let attempted = 0;
   return rows.map((entry) => {
     if (entry.action !== "would-delete") return entry;
+    if (
+      attempted >= (opts.maxDeletes ?? Infinity) ||
+      (attempted > 0 && performance.now() - started >= (opts.timeBudgetMs ?? Infinity))
+    )
+      return entry;
+    attempted++;
     // Reclassify immediately before removal. A renewal, release-state change,
     // heartbeat, symlink swap, or tracked file added since inventory must win.
-    const current = inventoryArtifacts(repoRoot, { now, freshnessSeconds }).find(
-      (row) => row.path === entry.path,
-    );
+    // Only repository-budget eviction needs a new whole-store plan. Expiry and
+    // per-unit size are local decisions; recheck all their guards on the target.
+    const current =
+      entry.classification === "managed-over-budget"
+        ? inventoryArtifacts(repoRoot, { now, freshnessSeconds }).find(
+            (row) => row.path === entry.path,
+          )
+        : applyArtifactUnitBudget(
+            repoRoot,
+            classifyArtifactPath(repoRoot, entry.path, now, freshnessSeconds),
+          );
     if (!current) {
       return { ...entry, classification: "unknown", reason: "entry disappeared", action: "keep" };
     }
@@ -659,7 +681,7 @@ const AUTO_CLEAN_STAMP = ".harnery/artifacts-auto-clean.json";
 
 export interface ArtifactAutoCleanResult {
   ran: boolean;
-  reason: "swept" | "disabled" | "fresh" | "no-root";
+  reason: "swept" | "partial" | "failed" | "disabled" | "fresh" | "no-root";
   deleted: number;
   bytes: number;
 }
@@ -672,13 +694,14 @@ export interface ArtifactAutoCleanResult {
  * busy hosts. This runs the exact same guarded deletion (expired or over-budget
  * managed entries, each re-classified immediately before removal;
  * unmanaged and legacy directories are never touched) at most once per
- * interval (default 1h), claim-first via a stamp file so concurrent session
- * starts do not double-sweep. Disable with `artifacts.auto_clean: false` or
+ * interval (default 1h after completion, 1m between partial/failed slices).
+ * The owner-aware lock serializes callers; interrupted attempts can retry.
+ * Disable with `artifacts.auto_clean: false` or
  * `HARNERY_ARTIFACT_AUTO_CLEAN=0`.
  */
 export function autoCleanArtifacts(
   repoRoot: string,
-  opts: { now?: Date } = {},
+  opts: { now?: Date; maxDeletes?: number; timeBudgetMs?: number } = {},
 ): ArtifactAutoCleanResult {
   if (!existsSync(artifactsRoot(repoRoot))) {
     return { ran: false, reason: "no-root", deleted: 0, bytes: 0 };
@@ -691,7 +714,7 @@ export function autoCleanArtifacts(
 
 function autoCleanArtifactsUnlocked(
   repoRoot: string,
-  opts: { now?: Date },
+  opts: { now?: Date; maxDeletes?: number; timeBudgetMs?: number },
 ): ArtifactAutoCleanResult {
   const now = opts.now ?? new Date();
   assertValidDate(now, "now");
@@ -704,26 +727,73 @@ function autoCleanArtifactsUnlocked(
   const stampPath = join(resolve(repoRoot), AUTO_CLEAN_STAMP);
   const intervalMs = artifactAutoCleanIntervalHours() * 60 * 60 * 1000;
   try {
-    const stamp = JSON.parse(readFileSync(stampPath, "utf8")) as { last_run_at?: string };
-    const last = Date.parse(stamp.last_run_at ?? "");
-    if (Number.isFinite(last) && now.getTime() - last < intervalMs) {
+    const stamp = JSON.parse(readFileSync(stampPath, "utf8")) as {
+      status?: string;
+      last_completed_at?: string;
+      retry_after?: string;
+    };
+    const last = Date.parse(stamp.last_completed_at ?? "");
+    if (
+      (stamp.status === "completed" &&
+        Number.isFinite(last) &&
+        now.getTime() - last < intervalMs) ||
+      (["partial", "failed"].includes(stamp.status ?? "") &&
+        Date.parse(stamp.retry_after ?? "") > now.getTime())
+    ) {
       return { ran: false, reason: "fresh", deleted: 0, bytes: 0 };
     }
   } catch {
     // Missing or unreadable stamp: sweep now and write a fresh one.
   }
-  // Claim first: a crash mid-sweep costs one skipped interval, while claiming
-  // after would let two concurrent session starts both walk the store.
-  writeFileSync(stampPath, `${JSON.stringify({ last_run_at: now.toISOString() }, null, 2)}\n`);
-  const rows = cleanArtifactsUnlocked(repoRoot, { yes: true, now });
-  const deletedRows = rows.filter((row) => row.action === "deleted");
-  const deleted = deletedRows.length;
-  const bytes = deletedRows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
-  writeFileSync(
-    stampPath,
-    `${JSON.stringify({ last_run_at: now.toISOString(), deleted, bytes }, null, 2)}\n`,
-  );
-  return { ran: true, reason: "swept", deleted, bytes };
+  const maxDeletes = opts.maxDeletes ?? 10;
+  const timeBudgetMs = opts.timeBudgetMs ?? 5000;
+  if (
+    !Number.isSafeInteger(maxDeletes) ||
+    maxDeletes < 1 ||
+    !Number.isFinite(timeBudgetMs) ||
+    timeBudgetMs < 0
+  )
+    throw new Error(
+      "cleanup limits must allow at least one deletion and a nonnegative time budget",
+    );
+  const attempt = { last_attempt_at: now.toISOString() };
+  const writeStamp = (state: object) => {
+    const temp = `${stampPath}.${randomUUID()}.tmp`;
+    writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`);
+    renameSync(temp, stampPath);
+  };
+  writeStamp({ ...attempt, status: "running" });
+  try {
+    const rows = cleanArtifactsUnlocked(repoRoot, { yes: true, now, maxDeletes, timeBudgetMs });
+    const deletedRows = rows.filter((row) => row.action === "deleted");
+    const deleted = deletedRows.length;
+    const bytes = deletedRows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
+    const remaining = rows.filter((row) => row.action === "would-delete").length;
+    const failures = rows
+      .filter((row) => row.classification === "unknown")
+      .map((row) => ({ name: row.name, reason: row.reason }));
+    const status = failures.length ? "failed" : remaining ? "partial" : "completed";
+    writeStamp({
+      ...attempt,
+      status,
+      deleted,
+      bytes,
+      remaining,
+      failures,
+      ...(status === "completed"
+        ? { last_completed_at: now.toISOString() }
+        : { retry_after: new Date(now.getTime() + 60_000).toISOString() }),
+    });
+    return { ran: true, reason: status === "completed" ? "swept" : status, deleted, bytes };
+  } catch (error) {
+    writeStamp({
+      ...attempt,
+      status: "failed",
+      error: errorMessage("cleanup failed", error),
+      retry_after: new Date(now.getTime() + 60_000).toISOString(),
+    });
+    throw error;
+  }
 }
 
 export function resolveArtifactRef(repoRoot: string, ref: string): string {
@@ -845,26 +915,33 @@ function classifyArtifactPath(
   };
 }
 
+function applyArtifactUnitBudget(
+  repoRoot: string,
+  row: ArtifactInventoryEntry,
+): ArtifactInventoryEntry {
+  const maxUnitBytes = artifactMaxUnitBytes(repoRoot);
+  if (
+    row.classification === "managed-current" &&
+    row.bytes !== null &&
+    row.bytes > maxUnitBytes &&
+    !row.oversize_acknowledged
+  ) {
+    return {
+      ...row,
+      classification: "managed-oversize",
+      action: "would-delete",
+      reason: `bundle uses ${row.bytes} bytes, above the ${maxUnitBytes}-byte ceiling without --big`,
+    };
+  }
+  return row;
+}
+
 function applyArtifactBudgets(
   repoRoot: string,
   inputRows: ArtifactInventoryEntry[],
 ): ArtifactInventoryEntry[] {
-  const maxUnitBytes = artifactMaxUnitBytes(repoRoot);
   const maxBytes = artifactMaxBytes(repoRoot);
-  const rows = inputRows.map((row) => ({ ...row }));
-
-  for (const row of rows) {
-    if (
-      row.classification === "managed-current" &&
-      row.bytes !== null &&
-      row.bytes > maxUnitBytes &&
-      !row.oversize_acknowledged
-    ) {
-      row.classification = "managed-oversize";
-      row.reason = `bundle uses ${row.bytes} bytes, above the ${maxUnitBytes}-byte ceiling without --big`;
-      row.action = "would-delete";
-    }
-  }
+  const rows = inputRows.map((row) => applyArtifactUnitBudget(repoRoot, { ...row }));
 
   const managedBytes = rows.reduce(
     (sum, row) => sum + (row.artifact_id && row.bytes !== null ? row.bytes : 0),
@@ -1227,27 +1304,6 @@ export function repairArtifactActivity(
       });
   };
   return opts.yes ? withArtifactLock(repoRoot, repair) : repair();
-}
-
-/** A persistent directory lock fails closed on contention or a crashed owner. */
-function withArtifactLock<T>(repoRoot: string, action: () => T): T {
-  const lock = join(resolve(repoRoot), ".harnery/artifacts-mutation.lock");
-  mkdirSync(dirname(lock), { recursive: true });
-  try {
-    mkdirSync(lock);
-  } catch (error) {
-    throw new Error(
-      errorMessage(
-        "artifact store mutation lock unavailable; retry after its owner finishes",
-        error,
-      ),
-    );
-  }
-  try {
-    return action();
-  } finally {
-    rmdirSync(lock);
-  }
 }
 
 function validHoldId(value: unknown): value is string {

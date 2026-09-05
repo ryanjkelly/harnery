@@ -1,0 +1,72 @@
+---
+title: "ADR 0177: recover interrupted artifact cleanup"
+description: Recover dead cleanup owners without evicting live writers or losing review evidence.
+sidebar:
+  order: 177
+---
+
+Date: 2026-09-05. Status: accepted.
+
+## Context
+
+An interrupted cleanup could leave an empty directory lock indefinitely. Every
+artifact mutation used that lock, so creation, release, and early retirement
+also stopped. The cleanup stamp recorded an attempt before work began without
+distinguishing it from completion. Cleanup also inventoried the entire store
+before every deletion, even when only one workspace's expiry mattered.
+
+This extends [ADR 0170](/decisions/0170-retire-reviewed-artifacts-early/).
+
+## Alternatives
+
+Removing old locks after a timeout could evict a slow live writer. Ignoring
+the lock after a cleanup failure would allow concurrent deletion and renewal.
+Neither is safe. A hard cleanup timeout would introduce more interrupted writes.
+Automatically discarding passing checks would remove the reviewing agent's
+judgment about pending readers and final evidence.
+
+## Decision
+
+Record each lock owner's hostname, PID, process-start token, and acquisition
+time in a uniquely named file. Recover only demonstrably dead local owners.
+Only the contender that removes the observed owner's unique file may remove
+the lock directory. Other contenders stop rather than touching a replacement.
+Harnery leaves the lock alone when its owner record is foreign, malformed,
+missing, or unverifiable.
+
+Publication and release still have a short empty-directory interval. A crash
+there requires explicit inspection, as does recovery from an old empty lock.
+Automatically removing those directories cannot distinguish a crash from an
+initializing writer. This is a local coordination boundary, not protection
+against an actor who can rewrite runtime files.
+
+Automatic cleanup attempts at most ten candidates, yielding between units after
+five seconds. One inventory and at least one candidate may exceed that budget.
+The manual command remains a complete sweep. Expiry and per-unit size eviction
+revalidate only the target; repository-budget eviction recalculates the full
+plan. Every deletion retains the existing hold, live-owner, tracked-path,
+filesystem, identity, size, modification, and deadline checks.
+
+Write each running, partial, failed, or completed state atomically. Only
+completion starts the hourly throttle. Partial and failed slices retry on the
+next opportunity after a one-minute cooldown; interrupted attempts can retry
+as soon as their lock recovers. Cleanup still needs a session start, new work,
+or an explicit command; it does not run while the project is idle.
+
+Return the retain-or-discard reminder from `artifacts release` as well as
+creation and verification results. Release still preserves retention. The
+reminder leaves disposal judgment with the reviewing agent because a passing
+check cannot establish whether another reader still needs its evidence.
+
+## Verification
+
+Tests kill a child holding a lock, confirm live-owner exclusion and recovery,
+exercise interrupted and partial sweeps, and check the unchanged deletion
+guards. CLI tests verify that release returns the reminder without shortening
+the retention window.
+
+## Scope
+
+This decision covers the artifact store's mutation lock and automatic cleanup.
+It does not change other subsystem locks, event-ledger retention, or review-pack
+deadlines.

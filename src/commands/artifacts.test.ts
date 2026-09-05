@@ -48,6 +48,11 @@ describe("artifacts command", () => {
         90 * 60_000,
       );
       expect(created.data[0].after_review).toContain("artifacts discard");
+      const released = await invoke(["release", id]);
+      expect(released.errors).toEqual([]);
+      expect(released.data[0].after_review).toContain("artifacts discard");
+      expect(released.data[0].retention).toEqual(manifest.retention);
+      expect(released.data[0].released_at).toBeDefined();
       expect(
         (await invoke(["renew", id, "--minutes", "120", "--reason", "Pending"])).errors,
       ).toEqual([]);

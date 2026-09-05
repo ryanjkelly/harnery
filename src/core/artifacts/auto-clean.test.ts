@@ -82,7 +82,8 @@ describe("autoCleanArtifacts", () => {
     const stamp = JSON.parse(
       readFileSync(join(root, ".harnery", "artifacts-auto-clean.json"), "utf8"),
     );
-    expect(stamp.last_run_at).toBe(T0_PLUS_3D.toISOString());
+    expect(stamp.status).toBe("completed");
+    expect(stamp.last_completed_at).toBe(T0_PLUS_3D.toISOString());
     expect(stamp.deleted).toBe(1);
   });
 
@@ -92,6 +93,48 @@ describe("autoCleanArtifacts", () => {
     const result = autoCleanArtifacts(root, { now: new Date(T0.getTime() + 12 * 60 * 60 * 1000) });
     expect(result.deleted).toBe(0);
     expect(existsSync(path)).toBe(true);
+  });
+
+  test("an interrupted attempt does not count as a completed sweep", () => {
+    const root = makeRoot();
+    const path = seedExpired(root, T0);
+    writeFileSync(
+      join(root, ".harnery/artifacts-auto-clean.json"),
+      JSON.stringify({
+        status: "running",
+        last_attempt_at: T0_PLUS_3D.toISOString(),
+      }),
+    );
+    expect(autoCleanArtifacts(root, { now: T0_PLUS_3D }).deleted).toBe(1);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("partial sweeps yield and continue after a short cooldown", () => {
+    const root = makeRoot();
+    for (let i = 0; i < 3; i++) seedExpired(root, T0, `expired-${i}`);
+    expect(autoCleanArtifacts(root, { now: T0_PLUS_3D, maxDeletes: 1 })).toMatchObject({
+      reason: "partial",
+      deleted: 1,
+    });
+    const stamp = JSON.parse(
+      readFileSync(join(root, ".harnery/artifacts-auto-clean.json"), "utf8"),
+    );
+    expect(stamp).toMatchObject({ status: "partial", remaining: 2 });
+    expect(stamp.last_completed_at).toBeUndefined();
+    expect(autoCleanArtifacts(root, { now: T0_PLUS_3D }).reason).toBe("fresh");
+    expect(
+      autoCleanArtifacts(root, { now: new Date(T0_PLUS_3D.getTime() + 60_001) }),
+    ).toMatchObject({ reason: "swept", deleted: 2 });
+  });
+
+  test("a time-limited slice always makes one unit of progress", () => {
+    const root = makeRoot();
+    seedExpired(root, T0, "first");
+    seedExpired(root, T0, "second");
+    expect(autoCleanArtifacts(root, { now: T0_PLUS_3D, timeBudgetMs: 0 })).toMatchObject({
+      reason: "partial",
+      deleted: 1,
+    });
   });
 
   test("throttles to once per interval", () => {

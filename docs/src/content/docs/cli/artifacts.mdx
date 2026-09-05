@@ -47,7 +47,11 @@ harn artifacts create checkout-audit \
 # Write screenshots and reports under the returned path.
 
 # Stop treating the creating agent's heartbeat as active-use protection.
+# Keep the normal window when review, a handoff, or final evidence needs it.
 harn artifacts release <artifact-id>
+
+# For reviewed disposable captures, use discard instead of release.
+harn artifacts discard <artifact-id> --reason "Reviewed; superseded by the final capture"
 
 # Preview cleanup. This never changes the filesystem.
 harn artifacts clean
@@ -88,9 +92,10 @@ harn artifacts renew <artifact-id> --minutes 180 --reason "Still reviewing"
 `create` and `renew` accept whole minutes from 1 through 5,256,000, or whole
 days from 1 through 3,650. The flags are mutually exclusive. `renew` requires
 one of them and can restore a longer window before cleanup deletes the files.
-Artifact creation, managed `qa-run` results, and terminal `qa-status` reports
-include `after_review` guidance with the appropriate discard command. This advice
-never shortens retention by itself.
+Artifact creation and release, managed `qa-run` results, and terminal `qa-status`
+reports include `after_review` guidance with the appropriate discard command.
+Release returns this reminder alongside its unchanged manifest fields. The
+reminder never shortens retention by itself.
 
 ## Deliver review files consistently
 
@@ -220,15 +225,24 @@ ceiling, the mutating command also requires `--big`.
 
 ## Automatic cleanup
 
-Session starts, `artifacts create`, and new managed QA workspaces offer a cleanup
-opportunity at most once per hour. They run the same guarded deletion as
-`clean --yes`. The sweep is throttled by a
-stamp file (`.harnery/artifacts-auto-clean.json`, which also records the last
-run's deleted count and bytes), deletes only entries still classified
+Session starts, `artifacts create`, and new managed QA workspaces offer cleanup
+opportunities. A completed sweep suppresses another for one hour. Automatic
+sweeps attempt at most ten deletions and yield between candidates after five
+seconds. The initial inventory and one filesystem operation can exceed that
+time budget; this is not a hard process timeout. Each slice attempts at least
+one candidate so a large store can still make progress. Partial or failed
+slices can retry on another opportunity after one minute.
+
+The stamp file (`.harnery/artifacts-auto-clean.json`) distinguishes `running`,
+`partial`, `failed`, and `completed` attempts and records counts, bytes, remaining
+candidates, and failures. An interrupted attempt does not count as completion.
+The sweep deletes only entries still classified
 `managed-expired`, `managed-oversize`, or `managed-over-budget` after the final
 recheck, and never touches unmanaged or legacy directories. The mutation lock
 serializes the sweep and its timestamp with other artifact mutations. Lock
-contention does not consume the cleanup opportunity.
+contention does not consume the cleanup opportunity. Expiry and per-unit size
+checks rescan only the candidate; repository-budget eviction still refreshes
+the whole store because its decision depends on other entries.
 
 Expiration makes files eligible for the next cleanup opportunity; it is not a
 background timer. An idle project keeps expired files until another session,
@@ -346,10 +360,18 @@ cleanup remains a separate `artifacts clean --yes` operation with the existing
 hold, owner, tracked-file, and filesystem guards.
 
 Manifest mutation and deletion share `.harnery/artifacts-mutation.lock`.
-Contention causes writes to fail and cleanup to retain its candidates. Retry
-after the running operation ends. A crashed process leaves the lock in place
-deliberately: establish that artifact operations have stopped before removing
-that exact empty lock directory. Never remove it based on age alone.
+Each lock records its hostname, process ID, and process-start token in a unique
+owner file. The next writer can recover a dead local owner's lock. Live owners,
+foreign hosts, unreadable owners, symlinks, and empty locks remain protected;
+age alone never permits removal. Competing recovery attempts cannot remove a
+replacement owner's lock.
+
+An empty lock can come from an older runtime or an interruption while publishing
+or removing its owner file. There is no safe automatic way to distinguish that
+from a writer initializing the lock. Establish that artifact operations have
+stopped before explicitly removing that exact empty directory. Do not recursively
+delete lock contents. Normal exceptions release the lock; interrupted work
+with a valid owner record recovers automatically.
 
 ## Journal, artifacts, and durable files
 

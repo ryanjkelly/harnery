@@ -227,7 +227,11 @@ export function registerArtifactsCommand(
     .action((ref: string) => {
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
-        emit.data(releaseArtifact(repoRoot, ref, { actor: currentActor(repoRoot) }));
+        const manifest = releaseArtifact(repoRoot, ref, { actor: currentActor(repoRoot) });
+        emit.data({
+          ...manifest,
+          after_review: artifactReviewGuidance(repoRoot, manifest.artifact_id),
+        });
       });
     });
 
