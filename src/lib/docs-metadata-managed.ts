@@ -18,7 +18,10 @@ export function isExcludedDocsMetadataPath(path: string): boolean {
     // Dashboard surfaces render from copies of other repositories' documents.
     /(?:^|\/)content\/dashboards\//.test(rel) ||
     /(?:^|\/)docs\/shopify\/admin-api\//.test(rel) ||
-    /(?:^|\/)docs\/templates\//.test(rel)
+    // Template skeletons carry placeholder frontmatter by design. Hosts keep
+    // them under docs/templates/ or another documentation root such as
+    // meta-docs/templates/, so match the directory name rather than one root.
+    /(?:^|\/)templates\//.test(rel)
   );
 }
 
