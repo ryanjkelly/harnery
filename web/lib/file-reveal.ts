@@ -1,9 +1,9 @@
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import { execFile as execFileCallback } from "node:child_process";
 import { closeSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { coordRoot } from "./coord-reader";
-import { focusExplorerFile } from "./file-reveal-windows";
+import { explorerRevealArgs } from "./file-reveal-windows";
 import { resolveFile } from "./files";
 
 const execFile = promisify(execFileCallback);
@@ -23,7 +23,7 @@ export function nativeRevealPlan(
   options: {
     platform?: NodeJS.Platform;
     wsl?: boolean;
-    wslExplorerPath?: string;
+    wslPowerShellPath?: string;
     wslWindowsPath?: string;
   } = {},
 ): NativeRevealPlan | null {
@@ -34,16 +34,22 @@ export function nativeRevealPlan(
   }
   if (platform === "win32") {
     return {
-      command: "explorer.exe",
-      args: [`/select,${absoluteFile}`],
+      command: path.win32.join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      ),
+      args: explorerRevealArgs(absoluteFile),
       manager: "Explorer",
     };
   }
   if (platform === "linux" && wsl) {
-    if (!options.wslExplorerPath || !options.wslWindowsPath) return null;
+    if (!options.wslPowerShellPath || !options.wslWindowsPath) return null;
     return {
-      command: options.wslExplorerPath,
-      args: [`/select,${options.wslWindowsPath}`],
+      command: options.wslPowerShellPath,
+      args: explorerRevealArgs(options.wslWindowsPath),
       manager: "Explorer",
     };
   }
@@ -61,25 +67,10 @@ export type RevealOutcome =
   | { ok: true; manager: FileManagerName }
   | { ok: false; status: number; error: string; detail: string | null };
 
-/** Explorer hands requests to the desktop shell and can exit nonzero without
- * diagnostics. A successful spawn acknowledges dispatch, not window state. */
+/** One native command per request. Windows uses the shell API's result, not
+ * explorer.exe's unreliable exit status, and opens and raises in one script. */
 export async function launchNativeReveal(plan: NativeRevealPlan): Promise<void> {
-  if (plan.manager !== "Explorer") {
-    await execFile(plan.command, plan.args, { encoding: "utf8", timeout: 5_000 });
-    return;
-  }
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(plan.command, plan.args, {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    child.once("error", reject);
-    child.once("spawn", () => {
-      child.unref();
-      resolve();
-    });
-  });
+  await execFile(plan.command, plan.args, { encoding: "utf8", timeout: 8_000, windowsHide: true });
 }
 
 /** Validate through the same fail-closed resolver used by file serving, then
@@ -98,25 +89,29 @@ export async function revealInNativeFileManager(rawPath: string): Promise<Reveal
 
   const absoluteFile = path.resolve(coordRoot(), ...resolved.relPath.split("/"));
   const wsl = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
-  let wslExplorerPath: string | undefined;
+  let wslPowerShellPath: string | undefined;
   let wslWindowsPath: string | undefined;
   try {
     if (process.platform === "linux" && wsl) {
-      const [convertedFile, convertedExplorer] = await Promise.all([
+      const [convertedFile, convertedPowerShell] = await Promise.all([
         execFile("wslpath", ["-w", absoluteFile], {
           encoding: "utf8",
           timeout: 5_000,
         }),
-        execFile("wslpath", ["-u", "C:\\Windows\\explorer.exe"], {
-          encoding: "utf8",
-          timeout: 5_000,
-        }),
+        execFile(
+          "wslpath",
+          ["-u", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"],
+          {
+            encoding: "utf8",
+            timeout: 5_000,
+          },
+        ),
       ]);
       wslWindowsPath = convertedFile.stdout.trim();
-      wslExplorerPath = convertedExplorer.stdout.trim();
-      if (!wslWindowsPath || !wslExplorerPath) throw new Error("wslpath returned an empty path");
+      wslPowerShellPath = convertedPowerShell.stdout.trim();
+      if (!wslWindowsPath || !wslPowerShellPath) throw new Error("wslpath returned an empty path");
     }
-    const plan = nativeRevealPlan(absoluteFile, { wsl, wslExplorerPath, wslWindowsPath });
+    const plan = nativeRevealPlan(absoluteFile, { wsl, wslPowerShellPath, wslWindowsPath });
     if (!plan) {
       return {
         ok: false,
@@ -126,22 +121,6 @@ export async function revealInNativeFileManager(rawPath: string): Promise<Reveal
       };
     }
     await launchNativeReveal(plan);
-    if (plan.manager === "Explorer") {
-      const windowsFile = wslWindowsPath ?? absoluteFile;
-      const windowsDirectory = wslExplorerPath
-        ? path.dirname(wslExplorerPath)
-        : (process.env.SystemRoot ?? "C:\\Windows");
-      const powershell = path.join(
-        windowsDirectory,
-        "System32",
-        "WindowsPowerShell",
-        "v1.0",
-        "powershell.exe",
-      );
-      // Opening has already succeeded. A denied foreground request must not
-      // turn it back into a misleading launch error.
-      await focusExplorerFile(windowsFile, powershell).catch(() => false);
-    }
     return { ok: true, manager: plan.manager };
   } catch (err) {
     return {

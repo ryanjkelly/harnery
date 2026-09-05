@@ -10,23 +10,31 @@ test("routes native file reveal through Finder on macOS", () => {
 });
 
 test("routes native and WSL Windows paths through Explorer", () => {
-  expect(nativeRevealPlan("C:\\repo\\a file.txt", { platform: "win32", wsl: false })).toEqual({
-    command: "explorer.exe",
-    args: ["/select,C:\\repo\\a file.txt"],
-    manager: "Explorer",
+  const native = nativeRevealPlan("C:\\repo\\a file.txt", { platform: "win32", wsl: false });
+  const wsl = nativeRevealPlan("/home/me/repo/a file.txt", {
+    platform: "linux",
+    wsl: true,
+    wslPowerShellPath: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    wslWindowsPath: "\\\\wsl.localhost\\Ubuntu\\home\\me\\repo\\a file.txt",
   });
-  expect(
-    nativeRevealPlan("/home/me/repo/a file.txt", {
-      platform: "linux",
-      wsl: true,
-      wslExplorerPath: "/mnt/c/Windows/explorer.exe",
-      wslWindowsPath: "\\\\wsl.localhost\\Ubuntu\\home\\me\\repo\\a file.txt",
-    }),
-  ).toEqual({
-    command: "/mnt/c/Windows/explorer.exe",
-    args: ["/select,\\\\wsl.localhost\\Ubuntu\\home\\me\\repo\\a file.txt"],
-    manager: "Explorer",
-  });
+  expect(native?.command).toMatch(/\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/);
+  expect(wsl?.command).toBe("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
+  for (const [plan, filename] of [
+    [native, "C:\\repo\\a file.txt"],
+    [wsl, "\\\\wsl.localhost\\Ubuntu\\home\\me\\repo\\a file.txt"],
+  ] as const) {
+    expect(plan?.manager).toBe("Explorer");
+    expect(plan?.args.slice(0, -1)).toEqual([
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-STA",
+      "-EncodedCommand",
+    ]);
+    const script = Buffer.from(plan!.args.at(-1)!, "base64").toString("utf16le");
+    const encodedPath = /FromBase64String\('([^']+)'\)/.exec(script)?.[1];
+    expect(Buffer.from(encodedPath!, "base64").toString("utf8")).toBe(filename);
+  }
 });
 
 test("opens the containing directory with the Linux file manager", () => {
@@ -37,12 +45,14 @@ test("opens the containing directory with the Linux file manager", () => {
   });
 });
 
-test("Explorer launch acknowledges dispatch even when its process exits nonzero", async () => {
-  await launchNativeReveal({
-    command: process.execPath,
-    args: ["-e", "process.exit(1)"],
-    manager: "Explorer",
-  });
+test("Windows shell API failures are reported by the single reveal command", async () => {
+  await expect(
+    launchNativeReveal({
+      command: process.execPath,
+      args: ["-e", "process.exit(1)"],
+      manager: "Explorer",
+    }),
+  ).rejects.toMatchObject({ code: 1 });
 });
 
 test("Explorer launch still rejects an executable that cannot be started", async () => {

@@ -1,11 +1,6 @@
-import { execFile as execFileCallback } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFile = promisify(execFileCallback);
-
 /** Encode the file as data, separately from PowerShell source. File names may
  * contain quotes, dollar signs, and other PowerShell metacharacters. */
-export function explorerFocusScript(windowsFile: string): string {
+export function explorerRevealScript(windowsFile: string): string {
   const encodedPath = Buffer.from(windowsFile, "utf8").toString("base64");
   return `
 $ErrorActionPreference = 'Stop'
@@ -69,22 +64,14 @@ do {
 `;
 }
 
-export async function focusExplorerFile(
-  windowsFile: string,
-  powershellCommand: string,
-): Promise<boolean> {
-  const script = explorerFocusScript(windowsFile);
-  const { stdout } = await execFile(
-    powershellCommand,
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-STA",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ],
-    { encoding: "utf8", timeout: 8_000, windowsHide: true },
-  );
-  return JSON.parse(stdout.trim()).foreground === true;
+export function explorerRevealArgs(windowsFile: string): string[] {
+  const script = explorerRevealScript(windowsFile);
+  return [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-STA",
+    "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64"),
+  ];
 }
