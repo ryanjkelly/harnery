@@ -1,4 +1,4 @@
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { closeSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -60,6 +60,27 @@ export type RevealOutcome =
   | { ok: true; manager: FileManagerName }
   | { ok: false; status: number; error: string; detail: string | null };
 
+/** Explorer hands requests to the desktop shell and can exit nonzero without
+ * diagnostics. A successful spawn acknowledges dispatch, not window state. */
+export async function launchNativeReveal(plan: NativeRevealPlan): Promise<void> {
+  if (plan.manager !== "Explorer") {
+    await execFile(plan.command, plan.args, { encoding: "utf8", timeout: 5_000 });
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(plan.command, plan.args, {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
 /** Validate through the same fail-closed resolver used by file serving, then
  * hand only its canonical in-repository path to the native file manager. */
 export async function revealInNativeFileManager(rawPath: string): Promise<RevealOutcome> {
@@ -103,7 +124,7 @@ export async function revealInNativeFileManager(rawPath: string): Promise<Reveal
         detail: `No native file manager integration for ${process.platform}`,
       };
     }
-    await execFile(plan.command, plan.args, { encoding: "utf8", timeout: 5_000 });
+    await launchNativeReveal(plan);
     return { ok: true, manager: plan.manager };
   } catch (err) {
     return {

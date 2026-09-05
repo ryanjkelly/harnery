@@ -15,7 +15,7 @@ export function RevealInFileManagerButton({ path }: { path: string }) {
     state === "opening"
       ? "Opening containing folder…"
       : state === "opened"
-        ? "Opened in the system file manager"
+        ? "Folder open requested"
         : state === "error"
           ? `Could not open the containing folder${detail ? `: ${detail}` : ""}`
           : "Show in Explorer, Finder, or the system file manager";
