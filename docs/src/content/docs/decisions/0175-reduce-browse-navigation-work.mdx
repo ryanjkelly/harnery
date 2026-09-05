@@ -1,0 +1,116 @@
+---
+title: "ADR 0175: reduce Browse navigation work"
+description: Read directory metadata asynchronously, give media converters checked descriptors, and retain recently decoded previews.
+sidebar:
+  order: 175
+---
+
+**Date:** 2026-09-05
+**Status:** Accepted
+
+## Context
+
+[ADR 0173](/decisions/0173-prepare-thumbnails-before-navigation/) reduced
+thumbnail scheduling and converter startup costs. Folder navigation still
+loaded the workspace catalog unnecessarily, media generation copied entire
+files before extracting one frame, and leaving a card discarded its decoded
+preview. Returning with Back requested the same successful images again.
+
+## Alternatives considered
+
+More converter concurrency would not remove copying or repeated browser
+work. Listing virtualization would hide files from browser Find. Persistent
+browser storage would retain previews beyond the current document and need
+a separate access-policy invalidation mechanism. Reopening a media pathname
+inside FFmpeg would lose the resolver's checked file identity.
+
+## Decision
+
+Ordinary folders and repository navigation load their own listing without
+requesting the workspace catalog. Workspace views and the artifact root still
+load that catalog. The global command palette also waits until it opens to
+load its catalog; it no longer starts a synchronous catalog scan when another
+page mounts. `listDir` is asynchronous, with eight concurrent metadata
+reads and one `lstat` per ordinary entry. It rechecks directory identity,
+containment, and file policy before returning. All rows remain in the DOM.
+The listing endpoint reports its handler time through `Server-Timing` so
+transport, server scheduling, and client rendering remain distinguishable.
+
+On Linux and macOS, media converters inherit the resolver's open descriptor
+as child descriptor 3. FFmpeg can seek through the descriptor path without
+copying the source or reopening its original pathname. The service checks
+the source version before and after rendering; in-place changes invalidate
+the result. Other platforms retain bounded staging, as do non-media
+converters. Converter timeouts, output caps, protocol restrictions, and
+process cleanup remain in force.
+
+The browser retains up to 64 recently decoded thumbnails, with a 24 MiB
+estimated byte budget and a 30-second lifetime. Entries hold the decoded
+image and object URL. Active cards lease entries, so eviction never revokes
+an image still in use; these active leases can temporarily exceed the
+retention budget. Changed versions, Refresh, hidden documents, and page exit
+retire retained entries. Failed or denied requests are not retained in this
+browser cache. Filesystem version precision remains the freshness limit.
+
+`bun run bench:browse <output-directory> <base-url>` from `web/` creates a
+1,005-entry mixed fixture when optional Office and video tools are installed.
+It checks full DOM coverage, decoded visible previews, rapid scrolling,
+same-document Back, and a failed converter. JSON and screenshots preserve
+the evidence. Default smoke ceilings are 2,500 ms for listing, 5,000 ms for
+the first preview, and 10,000 ms for all visible previews. Request gates
+bound offscreen work and Back requests; ordinary folder navigation must
+make zero workspace-catalog or unopened command-palette requests. These are
+configurable regression ceilings, not service-level promises or comparisons
+across machines.
+
+## Result
+
+Five uncached renders of the same 256 MiB MP4 fixture reduced median
+generation from 511.9 ms to 38.7 ms. Staging fell from 256 MiB per render to
+zero. The file contains a two-second 640 by 360 clip padded with a sparse
+MP4 free box: this measures copy overhead, not representative video decoding
+cost. A separate Node 24 probe rendered through an inherited descriptor in
+37–41 ms. The tests exercised Linux; they did not cover macOS. A fresh path
+through the production HTTP endpoint generated the same image in 249 ms,
+including transport, with 192 ms reported for rendering.
+
+Production browser measurements kept all 1,005 rows in the DOM and decoded
+all 14 valid visible previews. The intentionally malformed video returned
+422 without starving successful conversions. Returning with Back reused
+every successful preview; its only thumbnail request was the malformed file.
+
+| Measurement | Before | After |
+| --- | --- | --- |
+| Small-folder listing ready | 1,095 ms | 187 ms |
+| Small folder, all 15 visible previews decoded | 1,958 ms | 668 ms |
+| Large-folder listing ready | 1,112 ms | 281 ms |
+| Back, all visible previews decoded | 284 ms | 204 ms |
+| Back thumbnail requests | 21 | 1 |
+| Rapid-scroll return, all visible previews decoded | 212 ms | 185 ms |
+| Rapid-scroll thumbnail requests | 43 | 17 |
+
+The first implementation reduced an observed large listing from 1,112 ms
+to 544 ms, but a repeat took 1,626 ms. That repeat spent 1,395 ms in HTTP
+while the listing handler took only 28 ms. Server logs showed 1.3–1.5 second
+event-loop stalls during the command palette's eager catalog scan. Removing
+the mount request produced the 281 ms production result above. The final
+regression recorded zero requests for both unused catalogs. Earlier
+in-process measurements found a small listing took 2–3 ms and a cold
+workspace catalog took 136 ms.
+
+Cold mixed-format completion measured 1,451 ms before and 2,213 ms in the
+final sample. First-time converter startup remains variable; these changes
+do not establish a universal cold-generation speedup. An earlier small-folder
+run also overlapped a production rebuild and route warmup. The benchmark's
+two-animation-frame timestamp is a paint opportunity, not a measurement of
+compositor output.
+
+The final browser runs kept the same production build and server process
+throughout. A real palette interaction confirmed zero catalog requests
+before opening, one request on first open, and no second request on immediate
+reopen. A returned entity appeared in search, so deferral preserves catalog
+loading as well as removing its startup cost.
+
+Validation passed: 93 focused checks, web TypeScript, the production build,
+and all 3,185 tests in the repository's partitioned full suite. The browser
+regression gates also passed against the production server.
