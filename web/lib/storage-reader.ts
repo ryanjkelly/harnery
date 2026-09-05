@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -15,6 +16,11 @@ import type {
 import { HARNERY_STORAGE_INVENTORY_SCHEMA } from "../../src/core/storage/contract";
 import { storageHealth } from "../../src/core/storage/health";
 import { coordRoot } from "./coord-reader";
+import {
+  readStorageSnapshot,
+  STORAGE_SNAPSHOT_MAX_AGE_MS,
+  writeStorageSnapshot,
+} from "./storage-snapshot-cache";
 
 const execFile = promisify(execFileCallback);
 
@@ -83,15 +89,18 @@ const STORAGE_CLASS_ORDER: readonly HarneryStorageClass[] = [
 
 const DEFAULT_CACHE_MS = 5 * 60_000;
 interface StorageFootprintCacheState {
-  cached: { root: string; expiresAt: number; report: StorageFootprintReport } | null;
-  inFlight: { root: string; promise: Promise<StorageFootprintReport> } | null;
+  cached: { key: string; savedAt: number; report: StorageFootprintReport } | null;
+  inFlight: Map<string, Promise<StorageFootprintReport>>;
 }
 
 const cacheScope = globalThis as typeof globalThis & {
-  __harneryStorageFootprintCache?: StorageFootprintCacheState;
+  __harneryStorageFootprintCacheV2?: StorageFootprintCacheState;
 };
-const cacheState = cacheScope.__harneryStorageFootprintCache ?? { cached: null, inFlight: null };
-cacheScope.__harneryStorageFootprintCache = cacheState;
+const cacheState = cacheScope.__harneryStorageFootprintCacheV2 ?? {
+  cached: null,
+  inFlight: new Map(),
+};
+cacheScope.__harneryStorageFootprintCacheV2 = cacheState;
 
 /**
  * Read the canonical, metadata-only storage inventory for one project root.
@@ -109,19 +118,51 @@ export async function readStorageFootprint(
     inventoryReader?: (root: string) => Promise<HarneryStorageInventoryReport>;
   } = {},
 ): Promise<StorageFootprintReport> {
-  const now = options.now?.() ?? Date.now();
+  const clock = options.now ?? Date.now;
+  const now = clock();
   const cacheMs = options.cacheMs ?? DEFAULT_CACHE_MS;
-  const cached = cacheMs > 0 && cacheState.cached?.root === root ? cacheState.cached : null;
-  if (cached && cached.expiresAt > now) return cached.report;
-
+  const catalog = createStorageCatalog({ coord_root: root, project_root: root });
+  // Catalog descriptors include resolved roots and effective configuration.
+  // A moved checkout or changed policy must not inherit an older report.
+  const key = createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        root,
+        schema: HARNERY_STORAGE_INVENTORY_SCHEMA,
+        families: catalog.families,
+        diagnostics: catalog.log_storage_diagnostics,
+      }),
+    )
+    .digest("hex");
+  let cached = cacheMs > 0 && cacheState.cached?.key === key ? cacheState.cached : null;
+  if (cached && (now < cached.savedAt || now - cached.savedAt > STORAGE_SNAPSHOT_MAX_AGE_MS))
+    cached = null;
+  if (!cached && cacheMs > 0) {
+    const disk = await readStorageSnapshot(root, key, now);
+    if (disk && isStorageInventoryReport(disk.inventory)) {
+      try {
+        cached = {
+          key,
+          savedAt: disk.savedAt,
+          report: projectStorageFootprint(catalog, disk.inventory),
+        };
+        cacheState.cached = cached;
+      } catch {
+        // A structurally unusable or obsolete display snapshot is a cache miss.
+      }
+    }
+  }
+  if (cached && now - cached.savedAt < cacheMs) return cached.report;
   const refresh = startStorageFootprintRefresh(
     root,
+    key,
+    catalog,
     options.inventoryReader ?? readInventoryFromCli,
     cacheMs,
-    now,
+    clock,
   );
   if (cached) {
-    // Stale but present: hand back the snapshot and let the refresh land later.
     refresh.catch(() => {});
     return cached.report;
   }
@@ -130,35 +171,51 @@ export async function readStorageFootprint(
 
 function startStorageFootprintRefresh(
   root: string,
+  key: string,
+  catalog: ReturnType<typeof createStorageCatalog>,
   inventoryReader: (root: string) => Promise<HarneryStorageInventoryReport>,
   cacheMs: number,
-  now: number,
+  clock: () => number,
 ): Promise<StorageFootprintReport> {
-  if (cacheState.inFlight?.root === root) return cacheState.inFlight.promise;
-  const promise = buildStorageFootprint(root, inventoryReader)
-    .then((report) => {
-      if (cacheMs > 0) cacheState.cached = { root, expiresAt: now + cacheMs, report };
+  const existing = cacheState.inFlight.get(key);
+  if (existing) return existing;
+  const promise = inventoryReader(root)
+    .then(async (inventory) => {
+      if (!isStorageInventoryReport(inventory))
+        throw new Error("storage inventory emitted an unsupported schema");
+      const report = projectStorageFootprint(catalog, inventory);
+      const savedAt = clock();
+      if (cacheMs > 0 && cacheState.inFlight.get(key) === promise) {
+        cacheState.cached = { key, savedAt, report };
+        await writeStorageSnapshot(root, key, savedAt, inventory);
+      }
       return report;
     })
     .finally(() => {
-      if (cacheState.inFlight?.promise === promise) cacheState.inFlight = null;
+      if (cacheState.inFlight.get(key) === promise) cacheState.inFlight.delete(key);
     });
-  cacheState.inFlight = { root, promise };
+  cacheState.inFlight.set(key, promise);
   return promise;
 }
 
 /** Clear the process-local snapshot when a test or host lifecycle resets roots. */
 export function clearStorageFootprintCache(): void {
   cacheState.cached = null;
-  cacheState.inFlight = null;
+  cacheState.inFlight.clear();
 }
 
-async function buildStorageFootprint(
-  root: string,
-  inventoryReader: (root: string) => Promise<HarneryStorageInventoryReport>,
-): Promise<StorageFootprintReport> {
-  const catalog = createStorageCatalog({ coord_root: root, project_root: root });
-  const inventory = await inventoryReader(root);
+function projectStorageFootprint(
+  catalog: ReturnType<typeof createStorageCatalog>,
+  inventory: HarneryStorageInventoryReport,
+): StorageFootprintReport {
+  const ids = new Set(inventory.families.map((family) => family.family_id));
+  if (
+    ids.size !== inventory.families.length ||
+    ids.size !== catalog.families.length ||
+    catalog.families.some((family) => !ids.has(family.id))
+  ) {
+    throw new Error("storage inventory does not match the complete catalog");
+  }
   const health = storageHealth(inventory);
   const healthByFamily = new Map(health.families.map((family) => [family.family_id, family]));
   const families = inventory.families.map((family) => {
@@ -221,13 +278,120 @@ function harnBin(root: string): string {
 }
 
 function isStorageInventoryReport(value: unknown): value is HarneryStorageInventoryReport {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
+  const object = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  const strings = (v: unknown) => Array.isArray(v) && v.every((item) => typeof item === "string");
+  const count = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  const measurement = (v: unknown, unit: string) =>
+    object(v) &&
+    v.unit === unit &&
+    ((v.state === "observed" && count(v.value)) ||
+      (v.state === "unavailable" && typeof v.reason_code === "string"));
+  const totals = (v: unknown) =>
+    object(v) &&
+    measurement(v.regular_files, "files") &&
+    measurement(v.logical_bytes, "bytes") &&
+    measurement(v.allocated_bytes, "bytes");
+  const log = (v: unknown) => {
+    if (!object(v) || !object(v.usage) || !object(v.pressure) || !object(v.retention)) return false;
+    const usage = v.usage;
+    if (
+      ![
+        "managed_bytes",
+        "unmanaged_bytes",
+        "total_bytes",
+        "managed_files",
+        "unmanaged_files",
+      ].every((k) => count(usage[k]))
+    )
+      return false;
+    if (
+      typeof v.pressure.state !== "string" ||
+      !strings(v.pressure.reason_codes) ||
+      typeof v.retention.state !== "string" ||
+      typeof v.retention.enforcement !== "string" ||
+      !strings(v.retention.reason_codes)
+    )
+      return false;
+    for (const k of ["ratio", "bytes_over"])
+      if (v.pressure[k] !== null && !count(v.pressure[k])) return false;
+    const policy = v.effective_policy;
+    return (
+      policy === null ||
+      (object(policy) &&
+        typeof policy.state === "string" &&
+        ["max_bytes", "max_age_days", "max_age_ms"].every((k) => count(policy[k])) &&
+        typeof policy.fingerprint === "string" &&
+        object(policy.provenance) &&
+        object(policy.provenance.max_bytes) &&
+        typeof policy.provenance.max_bytes.source === "string" &&
+        object(policy.provenance.max_age_days) &&
+        typeof policy.provenance.max_age_days.source === "string" &&
+        Array.isArray(policy.diagnostics) &&
+        policy.diagnostics.every(
+          (d: unknown) => object(d) && typeof d.code === "string" && typeof d.message === "string",
+        ))
+    );
+  };
+  if (
+    !object(value) ||
+    value.schema !== HARNERY_STORAGE_INVENTORY_SCHEMA ||
+    typeof value.captured_at !== "string" ||
+    !Number.isFinite(Date.parse(value.captured_at)) ||
+    !object(value.privacy) ||
+    value.privacy.content_read !== false ||
+    value.privacy.path_mode !== "aggregate-labels" ||
+    !object(value.scan) ||
+    value.scan.mode !== "streaming-lstat" ||
+    !count(value.scan.max_concurrency) ||
+    value.scan.project_filesystem_scope !== ".harnery-and-registered-external-roots" ||
+    !object(value.filter) ||
+    Object.keys(value.filter).length !== 0 ||
+    !totals(value.filesystem_totals) ||
+    !object(value.scope_totals) ||
+    !totals(value.scope_totals.coordination_root) ||
+    !totals(value.scope_totals.registered_external_roots) ||
+    !Array.isArray(value.families) ||
+    !Array.isArray(value.issues)
+  )
+    return false;
   return (
-    record.schema === HARNERY_STORAGE_INVENTORY_SCHEMA &&
-    typeof record.captured_at === "string" &&
-    Array.isArray(record.families) &&
-    Array.isArray(record.issues)
+    value.issues.every(
+      (issue: unknown) =>
+        object(issue) &&
+        typeof issue.reason_code === "string" &&
+        count(issue.count) &&
+        issue.maintenance_eligible === false,
+    ) &&
+    value.families.every(
+      (family: unknown) =>
+        object(family) &&
+        [
+          "family_id",
+          "source",
+          "storage_class",
+          "policy_version",
+          "provider_id",
+          "inventory",
+          "state",
+        ].every((k) => typeof family[k] === "string") &&
+        object(family.maintenance) &&
+        typeof family.maintenance.state === "string" &&
+        (family.maintenance.reason_code === undefined ||
+          typeof family.maintenance.reason_code === "string") &&
+        strings(family.reason_codes) &&
+        totals(family.totals) &&
+        (family.log_storage === undefined || log(family.log_storage)) &&
+        Array.isArray(family.roots) &&
+        family.roots.every(
+          (root: unknown) =>
+            object(root) &&
+            count(root.root_index) &&
+            ["root_label", "ownership", "state"].every((k) => typeof root[k] === "string") &&
+            strings(root.reason_codes) &&
+            totals(root.totals),
+        ),
+    )
   );
 }
 

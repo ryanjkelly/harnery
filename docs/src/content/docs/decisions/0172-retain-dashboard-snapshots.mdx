@@ -1,0 +1,69 @@
+---
+title: "ADR 0172: retain dashboard snapshots across restarts"
+description: Reuse bounded storage snapshots, coalesce visible dashboard updates, and render storage records once.
+sidebar:
+  order: 172
+---
+
+**Date:** 2026-09-05
+**Status:** Accepted
+
+## Context
+
+Production builds reduced the cost of serving the dashboard, but each process
+restart still discarded the storage inventory. A cold inventory request took
+up to 34 seconds in local measurements; a warm request took about 100 ms.
+The Storage page also rendered each family and root twice to support desktop
+and mobile layouts.
+
+The global refresh scheduler waited two minutes between heavy-page updates.
+Shortening that interval without tracking request completion would let slow
+refreshes overlap. Hidden tabs would continue doing work that nobody could see.
+
+## Alternatives considered
+
+- Warm every route after startup. This helps, but people can reach a route before
+  warming finishes, and a restart still repeats the inventory scan.
+- Rescan on every request. Inventory cost depends on the number of managed
+  filesystem entries and is too high for interactive use.
+- Persist coordination authority without revalidation. A display cache must not
+  weaken ledger validation or authorize maintenance.
+- Virtualize storage rows. That would break browser Find without an in-app
+  replacement. The duplicate layouts can be removed while retaining every row.
+
+## Decision
+
+Keep one atomic inventory snapshot under
+.harnery/cache/storage-footprint/snapshot.json, registered as a repairable
+cache. It contains aggregate metadata from the canonical inventory command,
+never file bodies. The reader bounds the file at 4 MiB and rejects snapshots
+older than 24 hours, future timestamps, invalid structure, checksum failures,
+and mismatched checkout, schema, or effective catalog configuration.
+
+A five-minute-old snapshot can be displayed while one background scan refreshes
+it. Cache write failures do not fail a fresh inventory. The capture timestamp
+remains visible. This report is informational; maintenance continues to use its
+own current inventory and authorization checks.
+
+Visible heavy pages coalesce changes on a 15-second interval, and lightweight
+pages use 10 seconds. The cooldown starts when the previous React refresh
+transition finishes. Hidden tabs retain one pending update without issuing
+refreshes. Pages with their own live stream keep their existing update path.
+
+Storage families and roots use one semantic table each. Responsive styles turn
+the rows into labeled cards on narrow screens. Every record remains rendered
+and searchable.
+
+## Verification
+
+Focused tests cover process-cache loss, concurrent refreshes, changed
+configuration, copied snapshots, corrupted and oversized files, expired and
+future timestamps, cache write failure, and failed background scans.
+Scheduler tests cover event storms, hidden tabs, slow in-flight requests,
+duplicate completion callbacks, and cancellation.
+
+A fresh-process probe took 29.8 seconds to scan the inventory and 11 ms to read
+the saved snapshot from a second process. Production response sizes and
+repeated browser refreshes are checked during integration. The cache does not remove the first
+inventory scan on a new checkout or after an incompatible configuration change.
+
