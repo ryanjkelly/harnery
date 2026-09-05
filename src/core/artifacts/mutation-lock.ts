@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
+import { processStartToken } from "../agents/state/proc-start.ts";
 
 interface LockOwner {
   version: 1;
@@ -42,7 +42,16 @@ function reclaimDeadOwner(lock: string): boolean {
     let dead = false;
     try {
       process.kill(owner.pid, 0);
-      dead = checkPidToken(owner.pid, owner.process_start ?? undefined) === "mismatch";
+      const current = processStartToken(owner.pid);
+      // Wall-clock ps lstart output can drift even for a live process. Only
+      // boot-scoped procfs ticks establish PID reuse; other probes need ESRCH.
+      const bootScoped = /^l[0-9a-f]{8}\.\d+$/;
+      dead =
+        typeof owner.process_start === "string" &&
+        bootScoped.test(owner.process_start) &&
+        typeof current === "string" &&
+        bootScoped.test(current) &&
+        current !== owner.process_start;
     } catch (error) {
       dead = (error as NodeJS.ErrnoException).code === "ESRCH";
     }

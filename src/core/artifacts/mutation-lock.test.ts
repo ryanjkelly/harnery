@@ -85,11 +85,12 @@ describe("artifact mutation lock", () => {
     };
     writeFileSync(file, JSON.stringify(owner));
     expect(() => withArtifactLock(path, () => {})).toThrow();
-    if (processStartToken(process.pid)) {
-      writeFileSync(
-        file,
-        JSON.stringify({ ...owner, process_start: "different-process-incarnation" }),
-      );
+    // A wall-clock token mismatch cannot safely prove a recycled live PID.
+    writeFileSync(file, JSON.stringify({ ...owner, process_start: "pDifferent start time" }));
+    expect(() => withArtifactLock(path, () => {})).toThrow();
+    const token = processStartToken(process.pid);
+    if (token && /^l[0-9a-f]{8}\.\d+$/.test(token)) {
+      writeFileSync(file, JSON.stringify({ ...owner, process_start: `${token}1` }));
       expect(withArtifactLock(path, () => "recovered")).toBe("recovered");
     }
   });

@@ -29,6 +29,9 @@ judgment about pending readers and final evidence.
 
 Record each lock owner's hostname, PID, process-start token, and acquisition
 time in a uniquely named file. Recover only demonstrably dead local owners.
+PID reuse requires mismatched boot-scoped Linux process ticks. Wall-clock `ps`
+start times are not sufficient proof because they can drift for a live process.
+On other probes, recovery requires the recorded PID to be absent.
 Only the contender that removes the observed owner's unique file may remove
 the lock directory. Other contenders stop rather than touching a replacement.
 Harnery leaves the lock alone when its owner record is foreign, malformed,
@@ -64,6 +67,10 @@ Tests kill a child holding a lock, confirm live-owner exclusion and recovery,
 exercise interrupted and partial sweeps, and check the unchanged deletion
 guards. CLI tests verify that release returns the reminder without shortening
 the retention window.
+
+A full-suite run exposed an intermittent existing `psStartToken` stability-test
+failure; its twenty-test file passed independently. Lock recovery therefore
+rejects wall-clock token mismatches as proof that a live PID was recycled.
 
 ## Scope
 

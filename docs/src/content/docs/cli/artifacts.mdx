@@ -366,6 +366,10 @@ foreign hosts, unreadable owners, symlinks, and empty locks remain protected;
 age alone never permits removal. Competing recovery attempts cannot remove a
 replacement owner's lock.
 
+A live PID counts as recycled only when boot-scoped Linux process ticks prove
+it belongs to a different process. Wall-clock `ps` tokens are not enough;
+platforms without boot-scoped tokens recover only after the PID is gone.
+
 An empty lock can come from an older runtime or an interruption while publishing
 or removing its owner file. There is no safe automatic way to distinguish that
 from a writer initializing the lock. Establish that artifact operations have
