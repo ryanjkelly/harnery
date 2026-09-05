@@ -23,6 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import {
   artifactAutoCleanEnabled,
@@ -31,6 +32,12 @@ import {
   artifactMaxBytes,
   artifactMaxUnitBytes,
 } from "../config.ts";
+import {
+  type ArtifactActivity,
+  artifactRootEntries,
+  readArtifactActivity,
+  validArtifactActivity,
+} from "./activity.ts";
 import { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
 
 export { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
@@ -74,6 +81,7 @@ export interface ArtifactManifestV2 {
   released_at?: string;
   released_by?: ArtifactActor;
   oversize_acknowledged?: boolean;
+  activity?: ArtifactActivity;
 }
 
 export interface ArtifactHold {
@@ -225,7 +233,7 @@ function createArtifactUnlocked(
     },
     ...(input.big ? { oversize_acknowledged: true } : {}),
   };
-  atomicWriteManifest(path, manifest);
+  atomicWriteManifest(path, manifest, now);
   return { path, manifest };
 }
 
@@ -307,7 +315,7 @@ function renewArtifactUnlocked(
       reason: why,
     },
   };
-  atomicWriteManifest(path, manifest);
+  atomicWriteManifest(path, manifest, now);
   return manifest;
 }
 
@@ -334,7 +342,7 @@ function releaseArtifactUnlocked(
     released_at: now.toISOString(),
     released_by: input.actor,
   };
-  atomicWriteManifest(path, manifest);
+  atomicWriteManifest(path, manifest, now);
   return manifest;
 }
 
@@ -359,7 +367,7 @@ export function holdArtifact(
       return parsed.manifest;
     }
     const manifest = { ...parsed.manifest, holds: [...parsed.manifest.holds, hold] };
-    atomicWriteManifest(path, manifest);
+    atomicWriteManifest(path, manifest, input.now);
     return manifest;
   });
 }
@@ -385,7 +393,7 @@ export function unholdArtifact(
       ...parsed.manifest,
       holds: parsed.manifest.holds.filter((item) => item.id !== id),
     };
-    atomicWriteManifest(path, manifest);
+    atomicWriteManifest(path, manifest, input.now);
     return manifest;
   });
 }
@@ -691,7 +699,7 @@ function classifyArtifactPath(
   }
   const manifest = parsed.manifest;
   const bytes = safeTreeSize(path);
-  const lastModifiedMs = safeTreeLastModified(path, now);
+  const lastModifiedMs = safeTreeLastModified(path, now, manifest.activity);
   const retentionAnchorMs = Date.parse(manifest.retention.renewed_at ?? manifest.created_at);
   const retentionWindowMs = Date.parse(manifest.retention.expires_at) - retentionAnchorMs;
   const effectiveLastModifiedMs = Math.max(retentionAnchorMs, lastModifiedMs ?? 0);
@@ -883,11 +891,24 @@ export function parseArtifactManifest(value: unknown): ParsedManifest | Manifest
   if (m.oversize_acknowledged !== undefined && typeof m.oversize_acknowledged !== "boolean") {
     return { ok: false, reason: "invalid oversize_acknowledged" };
   }
+  if (m.activity !== undefined && !validArtifactActivity(m.activity)) {
+    return { ok: false, reason: "invalid activity checkpoint" };
+  }
   return { ok: true, manifest: m as ArtifactManifestV2 };
 }
 
-function atomicWriteManifest(path: string, manifest: ArtifactManifestV2): void {
+function atomicWriteManifest(path: string, manifest: ArtifactManifestV2, now = new Date()): void {
   const target = join(path, ARTIFACT_MANIFEST);
+  manifest.activity = readArtifactActivity(
+    path,
+    now,
+    existsSync(target)
+      ? manifest.activity
+      : {
+          last_changed_at: manifest.created_at,
+          root_entries_sha256: artifactRootEntries(path),
+        },
+  );
   const tmp = `${target}.tmp.${process.pid}.${randomUUID().slice(0, 8)}`;
   try {
     writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`, {
@@ -911,7 +932,7 @@ export interface ArtifactMigrationEntry {
 /** Explicit, bounded v1 cutover. Preview never writes; every applied unit keeps its exact preimage. */
 export function migrateArtifacts(
   repoRoot: string,
-  opts: { yes?: boolean } = {},
+  opts: { yes?: boolean; now?: Date } = {},
 ): ArtifactMigrationEntry[] {
   const migrate = (): ArtifactMigrationEntry[] => {
     const root = artifactsRoot(repoRoot);
@@ -978,7 +999,7 @@ export function migrateArtifacts(
           }
           if (readFileSync(target, "utf8") !== preimage)
             throw new Error("manifest changed before migration");
-          atomicWriteManifest(path, parsed.manifest);
+          atomicWriteManifest(path, parsed.manifest, opts.now);
           return {
             path,
             action: "migrated",
@@ -991,6 +1012,143 @@ export function migrateArtifacts(
       });
   };
   return opts.yes ? withArtifactLock(repoRoot, migrate) : migrate();
+}
+
+export interface ArtifactActivityRepairEntry {
+  path: string;
+  action: "keep" | "would-repair" | "repaired";
+  reason: string;
+  previous_expires_at?: string;
+  repaired_expires_at?: string;
+  receipt_path?: string;
+}
+
+/** Repair only a provable, untouched v1-to-v2 migration. Never delete payloads.
+ * Old migrations saved the original manifest but not the original root stat.
+ * The exact preimage and coincident root/manifest/receipt timestamps bound this
+ * correction. Any later root change or metadata mutation requires manual review.
+ */
+export function repairArtifactActivity(
+  repoRoot: string,
+  opts: { yes?: boolean; now?: Date } = {},
+): ArtifactActivityRepairEntry[] {
+  const repair = (): ArtifactActivityRepairEntry[] => {
+    const now = opts.now ?? new Date();
+    assertValidDate(now, "now");
+    const preimageRoot = join(resolve(repoRoot), ".harnery/artifact-migrations");
+    const preimages = new Map<string, { value: unknown; path: string; mtime: number }[]>();
+    if (existsSync(preimageRoot) && !lstatSync(preimageRoot).isSymbolicLink()) {
+      for (const name of readdirSync(preimageRoot)) {
+        if (!/^[a-f0-9]{64}\.v1\.json$/.test(name)) continue;
+        const file = join(preimageRoot, name);
+        try {
+          const stat = lstatSync(file);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) continue;
+          const bytes = readFileSync(file, "utf8");
+          if (`${createHash("sha256").update(bytes).digest("hex")}.v1.json` !== name) continue;
+          const old = JSON.parse(bytes);
+          if (
+            old?.schema_version !== 1 ||
+            Object.hasOwn(old, "holds") ||
+            Object.hasOwn(old, "activity")
+          )
+            continue;
+          const upgraded = { ...old, schema_version: ARTIFACT_SCHEMA_VERSION, holds: [] };
+          const parsed = parseArtifactManifest(upgraded);
+          if (!parsed.ok) continue;
+          const items = preimages.get(parsed.manifest.artifact_id) ?? [];
+          items.push({ value: upgraded, path: file, mtime: stat.mtimeMs });
+          preimages.set(parsed.manifest.artifact_id, items);
+        } catch {
+          // Unverifiable preimages confer no repair authority.
+        }
+      }
+    }
+    const root = artifactsRoot(repoRoot);
+    if (!existsSync(root)) return [];
+    return readdirSync(root)
+      .sort()
+      .map((name): ArtifactActivityRepairEntry => {
+        const path = join(root, name);
+        try {
+          const parsed = readManifest(path);
+          if (!parsed.ok) throw new Error(parsed.reason);
+          const manifest = parsed.manifest;
+          if (manifest.activity)
+            return { path, action: "keep", reason: "activity already recorded" };
+          const source = preimages
+            .get(manifest.artifact_id)
+            ?.find((item) => isDeepStrictEqual(item.value, manifest));
+          if (!source) throw new Error("no exact migration preimage");
+          if (containsTrackedPath(repoRoot, path))
+            throw new Error("artifact contains tracked files");
+          const target = join(path, ARTIFACT_MANIFEST);
+          const before = readFileSync(target, "utf8");
+          const unitStat = lstatSync(path);
+          const manifestStat = lstatSync(target);
+          if (
+            unitStat.mtimeMs !== manifestStat.mtimeMs ||
+            unitStat.ctimeMs !== manifestStat.ctimeMs ||
+            manifestStat.mtimeMs !== manifestStat.ctimeMs ||
+            manifestStat.mtimeMs < source.mtime ||
+            manifestStat.mtimeMs - source.mtime > 5000
+          )
+            throw new Error("root or manifest changed outside the recorded migration");
+          const anchor = manifest.retention.renewed_at ?? manifest.created_at;
+          const oldActivity = readArtifactActivity(path, now);
+          const activity = readArtifactActivity(path, now, {
+            last_changed_at: anchor,
+            root_entries_sha256: artifactRootEntries(path),
+          });
+          const windowMs = Date.parse(manifest.retention.expires_at) - Date.parse(anchor);
+          const expiry = (changedAt: string) =>
+            new Date(Math.max(Date.parse(anchor), Date.parse(changedAt)) + windowMs).toISOString();
+          const row: ArtifactActivityRepairEntry = {
+            path,
+            action: opts.yes ? "repaired" : "would-repair",
+            reason:
+              "exact migration preimage; unchanged root; payload activity and retention preserved",
+            previous_expires_at: expiry(oldActivity.last_changed_at),
+            repaired_expires_at: expiry(activity.last_changed_at),
+          };
+          if (!opts.yes) return row;
+          const receipt = join(
+            preimageRoot,
+            `${manifest.artifact_id}.${randomUUID()}.activity-repair.json`,
+          );
+          writeFileSync(
+            receipt,
+            `${JSON.stringify(
+              {
+                schema_version: 1,
+                repaired_at: now.toISOString(),
+                path: relative(repoRoot, path),
+                preimage_path: relative(repoRoot, source.path),
+                original_manifest: before,
+                activity,
+                previous_expires_at: row.previous_expires_at,
+                repaired_expires_at: row.repaired_expires_at,
+              },
+              null,
+              2,
+            )}\n`,
+            { flag: "wx", mode: 0o600 },
+          );
+          const current = lstatSync(path);
+          if (
+            readFileSync(target, "utf8") !== before ||
+            current.mtimeMs !== unitStat.mtimeMs ||
+            current.ctimeMs !== unitStat.ctimeMs
+          )
+            throw new Error("artifact changed before repair");
+          atomicWriteManifest(path, { ...manifest, activity }, now);
+          return { ...row, receipt_path: receipt };
+        } catch (error) {
+          return { path, action: "keep", reason: errorMessage("activity repair refused", error) };
+        }
+      });
+  };
+  return opts.yes ? withArtifactLock(repoRoot, repair) : repair();
 }
 
 /** A persistent directory lock fails closed on contention or a crashed owner. */
@@ -1099,24 +1257,9 @@ function safeTreeSize(path: string): number | null {
  * symlinks. A small future tolerance protects a write racing the inventory
  * scan; timestamps farther ahead are ignored as clock-skewed metadata.
  */
-function safeTreeLastModified(path: string, now: Date): number | null {
-  const nowMs = now.getTime();
-  const futureToleranceMs = 5 * 60 * 1000;
+function safeTreeLastModified(path: string, now: Date, activity?: ArtifactActivity): number | null {
   try {
-    const st = lstatSync(path);
-    let latest = 0;
-    for (const timestamp of [st.mtimeMs, st.ctimeMs]) {
-      if (Number.isFinite(timestamp) && timestamp <= nowMs + futureToleranceMs) {
-        latest = Math.max(latest, Math.min(timestamp, nowMs));
-      }
-    }
-    if (st.isSymbolicLink() || !st.isDirectory()) return latest;
-    for (const child of readdirSync(path)) {
-      const childLatest = safeTreeLastModified(join(path, child), now);
-      if (childLatest === null) return null;
-      latest = Math.max(latest, childLatest);
-    }
-    return latest;
+    return Date.parse(readArtifactActivity(path, now, activity).last_changed_at);
   } catch {
     return null;
   }

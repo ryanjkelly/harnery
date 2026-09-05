@@ -212,7 +212,7 @@ describe("artifact holds", () => {
 describe("explicit artifact migration", () => {
   function legacy(root: string) {
     const artifact = create(root, "legacy", false);
-    const { holds: _holds, ...fields } = artifact.manifest;
+    const { holds: _holds, activity: _activity, ...fields } = artifact.manifest;
     const value = {
       ...fields,
       schema_version: 1,
@@ -239,7 +239,7 @@ describe("explicit artifact migration", () => {
     const applied = migrateArtifacts(root, { yes: true });
     expect(applied[0]?.action).toBe("migrated");
     expect(readFileSync(applied[0]!.preimage_path!, "utf8")).toBe(artifact.bytes);
-    expect(showArtifact(root, artifact.path).manifest).toEqual({
+    expect(showArtifact(root, artifact.path).manifest).toMatchObject({
       ...artifact.value,
       schema_version: 2,
       holds: [],

@@ -22,6 +22,7 @@ describe("artifacts command", () => {
       "release",
       "capabilities",
       "migrate",
+      "repair-activity",
       "hold",
       "unhold",
       "clean",

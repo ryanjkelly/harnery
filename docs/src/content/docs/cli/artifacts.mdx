@@ -29,6 +29,7 @@ harn artifacts create <slug> --purpose <text> --hold <id> --hold-reason <text> -
 harn artifacts hold <ref> --id <id> --reason <text> [--actor <instance-id>]
 harn artifacts unhold <ref> --id <id> [--actor <instance-id>]
 harn artifacts migrate [--yes]
+harn artifacts repair-activity [--yes]
 harn artifacts clean [--yes]
 ```
 
@@ -107,9 +108,18 @@ native absolute paths. A delivery manifest records navigation, not retention;
 move anything that must outlive the workspace into durable project storage.
 
 New workspaces expire after three inactive days by default. Creating, editing,
-renaming, or deleting anything in the workspace restarts that window. Harnery
-derives activity from filesystem timestamps when it inventories or cleans the
-workspace, so agents do not need to run a separate touch command.
+renaming, or deleting payload files restarts that window. Harnery derives
+activity from filesystem timestamps when it inventories or cleans the workspace,
+so agents do not need to run a separate touch command. Internal manifest writes
+(migration, release, hold, and unhold) preserve the activity clock. Explicit
+renewal still starts the requested retention window.
+
+The manifest records an activity checkpoint and a fingerprint of root entry
+names. This separates the parent directory changes caused by manifest replacement
+from payload deletions and renames. Nested directories and files keep their
+ordinary timestamps. Invalid checkpoints protect the workspace from cleanup.
+Manifests without a checkpoint retain their conservative filesystem-based clock
+until a normal metadata mutation records one or a verified repair applies.
 
 Set a project default in `.harnery/config.jsonc`:
 
@@ -261,7 +271,8 @@ as `invalid-manifest`; normal operations do not convert them implicitly.
 converts each eligible unit to v2 with empty holds and saves its exact old
 manifest under `.harnery/artifact-migrations/<sha256>.v1.json` before replacement.
 IDs, paths, owner records, release state, and retention fields are preserved.
-The manifest write counts as filesystem activity under rolling retention.
+The migration records activity before replacing the manifest, preserving the
+effective deadline as well as the stored retention fields.
 Tracked files, symlinks, malformed manifests, unexpected v1 hold fields, and
 unsupported schemas remain untouched. Check each returned row: failed units
 have `action: keep` and a reason. A repeated successful migration does nothing.
@@ -269,6 +280,28 @@ have `action: keep` and a reason. A repeated successful migration does nothing.
 Version 0.37.0 cleanup rejects schema v2 and therefore retains these workspaces,
 but it cannot manage their holds. Finish old runtime processes before migration;
 the new lock cannot coordinate with a cleanup process that predates it.
+
+## Repair activity after an older migration
+
+Earlier v1-to-v2 migrations treated the manifest replacement as fresh activity,
+extending the effective deadline by another full retention window.
+`artifacts repair-activity` previews corrections. Pass `--yes` to apply them;
+the command changes metadata only and never deletes payload files.
+
+A correction requires a hash-verified v1 preimage, an exact match to its v2
+conversion, and unchanged root and manifest timestamps matching the migration.
+The command skips artifacts with later metadata changes, holds, tracked files,
+unverifiable preimages, or later root-directory changes. It derives activity from
+surviving payload timestamps and the original creation or renewal anchor. Old
+root-only activity preceding the migration cannot be reconstructed because the
+old migration did not save that timestamp. This is an explicit recovery operation,
+not a silent change during inventory.
+
+Every correction saves the original v2 manifest and the before/after deadlines
+in `.harnery/artifact-migrations/*.activity-repair.json`. Repeated repairs leave
+checkpointed artifacts unchanged. Review `artifacts clean` after repair; applying
+cleanup remains a separate `artifacts clean --yes` operation with the existing
+hold, owner, tracked-file, and filesystem guards.
 
 Manifest mutation and deletion share `.harnery/artifacts-mutation.lock`.
 Contention causes writes to fail and cleanup to retain its candidates. Retry

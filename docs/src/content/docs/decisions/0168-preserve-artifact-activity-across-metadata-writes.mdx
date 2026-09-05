@@ -1,0 +1,57 @@
+---
+title: "ADR 0168: preserve artifact activity across metadata writes"
+description: Keep lifecycle metadata maintenance from restarting payload retention.
+sidebar:
+  order: 168
+---
+
+Date: 2026-09-05. Status: accepted.
+
+## Context
+
+The v1-to-v2 artifact migration preserved stored expiry fields, but atomic
+manifest replacement changed both the manifest and root directory timestamps.
+Rolling retention interpreted this as fresh work and extended the effective
+deadline. Release and hold operations had the same effect.
+
+## Alternatives
+
+Ignoring only the manifest leaves the root directory extension in place.
+Ignoring every directory loses deletion and rename activity. Restoring directory
+timestamps cannot restore ctime and can erase evidence of concurrent writes.
+Replacing rolling retention with a creation deadline would expire working files.
+
+## Decision
+
+Store an optional, validated activity checkpoint in schema v2 manifests. Before
+an internal write, capture the effective activity and a hash of root entry names
+excluding the manifest. Inventory retains that activity while the root entries
+match. Root deletions and renames invalidate the fingerprint and use the root
+timestamp. Payload timestamps, including nested directories, remain authoritative.
+Temporary entries left by an interrupted write count as payload. Inventory never
+writes checkpoints. Existing manifests without checkpoints retain conservative
+filesystem activity; malformed checkpoints fail closed.
+
+The repair command requires an exact, hash-verified preimage and matching root,
+manifest, and migration timestamps. It skips holds, later metadata, tracked
+content, and changed roots. It saves the full v2 preimage and before/after
+deadlines before applying a correction. Corrected
+activity uses surviving payload timestamps and the original retention anchor.
+Historical root-only deletion activity cannot be recovered from the old preimage;
+therefore this recovery requires an explicit operation and never runs during
+ordinary inventory or automatic cleanup.
+
+The repair does not delete files. Normal guarded cleanup remains separate.
+Explicit renewal changes the retention anchor as before.
+
+## Verification
+
+Focused tests cover metadata-only migration and hold updates, payload edits,
+root renames and deletions, nested deletions, explicit renewal, malformed
+checkpoints, exact-preimage repair, preview immutability, and idempotence.
+Existing cleanup tests retain live-owner, hold, tracking, and symlink protection.
+
+## Scope
+
+This decision governs managed artifact activity only. It does not change review
+pack deadlines, operational log retention, or other storage families.

@@ -17,6 +17,7 @@ import {
   releaseArtifact,
   renderArtifactDeliveryCard,
   renewArtifact,
+  repairArtifactActivity,
   resolveArtifactDeliveryManifest,
   showArtifact,
   unholdArtifact,
@@ -216,6 +217,17 @@ export function registerArtifactsCommand(
     .option("--yes", "Apply the migration to valid v1 manifests")
     .action((opts: { yes?: boolean }) =>
       run(emit, () => emit.data({ rows: migrateArtifacts(requireRepoRoot(context), opts) })),
+    );
+
+  root
+    .command("repair-activity")
+    .description("Preview retention corrections for unchanged, preimage-backed v1 migrations.")
+    .option(
+      "--yes",
+      "Record verified activity corrections with preimage receipts; deletes no files",
+    )
+    .action((opts: { yes?: boolean }) =>
+      run(emit, () => emit.data({ rows: repairArtifactActivity(requireRepoRoot(context), opts) })),
     );
 
   root
