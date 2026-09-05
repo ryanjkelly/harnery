@@ -3,6 +3,7 @@ import { closeSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { coordRoot } from "./coord-reader";
+import { focusExplorerFile } from "./file-reveal-windows";
 import { resolveFile } from "./files";
 
 const execFile = promisify(execFileCallback);
@@ -125,6 +126,22 @@ export async function revealInNativeFileManager(rawPath: string): Promise<Reveal
       };
     }
     await launchNativeReveal(plan);
+    if (plan.manager === "Explorer") {
+      const windowsFile = wslWindowsPath ?? absoluteFile;
+      const windowsDirectory = wslExplorerPath
+        ? path.dirname(wslExplorerPath)
+        : (process.env.SystemRoot ?? "C:\\Windows");
+      const powershell = path.join(
+        windowsDirectory,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      // Opening has already succeeded. A denied foreground request must not
+      // turn it back into a misleading launch error.
+      await focusExplorerFile(windowsFile, powershell).catch(() => false);
+    }
     return { ok: true, manager: plan.manager };
   } catch (err) {
     return {
