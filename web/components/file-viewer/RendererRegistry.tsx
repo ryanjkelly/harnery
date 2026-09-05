@@ -10,7 +10,7 @@
  */
 
 import { Component, lazy, type ReactNode, Suspense, useCallback, useEffect, useState } from "react";
-import { type FetchResult, fetchText, rawUrl } from "@/lib/file-viewer/client";
+import { type FetchResult, fetchText, invalidatePreview, rawUrl } from "@/lib/file-viewer/client";
 import type { FileMeta, FileText } from "@/lib/file-viewer/types";
 import {
   DownloadCard,
@@ -65,15 +65,22 @@ function TextFamily({
   path: string;
   htmlInitialMode?: "source" | "preview";
 }) {
+  const [mode, setMode] = useState<"preview" | "source">("preview");
   const [res, setRes] = useState<FetchResult<FileText> | null>(null);
+  const [revision, setRevision] = useState(0);
   const load = useCallback(() => {
+    invalidatePreview(path);
     setRes(null);
-    fetchText(path).then(setRes);
+    setRevision((value) => value + 1);
   }, [path]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision explicitly retries the text request.
   useEffect(() => {
-    load();
-  }, [load]);
-
+    const controller = new AbortController();
+    void fetchText(path, controller.signal).then((result) => {
+      if (!controller.signal.aborted) setRes(result);
+    });
+    return () => controller.abort();
+  }, [path, revision]);
   if (res === null) return <LoadingState path={meta.relPath} />;
   if (!res.ok) {
     if (res.code === "transport" || res.code === "bad_json" || res.status >= 500) {
@@ -107,7 +114,9 @@ function TextFamily({
     meta.category === "text" || meta.category === "csv" || meta.category === "html";
   const Renderer =
     meta.category === "markdown"
-      ? MarkdownRenderer
+      ? mode === "source"
+        ? CodeRenderer
+        : MarkdownRenderer
       : meta.category === "json"
         ? JsonRenderer
         : meta.category === "yaml"
@@ -120,6 +129,24 @@ function TextFamily({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {meta.category === "markdown" && (
+        <fieldset
+          className="flex shrink-0 gap-1 border-b border-border px-3 py-1.5"
+          aria-label="Document view"
+        >
+          {(["preview", "source"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={mode === value}
+              onClick={() => setMode(value)}
+              className={`rounded px-2 py-1 text-xs ${mode === value ? "bg-muted/70 text-foreground" : "text-muted-foreground hover:bg-muted/40"}`}
+            >
+              {value === "preview" ? "Preview" : "Source"}
+            </button>
+          ))}
+        </fieldset>
+      )}
       {file.truncated && <TruncationBanner lines={file.lines} />}
       <div className={`min-h-0 flex-1 ${selfScrolls ? "flex flex-col" : "overflow-auto"}`}>
         <RenderErrorBoundary key={path} relPath={meta.relPath}>
@@ -147,7 +174,14 @@ export function RendererRegistry({
   htmlInitialMode?: "source" | "preview";
 }) {
   if (TEXT_FAMILY.has(meta.category)) {
-    return <TextFamily meta={meta} path={path} htmlInitialMode={htmlInitialMode} />;
+    return (
+      <TextFamily
+        key={`${path}:${meta.mtime}:${meta.size}`}
+        meta={meta}
+        path={path}
+        htmlInitialMode={htmlInitialMode}
+      />
+    );
   }
   const PathRenderer = PATH_RENDERERS[meta.category];
   if (PathRenderer) {

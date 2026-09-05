@@ -5,6 +5,7 @@
  * boundary.
  */
 
+import { createPreviewCache } from "./preview-cache";
 import type { DirListing, DirUsage, FileError, FileMeta, FileText, SearchResult } from "./types";
 
 export interface FetchOk<T> {
@@ -25,17 +26,23 @@ function qs(path: string): string {
   return `path=${encodeURIComponent(path)}`;
 }
 
-async function getJson<T>(url: string): Promise<FetchResult<T>> {
+async function getJson<T>(url: string, signal?: AbortSignal): Promise<FetchResult<T>> {
   let res: Response;
   try {
-    res = await fetch(url, { cache: "no-store" });
+    res = await fetch(url, { cache: "no-store", signal });
   } catch (err) {
-    return { ok: false, status: 0, code: "transport", detail: (err as Error).message };
+    return {
+      ok: false,
+      status: 0,
+      code: signal?.aborted ? "aborted" : "transport",
+      detail: signal?.aborted ? null : (err as Error).message,
+    };
   }
   let body: unknown;
   try {
     body = await res.json();
   } catch {
+    if (signal?.aborted) return { ok: false, status: 0, code: "aborted", detail: null };
     if (!res.ok) return { ok: false, status: res.status, code: "transport", detail: null };
     return { ok: false, status: res.status, code: "bad_json", detail: "response was not JSON" };
   }
@@ -51,12 +58,27 @@ async function getJson<T>(url: string): Promise<FetchResult<T>> {
   return { ok: true, data: body as T };
 }
 
-export function fetchMeta(path: string): Promise<FetchResult<FileMeta>> {
-  return getJson<FileMeta>(`/api/file/meta?${qs(path)}`);
+const metaCache = createPreviewCache<FileMeta>({
+  load: (path, signal) => getJson<FileMeta>(`/api/file/meta?${qs(path)}`, signal),
+});
+const textCache = createPreviewCache<FileText>({
+  load: (path, signal) => getJson<FileText>(`/api/file/text?${qs(path)}`, signal),
+  weight: (file) => file.content.length * 2,
+  maxWeight: 8 * 1024 * 1024,
+});
+
+/** Explicit refresh bypasses both recent responses and any older generation. */
+export function invalidatePreview(path: string): void {
+  metaCache.invalidate(path);
+  textCache.invalidate(path);
 }
 
-export function fetchText(path: string): Promise<FetchResult<FileText>> {
-  return getJson<FileText>(`/api/file/text?${qs(path)}`);
+export function fetchMeta(path: string, signal?: AbortSignal): Promise<FetchResult<FileMeta>> {
+  return metaCache.get(path, signal);
+}
+
+export function fetchText(path: string, signal?: AbortSignal): Promise<FetchResult<FileText>> {
+  return textCache.get(path, signal);
 }
 
 export interface RevealResult {
@@ -65,16 +87,25 @@ export interface RevealResult {
 
 /** Ask the local dashboard server to reveal a validated file in its native
  * containing folder. The server chooses Explorer/Finder from its host OS. */
-export async function revealInFileManager(path: string): Promise<FetchResult<RevealResult>> {
+export async function revealInFileManager(
+  path: string,
+  signal?: AbortSignal,
+): Promise<FetchResult<RevealResult>> {
   let res: Response;
   try {
     res = await fetch("/api/file/reveal", {
       method: "POST",
+      signal,
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path }),
     });
   } catch (err) {
-    return { ok: false, status: 0, code: "transport", detail: (err as Error).message };
+    return {
+      ok: false,
+      status: 0,
+      code: signal?.aborted ? "aborted" : "transport",
+      detail: signal?.aborted ? null : (err as Error).message,
+    };
   }
   let body: unknown;
   try {

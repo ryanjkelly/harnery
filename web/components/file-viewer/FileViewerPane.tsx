@@ -8,11 +8,13 @@
  * file type renders identically to the overlay.
  */
 
-import { Check, Copy, Download, ExternalLink, Eye, FileText } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, FileText, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   type FetchResult,
   fetchMeta,
+  invalidatePreview,
   isHtmlPreviewPath,
   rawUrl,
   renderUrl,
@@ -29,29 +31,35 @@ import {
 } from "./ViewerStates";
 
 export function FileViewerPane({ path }: { path: string | null }) {
+  // A new selection owns a new component, including renderer state. This also
+  // prevents even a single paint of the previous file before effects run.
+  return path === null ? <EmptyPane /> : <SelectedFilePane key={path} path={path} />;
+}
+
+function SelectedFilePane({ path }: { path: string }) {
   const [meta, setMeta] = useState<FetchResult<FileMeta> | null>(null);
+  const [revision, setRevision] = useState(0);
   const load = useCallback(() => {
-    if (path === null) {
-      setMeta(null);
-      return;
-    }
+    invalidatePreview(path);
     setMeta(null);
-    fetchMeta(path).then(setMeta);
+    setRevision((value) => value + 1);
   }, [path]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision explicitly reloads this path on Refresh.
   useEffect(() => {
-    load();
-  }, [load]);
-
-  if (path === null) return <EmptyPane />;
-
+    const controller = new AbortController();
+    void fetchMeta(path, controller.signal).then((result) => {
+      if (!controller.signal.aborted) setMeta(result);
+    });
+    return () => controller.abort();
+  }, [path, revision]);
   const filename = path.split("/").pop() ?? path;
   const m = meta?.ok ? meta.data : null;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
-        <span className="truncate font-mono text-sm text-foreground" title={path}>
-          {filename}
-        </span>
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        <Tooltip content={path} triggerClassName="min-w-0 max-w-full">
+          <span className="truncate font-mono text-sm text-foreground">{filename}</span>
+        </Tooltip>
         <CopyButton value={m?.relPath ?? path} />
         {m && (
           <span className="ml-1 hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
@@ -62,29 +70,32 @@ export function FileViewerPane({ path }: { path: string | null }) {
         )}
         <div className="ml-auto flex items-center gap-1">
           {m && <RevealInFileManagerButton path={m.relPath} />}
-          {isHtmlPreviewPath(path) && (
-            <IconLink
-              href={renderUrl(path)}
-              target="_blank"
-              title="Open on files origin (HTML with scripts)"
-            >
-              <Eye className="size-4" />
-            </IconLink>
-          )}
-          <IconLink href={rawUrl(path)} target="_blank" title="Open raw in new tab">
-            <ExternalLink className="size-4" />
-          </IconLink>
+          <button
+            type="button"
+            onClick={load}
+            aria-label="Refresh preview"
+            className="inline-flex items-center gap-1.5 rounded border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          >
+            <RefreshCw className="size-3.5" /> Refresh
+          </button>
+          <IconLink
+            href={isHtmlPreviewPath(path) ? renderUrl(path) : rawUrl(path)}
+            target="_blank"
+            title="Open in new tab"
+          >
+            <ExternalLink className="size-3.5" /> Open
+          </IconLink>{" "}
           <IconLink
             href={rawUrl(path, { download: filename })}
             download={filename}
             title="Download"
           >
-            <Download className="size-4" />
+            <Download className="size-3.5" /> Download
           </IconLink>
         </div>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col bg-background/40">
-        <PaneBody path={path} meta={meta} onRetry={load} />
+        <PaneBody key={revision} path={path} meta={meta} onRetry={load} />
       </div>
     </div>
   );
@@ -116,14 +127,14 @@ function PaneBody({
         return <TransportErrorState onRetry={onRetry} />;
     }
   }
-  return <RendererRegistry meta={meta.data} path={path} />;
+  return <RendererRegistry meta={meta.data} path={path} htmlInitialMode="preview" />;
 }
 
 function EmptyPane() {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
       <FileText className="size-8 text-muted-foreground/40" />
-      <p className="text-sm text-muted-foreground">Select a file from the tree to view it here.</p>
+      <p className="text-sm text-muted-foreground">Select a file to preview it here.</p>
     </div>
   );
 }
@@ -146,12 +157,11 @@ function IconLink({
   return (
     <a
       href={href}
-      title={title}
       aria-label={title}
       target={target}
       rel={target === "_blank" ? "noopener noreferrer" : undefined}
       download={download}
-      className="inline-flex items-center justify-center rounded border border-border p-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+      className="inline-flex items-center justify-center gap-1.5 rounded border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
     >
       {children}
     </a>
@@ -163,7 +173,6 @@ function CopyButton({ value }: { value: string }) {
   return (
     <button
       type="button"
-      title="Copy path"
       aria-label="Copy path"
       onClick={async () => {
         try {
