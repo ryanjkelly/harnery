@@ -59,19 +59,18 @@ export default function CodeRenderer({
     };
   }, [file.relPath, file.content]);
 
-  if (failed) return <TextRenderer file={file} wrap={wrap} />;
-  if (html === null) {
-    // Highlighting in flight, so show plain text immediately to avoid a flash
-    // of empty (the grammar import can take a beat on first use).
-    return <TextRenderer file={file} wrap={wrap} />;
-  }
-  const body = (
-    <div
-      className={`shiki-host min-h-0 flex-1 overflow-auto p-3 text-[12px] leading-relaxed [&_pre]:m-0 [&_pre]:bg-transparent! ${wrapClass(wrap)}`}
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: Shiki-tokenized escaped HTML, not raw file bytes
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  // Keep the toolbar around the fallback too: loading or a missing grammar
+  // must not remove the user's Wrap control.
+  const body =
+    failed || html === null ? (
+      <TextRenderer file={file} wrap={wrap} />
+    ) : (
+      <div
+        className={`shiki-host min-h-0 flex-1 overflow-auto p-3 text-[12px] leading-relaxed [&_pre]:m-0 [&_pre]:bg-transparent! ${wrapClass(wrap)}`}
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: Shiki-tokenized escaped HTML, not raw file bytes
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
   if (controlled) return body;
   return (
     <div className="flex min-h-0 flex-1 flex-col">

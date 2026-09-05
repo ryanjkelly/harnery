@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ColorizedJson } from "@/components/log-table/ColorizedJson";
 import type { FileText } from "@/lib/file-viewer/types";
+import CodeRenderer from "./CodeRenderer";
 import JsonRenderer from "./JsonRenderer";
 import MarkdownRenderer from "./MarkdownRenderer";
 import TextRenderer from "./TextRenderer";
@@ -35,4 +36,17 @@ test("formatted JSON can disable soft wrapping", () => {
   const html = renderToStaticMarkup(<ColorizedJson value={{ value: "long" }} wrap={false} />);
   expect(html).toContain("whitespace-pre");
   expect(html).not.toContain("whitespace-pre-wrap");
+});
+
+test("code fallback keeps one Wrap control until syntax highlighting is ready", () => {
+  const html = renderToStaticMarkup(
+    <CodeRenderer file={file("code", "source.ts", "const value = 1;")} />,
+  );
+  expect(html.match(/Wrap<\/button>/g)).toHaveLength(1);
+});
+
+test("embedded code fallback leaves the Wrap control with its parent renderer", () => {
+  const source = file("code", "source.ts", "const value = 1;");
+  const html = renderToStaticMarkup(<CodeRenderer file={source} wrap={false} />);
+  expect(html).not.toContain("Wrap</button>");
 });
