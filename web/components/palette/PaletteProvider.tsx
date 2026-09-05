@@ -92,6 +92,8 @@ export interface PaletteItem {
 export interface PaletteSection {
   label: string;
   items: PaletteItem[];
+  /** Empty-query preview size. Search and Browse all retain the complete section. */
+  initialLimit?: number;
   /** Sort weight among non-synthesized sections (lower = earlier). Routes sit
    * at 50; page-contextual sections default to 0; global catalogs register
    * >50 to fall below routes. Recents pin to -100 internally. */
@@ -99,7 +101,13 @@ export interface PaletteSection {
 }
 
 interface PaletteRegistry {
-  register: (id: string, label: string, items: PaletteItem[], order?: number) => void;
+  register: (
+    id: string,
+    label: string,
+    items: PaletteItem[],
+    order?: number,
+    initialLimit?: number,
+  ) => void;
   unregister: (id: string) => void;
 }
 
@@ -122,14 +130,19 @@ export const PaletteFileOpenContext = createContext<FileOpenApi | null>(null);
  * **Memoize `items`** — re-registers whenever the array reference changes.
  * Pass `order` to position the section relative to Routes (50).
  */
-export function useCommandPaletteSection(label: string, items: PaletteItem[], order = 0): void {
+export function useCommandPaletteSection(
+  label: string,
+  items: PaletteItem[],
+  order = 0,
+  initialLimit?: number,
+): void {
   const registry = useContext(PaletteRegistryContext);
   const id = useId();
   useEffect(() => {
     if (!registry) return;
-    registry.register(id, label, items, order);
+    registry.register(id, label, items, order, initialLimit);
     return () => registry.unregister(id);
-  }, [registry, id, label, items, order]);
+  }, [registry, id, label, items, order, initialLimit]);
 }
 
 /** Route a file path through the page override or the overlay fallback. */
@@ -162,9 +175,12 @@ export function PaletteProvider({ children }: { children: ReactNode }) {
 
   // Stable callbacks — components registering sections don't re-fire their
   // effect when OTHER sections change.
-  const register = useCallback((id: string, label: string, items: PaletteItem[], order = 0) => {
-    setSections((s) => ({ ...s, [id]: { label, items, order } }));
-  }, []);
+  const register = useCallback(
+    (id: string, label: string, items: PaletteItem[], order = 0, initialLimit?: number) => {
+      setSections((s) => ({ ...s, [id]: { label, items, order, initialLimit } }));
+    },
+    [],
+  );
   const unregister = useCallback((id: string) => {
     setSections((s) => {
       if (!(id in s)) return s;

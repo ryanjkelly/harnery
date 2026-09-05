@@ -141,11 +141,11 @@ export function CatalogRegistrar() {
     [catalog.goals, push],
   );
 
-  useCommandPaletteSection("Agents", agents, 0);
-  useCommandPaletteSection("Councils", councils, 60);
-  useCommandPaletteSection("Decisions", decisions, 61);
-  useCommandPaletteSection("Work", work, 62);
-  useCommandPaletteSection("Workflows", workflows, 63);
-  useCommandPaletteSection("Goals", goals, 64);
+  useCommandPaletteSection("Agents", agents, 0, 6);
+  useCommandPaletteSection("Councils", councils, 60, 4);
+  useCommandPaletteSection("Decisions", decisions, 61, 4);
+  useCommandPaletteSection("Work", work, 62, 4);
+  useCommandPaletteSection("Workflows", workflows, 63, 4);
+  useCommandPaletteSection("Goals", goals, 64, 4);
   return null;
 }

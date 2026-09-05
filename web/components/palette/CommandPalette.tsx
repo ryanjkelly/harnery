@@ -48,6 +48,7 @@ import {
   useState,
 } from "react";
 import { useFileViewer } from "@/components/file-viewer/FileViewerProvider";
+import { paletteHomeSections } from "@/lib/palette/home";
 import { parseIdInput } from "@/lib/palette/id-parser";
 import { clearRecents, getRecents, type RecentEntry, recordRecent } from "@/lib/palette/recents";
 import { APP_ROUTES } from "@/lib/palette/routes";
@@ -388,11 +389,24 @@ export function CommandPalette() {
       .filter((s) => s.items.length > 0);
   }, [composed, query, idSection, recentSection]);
 
+  const displayed = useMemo(
+    () =>
+      query.trim()
+        ? filtered
+        : paletteHomeSections<PaletteItem, PaletteSection>(filtered, (section) => ({
+            key: `browse-section-${section.label}`,
+            label: `Browse all ${section.label.toLowerCase()}`,
+            description: `${section.items.length.toLocaleString()} entries · Search above to find any of them`,
+            pushItems: { title: section.label, items: section.items },
+          })),
+    [filtered, query],
+  );
+
   // Flatten the CURRENT view for keyboard nav + index-aligned rendering.
   const flat = useMemo<{ item: PaletteItem; sectionLabel: string }[]>(() => {
     const list: { item: PaletteItem; sectionLabel: string }[] = [];
     if (atRoot) {
-      for (const s of filtered)
+      for (const s of displayed)
         for (const it of s.items) list.push({ item: it, sectionLabel: s.label });
       return list;
     }
@@ -417,7 +431,7 @@ export function CommandPalette() {
       return list;
     }
     return list;
-  }, [atRoot, view, filtered, query, asyncSuggestions]);
+  }, [atRoot, view, displayed, query, asyncSuggestions]);
 
   const submitPrompt = useCallback(() => {
     if (atRoot || view?.kind !== "prompt") return;
