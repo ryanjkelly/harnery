@@ -18,6 +18,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -756,6 +757,29 @@ describe("resolveFile TOCTOU", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveFile host config", () => {
+  test("rapid policy flips with a preserved modification time invalidate cached policy", () => {
+    const root = makeRoot();
+    try {
+      w(root, "docs/preview.css", "body { color: blue }");
+      const config = w(root, ".harnery/config.jsonc", "{}");
+      const stamp = new Date("2020-01-01T00:00:00Z");
+      utimesSync(config, stamp, stamp);
+      const initial = resolveFile("docs/preview.css", { root });
+      expect(initial.ok).toBe(true);
+      if (initial.ok) closeSync(initial.fd);
+      writeFileSync(config, JSON.stringify({ files: { deny_globs: ["**/preview.css"] } }));
+      utimesSync(config, stamp, stamp);
+      expectReject(resolveFile("docs/preview.css", { root }), "denied", 403);
+      writeFileSync(config, "{}");
+      utimesSync(config, stamp, stamp);
+      const restored = resolveFile("docs/preview.css", { root });
+      expect(restored.ok).toBe(true);
+      if (restored.ok) closeSync(restored.fd);
+    } finally {
+      __resetFilesCaches();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   test("additive deny_globs extend the floor", () => {
     const root = buildFixture();
     w(root, "docs/internal-notes.md", "private\n");

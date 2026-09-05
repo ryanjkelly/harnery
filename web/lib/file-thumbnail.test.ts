@@ -1,10 +1,19 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import { serveFileThumbnail } from "./file-thumbnail";
-import { __resetFilesCaches, __setResolveTestHooks } from "./files";
+import { __resetFilesCaches, __setResolveTestHooks, resolveFile } from "./files";
+import { __resetThumbnailMemory, serveFileThumbnail } from "./thumbnail-service";
 
 let root: string;
 beforeEach(async () => {
@@ -16,7 +25,8 @@ beforeEach(async () => {
   writeFileSync(join(root, "image.png"), png);
   __resetFilesCaches();
 });
-afterEach(() => {
+afterEach(async () => {
+  await __resetThumbnailMemory();
   __setResolveTestHooks(null);
   __resetFilesCaches();
   rmSync(root, { recursive: true, force: true });
@@ -25,7 +35,7 @@ const request = (path: string, headers?: Record<string, string>) =>
   new Request(`http://localhost/api/file/thumbnail?path=${encodeURIComponent(path)}`, { headers });
 
 test("thumbnail is bounded WebP and revalidates with the same file version", async () => {
-  const response = await serveFileThumbnail(request("image.png"), { root });
+  const response = await serveFileThumbnail(request("image.png"), { root, wait: true });
   expect(response.status).toBe(200);
   const bytes = Buffer.from(await response.arrayBuffer());
   const metadata = await sharp(bytes).metadata();
@@ -39,13 +49,13 @@ test("thumbnail is bounded WebP and revalidates with the same file version", asy
   expect(repeat.status).toBe(304);
 });
 
-test("thumbnail rejects traversal, denied paths, and non-raster input", async () => {
-  writeFileSync(join(root, "readme.md"), "hello");
+test("thumbnail rejects traversal, denied paths, and unsupported binary input", async () => {
+  writeFileSync(join(root, "opaque.bin"), Buffer.from([0, 1, 0, 2]));
   mkdirSync(join(root, ".credentials"));
   writeFileSync(join(root, ".credentials", "hidden.png"), "hidden");
   expect((await serveFileThumbnail(request("../image.png"), { root })).status).toBe(400);
   expect((await serveFileThumbnail(request(".credentials/hidden.png"), { root })).status).toBe(403);
-  expect((await serveFileThumbnail(request("readme.md"), { root })).status).toBe(415);
+  expect((await serveFileThumbnail(request("opaque.bin"), { root })).status).toBe(415);
 });
 
 test("thumbnail reads checked inode after its pathname is replaced", async () => {
@@ -55,7 +65,7 @@ test("thumbnail reads checked inode after its pathname is replaced", async () =>
       symlinkSync("/etc/passwd", path);
     },
   });
-  const response = await serveFileThumbnail(request("image.png"), { root });
+  const response = await serveFileThumbnail(request("image.png"), { root, wait: true });
   // The resolver may reject the race itself; it must never reopen the replacement.
   expect([200, 403]).toContain(response.status);
   if (response.status === 200)
@@ -68,12 +78,70 @@ test("oversized sources are refused before decoding", async () => {
 });
 
 test("a replaced image cannot reuse the old thumbnail cache", async () => {
-  const first = await serveFileThumbnail(request("image.png"), { root });
-  const replacement = await sharp({ create: { width: 400, height: 100, channels: 3, background: "blue" } }).png().toBuffer();
+  const first = await serveFileThumbnail(request("image.png"), { root, wait: true });
+  const replacement = await sharp({
+    create: { width: 400, height: 100, channels: 3, background: "blue" },
+  })
+    .png()
+    .toBuffer();
   writeFileSync(join(root, "replacement.png"), replacement);
   renameSync(join(root, "replacement.png"), join(root, "image.png"));
-  const second = await serveFileThumbnail(request("image.png", { "if-none-match": first.headers.get("etag")! }), { root });
+  const second = await serveFileThumbnail(
+    request("image.png", { "if-none-match": first.headers.get("etag")! }),
+    { root, wait: true },
+  );
   expect(second.status).toBe(200);
   expect(second.headers.get("etag")).not.toBe(first.headers.get("etag"));
   expect((await sharp(Buffer.from(await second.arrayBuffer())).metadata()).height).toBe(90);
+});
+
+test("cold HTTP requests return pending and repeated requests reuse the result", async () => {
+  writeFileSync(join(root, "sequence.json"), '{"title":"Motion sequence","frames":12}');
+  const cold = await serveFileThumbnail(request("sequence.json"), { root });
+  expect(cold.status).toBe(202);
+  expect(cold.headers.get("retry-after")).toBe("0");
+  const generated = await serveFileThumbnail(request("sequence.json"), { root, wait: true });
+  expect(generated.status).toBe(200);
+  const cached = await serveFileThumbnail(request("sequence.json"), { root });
+  expect(cached.headers.get("x-thumbnail-cache")).toBe("memory");
+  expect(await cached.arrayBuffer()).toEqual(await generated.arrayBuffer());
+});
+
+test("disk cache survives memory eviction but never bypasses current file policy", async () => {
+  const first = await serveFileThumbnail(request("image.png"), { root, wait: true });
+  await __resetThumbnailMemory();
+  const disk = await serveFileThumbnail(request("image.png"), { root });
+  expect(disk.status).toBe(200);
+  expect(disk.headers.get("x-thumbnail-cache")).toBe("disk");
+  expect(await disk.arrayBuffer()).toEqual(await first.arrayBuffer());
+  const [cachedFile] = readdirSync(join(root, ".harnery/cache/file-thumbnails"));
+  expect(cachedFile).toBeDefined();
+  const rawCache = resolveFile(`.harnery/cache/file-thumbnails/${cachedFile}`, { root });
+  expect(rawCache.ok).toBe(false);
+  if (!rawCache.ok) expect(rawCache.code).toBe("denied");
+  rmSync(join(root, "image.png"));
+  symlinkSync("/etc/passwd", join(root, "image.png"));
+  expect([400, 403]).toContain((await serveFileThumbnail(request("image.png"), { root })).status);
+});
+
+test("folder previews are bounded collages and change when a child changes", async () => {
+  mkdirSync(join(root, "frames"));
+  writeFileSync(join(root, "frames", "one.md"), "# First frame");
+  const first = await serveFileThumbnail(request("frames"), { root, wait: true });
+  expect(first.status).toBe(200);
+  const image = await sharp(Buffer.from(await first.arrayBuffer())).metadata();
+  expect(image.width).toBe(360);
+  expect(image.height).toBe(240);
+  writeFileSync(join(root, "frames", "one.md"), "# Revised first frame");
+  const second = await serveFileThumbnail(request("frames"), { root, wait: true });
+  expect(second.status).toBe(200);
+  expect(second.headers.get("etag")).not.toBe(first.headers.get("etag"));
+});
+
+test("cache symlinks cannot substitute an unrelated file", async () => {
+  mkdirSync(join(root, ".harnery", "cache"));
+  symlinkSync(tmpdir(), join(root, ".harnery", "cache", "file-thumbnails"));
+  const result = await serveFileThumbnail(request("image.png"), { root, wait: true });
+  expect(result.status).toBe(200);
+  expect(result.headers.get("x-thumbnail-cache")).toBe("generated");
 });

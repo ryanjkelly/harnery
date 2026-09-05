@@ -1,0 +1,97 @@
+---
+title: "ADR 0171: generate file thumbnails in a bounded queue"
+description: Render visible file cards with native converters and cache their small WebP images.
+sidebar:
+  order: 171
+---
+
+**Date:** 2026-09-05
+**Status:** Accepted
+
+## Context
+
+Browse displayed image thumbnails but used generic icons for documents, code,
+video, and folders. Generating those previews inside directory listings would
+put converter startup and large-file reads on the navigation path.
+
+## Alternatives considered
+
+A universal preview service or Python wrapper could coordinate the converters,
+but would add a service or runtime to the dashboard. The required engines are
+already available as native commands or JavaScript dependencies. Calling them
+directly also lets text previews avoid browser startup.
+
+Client-side conversion would download original files into every browser and
+repeat expensive work after navigation. Synchronous server conversion would
+hold requests open while documents render.
+
+## Decision
+
+The thumbnail endpoint returns cached WebP images, or a small HTTP 202 response
+while a process-local queue generates them. It admits at most 32 jobs and runs
+two at a time. Duplicate requests share a job. Failures are suppressed for a
+minute; missing converters and unsupported files retain their file icons.
+
+The browser requests only visible thumbnails, with four network slots and a
+30-second retry budget. It cancels offscreen requests and disposes image URLs
+when cards unmount. Explicit Refresh starts a new generation. Live dashboard
+updates do not restart failed thumbnail attempts.
+
+Renderers produce images no larger than 360 by 240 pixels:
+
+| Input | Renderer |
+| --- | --- |
+| Images and self-contained SVG | Sharp/libvips |
+| Text, code, JSON, YAML, Markdown | Escaped text layout rendered by Sharp |
+| CSV and TSV | Bounded table layout rendered by Sharp |
+| Video and audio | FFmpeg frame extraction or waveform |
+| PDF | Poppler first-page rendering |
+| Office documents | Headless LibreOffice to PDF, then Poppler |
+| HTML | Pooled Chromium with scripts and external network requests disabled |
+| Folders | Up to four child thumbnails from a bounded two-level sample |
+
+FFmpeg, Poppler (`pdftoppm`), and LibreOffice must be on the dashboard process's
+PATH for their formats. HTML uses the existing Playwright dependency and its
+installed Chromium browser. Each converter has a deadline and output limit.
+Office conversions use a separate profile with macros disabled.
+
+Every request checks the current file policy before consulting the cache.
+Conversion reads a private copy made from the resolver's checked descriptor.
+Text copies stop at 256 KiB. Other formats have explicit source-size limits.
+HTML assets pass through the same resolver; changes to linked styles, images,
+or access policy invalidate the thumbnail. A bounded dependency memo avoids
+reparsing unchanged HTML on cache hits.
+
+Cache keys include source identity, renderer version, and HTML dependencies.
+Memory holds at most 128 images and 16 MiB. Linux disk storage uses checked
+directory descriptors and atomic writes, with a 128 MiB / 1,000-entry cap.
+Platforms without the descriptor-anchored disk implementation use memory only.
+Cache files are disposable derivatives under the host's `.harnery/cache/`.
+The raw file endpoints refuse the thumbnail cache directory so a cached image
+cannot bypass a later deny on its source file.
+
+## Result
+
+The repeatable benchmark is `web/scripts/thumbnail-benchmark.ts`. Run it from
+`web` with a managed fixture directory and, optionally, the configured dashboard
+URL. It records cold generation, memory and disk hits, concurrent HTTP completion,
+and directory latency during conversion. Failed conversions fail the HTTP run.
+
+On a Linux development workstation, a ten-format fixture run measured 11–23 ms
+for text and raster generation, 40–58 ms for PDF and media, 309 ms for HTML, and
+851 ms for an Office document. Memory hits took 0.04–0.34 ms; disk hits took
+0.74–1.17 ms. These are synthetic fixtures, not service-level guarantees.
+
+The same ten thumbnails completed through the production HTTP endpoint within
+834 ms when requested together. Directory requests had a 3.31 ms median and a
+188 ms maximum during first converter startup. The remaining startup spike is
+visible in the benchmark and should guide any later worker-process isolation.
+
+The HTTP benchmark also caught an earlier staging-stream hang that in-process
+checks had missed. Production-bundle verification is required alongside renderer
+tests; a passing source test does not prove the currently running bundle works.
+
+## Scope
+
+This changes local dashboard previews. It does not execute document scripts,
+publish source files, or generate thumbnails for an entire repository eagerly.

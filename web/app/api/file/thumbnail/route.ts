@@ -1,4 +1,4 @@
-import { serveFileThumbnail } from "@/lib/file-thumbnail";
+import { serveFileThumbnail } from "@/lib/thumbnail-service";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

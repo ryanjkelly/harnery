@@ -47,12 +47,12 @@ import {
   browseHref,
   displayName,
   type FileFilter,
-  fileCategory,
   filterEntries,
   inBrowseScope,
   parentDirectory,
   readBrowseLocation,
 } from "./browse-model";
+import { FileThumbnail } from "./FileThumbnail";
 import { FileViewerPane } from "./FileViewerPane";
 import { iconForFile } from "./file-icons";
 
@@ -115,6 +115,7 @@ export function BrowseClient({
   const [loading, setLoading] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [revision, setRevision] = useState(0);
+  const [thumbnailGeneration, setThumbnailGeneration] = useState(0);
   const [query, setQuery] = useState("");
   const [searchScope, setSearchScope] = useState<"folder" | "descendants" | "repository">("folder");
   const [searchResult, setSearchResult] = useState<BrowseSearchResult | null>(null);
@@ -183,6 +184,10 @@ export function BrowseClient({
     cache.current.clear();
     setRevision((value) => value + 1);
   }, []);
+  const refreshFiles = useCallback(() => {
+    refresh();
+    setThumbnailGeneration((value) => value + 1);
+  }, [refresh]);
   const liveScheduler = useMemo(
     () =>
       createLiveRefreshScheduler(
@@ -588,7 +593,7 @@ export function BrowseClient({
                         : "Find a workspace, then explore its files and finished outputs."}
                 </p>
               </div>
-              <IconButton label="Refresh files" onClick={refresh}>
+              <IconButton label="Refresh files" onClick={refreshFiles}>
                 <RefreshCw className={`size-4 ${busy ? "animate-spin" : ""}`} />
               </IconButton>
               {folderMode && (
@@ -770,7 +775,7 @@ export function BrowseClient({
             {activeError && (
               <div role="alert" className="m-4 rounded-lg border border-border p-4 text-sm">
                 {activeError}
-                <button type="button" onClick={refresh} className={`${BUTTON} ml-2 underline`}>
+                <button type="button" onClick={refreshFiles} className={`${BUTTON} ml-2 underline`}>
                   Try again
                 </button>
               </div>
@@ -855,7 +860,7 @@ export function BrowseClient({
                 {remoteSearch && searchResult?.indexing && (
                   <button
                     type="button"
-                    onClick={refresh}
+                    onClick={refreshFiles}
                     className={`${BUTTON} mt-4 border border-border`}
                   >
                     Refresh search
@@ -874,6 +879,7 @@ export function BrowseClient({
                   <EntryRow
                     key={entry.relPath}
                     entry={entry}
+                    thumbnailGeneration={thumbnailGeneration}
                     index={index}
                     grid={mode === "grid"}
                     selected={highlight === entry.relPath || location.file === entry.relPath}
@@ -1025,6 +1031,7 @@ function IconButton({
 }
 const EntryRow = memo(function EntryRow({
   entry,
+  thumbnailGeneration,
   index,
   grid,
   selected,
@@ -1033,6 +1040,7 @@ const EntryRow = memo(function EntryRow({
   onFocus,
 }: {
   entry: BrowserEntry;
+  thumbnailGeneration: number;
   index: number;
   grid: boolean;
   selected: boolean;
@@ -1041,11 +1049,6 @@ const EntryRow = memo(function EntryRow({
   onFocus: (path: string) => void;
 }) {
   const Icon = entry.kind === "dir" ? Folder : iconForFile(entry.name);
-  const [failedThumbnail, setFailedThumbnail] = useState(false);
-  const thumbnail =
-    fileCategory(entry) === "image" &&
-    !entry.name.toLowerCase().endsWith(".svg") &&
-    !failedThumbnail;
   const date = entry.mtime ? new Date(entry.mtime) : null;
   const formattedDate = date && !Number.isNaN(date.getTime()) ? MODIFIED_DATE.format(date) : null;
   const subtitle = entry.purpose || (showPath ? entry.relPath : null);
@@ -1068,21 +1071,14 @@ const EntryRow = memo(function EntryRow({
               : "flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted/40"
           }
         >
-          {thumbnail ? (
-            // biome-ignore lint/performance/noImgElement: the thumbnail endpoint already emits bounded optimized WebP; Next Image would re-encode it.
-            <img
-              src={`/api/file/thumbnail?path=${encodeURIComponent(entry.relPath)}`}
-              alt=""
-              loading="lazy"
-              decoding="async"
-              onError={() => setFailedThumbnail(true)}
-              className="size-full object-contain"
-            />
-          ) : (
+          <FileThumbnail
+            relPath={entry.relPath}
+            version={`${entry.mtime ?? ""}:${entry.size ?? ""}:${thumbnailGeneration}`}
+          >
             <Icon
               className={grid ? "size-10 text-muted-foreground/70" : "size-4 text-muted-foreground"}
             />
-          )}
+          </FileThumbnail>
         </div>
         <div className="min-w-0 flex-1">
           <span className="block break-words text-sm font-medium leading-5">

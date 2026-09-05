@@ -584,23 +584,24 @@ export function loadFilesConfig(root: string): FilesConfig {
   return cfg;
 }
 
-/** mtime-keyed per-process config cache (config.jsonc is read per resolve
- * otherwise; a stat is cheap, a parse is not). */
-let configCache: { root: string; mtimeMs: number; cfg: FilesConfig } | null = null;
+/** Recheck file identity and version before reusing parsed policy. Editors can
+ * preserve modification times or replace a config file within one clock tick. */
+let configCache: { root: string; identity: string; cfg: FilesConfig } | null = null;
 
 function filesConfig(root: string): FilesConfig {
   const p = path.join(root, ".harnery", "config.jsonc");
-  let mtimeMs = -1;
+  let identity = "missing";
   try {
-    mtimeMs = statSync(p).mtimeMs;
+    const stat = statSync(p);
+    identity = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
   } catch {
-    // missing config → mtime stays -1, cached empty config is fine
+    // A missing config uses the default policy.
   }
-  if (configCache && configCache.root === root && configCache.mtimeMs === mtimeMs) {
+  if (configCache && configCache.root === root && configCache.identity === identity) {
     return configCache.cfg;
   }
   const cfg = loadFilesConfig(root); // may throw FilesConfigError; callers map to config_error
-  configCache = { root, mtimeMs, cfg };
+  configCache = { root, identity, cfg };
   return cfg;
 }
 
@@ -616,6 +617,11 @@ export type DenyVerdict =
  * through resolveFile only. */
 export function evaluateDeny(relPath: string, cfg: FilesConfig): DenyVerdict {
   const segments = matchSegments(relPath);
+  // Derivatives must go through the thumbnail endpoint's source-policy check.
+  // Raw cache URLs would otherwise survive a later deny on the original file.
+  const normalized = `/${segments.map((segment) => segment.toLowerCase()).join("/")}/`;
+  if (normalized.includes("/.harnery/cache/file-thumbnails/"))
+    return { denied: true, pattern: ".harnery/cache/file-thumbnails", tier: "hard" };
   // Hard tier first, never overridable.
   for (const g of compiledHardFloor) {
     if (globMatches(g, segments)) return { denied: true, pattern: g.source, tier: "hard" };
