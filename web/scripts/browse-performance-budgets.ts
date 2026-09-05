@@ -7,6 +7,7 @@ export interface BrowsePerformanceSample {
   decoded: number;
   thumbnailRequests: number;
   workspaceRequests: number;
+  paletteRequests: number;
   uniqueRequestedFiles: number;
   errors: string[];
 }
@@ -42,6 +43,8 @@ export function checkBrowseSample(
     failures.push(`${sample.name}: revisit requests exceeded ${budgets.maxRevisitRequests}`);
   if (sample.workspaceRequests !== 0)
     failures.push(`${sample.name}: folder navigation requested the workspace catalog`);
+  if (sample.paletteRequests !== 0)
+    failures.push(`${sample.name}: folder navigation requested the unopened command palette`);
   failures.push(...sample.errors.map((error) => `${sample.name}: ${error}`));
   return failures;
 }

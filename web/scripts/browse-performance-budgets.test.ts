@@ -14,6 +14,7 @@ const sample: BrowsePerformanceSample = {
   decoded: 15,
   thumbnailRequests: 24,
   workspaceRequests: 0,
+  paletteRequests: 0,
   uniqueRequestedFiles: 20,
   errors: [],
 };
@@ -54,5 +55,8 @@ describe("Browse regression gates", () => {
   test("first decoded preview has an independent smoke ceiling", () => {
     expect(checkBrowseSample({ ...sample, firstDecodedMs: null })).toHaveLength(1);
     expect(checkBrowseSample({ ...sample, firstDecodedMs: 5001 })).toHaveLength(1);
+  });
+  test("folder navigation never requests the unopened command palette", () => {
+    expect(checkBrowseSample({ ...sample, paletteRequests: 1 })).toHaveLength(1);
   });
 });

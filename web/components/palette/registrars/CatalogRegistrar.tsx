@@ -88,8 +88,8 @@ export function CatalogRegistrar() {
   const [catalog, setCatalog] = useState<PaletteCatalog>(EMPTY);
   const fetchedAtRef = useRef(0);
 
-  // Fetch on mount, then revalidate whenever the palette opens (rate-limited)
-  // so a long-lived tab still sees newly created entities.
+  // Load when the palette opens, then revalidate on later opens (rate-limited).
+  // Catalog scans must not compete with the page the user is navigating to.
   useEffect(() => {
     let cancelled = false;
     const load = () => {
@@ -106,7 +106,6 @@ export function CatalogRegistrar() {
     const onPaletteOpen = () => {
       if (Date.now() - fetchedAtRef.current >= REFETCH_MIN_AGE_MS) load();
     };
-    load();
     window.addEventListener(COMMAND_PALETTE_OPENED_EVENT, onPaletteOpen);
     return () => {
       cancelled = true;

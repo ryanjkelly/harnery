@@ -117,10 +117,12 @@ async function measure(page: Page, name: string, action: () => Promise<unknown>)
   const errors: string[] = [];
   const requestedFiles: string[] = [];
   let workspaceRequests = 0;
+  let paletteRequests = 0;
   const records = new WeakMap<import("playwright").Request, (typeof requests)[number]>();
   const onRequest = (request: import("playwright").Request) => {
     const parsed = new URL(request.url());
     if (parsed.pathname === "/api/file/workspaces") workspaceRequests++;
+    if (parsed.pathname === "/api/palette") paletteRequests++;
     if (parsed.pathname === "/api/file/thumbnail")
       requestedFiles.push(parsed.searchParams.get("path") ?? "");
   };
@@ -226,6 +228,7 @@ async function measure(page: Page, name: string, action: () => Promise<unknown>)
       observed.paintOpportunityMs === null ? null : observed.paintOpportunityMs + actionMs,
     thumbnailRequests: requestedFiles.length,
     workspaceRequests,
+    paletteRequests,
     uniqueRequestedFiles: new Set(requestedFiles).size,
     errors,
   };
