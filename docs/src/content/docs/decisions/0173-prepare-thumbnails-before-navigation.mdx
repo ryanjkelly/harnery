@@ -1,0 +1,118 @@
+---
+title: "ADR 0173: prepare thumbnails before navigation"
+description: Prepare recent files in the background, reuse captured previews, and isolate converter startup from the dashboard.
+sidebar:
+  order: 173
+---
+
+**Date:** 2026-09-05
+**Status:** Accepted
+
+## Context
+
+[ADR 0171](/decisions/0171-generate-file-thumbnails-in-a-bounded-queue/)
+made previews available for many file types. Its production benchmark still
+showed a 188 ms directory-latency spike during converter startup. Browser
+measurements also found 262–440 ms between pending responses and retries,
+even when a generated thumbnail was already available.
+
+## Alternatives considered
+
+Increasing converter concurrency would compete with navigation and let slow
+Office jobs occupy every generation slot. Scanning the entire repository
+would spend CPU on files the user might never open. Keeping every converter
+alive indefinitely would increase idle memory use.
+
+Pairing screenshots with documents by basename cannot establish that the
+screenshot depicts the current document. Capture output needs an explicit
+association; Office documents can supply their own embedded thumbnail.
+
+## Decision
+
+Node instrumentation starts bounded background preparation. It watches up to
+24 recent artifact workspaces and eight recently browsed folders, with 64
+watchers total, two nested directory levels, and at most 128 entries per
+directory scan. Startup seeds a small sample from the first two selected
+folders. File events are debounced before generation. Visible work pauses
+background admission; discovery holds at most 256 pending files.
+`HARNERY_THUMBNAILS_PREGENERATE=0` disables this work. Files outside this
+recent working set still generate on demand.
+
+The generation queue admits visible requests before prefetch and background
+requests. Duplicate requests promote queued jobs instead of copying them.
+Two jobs can run, but only one may use an expensive converter, leaving a slot
+for text and image previews. Admission limits are 32 total jobs, 24 for
+prefetch, and eight for background requests.
+
+Visible cheap requests wait up to 40 ms for completion. Pending responses
+switch immediately to a completion request with a wait of at most one
+second. The browser permits four requests, with at most two visible
+completion waits and one speculative request. It prefetches cards within
+240 pixels below the scroll viewport and cancels offscreen or hidden
+requests. Completed images enter memory immediately. A separate writer
+persists them without delaying the response. Disk writes are serialized
+across instrumentation and route bundles, with at most 32 pending images,
+while retaining the existing size, ownership, and pruning checks.
+
+Chromium runs in a helper subprocess, so loading Playwright does not block
+the dashboard event loop. Checked local-asset reads cross an IPC bridge;
+scripts and external network requests remain disabled. Office conversions
+reuse a serial Python UNO worker with a private LibreOffice profile and
+macros disabled. Both engines retire after two idle minutes and recycle
+after bounded use. Office requires Python 3 with its UNO module in addition
+to LibreOffice and Poppler; missing tools retain the normal file icon.
+
+Explicit artifact-local screenshot or poster associations and recognized
+embedded Office rasters bypass conversion. Manual associations use
+`web/scripts/thumbnail-register-preview.ts` to bind source and preview
+versions plus HTML dependencies. Successful self-contained browser captures
+also register their saved HTML snapshot and PNG automatically. Automatic
+reuse verifies the saved HTML digest, bounded to 2 MiB. Preview freshness
+uses filesystem versions; same-version replacements on filesystems with
+coarse timestamps remain a limitation. Reuse always checks current file
+access policy. Changed sources, previews, or linked assets invalidate the
+association. Office ZIP extraction reads only bounded central-directory
+metadata and recognized raster entries.
+
+## Result
+
+The checks passed: 219 focused and adjacent tests, source and web TypeScript,
+and a production build. Live checks confirmed that a new text file and its
+next revision were cached before their first thumbnail request. Preparation
+took about 1.6 seconds including debounce; the cached handler took 0.5–0.6 ms.
+A real browser capture produced an association that the production endpoint
+reused in 17.4 ms, including 11.7 ms of image rendering.
+
+Production HTTP conversion measured 856 ms for the first Office document and
+73–88 ms for three subsequent uncached documents. HTML measured 361 ms cold
+and 92–118 ms for subsequent uncached documents. These workstation samples
+include transport and are not service-level guarantees.
+
+`web/scripts/thumbnail-browser-benchmark.ts` measures directory readiness,
+decoded visible images, request timing, cached revisits, and Back navigation.
+Fresh copies of the same fixture set produced these results:
+
+| Measurement | Before | After |
+| --- | --- | --- |
+| First visible image decoded after listing | 480 ms | 67 ms |
+| All 15 visible images decoded after listing | 1,076 ms | 633 ms |
+| Cold HTTP requests and resulting images | 42 requests / 15 images | 27 requests / 19 images |
+| Cached revisit and Back, all visible images | 124–130 ms | 121–160 ms |
+
+The four additional images were prefetched below the viewport. Two further
+runs with fresh files and warm engines completed all visible images in
+299–348 ms after listing. Every cold output was newly generated, so these
+runs did not depend on background preparation or cached thumbnails.
+
+The benchmark's two-animation-frame measurement is a paint opportunity,
+not a measurement of the compositor's physical paint. Directory startup
+varied between runs and is reported separately from thumbnail latency.
+
+Two production details mattered. The instrumentation import must sit inside
+an explicit positive `NEXT_RUNTIME === "nodejs"` branch, otherwise Next's
+Edge bundle follows Node-only imports. Worker tracing must resolve the real
+Playwright and playwright-core package directories; presumed sibling paths
+do not work with every package manager's symlink layout. The final route
+trace includes both helpers and both browser packages. Cleanup checks also
+verify Chromium exits with its helper, since Chromium owns a separate
+process group.
