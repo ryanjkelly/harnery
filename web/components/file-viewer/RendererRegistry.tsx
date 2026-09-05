@@ -147,7 +147,7 @@ function TextFamily({
           ))}
         </fieldset>
       )}
-      {file.truncated && <TruncationBanner lines={file.lines} />}
+      {file.truncated && meta.category !== "html" && <TruncationBanner lines={file.lines} />}
       <div className={`min-h-0 flex-1 ${selfScrolls ? "flex flex-col" : "overflow-auto"}`}>
         <RenderErrorBoundary key={path} relPath={meta.relPath}>
           <Suspense fallback={<LoadingState path={meta.relPath} />}>

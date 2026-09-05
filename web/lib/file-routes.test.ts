@@ -289,6 +289,19 @@ describe("GET /api/file", () => {
 });
 
 describe("GET /files/render/[...path]", () => {
+  test("HTML preview serves the body beyond the source viewer line limit", async () => {
+    const content = `<!doctype html><head><style>\n${"/* saved stylesheet */\n".repeat(TEXT_ENDPOINT_MAX_LINES)}\n</style></head><body><h1>Visible saved page</h1></body>`;
+    w("docs/long snapshot.html", content);
+    const source = await textGET(req("docs/long snapshot.html"));
+    const excerpt = await source.json();
+    expect(excerpt.truncated).toBe(true);
+    expect(excerpt.content).not.toContain("Visible saved page");
+    const preview = await renderTreeGET(...renderTreeReq("docs/long snapshot.html"));
+    expect(preview.status).toBe(200);
+    expect(preview.headers.get("content-security-policy")).toBe("sandbox");
+    expect(await preview.text()).toBe(content);
+  });
+
   test("serves a sandboxed path-shaped HTML tree with safe asset MIME", async () => {
     w(
       "docs/page.html",

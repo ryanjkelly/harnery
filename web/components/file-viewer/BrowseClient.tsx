@@ -539,11 +539,11 @@ export function BrowseClient({
               .filter((path) => inBrowseScope(path, scope?.roots))
               .slice(0, 5)
               .map((path) => (
-                <Tooltip key={path} content={path} triggerClassName="block">
+                <Tooltip key={path} content={path} triggerClassName="w-full min-w-0 max-w-full">
                   <button
                     type="button"
                     onClick={() => openFile(path)}
-                    className="w-full truncate rounded px-2 py-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                    className="w-full min-w-0 truncate rounded px-2 py-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
                     {path.split("/").pop()}
                   </button>

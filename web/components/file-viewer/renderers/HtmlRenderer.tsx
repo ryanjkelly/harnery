@@ -2,16 +2,19 @@
 
 /**
  * HTML / XML renderer: Shiki-highlighted SOURCE by default, plus a
- * Preview toggle that renders the HTML in a `sandbox`ed `<iframe>` from a blob
- * URL. Source is the default in the overlay (preview opt-in); `/files/view`
+ * Preview toggle that loads the complete document through the sandboxed render
+ * tree. Source is the default in the overlay (preview opt-in); `/files/view`
  * may seed Preview via `initialMode`. The iframe sandbox has NO
  * allow-same-origin, so the previewed document gets a unique opaque origin and
- * can never touch the dashboard. The blob: URL is created only in Preview.
+ * can never touch the dashboard. Source limits do not truncate the preview;
+ * relative styles and images resolve beside the document in the render tree.
  */
 
 import { Code2, Eye } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { sandboxedRenderUrl } from "@/lib/file-viewer/client";
 import type { FileText } from "@/lib/file-viewer/types";
+import { TruncationBanner } from "../ViewerStates";
 import CodeRenderer from "./CodeRenderer";
 import { useWrapPref, WrapToggle } from "./WrapToggle";
 
@@ -72,9 +75,10 @@ export default function HtmlRenderer({
           </div>
         )}
       </div>
+      {mode === "source" && file.truncated && <TruncationBanner lines={file.lines} />}
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "preview" && !isXml ? (
-          <HtmlPreview content={file.content} />
+          <HtmlPreview path={file.relPath} />
         ) : (
           <CodeRenderer file={file} wrap={wrap} />
         )}
@@ -83,15 +87,10 @@ export default function HtmlRenderer({
   );
 }
 
-function HtmlPreview({ content }: { content: string }) {
-  const blobUrl = useMemo(() => {
-    const blob = new Blob([content], { type: "text/html" });
-    return URL.createObjectURL(blob);
-  }, [content]);
-  useEffect(() => () => URL.revokeObjectURL(blobUrl), [blobUrl]);
+function HtmlPreview({ path }: { path: string }) {
   return (
     <iframe
-      src={blobUrl}
+      src={sandboxedRenderUrl(path)}
       title="HTML preview"
       // No allow-scripts, no allow-same-origin: the preview is inert + isolated.
       sandbox=""
