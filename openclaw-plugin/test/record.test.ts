@@ -68,8 +68,9 @@ describe("OpenClaw recorder worker runtime", () => {
 
     expect(processor.process(message(1, "private-session"))).toBe(false);
     expect(logs).toHaveLength(1);
-    expect(logs[0]).toMatchObject({ event: "record_failure", error_name: "Error" });
+    expect(logs[0]).toMatchObject({ event: "record_failure", error_name: "RecorderBusyError" });
     expect(JSON.stringify(logs)).not.toContain("private-session");
+    expect(JSON.stringify(logs)).not.toContain("openclaw_recorder_busy");
   });
 
   test("swallows recorder exceptions, omits error text, and continues", () => {
@@ -91,6 +92,7 @@ describe("OpenClaw recorder worker runtime", () => {
 
     expect(calls).toBe(2);
     expect(logs.map((row) => row.event)).toEqual(["record_failure", "record_result"]);
+    expect(logs[0]).toMatchObject({ error_name: "Error" });
     expect(JSON.stringify(logs)).not.toContain("private recorder failure detail");
   });
 
@@ -110,6 +112,7 @@ describe("OpenClaw recorder worker runtime", () => {
     expect(processor.process(message(1, "session-a"))).toBe(false);
     expect(calls).toBe(0);
     expect(logs.map((row) => row.event)).toEqual(["record_failure"]);
+    expect(logs[0]).toMatchObject({ error_name: "RecorderFaultInjectedError" });
   });
 });
 

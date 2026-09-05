@@ -22,6 +22,26 @@ export interface RecordWorkerProcessor {
   process(message: RecordWorkerMessage): boolean;
 }
 
+/**
+ * Sentinel raised when the canonical recorder reports `busy`: the memory-only
+ * intake queue overflowed and this signal was dropped. Its fixed `name` lets a
+ * redacted `record_failure` row distinguish dropped evidence from a crash.
+ */
+export class RecorderBusyError extends Error {
+  constructor() {
+    super("openclaw_recorder_busy");
+    this.name = "RecorderBusyError";
+  }
+}
+
+/** Sentinel for the `recorderFault` test/debug switch that fails the recorder open. */
+export class RecorderFaultInjectedError extends Error {
+  constructor() {
+    super("recorder_fault_injected");
+    this.name = "RecorderFaultInjectedError";
+  }
+}
+
 export function createRecordWorkerProcessor(
   data: RecordWorkerData,
   dependencies: RecordWorkerRuntimeDependencies = {},
@@ -43,7 +63,7 @@ export function createRecordWorkerProcessor(
 
   const record = (hook: OpenClawHookName, translation: OpenClawTranslation): boolean => {
     try {
-      if (data.config.recorderFault) throw new Error("recorder_fault_injected");
+      if (data.config.recorderFault) throw new RecorderFaultInjectedError();
       if (!initialized) {
         ensureLedger(data.config.ledgerRoot, "openclaw-plugin-v3");
         initialized = true;
@@ -64,7 +84,7 @@ export function createRecordWorkerProcessor(
         intake: "memory_only",
       });
       if (result.state === "busy") {
-        throw new Error("openclaw_recorder_busy");
+        throw new RecorderBusyError();
       }
       log("record_result", {
         hook,
