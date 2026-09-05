@@ -10,13 +10,11 @@
  *
  * Interaction model:
  *   ⌘K / Ctrl-K   toggle (global; bound once here)
+ *   /             open when not typing in a field
  *   ↑/↓ ⏎         navigate + select; ⌘⏎ / middle-click opens href in new tab
  *   drill-downs    an item with `prompt` pushes a text sub-view with its own
  *                  submit button + live suggestions; `pushItems` pushes a
  *                  pick-list. Backspace-on-empty and Esc pop one level.
- *
- * `/` is deliberately NOT bound: the log tables (/live, /events) own it for
- * their in-page search focus.
  *
  * Renders full-screen on mobile (< sm) and as a centered panel on desktop —
  * same responsive pattern the old /browse file palette used.
@@ -242,9 +240,26 @@ export function CommandPalette() {
     [fileSearchPrompt],
   );
 
-  // ⌘K / Ctrl-K toggle + programmatic open via custom event.
+  // ⌘K / Ctrl-K toggle, slash open, and programmatic open via custom event.
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || e.repeat) return;
+      const typing = e
+        .composedPath()
+        .some(
+          (target) =>
+            target instanceof HTMLElement &&
+            (target.isContentEditable ||
+              target.matches("input, textarea, select, [role=textbox], [role=combobox]")),
+        );
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !typing) {
+        e.preventDefault();
+        if (!openRef.current) {
+          reset();
+          setOpen(true);
+        }
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         if (openRef.current) {

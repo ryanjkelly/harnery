@@ -100,7 +100,7 @@ type RenderItem<E> = { kind: "row"; row: E } | { kind: "group"; rows: E[]; group
  * detection + per-row tooltip.
  *
  * Keyboard shortcuts:
- *   `/`     focus search input
+ *   Ctrl/⌘F focus search input
  *   `Esc`   clear search / collapse expanded row / blur input
  *   `[`     toggle regex mode
  *   `p`     toggle pause (only when SSE source is connected)
@@ -407,7 +407,9 @@ export function LogTable<E>({
     const handler = (e: globalThis.KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
       const inField = tag === "input" || tag === "textarea" || tag === "select";
-      if (e.key === "/" && !inField) {
+      if (e.defaultPrevented || e.isComposing) return;
+      const inDialog = (e.target as Element | null)?.closest?.('[role="dialog"]');
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f" && !inDialog) {
         e.preventDefault();
         searchInputRef.current?.focus();
         return;
@@ -524,7 +526,7 @@ export function LogTable<E>({
             value={search}
             onChange={onSearchChange}
             onKeyDown={onSearchKey}
-            placeholder={regexMode ? "regex /pattern/i" : "search… (press /)"}
+            placeholder={regexMode ? "regex /pattern/i" : "search… (Ctrl/⌘F)"}
             className="bg-transparent border-0 outline-none px-2 py-1.5 text-foreground placeholder:text-muted-foreground/60 w-64 font-mono"
             spellCheck={false}
             autoComplete="off"

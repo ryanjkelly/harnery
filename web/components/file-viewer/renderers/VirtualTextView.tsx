@@ -111,13 +111,13 @@ export default function VirtualTextView({ content, wrap }: { content: string; wr
     else setCurrent(0);
   }, [matches, gotoMatch]);
 
-  // `/` opens search (unless already typing somewhere); Enter / Shift-Enter
+  // Ctrl/⌘F searches every line, including rows outside the rendered window. Enter / Shift-Enter
   // cycle matches; Esc closes search WITHOUT closing the overlay (stopPropagation).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const el = document.activeElement;
-      const typing = el && /^(input|textarea|select)$/i.test(el.tagName);
-      if (e.key === "/" && !typing) {
+      if (e.defaultPrevented || e.isComposing) return;
+      if (document.querySelector('[role="dialog"][aria-label="Command palette"]')) return;
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
         setSearchOpen(true);
         requestAnimationFrame(() => inputRef.current?.focus());

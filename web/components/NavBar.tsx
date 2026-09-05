@@ -136,7 +136,7 @@ export function NavBar({ scannedDir, compact = false }: { scannedDir: string; co
           >
             {scannedDir}
           </span>
-          <Tooltip content={`Command palette${kbd ? ` (${kbd})` : ""}: search everything`}>
+          <Tooltip content={`Command palette (${kbd ? `${kbd} or ` : ""}/): search everything`}>
             <button
               type="button"
               onClick={() => openCommandPalette()}
