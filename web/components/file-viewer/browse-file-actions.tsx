@@ -1,6 +1,17 @@
 "use client";
 
-import { Copy, Download, ExternalLink, Folder, FolderOpen, Pin, RefreshCw } from "lucide-react";
+import {
+  Copy,
+  Download,
+  ExternalLink,
+  Eye,
+  Folder,
+  FolderOpen,
+  Pause,
+  Pin,
+  Play,
+  RefreshCw,
+} from "lucide-react";
 import { rawUrl, revealInFileManager } from "@/lib/file-viewer/client";
 import {
   type BrowseLocation,
@@ -27,14 +38,27 @@ export function fileBrowseLink(entry: BrowserEntry, current: string): string {
 export function browseFileActions(options: {
   entry: BrowserEntry;
   selectedPath: string | null;
+  videoPlaying: boolean;
   pins: string[];
   onOpen: (entry: BrowserEntry) => void;
+  onVideoAction: (path: string, action: "play" | "pause") => void;
   onNavigate: (location: BrowseLocation) => void;
   onPin: (path: string) => void;
   onRefresh: (path: string) => void;
   notify: (message: string) => void;
 }): FileAction[] {
   const { entry, notify } = options;
+  const isVideo = entry.kind === "file" && /\.(mp4|webm|mov|m4v)$/i.test(entry.name);
+  const selectedVideo = isVideo && options.selectedPath === entry.relPath;
+  const videoAction = options.videoPlaying ? "pause" : "play";
+  const OpenIcon =
+    entry.kind === "dir"
+      ? FolderOpen
+      : selectedVideo && options.videoPlaying
+        ? Pause
+        : isVideo
+          ? Play
+          : Eye;
   const folder = entry.kind === "dir" ? entry.relPath : parentDirectory(entry.relPath);
   const copy = async (value: string, label: string) => {
     try {
@@ -50,11 +74,16 @@ export function browseFileActions(options: {
       label:
         entry.kind === "dir"
           ? "Open folder"
-          : options.selectedPath === entry.relPath && /\.(mp4|webm|mov|m4v)$/i.test(entry.name)
-            ? "Pause video"
-            : "Preview",
-      icon: <FolderOpen className="size-4" />,
-      onSelect: () => options.onOpen(entry),
+          : selectedVideo
+            ? options.videoPlaying
+              ? "Pause video"
+              : "Play video"
+            : isVideo
+              ? "Preview video"
+              : "Preview",
+      icon: <OpenIcon className="size-4" />,
+      onSelect: () =>
+        selectedVideo ? options.onVideoAction(entry.relPath, videoAction) : options.onOpen(entry),
     },
     {
       id: "tab",

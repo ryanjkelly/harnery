@@ -14,6 +14,7 @@ import { rawUrl } from "@/lib/file-viewer/client";
 import type { FileMeta } from "@/lib/file-viewer/types";
 import {
   VideoAutoplayToggle,
+  VideoPlaybackContext,
   VideoSelectionContext,
   videoAutoplayEnabled,
 } from "../video-playback";
@@ -32,14 +33,22 @@ export function AudioRenderer({ path }: { meta: FileMeta; path: string }) {
 export function VideoRenderer({ meta, path }: { meta: FileMeta; path: string }) {
   const video = useRef<HTMLVideoElement>(null);
   const selection = useContext(VideoSelectionContext);
+  const reportPlayback = useContext(VideoPlaybackContext);
   const [blocked, setBlocked] = useState(false);
+  useEffect(() => {
+    reportPlayback({ path, playing: false });
+    return () => reportPlayback(null);
+  }, [path, reportPlayback]);
   useEffect(() => {
     const element = video.current;
     if (!element) return;
     let cancelled = false;
     if (selection?.path === path && selection.action === "pause") {
       element.pause();
-    } else if (videoAutoplayEnabled()) {
+    } else if (
+      (selection?.path === path && selection.action === "play") ||
+      videoAutoplayEnabled()
+    ) {
       setBlocked(false);
       void element
         .play()
@@ -70,7 +79,13 @@ export function VideoRenderer({ meta, path }: { meta: FileMeta; path: string }) 
           controls
           playsInline
           preload="metadata"
-          onPlay={() => setBlocked(false)}
+          onPlay={() => {
+            setBlocked(false);
+            reportPlayback({ path, playing: true });
+          }}
+          onPause={() => reportPlayback({ path, playing: false })}
+          onEnded={() => reportPlayback({ path, playing: false })}
+          onEmptied={() => reportPlayback({ path, playing: false })}
           src={rawUrl(path)}
           className="max-h-full max-w-full"
         >

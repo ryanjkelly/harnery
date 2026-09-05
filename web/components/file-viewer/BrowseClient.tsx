@@ -60,7 +60,12 @@ import { FileThumbnail } from "./FileThumbnail";
 import { FileViewerPane } from "./FileViewerPane";
 import { iconForFile } from "./file-icons";
 import { clearThumbnailCache } from "./thumbnail-cache";
-import { type VideoSelection, VideoSelectionContext } from "./video-playback";
+import {
+  type VideoPlayback,
+  VideoPlaybackContext,
+  type VideoSelection,
+  VideoSelectionContext,
+} from "./video-playback";
 
 export interface BrowseScope {
   label: string;
@@ -138,6 +143,7 @@ export function BrowseClient({
   const [fullPreview, setFullPreview] = useState(false);
   const [previewWidth, setPreviewWidth] = useState(48);
   const [videoSelection, setVideoSelection] = useState<VideoSelection | null>(null);
+  const [videoPlayback, setVideoPlayback] = useState<VideoPlayback | null>(null);
   const [previewRevision, setPreviewRevision] = useState(0);
   const [fileMenu, setFileMenu] = useState<{
     entry: BrowserEntry;
@@ -508,8 +514,16 @@ export function BrowseClient({
     ? browseFileActions({
         entry: fileMenu.entry,
         selectedPath: location.file,
+        videoPlaying: videoPlayback?.path === location.file && videoPlayback.playing,
         pins,
         onOpen: openEntry,
+        onVideoAction: (path, action) => {
+          setVideoSelection((previous) => ({
+            path,
+            action,
+            sequence: (previous?.sequence ?? 0) + 1,
+          }));
+        },
         onNavigate: navigate,
         onPin: togglePin,
         onRefresh: (path) => {
@@ -1047,7 +1061,9 @@ export function BrowseClient({
                 </IconButton>
               </div>
               <VideoSelectionContext.Provider value={videoSelection}>
-                <FileViewerPane key={previewRevision} path={location.file} />
+                <VideoPlaybackContext.Provider value={setVideoPlayback}>
+                  <FileViewerPane key={previewRevision} path={location.file} />
+                </VideoPlaybackContext.Provider>
               </VideoSelectionContext.Provider>
             </section>
           </>

@@ -5,8 +5,10 @@ import { createContext, useSyncExternalStore } from "react";
 const KEY = "files:autoplay-videos";
 const EVENT = "files:autoplay-videos-changed";
 let fallback = true;
-export type VideoSelection = { path: string; action: "open" | "pause"; sequence: number };
+export type VideoSelection = { path: string; action: "open" | "play" | "pause"; sequence: number };
 export const VideoSelectionContext = createContext<VideoSelection | null>(null);
+export type VideoPlayback = { path: string; playing: boolean };
+export const VideoPlaybackContext = createContext<(state: VideoPlayback | null) => void>(() => {});
 
 export function videoAutoplayEnabled(): boolean {
   try {
