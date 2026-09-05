@@ -28,9 +28,14 @@ while moving their synchronous work away from HTTP handling.
 ## Decision
 
 One lazily started worker per server coordination root handles the complete
-palette catalog, agents API, homepage data assembly, and event queries. The
+palette catalog, agents API, homepage data assembly, and event queries. Initial
+Events and Councils page assembly also runs in this worker. The
 homepage assembly includes identities, anomalies, and hover-card summaries;
 moving only its initial agent read would leave later scans on the HTTP thread.
+Events reuses one agent snapshot for its name index and layered hover-card
+summaries. Councils collects names from every displayed role and council state
+before building its summaries. Both pages await the complete data assembly;
+their existing tables, filters, cards, and live subscriptions remain intact.
 Mutation routes retain their existing authority checks.
 
 Identical pending requests share a promise. The client admits at most 32
@@ -71,6 +76,14 @@ catalog response took 178 ms; the other three responses took 1,522–1,623 ms,
 including shared-worker queueing. Repository tests were running concurrently,
 so these are observed responsiveness measurements, not unloaded throughput
 benchmarks or latency guarantees.
+
+After extending the worker to initial Events and Councils page assembly, a
+before/after production probe found that the slowest concurrent lightweight
+request fell from 363 to 47 ms during Events rendering and from 48 to 4 ms
+during Councils rendering. Events returned in 399 ms before and 464 ms after;
+Councils took about 62 ms in both samples. These single samples show reduced
+interference with other requests, not faster page completion. Each probe kept
+one build throughout; repository tests ran alongside the later probe.
 
 The change isolates selected presentation reads; it does not make every
 dashboard route asynchronous. Some other pages still assemble summaries with

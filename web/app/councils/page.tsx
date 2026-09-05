@@ -4,25 +4,13 @@ import Link from "next/link";
 import { AgentChipProvider } from "@/components/AgentChip";
 import { CouncilCard } from "@/components/CouncilCard";
 import { NavBar } from "@/components/NavBar";
-import { buildAgentSummaryMap } from "@/lib/agent-summary";
-import { type CouncilSummary, coordRoot, readCouncils } from "@/lib/coord-reader";
+import { type CouncilSummary, coordRoot } from "@/lib/coord-reader";
+import { readDashboard } from "@/lib/dashboard-reader";
 
 export const dynamic = "force-dynamic";
 
-export default function CouncilsPage() {
-  const snap = readCouncils();
-
-  // Union of every agent name surfaced on this page so AgentChip popovers
-  // render with persona metadata baked in.
-  const everyName = new Set<string>();
-  for (const c of [...snap.active, ...snap.closed, ...snap.archived]) {
-    if (c.created_by) everyName.add(c.created_by);
-    if (c.steward) everyName.add(c.steward);
-    for (const m of c.members) everyName.add(m);
-    for (const m of c.contributors_in_current_round) everyName.add(m);
-    for (const m of c.pending_in_current_round) everyName.add(m);
-  }
-  const summaries = buildAgentSummaryMap(everyName);
+export default async function CouncilsPage() {
+  const { snap, summaries } = await readDashboard("councilsPage");
 
   return (
     <AgentChipProvider summaries={summaries}>

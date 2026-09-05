@@ -2,12 +2,8 @@ import Link from "next/link";
 import { AgentChipProvider } from "@/components/AgentChip";
 import { EventsLogTable } from "@/components/log-table/EventsLogTable";
 import { NavBar } from "@/components/NavBar";
-import {
-  buildAgentSummaryMap,
-  buildEndedAgentSummaries,
-  buildSubagentSummaries,
-} from "@/lib/agent-summary";
-import { coordRoot, readAgents, readEvents, readInstanceIdentities } from "@/lib/coord-reader";
+import { coordRoot } from "@/lib/coord-reader";
+import { readDashboard } from "@/lib/dashboard-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -34,45 +30,12 @@ export default async function EventsPage({ searchParams }: PageProps) {
   const type = sp.type ?? null;
   const instanceId = sp.instance ?? null;
   const q = sp.q ?? null;
-  const data = readEvents({ limit, instanceId: instanceId ?? undefined });
-  const snap = readAgents();
-
-  // Durable instance_id → identity from canonical V3 session events.
-  // agent.started (Agent-tool dispatches). Unlike heartbeats, these persist in
-  // the append-only log after a session ends, so a finished agent keeps its
-  // name instead of reverting to a raw instance_id. One scan, shared with the
-  // summary builders below.
-  const identities = readInstanceIdentities();
-  const instanceToName: Record<string, string> = {};
-  for (const hb of [...snap.active, ...snap.stale]) {
-    instanceToName[hb.instance_id] = hb.name;
-  }
-  // Live heartbeats win (freshest name); the durable log fills every agent that
-  // has since exited (main sessions and subagents alike), so neither shows a
-  // raw id in the agent column.
-  for (const [iid, id] of Object.entries(identities)) {
-    if (!instanceToName[iid]) instanceToName[iid] = id.name;
-  }
-  const namesInEvents = new Set<string>();
-  for (const r of data.rows) {
-    if (r.instance_id && instanceToName[r.instance_id]) {
-      namesInEvents.add(instanceToName[r.instance_id]);
-    }
-  }
-  const agentNames = Array.from(namesInEvents).sort();
-  // Hover cards, lowest-priority first: ended main agents and
-  // subagents (agent.started) from the durable log, then live/recent main
-  // agents from heartbeats + journal, which override the rest on any name
-  // collision so a live agent always shows its richer card.
-  const summaries = {
-    ...buildEndedAgentSummaries(identities),
-    ...buildSubagentSummaries(identities),
-    ...buildAgentSummaryMap(agentNames, identities),
-  };
+  const { data, agentNames, instanceToName, summaries, allKinds } = await readDashboard(
+    "eventsPage",
+    { limit, instanceId: instanceId ?? undefined },
+  );
 
   const initialAgentName = instanceId ? (instanceToName[instanceId] ?? null) : null;
-
-  const allKinds = Array.from(new Set(data.rows.map((r) => r.event_type))).sort();
 
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">

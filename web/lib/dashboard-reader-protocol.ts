@@ -1,6 +1,11 @@
 import type { AgentsSnapshot, EventsResponse } from "./coord-reader";
 import type { EventQueryOptions } from "./event-query-reader";
 import type { HomeSnapshot } from "./home-snapshot-reader";
+import type {
+  CouncilsPageSnapshot,
+  EventsPageOptions,
+  EventsPageSnapshot,
+} from "./page-snapshot-reader";
 import type { PaletteCatalog } from "./palette/catalog";
 
 export interface DashboardResults {
@@ -8,6 +13,8 @@ export interface DashboardResults {
   palette: PaletteCatalog;
   home: HomeSnapshot;
   events: EventsResponse;
+  eventsPage: EventsPageSnapshot;
+  councilsPage: CouncilsPageSnapshot;
 }
 
 export interface DashboardInputs {
@@ -15,6 +22,8 @@ export interface DashboardInputs {
   palette: undefined;
   home: undefined;
   events: EventQueryOptions;
+  eventsPage: EventsPageOptions;
+  councilsPage: undefined;
 }
 
 export type DashboardReadKind = keyof DashboardResults;
