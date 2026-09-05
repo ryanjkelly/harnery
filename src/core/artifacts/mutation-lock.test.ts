@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import * as fs from "node:fs";
 import {
   existsSync,
   mkdirSync,
@@ -27,6 +28,30 @@ afterEach(() => {
 });
 
 describe("artifact mutation lock", () => {
+  test("a failed or partial owner publication releases the initializing lock", () => {
+    for (const partial of [false, true]) {
+      const path = root();
+      const originalWrite = fs.writeFileSync;
+      const fault = spyOn(fs, "writeFileSync").mockImplementation((file, data, options) => {
+        if (partial) originalWrite(file, String(data).slice(0, 8), options);
+        throw new Error("owner publication failed");
+      });
+      let actionRan = false;
+      try {
+        expect(() =>
+          withArtifactLock(path, () => {
+            actionRan = true;
+          }),
+        ).toThrow("owner publication failed");
+        expect(actionRan).toBe(false);
+        expect(existsSync(join(path, ".harnery/artifacts-mutation.lock"))).toBe(false);
+      } finally {
+        fault.mockRestore();
+      }
+      expect(withArtifactLock(path, () => 42)).toBe(42);
+    }
+  });
+
   test("records the process and refuses a live owner, then releases on exceptions", () => {
     const path = root();
     const lock = join(path, ".harnery/artifacts-mutation.lock");

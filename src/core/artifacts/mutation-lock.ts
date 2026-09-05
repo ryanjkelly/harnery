@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   rmdirSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -91,13 +92,15 @@ export function withArtifactLock<T>(repoRoot: string, action: () => T): T {
     mkdirSync(lock);
   }
   const ownerPath = join(lock, `owner-${randomUUID()}.json`);
-  writeFileSync(ownerPath, JSON.stringify(owner), { flag: "wx" });
   try {
+    writeFileSync(ownerPath, JSON.stringify(owner), { flag: "wx" });
     return action();
   } finally {
     // A crash before publication or between these two calls leaves an empty
     // directory. It cannot be distinguished safely from an initializing owner.
-    unlinkSync(ownerPath);
+    // Publication may have failed before creating a file. Remove only our
+    // unique file, then the empty directory; never recursively delete contents.
+    rmSync(ownerPath, { force: true });
     rmdirSync(lock);
   }
 }

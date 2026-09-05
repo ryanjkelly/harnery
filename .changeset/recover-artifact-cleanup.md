@@ -8,3 +8,6 @@ or discard reviewed evidence when releasing artifacts.
 
 Require boot-scoped process tokens for PID-reuse recovery; wall-clock process
 start times never justify removing a live PID's lock.
+
+Release an initializing lock when writing its owner record fails, including a
+partially written record.
