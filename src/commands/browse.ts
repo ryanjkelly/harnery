@@ -87,6 +87,11 @@ import {
   type BrowserSessionServer,
   startBrowserSessionServer,
 } from "../lib/browser/session-control.ts";
+import {
+  type CaptureFingerprint,
+  captureThumbnailFingerprint,
+  registerCaptureThumbnail,
+} from "../lib/browser/thumbnail-association.ts";
 import { reviewCandidateRects } from "../lib/browser/tiling.ts";
 import {
   type DiffResult,
@@ -1675,6 +1680,7 @@ async function runTrioMode(
   const skipScreenshot = opts.screenshot === false;
   let pngPath: string | undefined;
   let pngBytes: number | undefined;
+  let pngFingerprint: CaptureFingerprint | null = null;
   let captureEvalResult: unknown;
   let captureViewport: { width: number; height: number } | undefined;
   let captureEvidence: unknown;
@@ -1691,6 +1697,8 @@ async function runTrioMode(
     } else {
       pngBytes = await browser.screenshot(pngPath, { fullPage: opts.fullPage !== false });
     }
+    if (!opts.selector && opts.fullPage !== false)
+      pngFingerprint = captureThumbnailFingerprint(pngPath);
     written.push(pngPath);
   } else if (opts.captureEvaluate) {
     throw new Error("--capture-evaluate requires a screenshot; remove --no-screenshot.");
@@ -1714,6 +1722,19 @@ async function runTrioMode(
   }
   written.push(htmlPath);
 
+  const thumbnailAssociation =
+    snapshot && pngPath && pngFingerprint
+      ? registerCaptureThumbnail({
+          htmlPath,
+          pngPath,
+          html: snapshot.html,
+          preview: pngFingerprint,
+          fullDocument: !opts.selector && opts.fullPage !== false,
+          stylesheetsLinked: snapshot.stylesheetsLinked,
+          resourcesLinked: snapshot.resourcesLinked,
+        })
+      : null;
+
   const diag = browser.diagnostics();
   const jsonPath = `${prefix}.json`;
   const envelope: Record<string, unknown> = {
@@ -1728,6 +1749,7 @@ async function runTrioMode(
     ...summarizeDiagnostics(diag),
   };
   if (pngBytes !== undefined) envelope.screenshotBytes = pngBytes;
+  if (thumbnailAssociation) envelope.thumbnailAssociation = thumbnailAssociation;
   if (snapshot) {
     envelope.htmlSnapshot = {
       stylesheetsInlined: snapshot.stylesheetsInlined,

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -14,16 +15,21 @@ import {
   runThumbnailCommand,
 } from "./thumbnail-renderers";
 import { closeThumbnailBrowser } from "./thumbnail-renderers/html";
+import { closeOfficeThumbnailWorker, convertOfficeThumbnail } from "./thumbnail-renderers/office";
 
 let root: string;
 const hasMedia = !!Bun.which("ffmpeg");
-const hasOffice = !!Bun.which("libreoffice") && !!Bun.which("pdftoppm");
+const hasOffice =
+  !!Bun.which("libreoffice") &&
+  !!Bun.which("pdftoppm") &&
+  spawnSync("python3", ["-c", "import uno"]).status === 0;
 const hasBrowser = existsSync(chromium.executablePath());
 beforeAll(async () => {
   root = await mkdtemp(path.join(tmpdir(), "harn-thumb-test-"));
 });
 afterAll(async () => {
   await closeThumbnailBrowser();
+  await closeOfficeThumbnailWorker();
   await rm(root, { recursive: true, force: true });
 });
 const input = (name: string, category: FileCategory) => ({
@@ -194,13 +200,21 @@ test.skipIf(!hasOffice)(
       path.join(root, "document.rtf"),
       "{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Arial;}}\\f0\\fs40 Thumbnail document\\par First page content.}",
     );
-    const start = performance.now();
-    const bytes = await renderThumbnail(input("document.rtf", "binary"));
-    const meta = await sharp(bytes).metadata();
-    expect(meta.format).toBe("webp");
-    expect(meta.height).toBeLessThanOrEqual(240);
+    const timings: number[] = [];
+    for (let index = 0; index < 4; index++) {
+      const start = performance.now();
+      const bytes = await renderThumbnail(input("document.rtf", "binary"));
+      timings.push(performance.now() - start);
+      const meta = await sharp(bytes).metadata();
+      expect(meta.format).toBe("webp");
+      expect(meta.height).toBeLessThanOrEqual(240);
+    }
     console.log(
-      JSON.stringify({ benchmark: "office renderer", coldMs: performance.now() - start }),
+      JSON.stringify({
+        benchmark: "office renderer",
+        coldMs: timings[0],
+        warmMs: timings.slice(1),
+      }),
     );
   },
   30_000,
@@ -219,3 +233,32 @@ test("text secret signatures are refused before conversion", async () => {
   );
   await expect(renderThumbnail(input("secret.txt", "text"))).rejects.toThrow("denied");
 });
+
+test("closing Office cancels queued work without starting a replacement worker", async () => {
+  const pending = convertOfficeThumbnail(
+    path.join(root, "never-open.rtf"),
+    path.join(root, "never-created.pdf"),
+    "writer_pdf_Export",
+  );
+  const result = pending.catch((error: Error) => error.message);
+  await closeOfficeThumbnailWorker();
+  expect(await result).toBe("thumbnail_closed");
+  expect(existsSync(path.join(root, "never-created.pdf"))).toBe(false);
+});
+
+test.skipIf(!hasBrowser)(
+  "browser worker can close and start again with a fresh context",
+  async () => {
+    await closeThumbnailBrowser();
+    await writeFile(
+      path.join(root, "restart.html"),
+      '<html><body style="background:rgb(0,0,255)"></body></html>',
+    );
+    const bytes = await renderThumbnail(input("restart.html", "html"));
+    const { data } = await sharp(bytes).raw().toBuffer({ resolveWithObject: true });
+    expect(data[0]).toBeLessThan(20);
+    expect(data[2]).toBeGreaterThan(230);
+    await closeThumbnailBrowser();
+  },
+  30_000,
+);

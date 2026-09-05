@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import Papa from "papaparse";
 import sharp from "sharp";
 import { type FileCategory, scanChunk } from "./files";
+import { convertOfficeThumbnail } from "./thumbnail-renderers/office";
 
 export interface ThumbnailInput {
   /** Private immutable copy made from the resolver's checked descriptor. */
@@ -283,37 +283,15 @@ async function renderPdf(inputPath: string): Promise<Buffer> {
 async function renderOffice(input: ThumbnailInput): Promise<Buffer> {
   const temp = await mkdtemp(path.join(tmpdir(), "harn-thumb-office-"));
   try {
-    const profile = path.join(temp, "profile");
-    await mkdir(path.join(profile, "user"), { recursive: true });
-    await writeFile(
-      path.join(profile, "user", "registrymodifications.xcu"),
-      `<?xml version="1.0" encoding="UTF-8"?><oor:items xmlns:oor="http://openoffice.org/2001/registry"><item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop><prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop></item><item oor:path="/org.openoffice.Office.Writer/Content/Update"><prop oor:name="Link" oor:op="fuse"><value>2</value></prop></item><item oor:path="/org.openoffice.Office.Calc/Content/Update"><prop oor:name="Link" oor:op="fuse"><value>1</value></prop></item></oor:items>`,
-    );
     const ext = path.extname(input.relPath).slice(1).toLowerCase();
     const filter = ["xls", "xlsx", "ods"].includes(ext)
       ? "calc_pdf_Export"
       : ["ppt", "pptx", "odp"].includes(ext)
         ? "impress_pdf_Export"
         : "writer_pdf_Export";
-    await runThumbnailCommand(
-      "libreoffice",
-      [
-        `-env:UserInstallation=${pathToFileURL(profile).href}`,
-        "--headless",
-        "--nologo",
-        "--nodefault",
-        "--norestore",
-        "--convert-to",
-        `pdf:${filter}:{"PageRange":{"type":"string","value":"1"}}`,
-        "--outdir",
-        temp,
-        input.inputPath,
-      ],
-      25_000,
-    );
-    return await renderPdf(
-      path.join(temp, `${path.basename(input.inputPath, path.extname(input.inputPath))}.pdf`),
-    );
+    const pdf = path.join(temp, "page.pdf");
+    await convertOfficeThumbnail(input.inputPath, pdf, filter);
+    return await renderPdf(pdf);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

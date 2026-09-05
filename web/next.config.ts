@@ -1,8 +1,18 @@
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+const playwrightPackage = require.resolve("playwright/package.json");
+// Package managers may keep transitive dependencies outside node_modules' top level.
+const browserPackages = [
+  playwrightPackage,
+  createRequire(playwrightPackage).resolve("playwright-core/package.json"),
+].map(
+  (manifest) => `${path.relative(dirname, path.dirname(manifest)).split(path.sep).join("/")}/**/*`,
+);
 
 const nextConfig: NextConfig = {
   // A supervising host can build into a staging directory while the previous
@@ -11,6 +21,13 @@ const nextConfig: NextConfig = {
   // The web UI imports readers from harnery's src/ (one level up). Pin
   // the tracing root so Next includes those files when building.
   outputFileTracingRoot: path.resolve(dirname, ".."),
+  outputFileTracingIncludes: {
+    "/api/file/thumbnail": [
+      "./lib/thumbnail-renderers/*.mjs",
+      "./lib/thumbnail-renderers/*.py",
+      ...browserPackages,
+    ],
+  },
   // bun:sqlite is a Bun builtin. The dashboard runs under Node; leave it
   // external so a reader that optionally probes Codex state can fail closed
   // instead of crashing the whole app at import time.

@@ -135,11 +135,16 @@ async function reserve(dir: FileHandle, key: string, bytes: number): Promise<boo
   return true;
 }
 
-let writeTail: Promise<void> = Promise.resolve();
+const globalWrites = globalThis as typeof globalThis & {
+  __harneryThumbnailDiskWrites?: { tail: Promise<void>; pending: number };
+};
+globalWrites.__harneryThumbnailDiskWrites ??= { tail: Promise.resolve(), pending: 0 };
+const writes = globalWrites.__harneryThumbnailDiskWrites;
 export function writeThumbnailDisk(root: string, key: string, bytes: Buffer): Promise<void> {
-  if (!KEY.test(key) || bytes.length > MAX_OUTPUT) return Promise.resolve();
+  if (!KEY.test(key) || bytes.length > MAX_OUTPUT || writes.pending >= 32) return Promise.resolve();
+  writes.pending++;
   // One writer keeps the per-process reservation bound exact; readers never wait here.
-  const work = writeTail.then(async () => {
+  const work = writes.tail.then(async () => {
     const dir = await directory(root, true);
     if (!dir) return;
     const temp = `${key}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
@@ -163,6 +168,10 @@ export function writeThumbnailDisk(root: string, key: string, bytes: Buffer): Pr
       await dir.close().catch(() => {});
     }
   });
-  writeTail = work.catch(() => {});
-  return writeTail;
+  writes.tail = work
+    .catch(() => {})
+    .finally(() => {
+      writes.pending--;
+    });
+  return writes.tail;
 }

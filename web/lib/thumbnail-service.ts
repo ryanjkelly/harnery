@@ -8,29 +8,48 @@ import { coordRoot } from "./coord-reader";
 import { fileErrorResponse } from "./file-routes";
 import { resolveDir } from "./file-tree";
 import { type ResolvedFile, type ResolveOptions, resolveFile } from "./files";
+import { noteThumbnailFolder } from "./thumbnail-activity";
 import { readThumbnailDisk, writeThumbnailDisk } from "./thumbnail-disk-cache";
+import {
+  awaitThumbnail,
+  createThumbnailQueue,
+  type ThumbnailCost,
+  type ThumbnailPriority,
+} from "./thumbnail-queue";
 import { canRenderThumbnail, renderThumbnail } from "./thumbnail-renderers";
 import { thumbnailDependencyKey } from "./thumbnail-renderers/dependencies";
+import { resolveThumbnailReuse, type ThumbnailReuse } from "./thumbnail-reuse";
 
 // Bump when rendering rules change; disk entries are disposable derivatives.
-const VERSION = "v2";
+const VERSION = "v3";
 const MAX_OUTPUT = 512 * 1024;
 const MEMORY_BYTES = 16 * 1024 * 1024;
 
 const OFFICE = /\.(docx?|xlsx?|pptx?|odt|ods|odp|rtf)$/i;
-type Source = { file: ResolvedFile; identity: string };
+type Source = { file: ResolvedFile; identity: string; reuse?: ThumbnailReuse | null };
 type Result = { bytes?: Buffer; error?: string; ms: number };
-type Job = { key: string; run: () => Promise<Result>; finish: (result: Result) => void };
-const memory = new Map<string, Buffer>();
-const pending = new Map<string, Promise<Result>>();
-const failures = new Map<string, { error: string; until: number }>();
-const queue: Job[] = [];
-let memoryBytes = 0;
-let active = 0;
+function createState() {
+  return {
+    memory: new Map<string, Buffer>(),
+    failures: new Map<string, { error: string; until: number }>(),
+    queue: createThumbnailQueue<Result>(),
+    persisting: new Set<Promise<void>>(),
+    memoryBytes: 0,
+  };
+}
+// Instrumentation and route bundles must share one process-wide queue and cache.
+const globalState = globalThis as typeof globalThis & {
+  __harneryThumbnailsV3?: ReturnType<typeof createState>;
+};
+globalState.__harneryThumbnailsV3 ??= createState();
+const state = globalState.__harneryThumbnailsV3;
+const { memory, failures, queue } = state;
 
 export interface ThumbnailOptions extends ResolveOptions {
   /** Offline tests/benchmarks may wait; HTTP requests always return promptly. */
   wait?: boolean;
+  waitMs?: number;
+  priority?: ThumbnailPriority;
 }
 function problem(error: string, status: number): Response {
   return Response.json({ error }, { status, headers: { "cache-control": "no-store" } });
@@ -47,32 +66,21 @@ function limit(file: ResolvedFile): number {
   return Number.POSITIVE_INFINITY; // Text thumbnails stage only the first 256 KiB.
 }
 function closeSources(sources: Source[]) {
-  for (const { file } of sources) closeSync(file.fd);
+  for (const { file, reuse } of sources) {
+    closeSync(file.fd);
+    if (reuse?.kind === "file") closeSync(reuse.file.fd);
+  }
 }
 function remember(key: string, bytes: Buffer) {
   const old = memory.get(key);
-  if (old) memoryBytes -= old.length;
+  if (old) state.memoryBytes -= old.length;
   memory.delete(key);
   memory.set(key, bytes);
-  memoryBytes += bytes.length;
-  while (memory.size > 128 || memoryBytes > MEMORY_BYTES) {
+  state.memoryBytes += bytes.length;
+  while (memory.size > 128 || state.memoryBytes > MEMORY_BYTES) {
     const oldest = memory.keys().next().value!;
-    memoryBytes -= memory.get(oldest)!.length;
+    state.memoryBytes -= memory.get(oldest)!.length;
     memory.delete(oldest);
-  }
-}
-function drain() {
-  while (active < 2 && queue.length) {
-    const job = queue.shift()!;
-    active++;
-    void job
-      .run()
-      .then(job.finish, () => job.finish({ error: "thumbnail_unavailable", ms: 0 }))
-      .finally(() => {
-        pending.delete(job.key);
-        active--;
-        drain();
-      });
   }
 }
 /** Snapshot only the checked descriptor, verifying no edits occurred during copy. */
@@ -82,8 +90,18 @@ async function renderSource(
   temporary: string,
   index: number,
 ): Promise<Buffer> {
-  const { file } = source;
-  if (identity(file) !== source.identity) throw new Error("source_changed");
+  if (identity(source.file) !== source.identity) throw new Error("source_changed");
+  if (source.reuse?.kind === "bytes") {
+    return sharp(source.reuse.bytes, { limitInputPixels: 32_000_000 })
+      .rotate()
+      .resize(360, 240, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 72 })
+      .timeout({ seconds: 5 })
+      .toBuffer();
+  }
+  const file = source.reuse?.kind === "file" ? source.reuse.file : source.file;
+  const expectedIdentity = source.reuse?.kind === "file" ? source.reuse.identity : source.identity;
+  if (identity(file) !== expectedIdentity) throw new Error("source_changed");
   const inputPath = path.join(temporary, `${index}${path.extname(file.relPath)}`);
   const output = await open(inputPath, "wx", 0o600);
   try {
@@ -102,7 +120,7 @@ async function renderSource(
   } finally {
     await output.close();
   }
-  if (identity(file) !== source.identity) throw new Error("source_changed");
+  if (identity(file) !== expectedIdentity) throw new Error("source_changed");
   return renderThumbnail({ inputPath, relPath: file.relPath, category: file.category, root });
 }
 async function generate(sources: Source[], root: string, folder: boolean): Promise<Buffer> {
@@ -178,12 +196,18 @@ async function folderSources(relative: string, root: string): Promise<Source[]> 
   return sources;
 }
 
-/** A cold HTTP request queues work and returns 202. Cache hits serve an image. */
+/** Serve cached images or wait briefly for queued work; unfinished requests return 202. */
 export async function serveFileThumbnail(
   req: Request,
   opts: ThumbnailOptions = {},
 ): Promise<Response> {
-  const rel = new URL(req.url).searchParams.get("path");
+  const params = new URL(req.url).searchParams;
+  const rel = params.get("path");
+  const requestedPriority = opts.priority ?? params.get("priority");
+  const priority: ThumbnailPriority =
+    requestedPriority === "background" || requestedPriority === "prefetch"
+      ? requestedPriority
+      : "visible";
   if (rel === null) return problem("invalid_path", 400);
   const started = performance.now();
   let root: string;
@@ -215,6 +239,9 @@ export async function serveFileThumbnail(
     if (!sources.length) return problem("unsupported", 415);
   }
   try {
+    if (priority === "visible") noteThumbnailFolder(root, folder ? rel : path.posix.dirname(rel));
+    // Assign each successful reuse immediately so partial failures still close every returned fd.
+    for (const source of sources) source.reuse = await resolveThumbnailReuse(source.file, root);
     const dependencies = await Promise.all(
       sources.map(({ file }) => thumbnailDependencyKey(file, root)),
     );
@@ -228,7 +255,15 @@ export async function serveFileThumbnail(
           rel,
           folder,
           dependencies,
-          sources.map((s) => [s.file.relPath, s.identity]),
+          sources.map((s) => [
+            s.file.relPath,
+            s.identity,
+            s.reuse && [
+              s.reuse.provenance,
+              s.reuse.identity,
+              s.reuse.kind === "file" ? s.reuse.file.relPath : "embedded",
+            ],
+          ]),
         ]),
       )
       .digest("hex");
@@ -238,6 +273,9 @@ export async function serveFileThumbnail(
       "x-content-type-options": "nosniff",
       "content-security-policy": "sandbox",
       etag: `W/"${key}"`,
+      "x-thumbnail-source": sources.some((source) => source.reuse)
+        ? sources.map((source) => source.reuse?.provenance ?? "rendered").join(",")
+        : "rendered",
     };
     const respond = (bytes: Buffer, hit: string, generation = 0) => {
       headers["x-thumbnail-cache"] = hit;
@@ -260,42 +298,68 @@ export async function serveFileThumbnail(
     }
     const failure = failures.get(key);
     if (failure && failure.until > Date.now()) return problem(failure.error, 422);
-    let work = pending.get(key);
-    if (!work) {
-      if (pending.size >= 32) return problem("thumbnail_busy", 503);
-      let finish!: (result: Result) => void;
-      work = new Promise<Result>((resolve) => {
-        finish = resolve;
-      });
-      pending.set(key, work);
-      transferred = true;
-      queue.push({
-        key,
-        finish,
-        run: async () => {
-          const start = performance.now();
+    const cost: ThumbnailCost = sources.some(
+      ({ file, reuse }) =>
+        !reuse &&
+        (["html", "pdf", "audio", "video"].includes(file.category) || OFFICE.test(file.relPath)),
+    )
+      ? "expensive"
+      : "fast";
+    const submitted = queue.submit(key, priority, cost, async () => {
+      const start = performance.now();
+      try {
+        const bytes = await generate(sources, root, folder);
+        if (bytes.length > MAX_OUTPUT) throw new Error("thumbnail_output_limit");
+        remember(key, bytes);
+        // Cache maintenance is bounded separately and must not delay visible pixels.
+        const persistence = writeThumbnailDisk(root, key, bytes);
+        state.persisting.add(persistence);
+        void persistence.finally(() => state.persisting.delete(persistence));
+        return { bytes, ms: performance.now() - start };
+      } catch (error) {
+        const reason = (error as Error).message.startsWith("converter_missing:")
+          ? "converter_missing"
+          : "thumbnail_unavailable";
+        failures.set(key, { error: reason, until: Date.now() + 60_000 });
+        if (failures.size > 128) failures.delete(failures.keys().next().value!);
+        return { error: reason, ms: performance.now() - start };
+      } finally {
+        closeSources(sources);
+      }
+    });
+    if (!submitted) return problem("thumbnail_busy", 503);
+    transferred = submitted.created;
+    const requestedWait =
+      opts.waitMs ??
+      (params.has("wait")
+        ? Number(params.get("wait"))
+        : cost === "fast" && priority === "visible"
+          ? 40
+          : 0);
+    const waitMs = Number.isFinite(requestedWait) ? Math.max(0, Math.min(1000, requestedWait)) : 0;
+    const result = opts.wait
+      ? await submitted.promise
+      : await awaitThumbnail(submitted.promise, waitMs, req.signal);
+    if (result) {
+      // A bounded HTTP wait can span a file replacement or access-policy change.
+      for (const source of sources) {
+        const current = resolveFile(source.file.relPath, { root });
+        if (!current.ok) return fileErrorResponse(current);
+        try {
+          if (identity(current) !== source.identity) return problem("source_changed", 409);
+        } finally {
+          closeSync(current.fd);
+        }
+        if (source.reuse?.kind === "file") {
+          const preview = resolveFile(source.reuse.file.relPath, { root });
+          if (!preview.ok) return fileErrorResponse(preview);
           try {
-            const bytes = await generate(sources, root, folder);
-            if (bytes.length > MAX_OUTPUT) throw new Error("thumbnail_output_limit");
-            remember(key, bytes);
-            await writeThumbnailDisk(root, key, bytes);
-            return { bytes, ms: performance.now() - start };
-          } catch (error) {
-            const reason = (error as Error).message.startsWith("converter_missing:")
-              ? "converter_missing"
-              : "thumbnail_unavailable";
-            failures.set(key, { error: reason, until: Date.now() + 60_000 });
-            if (failures.size > 128) failures.delete(failures.keys().next().value!);
-            return { error: reason, ms: performance.now() - start };
+            if (identity(preview) !== source.reuse.identity) return problem("source_changed", 409);
           } finally {
-            closeSources(sources);
+            closeSync(preview.fd);
           }
-        },
-      });
-      drain();
-    }
-    if (opts.wait) {
-      const result = await work;
+        }
+      }
       return result.bytes
         ? respond(result.bytes, "generated", result.ms)
         : problem(result.error!, 422);
@@ -319,8 +383,13 @@ export async function serveFileThumbnail(
 }
 /** Clear process-local state after jobs finish; persisted images remain reusable. */
 export async function __resetThumbnailMemory(): Promise<void> {
-  await Promise.all(pending.values());
+  await queue.idle();
+  await Promise.all(state.persisting);
   memory.clear();
-  memoryBytes = 0;
+  state.memoryBytes = 0;
   failures.clear();
+}
+
+export function thumbnailQueueStatus() {
+  return { pending: queue.size, visible: queue.hasVisibleWork };
 }

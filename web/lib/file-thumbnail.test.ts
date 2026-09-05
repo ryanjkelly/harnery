@@ -11,8 +11,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { zipSync } from "fflate";
 import sharp from "sharp";
 import { __resetFilesCaches, __setResolveTestHooks, resolveFile } from "./files";
+import { __setThumbnailDiskTestHooks } from "./thumbnail-disk-cache";
+import { registerThumbnailPreview } from "./thumbnail-reuse";
 import { __resetThumbnailMemory, serveFileThumbnail } from "./thumbnail-service";
 
 let root: string;
@@ -97,7 +100,7 @@ test("a replaced image cannot reuse the old thumbnail cache", async () => {
 
 test("cold HTTP requests return pending and repeated requests reuse the result", async () => {
   writeFileSync(join(root, "sequence.json"), '{"title":"Motion sequence","frames":12}');
-  const cold = await serveFileThumbnail(request("sequence.json"), { root });
+  const cold = await serveFileThumbnail(request("sequence.json"), { root, waitMs: 0 });
   expect(cold.status).toBe(202);
   expect(cold.headers.get("retry-after")).toBe("0");
   const generated = await serveFileThumbnail(request("sequence.json"), { root, wait: true });
@@ -144,4 +147,82 @@ test("cache symlinks cannot substitute an unrelated file", async () => {
   const result = await serveFileThumbnail(request("image.png"), { root, wait: true });
   expect(result.status).toBe(200);
   expect(result.headers.get("x-thumbnail-cache")).toBe("generated");
+});
+
+test("bounded completion requests deliver a cold text thumbnail without another polling interval", async () => {
+  writeFileSync(join(root, "ready.txt"), "Ready when rendering completes.");
+  const result = await serveFileThumbnail(
+    new Request("http://localhost/api/file/thumbnail?path=ready.txt&wait=1000"),
+    { root },
+  );
+  expect(result.status).toBe(200);
+  expect(result.headers.get("x-thumbnail-cache")).toBe("generated");
+});
+
+test("registered screenshots bypass HTML rendering and asset edits invalidate their cache", async () => {
+  const workspace = ".harnery/artifacts/registered";
+  mkdirSync(join(root, workspace), { recursive: true });
+  const source = `${workspace}/page.html`;
+  const preview = `${workspace}/capture.png`;
+  writeFileSync(
+    join(root, source),
+    '<link rel="stylesheet" href="style.css"><h1>Current page</h1>',
+  );
+  writeFileSync(join(root, workspace, "style.css"), "h1 { color: blue }");
+  writeFileSync(
+    join(root, preview),
+    await sharp({
+      create: { width: 800, height: 600, channels: 3, background: "red" },
+    })
+      .png()
+      .toBuffer(),
+  );
+  await registerThumbnailPreview(source, preview, { root });
+  const first = await serveFileThumbnail(request(source), { root, wait: true });
+  expect(first.status).toBe(200);
+  expect(first.headers.get("x-thumbnail-source")).toBe("registered-preview");
+  const firstStats = await sharp(Buffer.from(await first.arrayBuffer())).stats();
+  expect(firstStats.channels[0].mean).toBeGreaterThan(240);
+  writeFileSync(join(root, workspace, "style.css"), "h1 { color: green }");
+  const changed = await serveFileThumbnail(request(source), { root, wait: true });
+  expect(changed.status).toBe(200);
+  expect(changed.headers.get("x-thumbnail-source")).toBe("rendered");
+  expect(changed.headers.get("etag")).not.toBe(first.headers.get("etag"));
+});
+
+test("embedded Office preview serves without requiring a convertible document body", async () => {
+  const png = await sharp({
+    create: { width: 800, height: 600, channels: 3, background: "blue" },
+  })
+    .png()
+    .toBuffer();
+  writeFileSync(
+    join(root, "embedded.pptx"),
+    zipSync({
+      "docProps/thumbnail.png": png,
+      "ppt/slides/slide1.xml": Buffer.from("<slide/>"),
+    }),
+  );
+  const result = await serveFileThumbnail(request("embedded.pptx"), { root, wait: true });
+  expect(result.status).toBe(200);
+  expect(result.headers.get("x-thumbnail-source")).toBe("office-embedded");
+  expect((await sharp(Buffer.from(await result.arrayBuffer())).metadata()).format).toBe("webp");
+});
+
+test("disk maintenance cannot hold a completed visible thumbnail response", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  __setThumbnailDiskTestHooks({ afterDirectoryOpen: () => held });
+  try {
+    // No cache directory exists yet, so only its creation by the writer reaches the hook.
+    const result = await serveFileThumbnail(request("image.png"), { root, waitMs: 1000 });
+    expect(result.status).toBe(200);
+    expect(result.headers.get("x-thumbnail-cache")).toBe("generated");
+    expect((await sharp(Buffer.from(await result.arrayBuffer())).metadata()).format).toBe("webp");
+  } finally {
+    release();
+    __setThumbnailDiskTestHooks();
+  }
 });
