@@ -1,11 +1,26 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Dashboard reader regressions live outside the core discovery roots. Keep
+// their worker lifecycle and fixture caches isolated from the other suites.
+const dashboardReaderFiles = [
+  "web/lib/dashboard-reader-client.test.ts",
+  "web/lib/event-query-reader.test.ts",
+  "web/lib/events-stream.test.ts",
+  "web/lib/home-snapshot-reader.test.ts",
+  "web/lib/page-snapshot-reader.test.ts",
+];
+for (const file of dashboardReaderFiles) {
+  if (!existsSync(join(repoRoot, file))) {
+    throw new Error(`dashboard reader test partition is stale; missing: ${file}`);
+  }
+}
 
 // Playwright keeps process-wide browser transport state. Running these files
 // after the large unit/integration graph in the same Bun process eventually
@@ -180,6 +195,11 @@ if (isolatedBrowserFiles.length + isolatedBrowserProcessFiles.length !== browser
 }
 
 const partitionPlan = [
+  {
+    label: "dashboard reader test partition",
+    files: dashboardReaderFiles,
+    extraArgs: recorderTestArgs,
+  },
   ...isolatedBrowserProcessFiles.map((file) => ({
     label: `browser process partition: ${file}`,
     files: [file],
