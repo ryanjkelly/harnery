@@ -1,25 +1,20 @@
 import { BrowseClient, type BrowseScope } from "@/components/file-viewer/BrowseClient";
 import { NavBar } from "@/components/NavBar";
 import { agentArtifactDirectories } from "@/lib/artifact-browser";
-import { coordRoot, readAgents } from "@/lib/coord-reader";
+import { workspaceEntry } from "@/lib/browse-catalog";
+import { coordRoot } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const metadata = { title: "Browse · Harnery" };
 
 /**
- * /browse: split-pane repo file explorer — directory tree (left) + inline file
- * viewer (right). A human entry point for the same viewer the event-log
- * `?path=` deep links open in the modal overlay. `?file=<rel>` deep-links a
- * selection here (distinct from the overlay's `?path=`, on purpose — see
- * BrowseClient).
+ * Folder and workspace browser with an optional inline preview. `?file=`
+ * selects a file without opening the global `?path=` overlay.
  *
- * Two ways to SCOPE the tree (nothing outside the scope is listed or
- * size-walked — much cheaper than rooting at the repo):
+ * Agent and directory links establish the initial browsing scope:
  * - `?agent=<instance-id>`: the agent's managed artifact workspaces become the
- *   tree roots (newest first). An agent with no workspace yet gets an EMPTY
- *   scope (the banner says so, with "Full repo" as the way out) — never the
- *   whole artifact root, whose size walk takes seconds.
+ *   roots (newest first). An agent with no workspace gets an empty scope.
  * - `?dir=<rel-path>`: any repo directory becomes the sole root (a workflow
  *   run, a book, a vendor dump). `?agent=` wins when both are present.
  */
@@ -43,17 +38,13 @@ export default async function BrowsePage({
     }
     let agentName: string | null = null;
     try {
-      const snapshot = readAgents();
-      agentName =
-        [...snapshot.active, ...snapshot.stale, ...snapshot.terminal].find(
-          (agent) => agent.instance_id === rawAgent || agent.v3_instance_id === rawAgent,
-        )?.name ?? null;
+      // The manifest already carries the owner. A file page does not need to
+      // rebuild the complete coordination projection to label one workspace.
+      agentName = roots[0] ? ((await workspaceEntry(roots[0]))?.owner ?? null) : null;
     } catch {
       agentName = null;
     }
-    // Zero workspaces renders an empty scoped tree on purpose: falling back to
-    // the whole artifact root costs a multi-second size walk. "Full repo"
-    // stays available in the banner.
+    // An empty owner scope must not silently show another agent's work.
     scope =
       roots.length > 0
         ? { label: `${agentName ?? "Agent"}'s artifacts`, roots }
@@ -66,7 +57,7 @@ export default async function BrowsePage({
   }
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
-      <NavBar scannedDir={coordRoot()} />
+      <NavBar scannedDir={coordRoot()} compact />
       <BrowseClient initialPath={initialPath} scope={scope} />
     </div>
   );

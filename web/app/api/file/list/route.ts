@@ -8,18 +8,18 @@
  *   GET /api/file/list?dir=<rel>  list a subdirectory
  */
 
+import { listBrowseDir } from "@/lib/browse-catalog";
 import { fileErrorResponse } from "@/lib/file-routes";
-import { listDir } from "@/lib/file-tree";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export function GET(req: Request): Response {
+export async function GET(req: Request): Promise<Response> {
   const dir = new URL(req.url).searchParams.get("dir") ?? "";
-  const r = listDir(dir);
+  const r = await listBrowseDir(dir);
   if (!r.ok) return fileErrorResponse(r);
   return Response.json(
-    { dir: r.dir, entries: r.entries },
+    { dir: r.dir, entries: r.entries, workspace: r.workspace },
     { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } },
   );
 }

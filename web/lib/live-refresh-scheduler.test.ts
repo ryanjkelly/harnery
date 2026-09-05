@@ -46,6 +46,7 @@ describe("live refresh route policy", () => {
   });
 
   test("self-live pages never request a global server render", () => {
+    expect(liveRefreshIntervalMs("/browse")).toBeNull();
     expect(liveRefreshIntervalMs("/images")).toBeNull();
     expect(liveRefreshIntervalMs("/codec/review")).toBeNull();
     expect(liveRefreshIntervalMs("/diagnostics")).toBeNull();
@@ -55,7 +56,6 @@ describe("live refresh route policy", () => {
 
   test("lightweight pages keep a shorter coalescing window", () => {
     expect(liveRefreshIntervalMs("/files/view")).toBe(LIGHT_REFRESH_INTERVAL_MS);
-    expect(liveRefreshIntervalMs("/browse")).toBe(LIGHT_REFRESH_INTERVAL_MS);
   });
 });
 

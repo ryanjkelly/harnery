@@ -13,9 +13,9 @@ import { dirUsage } from "@/lib/file-tree";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export function GET(req: Request): Response {
+export async function GET(req: Request): Promise<Response> {
   const dir = new URL(req.url).searchParams.get("dir") ?? "";
-  const r = dirUsage(dir);
+  const r = await dirUsage(dir);
   if (!r.ok) return fileErrorResponse(r);
   return Response.json(
     { dir: r.dir, self: r.self, children: r.children, partial: r.partial },

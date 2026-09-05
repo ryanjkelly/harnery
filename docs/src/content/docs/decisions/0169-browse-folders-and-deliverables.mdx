@@ -1,0 +1,84 @@
+---
+title: "ADR 0169: browse folders and deliverables without recursive scans"
+description: Separate folder navigation from disk accounting and make managed outputs readable in the file browser.
+sidebar:
+  order: 169
+---
+
+**Date:** 2026-09-05
+**Status:** Accepted
+
+## Context
+
+The Browse tree waited for recursive usage totals before showing a directory's
+immediate children. Deep links repeated that work for each ancestor. Large
+artifact collections also forced readers to distinguish date-prefixed folder
+names in a narrow column, even when the workspace already contained a delivery
+manifest with useful labels.
+
+Search built a synchronous repository-wide index inside the request handler.
+The index could omit files at its cap, and the palette discarded the coverage
+flag. File preview requests could complete out of order after selection changed.
+
+## Alternatives considered
+
+- Keep the tree and optimize its rows. This would reduce rendering work but
+  leave recursive accounting on the navigation path and keep the narrow labels.
+- Virtualize the tree. This would hide entries from browser Find and would not
+  fix the server scans. The replacement keeps the current folder in the DOM.
+- Build an independent asset database. Existing artifact and delivery manifests
+  already identify the workspace and its selected outputs. A second authority
+  would introduce synchronization and migration work without improving those
+  records.
+
+## Decision
+
+Browse shows one folder at a time, with breadcrumbs, sorting, local filtering,
+list and thumbnail views, and an optional file preview. Recent workspaces,
+deliverables, pinned folders, and the repository are entry points in a compact
+sidebar. Folder and file navigation update browser history. Existing agent,
+directory, and file deep links retain their scope.
+
+Directory listings contain shallow metadata. Recursive size totals belong to
+the separate usage endpoint and never gate Browse. The usage walker uses
+asynchronous filesystem calls and a bounded deadline.
+
+Workspace labels and selected destinations come from the existing manifests.
+The browser reads bounded metadata from checked file descriptors, validates
+every local destination through the file policy, and confines delivery paths
+to their workspace. These labels do not establish completion or approval.
+
+Search can target a folder's descendants or the repository. It collects file
+and directory entries cooperatively, returns partial results during the first
+pass, and keeps the previous snapshot readable during refresh. The response
+and interface report incomplete coverage. The search cache has explicit limits;
+opening a result still goes through the file resolver.
+
+Preview requests have bounded caches and cancellation. A response belongs to
+the path and request generation that started it; changing selection cannot
+display that response under another filename. Refresh bypasses the old
+generation. Renderers keep their existing file policy and HTML origin isolation.
+
+Raster thumbnails use the same checked descriptor as the file resolver. The
+server limits source bytes, decoded pixels, decoder concurrency, cache memory,
+and output dimensions. A grid requests these small WebP images rather than
+downloading the original images before a reader opens them.
+
+The application navigation exposes one Files destination. Images and Storage
+remain available within that area and through the command palette. File pages
+use a compact application menu so the folder and preview have room to work.
+
+## Verification
+
+Focused tests cover directory containment and deny rules, scoped search and
+refresh, manifest destinations, preview cancellation and cache bounds,
+thumbnail dimensions and checked-inode serving, and navigation state. Browser
+checks cover folder opens, filtering, history, thumbnails, preview controls,
+and narrow-screen layouts. The 162 focused tests and web TypeScript check passed.
+
+## Scope and promotion
+
+This decision governs the local dashboard's file area. It does not change
+artifact retention, move files, publish outputs, or give manifest contents
+authority to execute instructions. Other dashboard pages keep their own
+navigation and update requirements.

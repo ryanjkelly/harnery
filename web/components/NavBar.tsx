@@ -13,7 +13,7 @@ import { LiveRefresher } from "./LiveRefresher";
 import { SettingsDialog } from "./SettingsDialog";
 import { Tooltip } from "./ui/tooltip";
 
-export function NavBar({ scannedDir }: { scannedDir: string }) {
+export function NavBar({ scannedDir, compact = false }: { scannedDir: string; compact?: boolean }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const pathname = usePathname();
 
@@ -38,6 +38,7 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
     [];
   let prevGroup: string | null = null;
   for (const r of APP_ROUTES) {
+    if (r.navigation === false) continue;
     if (prevGroup !== null && r.group !== prevGroup)
       nav.push({ type: "sep", key: `sep-${r.group}` });
     nav.push({ type: "link", href: r.href, label: r.href === "/" ? "Dashboard" : r.label });
@@ -45,8 +46,14 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
   }
 
   return (
-    <header className="border-b border-border mb-8">
-      <div className="max-w-screen-2xl mx-auto px-6 py-4 flex items-baseline justify-between gap-6 flex-wrap">
+    <header className={`shrink-0 border-b border-border ${compact ? "" : "mb-8"}`}>
+      <div
+        className={
+          compact
+            ? "mx-auto flex min-h-14 items-center justify-between gap-3 px-4 py-2"
+            : "max-w-screen-2xl mx-auto px-6 py-4 flex items-baseline justify-between gap-6 flex-wrap"
+        }
+      >
         <div className="flex items-baseline flex-wrap gap-x-4 gap-y-1 sm:gap-6">
           <Link
             href="/"
@@ -57,43 +64,76 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
             <img src="/harnery-emblem.svg" alt="" width={22} height={22} className="shrink-0" />
             Harnery
           </Link>
-          <nav className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-muted-foreground">
-            {nav.map((entry) =>
-              entry.type === "sep" ? (
-                <span
-                  key={entry.key}
-                  aria-hidden
-                  className="hidden select-none text-border sm:inline"
-                >
-                  ·
-                </span>
-              ) : (
-                <Link
-                  key={entry.href}
-                  href={entry.href}
-                  prefetch={false}
-                  aria-current={isRouteActive(entry.href, pathname) ? "page" : undefined}
-                  className={
-                    isRouteActive(entry.href, pathname)
-                      ? "text-foreground font-medium underline decoration-foreground/40 underline-offset-8"
-                      : "hover:text-foreground"
-                  }
-                >
-                  {entry.label}
-                </Link>
-              ),
-            )}
-          </nav>
+          {compact ? (
+            <nav aria-label="Application">
+              <details className="relative">
+                <summary className="cursor-pointer rounded-md border border-border px-3 py-1.5 text-sm text-foreground hover:bg-muted">
+                  Files
+                </summary>
+                <div className="absolute left-0 top-full z-50 mt-2 grid max-h-[75vh] w-64 gap-1 overflow-auto rounded-lg border border-border bg-background p-2 shadow-xl">
+                  {nav.map((entry) =>
+                    entry.type === "sep" ? (
+                      <hr key={entry.key} className="my-1 border-border" />
+                    ) : (
+                      <Link
+                        key={entry.href}
+                        href={entry.href}
+                        prefetch={false}
+                        className="rounded px-3 py-2 text-sm hover:bg-muted"
+                        aria-current={isRouteActive(entry.href, pathname) ? "page" : undefined}
+                      >
+                        {entry.label}
+                      </Link>
+                    ),
+                  )}
+                </div>
+              </details>
+            </nav>
+          ) : (
+            <nav className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-muted-foreground">
+              {nav.map((entry) =>
+                entry.type === "sep" ? (
+                  <span
+                    key={entry.key}
+                    aria-hidden
+                    className="hidden select-none text-border sm:inline"
+                  >
+                    ·
+                  </span>
+                ) : (
+                  <Link
+                    key={entry.href}
+                    href={entry.href}
+                    prefetch={false}
+                    aria-current={isRouteActive(entry.href, pathname) ? "page" : undefined}
+                    className={
+                      isRouteActive(entry.href, pathname)
+                        ? "text-foreground font-medium underline decoration-foreground/40 underline-offset-8"
+                        : "hover:text-foreground"
+                    }
+                  >
+                    {entry.label}
+                  </Link>
+                ),
+              )}
+            </nav>
+          )}
         </div>
         {/* items-center (not baseline): the icon buttons have no text baseline,
             so a baseline row drops them to their bottom edge. The cluster still
             baseline-ties to the left nav via its first item (LIVE). */}
-        <div className="flex items-center gap-4">
+        <div className={`flex min-w-0 items-center ${compact ? "gap-2 sm:gap-3" : "gap-4"}`}>
           <LiveRefresher />
           {/* min-w-0 + a viewport-relative cap so the (long, unbreakable) scan
               path truncates on narrow screens instead of forcing horizontal
               page overflow. Desktop keeps the original ~420px cap. */}
-          <span className="text-xs font-mono text-muted-foreground truncate min-w-0 max-w-[45vw] sm:max-w-105">
+          <span
+            className={
+              compact
+                ? "hidden min-w-0 max-w-[30vw] truncate font-mono text-xs text-muted-foreground md:block"
+                : "text-xs font-mono text-muted-foreground truncate min-w-0 max-w-[45vw] sm:max-w-105"
+            }
+          >
             {scannedDir}
           </span>
           <Tooltip content={`Command palette${kbd ? ` (${kbd})` : ""}: search everything`}>

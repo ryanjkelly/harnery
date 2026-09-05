@@ -1,3 +1,4 @@
+import { FileAreaNav } from "@/components/file-viewer/FileAreaNav";
 import { ImageGallery } from "@/components/images/ImageGallery";
 import { NavBar } from "@/components/NavBar";
 import {
@@ -46,8 +47,9 @@ export default async function ImagesPage() {
 
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
-      <NavBar scannedDir={coordRoot()} />
-      <main className="flex-1 min-h-0 flex flex-col w-full px-6 pb-6">
+      <NavBar scannedDir={coordRoot()} compact />
+      <FileAreaNav active="images" />
+      <main className="flex-1 min-h-0 flex flex-col w-full px-6 py-6">
         <header className="mb-4 flex items-baseline justify-between flex-wrap gap-3 shrink-0">
           <h1 className="text-xl font-semibold tracking-tight">Images</h1>
           <div className="text-xs text-muted-foreground flex items-center gap-3">

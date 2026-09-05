@@ -97,6 +97,7 @@ export interface DirUsage {
 /** One fuzzy file-search hit from /api/file/search. */
 export interface SearchMatch {
   relPath: string;
+  kind?: "file" | "dir";
 }
 
 /** The /api/file/search JSON shape (lib/file-tree.ts). */
@@ -107,6 +108,8 @@ export interface SearchResult {
   total: number;
   /** True if the index or the match set was capped. */
   truncated: boolean;
+  /** A background index pass is still collecting or refreshing entries. */
+  indexing?: boolean;
 }
 
 /** Options for `useFileViewer().open()`. A `sequence` of repo-relative paths

@@ -1,7 +1,6 @@
 import {
   Briefcase,
   Clapperboard,
-  FileText,
   FolderTree,
   HardDrive,
   Image,
@@ -33,6 +32,8 @@ export interface AppRoute {
   group: string;
   icon: LucideIcon;
   keywords: string[];
+  /** Utility views stay searchable without duplicating the main navigation. */
+  navigation?: boolean;
 }
 
 export const APP_ROUTES: readonly AppRoute[] = [
@@ -114,22 +115,25 @@ export const APP_ROUTES: readonly AppRoute[] = [
     keywords: ["runs", "subagents", "stages", "transcripts", "wf"],
   },
   {
-    href: "/files",
+    href: "/browse",
     label: "Files",
     group: "library",
-    icon: FileText,
-    keywords: ["viewer", "path", "deep link", "open file"],
-  },
-  {
-    href: "/browse",
-    label: "Browse",
-    group: "library",
     icon: FolderTree,
-    keywords: ["tree", "repo", "directory", "explorer", "search files"],
+    keywords: [
+      "browse",
+      "repo",
+      "directory",
+      "explorer",
+      "search files",
+      "deliverables",
+      "recent",
+      "viewer",
+    ],
   },
   {
     href: "/images",
     label: "Images",
+    navigation: false,
     group: "library",
     icon: Image,
     keywords: ["gallery", "screenshots", "produced", "thumbnails"],
@@ -137,6 +141,7 @@ export const APP_ROUTES: readonly AppRoute[] = [
   {
     href: "/storage",
     label: "Storage",
+    navigation: false,
     group: "library",
     icon: HardDrive,
     keywords: ["disk", "files", "footprint", "inventory", "health", "logs", "retention"],

@@ -1,5 +1,6 @@
 import { FileText } from "lucide-react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { NavBar } from "@/components/NavBar";
 import { coordRoot } from "@/lib/coord-reader";
 
@@ -18,10 +19,16 @@ export const metadata = { title: "Files · Harnery" };
  * HTML "open preview in new tab" uses `/files/view?path=…` instead — a
  * full-page viewer that keeps `/api/file` non-navigable (text/plain).
  */
-export default function FilesPage() {
+export default async function FilesPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  if (!params.path) redirect("/browse");
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
-      <NavBar scannedDir={coordRoot()} />
+      <NavBar scannedDir={coordRoot()} compact />
       <main className="flex flex-1 flex-col items-center justify-center px-6 pb-6 text-center">
         <FileText className="mb-4 size-10 text-muted-foreground/40" />
         <h1 className="mb-2 text-xl font-semibold tracking-tight">File viewer</h1>

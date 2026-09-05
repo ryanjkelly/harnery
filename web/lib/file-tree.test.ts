@@ -8,10 +8,24 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { __resetFileTreeCaches, dirUsage, listDir, searchFiles } from "./file-tree.ts";
+import {
+  __fileTreeTestHooks,
+  __resetFileTreeCaches,
+  dirUsage,
+  listDir,
+  searchFiles,
+} from "./file-tree.ts";
 
 function makeRoot(): string {
   return realpathSync(mkdtempSync(path.join(os.tmpdir(), "harn-tree-")));
@@ -100,7 +114,9 @@ describe("listDir — subdirectories", () => {
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.dir).toBe("docs");
-      expect(res.entries).toEqual([{ name: "plans", relPath: "docs/plans", kind: "dir" }]);
+      expect(res.entries).toEqual([
+        expect.objectContaining({ name: "plans", relPath: "docs/plans", kind: "dir" }),
+      ]);
     }
   });
 
@@ -147,6 +163,19 @@ describe("listDir — fail-closed rejections", () => {
 });
 
 describe("listDir — symlink containment", () => {
+  test("an allowed alias cannot reveal a denied canonical target", async () => {
+    const root = buildFixture();
+    symlinkSync(path.join(root, ".credentials"), path.join(root, "alias"), "dir");
+    symlinkSync(path.join(root, ".env"), path.join(root, "alias.txt"), "file");
+    expect(names(listDir("", { root }))).not.toContain("alias");
+    expect(names(listDir("", { root }))).not.toContain("alias.txt");
+    expect(listDir("alias", { root })).toMatchObject({ ok: false, code: "denied" });
+    expect(await searchFiles("key", { root, dir: "alias" })).toMatchObject({
+      ok: false,
+      code: "denied",
+    });
+    expect(await dirUsage("alias", { root })).toMatchObject({ ok: false, code: "denied" });
+  });
   test("a symlink whose target escapes the root is skipped", () => {
     const root = buildFixture();
     // points at the parent tmp dir, which is outside the repo root
@@ -177,15 +206,24 @@ describe("listDir — file sizes", () => {
 });
 
 describe("dirUsage — recursive totals + counts (deny-aware)", () => {
+  test("a changed deny policy cannot reuse cached folder names or totals", async () => {
+    const root = buildFixture();
+    const before = await dirUsage("", { root });
+    expect(before.ok && before.children.docs).toBeDefined();
+    w(root, ".harnery/config.jsonc", JSON.stringify({ files: { deny_globs: ["**/docs/**"] } }));
+    const after = await dirUsage("", { root });
+    expect(after.ok && after.children.docs).toBeUndefined();
+  });
   const root = buildFixture();
   __resetFileTreeCaches();
-  const res = dirUsage("", { root });
+  const result = dirUsage("", { root });
 
   // Non-denied files under the fixture: README.md(9) + .env.example(17) +
   // docs/plans/plan.md(7) + src/index.ts(11) + app-web/src/data.json(8) +
   // tools/ok.txt(5) = 57 bytes across 6 files + 6 dirs. node_modules/.git/
   // .credentials and the secret jsons are excluded.
-  test("self totals exclude hidden/denied paths", () => {
+  test("self totals exclude hidden/denied paths", async () => {
+    const res = await result;
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.self).toEqual({ fileCount: 6, dirCount: 6, totalBytes: 57 });
@@ -193,7 +231,8 @@ describe("dirUsage — recursive totals + counts (deny-aware)", () => {
     }
   });
 
-  test("per-immediate-child breakdown is present for visible dirs only", () => {
+  test("per-immediate-child breakdown is present for visible dirs only", async () => {
+    const res = await result;
     if (!res.ok) throw new Error("expected ok");
     expect(res.children.docs).toEqual({ fileCount: 1, dirCount: 1, totalBytes: 7 });
     expect(res.children.tools).toEqual({ fileCount: 1, dirCount: 0, totalBytes: 5 });
@@ -202,20 +241,78 @@ describe("dirUsage — recursive totals + counts (deny-aware)", () => {
     expect(res.children[".credentials"]).toBeUndefined();
   });
 
-  test("rejections mirror listDir (denied / traversal / not-a-dir)", () => {
-    const denied = dirUsage(".credentials", { root });
+  test("rejections mirror listDir (denied / traversal / not-a-dir)", async () => {
+    const denied = await dirUsage(".credentials", { root });
     expect(denied.ok).toBe(false);
     if (!denied.ok) expect(denied.code).toBe("denied");
-    const trav = dirUsage("../etc", { root });
+    const trav = await dirUsage("../etc", { root });
     expect(trav.ok).toBe(false);
     if (!trav.ok) expect(trav.code).toBe("invalid_path");
-    const notDir = dirUsage("README.md", { root });
+    const notDir = await dirUsage("README.md", { root });
     expect(notDir.ok).toBe(false);
     if (!notDir.ok) expect(notDir.code).toBe("not_file");
   });
 });
 
 describe("searchFiles — fuzzy index (deny + build-artifact aware)", () => {
+  test("async walks refuse a queued directory replaced by an external symlink", async () => {
+    for (const mode of ["search", "usage"]) {
+      const root = buildFixture();
+      const outside = makeRoot();
+      w(outside, "must-not-appear.txt", "outside bytes");
+      const target = path.join(root, "docs");
+      __fileTreeTestHooks.beforeDirectoryOpen = (absolutePath) => {
+        if (absolutePath !== target) return;
+        renameSync(target, path.join(root, "moved-docs"));
+        symlinkSync(outside, target, "dir");
+      };
+      try {
+        if (mode === "search") {
+          const result = await searchFiles("must-not-appear", { root, waitForIndex: true });
+          expect(result).toMatchObject({ ok: true, matches: [], truncated: true });
+        } else {
+          const result = await dirUsage("", { root });
+          expect(result.ok && result.children.docs).toMatchObject({
+            fileCount: 0,
+            totalBytes: 0,
+            partial: true,
+          });
+        }
+      } finally {
+        __fileTreeTestHooks.beforeDirectoryOpen = undefined;
+      }
+    }
+  });
+  test("limits search to the selected folder and includes folder matches", async () => {
+    const root = buildFixture();
+    const result = await searchFiles("plan", { root, dir: "docs", waitForIndex: true });
+    expect(result.ok && result.matches).toEqual([
+      { relPath: "docs/plans", kind: "dir" },
+      { relPath: "docs/plans/plan.md", kind: "file" },
+    ]);
+    const outside = await searchFiles("index", { root, dir: "docs", waitForIndex: true });
+    expect(outside.ok && outside.matches).toEqual([]);
+  });
+
+  test("explicitly reports an incomplete index when the safety cap is hit", async () => {
+    const root = buildFixture();
+    const result = await searchFiles("s", { root, maxEntries: 2, waitForIndex: true });
+    expect(result).toMatchObject({ ok: true, truncated: true, indexing: false });
+  });
+
+  test("refreshes expired snapshots and removes deleted entries", async () => {
+    const root = buildFixture();
+    w(root, "old-report.txt", "old");
+    await searchFiles("report", { root, waitForIndex: true, refreshMs: 0 });
+    unlinkSync(path.join(root, "old-report.txt"));
+    w(root, "new-report.txt", "fresh");
+    const result = await searchFiles("report", { root, waitForIndex: true });
+    expect(result.ok && result.matches).toContainEqual({ relPath: "new-report.txt", kind: "file" });
+    expect(result.ok && result.matches).not.toContainEqual({
+      relPath: "old-report.txt",
+      kind: "file",
+    });
+  });
   function searchFixture(): string {
     const root = buildFixture();
     w(root, ".next/static/chunk-abc.js", "console.log(1)\n"); // build artifact → not indexed
@@ -224,38 +321,38 @@ describe("searchFiles — fuzzy index (deny + build-artifact aware)", () => {
   }
   const root = searchFixture();
   __resetFileTreeCaches();
-  const paths = (q: string) => {
-    const r = searchFiles(q, { root });
+  const paths = async (q: string) => {
+    const r = await searchFiles(q, { root, waitForIndex: true });
     return r.ok ? r.matches.map((m) => m.relPath) : [];
   };
 
-  test("matches by basename substring", () => {
-    expect(paths("plan")).toContain("docs/plans/plan.md");
+  test("matches by basename substring", async () => {
+    expect(await paths("plan")).toContain("docs/plans/plan.md");
   });
 
-  test("ranks an exact/prefix basename match first", () => {
-    const first = paths("index")[0];
+  test("ranks an exact/prefix basename match first", async () => {
+    const first = (await paths("index"))[0];
     expect(first).toBe("src/index.ts");
   });
 
-  test("excludes denied files and build-artifact dirs from the index", () => {
-    const chunk = paths("chunk"); // lives under .next → skipped
+  test("excludes denied files and build-artifact dirs from the index", async () => {
+    const chunk = await paths("chunk"); // lives under .next → skipped
     expect(chunk).toHaveLength(0);
-    const lib = paths("lib.js"); // lives under node_modules → denied
+    const lib = await paths("lib.js"); // lives under node_modules → denied
     expect(lib).toHaveLength(0);
-    const env = paths(".env"); // .env is denied; .env.example is rescued
+    const env = await paths(".env"); // .env is denied; .env.example is rescued
     expect(env).not.toContain(".env");
     expect(env).toContain(".env.example");
   });
 
-  test("empty query returns no matches", () => {
-    const r = searchFiles("   ", { root });
+  test("empty query returns no matches", async () => {
+    const r = await searchFiles("   ", { root });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.matches).toHaveLength(0);
   });
 
-  test("honors the limit + reports truncation", () => {
-    const r = searchFiles("s", { root, limit: 1 }); // 's' is a broad subsequence hit
+  test("honors the limit + reports truncation", async () => {
+    const r = await searchFiles("s", { root, limit: 1 }); // 's' is a broad subsequence hit
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.matches.length).toBeLessThanOrEqual(1);
