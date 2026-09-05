@@ -2,10 +2,14 @@
 
 import { Radio, RefreshCw, WifiOff } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useTransition } from "react";
 
 import { Tooltip } from "@/components/ui/tooltip";
-import { createLiveRefreshScheduler, liveRefreshIntervalMs } from "@/lib/live-refresh-scheduler";
+import {
+  createLiveRefreshScheduler,
+  type LiveRefreshScheduler,
+  liveRefreshIntervalMs,
+} from "@/lib/live-refresh-scheduler";
 import { useLiveSignal } from "@/lib/useLiveSignal";
 
 /**
@@ -25,34 +29,56 @@ import { useLiveSignal } from "@/lib/useLiveSignal";
 export function LiveRefresher() {
   const router = useRouter();
   const pathname = usePathname();
+  const [isPending, startTransition] = useTransition();
+  const refreshComplete = useRef<(() => void) | null>(null);
+  const schedulerRef = useRef<LiveRefreshScheduler | null>(null);
   const refreshIntervalMs = liveRefreshIntervalMs(pathname);
-  const scheduler = useMemo(
-    () =>
-      refreshIntervalMs === null
-        ? null
-        : createLiveRefreshScheduler(() => router.refresh(), refreshIntervalMs, {
-            now: () => Date.now(),
-            setTimeout: (callback, ms) => window.setTimeout(callback, ms),
-            clearTimeout: (handle) => window.clearTimeout(handle as number),
-          }),
-    [refreshIntervalMs, router],
-  );
 
-  useEffect(() => () => scheduler?.cancel(), [scheduler]);
+  useEffect(() => {
+    if (isPending) return;
+    const complete = refreshComplete.current;
+    refreshComplete.current = null;
+    complete?.();
+  }, [isPending]);
+
+  useEffect(() => {
+    if (refreshIntervalMs === null) return;
+    const scheduler = createLiveRefreshScheduler(
+      (complete) => {
+        refreshComplete.current = complete;
+        startTransition(() => router.refresh());
+      },
+      refreshIntervalMs,
+      {
+        now: () => Date.now(),
+        setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+        clearTimeout: (handle) => window.clearTimeout(handle as number),
+      },
+    );
+    schedulerRef.current = scheduler;
+    const visibilityChanged = () => scheduler.setVisible(!document.hidden);
+    visibilityChanged();
+    document.addEventListener("visibilitychange", visibilityChanged);
+    return () => {
+      document.removeEventListener("visibilitychange", visibilityChanged);
+      scheduler.cancel();
+      schedulerRef.current = null;
+    };
+  }, [refreshIntervalMs, router]);
 
   const events = useMemo(
     () => ({
       hello: () => {},
       ping: () => {},
-      refresh: () => scheduler?.request(),
+      refresh: () => schedulerRef.current?.request(),
     }),
-    [scheduler],
+    [],
   );
 
   const status = useLiveSignal({
     streamUrl: "/api/stream",
     events,
-    onFallbackChange: () => scheduler?.request(),
+    onFallbackChange: () => schedulerRef.current?.request(),
   });
 
   const isLive = status === "live";

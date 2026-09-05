@@ -285,14 +285,13 @@ export default async function StoragePage() {
                   Every family remains in the page for browser Find. Expand a row for its ownership
                   contract.
                 </p>
-                <div className="min-w-0 grid gap-2 md:hidden">
-                  {report.families.map((family) => (
-                    <FamilyMobileCard key={family.inventory.family_id} family={family} />
-                  ))}
-                </div>
-                <div className="hidden overflow-x-auto rounded-xl border border-border/60 md:block">
-                  <table className="storage-family-table min-w-[1080px] w-full table-fixed text-sm">
-                    <colgroup>
+                <div className="min-w-0 md:overflow-x-auto md:rounded-xl md:border md:border-border/60">
+                  <table
+                    role="table"
+                    aria-labelledby="families-heading"
+                    className="storage-family-table block w-full text-sm md:table md:min-w-[1080px] md:table-fixed"
+                  >
+                    <colgroup className="hidden md:table-column-group">
                       <col className="w-[260px]" />
                       <col className="w-[170px]" />
                       <col className="w-[130px]" />
@@ -301,8 +300,11 @@ export default async function StoragePage() {
                       <col className="w-[100px]" />
                       <col className="w-[230px]" />
                     </colgroup>
-                    <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
-                      <tr>
+                    <thead
+                      role="rowgroup"
+                      className="sr-only bg-muted/60 text-left text-xs text-muted-foreground md:not-sr-only md:table-header-group"
+                    >
+                      <tr role="row">
                         <Th>Family</Th>
                         <Th>Class</Th>
                         <Th>Status</Th>
@@ -312,7 +314,10 @@ export default async function StoragePage() {
                         <Th>Maintenance</Th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-border/60">
+                    <tbody
+                      role="rowgroup"
+                      className="grid gap-2 md:table-row-group md:divide-y md:divide-border/60"
+                    >
                       {report.families.map((family) => (
                         <FamilyRow key={family.inventory.family_id} family={family} />
                       ))}
@@ -358,20 +363,13 @@ export default async function StoragePage() {
                 <p className="mb-3 text-xs text-muted-foreground">
                   Aggregate labels only. Physical path contents and stored records remain private.
                 </p>
-                <div className="min-w-0 grid gap-2 md:hidden">
-                  {report.families.flatMap(({ inventory }) =>
-                    inventory.roots.map((rootRow) => (
-                      <RootMobileCard
-                        key={`${inventory.family_id}:${rootRow.root_index}`}
-                        familyId={inventory.family_id}
-                        root={rootRow}
-                      />
-                    )),
-                  )}
-                </div>
-                <div className="hidden overflow-x-auto rounded-xl border border-border/60 md:block">
-                  <table className="storage-root-table min-w-[1300px] w-full table-fixed text-sm">
-                    <colgroup>
+                <div className="min-w-0 md:overflow-x-auto md:rounded-xl md:border md:border-border/60">
+                  <table
+                    role="table"
+                    aria-labelledby="roots-heading"
+                    className="storage-root-table block w-full text-sm md:table md:min-w-[1300px] md:table-fixed"
+                  >
+                    <colgroup className="hidden md:table-column-group">
                       <col className="w-[230px]" />
                       <col className="w-[320px]" />
                       <col className="w-[120px]" />
@@ -381,8 +379,11 @@ export default async function StoragePage() {
                       <col className="w-[95px]" />
                       <col className="w-[225px]" />
                     </colgroup>
-                    <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
-                      <tr>
+                    <thead
+                      role="rowgroup"
+                      className="sr-only bg-muted/60 text-left text-xs text-muted-foreground md:not-sr-only md:table-header-group"
+                    >
+                      <tr role="row">
                         <Th>Family</Th>
                         <Th>Root label</Th>
                         <Th>Ownership</Th>
@@ -393,14 +394,18 @@ export default async function StoragePage() {
                         <Th>Reasons</Th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-border/60">
+                    <tbody
+                      role="rowgroup"
+                      className="grid gap-2 md:table-row-group md:divide-y md:divide-border/60"
+                    >
                       {report.families.flatMap(({ inventory }) =>
                         inventory.roots.map((rootRow) => (
                           <tr
+                            role="row"
                             key={`${inventory.family_id}:${rootRow.root_index}`}
-                            className="align-top odd:bg-muted/20 hover:bg-muted/50"
+                            className={STORAGE_ROW_CLASS}
                           >
-                            <Td mono>
+                            <Td mono mobileLabel="Family">
                               <StorageHelp
                                 name={`table-root-family-${inventory.family_id}-${rootRow.root_index}`}
                                 help={storageTermHelp("Family")}
@@ -408,7 +413,7 @@ export default async function StoragePage() {
                                 <span>{inventory.family_id}</span>
                               </StorageHelp>
                             </Td>
-                            <Td mono>
+                            <Td mono mobileLabel="Root label">
                               <StorageHelp
                                 name={`table-root-label-${inventory.family_id}-${rootRow.root_index}`}
                                 help={storageTermHelp("Root label")}
@@ -419,16 +424,22 @@ export default async function StoragePage() {
                                 </span>
                               </StorageHelp>
                             </Td>
-                            <Td>{rootRow.ownership}</Td>
-                            <Td>
+                            <Td mobileLabel="Ownership" mobileSpan={3}>
+                              {rootRow.ownership}
+                            </Td>
+                            <Td mobileLabel="State" mobileSpan={3}>
                               <StateBadge state={rootRow.state} />
                             </Td>
-                            <Td align="right">{formatMeasurement(rootRow.totals.regular_files)}</Td>
-                            <Td align="right">{formatMeasurement(rootRow.totals.logical_bytes)}</Td>
-                            <Td align="right">
+                            <Td align="right" mobileLabel="Files" mobileSpan={2}>
+                              {formatMeasurement(rootRow.totals.regular_files)}
+                            </Td>
+                            <Td align="right" mobileLabel="Logical" mobileSpan={2}>
+                              {formatMeasurement(rootRow.totals.logical_bytes)}
+                            </Td>
+                            <Td align="right" mobileLabel="Allocated" mobileSpan={2}>
                               {formatMeasurement(rootRow.totals.allocated_bytes)}
                             </Td>
-                            <Td>
+                            <Td mobileLabel="Reasons">
                               <ReasonList reasons={rootRow.reason_codes} />
                             </Td>
                           </tr>
@@ -961,11 +972,15 @@ function LogBudgetCard({ family }: { family: StorageFamilyView }) {
   );
 }
 
+// Keep one searchable record tree; the same table rows become labeled cards on small screens.
+const STORAGE_ROW_CLASS =
+  "grid min-w-0 grid-cols-6 rounded-lg border border-border/60 bg-card align-top md:table-row md:rounded-none md:border-0 md:bg-transparent md:odd:bg-muted/20 md:hover:bg-muted/50";
+
 function FamilyRow({ family }: { family: StorageFamilyView }) {
   const { inventory, health, descriptor } = family;
   return (
-    <tr className="align-top odd:bg-muted/20 hover:bg-muted/50">
-      <Td>
+    <tr role="row" className={STORAGE_ROW_CLASS}>
+      <Td mobileLabel="Family">
         <details className="group max-w-md">
           <summary className="flex cursor-pointer list-none items-start font-mono font-medium marker:hidden">
             <ChevronRight
@@ -1029,7 +1044,7 @@ function FamilyRow({ family }: { family: StorageFamilyView }) {
           </dl>
         </details>
       </Td>
-      <Td>
+      <Td mobileLabel="Class" mobileSpan={3}>
         <Badge
           variant="outline"
           title={storageClassHelp(inventory.storage_class)}
@@ -1040,16 +1055,22 @@ function FamilyRow({ family }: { family: StorageFamilyView }) {
         </Badge>
         <div className="mt-1 text-xs text-muted-foreground">{inventory.source}</div>
       </Td>
-      <Td>
+      <Td mobileLabel="Status" mobileSpan={3}>
         <HealthBadge status={health.status} />
         <div className="mt-1">
           <StateBadge state={inventory.state} />
         </div>
       </Td>
-      <Td align="right">{formatMeasurement(inventory.totals.regular_files)}</Td>
-      <Td align="right">{formatMeasurement(inventory.totals.logical_bytes)}</Td>
-      <Td align="right">{formatMeasurement(inventory.totals.allocated_bytes)}</Td>
-      <Td>
+      <Td align="right" mobileLabel="Files" mobileSpan={2}>
+        {formatMeasurement(inventory.totals.regular_files)}
+      </Td>
+      <Td align="right" mobileLabel="Logical" mobileSpan={2}>
+        {formatMeasurement(inventory.totals.logical_bytes)}
+      </Td>
+      <Td align="right" mobileLabel="Allocated" mobileSpan={2}>
+        {formatMeasurement(inventory.totals.allocated_bytes)}
+      </Td>
+      <Td mobileLabel="Maintenance">
         <StateBadge state={inventory.maintenance.state} />
         {inventory.maintenance.reason_code ? (
           <div className="mt-1 text-xs text-muted-foreground">
@@ -1058,181 +1079,6 @@ function FamilyRow({ family }: { family: StorageFamilyView }) {
         ) : null}
       </Td>
     </tr>
-  );
-}
-
-function FamilyMobileCard({ family }: { family: StorageFamilyView }) {
-  const { inventory, health, descriptor } = family;
-  return (
-    <details className="group rounded-lg border border-border/60 bg-card p-3">
-      <summary className="flex cursor-pointer list-none items-start justify-between gap-3 marker:hidden">
-        <div className="flex min-w-0 items-start gap-2">
-          <ChevronRight
-            className="mt-0.5 size-4 shrink-0 text-muted-foreground group-open:hidden"
-            aria-hidden
-          />
-          <ChevronDown
-            className="mt-0.5 hidden size-4 shrink-0 text-muted-foreground group-open:block"
-            aria-hidden
-          />
-          <div className="min-w-0">
-            <div className="font-mono text-sm font-medium break-words">
-              <StorageHelp
-                name={`mobile-family-${inventory.family_id}`}
-                help="Stable identifier for this storage family. Expand the card to see its full ownership contract."
-              >
-                <span>{inventory.family_id}</span>
-              </StorageHelp>
-            </div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              <StorageHelp
-                name={`mobile-family-class-${inventory.family_id}`}
-                help={storageClassHelp(inventory.storage_class)}
-              >
-                <span>{classLabel(inventory.storage_class)}</span>
-              </StorageHelp>{" "}
-              · {inventory.source}
-            </div>
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-2">
-          <HealthBadge status={health.status} />
-          <StateBadge state={inventory.state} />
-        </div>
-      </summary>
-      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border/60 pt-3 text-xs">
-        <MobileMeasurement
-          label="Files"
-          value={formatMeasurement(inventory.totals.regular_files)}
-        />
-        <MobileMeasurement
-          label="Logical"
-          value={formatMeasurement(inventory.totals.logical_bytes)}
-        />
-        <MobileMeasurement
-          label="Allocated"
-          value={formatMeasurement(inventory.totals.allocated_bytes)}
-        />
-      </div>
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-muted-foreground">
-          <Term term="Maintenance" />
-        </span>
-        <StateBadge state={inventory.maintenance.state} />
-        {inventory.maintenance.reason_code ? (
-          <ReasonList reasons={[inventory.maintenance.reason_code]} />
-        ) : null}
-      </div>
-      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 border-t border-border/60 pt-3 text-xs">
-        <dt className="text-muted-foreground">
-          <Term term="Owner" />
-        </dt>
-        <dd className="text-right break-words">{descriptor.owner}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Provider" />
-        </dt>
-        <dd className="text-right font-mono break-words">{inventory.provider_id}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Policy" />
-        </dt>
-        <dd className="text-right font-mono break-words">{inventory.policy_version}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Format" />
-        </dt>
-        <dd className="text-right break-words">{descriptor.format}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Durability" />
-        </dt>
-        <dd className="text-right break-words">{descriptor.durability}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Sensitivity" />
-        </dt>
-        <dd className="text-right break-words">{descriptor.sensitivity}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Writer" />
-        </dt>
-        <dd className="text-right break-words">{descriptor.writerModel}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Consumers" />
-        </dt>
-        <dd className="text-right break-words">{descriptor.consumers.join(", ")}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Roots" />
-        </dt>
-        <dd className="text-right">{inventory.roots.length}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Reasons" />
-        </dt>
-        <dd className="text-right">
-          <ReasonList reasons={inventory.reason_codes} />
-        </dd>
-      </dl>
-    </details>
-  );
-}
-
-function RootMobileCard({
-  familyId,
-  root,
-}: {
-  familyId: string;
-  root: StorageFamilyView["inventory"]["roots"][number];
-}) {
-  return (
-    <article className="min-w-0 max-w-full rounded-lg border border-border/60 bg-card p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="font-mono text-xs text-muted-foreground break-words">
-            <StorageHelp
-              name={`root-family-${familyId}-${root.root_index}`}
-              help={storageTermHelp("Family")}
-            >
-              <span>{familyId}</span>
-            </StorageHelp>
-          </div>
-          <div className="mt-1 font-mono text-sm font-medium break-words">
-            <StorageHelp
-              name={`root-label-${familyId}-${root.root_index}`}
-              help={storageTermHelp("Root label")}
-            >
-              <span>{root.root_label}</span>
-            </StorageHelp>
-          </div>
-        </div>
-        <StateBadge state={root.state} />
-      </div>
-      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border/60 pt-3 text-xs">
-        <MobileMeasurement label="Files" value={formatMeasurement(root.totals.regular_files)} />
-        <MobileMeasurement label="Logical" value={formatMeasurement(root.totals.logical_bytes)} />
-        <MobileMeasurement
-          label="Allocated"
-          value={formatMeasurement(root.totals.allocated_bytes)}
-        />
-      </div>
-      <dl className="mt-3 min-w-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
-        <dt className="text-muted-foreground">
-          <Term term="Ownership" />
-        </dt>
-        <dd className="min-w-0 text-right break-words">{root.ownership}</dd>
-        <dt className="text-muted-foreground">
-          <Term term="Reasons" />
-        </dt>
-        <dd className="text-right">
-          <ReasonList reasons={root.reason_codes} />
-        </dd>
-      </dl>
-    </article>
-  );
-}
-
-function MobileMeasurement({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-muted-foreground">
-        <Term term={label} />
-      </div>
-      <div className="mt-0.5 font-mono break-words">{value}</div>
-    </div>
   );
 }
 
@@ -1392,10 +1238,20 @@ function Term({ term, children }: { term: string; children?: React.ReactNode }) 
 function Th({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) {
   return (
     <th
+      role="columnheader"
       scope="col"
       className={`px-3 py-2 font-medium ${align === "right" ? "text-right" : "text-left"}`}
     >
-      {typeof children === "string" ? <Term term={children} /> : children}
+      {typeof children === "string" ? (
+        <>
+          <span className="md:hidden">{children}</span>
+          <span className="hidden md:inline">
+            <Term term={children} />
+          </span>
+        </>
+      ) : (
+        children
+      )}
     </th>
   );
 }
@@ -1404,15 +1260,25 @@ function Td({
   children,
   align = "left",
   mono = false,
+  mobileLabel,
+  mobileSpan = 6,
 }: {
   children: React.ReactNode;
   align?: "left" | "right";
   mono?: boolean;
+  mobileLabel: string;
+  mobileSpan?: 2 | 3 | 6;
 }) {
+  const spanClass =
+    mobileSpan === 2 ? "col-span-2" : mobileSpan === 3 ? "col-span-3" : "col-span-6";
   return (
     <td
-      className={`break-words px-3 py-2.5 ${align === "right" ? "text-right tabular-nums" : "text-left"} ${mono ? "font-mono text-xs" : ""}`}
+      role="cell"
+      className={`${spanClass} block min-w-0 [overflow-wrap:anywhere] px-3 py-2.5 text-left md:table-cell ${align === "right" ? "tabular-nums md:text-right" : ""} ${mono ? "font-mono text-xs" : ""}`}
     >
+      <div className="mb-1 font-sans text-xs text-muted-foreground md:hidden">
+        <Term term={mobileLabel} />
+      </div>
       {children}
     </td>
   );
