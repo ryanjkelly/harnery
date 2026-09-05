@@ -5,6 +5,9 @@ import type { NextConfig } from "next";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
+  // A supervising host can build into a staging directory while the previous
+  // bundle keeps serving, then swap directories. Default stays Next's `.next`.
+  ...(process.env.HARNERY_WEB_DIST_DIR ? { distDir: process.env.HARNERY_WEB_DIST_DIR } : {}),
   // The web UI imports readers from harnery's src/ (one level up). Pin
   // the tracing root so Next includes those files when building.
   outputFileTracingRoot: path.resolve(dirname, ".."),

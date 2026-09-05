@@ -121,21 +121,38 @@ export function tryWriteLiveDisplayV3(
   }
 }
 
-/** Return every unexpired live-display row across generations. */
+/**
+ * Return every unexpired live-display row across generations.
+ *
+ * A generation file whose last write is older than the hard TTL cannot hold a
+ * live row, so it is skipped on the stat alone. Without that guard a directory
+ * that has not been swept turns every read into a parse of days of residue.
+ */
 export function listLiveDisplayV3(
   coordRoot: string,
   now: () => Date = () => new Date(),
 ): LiveDisplayRowV3[] {
   const root = liveRoot(coordRoot);
   if (!existsSync(root)) return [];
+  const nowMs = now().getTime();
   const rows: LiveDisplayRowV3[] = [];
   for (const name of readdirSync(root)) {
     if (!name.endsWith(".ndjson")) continue;
     const generationId = name.slice(0, -".ndjson".length);
     if (!GENERATION_PATTERN.test(generationId)) continue;
+    if (fileHardExpiredV3(join(root, name), nowMs)) continue;
     rows.push(...readLiveDisplayV3(coordRoot, generationId, now));
   }
   return rows;
+}
+
+/** True when the file's last write predates the hard TTL; a missing file counts as expired. */
+function fileHardExpiredV3(path: string, nowMs: number): boolean {
+  try {
+    return statSync(path).mtimeMs + HARD_MAX_TTL_MS <= nowMs;
+  } catch {
+    return true;
+  }
 }
 
 /** Return only unexpired, structurally valid rows. Expiry is enforced before cleanup. */
@@ -180,10 +197,11 @@ export function janitorLiveDisplayV3(
     if (!name.endsWith(".ndjson")) continue;
     scanned += 1;
     const path = join(root, basename(name));
-    const visible = GENERATION_PATTERN.test(name.slice(0, -".ndjson".length))
-      ? readLiveDisplayV3(coordRoot, name.slice(0, -".ndjson".length), now)
-      : [];
-    const hardExpired = statSync(path).mtimeMs + HARD_MAX_TTL_MS <= nowMs;
+    const hardExpired = fileHardExpiredV3(path, nowMs);
+    const visible =
+      !hardExpired && GENERATION_PATTERN.test(name.slice(0, -".ndjson".length))
+        ? readLiveDisplayV3(coordRoot, name.slice(0, -".ndjson".length), now)
+        : [];
     if (visible.length === 0 || hardExpired) {
       rmSync(path, { force: true });
       removed += 1;

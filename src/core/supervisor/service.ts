@@ -20,6 +20,7 @@ import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts"
 import { pressureHistoryFromSupervisor } from "../diagnostics/advice.ts";
 import { assessPressure } from "../diagnostics/pressure.ts";
 import { readEventV3ControlState } from "../events/v3/control.ts";
+import { janitorLiveDisplayV3 } from "../events/v3/live-feed.ts";
 import type { ResourceSamplerState } from "../resources/contract.ts";
 import { sampleResources } from "../resources/sampler.ts";
 import { requestResourceServiceStop } from "../resources/service.ts";
@@ -65,6 +66,7 @@ const SUPERVISOR_MIN_INTERVAL_MS = 500;
 const SUPERVISOR_MAX_INTERVAL_MS = 60_000;
 const SUPERVISOR_MIN_IDLE_EXIT_MS = 5_000;
 const SUPERVISOR_MAX_IDLE_EXIT_MS = 24 * 60 * 60_000;
+const LIVE_DISPLAY_SWEEP_INTERVAL_MS = 5 * 60_000;
 
 interface SupervisorLease {
   pid: number;
@@ -228,6 +230,10 @@ export async function runSupervisor(
   let pressureHysteresis = priorPressure?.assessment.hysteresis ?? null;
   const observerGeneration = `${process.pid}:${startedAt}`;
   const logs = new SupervisorLogCollector(coordRoot);
+  // Live-display rows expire within the hour, but nothing else deletes their
+  // generation files. Left alone the directory grows without bound and every
+  // dashboard read pays for the residue, so the supervisor sweeps it.
+  let lastLiveDisplaySweepMs = 0;
   const writeStatus = () => {
     status.heartbeat_at = now().toISOString();
     writePrivateJsonAtomic(paths.service, status);
@@ -252,6 +258,15 @@ export async function runSupervisor(
       const cycleStarted = performance.now();
       try {
         const cycleNow = now();
+        if (cycleNow.getTime() - lastLiveDisplaySweepMs >= LIVE_DISPLAY_SWEEP_INTERVAL_MS) {
+          lastLiveDisplaySweepMs = cycleNow.getTime();
+          try {
+            const swept = janitorLiveDisplayV3(coordRoot, now);
+            if (swept.removed > 0) log(coordRoot, "supervisor.live_display_swept", { ...swept });
+          } catch (error) {
+            log(coordRoot, "supervisor.live_display_sweep_error", {}, error);
+          }
+        }
         const serviceHealth = collectServiceHealth(coordRoot, status);
         const resource = sampleResources(coordRoot, previousResource, {
           backgroundHost: true,

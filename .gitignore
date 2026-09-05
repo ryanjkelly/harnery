@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .next/
+.next-staging/
+.next-previous/
 docs/.astro/
 docs/dist/
 *.log

@@ -73,7 +73,7 @@ const CONTENTS_PROBE = "_";
 const USAGE_PER_CHILD_MAX_ENTRIES = 40_000;
 const USAGE_PER_CHILD_MAX_MS = 1_200;
 const USAGE_GLOBAL_MAX_MS = 6_000;
-const USAGE_TTL_MS = 60_000;
+const USAGE_TTL_MS = 5 * 60_000;
 
 /** Search-index caps + the build/dependency/cache directories the index skips.
  * These are generic ecosystem conventions (NOT host-specific): nobody fuzzy-

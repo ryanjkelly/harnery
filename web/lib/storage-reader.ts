@@ -93,7 +93,14 @@ const cacheScope = globalThis as typeof globalThis & {
 const cacheState = cacheScope.__harneryStorageFootprintCache ?? { cached: null, inFlight: null };
 cacheScope.__harneryStorageFootprintCache = cacheState;
 
-/** Read the canonical, metadata-only storage inventory for one project root. */
+/**
+ * Read the canonical, metadata-only storage inventory for one project root.
+ *
+ * The inventory walks every managed root, which on a large project takes
+ * seconds. A fresh snapshot is served as-is. An expired snapshot is served
+ * immediately while one refresh runs in the background, so a page load never
+ * waits on the walk once the first snapshot exists. Only a cold cache blocks.
+ */
 export async function readStorageFootprint(
   root = coordRoot(),
   options: {
@@ -104,23 +111,40 @@ export async function readStorageFootprint(
 ): Promise<StorageFootprintReport> {
   const now = options.now?.() ?? Date.now();
   const cacheMs = options.cacheMs ?? DEFAULT_CACHE_MS;
-  if (cacheMs > 0 && cacheState.cached?.root === root && cacheState.cached.expiresAt > now) {
-    return cacheState.cached.report;
-  }
-  if (cacheState.inFlight?.root === root) return cacheState.inFlight.promise;
+  const cached = cacheMs > 0 && cacheState.cached?.root === root ? cacheState.cached : null;
+  if (cached && cached.expiresAt > now) return cached.report;
 
-  const promise = buildStorageFootprint(root, options.inventoryReader ?? readInventoryFromCli).then(
-    (report) => {
+  const refresh = startStorageFootprintRefresh(
+    root,
+    options.inventoryReader ?? readInventoryFromCli,
+    cacheMs,
+    now,
+  );
+  if (cached) {
+    // Stale but present: hand back the snapshot and let the refresh land later.
+    refresh.catch(() => {});
+    return cached.report;
+  }
+  return refresh;
+}
+
+function startStorageFootprintRefresh(
+  root: string,
+  inventoryReader: (root: string) => Promise<HarneryStorageInventoryReport>,
+  cacheMs: number,
+  now: number,
+): Promise<StorageFootprintReport> {
+  if (cacheState.inFlight?.root === root) return cacheState.inFlight.promise;
+  const promise = buildStorageFootprint(root, inventoryReader)
+    .then((report) => {
       if (cacheMs > 0) cacheState.cached = { root, expiresAt: now + cacheMs, report };
       return report;
-    },
-  );
+    })
+    .finally(() => {
+      if (cacheState.inFlight?.promise === promise) cacheState.inFlight = null;
+    });
   cacheState.inFlight = { root, promise };
-  try {
-    return await promise;
-  } finally {
-    if (cacheState.inFlight?.promise === promise) cacheState.inFlight = null;
-  }
+  return promise;
 }
 
 /** Clear the process-local snapshot when a test or host lifecycle resets roots. */

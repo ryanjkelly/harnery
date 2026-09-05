@@ -55,4 +55,44 @@ describe("storage footprint reader", () => {
     const cached = await readStorageFootprint(root, { inventoryReader });
     expect(cached).toBe(report);
   });
+
+  test("serves an expired snapshot immediately and refreshes it in the background", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-web-storage-"));
+    roots.push(root);
+    mkdirSync(join(root, ".harnery"), { recursive: true });
+    writeFileSync(join(root, ".harnery", "config.jsonc"), "{}\n");
+
+    let reads = 0;
+    let release: (() => void) | undefined;
+    const inventoryReader = async (sourceRoot: string) => {
+      reads += 1;
+      if (reads > 1) await new Promise<void>((resolve) => (release = resolve));
+      return inventoryStorage(
+        createStorageCatalog({ coord_root: sourceRoot, project_root: sourceRoot }),
+      );
+    };
+    let clock = 1_000;
+    const options = { inventoryReader, cacheMs: 100, now: () => clock };
+
+    const first = await readStorageFootprint(root, options);
+    expect(reads).toBe(1);
+
+    clock += 500;
+    const stale = await readStorageFootprint(root, options);
+    expect(stale).toBe(first);
+    expect(reads).toBe(2);
+
+    const again = await readStorageFootprint(root, options);
+    expect(again).toBe(first);
+    expect(reads).toBe(2);
+
+    release?.();
+    let fresh = first;
+    for (let attempt = 0; attempt < 200 && fresh === first; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      fresh = await readStorageFootprint(root, options);
+    }
+    expect(fresh).not.toBe(first);
+    expect(reads).toBe(2);
+  });
 });
