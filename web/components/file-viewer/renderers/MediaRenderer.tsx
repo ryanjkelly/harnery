@@ -9,8 +9,14 @@
  * attr is the containment.
  */
 
+import { useContext, useEffect, useRef, useState } from "react";
 import { rawUrl } from "@/lib/file-viewer/client";
 import type { FileMeta } from "@/lib/file-viewer/types";
+import {
+  VideoAutoplayToggle,
+  VideoSelectionContext,
+  videoAutoplayEnabled,
+} from "../video-playback";
 
 export function AudioRenderer({ path }: { meta: FileMeta; path: string }) {
   return (
@@ -24,12 +30,54 @@ export function AudioRenderer({ path }: { meta: FileMeta; path: string }) {
 }
 
 export function VideoRenderer({ meta, path }: { meta: FileMeta; path: string }) {
+  const video = useRef<HTMLVideoElement>(null);
+  const selection = useContext(VideoSelectionContext);
+  const [blocked, setBlocked] = useState(false);
+  useEffect(() => {
+    const element = video.current;
+    if (!element) return;
+    let cancelled = false;
+    if (selection?.path === path && selection.action === "pause") {
+      element.pause();
+    } else if (videoAutoplayEnabled()) {
+      setBlocked(false);
+      void element
+        .play()
+        .then(() => {
+          if (cancelled) element.pause();
+        })
+        .catch(() => {
+          if (!cancelled) setBlocked(true);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [path, selection]);
   return (
-    <div className="flex h-full min-h-0 items-center justify-center bg-muted/20 p-4">
-      <video controls src={rawUrl(path)} className="max-h-[78vh] max-w-full">
-        <track kind="captions" />
-        {meta.relPath}
-      </video>
+    <div className="flex h-full min-h-0 flex-col bg-muted/20">
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-b border-border px-4 py-2">
+        {blocked && (
+          <span role="status" className="text-xs text-muted-foreground">
+            Press Play to start this video.
+          </span>
+        )}
+        <VideoAutoplayToggle />
+      </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center p-4">
+        <video
+          ref={video}
+          controls
+          playsInline
+          preload="metadata"
+          onPlay={() => setBlocked(false)}
+          src={rawUrl(path)}
+          className="max-h-full max-w-full"
+        >
+          <track kind="captions" />
+          {meta.relPath}
+        </video>
+      </div>
     </div>
   );
 }
