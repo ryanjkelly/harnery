@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
@@ -10,7 +10,9 @@ import {
 } from "../../src/core/events/v3/live-routing.ts";
 import {
   __resetCoordRootCache,
+  __resetNameHistoryCache,
   classifyAgentLedgerStateV3,
+  historyNameForInstance,
   readAgents,
   readCachedAgentsForCodec,
   readEvents,
@@ -126,6 +128,29 @@ describe("V3 web coordination reader", () => {
     expect(snapshot.active).toHaveLength(1);
     expect(snapshot.active[0]?.name).toBe("Kestrel");
     expect(snapshot.active[0]?.task).toBe("Wrap session");
+  });
+});
+
+describe("name-history index", () => {
+  test("the newest row wins across id forms and a rewrite refreshes the index", () => {
+    const root = freshRoot();
+    process.env.HARNERY_COORD_ROOT = root;
+    __resetCoordRootCache();
+    __resetNameHistoryCache();
+    const native = "f60993f5-5a32-4d5a-bd8f-825bca29167e";
+    const historyPath = join(root, ".harnery", ".name-history");
+    const row = (instance_id: string, name: string) =>
+      `${JSON.stringify({ instance_id, name, kind: "session", source: "pool", ts: "t" })}\n`;
+    writeFileSync(historyPath, row(native, "agent-Kestrel") + row(`inst_${native}`, "Wren"));
+    expect(historyNameForInstance(native)).toBe("Wren");
+    expect(historyNameForInstance(`inst_${native}`)).toBe("Wren");
+    expect(historyNameForInstance("00000000-0000-4000-8000-000000000000")).toBeUndefined();
+
+    // Same size, later mtime: the index must notice the rewrite.
+    const later = new Date(Date.now() + 5_000);
+    writeFileSync(historyPath, row(`inst_${native}`, "Wren") + row(native, "agent-Kestrel"));
+    utimesSync(historyPath, later, later);
+    expect(historyNameForInstance(native)).toBe("Kestrel");
   });
 });
 

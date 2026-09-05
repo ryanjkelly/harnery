@@ -526,30 +526,82 @@ function nameForLedgerInstance(instanceId: string): string {
 /** Pool or assumed name from `.name-history`. Empty cache names stay empty so
  * Codec can fall back to the short native id instead of a UUID heading. */
 export function historyNameForInstance(instanceId: string): string | undefined {
+  const index = nameHistoryIndex();
+  if (!index) return undefined;
+  // The newest history row wins, whichever id form it matched on.
+  let best: NameHistoryHit | undefined;
+  for (const key of [instanceId, nativeInstanceIdV3(instanceId), liveInstanceIdV3(instanceId)]) {
+    const hit = index.get(key);
+    if (hit && (!best || hit.seq > best.seq)) best = hit;
+  }
+  return best?.name;
+}
+
+interface NameHistoryHit {
+  name: string;
+  seq: number;
+}
+
+let nameHistoryCache: {
+  path: string;
+  size: number;
+  mtimeMs: number;
+  index: Map<string, NameHistoryHit>;
+} | null = null;
+
+/**
+ * Parse `.name-history` once per file version. Every page render asks for a
+ * name per generation, and the file grows for the life of the project, so
+ * re-reading it per lookup scales as generations times history size. The
+ * index is keyed by every id form a row can match: the id as written, its
+ * native form, and its live form.
+ */
+function nameHistoryIndex(): Map<string, NameHistoryHit> | null {
   const historyPath = path.join(harneryDir(), ".name-history");
-  if (!existsSync(historyPath)) return undefined;
-  const native = nativeInstanceIdV3(instanceId);
-  const live = liveInstanceIdV3(instanceId);
-  for (const line of readFileSync(historyPath, "utf8").split("\n").reverse()) {
+  let size: number;
+  let mtimeMs: number;
+  try {
+    ({ size, mtimeMs } = statSync(historyPath));
+  } catch {
+    nameHistoryCache = null;
+    return null;
+  }
+  if (
+    nameHistoryCache &&
+    nameHistoryCache.path === historyPath &&
+    nameHistoryCache.size === size &&
+    nameHistoryCache.mtimeMs === mtimeMs
+  ) {
+    return nameHistoryCache.index;
+  }
+  const index = new Map<string, NameHistoryHit>();
+  let seq = 0;
+  for (const line of readFileSync(historyPath, "utf8").split("\n")) {
+    seq += 1;
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line) as { instance_id?: string; name?: string };
       if (!entry.name || !entry.instance_id) continue;
-      const entryNative = nativeInstanceIdV3(entry.instance_id);
-      if (
-        entry.instance_id === instanceId ||
-        entry.instance_id === native ||
-        entry.instance_id === live ||
-        liveInstanceIdV3(entry.instance_id) === instanceId ||
-        entryNative === native
-      ) {
-        return entry.name.startsWith("agent-") ? entry.name.slice("agent-".length) : entry.name;
+      const name = entry.name.startsWith("agent-") ? entry.name.slice("agent-".length) : entry.name;
+      const hit = { name, seq };
+      for (const key of new Set([
+        entry.instance_id,
+        nativeInstanceIdV3(entry.instance_id),
+        liveInstanceIdV3(entry.instance_id),
+      ])) {
+        index.set(key, hit);
       }
     } catch {
       // Ignore malformed history rows; the instance prefix remains an honest fallback.
     }
   }
-  return undefined;
+  nameHistoryCache = { path: historyPath, size, mtimeMs, index };
+  return index;
+}
+
+/** Drop the parsed name-history (tests repoint the coord root at fixtures). */
+export function __resetNameHistoryCache(): void {
+  nameHistoryCache = null;
 }
 
 function codecCacheDisplayName(row: Omit<Heartbeat, "age_seconds">): string {
