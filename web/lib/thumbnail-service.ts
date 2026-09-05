@@ -16,7 +16,11 @@ import {
   type ThumbnailCost,
   type ThumbnailPriority,
 } from "./thumbnail-queue";
-import { canRenderThumbnail, renderThumbnail } from "./thumbnail-renderers";
+import {
+  canRenderThumbnail,
+  renderThumbnail,
+  thumbnailDescriptorPath,
+} from "./thumbnail-renderers";
 import { thumbnailDependencyKey } from "./thumbnail-renderers/dependencies";
 import { resolveThumbnailReuse, type ThumbnailReuse } from "./thumbnail-reuse";
 
@@ -83,7 +87,7 @@ function remember(key: string, bytes: Buffer) {
     memory.delete(oldest);
   }
 }
-/** Snapshot only the checked descriptor, verifying no edits occurred during copy. */
+/** Media borrows a checked descriptor; other converters receive a private snapshot. */
 async function renderSource(
   source: Source,
   root: string,
@@ -102,6 +106,18 @@ async function renderSource(
   const file = source.reuse?.kind === "file" ? source.reuse.file : source.file;
   const expectedIdentity = source.reuse?.kind === "file" ? source.reuse.identity : source.identity;
   if (identity(file) !== expectedIdentity) throw new Error("source_changed");
+  if ((file.category === "audio" || file.category === "video") && thumbnailDescriptorPath()) {
+    const bytes = await renderThumbnail({
+      inputPath: "",
+      inputFd: file.fd,
+      relPath: file.relPath,
+      category: file.category,
+      root,
+    });
+    // A descriptor survives renames, but in-place writes must invalidate the result before caching.
+    if (identity(file) !== expectedIdentity) throw new Error("source_changed");
+    return bytes;
+  }
   const inputPath = path.join(temporary, `${index}${path.extname(file.relPath)}`);
   const output = await open(inputPath, "wx", 0o600);
   try {

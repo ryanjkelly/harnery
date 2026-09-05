@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -15,6 +16,7 @@ import { zipSync } from "fflate";
 import sharp from "sharp";
 import { __resetFilesCaches, __setResolveTestHooks, resolveFile } from "./files";
 import { __setThumbnailDiskTestHooks } from "./thumbnail-disk-cache";
+import * as renderers from "./thumbnail-renderers";
 import { registerThumbnailPreview } from "./thumbnail-reuse";
 import { __resetThumbnailMemory, serveFileThumbnail } from "./thumbnail-service";
 
@@ -224,5 +226,57 @@ test("disk maintenance cannot hold a completed visible thumbnail response", asyn
   } finally {
     release();
     __setThumbnailDiskTestHooks();
+  }
+});
+
+test.skipIf(!renderers.thumbnailDescriptorPath())(
+  "media bypasses staging and discards in-place writes before caching",
+  async () => {
+    const source = join(root, "changing.mp4");
+    writeFileSync(source, "fixture media");
+    const image = await sharp({
+      create: { width: 360, height: 240, channels: 3, background: "blue" },
+    })
+      .webp()
+      .toBuffer();
+    let borrowed = false;
+    const renderer = spyOn(renderers, "renderThumbnail").mockImplementation(async (input) => {
+      borrowed = Number.isInteger(input.inputFd) && input.inputPath === "";
+      writeFileSync(source, "changed during rendering");
+      return image;
+    });
+    try {
+      const response = await serveFileThumbnail(request("changing.mp4"), { root, wait: true });
+      expect(borrowed).toBe(true);
+      expect(response.status).toBe(409);
+      await __resetThumbnailMemory();
+      expect(existsSync(join(root, ".harnery/cache/file-thumbnails"))).toBe(false);
+    } finally {
+      renderer.mockRestore();
+    }
+  },
+);
+
+test("media retains bounded snapshot fallback when descriptor paths are unavailable", async () => {
+  writeFileSync(join(root, "fallback.mp4"), "fixture media");
+  const image = await sharp({
+    create: { width: 360, height: 240, channels: 3, background: "blue" },
+  })
+    .webp()
+    .toBuffer();
+  const capability = spyOn(renderers, "thumbnailDescriptorPath").mockReturnValue(null);
+  const renderer = spyOn(renderers, "renderThumbnail").mockImplementation(async (input) => {
+    expect(input.inputFd).toBeUndefined();
+    expect(existsSync(input.inputPath)).toBe(true);
+    return image;
+  });
+  try {
+    expect((await serveFileThumbnail(request("fallback.mp4"), { root, wait: true })).status).toBe(
+      200,
+    );
+    expect(renderer).toHaveBeenCalledTimes(1);
+  } finally {
+    renderer.mockRestore();
+    capability.mockRestore();
   }
 });

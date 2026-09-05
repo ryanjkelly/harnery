@@ -58,25 +58,72 @@ function buildFixture(): string {
   return root;
 }
 
-const names = (r: ReturnType<typeof listDir>): string[] =>
+const names = (r: Awaited<ReturnType<typeof listDir>>): string[] =>
   r.ok ? r.entries.map((e) => e.name) : [];
 
-describe("listDir — root listing", () => {
-  const root = buildFixture();
-  const res = listDir("", { root });
+test("listing yields to other requests while collecting a large directory", async () => {
+  const root = makeRoot();
+  for (let i = 0; i < 1000; i++) w(root, `files/${i}.txt`, "content");
+  let yielded = false;
+  const turn = setImmediate(() => {
+    yielded = true;
+  });
+  try {
+    const result = await listDir("files", { root });
+    expect(result.ok && result.entries.length).toBe(1000);
+    expect(yielded).toBe(true);
+  } finally {
+    clearImmediate(turn);
+  }
+});
 
-  test("succeeds and reports dir as the repo root ('')", () => {
+test("a directory replacement during listing cannot publish names from another target", async () => {
+  const root = makeRoot();
+  const outside = makeRoot();
+  w(root, "files/visible.txt", "visible");
+  w(outside, "private.txt", "outside");
+  __fileTreeTestHooks.afterListingRead = (directory) => {
+    renameSync(directory, `${directory}.original`);
+    symlinkSync(outside, directory);
+  };
+  try {
+    const result = await listDir("files", { root });
+    expect(result.ok).toBe(false);
+  } finally {
+    __fileTreeTestHooks.afterListingRead = undefined;
+  }
+});
+
+test("a changed deny policy during listing cannot publish the earlier result", async () => {
+  const root = makeRoot();
+  w(root, "files/visible.txt", "visible");
+  __fileTreeTestHooks.afterListingRead = () => {
+    w(root, ".harnery/config.jsonc", JSON.stringify({ files: { deny_globs: ["**/visible.txt"] } }));
+  };
+  try {
+    const result = await listDir("files", { root });
+    expect(result).toMatchObject({ ok: false, code: "config_error" });
+  } finally {
+    __fileTreeTestHooks.afterListingRead = undefined;
+  }
+});
+
+describe("listDir — root listing", async () => {
+  const root = buildFixture();
+  const res = await listDir("", { root });
+
+  test("succeeds and reports dir as the repo root ('')", async () => {
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.dir).toBe("");
   });
 
-  test("shows positive controls", () => {
+  test("shows positive controls", async () => {
     expect(names(res)).toEqual(
       expect.arrayContaining(["README.md", "docs", "src", "app-web", "tools"]),
     );
   });
 
-  test("hides directly-denied entries (.env, .credentials, .git, secret jsons)", () => {
+  test("hides directly-denied entries (.env, .credentials, .git, secret jsons)", async () => {
     const n = names(res);
     for (const hidden of [
       ".env",
@@ -89,15 +136,15 @@ describe("listDir — root listing", () => {
     }
   });
 
-  test("hides contents-denied directories (node_modules)", () => {
+  test("hides contents-denied directories (node_modules)", async () => {
     expect(names(res)).not.toContain("node_modules");
   });
 
-  test("readmits soft-denied entries rescued by an allow-override (.env.example)", () => {
+  test("readmits soft-denied entries rescued by an allow-override (.env.example)", async () => {
     expect(names(res)).toContain(".env.example");
   });
 
-  test("orders directories before files", () => {
+  test("orders directories before files", async () => {
     if (!res.ok) throw new Error("expected ok");
     const kinds = res.entries.map((e) => e.kind);
     const lastDir = kinds.lastIndexOf("dir");
@@ -106,11 +153,11 @@ describe("listDir — root listing", () => {
   });
 });
 
-describe("listDir — subdirectories", () => {
+describe("listDir — subdirectories", async () => {
   const root = buildFixture();
 
-  test("lists a nested directory by relPath, with canonical dir echoed", () => {
-    const res = listDir("docs", { root });
+  test("lists a nested directory by relPath, with canonical dir echoed", async () => {
+    const res = await listDir("docs", { root });
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.dir).toBe("docs");
@@ -120,83 +167,83 @@ describe("listDir — subdirectories", () => {
     }
   });
 
-  test("hides a denied file inside an allowed directory (tools/my-service-account.json)", () => {
-    const res = listDir("tools", { root });
+  test("hides a denied file inside an allowed directory (tools/my-service-account.json)", async () => {
+    const res = await listDir("tools", { root });
     const n = names(res);
     expect(n).toContain("ok.txt");
     expect(n).not.toContain("my-service-account.json");
   });
 });
 
-describe("listDir — fail-closed rejections", () => {
+describe("listDir — fail-closed rejections", async () => {
   const root = buildFixture();
 
-  test("`..` segment → invalid_path", () => {
-    const r = listDir("../etc", { root });
+  test("`..` segment → invalid_path", async () => {
+    const r = await listDir("../etc", { root });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("invalid_path");
   });
 
-  test("absolute path outside root → unresolvable", () => {
-    const r = listDir("/etc", { root });
+  test("absolute path outside root → unresolvable", async () => {
+    const r = await listDir("/etc", { root });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("unresolvable");
   });
 
-  test("a directly-denied directory → denied (not an empty listing)", () => {
-    const r = listDir(".credentials", { root });
+  test("a directly-denied directory → denied (not an empty listing)", async () => {
+    const r = await listDir(".credentials", { root });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("denied");
   });
 
-  test("non-existent directory → not_found", () => {
-    const r = listDir("does/not/exist", { root });
+  test("non-existent directory → not_found", async () => {
+    const r = await listDir("does/not/exist", { root });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("not_found");
   });
 
-  test("a regular file (not a directory) → not_file", () => {
-    const r = listDir("README.md", { root });
+  test("a regular file (not a directory) → not_file", async () => {
+    const r = await listDir("README.md", { root });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("not_file");
   });
 });
 
-describe("listDir — symlink containment", () => {
+describe("listDir — symlink containment", async () => {
   test("an allowed alias cannot reveal a denied canonical target", async () => {
     const root = buildFixture();
     symlinkSync(path.join(root, ".credentials"), path.join(root, "alias"), "dir");
     symlinkSync(path.join(root, ".env"), path.join(root, "alias.txt"), "file");
-    expect(names(listDir("", { root }))).not.toContain("alias");
-    expect(names(listDir("", { root }))).not.toContain("alias.txt");
-    expect(listDir("alias", { root })).toMatchObject({ ok: false, code: "denied" });
+    expect(names(await listDir("", { root }))).not.toContain("alias");
+    expect(names(await listDir("", { root }))).not.toContain("alias.txt");
+    expect(await listDir("alias", { root })).toMatchObject({ ok: false, code: "denied" });
     expect(await searchFiles("key", { root, dir: "alias" })).toMatchObject({
       ok: false,
       code: "denied",
     });
     expect(await dirUsage("alias", { root })).toMatchObject({ ok: false, code: "denied" });
   });
-  test("a symlink whose target escapes the root is skipped", () => {
+  test("a symlink whose target escapes the root is skipped", async () => {
     const root = buildFixture();
     // points at the parent tmp dir, which is outside the repo root
     symlinkSync(os.tmpdir(), path.join(root, "escape-link"), "dir");
-    expect(names(listDir("", { root }))).not.toContain("escape-link");
+    expect(names(await listDir("", { root }))).not.toContain("escape-link");
   });
 
-  test("an in-root symlink to a real file is shown as a file", () => {
+  test("an in-root symlink to a real file is shown as a file", async () => {
     const root = buildFixture();
     symlinkSync(path.join(root, "README.md"), path.join(root, "readme-link.md"), "file");
-    const res = listDir("", { root });
+    const res = await listDir("", { root });
     const entry = res.ok ? res.entries.find((e) => e.name === "readme-link.md") : undefined;
     expect(entry?.kind).toBe("file");
   });
 });
 
-describe("listDir — file sizes", () => {
+describe("listDir — file sizes", async () => {
   const root = buildFixture();
-  const res = listDir("", { root });
+  const res = await listDir("", { root });
 
-  test("file entries carry byte size; directories carry none", () => {
+  test("file entries carry byte size; directories carry none", async () => {
     if (!res.ok) throw new Error("expected ok");
     const readme = res.entries.find((e) => e.name === "README.md");
     const docs = res.entries.find((e) => e.name === "docs");
@@ -205,7 +252,7 @@ describe("listDir — file sizes", () => {
   });
 });
 
-describe("dirUsage — recursive totals + counts (deny-aware)", () => {
+describe("dirUsage — recursive totals + counts (deny-aware)", async () => {
   test("a changed deny policy cannot reuse cached folder names or totals", async () => {
     const root = buildFixture();
     const before = await dirUsage("", { root });
@@ -254,7 +301,7 @@ describe("dirUsage — recursive totals + counts (deny-aware)", () => {
   });
 });
 
-describe("searchFiles — fuzzy index (deny + build-artifact aware)", () => {
+describe("searchFiles — fuzzy index (deny + build-artifact aware)", async () => {
   test("async walks refuse a queued directory replaced by an external symlink", async () => {
     for (const mode of ["search", "usage"]) {
       const root = buildFixture();

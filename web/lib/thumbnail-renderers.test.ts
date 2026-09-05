@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync, renameSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import {
   escapeThumbnailText,
   renderThumbnail,
   runThumbnailCommand,
+  thumbnailDescriptorPath,
 } from "./thumbnail-renderers";
 import { closeThumbnailBrowser } from "./thumbnail-renderers/html";
 import { closeOfficeThumbnailWorker, convertOfficeThumbnail } from "./thumbnail-renderers/office";
@@ -95,6 +96,19 @@ test.skipIf(!hasMedia)(
     console.log(
       JSON.stringify({ benchmark: "video renderer", coldMs: timings[0], warmMs: timings.slice(1) }),
     );
+    if (thumbnailDescriptorPath()) {
+      const fd = openSync(path.join(root, "clip.mp4"), "r");
+      try {
+        renameSync(path.join(root, "clip.mp4"), path.join(root, "checked.mp4"));
+        await writeFile(path.join(root, "clip.mp4"), "replacement is not media");
+        const bytes = await renderThumbnail({ ...input("clip.mp4", "video"), inputFd: fd });
+        const stats = await sharp(bytes).stats();
+        expect(stats.channels[2].mean).toBeGreaterThan(240);
+        expect(fstatSync(fd).size).toBeGreaterThan(0);
+      } finally {
+        closeSync(fd);
+      }
+    }
   },
 );
 
@@ -135,6 +149,30 @@ test("converter deadline and missing converter errors are explicit", async () =>
   ).rejects.toThrow("thumbnail_timeout");
 });
 
+test.skipIf(!thumbnailDescriptorPath())(
+  "native command inherits a seekable descriptor and retains caller ownership",
+  async () => {
+    const file = path.join(root, "descriptor.txt");
+    await writeFile(file, "checked content");
+    const fd = openSync(file, "r");
+    try {
+      const script =
+        "const fs=require('node:fs'); const b=Buffer.alloc(7); fs.readSync(3,b,0,7,8); process.stdout.write(b)";
+      expect(
+        (await runThumbnailCommand(process.execPath, ["-e", script], 1000, fd)).toString(),
+      ).toBe("content");
+      await expect(
+        runThumbnailCommand(process.execPath, ["-e", "setTimeout(()=>{},10000)"], 50, fd),
+      ).rejects.toThrow("thumbnail_timeout");
+      const bytes = Buffer.alloc(7);
+      expect(readSync(fd, bytes, 0, 7, 0)).toBe(7);
+      expect(bytes.toString()).toBe("checked");
+    } finally {
+      closeSync(fd);
+    }
+  },
+);
+
 test.skipIf(!hasMedia)("audio thumbnail renders a bounded waveform", async () => {
   await runThumbnailCommand("ffmpeg", [
     "-hide_banner",
@@ -151,6 +189,14 @@ test.skipIf(!hasMedia)("audio thumbnail renders a bounded waveform", async () =>
   ]);
   const bytes = await renderThumbnail(input("tone.wav", "audio"));
   expect((await sharp(bytes).metadata()).width).toBe(360);
+  if (thumbnailDescriptorPath()) {
+    const fd = openSync(path.join(root, "tone.wav"), "r");
+    try {
+      expect(await renderThumbnail({ ...input("tone.wav", "audio"), inputFd: fd })).toEqual(bytes);
+    } finally {
+      closeSync(fd);
+    }
+  }
 });
 
 test.skipIf(!hasBrowser)(

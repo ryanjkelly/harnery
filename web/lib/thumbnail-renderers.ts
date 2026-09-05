@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,8 +9,10 @@ import { type FileCategory, scanChunk } from "./files";
 import { convertOfficeThumbnail } from "./thumbnail-renderers/office";
 
 export interface ThumbnailInput {
-  /** Private immutable copy made from the resolver's checked descriptor. */
+  /** Private copy; unused when media is read from inputFd. */
   inputPath: string;
+  /** Borrowed checked descriptor, retained by the caller until rendering completes. */
+  inputFd?: number;
   relPath: string;
   category: FileCategory;
   root: string;
@@ -52,16 +55,24 @@ export function canRenderThumbnail(category: FileCategory, relPath: string): boo
   );
 }
 
+/** Child fd 3 is inherited from the checked inode, never reopened by its original name. */
+export function thumbnailDescriptorPath(): string | null {
+  if (process.platform === "linux" && existsSync("/proc/self/fd")) return "/proc/self/fd/3";
+  if (process.platform === "darwin" && existsSync("/dev/fd")) return "/dev/fd/3";
+  return null;
+}
+
 /** Fixed argv, bounded pipes, and a hard deadline for each native converter. */
 export function runThumbnailCommand(
   command: string,
   args: string[],
   timeoutMs = 8_000,
+  inputFd?: number,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const grouped = process.platform !== "win32";
     const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe", ...(inputFd === undefined ? [] : [inputFd])],
       windowsHide: true,
       detached: grouped,
     });
@@ -79,12 +90,12 @@ export function runThumbnailCommand(
       }
     };
     const timer = setTimeout(() => stop("thumbnail_timeout"), timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout!.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > OUTPUT_BYTES) stop("thumbnail_output_limit");
       else chunks.push(chunk);
     });
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr!.on("data", (chunk: Buffer) => {
       stderrSize += chunk.length;
       if (stderrSize > 64 * 1024) stop("thumbnail_output_limit");
     });
@@ -203,6 +214,9 @@ async function webp(bytes: Buffer): Promise<Buffer> {
 }
 
 async function renderMedia(input: ThumbnailInput): Promise<Buffer> {
+  const inputPath = input.inputFd === undefined ? input.inputPath : thumbnailDescriptorPath();
+  if (!inputPath) throw new Error("thumbnail_descriptor_unavailable");
+  const run = (args: string[]) => runThumbnailCommand("ffmpeg", args, 8_000, input.inputFd);
   const common = [
     "-hide_banner",
     "-loglevel",
@@ -216,10 +230,10 @@ async function renderMedia(input: ThumbnailInput): Promise<Buffer> {
     "file,pipe",
   ];
   if (input.category === "audio") {
-    const bytes = await runThumbnailCommand("ffmpeg", [
+    const bytes = await run([
       ...common,
       "-i",
-      input.inputPath,
+      inputPath,
       "-t",
       "30",
       "-filter_complex",
@@ -237,12 +251,12 @@ async function renderMedia(input: ThumbnailInput): Promise<Buffer> {
     return webp(bytes);
   }
   const frame = (seek: string) =>
-    runThumbnailCommand("ffmpeg", [
+    run([
       ...common,
       "-ss",
       seek,
       "-i",
-      input.inputPath,
+      inputPath,
       "-an",
       "-vf",
       "scale=360:240:force_original_aspect_ratio=decrease",

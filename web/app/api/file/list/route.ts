@@ -15,11 +15,18 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(req: Request): Promise<Response> {
+  const started = performance.now();
   const dir = new URL(req.url).searchParams.get("dir") ?? "";
   const r = await listBrowseDir(dir);
   if (!r.ok) return fileErrorResponse(r);
   return Response.json(
     { dir: r.dir, entries: r.entries, workspace: r.workspace },
-    { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } },
+    {
+      headers: {
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "server-timing": `listing;dur=${(performance.now() - started).toFixed(1)}`,
+      },
+    },
   );
 }

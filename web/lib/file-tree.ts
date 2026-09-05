@@ -19,8 +19,8 @@
  * re-resolves through the fd-returning `resolveFile` when a file is opened.
  */
 
-import { type Dirent, readdirSync, realpathSync, statSync } from "node:fs";
-import { lstat, opendir, realpath } from "node:fs/promises";
+import { type Dirent, realpathSync, statSync } from "node:fs";
+import { lstat, opendir, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { BrowseEntry, BrowseSearchResult } from "./browse-types";
 import { coordRoot } from "./coord-reader";
@@ -222,82 +222,84 @@ export function resolveDir(rawInput: string, opts: ListOptions = {}): ResolvedDi
  * List the immediate children of `rawInput` (repo-relative; "" / "." = root).
  * File entries carry their byte `size`; directory sizes come from `dirUsage`.
  */
-export function listDir(rawInput: string, opts: ListOptions = {}): ListResult {
+export async function listDir(rawInput: string, opts: ListOptions = {}): Promise<ListResult> {
   const r = resolveDir(rawInput, opts);
   if (!r.ok) return r;
   const { ROOT, real, baseRel, cfg } = r;
 
+  const before = await stat(real).catch(() => null);
+  if (!before?.isDirectory()) return reject("not_found", 404);
   let dirents: Dirent[];
   try {
-    dirents = readdirSync(real, { withFileTypes: true });
+    dirents = await readdir(real, { withFileTypes: true });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "EACCES" || code === "EPERM") return reject("denied", 403, "permission denied");
     return reject("unresolvable", 400, `readdir failed: ${code}`);
   }
+  __fileTreeTestHooks.afterListingRead?.(real);
 
   const entries: BrowseEntry[] = [];
-  for (const d of dirents) {
+  const readEntry = async (d: Dirent) => {
     const name = d.name;
-    if (name === "." || name === "..") continue;
+    if (name === "." || name === "..") return;
     const childRel = baseRel ? `${baseRel}/${name}` : name;
+    if (evaluateDeny(childRel, cfg).denied) return;
 
     // Classify kind, resolving symlinks WITH containment (a symlink whose
     // target escapes the root, or is broken, is skipped — never followed out).
     // Capture file byte size in the same stat (drives the row size + bars).
     let kind: "dir" | "file";
     let size: number | undefined;
-    if (d.isSymbolicLink()) {
+    let info = await lstat(path.join(real, name)).catch(() => null);
+    if (!info) return;
+    if (info.isSymbolicLink()) {
       let target: string;
       try {
-        target = realpathSync(path.join(real, name));
+        target = await realpath(path.join(real, name));
       } catch {
-        continue; // broken symlink
+        return; // broken symlink
       }
       const tRel = path.relative(ROOT, target);
-      if (tRel !== "" && (tRel.startsWith("..") || path.isAbsolute(tRel))) continue; // escapes root
+      if (tRel !== "" && (tRel.startsWith("..") || path.isAbsolute(tRel))) return; // escapes root
       const canonicalRel = tRel.split(path.sep).join("/");
-      if (evaluateDeny(canonicalRel, cfg).denied) continue;
-      let tst: ReturnType<typeof statSync>;
-      try {
-        tst = statSync(target);
-      } catch {
-        continue;
-      }
-      if (tst.isDirectory()) {
-        if (evaluateDeny(`${canonicalRel}/_`, cfg).denied) continue;
-        kind = "dir";
-      } else if (tst.isFile()) {
-        kind = "file";
-        size = tst.size;
-      } else continue; // socket / fifo / device
-    } else if (d.isDirectory()) {
+      if (evaluateDeny(canonicalRel, cfg).denied) return;
+      info = await lstat(target).catch(() => null);
+      if (!info || info.isSymbolicLink()) return;
+      if (info.isDirectory() && evaluateDeny(`${canonicalRel}/_`, cfg).denied) return;
+    }
+    if (info.isDirectory()) {
       kind = "dir";
-    } else if (d.isFile()) {
+    } else if (info.isFile()) {
       kind = "file";
-      try {
-        size = statSync(path.join(real, name)).size;
-      } catch {
-        size = undefined; // raced away; still listable, size just unknown
-      }
+      size = info.size;
     } else {
-      continue; // fifo / socket / device / etc.
+      return; // fifo / socket / device / etc.
     }
 
     // Deny filter: hide denied entries entirely (don't leak the name). For
     // directories, also hide when their CONTENTS are categorically denied
     // (e.g. node_modules), so the tree never shows a dead, unexpandable folder.
-    if (evaluateDeny(childRel, cfg).denied) continue;
-    if (kind === "dir" && evaluateDeny(`${childRel}/${CONTENTS_PROBE}`, cfg).denied) continue;
-
-    let mtime: string | undefined;
-    try {
-      mtime = statSync(path.join(real, name)).mtime.toISOString();
-    } catch {
-      /* raced away */
-    }
+    if (kind === "dir" && evaluateDeny(`${childRel}/${CONTENTS_PROBE}`, cfg).denied) return;
+    const mtime = info.mtime.toISOString();
     entries.push({ name, relPath: childRel, kind, ...(kind === "file" ? { size } : {}), mtime });
-  }
+  };
+  // Bound filesystem pressure while letting unrelated requests run between reads.
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(8, dirents.length) }, async () => {
+      while (cursor < dirents.length) await readEntry(dirents[cursor++]);
+    }),
+  );
+  // Async work can span a directory replacement or a policy change. Never
+  // publish names gathered under a different containment or deny decision.
+  const current = resolveDir(rawInput, opts);
+  if (!current.ok) return current;
+  const after = await stat(real).catch(() => null);
+  if (current.real !== real || !after || before.dev !== after.dev || before.ino !== after.ino)
+    return reject("unresolvable", 400, "directory changed during listing");
+  if (JSON.stringify(current.cfg) !== JSON.stringify(cfg))
+    return reject("config_error", 500, "file policy changed during listing");
 
   // Directories first, then files; case-insensitive name order within each.
   entries.sort((a, b) => {
@@ -322,7 +324,10 @@ interface WalkBudget {
 
 const usageCache = new Map<string, { expires: number; value: DirUsage }>();
 /** Deterministic race seam for containment tests; unset in production. */
-export const __fileTreeTestHooks: { beforeDirectoryOpen?: (absolutePath: string) => void } = {};
+export const __fileTreeTestHooks: {
+  beforeDirectoryOpen?: (absolutePath: string) => void;
+  afterListingRead?: (absolutePath: string) => void;
+} = {};
 
 /** Recheck queued directories after asynchronous yields. Never open a path
  * that was replaced with an alias, even if that alias remains inside root. */

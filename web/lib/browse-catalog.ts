@@ -151,7 +151,7 @@ async function enrich(entries: BrowseEntry[], opts: ListOptions): Promise<Browse
 }
 
 export async function listBrowseDir(dir: string, opts: ListOptions = {}) {
-  const result = listDir(dir, opts);
+  const result = await listDir(dir, opts);
   if (!result.ok) return result;
   let workspace: BrowseEntry | undefined;
   try {
@@ -180,7 +180,7 @@ export async function listWorkspaces(
 async function readWorkspaces(
   opts: ListOptions,
 ): Promise<({ ok: true } & BrowseWorkspaces) | ResolveReject> {
-  const result = listDir(ARTIFACTS, opts);
+  const result = await listDir(ARTIFACTS, opts);
   if (!result.ok)
     return result.code === "not_found" ? { ok: true, entries: [], partial: false } : result;
   const directories = result.entries

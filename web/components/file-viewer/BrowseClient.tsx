@@ -55,6 +55,7 @@ import {
 import { FileThumbnail } from "./FileThumbnail";
 import { FileViewerPane } from "./FileViewerPane";
 import { iconForFile } from "./file-icons";
+import { clearThumbnailCache } from "./thumbnail-cache";
 
 export interface BrowseScope {
   label: string;
@@ -134,6 +135,7 @@ export function BrowseClient({
   const cache = useRef(new Map<string, { at: number; data: Listing }>());
   const listArea = useRef<HTMLDivElement>(null);
   const folderMode = location.view === "folder" || location.view === "repository";
+  const catalogRequired = !folderMode || location.dir === ".harnery/artifacts";
   const remoteSearch = query.trim().length > 0 && searchScope !== "folder";
 
   useEffect(() => {
@@ -185,6 +187,7 @@ export function BrowseClient({
     setRevision((value) => value + 1);
   }, []);
   const refreshFiles = useCallback(() => {
+    clearThumbnailCache();
     refresh();
     setThumbnailGeneration((value) => value + 1);
   }, [refresh]);
@@ -287,7 +290,10 @@ export function BrowseClient({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision explicitly invalidates the catalog after refresh signals.
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !catalogRequired) {
+      setCatalogLoading(false);
+      return;
+    }
     const controller = new AbortController();
     setCatalogLoading(true);
     setCatalogError(null);
@@ -302,7 +308,7 @@ export function BrowseClient({
         if (!controller.signal.aborted) setCatalogLoading(false);
       });
     return () => controller.abort();
-  }, [ready, revision]);
+  }, [ready, catalogRequired, revision]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision explicitly invalidates the current directory after refresh signals.
   useEffect(() => {

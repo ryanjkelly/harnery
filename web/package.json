@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node --import ./server-performance.mjs node_modules/next/dist/bin/next dev --webpack -p ${HARNERY_WEB_PORT:-4276}",
     "build": "next build --webpack",
+    "bench:browse": "bun scripts/browse-performance.ts",
     "codec:pack-assets": "bun scripts/codec-pack-assets.ts",
     "start": "node --import ./server-performance.mjs node_modules/next/dist/bin/next start -p ${HARNERY_WEB_PORT:-4276}"
   },

@@ -1,10 +1,11 @@
 "use client";
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { loadThumbnail, type ThumbnailPriority } from "./thumbnail-loader";
+import { acquireThumbnail, type ThumbnailLease } from "./thumbnail-cache";
+import type { ThumbnailPriority } from "./thumbnail-loader";
 
 export function FileThumbnail(props: { relPath: string; version: string; children: ReactNode }) {
-  // A source change disposes the previous object URL before loading the replacement.
+  // Source versions and explicit refresh generations cannot reuse the previous image.
   return <Thumbnail key={`${props.relPath}\0${props.version}`} {...props} />;
 }
 
@@ -18,7 +19,7 @@ function Thumbnail({
   children: ReactNode;
 }) {
   const container = useRef<HTMLSpanElement>(null);
-  const objectUrl = useRef<string | null>(null);
+  const lease = useRef<ThumbnailLease | null>(null);
   const deadline = useRef<number | null>(null);
   const complete = useRef(false);
   const [priority, setPriority] = useState<ThumbnailPriority | null>(null);
@@ -61,42 +62,36 @@ function Thumbnail({
     };
   }, []);
 
-  useEffect(
-    () => () => {
-      if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
-    },
-    [],
-  );
-
   useEffect(() => {
     if (!priority) {
-      // Keep decoded images only in or just below the viewport, even in very long lists.
-      if (objectUrl.current) {
-        URL.revokeObjectURL(objectUrl.current);
-        objectUrl.current = null;
-        complete.current = false;
-        deadline.current = null;
-        setSrc(null);
-      }
+      // Released cards share a short-lived, bounded cache for scrolling and Back.
+      complete.current = false;
+      deadline.current = null;
+      setSrc(null);
       return;
     }
     if (complete.current) return;
+    setSrc(null);
     deadline.current ??= Date.now() + 30_000;
-    const controller = new AbortController();
-    void loadThumbnail(relPath, version, controller.signal, deadline.current, fetch, priority)
-      .then((blob) => {
-        if (controller.signal.aborted) return;
+    let canceled = false;
+    const acquired = acquireThumbnail(relPath, version, deadline.current, priority);
+    lease.current = acquired;
+    void acquired.ready
+      .then((image) => {
+        if (canceled) return;
         complete.current = true;
-        if (blob) {
-          objectUrl.current = URL.createObjectURL(blob);
-          setSrc(objectUrl.current);
-        }
+        if (image) setSrc(image.url);
       })
       .catch(() => {
         // Leaving the viewport can resume within the original budget; failures cannot.
-        if (!controller.signal.aborted) complete.current = true;
+        if (!canceled) complete.current = true;
       });
-    return () => controller.abort();
+    return () => {
+      canceled = true;
+      acquired.release();
+      lease.current = null;
+      complete.current = false;
+    };
   }, [relPath, version, priority]);
 
   return (
@@ -114,8 +109,9 @@ function Thumbnail({
           decoding="async"
           className="size-full object-contain"
           onError={() => {
-            if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
-            objectUrl.current = null;
+            lease.current?.invalidate();
+            lease.current?.release();
+            lease.current = null;
             setSrc(null);
           }}
         />
