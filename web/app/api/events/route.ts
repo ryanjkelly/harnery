@@ -1,9 +1,8 @@
-import { coordRoot, readEvents } from "@/lib/coord-reader";
-import { readWorkflowChildSessions, resolveRunCoordRoot } from "@/lib/workflow-reader";
+import { readDashboard } from "@/lib/dashboard-reader";
 
 export const dynamic = "force-dynamic";
 
-export function GET(req: Request): Response {
+export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const limit = Number(url.searchParams.get("limit") ?? "200");
   const instanceId = url.searchParams.get("instance") ?? undefined;
@@ -13,21 +12,11 @@ export function GET(req: Request): Response {
   // run's own coord root comes with it: a run driven from another checkout
   // transcripts here but emits its child events there.
   const run = url.searchParams.get("run") ?? undefined;
-  const runRoot = run ? resolveRunCoordRoot(coordRoot(), run) : undefined;
-  const sessions = run
-    ? new Set(
-        readWorkflowChildSessions(coordRoot(), run, {
-          coordinationRoot: runRoot?.root,
-        }).map((c) => c.sessionId),
-      )
-    : undefined;
-  return Response.json(
-    readEvents({
-      limit,
-      instanceId,
-      type,
-      sessions,
-      root: runRoot?.foreign ? runRoot.root : undefined,
-    }),
-  );
+  try {
+    return Response.json(
+      await readDashboard("events", { limit, instanceId, type, run }, { signal: req.signal }),
+    );
+  } catch {
+    return Response.json({ error: "Event reader unavailable" }, { status: 503 });
+  }
 }

@@ -11,7 +11,7 @@
 import { Briefcase, Scale, Target, User, Users, Workflow } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PaletteCatalog, PaletteEntry } from "@/app/api/palette/route";
+import type { PaletteCatalog, PaletteEntry } from "@/lib/palette/catalog";
 import type { RecentKind } from "@/lib/palette/recents";
 import { COMMAND_PALETTE_OPENED_EVENT } from "../CommandPalette";
 import { type PaletteItem, useCommandPaletteSection } from "../PaletteProvider";
@@ -92,23 +92,35 @@ export function CatalogRegistrar() {
   // Catalog scans must not compete with the page the user is navigating to.
   useEffect(() => {
     let cancelled = false;
-    const load = () => {
-      fetchedAtRef.current = Date.now();
-      fetch("/api/palette", { headers: { Accept: "application/json" }, cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : EMPTY))
-        .then((d: PaletteCatalog) => {
-          if (!cancelled) setCatalog(d ?? EMPTY);
-        })
-        .catch(() => {
-          /* offline / server restart — leave the sections as they were */
+    let inFlight: AbortController | null = null;
+    const load = async () => {
+      if (inFlight || cancelled) return;
+      const controller = new AbortController();
+      inFlight = controller;
+      try {
+        const response = await fetch("/api/palette", {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          signal: controller.signal,
         });
+        if (!response.ok) return;
+        const nextCatalog: PaletteCatalog | null = await response.json();
+        if (cancelled || !nextCatalog) return;
+        setCatalog(nextCatalog);
+        fetchedAtRef.current = Date.now();
+      } catch {
+        /* Offline or restarting: retain the catalog and retry on the next open. */
+      } finally {
+        if (inFlight === controller) inFlight = null;
+      }
     };
     const onPaletteOpen = () => {
-      if (Date.now() - fetchedAtRef.current >= REFETCH_MIN_AGE_MS) load();
+      if (Date.now() - fetchedAtRef.current >= REFETCH_MIN_AGE_MS) void load();
     };
     window.addEventListener(COMMAND_PALETTE_OPENED_EVENT, onPaletteOpen);
     return () => {
       cancelled = true;
+      inFlight?.abort();
       window.removeEventListener(COMMAND_PALETTE_OPENED_EVENT, onPaletteOpen);
     };
   }, []);

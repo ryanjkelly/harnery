@@ -38,7 +38,15 @@ const nextConfig: NextConfig = {
   // webpack (Next.js dev) needs to be told to try `.ts` first when the
   // import says `.js`. extensionAlias is the canonical webpack 5 hook for
   // this; see https://webpack.js.org/configuration/resolve/#resolveextensionalias.
-  webpack(config) {
+  webpack(config, { nextRuntime }) {
+    config.module = config.module ?? {};
+    config.module.parser = config.module.parser ?? {};
+    config.module.parser.javascript = config.module.parser.javascript ?? {};
+    config.module.parser.javascript.worker = ["...", "Worker from node:worker_threads"];
+    if (nextRuntime === "nodejs") {
+      // Node workers load beside server chunks, not from the browser asset URL.
+      config.output.workerPublicPath = "./";
+    }
     config.resolve = config.resolve ?? {};
     config.resolve.extensionAlias = {
       ".js": [".ts", ".tsx", ".js", ".jsx"],

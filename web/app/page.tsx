@@ -4,43 +4,13 @@ import { AgentChipProvider } from "@/components/AgentChip";
 import { AnomalyBanner } from "@/components/AnomalyBanner";
 import { ClaimsTable } from "@/components/ClaimsTable";
 import { NavBar } from "@/components/NavBar";
-import {
-  buildAgentSummaryMap,
-  buildEndedAgentSummaries,
-  buildSubagentSummaries,
-} from "@/lib/agent-summary";
-import { detectAnomalies } from "@/lib/anomalies";
-import { coordRoot, readAgents, readEvents, readInstanceIdentities } from "@/lib/coord-reader";
+import { coordRoot } from "@/lib/coord-reader";
+import { readDashboard } from "@/lib/dashboard-reader";
 
 export const dynamic = "force-dynamic";
 
-export default function HomePage() {
-  const snap = readAgents();
-  // 30-minute activity window. 600 events is enough to populate the lanes
-  // even on busy multi-agent days (~20 events/min ceiling per agent).
-  const recentEvents = readEvents({ limit: 600 });
-  const anomalies = detectAnomalies({}, snap, recentEvents);
-  const identities = readInstanceIdentities();
-  const instanceToName: Record<string, string> = {};
-  for (const hb of [...snap.active, ...snap.stale, ...snap.terminal]) {
-    instanceToName[hb.instance_id] = hb.name;
-  }
-  // Fill in agents whose session has ended (heartbeat gone) from the durable
-  // canonical V3 session ledger; otherwise the timeline silently drops
-  // their events: ActivityTimeline skips any instance_id it can't name.
-  for (const [iid, id] of Object.entries(identities)) {
-    if (!instanceToName[iid]) instanceToName[iid] = id.name;
-  }
-
-  // Hover-card data for every name surfaced on the page (timeline lanes +
-  // active/stale cards). Same layering as the live page: ended/subagent
-  // summaries from the durable log first, live summaries override on collision.
-  const agentNames = Array.from(new Set(Object.values(instanceToName))).sort();
-  const summaries = {
-    ...buildEndedAgentSummaries(identities),
-    ...buildSubagentSummaries(identities, snap),
-    ...buildAgentSummaryMap(agentNames, identities, snap),
-  };
+export default async function HomePage() {
+  const { snap, recentEvents, anomalies, instanceToName, summaries } = await readDashboard("home");
 
   return (
     <AgentChipProvider summaries={summaries}>

@@ -1,0 +1,80 @@
+---
+title: "ADR 0176: isolate dashboard readers"
+description: Keep catalog and agent scans off the HTTP event loop with a bounded background worker.
+sidebar:
+  order: 176
+---
+
+**Date:** 2026-09-05
+**Status:** Accepted
+
+## Context
+
+[ADR 0175](/decisions/0175-reduce-browse-navigation-work/) deferred the command
+palette's catalog request until opening. A fresh request could still spend
+roughly a second scanning coordination data on the HTTP event loop. Unrelated
+requests waited behind it. Homepage assembly and event-stream polling also
+used synchronous coordination readers.
+
+## Alternatives considered
+
+Deferring a request removes unnecessary startup work but does not isolate an
+eventual scan. A longer cache lifetime reduces scans at the cost of freshness;
+cache misses still block the server. Rewriting every filesystem operation and
+projection as asynchronous code would spread this change across authoritative
+readers. A persistent Node worker can reuse those readers and their caches
+while moving their synchronous work away from HTTP handling.
+
+## Decision
+
+One lazily started worker per server coordination root handles the complete
+palette catalog, agents API, homepage data assembly, and event queries. The
+homepage assembly includes identities, anomalies, and hover-card summaries;
+moving only its initial agent read would leave later scans on the HTTP thread.
+Mutation routes retain their existing authority checks.
+
+Identical pending requests share a promise. The client admits at most 32
+distinct pending requests and terminates a worker that exceeds a 30-second
+request deadline. Worker crashes reject outstanding reads; a later request
+starts a replacement. Idle workers retire after 60 seconds. Each worker has a
+512 MiB V8 old-generation limit, which is not a total process-memory cap.
+Its reader caches live for the worker's lifetime.
+
+The palette retains its ten-second server cache, measured from successful
+completion. API failures return 503 with a retry hint. The browser retains
+the previous catalog after a failed refresh, retries on the next open, and
+shares requests across rapid opens. Its 30-second refresh interval also starts
+at successful completion. Closing an HTTP subscription detaches that consumer;
+it does not cancel work another subscriber still needs.
+
+Event streams wait for each read to finish before scheduling another. The
+first successful read establishes a snapshot, later rows retain chronological
+delivery, and read failures emit the existing stale signal. Disconnects stop
+polling and suppress late results. Run filtering accepts canonical session IDs
+from live and terminal generations as well as native transcript session IDs.
+
+The production Webpack build recognizes Node's worker constructor and emits a
+worker entry alongside server chunks. Its worker-specific public path is
+relative: the browser's `/_next/` asset prefix is not a filesystem location.
+
+## Result and limits
+
+Three fresh workers reading a populated workspace completed the real catalog
+in 1,511–1,707 ms. A five-millisecond timer on the calling Node thread had a
+maximum interval of 6.1 ms during those reads. This demonstrates isolation,
+not a reduction in the catalog's computation time.
+
+Against one unchanged production build, concurrent catalog, agent, event, and
+homepage requests completed successfully. Twenty-five lightweight HTTP
+requests during that work had a 3.2 ms median and a 27.7 ms maximum. The
+catalog response took 178 ms; the other three responses took 1,522–1,623 ms,
+including shared-worker queueing. Repository tests were running concurrently,
+so these are observed responsiveness measurements, not unloaded throughput
+benchmarks or latency guarantees.
+
+The change isolates selected presentation reads; it does not make every
+dashboard route asynchronous. Some other pages still assemble summaries with
+synchronous readers. Worker startup, message copying, response serialization,
+and queueing remain part of request latency. The worker provides neither a
+transactional snapshot across all reader families nor a replacement for their
+existing freshness and diagnostic behavior.
