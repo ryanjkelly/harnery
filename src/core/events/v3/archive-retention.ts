@@ -10,11 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
-import {
-  artifactAutoCleanIntervalHours,
-  type EventLedgerArchivePolicy,
-  eventLedgerArchivePolicy,
-} from "../../config.ts";
+import { type EventLedgerArchivePolicy, eventLedgerArchivePolicy } from "../../config.ts";
 
 export type EventV3ArchiveClassification =
   | "retained"
@@ -151,7 +147,8 @@ export function autoCleanEventV3Archives(
   const policy = eventLedgerArchivePolicy(repoRoot);
   if (!policy.autoClean) return { ran: false, reason: "disabled", deleted: 0, bytes: 0 };
   const stampPath = join(resolve(repoRoot), AUTO_CLEAN_STAMP);
-  const intervalMs = artifactAutoCleanIntervalHours() * 60 * 60 * 1000;
+  // Archive cleanup remains daily, independent of short-lived working files.
+  const intervalMs = 24 * 60 * 60 * 1000;
   try {
     const stamp = JSON.parse(readFileSync(stampPath, "utf8")) as { last_run_at?: string };
     const last = Date.parse(stamp.last_run_at ?? "");

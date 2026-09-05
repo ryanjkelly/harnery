@@ -6,20 +6,39 @@
  * full control of that explicit destination.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { HarneryProgramContext } from "../commander.ts";
 import { monorepoRoot } from "./agents/index.ts";
 import {
   ARTIFACT_MANIFEST,
   type ArtifactManifestV2,
+  artifactReviewGuidance,
   artifactsRoot,
+  autoCleanArtifacts,
   configuredArtifactRetentionDays,
   createArtifact,
   parseArtifactManifest,
 } from "./artifacts/index.ts";
 
 export type QaArtifactKind = "qa-run" | "qa-record" | "review-pack";
+
+/** Recognize managed outputs even when a detached child receives an explicit path. */
+export function managedQaReviewGuidance(repoRoot: string, outParent: string): string | undefined {
+  const path = resolve(outParent);
+  if (dirname(path) !== artifactsRoot(repoRoot)) return undefined;
+  try {
+    if (
+      lstatSync(path).isSymbolicLink() ||
+      lstatSync(join(path, ARTIFACT_MANIFEST)).isSymbolicLink()
+    )
+      return undefined;
+    const manifest = readQaManifest(join(path, ARTIFACT_MANIFEST));
+    return manifest ? artifactReviewGuidance(repoRoot, manifest.artifact_id) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function resolveQaRepoRoot(context?: HarneryProgramContext): string {
   return resolve(context?.repoRoot ?? monorepoRoot() ?? process.cwd());
@@ -28,8 +47,15 @@ export function resolveQaRepoRoot(context?: HarneryProgramContext): string {
 export function createManagedQaOutParent(
   repoRoot: string,
   kind: QaArtifactKind,
-  opts: { retentionMinutes?: number } = {},
+  opts: { retentionMinutes?: number; onCleanupWarning?: (message: string) => void } = {},
 ): string {
+  try {
+    autoCleanArtifacts(repoRoot);
+  } catch (error) {
+    opts.onCleanupWarning?.(
+      `artifact cleanup skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   return createArtifact(repoRoot, {
     slug: kind,
     purpose:

@@ -1,0 +1,61 @@
+---
+title: "ADR 0170: retire reviewed artifacts early"
+description: Let agents shorten the lifetime of disposable evidence after review.
+sidebar:
+  order: 170
+---
+
+Date: 2026-09-05. Status: accepted.
+
+## Context
+
+Repeated verification creates temporary workspaces even when agents need the
+captures only until they inspect the result. The normal three-day window keeps
+these files long after that review. `release` removes ownership protection but
+does not shorten retention. The core supports minute durations, while the CLI
+previously exposed only whole days.
+
+## Alternatives
+
+Automatically discarding passing checks could remove evidence before user
+review or a handoff. A global shorter default has the same problem for uncertain
+work. Agent guidance alone cannot express a duration the CLI does not support,
+and daily cleanup leaves expired files through long working sessions.
+
+## Decision
+
+Add `artifacts discard` with a required reason and a default 60-minute grace
+period. It shortens the effective deadline and retention window, releases
+ownership, and deletes nothing immediately. It never extends an earlier deadline,
+including on retries. An expired artifact stays expired. Payload activity still
+restarts the shortened rolling window; `renew` can rescue files before deletion.
+
+Discard refuses holds, other live owners, tracked content, symlinks, and
+unreadable state. It uses the existing mutation lock and activity checkpoint.
+The manifest's retention reason and release actor record the decision without
+adding a second expiration authority.
+
+Expose mutually exclusive `--minutes` and `--days` on create and renew. Agent
+instructions and command results recommend discard only after inspection when
+no failure investigation, handoff, final evidence, or user review needs the files.
+This prevents premature evidence loss: the command cannot infer future readers
+from a passing verification result, so the reviewing agent supplies that judgment.
+
+Session starts and new artifact or managed QA work share an hourly cleanup
+throttle. Serialize the throttle with the sweep so competing callers cannot
+consume an opportunity without checking the files. Keep the cleanup kill switch
+and all existing deletion guards. Closed event epochs retain their daily sweep.
+No background service runs when the project is idle.
+
+## Verification
+
+Regression tests cover grace periods, earlier deadlines, retries, already-expired
+files, payload edits, rescue, holds, other live owners, tracked paths, symlinks,
+invalid durations, CLI argument combinations, cleanup contention, and new QA work
+triggering cleanup. The three-day default and release semantics remain covered
+by the existing artifact suite.
+
+## Scope
+
+This decision governs managed working artifacts. It does not retire user
+deliverables or change event-ledger retention and review-pack deadlines.

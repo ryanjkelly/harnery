@@ -821,7 +821,7 @@ export function artifactMaxUnitBytes(coordRoot?: string | null): number {
 }
 
 /**
- * Whether the daily SessionStart sweep of expired artifact workspaces runs.
+ * Whether opportunistic cleanup of expired artifact workspaces runs.
  * Precedence: `HARNERY_ARTIFACT_AUTO_CLEAN` (0/false disables) ->
  * `artifacts.auto_clean` -> enabled. The sweep only ever deletes
  * `managed-expired` entries via the same guarded classifier as
@@ -852,9 +852,8 @@ export function reviewPackAutoCleanEnabled(coordRoot?: string | null): boolean {
 
 /**
  * Sweep cadence in hours. Env-only (`HARNERY_ARTIFACT_AUTO_CLEAN_INTERVAL_HOURS`,
- * mainly for tests): the cadence is an implementation detail, not policy, and
- * retention itself is quantized in whole days, so the 24h default is not a
- * config surface.
+ * mainly for tests). Session starts and new artifact work share the hourly
+ * throttle so minute-scale retention is useful within long sessions.
  */
 export function artifactAutoCleanIntervalHours(): number {
   const env = coordEnv("ARTIFACT_AUTO_CLEAN_INTERVAL_HOURS");
@@ -862,7 +861,7 @@ export function artifactAutoCleanIntervalHours(): number {
     const n = Number(env);
     if (Number.isFinite(n) && n > 0 && n <= 24 * 365) return n;
   }
-  return 24;
+  return 1;
 }
 
 function integerSetting(

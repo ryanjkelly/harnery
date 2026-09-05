@@ -11,7 +11,11 @@ import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { recordQaSignal } from "../core/agents/qa-signal.ts";
 import { artifactsRoot } from "../core/artifacts/index.ts";
 import { resolveBinName, reviewPackAutoCleanEnabled } from "../core/config.ts";
-import { createManagedQaOutParent, resolveQaRepoRoot } from "../core/qa-artifacts.ts";
+import {
+  createManagedQaOutParent,
+  managedQaReviewGuidance,
+  resolveQaRepoRoot,
+} from "../core/qa-artifacts.ts";
 import { acquireAdmission, admissionBaseDir, admissionStatus } from "../lib/admission.ts";
 import {
   deleteExpiredPacks,
@@ -295,7 +299,9 @@ export function registerQaRunCommand(
         outParent =
           opts.outDir !== undefined
             ? resolve(opts.outDir)
-            : createManagedQaOutParent(repoRoot, "qa-run");
+            : createManagedQaOutParent(repoRoot, "qa-run", {
+                onCleanupWarning: (message) => emit.log(message, "warn"),
+              });
       } catch (err: unknown) {
         emit.error({
           code: "qa_run_output_unavailable",
@@ -498,7 +504,10 @@ export function registerQaRunCommand(
       // session age. Best-effort by contract: never throws.
       recordQaSignal(result);
 
-      if (opts.json) emit.data(result);
+      const afterReview = managedQaReviewGuidance(repoRoot, outParent);
+      if (opts.json)
+        emit.data({ ...result, ...(afterReview ? { after_review: afterReview } : {}) });
+      if (afterReview) emit.log(afterReview, "info");
       const resultPath = join(result.run.out_dir, QA_RUN_RESULT_FILENAME);
       for (const blocker of result.blockers) {
         emit.log(

@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EventLedgerArchivePolicy } from "../../config.ts";
 import {
+  autoCleanEventV3Archives,
   cleanEventV3Archives,
   eventV3ArchivesRoot,
   inventoryEventV3Archives,
@@ -45,6 +46,17 @@ function epoch(repo: string, stamp: string, bytes: number, modifiedAt = now): st
 }
 
 describe("Event Ledger V3 archive retention", () => {
+  test("archive cleanup stays daily while artifact cleanup runs hourly", () => {
+    const repo = root();
+    epoch(repo, "20260901000000000", 10);
+    expect(autoCleanEventV3Archives(repo, { now }).ran).toBe(true);
+    expect(
+      autoCleanEventV3Archives(repo, { now: new Date(now.getTime() + 2 * 3_600_000) }).reason,
+    ).toBe("fresh");
+    expect(
+      autoCleanEventV3Archives(repo, { now: new Date(now.getTime() + 25 * 3_600_000) }).ran,
+    ).toBe(true);
+  });
   test("keeps the newest minimum and selects oldest complete epochs to satisfy the byte budget", () => {
     const repo = root();
     epoch(repo, "20260801000000000", 40);

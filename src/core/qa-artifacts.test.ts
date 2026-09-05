@@ -2,8 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ARTIFACT_MANIFEST } from "./artifacts/index.ts";
-import { createManagedQaOutParent, latestManagedQaRun } from "./qa-artifacts.ts";
+import { ARTIFACT_MANIFEST, createArtifact } from "./artifacts/index.ts";
+import {
+  createManagedQaOutParent,
+  latestManagedQaRun,
+  managedQaReviewGuidance,
+} from "./qa-artifacts.ts";
 
 let root: string;
 
@@ -26,6 +30,34 @@ function writeRun(parent: string, id: string, startedAt: string): string {
 }
 
 describe("managed QA artifacts", () => {
+  test("retirement advice recognizes detached managed output but excludes external and malformed directories", () => {
+    const parent = createManagedQaOutParent(root, "qa-run");
+    expect(managedQaReviewGuidance(root, parent)).toContain("artifacts discard");
+    expect(managedQaReviewGuidance(root, join(root, "external"))).toBeUndefined();
+    writeFileSync(join(parent, ARTIFACT_MANIFEST), "{}");
+    expect(managedQaReviewGuidance(root, parent)).toBeUndefined();
+  });
+  test("new QA work sweeps expired workspaces and honors the cleanup kill switch", () => {
+    Bun.spawnSync(["git", "init", "-q"], { cwd: root });
+    const old = () =>
+      createArtifact(root, {
+        slug: "old",
+        purpose: "Reviewed capture",
+        retentionDays: 3,
+        retentionMinutes: 60,
+        now: new Date(Date.now() - 2 * 60 * 60_000),
+      });
+    const first = old();
+    createManagedQaOutParent(root, "qa-run");
+    expect(existsSync(first.path)).toBe(false);
+    const second = old();
+    writeFileSync(
+      join(root, ".harnery/config.jsonc"),
+      JSON.stringify({ artifacts: { auto_clean: false } }),
+    );
+    createManagedQaOutParent(root, "qa-run");
+    expect(existsSync(second.path)).toBe(true);
+  });
   test("implicit output creates a manifest-backed workspace under .harnery/artifacts", () => {
     const outParent = createManagedQaOutParent(root, "qa-run");
     expect(outParent).toContain(join(root, ".harnery", "artifacts"));

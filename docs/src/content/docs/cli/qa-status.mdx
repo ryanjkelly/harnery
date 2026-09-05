@@ -28,6 +28,8 @@ One state is derived rather than recorded: **dead**. A run is dead when its stat
 
 Once the result document exists, the reported state is simply the run's verdict: `passed`, `failed`, or `incomplete`.
 
+For completed runs in managed artifact workspaces, the command repeats the `after_review` guidance from `qa-run`. It suggests [`harn artifacts discard`](/cli/artifacts/#retire-disposable-evidence-after-review) only after review confirms the files are no longer needed. Checking status never shortens retention itself. Caller-owned output directories do not receive managed-artifact guidance.
+
 ## Path resolution
 
 `[path]` may name any of three things. Without a path, Harnery finds the newest run across valid `qa-run` and `qa-record` workspaces under `.harnery/artifacts/`:

@@ -11,7 +11,11 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
-import { latestManagedQaRun, resolveQaRepoRoot } from "../core/qa-artifacts.ts";
+import {
+  latestManagedQaRun,
+  managedQaReviewGuidance,
+  resolveQaRepoRoot,
+} from "../core/qa-artifacts.ts";
 import {
   type AdmissionEntry,
   admissionBaseDir,
@@ -578,8 +582,13 @@ export function registerQaStatusCommand(
         const report = outcome.report;
         const settled = report.terminal || report.state === "dead";
         if (settled || !opts.wait) {
-          if (opts.json) emit.data(report);
+          const afterReview = report.terminal
+            ? managedQaReviewGuidance(resolveQaRepoRoot(context), dirname(runDir))
+            : undefined;
+          if (opts.json)
+            emit.data({ ...report, ...(afterReview ? { after_review: afterReview } : {}) });
           renderReport(emit, report);
+          if (afterReview) emit.log(afterReview, "info");
           if (!settled && !opts.wait) {
             emit.log("still in progress; rerun with --wait to block until the run settles", "info");
           }

@@ -7,9 +7,12 @@ import {
   type ArtifactDeliveryManifest,
   adoptUnmanagedArtifactFiles,
   artifactCapabilities,
+  artifactReviewGuidance,
   artifactsRoot,
+  autoCleanArtifacts,
   cleanArtifacts,
   createArtifact,
+  discardArtifact,
   holdArtifact,
   inventoryArtifacts,
   migrateArtifacts,
@@ -45,6 +48,7 @@ export function registerArtifactsCommand(
     .description("Create one managed artifact workspace and print its path.")
     .requiredOption("--purpose <text>", "What the files are for")
     .option("--days <n>", "Retention in days (default from artifacts.default_retention_days)")
+    .option("--minutes <n>", "Retention in minutes; cannot be combined with --days")
     .option("--big", "Acknowledge that this workspace may exceed the per-bundle size ceiling")
     .option("--hold <id>", "Create the workspace with this hold already present")
     .option("--hold-reason <text>", "Why the initial hold is required")
@@ -55,6 +59,7 @@ export function registerArtifactsCommand(
         opts: {
           purpose: string;
           days?: string;
+          minutes?: string;
           big?: boolean;
           hold?: string;
           holdReason?: string;
@@ -63,16 +68,29 @@ export function registerArtifactsCommand(
       ) => {
         run(emit, () => {
           const repoRoot = requireRepoRoot(context);
+          if (opts.days !== undefined && opts.minutes !== undefined)
+            throw new Error("choose either --days or --minutes");
           const actor = opts.actor ? { instance_id: opts.actor } : currentActor(repoRoot);
           if (!!opts.hold !== !!opts.holdReason)
             throw new Error("--hold and --hold-reason must be used together");
           const retentionDays = opts.days
             ? parseDays(opts.days)
             : artifactDefaultRetentionDays(repoRoot);
+          const retentionMinutes =
+            opts.minutes === undefined ? undefined : parseMinutes(opts.minutes);
+          try {
+            autoCleanArtifacts(repoRoot);
+          } catch (error) {
+            emit.log(
+              `artifact cleanup skipped: ${error instanceof Error ? error.message : String(error)}`,
+              "warn",
+            );
+          }
           const created = createArtifact(repoRoot, {
             slug,
             purpose: opts.purpose,
             retentionDays,
+            retentionMinutes,
             actor,
             big: opts.big,
             holds: opts.hold ? [{ id: opts.hold, reason: opts.holdReason! }] : [],
@@ -83,6 +101,7 @@ export function registerArtifactsCommand(
             expires_at: created.manifest.retention.expires_at,
             owner_instance_id: actor?.instance_id ?? null,
             holds: created.manifest.holds,
+            after_review: artifactReviewGuidance(repoRoot, created.manifest.artifact_id),
           });
         });
       },
@@ -183,12 +202,19 @@ export function registerArtifactsCommand(
   root
     .command("renew <ref>")
     .description("Set a new retention window. Renewal does not mark the artifact active.")
-    .requiredOption("--days <n>", "Days from now")
+    .option("--days <n>", "Days from now; choose either --days or --minutes")
+    .option("--minutes <n>", "Minutes from now; choose either --days or --minutes")
     .requiredOption("--reason <text>", "Why the extra retention is needed")
-    .action((ref: string, opts: { days: string; reason: string }) => {
+    .action((ref: string, opts: { days?: string; minutes?: string; reason: string }) => {
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
-        const manifest = renewArtifact(repoRoot, ref, parseDays(opts.days), opts.reason, {
+        if ((opts.days === undefined) === (opts.minutes === undefined))
+          throw new Error("choose exactly one of --days or --minutes");
+        const duration =
+          opts.minutes === undefined
+            ? parseDays(opts.days!)
+            : { minutes: parseMinutes(opts.minutes) };
+        const manifest = renewArtifact(repoRoot, ref, duration, opts.reason, {
           actor: currentActor(repoRoot),
         });
         emit.data(manifest);
@@ -202,6 +228,22 @@ export function registerArtifactsCommand(
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
         emit.data(releaseArtifact(repoRoot, ref, { actor: currentActor(repoRoot) }));
+      });
+    });
+
+  root
+    .command("discard <ref>")
+    .description("Retire reviewed, disposable files after a grace period; deletes nothing now.")
+    .option("--minutes <n>", "Grace period in minutes; never extends an earlier expiry", "60")
+    .requiredOption("--reason <text>", "Why these reviewed files are no longer needed")
+    .action((ref: string, opts: { minutes: string; reason: string }) => {
+      run(emit, () => {
+        const repoRoot = requireRepoRoot(context);
+        const manifest = discardArtifact(repoRoot, ref, opts.reason, {
+          minutes: parseMinutes(opts.minutes),
+          actor: currentActor(repoRoot),
+        });
+        emit.data({ manifest, entry: showArtifact(repoRoot, ref).entry, deleted: false });
       });
     });
 
@@ -314,6 +356,13 @@ function parseDays(value: string): number {
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 3650) {
     throw new Error("--days must be between 1 and 3650");
   }
+  return parsed;
+}
+
+function parseMinutes(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 5256000)
+    throw new Error("--minutes must be between 1 and 5256000");
   return parsed;
 }
 

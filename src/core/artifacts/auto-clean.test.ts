@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { autoCleanArtifacts, createArtifact } from "./index.ts";
@@ -49,10 +57,21 @@ function seedExpired(root: string, t0: Date, slug = "sweep-me"): string {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const T0 = new Date();
 const T0_PLUS_3D = new Date(T0.getTime() + 3 * DAY_MS);
-const T0_PLUS_3D_PLUS_12H = new Date(T0.getTime() + 3.5 * DAY_MS);
-const T0_PLUS_3D_PLUS_25H = new Date(T0.getTime() + 3 * DAY_MS + 25 * 60 * 60 * 1000);
+const T0_PLUS_3D_PLUS_30M = new Date(T0.getTime() + 3 * DAY_MS + 30 * 60 * 1000);
+const T0_PLUS_3D_PLUS_61M = new Date(T0.getTime() + 3 * DAY_MS + 61 * 60 * 1000);
 
 describe("autoCleanArtifacts", () => {
+  test("lock contention does not consume the hourly cleanup opportunity", () => {
+    const root = makeRoot();
+    const path = seedExpired(root, T0);
+    const lock = join(root, ".harnery/artifacts-mutation.lock");
+    mkdirSync(lock);
+    expect(() => autoCleanArtifacts(root, { now: T0_PLUS_3D })).toThrow();
+    expect(existsSync(join(root, ".harnery/artifacts-auto-clean.json"))).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    rmdirSync(lock);
+    expect(autoCleanArtifacts(root, { now: T0_PLUS_3D }).deleted).toBe(1);
+  });
   test("sweeps expired workspaces and stamps the run", () => {
     const root = makeRoot();
     const path = seedExpired(root, T0);
@@ -80,10 +99,10 @@ describe("autoCleanArtifacts", () => {
     seedExpired(root, T0);
     autoCleanArtifacts(root, { now: T0_PLUS_3D });
     const second = seedExpired(root, T0, "sweep-me-too");
-    const throttled = autoCleanArtifacts(root, { now: T0_PLUS_3D_PLUS_12H });
+    const throttled = autoCleanArtifacts(root, { now: T0_PLUS_3D_PLUS_30M });
     expect(throttled).toMatchObject({ ran: false, reason: "fresh", deleted: 0 });
     expect(existsSync(second)).toBe(true);
-    const later = autoCleanArtifacts(root, { now: T0_PLUS_3D_PLUS_25H });
+    const later = autoCleanArtifacts(root, { now: T0_PLUS_3D_PLUS_61M });
     expect(later).toMatchObject({ ran: true, reason: "swept", deleted: 1 });
     expect(existsSync(second)).toBe(false);
   });

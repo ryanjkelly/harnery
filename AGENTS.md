@@ -107,7 +107,7 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=92968c66 -->
+<!-- harnery:begin instructions v=e954c482 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
@@ -172,6 +172,7 @@ Use it for anything future-you or a peer will need to pick up your thread.
 and other untracked files that must survive a session, create a managed workspace
 with `harn artifacts create <slug> --purpose "<why>"`. Write files under the
 returned path, then run `harn artifacts release <id>` when active work is done.
+After review, use `harn artifacts discard <id> --reason "<why no longer needed>"` for disposable or superseded evidence: it releases ownership and shortens retention to at most 60 minutes (`--minutes` overrides). Keep unresolved failures, handoffs, final evidence, and files awaiting review; use a hold when needed. A passing check cannot establish whether another reader needs the files, so the reviewing agent decides. For known short-lived work, `harn artifacts create --minutes <n>` sets the initial window.
 Do not create a repo-root temp directory; `harn artifacts clean` previews
 expired cleanup and requires `--yes` to delete anything.
 

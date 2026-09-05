@@ -3,9 +3,73 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
-import { showArtifact } from "../core/artifacts/index.ts";
+import { type ArtifactManifestV2, showArtifact } from "../core/artifacts/index.ts";
 
 describe("artifacts command", () => {
+  test("minute durations and reviewed discard are available through the CLI with strict validation", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "harnery-artifact-duration-"));
+    Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });
+    try {
+      const invoke = async (args: string[]) => {
+        const data: Record<string, unknown>[] = [];
+        const errors: unknown[] = [];
+        const program = createHarneryProgram({
+          context: { repoRoot },
+          emit: {
+            config() {},
+            data: (value) => {
+              data.push(value as Record<string, unknown>);
+            },
+            rows() {},
+            text() {},
+            file() {},
+            log() {},
+            error: (value) => {
+              errors.push(value);
+            },
+            setExitCode() {},
+          },
+        });
+        await program.parseAsync(["artifacts", ...args], { from: "user" });
+        return { data, errors };
+      };
+      const created = await invoke([
+        "create",
+        "short",
+        "--purpose",
+        "Temporary",
+        "--minutes",
+        "90",
+      ]);
+      expect(created.errors).toEqual([]);
+      const id = created.data[0].artifact_id as string;
+      const manifest = showArtifact(repoRoot, id).manifest;
+      expect(Date.parse(manifest.retention.expires_at) - Date.parse(manifest.created_at)).toBe(
+        90 * 60_000,
+      );
+      expect(created.data[0].after_review).toContain("artifacts discard");
+      expect(
+        (await invoke(["renew", id, "--minutes", "120", "--reason", "Pending"])).errors,
+      ).toEqual([]);
+      const discarded = await invoke(["discard", id, "--minutes", "15", "--reason", "Reviewed"]);
+      expect(discarded.errors).toEqual([]);
+      expect(discarded.data[0].deleted).toBe(false);
+      const retired = discarded.data[0].manifest as ArtifactManifestV2;
+      expect(
+        Date.parse(retired.retention.expires_at) - Date.parse(retired.retention.renewed_at!),
+      ).toBe(15 * 60_000);
+      for (const args of [
+        ["create", "bad", "--purpose", "bad", "--minutes", "0"],
+        ["create", "bad", "--purpose", "bad", "--minutes", "1", "--days", "1"],
+        ["renew", id, "--reason", "bad"],
+        ["renew", id, "--reason", "bad", "--days", "1", "--minutes", "1"],
+        ["discard", id, "--reason", "bad", "--minutes", "0.5"],
+      ])
+        expect((await invoke(args)).errors).toHaveLength(1);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
   test("registers the managed artifact lifecycle", async () => {
     const program = createHarneryProgram();
     await loadLazyCommand(program, "artifacts");
@@ -20,6 +84,7 @@ describe("artifacts command", () => {
       "delivery-card",
       "renew",
       "release",
+      "discard",
       "capabilities",
       "migrate",
       "repair-activity",

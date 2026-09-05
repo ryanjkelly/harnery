@@ -78,6 +78,8 @@ harn qa-status <run-dir> --wait
 
 ## Run identity and output layout
 
+Completed managed runs include `after_review` guidance in JSON output and a matching message in text output. After reviewing disposable or superseded evidence, use [`harn artifacts discard`](/cli/artifacts/#retire-disposable-evidence-after-review) to shorten its retention. A passing verdict does not shorten retention automatically. Keep files needed for pending review, handoff, debugging, or final evidence.
+
 Every invocation mints a fresh run and isolates its output. Without `--out-dir`, the parent is a manifest-backed workspace subject to the artifact store's retention and size policies. An explicit `--out-dir` names a caller-owned **parent** directory instead. The run itself writes into `run-<run_id>/` beneath the parent:
 
 ```

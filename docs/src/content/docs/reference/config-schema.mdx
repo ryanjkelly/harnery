@@ -150,8 +150,8 @@ wait, freshness, and rollout contract.
 
 | Field                    | Type   | Default | Description |
 | ------------------------ | ------ | ------- | ----------- |
-| `default_retention_days` | number | `3`     | Retention used by `harn artifacts create` when `--days` is absent |
-| `auto_clean` | boolean | `true` | Daily session-start sweep of expired workspaces (same guarded deletion as `artifacts clean --yes`) |
+| `default_retention_days` | number | `3`     | Retention used by `harn artifacts create` when neither `--days` nor `--minutes` is supplied |
+| `auto_clean` | boolean | `true` | Hourly-throttled cleanup at session start and before new artifact or managed QA work (same guarded deletion as `artifacts clean --yes`) |
 | `max_bytes` | integer | `21474836480` | Soft managed-store budget; valid range 64 MiB through 1 TiB |
 | `max_unit_bytes` | integer | `1073741824` | Per-workspace ceiling unless creation records `--big`; valid range 16 MiB through 1 TiB |
 

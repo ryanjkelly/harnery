@@ -150,6 +150,7 @@ Use it for anything future-you or a peer will need to pick up your thread.
 and other untracked files that must survive a session, create a managed workspace
 with \`${b} artifacts create <slug> --purpose "<why>"\`. Write files under the
 returned path, then run \`${b} artifacts release <id>\` when active work is done.
+After review, use \`${b} artifacts discard <id> --reason "<why no longer needed>"\` for disposable or superseded evidence: it releases ownership and shortens retention to at most 60 minutes (\`--minutes\` overrides). Keep unresolved failures, handoffs, final evidence, and files awaiting review; use a hold when needed. A passing check cannot establish whether another reader needs the files, so the reviewing agent decides. For known short-lived work, \`${b} artifacts create --minutes <n>\` sets the initial window.
 Do not create a repo-root temp directory; \`${b} artifacts clean\` previews
 expired cleanup and requires \`--yes\` to delete anything.
 

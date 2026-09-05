@@ -31,6 +31,8 @@ import {
   artifactDefaultRetentionDays,
   artifactMaxBytes,
   artifactMaxUnitBytes,
+  coordFreshnessSeconds,
+  resolveBinName,
 } from "../config.ts";
 import {
   type ArtifactActivity,
@@ -103,6 +105,8 @@ export function artifactCapabilities() {
     atomic_create_holds: true,
     owner_scoped_unhold: true,
     explicit_v1_migration: true,
+    minute_retention: true,
+    discard_after_review: true,
   } as const;
 }
 
@@ -283,7 +287,7 @@ export function showArtifact(
 export function renewArtifact(
   repoRoot: string,
   ref: string,
-  days: number,
+  days: number | { minutes: number },
   reason: string,
   input: ArtifactMutationInput = {},
 ): ArtifactManifestV2 {
@@ -295,13 +299,16 @@ export function renewArtifact(
 function renewArtifactUnlocked(
   repoRoot: string,
   ref: string,
-  days: number,
+  days: number | { minutes: number },
   reason: string,
   input: ArtifactMutationInput,
 ): ArtifactManifestV2 {
   const now = input.now ?? new Date();
   assertValidDate(now, "now");
-  const retentionDays = positiveDays(days);
+  const expiresAt =
+    typeof days === "number"
+      ? addDays(now, positiveDays(days))
+      : addMinutes(now, positiveMinutes(days.minutes));
   const why = reason.trim();
   if (!why) throw new Error("renewal reason must not be empty");
   const path = resolveArtifactRef(repoRoot, ref);
@@ -310,7 +317,7 @@ function renewArtifactUnlocked(
   const manifest: ArtifactManifestV2 = {
     ...parsed.manifest,
     retention: {
-      expires_at: addDays(now, retentionDays).toISOString(),
+      expires_at: expiresAt.toISOString(),
       renewed_at: now.toISOString(),
       reason: why,
     },
@@ -325,6 +332,64 @@ export function releaseArtifact(
   input: ArtifactMutationInput = {},
 ): ArtifactManifestV2 {
   return withArtifactLock(repoRoot, () => releaseArtifactUnlocked(repoRoot, ref, input));
+}
+
+/** Retire reviewed evidence without deleting it or extending an earlier deadline. */
+export function discardArtifact(
+  repoRoot: string,
+  ref: string,
+  reason: string,
+  input: ArtifactMutationInput & { minutes?: number } = {},
+): ArtifactManifestV2 {
+  return withArtifactLock(repoRoot, () => {
+    const now = input.now ?? new Date();
+    assertValidDate(now, "now");
+    const minutes = positiveMinutes(input.minutes ?? 60);
+    const why = reason.trim();
+    if (!why)
+      throw new Error("discard requires a reason confirming the files are no longer needed");
+    const path = resolveArtifactRef(repoRoot, ref);
+    const entry = classifyArtifactPath(repoRoot, path, now, coordFreshnessSeconds(repoRoot));
+    if (
+      !["managed-current", "managed-expired", "managed-active"].includes(entry.classification) ||
+      (entry.classification === "managed-active" &&
+        entry.owner_instance_id !== input.actor?.instance_id)
+    )
+      throw new Error(`cannot discard artifact: ${entry.reason}`);
+    const parsed = readManifest(path);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const manifest = parsed.manifest;
+    const remaining = Date.parse(entry.expires_at!) - now.getTime();
+    const priorWindow =
+      Date.parse(manifest.retention.expires_at) -
+      Date.parse(manifest.retention.renewed_at ?? manifest.created_at);
+    const windowMs = Math.min(minutes * 60_000, remaining, priorWindow);
+    const updated: ArtifactManifestV2 = {
+      ...manifest,
+      retention: {
+        ...manifest.retention,
+        ...(windowMs > 0
+          ? {
+              renewed_at: now.toISOString(),
+              expires_at: new Date(now.getTime() + windowMs).toISOString(),
+            }
+          : {}),
+        reason: why,
+      },
+      released_at: now.toISOString(),
+      released_by: input.actor,
+    };
+    atomicWriteManifest(path, updated, now);
+    return updated;
+  });
+}
+
+/** Advice only: a successful check does not establish that its evidence is disposable. */
+export function artifactReviewGuidance(repoRoot: string, ref: string): string {
+  const target = isAbsolute(ref) ? basename(ref) : ref;
+  if (!/^[A-Za-z0-9_.-]+$/.test(target))
+    throw new Error("review guidance requires an artifact id or directory name");
+  return `After reviewing these files, if they are disposable or superseded and no review, handoff, failure investigation, or final evidence depends on them, run ${resolveBinName(repoRoot)} artifacts discard ${target} --reason "Reviewed; no longer needed" (60-minute grace). Otherwise retain them; use a hold for pending review.`;
 }
 
 function releaseArtifactUnlocked(
@@ -600,20 +665,33 @@ export interface ArtifactAutoCleanResult {
 }
 
 /**
- * Throttled expired-artifact sweep, fired as a SessionStart effect.
+ * Throttled expired-artifact sweep, fired at SessionStart and before new work.
  *
  * Retention was previously enforced only when someone remembered to run
  * `artifacts clean --yes`, so expired workspaces accumulated indefinitely on
- * busy hosts. This runs the exact same guarded deletion (only
- * `managed-expired` entries, each re-classified immediately before removal;
+ * busy hosts. This runs the exact same guarded deletion (expired or over-budget
+ * managed entries, each re-classified immediately before removal;
  * unmanaged and legacy directories are never touched) at most once per
- * interval (default 24h), claim-first via a stamp file so concurrent session
+ * interval (default 1h), claim-first via a stamp file so concurrent session
  * starts do not double-sweep. Disable with `artifacts.auto_clean: false` or
  * `HARNERY_ARTIFACT_AUTO_CLEAN=0`.
  */
 export function autoCleanArtifacts(
   repoRoot: string,
   opts: { now?: Date } = {},
+): ArtifactAutoCleanResult {
+  if (!existsSync(artifactsRoot(repoRoot))) {
+    return { ran: false, reason: "no-root", deleted: 0, bytes: 0 };
+  }
+  if (!artifactAutoCleanEnabled(repoRoot)) {
+    return { ran: false, reason: "disabled", deleted: 0, bytes: 0 };
+  }
+  return withArtifactLock(repoRoot, () => autoCleanArtifactsUnlocked(repoRoot, opts));
+}
+
+function autoCleanArtifactsUnlocked(
+  repoRoot: string,
+  opts: { now?: Date },
 ): ArtifactAutoCleanResult {
   const now = opts.now ?? new Date();
   assertValidDate(now, "now");
@@ -637,7 +715,7 @@ export function autoCleanArtifacts(
   // Claim first: a crash mid-sweep costs one skipped interval, while claiming
   // after would let two concurrent session starts both walk the store.
   writeFileSync(stampPath, `${JSON.stringify({ last_run_at: now.toISOString() }, null, 2)}\n`);
-  const rows = cleanArtifacts(repoRoot, { yes: true, now });
+  const rows = cleanArtifactsUnlocked(repoRoot, { yes: true, now });
   const deletedRows = rows.filter((row) => row.action === "deleted");
   const deleted = deletedRows.length;
   const bytes = deletedRows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);

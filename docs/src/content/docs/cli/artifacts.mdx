@@ -17,13 +17,14 @@ Each workspace lives under `.harnery/artifacts/` with a versioned manifest.
 ## Subcommands
 
 ```bash
-harn artifacts create <slug> --purpose <text> [--days <n>] [--big]
+harn artifacts create <slug> --purpose <text> [--days <n> | --minutes <n>] [--big]
 harn artifacts adopt-unmanaged [--days <n>] [--big] [--yes]
 harn artifacts list
 harn artifacts show <ref>
 harn artifacts delivery-card <ref> [--title <text>] [--url <label=url>...] [--path <label=path>...]
-harn artifacts renew <ref> --days <n> --reason <text>
+harn artifacts renew <ref> (--days <n> | --minutes <n>) --reason <text>
 harn artifacts release <ref>
+harn artifacts discard <ref> --reason <text> [--minutes <n>]
 harn artifacts capabilities --json
 harn artifacts create <slug> --purpose <text> --hold <id> --hold-reason <text> --actor <instance-id>
 harn artifacts hold <ref> --id <id> --reason <text> [--actor <instance-id>]
@@ -54,6 +55,42 @@ harn artifacts clean
 # Delete only entries still classified managed-expired after a final recheck.
 harn artifacts clean --yes
 ```
+
+## Retire disposable evidence after review
+
+After inspecting temporary captures, discard them when they are disposable or
+superseded and no unresolved failure, handoff, final evidence, or user review
+depends on them:
+
+```bash
+harn artifacts discard <artifact-id> --reason "Reviewed; newer run contains the final evidence"
+```
+
+This records the reason, releases active-owner protection, and shortens the
+rolling retention window to at most 60 minutes. It deletes nothing immediately.
+Use `--minutes 15` for a shorter grace period. An earlier deadline stays earlier;
+repeating the command never extends it. An already-expired artifact stays expired.
+New payload activity restarts the shortened window.
+
+The command refuses held artifacts, another live agent's artifacts, tracked
+content, symlinks, and unreadable state. Use a hold for files awaiting review.
+A passing check does not establish whether someone still needs its evidence;
+the agent reviewing the result makes that decision. Keep the ordinary three-day
+window when unsure. `release` alone continues to preserve retention.
+
+For work known to need a short window from creation:
+
+```bash
+harn artifacts create layout-probe --purpose "Temporary layout check" --minutes 90
+harn artifacts renew <artifact-id> --minutes 180 --reason "Still reviewing"
+```
+
+`create` and `renew` accept whole minutes from 1 through 5,256,000, or whole
+days from 1 through 3,650. The flags are mutually exclusive. `renew` requires
+one of them and can restore a longer window before cleanup deletes the files.
+Artifact creation, managed `qa-run` results, and terminal `qa-status` reports
+include `after_review` guidance with the appropriate discard command. This advice
+never shortens retention by itself.
 
 ## Deliver review files consistently
 
@@ -132,7 +169,7 @@ Set a project default in `.harnery/config.jsonc`:
 ```
 
 `HARNERY_ARTIFACT_RETENTION_DAYS` overrides the config value for one process.
-`create --days` overrides both. `renew --days` starts a new rolling window of
+`create --days` or `create --minutes` overrides both. `renew` starts a new rolling window of
 the requested length. The `expires_at` field returned by `list` and `show` is
 the effective deadline after accounting for the latest change.
 
@@ -183,14 +220,19 @@ ceiling, the mutating command also requires `--big`.
 
 ## Automatic cleanup
 
-Cleanup candidates are also swept automatically: the first session start of
-each day runs the same guarded deletion as `clean --yes`, so time and byte limits hold
-without anyone remembering a maintenance command. The sweep is throttled by a
+Session starts, `artifacts create`, and new managed QA workspaces offer a cleanup
+opportunity at most once per hour. They run the same guarded deletion as
+`clean --yes`. The sweep is throttled by a
 stamp file (`.harnery/artifacts-auto-clean.json`, which also records the last
 run's deleted count and bytes), deletes only entries still classified
 `managed-expired`, `managed-oversize`, or `managed-over-budget` after the final
-recheck, and never touches unmanaged or legacy directories. A repo with no sessions accumulates nothing and pays
-nothing.
+recheck, and never touches unmanaged or legacy directories. The mutation lock
+serializes the sweep and its timestamp with other artifact mutations. Lock
+contention does not consume the cleanup opportunity.
+
+Expiration makes files eligible for the next cleanup opportunity; it is not a
+background timer. An idle project keeps expired files until another session,
+new work, or an explicit cleanup. The independent event-ledger sweep stays daily.
 
 Disable it per project or per process:
 
