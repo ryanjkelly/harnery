@@ -45,19 +45,34 @@ function Thumbnail({
       visible = entry.isIntersecting;
       update();
     });
-    const prefetch = new IntersectionObserver(
-      ([entry]) => {
-        nearby = entry.isIntersecting;
-        update();
-      },
-      { root: target.closest('[aria-label="Folder contents"]'), rootMargin: "0px 0px 240px 0px" },
-    );
+    const desktop = window.matchMedia("(min-width: 1024px)");
+    let prefetch: IntersectionObserver;
+    const observePrefetch = () => {
+      prefetch?.disconnect();
+      nearby = false;
+      update();
+      prefetch = new IntersectionObserver(
+        ([entry]) => {
+          nearby = entry.isIntersecting;
+          update();
+        },
+        {
+          root: target.closest(
+            desktop.matches ? '[aria-label="Folder contents"]' : '[aria-label="File browser"]',
+          ),
+          rootMargin: "0px 0px 240px 0px",
+        },
+      );
+      prefetch.observe(target);
+    };
     observer.observe(target);
-    prefetch.observe(target);
+    observePrefetch();
+    desktop.addEventListener("change", observePrefetch);
     document.addEventListener("visibilitychange", update);
     return () => {
       observer.disconnect();
       prefetch.disconnect();
+      desktop.removeEventListener("change", observePrefetch);
       document.removeEventListener("visibilitychange", update);
     };
   }, []);

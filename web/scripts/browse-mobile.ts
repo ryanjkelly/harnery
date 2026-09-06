@@ -75,6 +75,11 @@ try {
     await page.route("**/api/file/thumbnail?*", (route) => route.fulfill({ status: 404 }));
     await page.goto(`${baseUrl}/browse?dir=${encodeURIComponent(dir)}`);
     await page.locator("[data-file-row]").last().waitFor();
+    await page.waitForFunction(() => document.querySelector('[data-thumbnail-priority="visible"]'));
+    assert(
+      (await page.locator('[data-thumbnail-priority="offscreen"]').count()) > 0,
+      "Distant thumbnails must stay unloaded with either scroll layout",
+    );
     const region = page.getByRole("region", { name: "File browser", exact: true });
     const contents = page.getByRole("group", { name: "Folder contents" });
     const first = page.locator("[data-file-row]").first();

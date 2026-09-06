@@ -921,7 +921,7 @@ export function BrowseClient({
                     {currentWorkspace.deliveryItems.length}
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex gap-2 overflow-x-auto lg:flex-wrap lg:overflow-visible">
                   {currentWorkspace.deliveryItems.map((item) => (
                     <button
                       type="button"
@@ -933,7 +933,7 @@ export function BrowseClient({
                           kind: item.kind === "dir" ? "dir" : "file",
                         })
                       }
-                      className="flex max-w-full items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:border-ring/50 hover:bg-muted"
+                      className="flex max-w-full shrink-0 items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:border-ring/50 hover:bg-muted"
                     >
                       <FileCheck2 className="size-4 shrink-0 text-emerald-400" />
                       <span className="truncate">{item.label}</span>
