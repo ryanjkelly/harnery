@@ -16,6 +16,7 @@ import {
   ensureCloudflared,
   gateLogFile,
   isProcessAlive,
+  isTunnelStateLive,
   listStates,
   providerLogFile,
   readConfig,
@@ -433,7 +434,7 @@ function providerIsAlive(state: TunnelState): boolean {
 }
 
 function tunnelIsAlive(state: TunnelState): boolean {
-  return isProcessAlive(state.gate_pid) && providerIsAlive(state);
+  return isTunnelStateLive(state);
 }
 
 interface GateSpawnOpts {

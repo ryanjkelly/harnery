@@ -111,6 +111,11 @@ by name. Harnery skips its own metadata, hidden entries, symlinks, and special
 files. When more entries exist, the card reports the omitted count and points to
 the artifact folder instead of expanding the handoff.
 
+Artifact links use the configured Harnery dashboard. When a live tunnel fronts
+that dashboard port, the card uses its public URL for every artifact file and
+folder. Otherwise, it uses the local dashboard URL. A stale tunnel or a live
+tunnel for another service is ignored.
+
 Add a manifest when the card needs a remote URL, a friendly label, or an
 important file below the root:
 
@@ -127,9 +132,9 @@ Supplying items validates every local destination, saves
 `.harnery-delivery.json` in the workspace, and writes paste-ready Markdown to
 standard output. A saved manifest is an allowlist: the card includes those
 destinations and does not append unrelated root entries. The card contains a
-linked list followed by a fenced plain-text block. Both sections show the
-complete URL or filesystem path. The artifact folder is always included
-automatically.
+linked list followed by a fenced plain-text block. The list uses short labels so
+it stays easy to scan. The block contains every complete URL or filesystem path
+for copying. The artifact folder is always included automatically.
 
 Run the command again without item options to reproduce the saved selections:
 
@@ -143,10 +148,10 @@ cannot escape through `..` or a symlink. Supplying new items replaces the saved
 delivery manifest. Supplying only `--title` changes the heading and preserves
 the existing destinations.
 
-On WSL, local destinations are rendered as Windows UNC paths so they open in
-Windows applications and remain directly copyable. Other systems receive their
-native absolute paths. A delivery manifest records navigation, not retention;
-move anything that must outlive the workspace into durable project storage.
+On WSL, the plain-text block renders local destinations as Windows UNC paths so
+they remain directly copyable. Other systems receive their native absolute
+paths. A delivery manifest records navigation, not retention; move anything
+that must outlive the workspace into durable project storage.
 
 New workspaces expire after three inactive days by default. Creating, editing,
 renaming, or deleting payload files restarts that window. Harnery derives

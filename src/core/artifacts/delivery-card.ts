@@ -11,6 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { findLiveTunnelForPort } from "../../lib/tunnel/state.ts";
+import { resolveWebPort } from "../config.ts";
 import { ARTIFACT_MANIFEST } from "./constants.ts";
 import { resolveArtifactRef, showArtifact } from "./index.ts";
 
@@ -49,6 +51,8 @@ export interface ArtifactDeliveryCard {
 interface DisplayEnvironment {
   platform?: NodeJS.Platform;
   wslDistroName?: string;
+  webPort?: number;
+  tunnelUrl?: string | null;
 }
 
 export function writeArtifactDeliveryManifest(
@@ -116,15 +120,17 @@ export function renderArtifactDeliveryCard(
 ): ArtifactDeliveryCard {
   const artifactPath = managedArtifactPath(repoRoot, ref);
   const valid = validateManifest(artifactPath, manifest);
-  const rows: Array<{ label: string; target: string; icon: string }> = [];
+  const linkBase = deliveryLinkBase(repoRoot, environment);
+  const rows: Array<{ label: string; target: string; href: string; icon: string }> = [];
 
   for (const item of valid.items.filter((candidate) => candidate.kind === "url")) {
-    rows.push({ label: item.label, target: item.target, icon: "🌐" });
+    rows.push({ label: item.label, target: item.target, href: item.target, icon: "🌐" });
   }
 
   rows.push({
     label: "Artifact folder",
     target: displayPath(artifactPath, environment),
+    href: artifactBrowserUrl(repoRoot, artifactPath, linkBase, true),
     icon: "📁",
   });
 
@@ -133,6 +139,7 @@ export function renderArtifactDeliveryCard(
     rows.push({
       label: item.label,
       target: displayPath(absolute, environment),
+      href: artifactBrowserUrl(repoRoot, absolute, linkBase, lstatSync(absolute).isDirectory()),
       icon: iconForPath(absolute),
     });
   }
@@ -143,16 +150,14 @@ export function renderArtifactDeliveryCard(
     rows.push({
       label: item.name,
       target: displayPath(item.path, environment),
+      href: artifactBrowserUrl(repoRoot, item.path, linkBase, item.directory),
       icon: iconForPath(item.path),
     });
   }
   const omittedAutoItems = discovered.length - autoItems.length;
 
   let links = rows
-    .map(
-      (row) =>
-        `- ${row.icon} **${escapeMarkdown(row.label)}:** [${escapeMarkdown(row.target)}](<${linkTarget(row.target)}>)`,
-    )
+    .map((row) => `- ${row.icon} [${escapeMarkdown(row.label)}](<${row.href}>)`)
     .join("\n");
   if (omittedAutoItems > 0) {
     links += `\n- 📁 **More root items:** ${omittedAutoItems} additional ${omittedAutoItems === 1 ? "entry" : "entries"}; open the artifact folder.`;
@@ -313,12 +318,26 @@ function displayPath(path: string, environment: DisplayEnvironment): string {
   return resolve(path);
 }
 
-function linkTarget(target: string): string {
-  if (target.startsWith("http://") || target.startsWith("https://")) return target;
-  if (target.startsWith("\\\\wsl.localhost\\")) {
-    return `//${target.slice(2).replaceAll("\\", "/")}`;
-  }
-  return target.replaceAll("\\", "/");
+function deliveryLinkBase(repoRoot: string, environment: DisplayEnvironment): string {
+  const webPort = environment.webPort ?? resolveWebPort(undefined, repoRoot);
+  const tunnelUrl =
+    environment.tunnelUrl === undefined
+      ? findLiveTunnelForPort(webPort, repoRoot)?.url
+      : environment.tunnelUrl;
+  return (tunnelUrl ?? `http://localhost:${webPort}`).replace(/\/+$/, "");
+}
+
+function artifactBrowserUrl(
+  repoRoot: string,
+  target: string,
+  base: string,
+  directory: boolean,
+): string {
+  const relPath = relative(realpathSync(repoRoot), realpathSync(target)).split(sep).join("/");
+  const query = directory
+    ? `dir=${encodeURIComponent(relPath)}`
+    : `path=${encodeURIComponent(relPath)}`;
+  return `${base}/${directory ? "browse" : "files"}?${query}`;
 }
 
 function iconForPath(path: string): string {

@@ -1,4 +1,4 @@
-// Tunnel config + state persistence + provider helpers. Lives under
+// Tunnel config + state persistence + provider helpers. Commands default to
 // <cwd>/.cache/tunnel/; gitignored, so the allowlist is per-machine.
 
 import { execSync } from "node:child_process";
@@ -12,9 +12,10 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 
-// Inline cachePath: tunnel state under <cwd>/.cache/tunnel/.
-function cachePath(tool: string, filename: string): string {
-  const dir = resolve(process.cwd(), ".cache", tool);
+// Tunnel state lives under <root>/.cache/tunnel/. Root defaults to cwd for the
+// command surface and can be supplied by callers that already resolved a repo.
+function cachePath(tool: string, filename: string, root: string = process.cwd()): string {
+  const dir = resolve(root, ".cache", tool);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return resolve(dir, filename);
 }
@@ -107,8 +108,11 @@ export function writeConfig(cfg: TunnelConfig): void {
   writeFileSync(cachePath("tunnel", CONFIG_FILE), JSON.stringify(cfg, null, 2));
 }
 
-export function readState(name: string = DEFAULT_INSTANCE): TunnelState | null {
-  const p = cachePath("tunnel", stateFile(name));
+export function readState(
+  name: string = DEFAULT_INSTANCE,
+  root: string = process.cwd(),
+): TunnelState | null {
+  const p = cachePath("tunnel", stateFile(name), root);
   if (!existsSync(p)) return null;
   try {
     return normalizeState(JSON.parse(readFileSync(p, "utf-8")) as TunnelState, name);
@@ -117,12 +121,12 @@ export function readState(name: string = DEFAULT_INSTANCE): TunnelState | null {
   }
 }
 
-export function writeState(state: TunnelState): void {
-  writeFileSync(cachePath("tunnel", stateFile(state.name)), JSON.stringify(state, null, 2));
+export function writeState(state: TunnelState, root: string = process.cwd()): void {
+  writeFileSync(cachePath("tunnel", stateFile(state.name), root), JSON.stringify(state, null, 2));
 }
 
-export function clearState(name: string = DEFAULT_INSTANCE): void {
-  const p = cachePath("tunnel", stateFile(name));
+export function clearState(name: string = DEFAULT_INSTANCE, root: string = process.cwd()): void {
+  const p = cachePath("tunnel", stateFile(name), root);
   if (existsSync(p)) unlinkSync(p);
 }
 
@@ -130,14 +134,14 @@ export function clearState(name: string = DEFAULT_INSTANCE): void {
  * Every persisted tunnel instance, newest-started first. Reads every
  * `state*.json` under `.cache/tunnel/`; tolerates missing/corrupt files.
  */
-export function listStates(): TunnelState[] {
-  const dir = resolve(process.cwd(), ".cache", "tunnel");
+export function listStates(root: string = process.cwd()): TunnelState[] {
+  const dir = resolve(root, ".cache", "tunnel");
   if (!existsSync(dir)) return [];
   const out: TunnelState[] = [];
   for (const file of readdirSync(dir)) {
     const name = nameFromStateFile(file);
     if (name === null) continue;
-    const state = readState(name);
+    const state = readState(name, root);
     if (state) out.push(state);
   }
   return out.sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""));
@@ -150,6 +154,45 @@ export function isProcessAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+export type ProcessAliveCheck = (pid: number) => boolean;
+
+/** True when both the local gate and its provider-side process are live. */
+export function isTunnelStateLive(
+  state: TunnelState,
+  processAlive: ProcessAliveCheck = isProcessAlive,
+): boolean {
+  if (!processAlive(state.gate_pid)) return false;
+  if (state.provider === "tailscale") return true;
+  const providerPid = state.cloudflared_pid ?? state.provider_pid;
+  return typeof providerPid === "number" && processAlive(providerPid);
+}
+
+function tunnelTargetPort(state: TunnelState): number | null {
+  const value = /^[a-z][a-z\d+.-]*:\/\//i.test(state.target)
+    ? state.target
+    : `http://${state.target}`;
+  try {
+    const url = new URL(value);
+    if (url.port) return Number.parseInt(url.port, 10);
+    return url.protocol === "https:" ? 443 : 80;
+  } catch {
+    return null;
+  }
+}
+
+/** Newest live tunnel whose upstream is the requested local web port. */
+export function findLiveTunnelForPort(
+  port: number,
+  root: string = process.cwd(),
+  processAlive: ProcessAliveCheck = isProcessAlive,
+): TunnelState | null {
+  return (
+    listStates(root).find(
+      (state) => tunnelTargetPort(state) === port && isTunnelStateLive(state, processAlive),
+    ) ?? null
+  );
 }
 
 /**

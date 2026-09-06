@@ -66,10 +66,19 @@ destinations accept only HTTP and HTTPS. Labels are case-insensitively unique,
 and `Artifact folder` is reserved for the automatic row.
 
 The command writes Markdown to standard output so an agent can paste it without
-reformatting. The first section links every complete destination. The second is
-a fenced plain-text block with the same URLs and paths for copying. WSL output
-uses a UNC display path and a forward-slash UNC link target derived from
-`WSL_DISTRO_NAME`; other platforms use native absolute paths.
+reformatting. The first section links each destination through its short label.
+The second is a fenced plain-text block with the complete URLs and paths for
+copying.
+
+Artifact files and folders open through the configured Harnery dashboard. The
+renderer looks for the newest live tunnel whose upstream matches the dashboard
+port. It uses that tunnel as the link origin when available and falls back to
+the local dashboard origin when no matching tunnel is live. Both the local gate
+and the provider process must be running. Explicit `--url` destinations remain
+unchanged because the caller owns them.
+
+WSL output uses a UNC display path in the plain-text block; other platforms use
+native absolute paths. Link destinations remain browser URLs on every platform.
 
 ## Result
 
@@ -77,7 +86,9 @@ Without a delivery manifest, the command returns a card with at most five root
 entries. An optional manifest narrows the card to the files and URLs the operator
 needs. Any later agent can regenerate the handoff without reconstructing it from
 chat history, and broken or unsafe local destinations fail before the card is
-saved. The delivery schema can evolve separately from the lifecycle schema.
+saved. Live tunnels make the same generated card usable from another device,
+while local sessions keep working without a tunnel. The delivery schema can
+evolve separately from the lifecycle schema.
 
 The card does not extend retention or make a result durable. Existing artifact
 holds, release, and cleanup rules remain the authority for workspace lifetime.
