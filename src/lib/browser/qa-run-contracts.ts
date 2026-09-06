@@ -566,7 +566,10 @@ export function contextIdFor(context: QaContext): string {
 /**
  * Merge planner-manifest coverage with the job's extra contexts. The manifest
  * is the floor: its contexts always run, in manifest order, and a job can only
- * append. The union construction makes narrowing impossible by design; the
+ * append coverage or supply setup arguments for an exactly matching context.
+ * IDs and rendering identities must agree; aliases are rejected rather than
+ * silently losing a setup or leaving a check pointed at an absent context.
+ * The union construction makes narrowing impossible by design; the
  * returned list is what the runner executes and what the result reports.
  */
 export function mergeCoverage(manifest: QaManifest, job: QaRunJob): QaRunContext[] {
@@ -576,13 +579,30 @@ export function mergeCoverage(manifest: QaManifest, job: QaRunJob): QaRunContext
     theme: context.theme,
     state: context.state,
   }));
-  const seen = new Set(merged.map((context) => context.id));
+  const identity = (context: QaRunContext) =>
+    JSON.stringify([context.viewport, context.theme, context.state]);
+  const byId = new Map(merged.map((context) => [context.id, context]));
+  const byRender = new Map(merged.map((context) => [identity(context), context]));
+  const jobIds = new Set<string>();
   for (const context of job.contexts ?? []) {
-    const canonical = contextIdFor(context);
-    if (seen.has(canonical) || seen.has(context.id)) continue;
-    seen.add(canonical);
-    seen.add(context.id);
-    merged.push(context);
+    if (jobIds.has(context.id)) throw new Error(`Duplicate QA context ID: ${context.id}`);
+    jobIds.add(context.id);
+    const existingId = byId.get(context.id);
+    const existingRender = byRender.get(identity(context));
+    if (existingId || existingRender) {
+      if (!existingId || existingId !== existingRender) {
+        throw new Error(`Conflicting QA context ID or rendering identity: ${context.id}`);
+      }
+      if (context.args !== undefined) existingId.args = [...context.args];
+      continue;
+    }
+    const added = {
+      ...context,
+      ...(context.args !== undefined ? { args: [...context.args] } : {}),
+    };
+    byId.set(added.id, added);
+    byRender.set(identity(added), added);
+    merged.push(added);
   }
   return merged;
 }

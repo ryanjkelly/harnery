@@ -214,6 +214,104 @@ describe("validateQaRunJob", () => {
 });
 
 describe("mergeCoverage", () => {
+  test("matching contexts preserve setup arguments without narrowing the manifest", () => {
+    const input = validJob({
+      contexts: [
+        {
+          id: "desktop-light-default",
+          viewport: "desktop",
+          theme: "light",
+          state: "default",
+          args: ["--batch", "wait 5000"],
+        },
+        {
+          id: "mobile-light-default",
+          viewport: "mobile",
+          theme: "light",
+          state: "default",
+          args: ["--batch", "wait 2000"],
+        },
+      ],
+    });
+    const plan = manifest();
+    const merged = mergeCoverage(plan, input);
+    expect(merged.map((context) => context.id)).toEqual(plan.contexts.map(contextIdFor));
+    expect(merged[0].args).toEqual(["--batch", "wait 5000"]);
+    expect(merged[1].args).toEqual(["--batch", "wait 2000"]);
+    expect(merged[2].args).toBeUndefined();
+    merged[0].args!.push("--check-overflow");
+    expect(input.contexts![0].args).toEqual(["--batch", "wait 5000"]);
+    expect(plan).toEqual(manifest());
+  });
+
+  test("rejects a manifest ID reused for another viewport, theme or state", () => {
+    for (const change of [
+      { viewport: "mobile" },
+      { theme: "dark" as const },
+      { state: "expanded" },
+    ]) {
+      expect(() =>
+        mergeCoverage(
+          manifest(),
+          validJob({
+            contexts: [
+              {
+                id: "desktop-light-default",
+                viewport: "desktop",
+                theme: "light",
+                state: "default",
+                ...change,
+              },
+            ],
+          }),
+        ),
+      ).toThrow("Conflicting QA context ID or rendering identity");
+    }
+  });
+
+  test("rejects an alias for a manifest rendering context instead of dropping its setup", () => {
+    expect(() =>
+      mergeCoverage(
+        manifest(),
+        validJob({
+          contexts: [
+            {
+              id: "alias",
+              viewport: "desktop",
+              theme: "light",
+              state: "default",
+              args: ["--batch", "wait 5000"],
+            },
+          ],
+        }),
+      ),
+    ).toThrow("Conflicting QA context ID or rendering identity");
+  });
+
+  test("rejects duplicate job IDs and alternate IDs for the same extra rendering context", () => {
+    const first = { id: "wide", viewport: "hd", theme: "light" as const, state: "default" };
+    expect(() =>
+      mergeCoverage(manifest(), validJob({ contexts: [first, { ...first, viewport: "tablet" }] })),
+    ).toThrow("Duplicate QA context ID");
+    expect(() =>
+      mergeCoverage(manifest(), validJob({ contexts: [first, { ...first, id: "other-wide" }] })),
+    ).toThrow("Conflicting QA context ID or rendering identity");
+  });
+
+  test("extra contexts retain ordered arguments without sharing mutable job data", () => {
+    const extra = {
+      id: "wide",
+      viewport: "hd",
+      theme: "light" as const,
+      state: "default",
+      args: ["--batch", "click #tab; wait 500"],
+    };
+    const merged = mergeCoverage(manifest(), validJob({ contexts: [extra] }));
+    expect(merged[3]).toEqual(extra);
+    merged[3].args!.push("--check-overflow");
+    expect(extra.args).toEqual(["--batch", "click #tab; wait 500"]);
+  });
+
   test("manifest contexts are always present, in manifest order, first", () => {
     const merged = mergeCoverage(
       manifest(),
