@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ChevronDown,
   ChevronRight,
   Clock3,
   FileCheck2,
@@ -21,6 +22,7 @@ import {
   Pin,
   RefreshCw,
   Search,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import {
@@ -134,6 +136,8 @@ export function BrowseClient({
   const [searchError, setSearchError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FileFilter>("all");
   const [showHidden, setShowHidden] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [owner, setOwner] = useState("");
   const [sort, setSort] = useState<BrowseSort>("date");
   const [mode, setMode] = useState<"list" | "grid">("list");
@@ -581,7 +585,7 @@ export function BrowseClient({
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
       <aside
         aria-label="File locations"
-        className={`shrink-0 border-b border-border bg-muted/10 lg:w-48 lg:border-r lg:border-b-0 ${fullPreview ? "hidden" : ""}`}
+        className={`shrink-0 border-b border-border bg-muted/10 lg:w-48 lg:border-r lg:border-b-0 ${fullPreview ? "hidden" : location.file ? "hidden lg:block" : ""}`}
       >
         <nav className="flex gap-1 overflow-x-auto p-2 lg:flex-col lg:p-3">
           <p className="mb-2 hidden px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground lg:block">
@@ -629,11 +633,13 @@ export function BrowseClient({
       >
         <section
           aria-label="File browser"
-          className={`min-h-0 min-w-0 flex-1 flex-col ${fullPreview ? "hidden" : location.file ? "hidden lg:flex" : "flex"}`}
+          className={`min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:overflow-hidden ${fullPreview ? "hidden" : location.file ? "hidden lg:flex" : "flex"}`}
         >
-          <header className="shrink-0 border-b border-border px-4 py-4 sm:px-5">
+          <header className="shrink-0 border-b border-border px-4 py-2 lg:py-4 sm:px-5">
             {scope && (
-              <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+              <div
+                className={`mb-3 items-center gap-2 text-xs text-muted-foreground ${detailsOpen ? "flex" : "hidden lg:flex"}`}
+              >
                 <span className="truncate">{scope.label}</span>
                 <a
                   className="ml-auto shrink-0 underline underline-offset-4 hover:text-foreground"
@@ -646,9 +652,39 @@ export function BrowseClient({
               </div>
             )}
             <div className="flex items-start gap-3">
+              {folderMode && (
+                <div className="lg:hidden">
+                  <IconButton
+                    label="Up one folder"
+                    disabled={!location.dir}
+                    onClick={() =>
+                      navigate({ view: "folder", dir: parentDirectory(location.dir), file: null })
+                    }
+                  >
+                    <ArrowUp className="size-4" />
+                  </IconButton>
+                </div>
+              )}
               <div className="min-w-0 flex-1">
-                <h1 className="break-words text-xl font-semibold tracking-tight">{currentTitle}</h1>
-                <p className="mt-1 text-xs text-muted-foreground">
+                <h1 className="break-words text-base font-semibold tracking-tight lg:text-xl">
+                  <span className="hidden lg:inline">{currentTitle}</span>
+                  <button
+                    type="button"
+                    aria-expanded={detailsOpen}
+                    aria-controls="browse-folder-details"
+                    onClick={() => setDetailsOpen((value) => !value)}
+                    className="flex min-h-10 w-full items-start gap-1 text-left lg:hidden"
+                  >
+                    <span className={detailsOpen ? "" : "line-clamp-2"}>{currentTitle}</span>
+                    <ChevronDown
+                      className={`mt-1 size-4 shrink-0 text-muted-foreground ${detailsOpen ? "rotate-180" : ""}`}
+                    />
+                  </button>
+                </h1>
+                <p
+                  id="browse-folder-details"
+                  className={`mt-1 text-xs text-muted-foreground ${detailsOpen ? "" : "hidden lg:block"}`}
+                >
                   {folderMode
                     ? currentWorkspace?.purpose ||
                       "Open a file to preview. Use arrow keys to move between files."
@@ -675,17 +711,19 @@ export function BrowseClient({
             {folderMode && (
               <nav
                 aria-label="Folder breadcrumb"
-                className="mt-3 flex items-center gap-1 overflow-x-auto whitespace-nowrap text-xs"
+                className={`mt-3 items-center gap-1 overflow-x-auto whitespace-nowrap text-xs ${detailsOpen ? "flex" : "hidden lg:flex"}`}
               >
-                <IconButton
-                  label="Up one folder"
-                  disabled={!location.dir}
-                  onClick={() =>
-                    navigate({ view: "folder", dir: parentDirectory(location.dir), file: null })
-                  }
-                >
-                  <ArrowUp className="size-3.5" />
-                </IconButton>
+                <div className="hidden lg:block">
+                  <IconButton
+                    label="Up one folder"
+                    disabled={!location.dir}
+                    onClick={() =>
+                      navigate({ view: "folder", dir: parentDirectory(location.dir), file: null })
+                    }
+                  >
+                    <ArrowUp className="size-3.5" />
+                  </IconButton>
+                </div>
                 <button
                   type="button"
                   className="rounded px-1 py-1 text-muted-foreground hover:text-foreground"
@@ -722,8 +760,8 @@ export function BrowseClient({
               </nav>
             )}
           </header>
-          <div className="shrink-0 space-y-2 border-b border-border px-4 py-3 sm:px-5">
-            <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 focus-within:ring-2 focus-within:ring-ring">
+          <div className="shrink-0 space-y-2 border-b border-border px-4 py-3 sm:flex sm:flex-wrap sm:items-center sm:gap-3 sm:space-y-0 sm:px-5 lg:block lg:space-y-2">
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 focus-within:ring-2 focus-within:ring-ring sm:flex-1">
               <Search className="size-4 shrink-0 text-muted-foreground" />
               <input
                 aria-label="Search files and workspaces"
@@ -749,59 +787,74 @@ export function BrowseClient({
               </select>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <select
-                aria-label="File type"
-                className={SELECT}
-                value={filter}
-                onChange={(event) => setFilter(event.target.value as FileFilter)}
+              <button
+                type="button"
+                aria-expanded={filtersOpen}
+                aria-controls="browse-filters"
+                onClick={() => setFiltersOpen((value) => !value)}
+                className={`${BUTTON} min-h-10 border border-border lg:hidden`}
               >
-                <option value="all">All types</option>
-                <option value="dir">Folders</option>
-                <option value="image">Images</option>
-                <option value="video">Videos</option>
-                <option value="document">Documents</option>
-                <option value="code">Code & other files</option>
-              </select>
-              {owners.length > 1 && (
+                <SlidersHorizontal className="size-4" />
+                Filters{filter !== "all" || owner || showHidden ? " •" : ""}
+              </button>
+              <div
+                id="browse-filters"
+                className={`order-last w-full flex-wrap items-center gap-2 lg:contents ${filtersOpen ? "flex" : "hidden"}`}
+              >
                 <select
-                  aria-label="Filter by agent"
-                  className={`${SELECT} max-w-44`}
-                  value={owner}
-                  onChange={(event) => setOwner(event.target.value)}
+                  aria-label="File type"
+                  className={SELECT}
+                  value={filter}
+                  onChange={(event) => setFilter(event.target.value as FileFilter)}
                 >
-                  <option value="">All agents</option>
-                  {owners.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
+                  <option value="all">All types</option>
+                  <option value="dir">Folders</option>
+                  <option value="image">Images</option>
+                  <option value="video">Videos</option>
+                  <option value="document">Documents</option>
+                  <option value="code">Code & other files</option>
                 </select>
-              )}
-              <select
-                aria-label="Sort files"
-                className={SELECT}
-                value={sort}
-                onChange={(event) => {
-                  setSort(event.target.value as BrowseSort);
-                  save("sort", event.target.value);
-                }}
-              >
-                <option value="date">Newest first</option>
-                <option value="name">Name A–Z</option>
-                <option value="type">File type</option>
-              </select>
-              <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={showHidden}
+                {owners.length > 1 && (
+                  <select
+                    aria-label="Filter by agent"
+                    className={`${SELECT} max-w-44`}
+                    value={owner}
+                    onChange={(event) => setOwner(event.target.value)}
+                  >
+                    <option value="">All agents</option>
+                    {owners.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <select
+                  aria-label="Sort files"
+                  className={SELECT}
+                  value={sort}
                   onChange={(event) => {
-                    setShowHidden(event.target.checked);
-                    save("show-hidden", event.target.checked);
+                    setSort(event.target.value as BrowseSort);
+                    save("sort", event.target.value);
                   }}
-                  className="accent-foreground"
-                />
-                Show hidden files
-              </label>
+                >
+                  <option value="date">Newest first</option>
+                  <option value="name">Name A–Z</option>
+                  <option value="type">File type</option>
+                </select>
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={showHidden}
+                    onChange={(event) => {
+                      setShowHidden(event.target.checked);
+                      save("show-hidden", event.target.checked);
+                    }}
+                    className="accent-foreground"
+                  />
+                  Show hidden files
+                </label>
+              </div>
               <span className="ml-auto text-xs text-muted-foreground" aria-live="polite">
                 {busy ? "Loading…" : `${entries.length} ${entries.length === 1 ? "item" : "items"}`}
               </span>
@@ -836,7 +889,7 @@ export function BrowseClient({
             aria-label="Folder contents"
             tabIndex={-1}
             onKeyDown={onListKey}
-            className="min-h-0 flex-1 overflow-auto outline-none"
+            className="shrink-0 outline-none lg:min-h-0 lg:flex-1 lg:overflow-auto"
           >
             {activeError && (
               <div role="alert" className="m-4 rounded-lg border border-border p-4 text-sm">
