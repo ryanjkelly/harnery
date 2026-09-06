@@ -57,6 +57,7 @@ describe("artifact delivery cards", () => {
       });
       mkdirSync(join(created.path, "frames"));
       writeFileSync(join(created.path, "motion-map.png"), "image");
+      writeFileSync(join(created.path, "debug.json"), "{}");
 
       const manifest = writeArtifactDeliveryManifest(repoRoot, created.manifest.artifact_id, {
         title: "Review files",
@@ -81,6 +82,7 @@ describe("artifact delivery cards", () => {
       expect(card.markdown).toContain("```text");
       expect(card.markdown).toContain("ARTIFACT FOLDER");
       expect(card.markdown).toContain("MOTION MAP");
+      expect(card.markdown).not.toContain("debug.json");
       expect(card.auto_items).toBe(0);
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
@@ -102,6 +104,7 @@ describe("artifact delivery cards", () => {
       }
 
       const card = renderArtifactDeliveryCard(repoRoot, created.manifest.artifact_id);
+      expect(ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT).toBe(5);
       expect(card.auto_items).toBe(ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT);
       expect(card.omitted_auto_items).toBe(2);
       expect(card.markdown).toContain("**More root items:** 2 additional entries");

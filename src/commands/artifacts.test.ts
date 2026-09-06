@@ -183,6 +183,7 @@ describe("artifacts command", () => {
       const artifactPath = (created.data[0] as { path: string }).path;
       mkdirSync(join(artifactPath, "frames"));
       writeFileSync(join(artifactPath, "motion-map.png"), "image");
+      writeFileSync(join(artifactPath, "debug.json"), "{}");
       const automatic = await invoke(["delivery-card", id]);
       expect(automatic.errors).toEqual([]);
       expect(automatic.texts[0]).toContain("**frames:**");
@@ -205,6 +206,7 @@ describe("artifacts command", () => {
       expect(saved.texts[0]).toContain("ARTIFACT FOLDER");
       expect(saved.texts[0]).toContain("MOTION MAP");
       expect(saved.texts[0]).toContain("FRAMES");
+      expect(saved.texts[0]).not.toContain("debug.json");
       const reproduced = await invoke(["delivery-card", id]);
       expect(reproduced.errors).toEqual([]);
       expect(reproduced.texts).toEqual(saved.texts);

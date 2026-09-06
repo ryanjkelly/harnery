@@ -42,19 +42,18 @@ schema migration whenever the card format changed.
 
 Harnery adds `artifacts delivery-card <ref>`. With no delivery manifest, the
 command renders immediately from the managed artifact. It includes the artifact
-folder and discovers every visible root-level directory and regular file.
-Directories come first, followed by files, and each group is sorted by name.
-Harnery omits its own metadata, hidden entries, symlinks, and special files. The
-automatic list has a 100-entry ceiling and reports the omitted count so the
-output stays bounded.
+folder and discovers up to five visible root-level directories and regular
+files. Directories come first, followed by files, and each group is sorted by
+name. Harnery omits its own metadata, hidden entries, symlinks, and special
+files. The card reports the omitted count so the output stays compact.
 
 A call with repeatable `--url` and `--path` options validates and saves selected
-destinations, then prints the card. Saved URLs and paths appear before automatic
-root entries, and an exact path is not repeated. A later call without item
-options combines the saved selections with the current root inventory. `--title`
-sets the heading; when supplied alone, it updates the heading while preserving
-the saved items. A missing manifest defaults to the title `Artifact delivery`
-and an empty selected-item list.
+destinations, then prints the card. A non-empty saved manifest is an allowlist,
+so the renderer does not append unrelated root entries. A later call without
+item options reproduces the saved selections. `--title` sets the heading; when
+supplied alone, it updates the heading while preserving the saved items. A
+missing manifest defaults to the title `Artifact delivery` and an empty
+selected-item list.
 
 The delivery data lives in `.harnery-delivery.json` at the root of the managed
 workspace. It has its own versioned schema and contains a title plus ordered URL
@@ -74,12 +73,11 @@ uses a UNC display path and a forward-slash UNC link target derived from
 
 ## Result
 
-Every managed artifact now has a useful delivery card without extra setup. An
-optional small manifest preserves the intentional review surface when a workflow
-needs remote or nested destinations. Any later agent can regenerate the handoff
-without reconstructing it from chat history, and broken or unsafe local
-destinations fail before the card is saved. The delivery schema can evolve
-separately from the lifecycle schema.
+Without a delivery manifest, the command returns a card with at most five root
+entries. An optional manifest narrows the card to the files and URLs the operator
+needs. Any later agent can regenerate the handoff without reconstructing it from
+chat history, and broken or unsafe local destinations fail before the card is
+saved. The delivery schema can evolve separately from the lifecycle schema.
 
 The card does not extend retention or make a result durable. Existing artifact
 holds, release, and cleanup rules remain the authority for workspace lifetime.

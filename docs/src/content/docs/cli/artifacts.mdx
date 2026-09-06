@@ -105,11 +105,11 @@ Create a compact Markdown card with no setup:
 harn artifacts delivery-card <artifact-id>
 ```
 
-The card links the artifact folder and every remaining visible root-level
-directory and regular file. Directories appear first, then files, with each
-group sorted by name. Harnery skips its own metadata, hidden entries, symlinks,
-and special files. It lists up to 100 discovered entries and reports how many
-more are available in the artifact folder, which keeps pasted cards bounded.
+The card links the artifact folder and up to five visible root-level directories
+and regular files. Directories appear first, then files, with each group sorted
+by name. Harnery skips its own metadata, hidden entries, symlinks, and special
+files. When more entries exist, the card reports the omitted count and points to
+the artifact folder instead of expanding the handoff.
 
 Add a manifest when the card needs a remote URL, a friendly label, or an
 important file below the root:
@@ -125,14 +125,13 @@ harn artifacts delivery-card <artifact-id> \
 
 Supplying items validates every local destination, saves
 `.harnery-delivery.json` in the workspace, and writes paste-ready Markdown to
-standard output. Manifest items appear before discovered root entries. Harnery
-does not repeat a root item already named by its exact path in the manifest.
-The card contains a linked list followed by a fenced plain-text block. Both
-sections show the complete URL or filesystem path. The artifact folder is
-always included automatically.
+standard output. A saved manifest is an allowlist: the card includes those
+destinations and does not append unrelated root entries. The card contains a
+linked list followed by a fenced plain-text block. Both sections show the
+complete URL or filesystem path. The artifact folder is always included
+automatically.
 
-Run the command again without item options to combine the saved selections with
-the current root inventory:
+Run the command again without item options to reproduce the saved selections:
 
 ```bash
 harn artifacts delivery-card <artifact-id>

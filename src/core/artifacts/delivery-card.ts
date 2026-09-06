@@ -16,7 +16,7 @@ import { resolveArtifactRef, showArtifact } from "./index.ts";
 
 export const ARTIFACT_DELIVERY_MANIFEST = ".harnery-delivery.json";
 export const ARTIFACT_DELIVERY_SCHEMA_VERSION = 1 as const;
-export const ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT = 100;
+export const ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT = 5;
 
 export interface ArtifactDeliveryUrl {
   kind: "url";
@@ -117,7 +117,6 @@ export function renderArtifactDeliveryCard(
   const artifactPath = managedArtifactPath(repoRoot, ref);
   const valid = validateManifest(artifactPath, manifest);
   const rows: Array<{ label: string; target: string; icon: string }> = [];
-  const explicitPaths = new Set<string>();
 
   for (const item of valid.items.filter((candidate) => candidate.kind === "url")) {
     rows.push({ label: item.label, target: item.target, icon: "🌐" });
@@ -131,7 +130,6 @@ export function renderArtifactDeliveryCard(
 
   for (const item of valid.items.filter((candidate) => candidate.kind === "path")) {
     const absolute = resolveArtifactItem(artifactPath, item.path);
-    explicitPaths.add(absolute);
     rows.push({
       label: item.label,
       target: displayPath(absolute, environment),
@@ -139,9 +137,7 @@ export function renderArtifactDeliveryCard(
     });
   }
 
-  const discovered = discoverArtifactRootItems(artifactPath).filter(
-    (item) => !explicitPaths.has(item.path),
-  );
+  const discovered = valid.items.length === 0 ? discoverArtifactRootItems(artifactPath) : [];
   const autoItems = discovered.slice(0, ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT);
   for (const item of autoItems) {
     rows.push({
