@@ -73,7 +73,9 @@ export function buildStandaloneHtmlScript(): (
       if (cached !== undefined) return cached;
       let result: string | null = null;
       try {
-        const res = await fetch(url, { credentials: "include" });
+        // Retain access to authenticated same-origin assets without imposing
+        // credentialed CORS on public assets served by another origin.
+        const res = await fetch(url, { credentials: "same-origin" });
         if (res.ok) {
           const buf = await res.arrayBuffer();
           const fits =
@@ -169,7 +171,7 @@ export function buildStandaloneHtmlScript(): (
       }
       let css: string | null = null;
       try {
-        const res = await fetch(url, { credentials: "include" });
+        const res = await fetch(url, { credentials: "same-origin" });
         if (res.ok) css = await res.text();
       } catch {
         css = null;

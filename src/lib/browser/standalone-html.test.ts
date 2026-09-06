@@ -18,6 +18,12 @@ const browsers: Browser[] = [];
 beforeEach(async () => {
   fixtureServer = createServer((request, response) => {
     const path = (request.url ?? "/").split("?")[0];
+    if (path === "/assets/private.css") {
+      response.setHeader("content-type", "text/css");
+      response.statusCode = request.headers.cookie?.includes("snapshot_session=valid") ? 200 : 401;
+      response.end(".private { color: rgb(7, 8, 9); }");
+      return;
+    }
     if (path === "/assets/page.css") {
       response.setHeader("content-type", "text/css; charset=utf-8");
       response.end("body { background: rgb(1, 2, 3); background-image: url(/assets/pixel.png); }");
@@ -77,6 +83,49 @@ async function capture(maxResourceBytes: number) {
 }
 
 describe("standalone HTML snapshots", () => {
+  test("captures anonymous cross-origin assets while retaining same-origin authentication", async () => {
+    const requests: Array<{ path: string; cookie: string | undefined }> = [];
+    const cdn = createServer((request, response) => {
+      requests.push({ path: request.url ?? "", cookie: request.headers.cookie });
+      response.setHeader("Access-Control-Allow-Origin", "*");
+      if (request.url === "/page.css") {
+        response.setHeader("content-type", "text/css");
+        response.end('.external { background-image: url("/pixel.png"); color: rgb(4, 5, 6); }');
+      } else {
+        response.setHeader("content-type", "image/png");
+        response.end(PIXEL_PNG);
+      }
+    });
+    await new Promise<void>((resolve) => cdn.listen(0, "127.0.0.1", resolve));
+    const address = cdn.address();
+    if (!address || typeof address === "string") throw new Error("CDN did not bind TCP.");
+    const origin = `http://127.0.0.1:${address.port}`;
+    try {
+      const browser = new Browser({ profileDir: profile(), navigationTimeout: 10_000 });
+      browsers.push(browser);
+      await browser.open();
+      await browser.navigate(fixtureOrigin);
+      await browser.evaluate(`document.cookie = "snapshot_session=valid; path=/";
+        Promise.all(["/assets/private.css", "${origin}/page.css"].map(href => new Promise((resolve, reject) => {
+          const link = document.createElement("link"); link.rel = "stylesheet"; link.href = href;
+          link.onload = resolve; link.onerror = reject; document.head.append(link);
+        })));`);
+      requests.length = 0;
+      const snapshot = await browser.standaloneHtml();
+      expect(snapshot.html).toContain("rgb(7, 8, 9)");
+      expect(snapshot.html).toContain("rgb(4, 5, 6)");
+      expect(snapshot.html).toContain(`data-harnery-inlined-from="${origin}/page.css"`);
+      expect(snapshot.html).toContain('url("data:image/png;base64,');
+      expect(requests.some((request) => request.path === "/pixel.png")).toBe(true);
+      expect(requests.every((request) => request.cookie === undefined)).toBe(true);
+      expect(
+        browser.diagnostics().consoleErrors.filter((event) => event.text.includes("CORS")),
+      ).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => cdn.close(() => resolve()));
+    }
+  });
+
   test("inlines stylesheets and small resources, absolutizes the rest", async () => {
     const snapshot = await capture(1024);
 
