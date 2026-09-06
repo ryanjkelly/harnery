@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -39,6 +40,8 @@ test("failed gate still emits a plan; capture uses exact IDs and refuses source 
         resolve(import.meta.dir, "../../bin/harn"),
         "browse",
         ...base,
+        "--out",
+        join(dir, `artifact-${n}`),
         "--profile",
         join(dir, `profile-${n++}`),
         "--evaluate",
@@ -50,7 +53,13 @@ test("failed gate still emits a plan; capture uses exact IDs and refuses source 
   const gate = run(["--review-pack-plan", "--check-visible", "#missing", "--check-visible-fail"]);
   if (gate.status !== 2) throw new Error(gate.stderr);
   expect(gate.status).toBe(2);
-  const plan = JSON.parse(gate.stdout).review_pack_capture_plan as PageReviewCapturePlan;
+  const gateEnvelope = JSON.parse(gate.stdout);
+  const plan = gateEnvelope.review_pack_capture_plan as PageReviewCapturePlan;
+  const plannedSourcePath = gateEnvelope.review_pack_source_evidence.path;
+  const plannedSource = readFileSync(plannedSourcePath);
+  expect(createHash("sha256").update(plannedSource).digest("hex")).toBe(plan.source_digest);
+  expect(JSON.parse(plannedSource.toString()).dom).toContain("<script>");
+  expect(gate.stdout).not.toContain("function initialize");
   expect(plan.candidates.length).toBeGreaterThan(4);
   const allocation = allocateTileBudget([plan], 3).contexts[0],
     path = join(dir, "allocation.json");
@@ -67,8 +76,23 @@ test("failed gate still emits a plan; capture uses exact IDs and refuses source 
     allocation.selected_ids.map((id) => plan.candidates.find((c) => c.id === id)!.rect.y),
   );
   expect(context.allocation_coverage.uncovered_intervals.length).toBeGreaterThan(0);
+  expect(envelope.review_pack_source_evidence.path).not.toBe(plannedSourcePath);
+  expect(
+    createHash("sha256")
+      .update(readFileSync(envelope.review_pack_source_evidence.path))
+      .digest("hex"),
+  ).toBe(plan.source_digest);
   writeFileSync(file, readFileSync(file, "utf8").replace("Review fixture", "Changed fixture"));
   const stale = run(["--review-pack", join(dir, "changed-pack"), "--review-pack-allocation", path]);
   expect(stale.status).toBe(1);
   expect(stale.stderr).toContain("source changed");
+  const failedSourcePath = stale.stderr.match(
+    /Current source identity: (.+) \(sha256 ([a-f0-9]+)\)/,
+  );
+  expect(failedSourcePath).not.toBeNull();
+  const failedSource = readFileSync(failedSourcePath![1]);
+  expect(createHash("sha256").update(failedSource).digest("hex")).toBe(failedSourcePath![2]);
+  expect(failedSourcePath![2]).not.toBe(plan.source_digest);
+  expect(JSON.parse(failedSource.toString()).dom).toContain("Changed fixture");
+  expect(readFileSync(plannedSourcePath)).toEqual(plannedSource);
 }, 90000);

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -53,6 +52,7 @@ import {
   PAGE_REVIEW_CAPTURE_PLAN_SCHEMA,
   type PageReviewCapturePlan,
   type PageReviewContextAllocation,
+  type PageReviewSourceEvidence,
 } from "../lib/browser/page-review-contracts.ts";
 import {
   findPackTile,
@@ -65,6 +65,7 @@ import {
   writePackContext,
   writePackExpandedTile,
 } from "../lib/browser/page-review-pack.ts";
+import { retainPageReviewSourceIdentity } from "../lib/browser/page-review-source.ts";
 import {
   buildQaManifest,
   classifySignatures,
@@ -129,6 +130,7 @@ interface BrowseOpts {
   reviewPackPlan?: boolean;
   reviewPackAllocation?: string;
   capturePlanResult?: PageReviewCapturePlan;
+  captureSourceEvidence?: PageReviewSourceEvidence;
   out?: string;
   // Commander expands `--no-X` into `opts.x = false` (default true), not
   // `opts.noX`. So `--no-screenshot` toggles `screenshot`, `--no-full-page`
@@ -748,7 +750,8 @@ export function registerBrowseCommand(
     )
     .option(
       "--review-pack-plan",
-      "Emit all native capture candidates and gate associations without capturing tiles.",
+      "Emit all native capture candidates and gate associations without capturing tiles. " +
+        "With --out, retain private source identity inputs beside the output for diagnostics.",
     )
     .option(
       "--review-pack-allocation <json-file>",
@@ -1632,6 +1635,7 @@ async function runPrintMode(
     if (qaReuse) result.qaReuse = qaReuse;
     if (reviewPack) result.reviewPack = reviewPack;
     if (opts.capturePlanResult) result.review_pack_capture_plan = opts.capturePlanResult;
+    if (opts.captureSourceEvidence) result.review_pack_source_evidence = opts.captureSourceEvidence;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
     }
@@ -1786,6 +1790,7 @@ async function runTrioMode(
   if (qaReuse) envelope.qaReuse = qaReuse;
   if (reviewPack) envelope.reviewPack = reviewPack;
   if (opts.capturePlanResult) envelope.review_pack_capture_plan = opts.capturePlanResult;
+  if (opts.captureSourceEvidence) envelope.review_pack_source_evidence = opts.captureSourceEvidence;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
   }
@@ -2552,6 +2557,11 @@ async function buildReviewCapturePlan(
     }
     return document.documentElement.outerHTML;
   }, signature.domHtml);
+  const source = retainPageReviewSourceIdentity(
+    { nodes: signature.nodes, stylesheets: signature.stylesheets, dom: canonicalDom },
+    opts.out ?? (opts.reviewPack ? resolve(opts.reviewPack, "source") : undefined),
+  );
+  opts.captureSourceEvidence = source.evidence;
   const atoms = (await browser.visualAtoms()).map((a) => ({
     ...a,
     top: Math.round(a.top * dpr),
@@ -2583,15 +2593,7 @@ async function buildReviewCapturePlan(
     dpr,
     page_width: Math.round(geometry.width * dpr),
     page_height: Math.round(geometry.height * dpr),
-    source_digest: createHash("sha256")
-      .update(
-        JSON.stringify({
-          nodes: signature.nodes,
-          stylesheets: signature.stylesheets,
-          dom: canonicalDom,
-        }),
-      )
-      .digest("hex"),
+    source_digest: source.digest,
     recipe_version: REVIEW_CAPTURE_RECIPE,
     required_scopes: opts.reviewPackScope ?? [],
     candidates: reviewCandidateRects({
@@ -2616,10 +2618,16 @@ async function captureReviewPackContext(
   const plan = await buildReviewCapturePlan(browser, opts);
   let allocation: PageReviewContextAllocation;
   if (opts.reviewPackAllocation) {
-    allocation = validatePageReviewAllocation(
-      JSON.parse(readFileSync(resolve(opts.reviewPackAllocation), "utf8")),
-      plan,
-    );
+    try {
+      allocation = validatePageReviewAllocation(
+        JSON.parse(readFileSync(resolve(opts.reviewPackAllocation), "utf8")),
+        plan,
+      );
+    } catch (error) {
+      if (error instanceof Error && opts.captureSourceEvidence)
+        error.message += ` Current source identity: ${opts.captureSourceEvidence.path} (sha256 ${plan.source_digest}).`;
+      throw error;
+    }
   } else {
     // Standalone capture retains its 24-tile default; it still obeys one hard total.
     const maxTiles = critiqueTilingKnobs(opts).maxTiles;

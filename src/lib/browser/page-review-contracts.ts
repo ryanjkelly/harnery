@@ -25,6 +25,15 @@ export interface PageReviewCandidate {
   gate_hits: Array<{ check_id: string; severity: "critical" | "high" | "medium" | "low" | "info" }>;
 }
 
+/** Private diagnostic receipt, not an additional acceptance condition. Hash
+ * the referenced file bytes directly to reproduce source_digest. */
+export interface PageReviewSourceEvidence {
+  path: string;
+  sha256: string;
+  bytes: number;
+  encoding: "utf8";
+}
+
 export interface PageReviewCapturePlan {
   schema: typeof PAGE_REVIEW_CAPTURE_PLAN_SCHEMA;
   context_id: string;
