@@ -576,6 +576,48 @@ describe("semantic service", () => {
     expect(errors).toHaveLength(1);
   });
 
+  test("backs the wake timer off while sweeps find nothing and snaps back on new events", async () => {
+    const root = fixture();
+    const waits: number[] = [];
+    let sweeps = 0;
+    const idle = {
+      events: [] as unknown[],
+      diagnostics: [],
+      complete: true,
+      genesis_id: "gex_fixture",
+      active_schema_digest: "fixture",
+      advances: [],
+      bytes: 0,
+      cursor: undefined,
+      reset_required: false,
+    };
+    const busy = {
+      ...idle,
+      events: [{ event: {}, position: { segment_ordinal: 1, byte_offset: 0 } }],
+    };
+    await runSemanticServiceDaemon({
+      coordRoot: root,
+      debounceMs: 60_000,
+      wakeIntervalMs: 10,
+      idleWakeMaxMs: 25,
+      heartbeatIntervalMs: 60_000,
+      maxSweeps: 5,
+      readSince: (() => {
+        sweeps += 1;
+        return sweeps === 4 ? busy : idle;
+      }) as unknown as typeof readLedgerV3Since,
+      async runOnce() {
+        throw new Error("no pass is due inside the debounce window");
+      },
+      waitForWake: async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    });
+    // 10 ms base: idle sweeps double to 20, then clamp at 25; the fourth sweep saw an
+    // event and reset the timer; the fifth hit maxSweeps before waiting.
+    expect(waits).toEqual([20, 25, 25, 10]);
+  });
+
   test("writes shared diagnostics by default and uses only the legacy path on rollback", async () => {
     delete process.env.HARNERY_SHARED_LOGS;
     const sharedRoot = fixture();

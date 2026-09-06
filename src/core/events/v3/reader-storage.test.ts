@@ -44,7 +44,7 @@ describe("event ledger V3 filesystem discovery", () => {
     expect(read.bytes).toBe(Buffer.byteLength(`${canonicalJsonV3(genesis)}\n`, "utf8"));
   });
 
-  test("keeps a 12 MB full read and one-frame append inside stated ceilings", () => {
+  test("keeps a 12 MB full read and one-frame append inside stated ceilings, for cursor reads too", () => {
     const root = temporaryRoot();
     const row = `${canonicalJsonV3(eventV3Fixture("ledger.genesis", 1))}\n`;
     const rowBytes = Buffer.byteLength(row, "utf8");
@@ -67,6 +67,25 @@ describe("event ledger V3 filesystem discovery", () => {
     expect(appended.complete).toBe(true);
     expect(appended.events[0]).toBe(full.events[0]);
     expect(appendElapsed).toBeLessThan(APPEND_READ_CEILING_MS);
+
+    // A tail poller must ride the same snapshot: before 2026-09-06 readLedgerV3Since
+    // rediscovered and revalidated every frame per call (about 0.5 s for a 24.5 MB
+    // ledger, once a second, from the semantic service).
+    const tail = readLedgerV3Since(root);
+    expect(tail.cursor).toBeDefined();
+    // A distinct event: the repeated genesis row above collapses to one event per id.
+    appendFileSync(
+      paths.active,
+      `${canonicalJsonV3(eventV3Fixture("ledger.comparability_advanced", 2))}\n`,
+      "utf8",
+    );
+    const sinceStarted = performance.now();
+    const since = readLedgerV3Since(root, tail.cursor);
+    const sinceElapsed = performance.now() - sinceStarted;
+    expect(since.complete).toBe(true);
+    expect(since.reset_required).toBe(false);
+    expect(since.events).toHaveLength(1);
+    expect(sinceElapsed).toBeLessThan(APPEND_READ_CEILING_MS);
   });
 
   test("reuses one validated snapshot until ledger storage changes", () => {

@@ -65,6 +65,11 @@ export {
 export const SEMANTIC_SERVICE_DEFAULT_DEBOUNCE_MS = 5_000;
 export const SEMANTIC_SERVICE_DEFAULT_WAKE_MS = 1_000;
 export const SEMANTIC_SERVICE_DEFAULT_HEARTBEAT_MS = 5_000;
+// Ceiling for the wake timer while sweeps find nothing. The timer is only the fallback
+// behind fs.watch on the active ledger, so backing it off delays nothing that writes an
+// event; it stops an idle daemon from re-reading the manifest and agent documents once a
+// second all night. Observed 2026-09-06: 142,637 sweeps in 70 h, 10,291 of them passes.
+export const SEMANTIC_SERVICE_DEFAULT_IDLE_WAKE_MAX_MS = 30_000;
 const FOREIGN_STATUS_STALE_MS = 2 * 60_000;
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LOG_BYTES = 512 * 1024;
@@ -96,6 +101,7 @@ export interface RunSemanticServiceDaemonInput {
   callsPerHour?: number;
   debounceMs?: number;
   wakeIntervalMs?: number;
+  idleWakeMaxMs?: number;
   heartbeatIntervalMs?: number;
   maxSweeps?: number;
   now?: () => Date;
@@ -251,6 +257,13 @@ export async function runSemanticServiceDaemon(
     input.heartbeatIntervalMs ?? SEMANTIC_SERVICE_DEFAULT_HEARTBEAT_MS,
     "heartbeat interval",
   );
+  const idleWakeMaxMs = Math.max(
+    wakeIntervalMs,
+    positiveInterval(
+      input.idleWakeMaxMs ?? SEMANTIC_SERVICE_DEFAULT_IDLE_WAKE_MAX_MS,
+      "idle wake ceiling",
+    ),
+  );
   const readSince = input.readSince ?? readLedgerV3Since;
   const runOnce =
     input.runOnce ??
@@ -279,6 +292,8 @@ export async function runSemanticServiceDaemon(
   };
   let stopRequested = false;
   let dirtySince: number | undefined;
+  let idleSweeps = 0;
+  let wakeEarly: (() => void) | undefined;
   let lastLoggedErrorCode: string | undefined;
   let lastLoggedErrorAt = Number.NEGATIVE_INFINITY;
   const writeStatus = (): void => {
@@ -289,6 +304,8 @@ export async function runSemanticServiceDaemon(
     stopRequested = true;
     status.state = "stopping";
     writeStatus();
+    // A backed-off wait must not hold a stop request for up to the idle ceiling.
+    wakeEarly?.();
   };
   process.on("SIGINT", requestStop);
   process.on("SIGTERM", requestStop);
@@ -306,6 +323,7 @@ export async function runSemanticServiceDaemon(
     while (!stopRequested && !existsSync(paths.stop)) {
       const sweepAt = now();
       status.sweep_count += 1;
+      let sawWork = false;
       try {
         const before = safeManifest(coordRoot);
         let read = readSince(coordRoot, before?.cursor, { authority: "active" });
@@ -313,6 +331,7 @@ export async function runSemanticServiceDaemon(
           read = readSince(coordRoot, undefined, { authority: "active" });
         }
         requireCompleteLedger(read);
+        if (read.events.length > 0) sawWork = true;
         if (read.events.length > 0 || !before?.cursor) {
           dirtySince ??= sweepAt.getTime();
         }
@@ -342,6 +361,7 @@ export async function runSemanticServiceDaemon(
             shouldStop: () => stopRequested || existsSync(paths.stop),
           });
           status.pass_count += 1;
+          sawWork = true;
           status.model_calls += report.model_calls;
           status.cache_hits += report.cache_hits;
           status.process_usage = mergeSemanticUsageAggregates(
@@ -392,10 +412,19 @@ export async function runSemanticServiceDaemon(
       }
       status.last_sweep_at = now().toISOString();
       writeStatus();
+      idleSweeps = sawWork ? 0 : idleSweeps + 1;
       if (input.maxSweeps !== undefined && status.sweep_count >= input.maxSweeps) break;
       if (!stopRequested && !existsSync(paths.stop)) {
-        if (input.waitForWake) await input.waitForWake(wakeIntervalMs);
-        else await waitForLedgerWake(eventV3ActiveWatchPath(coordRoot), wakeIntervalMs);
+        // Double the fallback timer per idle sweep, up to the ceiling; any sweep that
+        // sees events or runs a pass snaps it back to the configured interval.
+        const waitMs = Math.min(idleWakeMaxMs, wakeIntervalMs * 2 ** Math.min(idleSweeps, 20));
+        if (input.waitForWake) await input.waitForWake(waitMs);
+        else {
+          await waitForLedgerWake(eventV3ActiveWatchPath(coordRoot), waitMs, (wake) => {
+            wakeEarly = wake;
+          });
+          wakeEarly = undefined;
+        }
       }
     }
   } finally {
@@ -566,7 +595,11 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-async function waitForLedgerWake(path: string, milliseconds: number): Promise<void> {
+async function waitForLedgerWake(
+  path: string,
+  milliseconds: number,
+  onWait?: (wake: () => void) => void,
+): Promise<void> {
   await new Promise<void>((done) => {
     let settled = false;
     let watcher: ReturnType<typeof watch> | undefined;
@@ -583,6 +616,7 @@ async function waitForLedgerWake(path: string, milliseconds: number): Promise<vo
     } catch {
       // The timer is the polling fallback when the active file does not exist yet.
     }
+    onWait?.(finish);
   });
 }
 

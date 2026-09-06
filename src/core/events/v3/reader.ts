@@ -480,18 +480,12 @@ export function readLedgerV3Since(
   cursor?: LedgerCursorV3,
   options: ReadLedgerV3Options = {},
 ): ReadLedgerV3SinceResult {
-  const discovered = discoverLedgerFramesV3(coordRoot);
-  const read = readLedgerFramesV3Since(discovered.frames, cursor, options);
-  const recovery = discoverRecoveryReceiptsV3(coordRoot);
-  const diagnostics = [...discovered.diagnostics, ...read.diagnostics, ...recovery.diagnostics];
-  return {
-    ...read,
-    events: diagnostics.length === 0 ? read.events : [],
-    diagnostics,
-    complete: diagnostics.length === 0,
-    bytes: discovered.bytes,
-    failed_epochs: recovery.receipts,
-  };
+  // Read through the validated snapshot cache that readLedgerV3 keeps, so a caller that
+  // polls the tail pays for the bytes appended since its last call, not for the whole
+  // authority. Until 2026-09-06 this rediscovered and revalidated every frame on every
+  // call: a 24.5 MB active segment cost about 0.5 s to return zero new events, and the
+  // semantic service asked once a second for three days (3.2 cores on an idle host).
+  return sliceLedgerReadSinceV3(readLedgerV3(coordRoot, options), cursor);
 }
 
 function discoverRecoveryReceiptsV3(coordRoot: string): {
@@ -740,7 +734,14 @@ export function readLedgerFramesV3Since(
   cursor?: LedgerCursorV3,
   options: ReadLedgerV3Options = {},
 ): ReadLedgerV3SinceResult {
-  const read = readLedgerFramesV3(frames, options);
+  return sliceLedgerReadSinceV3(readLedgerFramesV3(frames, options), cursor);
+}
+
+/** Apply a resume cursor to a validated read: the events after it, plus the next cursor. */
+function sliceLedgerReadSinceV3(
+  read: ReadLedgerV3Result,
+  cursor?: LedgerCursorV3,
+): ReadLedgerV3SinceResult {
   if (!read.genesis_id || !read.complete) {
     return { ...read, events: [], cursor, reset_required: Boolean(cursor) };
   }
