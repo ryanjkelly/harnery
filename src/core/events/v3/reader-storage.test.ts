@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import {
   appendFileSync,
   mkdirSync,
@@ -24,8 +25,6 @@ import { EVENT_V3_LEDGER_RELATIVE_ROOT, readLedgerV3, readLedgerV3Since } from "
 
 const roots: string[] = [];
 const PERFORMANCE_LEDGER_BYTES = 12 * 1024 * 1024;
-const FULL_READ_CEILING_MS = 3_000;
-const APPEND_READ_CEILING_MS = 100;
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -44,7 +43,7 @@ describe("event ledger V3 filesystem discovery", () => {
     expect(read.bytes).toBe(Buffer.byteLength(`${canonicalJsonV3(genesis)}\n`, "utf8"));
   });
 
-  test("keeps a 12 MB full read and one-frame append inside stated ceilings, for cursor reads too", () => {
+  test("reads only appended bytes after a 12 MB snapshot, for cursor reads too", () => {
     const root = temporaryRoot();
     const row = `${canonicalJsonV3(eventV3Fixture("ledger.genesis", 1))}\n`;
     const rowBytes = Buffer.byteLength(row, "utf8");
@@ -53,40 +52,50 @@ describe("event ledger V3 filesystem discovery", () => {
     mkdirSync(paths.root, { recursive: true });
     writeFileSync(paths.active, row.repeat(rows), "utf8");
 
-    const fullStarted = performance.now();
-    const full = readLedgerV3(root);
-    const fullElapsed = performance.now() - fullStarted;
-    expect(full.complete).toBe(true);
-    expect(full.bytes).toBeGreaterThanOrEqual(PERFORMANCE_LEDGER_BYTES);
-    expect(fullElapsed).toBeLessThan(FULL_READ_CEILING_MS);
+    const wholeReads = spyOn(fs, "readFileSync");
+    const rangeReads = spyOn(fs, "readSync");
+    const rangeBytesRead = () =>
+      rangeReads.mock.results.reduce(
+        (total, result) => total + (result.type === "return" ? result.value : 0),
+        0,
+      );
+    try {
+      const full = readLedgerV3(root);
+      expect(full.complete).toBe(true);
+      expect(full.bytes).toBeGreaterThanOrEqual(PERFORMANCE_LEDGER_BYTES);
+      expect(wholeReads.mock.calls.filter(([path]) => path === paths.active)).toHaveLength(1);
+      wholeReads.mockClear();
+      rangeReads.mockClear();
 
-    appendFileSync(paths.active, row, "utf8");
-    const appendStarted = performance.now();
-    const appended = readLedgerV3(root);
-    const appendElapsed = performance.now() - appendStarted;
-    expect(appended.complete).toBe(true);
-    expect(appended.events[0]).toBe(full.events[0]);
-    expect(appendElapsed).toBeLessThan(APPEND_READ_CEILING_MS);
+      appendFileSync(paths.active, row, "utf8");
+      const appended = readLedgerV3(root);
+      expect(appended.complete).toBe(true);
+      expect(appended.events[0]).toBe(full.events[0]);
+      expect(wholeReads.mock.calls.filter(([path]) => path === paths.active)).toHaveLength(0);
+      expect(rangeBytesRead()).toBe(rowBytes);
 
-    // A tail poller must ride the same snapshot: before 2026-09-06 readLedgerV3Since
-    // rediscovered and revalidated every frame per call (about 0.5 s for a 24.5 MB
-    // ledger, once a second, from the semantic service).
-    const tail = readLedgerV3Since(root);
-    expect(tail.cursor).toBeDefined();
-    // A distinct event: the repeated genesis row above collapses to one event per id.
-    appendFileSync(
-      paths.active,
-      `${canonicalJsonV3(eventV3Fixture("ledger.comparability_advanced", 2))}\n`,
-      "utf8",
-    );
-    const sinceStarted = performance.now();
-    const since = readLedgerV3Since(root, tail.cursor);
-    const sinceElapsed = performance.now() - sinceStarted;
-    expect(since.complete).toBe(true);
-    expect(since.reset_required).toBe(false);
-    expect(since.events).toHaveLength(1);
-    expect(sinceElapsed).toBeLessThan(APPEND_READ_CEILING_MS);
-  });
+      // A tail poller must ride the same snapshot: before 2026-09-06 readLedgerV3Since
+      // rediscovered and revalidated every frame per call (about 0.5 s for a 24.5 MB
+      // ledger, once a second, from the semantic service).
+      const tail = readLedgerV3Since(root);
+      expect(tail.cursor).toBeDefined();
+      expect(rangeBytesRead()).toBe(rowBytes);
+      wholeReads.mockClear();
+      rangeReads.mockClear();
+      // A distinct event: the repeated genesis row above collapses to one event per id.
+      const nextRow = `${canonicalJsonV3(eventV3Fixture("ledger.comparability_advanced", 2))}\n`;
+      appendFileSync(paths.active, nextRow, "utf8");
+      const since = readLedgerV3Since(root, tail.cursor);
+      expect(since.complete).toBe(true);
+      expect(since.reset_required).toBe(false);
+      expect(since.events).toHaveLength(1);
+      expect(wholeReads.mock.calls.filter(([path]) => path === paths.active)).toHaveLength(0);
+      expect(rangeBytesRead()).toBe(Buffer.byteLength(nextRow, "utf8"));
+    } finally {
+      wholeReads.mockRestore();
+      rangeReads.mockRestore();
+    }
+  }, 15_000);
 
   test("reuses one validated snapshot until ledger storage changes", () => {
     const root = temporaryRoot();

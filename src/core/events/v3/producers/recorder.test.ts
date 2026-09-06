@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -48,6 +48,26 @@ import {
 } from "./recorder.ts";
 
 const roots: string[] = [];
+
+// These synchronous cases own fresh roots, so only the recorder's retry waits
+// can fire inside the callback. Publish real transcript bytes at that boundary
+// without racing child-process startup or the host's scheduler.
+function withRecorderWaits<T>(
+  action: () => T,
+  onWait?: (delays: number[]) => void,
+): { result: T; delays: number[] } {
+  const delays: number[] = [];
+  const wait = spyOn(Atomics, "wait").mockImplementation((_cell, _index, _value, timeout) => {
+    delays.push(timeout ?? 0);
+    onWait?.(delays);
+    return "timed-out";
+  });
+  try {
+    return { result: action(), delays };
+  } finally {
+    wait.mockRestore();
+  }
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -384,6 +404,8 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(`${durable}\n${diagnostics.join("\n")}`).not.toContain("private-response");
   }, 30_000);
 
+  // This case deliberately persists 42 tool pairs across recovery boundaries.
+  // Allow durable I/O on a shared runner; the assertions prove behavior.
   test("keeps Claude post-stop tools out of the next native turn", () => {
     const root = candidateRoot("claude-code");
     const nativeSession = "claude-post-stop-tools";
@@ -506,7 +528,7 @@ describe("event ledger V3 persistent hook recorder", () => {
         expect(turn.tool_ms.reasons).not.toContain("tool_terminal_count_mismatch");
       }
     }
-  }, 30_000);
+  }, 60_000);
 
   test("keeps different Cursor prompt ids inside one canonical turn", () => {
     const root = candidateRoot("cursor");
@@ -1910,7 +1932,7 @@ describe("event ledger V3 persistent hook recorder", () => {
     clearRuntimeTelemetryCachesForTest();
   });
 
-  test("covers Codex's terminal-row flush race inside the bounded Stop grace", async () => {
+  test.each([1, 2])("joins a Codex terminal flushed at Stop retry %i", (flushAtRetry) => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-stop-context-flush";
     const nativeTurn = "codex-stop-context-turn";
@@ -1936,15 +1958,6 @@ describe("event ledger V3 persistent hook recorder", () => {
       ),
     );
 
-    const writerScript = join(root, "delayed-stop-transcript-append.mjs");
-    writeFileSync(
-      writerScript,
-      [
-        'import { appendFileSync } from "node:fs";',
-        "await new Promise((resolve) => setTimeout(resolve, Number(process.argv[2])));",
-        "appendFileSync(process.argv[3], process.argv[4]);",
-      ].join("\n"),
-    );
     const terminalRows = `${[
       {
         timestamp: "2026-08-21T20:24:14.100Z",
@@ -1967,25 +1980,22 @@ describe("event ledger V3 persistent hook recorder", () => {
     ]
       .map((row) => JSON.stringify(row))
       .join("\n")}\n`;
-    const writer = Bun.spawn([process.execPath, writerScript, "50", transcript, terminalRows], {
-      stdout: "ignore",
-      stderr: "inherit",
-    });
-    const startedAt = performance.now();
-    expect(
-      recordHookSignalV3(
-        baseInput(
-          root,
-          "stop",
-          parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
-          "codex",
+    const { result, delays } = withRecorderWaits(
+      () =>
+        recordHookSignalV3(
+          baseInput(
+            root,
+            "stop",
+            parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+            "codex",
+          ),
         ),
-      ).state,
-    ).toBe("recorded");
-    const elapsedMs = performance.now() - startedAt;
-    expect(await writer.exited).toBe(0);
-    expect(elapsedMs).toBeGreaterThanOrEqual(50);
-    expect(elapsedMs).toBeLessThan(1_000);
+      (requested) => {
+        if (requested.length === flushAtRetry) appendFileSync(transcript, terminalRows);
+      },
+    );
+    expect(result.state).toBe("recorded");
+    expect(delays).toEqual(flushAtRetry === 1 ? [75] : [75, 175]);
 
     const contexts = readLedgerV3(root)
       .events.map(({ event }) => event)
@@ -2033,14 +2043,18 @@ describe("event ledger V3 persistent hook recorder", () => {
         "codex",
       ),
     );
-    recordHookSignalV3(
-      baseInput(
-        root,
-        "stop",
-        parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
-        "codex",
+    const { result: stopped, delays } = withRecorderWaits(() =>
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "stop",
+          parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+          "codex",
+        ),
       ),
     );
+    expect(stopped.state).toBe("recorded");
+    expect(delays).toEqual([75, 175]);
     expect(
       readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
     ).toHaveLength(1);
@@ -2552,7 +2566,7 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(durable).not.toContain(nativeTurn);
   });
 
-  test("waits briefly for a late Codex terminal before an approved session end", async () => {
+  test.each([1, 2])("joins a Codex terminal flushed at approved-end retry %i", (flushAtRetry) => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-approved-end-context-flush";
     const nativeTurn = "codex-approved-end-context-turn";
@@ -2588,15 +2602,6 @@ describe("event ledger V3 persistent hook recorder", () => {
     const state = readHookProducerStateV3(root, "codex", nativeSession);
     if (!state) throw new Error("producer state missing");
 
-    const writerScript = join(root, "delayed-transcript-append.mjs");
-    writeFileSync(
-      writerScript,
-      [
-        'import { appendFileSync } from "node:fs";',
-        "await new Promise((resolve) => setTimeout(resolve, Number(process.argv[2])));",
-        "appendFileSync(process.argv[3], process.argv[4]);",
-      ].join("\n"),
-    );
     const terminalRows = `${[
       {
         timestamp: "2026-08-21T20:24:14.100Z",
@@ -2619,23 +2624,25 @@ describe("event ledger V3 persistent hook recorder", () => {
     ]
       .map((row) => JSON.stringify(row))
       .join("\n")}\n`;
-    const writer = Bun.spawn([process.execPath, writerScript, "300", transcript, terminalRows], {
-      stdout: "ignore",
-      stderr: "inherit",
-    });
-    const ended = recordApprovedSessionEndV3({
-      coordRoot: root,
-      mode: "candidate",
-      instance_id: state.instance_id,
-      generation_id: state.generation_id,
-      build_id: "build_fixture",
-      platform: "linux",
-      reason: "approved_explicit_end",
-      outcome: "succeeded",
-      coordination_finalized: true,
-    });
-    expect(await writer.exited).toBe(0);
+    const { result: ended, delays } = withRecorderWaits(
+      () =>
+        recordApprovedSessionEndV3({
+          coordRoot: root,
+          mode: "candidate",
+          instance_id: state.instance_id,
+          generation_id: state.generation_id,
+          build_id: "build_fixture",
+          platform: "linux",
+          reason: "approved_explicit_end",
+          outcome: "succeeded",
+          coordination_finalized: true,
+        }),
+      (requested) => {
+        if (requested.length === flushAtRetry) appendFileSync(transcript, terminalRows);
+      },
+    );
     expect(ended.state).toBe("recorded");
+    expect(delays).toEqual(flushAtRetry === 1 ? [250] : [250, 250]);
 
     const events = readLedgerV3(root).events.map(({ event }) => event);
     const contexts = events.filter((event) => event.event_type === "context.observed");
@@ -2688,8 +2695,7 @@ describe("event ledger V3 persistent hook recorder", () => {
     const state = readHookProducerStateV3(root, "codex", nativeSession);
     if (!state) throw new Error("producer state missing");
 
-    const startedAt = performance.now();
-    expect(
+    const { result, delays } = withRecorderWaits(() =>
       recordApprovedSessionEndV3({
         coordRoot: root,
         mode: "candidate",
@@ -2700,12 +2706,10 @@ describe("event ledger V3 persistent hook recorder", () => {
         reason: "approved_explicit_end",
         outcome: "succeeded",
         coordination_finalized: true,
-      }).state,
-    ).toBe("recorded");
-    const elapsedMs = performance.now() - startedAt;
-
-    expect(elapsedMs).toBeGreaterThanOrEqual(450);
-    expect(elapsedMs).toBeLessThan(2_000);
+      }),
+    );
+    expect(result.state).toBe("recorded");
+    expect(delays).toEqual([250, 250]);
     expect(
       readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
     ).toBeUndefined();

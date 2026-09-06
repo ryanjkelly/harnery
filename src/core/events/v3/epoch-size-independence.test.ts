@@ -34,6 +34,8 @@ const SMALL_BYTES = 1024 * 1024;
 const LARGE_BYTES = 40 * 1024 * 1024;
 const MAX_RATIO = 1.2;
 const PROBE_RUNS = 7;
+// Includes fixture generation and cold subprocess probes, even in focused runs.
+const FIXTURE_TIMEOUT_MS = 15_000;
 
 type ControlStateName = EventV3ControlState["state"];
 
@@ -51,47 +53,61 @@ afterEach(() => {
 });
 
 describe("event ledger V3 hook receipts are epoch-size independent", () => {
-  test("an active epoch costs the same at 1 MiB and at 40 MiB", () => {
-    const small = probe(activeRootOfSize(SMALL_BYTES), "active");
-    const large = probe(activeRootOfSize(LARGE_BYTES), "active");
-    expectSizeIndependent("active", small, large);
-  });
+  test(
+    "an active epoch costs the same at 1 MiB and at 40 MiB",
+    () => {
+      const small = probe(activeRootOfSize(SMALL_BYTES), "active");
+      const large = probe(activeRootOfSize(LARGE_BYTES), "active");
+      expectSizeIndependent("active", small, large);
+    },
+    FIXTURE_TIMEOUT_MS,
+  );
 
-  test("a candidate epoch costs the same at 1 MiB and at 40 MiB", () => {
-    const small = probe(candidateRootOfSize(SMALL_BYTES), "candidate");
-    const large = probe(candidateRootOfSize(LARGE_BYTES), "candidate");
-    expectSizeIndependent("candidate", small, large);
-  });
+  test(
+    "a candidate epoch costs the same at 1 MiB and at 40 MiB",
+    () => {
+      const small = probe(candidateRootOfSize(SMALL_BYTES), "candidate");
+      const large = probe(candidateRootOfSize(LARGE_BYTES), "candidate");
+      expectSizeIndependent("candidate", small, large);
+    },
+    FIXTURE_TIMEOUT_MS,
+  );
 
-  test("a stranded 40 MiB candidate is repaired and rotated at the next route resolution", () => {
-    const root = candidateRootOfSize(LARGE_BYTES);
-    const strandedBytes = statSync(eventV3Paths(root).active).size;
-    expect(strandedBytes).toBeGreaterThanOrEqual(LARGE_BYTES);
-    expect(readEventV3ControlState(root).state).toBe("candidate");
+  test(
+    "a stranded 40 MiB candidate is repaired and rotated at the next route resolution",
+    () => {
+      const root = candidateRootOfSize(LARGE_BYTES);
+      const strandedBytes = statSync(eventV3Paths(root).active).size;
+      expect(strandedBytes).toBeGreaterThanOrEqual(LARGE_BYTES);
+      expect(readEventV3ControlState(root).state).toBe("candidate");
 
-    // No pinned threshold: the shipped 32 MiB default has to fire on its own.
-    expect(resolveLiveEventLedgerRouteV3(root)).toMatchObject({ state: "v3", mode: "active" });
+      // No pinned threshold: the shipped 32 MiB default has to fire on its own.
+      expect(resolveLiveEventLedgerRouteV3(root)).toMatchObject({ state: "v3", mode: "active" });
 
-    const archived = archives(root);
-    expect(archived).toHaveLength(1);
-    const archivedActive = join(
-      root,
-      ".harnery",
-      "ledgers",
-      "v3-archives",
-      archived[0]!,
-      "active.ndjson",
-    );
-    // The epoch was repaired first, so the archive carries its activation.
-    expect(statSync(archivedActive).size).toBeGreaterThanOrEqual(strandedBytes);
-    expect(
-      existsSync(join(root, ".harnery", "ledgers", "v3-archives", archived[0]!, "activation.json")),
-    ).toBeTrue();
-    expect(statSync(eventV3Paths(root).active).size).toBeLessThan(SMALL_BYTES);
+      const archived = archives(root);
+      expect(archived).toHaveLength(1);
+      const archivedActive = join(
+        root,
+        ".harnery",
+        "ledgers",
+        "v3-archives",
+        archived[0]!,
+        "active.ndjson",
+      );
+      // The epoch was repaired first, so the archive carries its activation.
+      expect(statSync(archivedActive).size).toBeGreaterThanOrEqual(strandedBytes);
+      expect(
+        existsSync(
+          join(root, ".harnery", "ledgers", "v3-archives", archived[0]!, "activation.json"),
+        ),
+      ).toBeTrue();
+      expect(statSync(eventV3Paths(root).active).size).toBeLessThan(SMALL_BYTES);
 
-    const receipt = probe(root, "active");
-    expect(receipt.state).toBe("active");
-  });
+      const receipt = probe(root, "active");
+      expect(receipt.state).toBe("active");
+    },
+    FIXTURE_TIMEOUT_MS,
+  );
 });
 
 function expectSizeIndependent(label: string, small: ProbeReceipt, large: ProbeReceipt): void {

@@ -52,9 +52,12 @@ const browserProcessFiles = new Set([
 ]);
 
 // Browser-backed checks can spend several seconds waiting for Chromium on a
-// shared CI runner. Keep the core suite's strict default while giving this
-// isolated partition enough room to finish real browser work.
+// shared CI runner. Give this isolated partition enough room to finish real
+// browser work.
 const browserTestArgs = ["--max-concurrency", "1", "--timeout", "15000"];
+// Core includes large ledger fixtures and durable filesystem transactions.
+// This is a hang guard for shared runners, not an operation latency assertion.
+const coreTestArgs = ["--timeout", "15000"];
 // Workflow integration creates and finalizes real child ledgers and worktrees.
 // Shared-machine filesystem latency can exceed Bun's five-second unit default;
 // use the same bounded allowance as browser integration, not a product deadline.
@@ -214,7 +217,7 @@ const partitionPlan = [
       extraArgs: workflowTestArgs,
     })),
   ...namedCoreFiles,
-  { label: "core test partition", files: coreFiles, extraArgs: [] },
+  { label: "core test partition", files: coreFiles, extraArgs: coreTestArgs },
 ];
 
 if (process.argv.includes("--list")) {
