@@ -12,6 +12,7 @@ import {
   assignName,
   COORD_NAMES,
   readForkParent,
+  readLiveNames,
   recordNameAssumption,
   resolveForkAncestry,
   resolveName,
@@ -297,5 +298,104 @@ describe("recorded fork lineage", () => {
       ].join("\n") + "\n",
     );
     expect(resolveForkAncestry(root, "a")).toEqual([{ instance_id: "b", name: "Bob" }]);
+  });
+});
+
+describe("live-name skip at pool assignment", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "harn-live-names-"));
+    mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Write one heartbeat row into the generation-bound cache. */
+  function beat(instanceId: string, name: string, ageSecs: number): void {
+    writeFileSync(
+      path.join(root, ".harnery", "active", `${instanceId}.json`),
+      JSON.stringify({
+        instance_id: instanceId,
+        name,
+        session_id: `sid-${instanceId}`,
+        last_heartbeat: new Date(Date.now() - ageSecs * 1000).toISOString(),
+        files_touched: [],
+      }),
+    );
+  }
+
+  test("readLiveNames keeps fresh rows and drops rows past the freshness window", () => {
+    beat("live-1", "Anna", 10);
+    beat("stale-1", "Bob", 5000);
+    const live = readLiveNames(root, { freshnessSecs: 600 });
+    expect(live.has("Anna")).toBe(true);
+    expect(live.has("Bob")).toBe(false);
+  });
+
+  test("readLiveNames tolerates a missing cache and unparseable rows", () => {
+    const bare = mkdtempSync(path.join(os.tmpdir(), "harn-live-bare-"));
+    expect(readLiveNames(bare, { freshnessSecs: 600 }).size).toBe(0);
+    rmSync(bare, { recursive: true, force: true });
+
+    writeFileSync(path.join(root, ".harnery", "active", "torn.json"), "{not json");
+    writeFileSync(path.join(root, ".harnery", "active", "nameless.json"), JSON.stringify({}));
+    beat("live-1", "Anna", 10);
+    expect([...readLiveNames(root, { freshnessSecs: 600 })]).toEqual(["Anna"]);
+  });
+
+  test("a name a live agent holds is skipped and the counter advances past it", () => {
+    // Counter points at slot 0 (Anna), but Anna is live.
+    beat("held", COORD_NAMES[0]!, 10);
+    expect(assignName(root, "sess-new", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[1]);
+    // Counter advanced past the skipped slot, so the next assign does not re-probe it.
+    expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8").trim()).toBe("2");
+  });
+
+  test("probes across a consecutive run of live names", () => {
+    beat("h0", COORD_NAMES[0]!, 10);
+    beat("h1", COORD_NAMES[1]!, 10);
+    beat("h2", COORD_NAMES[2]!, 10);
+    expect(assignName(root, "sess-new", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[3]);
+    expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8").trim()).toBe("4");
+  });
+
+  test("skip wraps the pool: a live name at slot 259 yields slot 0", () => {
+    writeFileSync(path.join(root, ".harnery", ".name-counter"), "259");
+    beat("held", COORD_NAMES[259]!, 10);
+    expect(assignName(root, "sess-new", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[0]);
+    expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8").trim()).toBe("261");
+  });
+
+  test("a stale heartbeat does not reserve its name", () => {
+    beat("gone", COORD_NAMES[0]!, 5000);
+    expect(assignName(root, "sess-new", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[0]);
+  });
+
+  test("all 260 names live: falls back to the raw counter slot instead of looping forever", () => {
+    for (let i = 0; i < 260; i++) beat(`h${i}`, COORD_NAMES[i]!, 10);
+    expect(assignName(root, "sess-new", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[0]);
+    expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8").trim()).toBe("1");
+  });
+
+  test("the reported duplicate is prevented: a wrapped counter skips the live holder", () => {
+    // Reproduces 2026-09-06: a session named at slot N still live when the
+    // counter wrapped a full lap back onto the same slot.
+    const mayaSlot = COORD_NAMES.indexOf("Maya");
+    expect(mayaSlot).toBeGreaterThan(-1);
+    beat("codex-maya", "Maya", 10);
+    writeFileSync(path.join(root, ".harnery", ".name-counter"), String(mayaSlot + 260));
+    const assigned = assignName(root, "new-subagent", "subagent", { freshnessSecs: 600 });
+    expect(assigned).not.toBe("Maya");
+    expect(assigned).toBe(COORD_NAMES[(mayaSlot + 1) % 260]);
+  });
+
+  test("resume still returns the recorded name even when a peer holds it", () => {
+    // History wins over the live set: an existing owner must never be renamed.
+    const first = assignName(root, "sess-x", "session", { freshnessSecs: 600 });
+    beat("someone-else", first, 10);
+    expect(assignName(root, "sess-x", "session", { freshnessSecs: 600 })).toBe(first);
   });
 });

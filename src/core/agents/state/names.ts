@@ -25,10 +25,25 @@
  * new binding instead of rewriting history; readers therefore resolve from the
  * end of the file. Older one-row histories retain their original behavior.
  *   3. Else: new assignment, consume a counter slot.
+ *
+ * Live-name skip: the pool holds 260 names and a busy repo consumes ~100 a
+ * day, so the counter wraps roughly every three days while sessions that
+ * resume under a stable instance_id keep a name for far longer. A counter-only
+ * pick therefore hands a live agent's name to a new one (observed 2026-09-06:
+ * two concurrent "Maya" agents, their pool slots exactly 520 apart). Assignment
+ * now probes forward past any name a fresh heartbeat still holds.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
+import { coordFreshnessSeconds } from "../../config.ts";
 
 /** All 260 names. */
 export const COORD_NAMES = [
@@ -442,14 +457,68 @@ export function recordNameAssumption(
 }
 
 /**
+ * Names a live agent currently holds, read from the generation-bound heartbeat
+ * cache (`.harnery/active/<instance>.json`).
+ *
+ * Deliberately reads the cache directly rather than the V3 coordination view:
+ * that view imports `resolveName` from this module, so depending on it here
+ * would build an import cycle. The cache is the same set the view materializes
+ * from and is pruned as sessions end, so it answers "is this name taken right
+ * now" without one.
+ *
+ * Both error directions are safe for the caller. A stale row that slips past
+ * the freshness window costs one skipped pool slot; a live agent missing from
+ * the cache just restores the old counter-only behavior for that assignment.
+ */
+export function readLiveNames(
+  coordRoot: string,
+  opts?: { nowMs?: number; freshnessSecs?: number },
+): Set<string> {
+  const live = new Set<string>();
+  const dir = join(coordRoot, ".harnery", "active");
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return live; // No cache yet (fresh checkout) → nothing is live.
+  }
+
+  const nowMs = opts?.nowMs ?? Date.now();
+  const freshnessSecs = opts?.freshnessSecs ?? coordFreshnessSeconds(coordRoot);
+  const cutoffMs = nowMs - freshnessSecs * 1000;
+
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    let row: { name?: unknown; last_heartbeat?: unknown };
+    try {
+      row = JSON.parse(readFileSync(join(dir, entry), "utf8"));
+    } catch {
+      continue; // A torn or half-written row cannot prove a name is held.
+    }
+    if (typeof row.name !== "string" || row.name.length === 0) continue;
+    if (typeof row.last_heartbeat !== "string") continue;
+    const beatMs = Date.parse(row.last_heartbeat);
+    if (!Number.isFinite(beatMs) || beatMs < cutoffMs) continue;
+    live.add(row.name);
+  }
+  return live;
+}
+
+/**
  * Assign a name to <instanceId> with the given <kind>. Counter-consuming when
  * the owner is new. Idempotent: returns existing name on resume.
+ *
+ * Slot choice probes forward from the counter and takes the first name no live
+ * agent holds, then advances the counter past every slot it skipped so the skip
+ * is durable rather than re-probed on the next assignment. A full lap without a
+ * free name means all 260 are genuinely live, so the raw counter slot is used:
+ * a duplicate name beats refusing to name an agent at all.
  */
 export function assignName(
   coordRoot: string,
   instanceId: string,
   kind: NameKind,
-  opts?: { forkedFrom?: string },
+  opts?: { forkedFrom?: string; nowMs?: number; freshnessSecs?: number },
 ): string {
   // Check 1: existing history row → original name. A resume re-enters here,
   // which also makes fork stamping naturally idempotent: lineage lands only on
@@ -457,15 +526,33 @@ export function assignName(
   const existing = resolveName(coordRoot, instanceId);
   if (existing) return existing.name;
 
-  // New owner: consume a counter slot.
+  // New owner: consume a counter slot. The live set is gathered BEFORE the
+  // counter read on purpose. Counter read-modify-write is already unlocked, so
+  // concurrent assignments can collide on one slot; doing the directory scan
+  // first keeps that window exactly as narrow as it was before the skip existed.
+  const live = readLiveNames(coordRoot, {
+    ...(opts?.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
+    ...(opts?.freshnessSecs !== undefined ? { freshnessSecs: opts.freshnessSecs } : {}),
+  });
+
   const cPath = counterPath(coordRoot);
   let counter = 0;
   if (existsSync(cPath)) {
     const raw = readFileSync(cPath, "utf8").trim();
     if (/^\d+$/.test(raw)) counter = Number.parseInt(raw, 10);
   }
-  const name = COORD_NAMES[counter % 260]!;
-  atomicWrite(cPath, String(counter + 1));
+
+  let chosen = counter;
+  for (let probe = 0; probe < 260; probe++) {
+    const candidate = COORD_NAMES[(counter + probe) % 260]!;
+    if (!live.has(candidate)) {
+      chosen = counter + probe;
+      break;
+    }
+  }
+
+  const name = COORD_NAMES[chosen % 260]!;
+  atomicWrite(cPath, String(chosen + 1));
   const forkedFrom = opts?.forkedFrom;
   appendHistory(coordRoot, {
     instance_id: instanceId,
