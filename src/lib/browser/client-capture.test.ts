@@ -69,6 +69,19 @@ for (const dpr of [1, 2])
     }
   }, 30000);
 
+test("page-review readiness accepts finite late head initialization within the deadline", async () => {
+  const profile = mkdtempSync(join(tmpdir(), "native-readiness-finite-"));
+  profiles.push(profile);
+  const browser = new Browser({ profileDir: profile, viewport: { width: 320, height: 240 }, jar: null });
+  try {
+    await browser.open();
+    await browser.currentPage.setContent(
+      '<p>Ready</p><script>let frame=0;function change(){if(frame++<150){const link=document.createElement("link");link.rel="prefetch";link.href=`/late-${frame}.js`;document.head.append(link);requestAnimationFrame(change);}}requestAnimationFrame(change);</script>',
+    );
+    await browser.waitForReviewReady(5_000);
+  } finally { await browser.close(); }
+}, 20_000);
+
 test("page-review readiness refuses a continuously changing DOM", async () => {
   const profile = mkdtempSync(join(tmpdir(), "native-readiness-"));
   profiles.push(profile);
@@ -82,7 +95,9 @@ test("page-review readiness refuses a continuously changing DOM", async () => {
     await browser.currentPage.setContent(
       '<p>Loading</p><script>let frame=0;function change(){document.querySelector("p").setAttribute("data-frame",String(frame++));requestAnimationFrame(change);}requestAnimationFrame(change);</script>',
     );
-    await expect(browser.waitForReviewReady()).rejects.toThrow("did not settle");
+    await expect(browser.waitForReviewReady(250)).rejects.toThrow("did not settle");
+    await expect(browser.waitForReviewReady(0)).rejects.toThrow("timeoutMs");
+    await expect(browser.waitForReviewReady(60_001)).rejects.toThrow("timeoutMs");
   } finally {
     await browser.close();
   }

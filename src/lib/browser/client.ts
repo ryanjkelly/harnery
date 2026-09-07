@@ -626,12 +626,15 @@ export class Browser {
   }
 
   /** Wait for font-driven DOM/layout initialization, with a bounded convergence check. */
-  async waitForReviewReady(): Promise<void> {
-    const settled = await this.currentPage.evaluate(async () => {
+  async waitForReviewReady(timeoutMs = 15_000): Promise<void> {
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000)
+      throw new RangeError("waitForReviewReady timeoutMs must be an integer from 1 to 60000");
+    const settled = await this.currentPage.evaluate(async (timeoutMs) => {
       await document.fonts.ready;
+      const deadline = performance.now() + timeoutMs;
       let previous = "";
       let consecutive = 0;
-      for (let frame = 0; frame < 120; frame++) {
+      while (performance.now() < deadline) {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         const geometry = `${document.documentElement.scrollWidth},${document.documentElement.scrollHeight},${document.body?.scrollWidth},${document.body?.scrollHeight}`;
         const current = geometry + document.documentElement.outerHTML;
@@ -640,7 +643,7 @@ export class Browser {
         previous = current;
       }
       return false;
-    });
+    }, timeoutMs);
     if (!settled)
       throw new Error(
         "Page review source or layout did not settle; rerun when page initialization completes.",
