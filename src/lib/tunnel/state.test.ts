@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findLiveTunnelForPort, isTunnelStateLive, type TunnelState } from "./state.ts";
+import { findLiveTunnelForOrigin, isTunnelStateLive, type TunnelState } from "./state.ts";
 
 function state(overrides: Partial<TunnelState> = {}): TunnelState {
   return {
@@ -19,7 +19,7 @@ function state(overrides: Partial<TunnelState> = {}): TunnelState {
   };
 }
 
-describe("findLiveTunnelForPort", () => {
+describe("findLiveTunnelForOrigin", () => {
   test("returns the newest live tunnel that fronts the requested port", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-tunnel-state-"));
     try {
@@ -44,10 +44,59 @@ describe("findLiveTunnelForPort", () => {
       );
 
       const live = new Set([10, 20, 30, 40]);
-      expect(findLiveTunnelForPort(4276, root, (pid) => live.has(pid))?.url).toBe(
+      expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => live.has(pid))?.url).toBe(
         "https://new.example",
       );
-      expect(findLiveTunnelForPort(3000, root, (pid) => live.has(pid))?.name).toBe("other");
+      expect(
+        findLiveTunnelForOrigin(3000, "localhost:4276", root, (pid) => live.has(pid))?.name,
+      ).toBe("other");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("skips a same-port tunnel that serves a different Host", () => {
+    // Two tunnels can forward to one upstream port and differ only by the Host
+    // header they send. The dashboard tunnel is the older of the two here, so a
+    // port-only match would return the newer files tunnel and every dashboard
+    // route built on it would fail.
+    const root = mkdtempSync(join(tmpdir(), "harnery-tunnel-state-vhost-"));
+    try {
+      const dir = join(root, ".cache", "tunnel");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "state-harnery-web.json"),
+        JSON.stringify(
+          state({
+            name: "harnery-web",
+            url: "https://dashboard.example",
+            vhost: "localhost:4276",
+            started_at: "2026-09-06T10:00:00.000Z",
+          }),
+        ),
+      );
+      writeFileSync(
+        join(dir, "state-harnery-files.json"),
+        JSON.stringify(
+          state({
+            name: "harnery-files",
+            url: "https://files.example",
+            vhost: "harnery-files.localhost",
+            started_at: "2026-09-06T20:00:00.000Z",
+          }),
+        ),
+      );
+
+      const live = new Set([10, 20]);
+      expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => live.has(pid))?.url).toBe(
+        "https://dashboard.example",
+      );
+      expect(
+        findLiveTunnelForOrigin(4276, "harnery-files.localhost", root, (pid) => live.has(pid))?.url,
+      ).toBe("https://files.example");
+      expect(
+        findLiveTunnelForOrigin(4276, "nothing.serves.this", root, (pid) => live.has(pid)),
+      ).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -60,8 +109,8 @@ describe("findLiveTunnelForPort", () => {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "state.json"), JSON.stringify(state()));
 
-      expect(findLiveTunnelForPort(4276, root, (pid) => pid === 10)).toBeNull();
-      expect(findLiveTunnelForPort(4276, root, (pid) => pid === 20)).toBeNull();
+      expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => pid === 10)).toBeNull();
+      expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => pid === 20)).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -182,15 +182,29 @@ function tunnelTargetPort(state: TunnelState): number | null {
   }
 }
 
-/** Newest live tunnel whose upstream is the requested local web port. */
-export function findLiveTunnelForPort(
+/**
+ * Newest live tunnel that serves `vhost` on the requested local web port.
+ *
+ * The port alone does not identify a tunnel. Several tunnels can forward to one
+ * upstream port and be told apart only by the Host header they send, and a
+ * server that routes on Host then serves each of them a different site. Picking
+ * by port alone returns whichever such tunnel started last, so a caller that
+ * builds a URL for one site can hand back a host that serves another and every
+ * link 400s. Matching the vhost too keeps the returned tunnel the one that
+ * actually serves the caller's origin.
+ */
+export function findLiveTunnelForOrigin(
   port: number,
+  vhost: string,
   root: string = process.cwd(),
   processAlive: ProcessAliveCheck = isProcessAlive,
 ): TunnelState | null {
   return (
     listStates(root).find(
-      (state) => tunnelTargetPort(state) === port && isTunnelStateLive(state, processAlive),
+      (state) =>
+        tunnelTargetPort(state) === port &&
+        state.vhost === vhost &&
+        isTunnelStateLive(state, processAlive),
     ) ?? null
   );
 }

@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { findLiveTunnelForPort } from "../../lib/tunnel/state.ts";
+import { findLiveTunnelForOrigin } from "../../lib/tunnel/state.ts";
 import { resolveWebPort } from "../config.ts";
 import { ARTIFACT_MANIFEST } from "./constants.ts";
 import { resolveArtifactRef, showArtifact } from "./index.ts";
@@ -320,9 +320,13 @@ function displayPath(path: string, environment: DisplayEnvironment): string {
 
 function deliveryLinkBase(repoRoot: string, environment: DisplayEnvironment): string {
   const webPort = environment.webPort ?? resolveWebPort(undefined, repoRoot);
+  // Every href below is a dashboard route, so only a tunnel that serves the
+  // dashboard's own origin will answer them. A tunnel sharing this upstream
+  // port under another Host serves a different site and would 400 on /browse
+  // and /files, so fall back to the local URL rather than publish that host.
   const tunnelUrl =
     environment.tunnelUrl === undefined
-      ? findLiveTunnelForPort(webPort, repoRoot)?.url
+      ? findLiveTunnelForOrigin(webPort, `localhost:${webPort}`, repoRoot)?.url
       : environment.tunnelUrl;
   return (tunnelUrl ?? `http://localhost:${webPort}`).replace(/\/+$/, "");
 }

@@ -96,6 +96,51 @@ describe("artifact delivery cards", () => {
     }
   });
 
+  test("ignores a same-port tunnel that does not serve the dashboard", () => {
+    // A files tunnel and the dashboard tunnel can both forward to the web port
+    // and be told apart only by Host. Publishing the files host here produced a
+    // card whose every link returned HTTP 400, so the card must fall back to the
+    // local dashboard URL rather than name a host that cannot answer its routes.
+    const repoRoot = mkdtempSync(join(tmpdir(), "harnery-delivery-card-vhost-"));
+    Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });
+    try {
+      const created = createArtifact(repoRoot, {
+        slug: "vhost-card",
+        purpose: "Exercise same-port tunnels",
+        retentionDays: 3,
+        id: "vhost-card-id",
+      });
+      writeFileSync(join(created.path, "video.mp4"), "video");
+      const tunnelDir = join(repoRoot, ".cache", "tunnel");
+      mkdirSync(tunnelDir, { recursive: true });
+      writeFileSync(
+        join(tunnelDir, "state-harnery-files.json"),
+        JSON.stringify({
+          name: "harnery-files",
+          provider: "cloudflare",
+          url: "https://files.example/",
+          gate_pid: process.pid,
+          cloudflared_pid: process.pid,
+          started_at: "2026-09-06T20:00:00.000Z",
+          target: "127.0.0.1:4276",
+          vhost: "harnery-files.localhost",
+          gate_port: 9001,
+        }),
+      );
+
+      const card = renderArtifactDeliveryCard(repoRoot, created.manifest.artifact_id, undefined, {
+        platform: "linux",
+        webPort: 4276,
+      });
+
+      expect(card.markdown).not.toContain("files.example");
+      expect(card.markdown).toContain("[Artifact folder](<http://localhost:4276/browse?dir=");
+      expect(card.markdown).toContain("[video.mp4](<http://localhost:4276/files?path=");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test("uses a live tunnel base for every artifact path link", () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "harnery-delivery-card-tunnel-"));
     Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });
