@@ -31,10 +31,10 @@ describe("artifact delivery cards", () => {
       });
 
       expect(card.markdown).toContain("### Artifact delivery");
-      expect(card.markdown).toContain("[frames](<");
-      expect(card.markdown).toContain("[report.json](<");
-      expect(card.markdown.indexOf("[frames](<")).toBeLessThan(
-        card.markdown.indexOf("[report.json](<"),
+      expect(card.markdown).toContain("[frames](");
+      expect(card.markdown).toContain("[report.json](");
+      expect(card.markdown.indexOf("[frames](")).toBeLessThan(
+        card.markdown.indexOf("[report.json]("),
       );
       expect(card.markdown).not.toContain(".harnery-artifact.json");
       expect(card.markdown).not.toContain(".private-note");
@@ -78,7 +78,7 @@ describe("artifact delivery cards", () => {
         tunnelUrl: null,
       });
       expect(card.markdown).toContain("### Review files");
-      expect(card.markdown).toContain("[Video](<https://media.example/video.mp4>)");
+      expect(card.markdown).toContain("[Video](https://media.example/video.mp4)");
       expect(card.markdown).not.toContain("[https://media.example/video.mp4]");
       expect(card.markdown).toContain("\\\\wsl.localhost\\Test-Distro");
       expect(card.markdown).toContain("http://localhost:5100/browse?dir=");
@@ -91,6 +91,38 @@ describe("artifact delivery cards", () => {
       expect(linkedList).not.toContain("\\\\wsl.localhost");
       expect(plainText).toContain("\\\\wsl.localhost\\Test-Distro");
       expect(card.auto_items).toBe(0);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps a parenthesized filename safe in a plain link destination", () => {
+    // A raw ")" would end a [text](url) destination early. Encoding it is what
+    // lets the card drop the angle-bracket form, which some renderers style as
+    // a link while dropping the href, producing text that only looks clickable.
+    const repoRoot = mkdtempSync(join(tmpdir(), "harnery-delivery-card-parens-"));
+    Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });
+    try {
+      const created = createArtifact(repoRoot, {
+        slug: "parens-card",
+        purpose: "Exercise parentheses in names",
+        retentionDays: 3,
+        id: "parens-card-id",
+      });
+      writeFileSync(join(created.path, "take (2).mp4"), "video");
+
+      const card = renderArtifactDeliveryCard(repoRoot, created.manifest.artifact_id, undefined, {
+        platform: "linux",
+        webPort: 4276,
+        tunnelUrl: null,
+      });
+
+      expect(card.markdown).toContain("take%20%282%29.mp4)");
+      expect(card.markdown).not.toContain("](<");
+      // Nothing between the destination's parentheses may be an unescaped paren.
+      for (const destination of card.markdown.matchAll(/\]\(([^)]*)\)/g)) {
+        expect(destination[1]).not.toContain("(");
+      }
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }
@@ -134,8 +166,8 @@ describe("artifact delivery cards", () => {
       });
 
       expect(card.markdown).not.toContain("files.example");
-      expect(card.markdown).toContain("[Artifact folder](<http://localhost:4276/browse?dir=");
-      expect(card.markdown).toContain("[video.mp4](<http://localhost:4276/files?path=");
+      expect(card.markdown).toContain("[Artifact folder](http://localhost:4276/browse?dir=");
+      expect(card.markdown).toContain("[video.mp4](http://localhost:4276/files?path=");
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }
@@ -174,8 +206,8 @@ describe("artifact delivery cards", () => {
         webPort: 4276,
       });
 
-      expect(card.markdown).toContain("[Artifact folder](<https://public.example/browse?dir=");
-      expect(card.markdown).toContain("[video.mp4](<https://public.example/files?path=");
+      expect(card.markdown).toContain("[Artifact folder](https://public.example/browse?dir=");
+      expect(card.markdown).toContain("[video.mp4](https://public.example/files?path=");
       expect(card.markdown).not.toContain("http://localhost:4276");
       expect(card.markdown).toContain("ARTIFACT FOLDER\n");
       expect(card.markdown).toContain("VIDEO.MP4\n");

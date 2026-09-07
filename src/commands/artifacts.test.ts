@@ -186,8 +186,8 @@ describe("artifacts command", () => {
       writeFileSync(join(artifactPath, "debug.json"), "{}");
       const automatic = await invoke(["delivery-card", id]);
       expect(automatic.errors).toEqual([]);
-      expect(automatic.texts[0]).toContain("[frames](<");
-      expect(automatic.texts[0]).toContain("[motion-map.png](<");
+      expect(automatic.texts[0]).toContain("[frames](");
+      expect(automatic.texts[0]).toContain("[motion-map.png](");
       const saved = await invoke([
         "delivery-card",
         id,

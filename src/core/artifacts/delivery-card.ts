@@ -157,7 +157,7 @@ export function renderArtifactDeliveryCard(
   const omittedAutoItems = discovered.length - autoItems.length;
 
   let links = rows
-    .map((row) => `- ${row.icon} [${escapeMarkdown(row.label)}](<${row.href}>)`)
+    .map((row) => `- ${row.icon} [${escapeMarkdown(row.label)}](${markdownDestination(row.href)})`)
     .join("\n");
   if (omittedAutoItems > 0) {
     links += `\n- 📁 **More root items:** ${omittedAutoItems} additional ${omittedAutoItems === 1 ? "entry" : "entries"}; open the artifact folder.`;
@@ -339,9 +339,32 @@ function artifactBrowserUrl(
 ): string {
   const relPath = relative(realpathSync(repoRoot), realpathSync(target)).split(sep).join("/");
   const query = directory
-    ? `dir=${encodeURIComponent(relPath)}`
-    : `path=${encodeURIComponent(relPath)}`;
+    ? `dir=${encodeQueryValue(relPath)}`
+    : `path=${encodeQueryValue(relPath)}`;
   return `${base}/${directory ? "browse" : "files"}?${query}`;
+}
+
+/**
+ * Percent-encode a query value so the finished URL is safe as a bare Markdown
+ * destination. encodeURIComponent leaves parentheses raw, and a raw `)` ends a
+ * `[text](url)` destination early, which is the only reason a generated link
+ * would need the angle-bracket form below.
+ */
+function encodeQueryValue(value: string): string {
+  return encodeURIComponent(value).replace(/[()]/g, (char) => (char === "(" ? "%28" : "%29"));
+}
+
+/**
+ * Render a destination for a Markdown inline link.
+ *
+ * The angle-bracket form is valid CommonMark but not every renderer implements
+ * it, and one that does not can style the text as a link while dropping the
+ * href, leaving something that looks clickable and is not. So use the plain
+ * form, which every renderer handles, and reserve the brackets for a supplied
+ * URL that actually needs them.
+ */
+function markdownDestination(href: string): string {
+  return /[\s()<>]/.test(href) ? `<${href}>` : href;
 }
 
 function iconForPath(path: string): string {
