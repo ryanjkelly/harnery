@@ -72,14 +72,20 @@ for (const dpr of [1, 2])
 test("page-review readiness accepts finite late head initialization within the deadline", async () => {
   const profile = mkdtempSync(join(tmpdir(), "native-readiness-finite-"));
   profiles.push(profile);
-  const browser = new Browser({ profileDir: profile, viewport: { width: 320, height: 240 }, jar: null });
+  const browser = new Browser({
+    profileDir: profile,
+    viewport: { width: 320, height: 240 },
+    jar: null,
+  });
   try {
     await browser.open();
     await browser.currentPage.setContent(
       '<p>Ready</p><script>let frame=0;function change(){if(frame++<150){const link=document.createElement("link");link.rel="prefetch";link.href=`/late-${frame}.js`;document.head.append(link);requestAnimationFrame(change);}}requestAnimationFrame(change);</script>',
     );
     await browser.waitForReviewReady(5_000);
-  } finally { await browser.close(); }
+  } finally {
+    await browser.close();
+  }
 }, 20_000);
 
 test("page-review readiness refuses a continuously changing DOM", async () => {
@@ -102,3 +108,47 @@ test("page-review readiness refuses a continuously changing DOM", async () => {
     await browser.close();
   }
 }, 15000);
+
+for (const dpr of [1, 2])
+  test(`native bottom capture rejects stale geometry and preserves the last real row at DPR ${dpr}`, async () => {
+    const profile = mkdtempSync(join(tmpdir(), "native-lazy-boundary-"));
+    profiles.push(profile);
+    const browser = new Browser({
+      profileDir: profile,
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: dpr,
+      jar: null,
+    });
+    try {
+      await browser.open();
+      await browser.currentPage.setContent(
+        `<!doctype html><style>html,body{margin:0}main{height:8303px}img{display:block;width:180px;height:auto}</style><main></main><img loading="lazy" width="360" height="144" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='71'%3E%3Crect width='180' height='71' fill='red'/%3E%3C/svg%3E">`,
+      );
+      await browser.waitForReviewReady();
+      expect((await browser.pageMetrics()).scrollHeight).toBe(8375);
+      let failure: unknown;
+      try {
+        await browser.captureRegionByScroll({ x: 0, y: 6889, width: 390, height: 1486 });
+      } catch (error) {
+        failure = error;
+      }
+      expect(String(failure)).toContain("document y 8374 is not reachable");
+      expect((await browser.pageMetrics()).scrollHeight).toBe(8374);
+      expect(await browser.currentPage.evaluate(() => scrollY)).toBe(0);
+      const image = PNG.sync.read(
+        await browser.captureRegionByScroll({ x: 0, y: 6889, width: 390, height: 1485 }),
+      );
+      expect({ width: image.width, height: image.height }).toEqual({
+        width: 390 * dpr,
+        height: 1485 * dpr,
+      });
+      const lastPixel = ((image.height - 1) * image.width + 30 * dpr) * 4;
+      expect([...image.data.subarray(lastPixel, lastPixel + 4)]).toEqual([255, 0, 0, 255]);
+      await expect(
+        browser.captureRegionByScroll({ x: 0, y: 8374, width: 390, height: 1 }),
+      ).rejects.toThrow("not reachable");
+      expect(await browser.currentPage.evaluate(() => scrollY)).toBe(0);
+    } finally {
+      await browser.close();
+    }
+  }, 15000);

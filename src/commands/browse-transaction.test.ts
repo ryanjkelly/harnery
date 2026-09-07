@@ -116,3 +116,69 @@ test("real capture repeats gates on its fresh page and rejects mutation and insu
   expect(receipt.attempts.filter((a: { status: string }) => a.status === "failed")).toHaveLength(2);
   expect(receipt.attempts.at(-1).attempt).toBe(2);
 }, 120000);
+
+test("a lazy image changing the document bottom retries full gates and native coverage", () => {
+  const dir = mkdtempSync(join(tmpdir(), "browse-lazy-boundary-"));
+  dirs.push(dir);
+  const file = join(dir, "fixture.html");
+  writeFileSync(
+    file,
+    `<!doctype html><style>html,body{margin:0}main{height:8303px}img{display:block;width:180px;height:auto}</style><main>Native boundary fixture</main><img loading="lazy" width="360" height="144" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='71'%3E%3Crect width='180' height='71' fill='red'/%3E%3C/svg%3E">`,
+  );
+  const run = (name: string, args: string[]) =>
+    spawnSync(
+      "bash",
+      [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        pathToFileURL(file).href,
+        "--json",
+        "--no-cookies",
+        "--viewport",
+        "390x844",
+        "--profile",
+        join(dir, `${name}-profile`),
+        "--out",
+        join(dir, name),
+        "--review-pack-context",
+        "fixture",
+        "--review-pack-plan",
+        "--check-overflow",
+        "--check-overflow-fail",
+        ...args,
+      ],
+      { encoding: "utf8", timeout: 30000, maxBuffer: 8 * 1024 * 1024 },
+    );
+  const preliminary = run("plan", []);
+  if (preliminary.status !== 0) throw Error(preliminary.stderr);
+  const plan = JSON.parse(preliminary.stdout).review_pack_capture_plan;
+  expect(plan.page_height).toBe(8375);
+  const reservation = allocateTileBudget([plan], 24).contexts[0];
+  const reservationFile = join(dir, "reservation.json");
+  writeFileSync(reservationFile, JSON.stringify(reservation));
+  const captured = run("capture", [
+    "--review-pack",
+    join(dir, "pack"),
+    "--review-pack-reservation",
+    reservationFile,
+  ]);
+  if (captured.status !== 0) throw Error(captured.stderr);
+  const result = JSON.parse(captured.stdout);
+  const attempts = result.review_pack_transaction.attempts;
+  expect(attempts.filter((a: { status: string }) => a.status === "failed")).toHaveLength(1);
+  expect(attempts.at(-1)).toMatchObject({ attempt: 2, status: "captured" });
+  expect(result.review_pack_capture_plan.page_height).toBe(8374);
+  expect(result.review_pack_transaction.source_digest).toBe(
+    result.review_pack_capture_plan.source_digest,
+  );
+  const gates = JSON.parse(readFileSync(join(dir, "capture.attempt-2.gates.json"), "utf8"));
+  expect(gates.attempt).toBe(2);
+  expect(gates.overflow).toBeDefined();
+  const record = JSON.parse(
+    readFileSync(join(dir, "pack", "contexts", "fixture", "context.json"), "utf8"),
+  );
+  expect(record.capture_plan.page_height).toBe(8374);
+  expect(record.capture_fidelity.probed.length).toBe(result.reviewPack.tiles);
+  expect(record.capture_plan.source_digest).toBe(result.review_pack_transaction.source_digest);
+  expect(result.reviewPack.tiles).toBeLessThanOrEqual(reservation.selected_ids.length);
+}, 60000);

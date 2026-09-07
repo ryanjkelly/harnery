@@ -2818,6 +2818,16 @@ async function captureReviewPackContext(
   const probeStart = performance.now();
   const reconciled = await reconcileCaptureFidelity(browser, tiles);
   const probeMs = performance.now() - probeStart;
+  // A lazy image can change the document bottom while a native probe is running.
+  // Revalidate even failed probes so a changed plan gets the same bounded retry.
+  if (opts.captureTransactionAllocation) {
+    const after = await buildReviewCapturePlan(browser, opts);
+    try {
+      validatePageReviewAllocation(allocation, after);
+    } catch (error) {
+      throw new CaptureSourceChanged(String(error));
+    }
+  }
   if (reconciled.fidelity.probed.length !== tiles.length)
     throw new Error(
       "Page review native fidelity probe incomplete; no context was saved. " +
@@ -2834,14 +2844,7 @@ async function captureReviewPackContext(
       scopes.set(c.scope, group);
     }
   }
-  if (opts.captureTransactionAllocation) {
-    const after = await buildReviewCapturePlan(browser, opts);
-    try {
-      validatePageReviewAllocation(allocation, after);
-    } catch (error) {
-      throw new CaptureSourceChanged(String(error));
-    }
-  }
+
   const capture = qaCapture ?? (await captureQaState(browser, targetArg, navResult.url, opts));
   const writeContext = (destination: string) =>
     writePackContext(destination, {
