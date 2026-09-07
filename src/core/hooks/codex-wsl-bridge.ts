@@ -102,7 +102,11 @@ export function renderCodexWslFileLinkContext(coordRoot: string, workspaceCwd: u
   return (
     "Codex WSL file links: this task is hosted by Windows while tools run inside WSL. " +
     `For clickable local-file Markdown links, replace the Linux workspace root \`${mapping.linuxRoot}\` with the host-visible root \`${mapping.hostRoot}\`. ` +
-    `Example: \`[label](<${mapping.hostRoot}/path/to/file>)\`. ` +
+    `Example: \`[label](${mapping.hostRoot}/path/to/file)\`. ` +
+    "Percent-encode a space as %20 and a parenthesis as %28 or %29 in the link, " +
+    "and do not wrap the destination in angle brackets: that form is valid " +
+    "Markdown but some renderers style it as a link without keeping the target, " +
+    "so it looks clickable and does nothing. " +
     "Keep Linux paths unchanged in shell commands and tool inputs."
   );
 }

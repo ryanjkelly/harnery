@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { encodeLinkSafeComponent } from "../../lib/local-file-url.ts";
 import { findLiveTunnelForOrigin } from "../../lib/tunnel/state.ts";
 import { resolveWebPort } from "../config.ts";
 import { ARTIFACT_MANIFEST } from "./constants.ts";
@@ -339,20 +340,11 @@ function artifactBrowserUrl(
 ): string {
   const relPath = relative(realpathSync(repoRoot), realpathSync(target)).split(sep).join("/");
   const query = directory
-    ? `dir=${encodeQueryValue(relPath)}`
-    : `path=${encodeQueryValue(relPath)}`;
+    ? `dir=${encodeLinkSafeComponent(relPath)}`
+    : `path=${encodeLinkSafeComponent(relPath)}`;
   return `${base}/${directory ? "browse" : "files"}?${query}`;
 }
 
-/**
- * Percent-encode a query value so the finished URL is safe as a bare Markdown
- * destination. encodeURIComponent leaves parentheses raw, and a raw `)` ends a
- * `[text](url)` destination early, which is the only reason a generated link
- * would need the angle-bracket form below.
- */
-function encodeQueryValue(value: string): string {
-  return encodeURIComponent(value).replace(/[()]/g, (char) => (char === "(" ? "%28" : "%29"));
-}
 
 /**
  * Render a destination for a Markdown inline link.

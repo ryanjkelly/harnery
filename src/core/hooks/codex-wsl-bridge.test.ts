@@ -127,6 +127,11 @@ describe("Codex WSL workspace file links", () => {
     expect(text).toContain(linuxRoot);
     expect(text).toContain("//wsl.localhost/Ubuntu-22.04/home/dev/projects/example");
     expect(text).toContain("Keep Linux paths unchanged in shell commands");
+    // The angle-bracket destination form renders as unclickable styled text in
+    // some renderers, so the example must not teach it.
+    expect(text).not.toContain("](<");
+    expect(text).toContain("](//wsl.localhost/Ubuntu-22.04/home/dev/projects/example/path/to/file)");
+    expect(text).toContain("angle brackets");
   });
 
   test("counts only visible Markdown destinations under the Linux root", () => {
