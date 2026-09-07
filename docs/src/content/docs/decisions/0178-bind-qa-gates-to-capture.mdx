@@ -1,0 +1,52 @@
+---
+title: "ADR 0178: bind QA gates to the captured page"
+description: Keep source validation and bounded native coverage without borrowing gates from an earlier visit.
+sidebar:
+  order: 178
+---
+
+Date: 2026-09-07. Status: accepted.
+
+## Context
+
+QA planned native tiles during its gate visits, then opened new pages to capture
+them. Generated instance IDs could change between visits. The full source check
+correctly refused the old allocation, leaving otherwise stable pages without
+review evidence. Removing generated IDs or sorting stylesheets would hide changes
+to SVG, accessibility relationships or the CSS cascade.
+
+## Alternatives
+
+Keeping every planning page open until the global allocation finishes would make
+memory use depend on the entire context count. Pausing workers inside the existing
+bounded pool would deadlock when the allocator needed plans from queued contexts.
+Capturing without fresh gates would bind screenshots to an earlier page's results.
+
+## Decision
+
+Keep the preliminary gate pass for global tile allocation. Each context reserves
+exactly its assigned tile count. The capture worker repeats the context setup and
+all supplied gates, creates a new plan on that page, and allocates within its
+reservation. Required context identity and scopes remain a floor. A reservation
+that cannot cover the fresh page refuses capture; it never borrows another
+context's tiles or hides omitted native coverage.
+
+Compare full source identity before and after the gates, immediately before
+capture, and after native capture. A source change permits one complete gate,
+plan and allocation retry on the same page. A second change fails explicitly.
+The preliminary gate artifacts and each attempted gate receipt remain available.
+The final matrix uses only the fresh gate envelope bound to the saved capture.
+Failed gates may still produce diagnostic captures and retain their failed verdict.
+
+The existing command pool bounds browser concurrency. There are no parked browser
+processes or new IPC leases. Existing command deadlines, process-group cleanup and
+browser `finally` cleanup remain responsible for termination. Vision starts after
+the capture browsers close.
+
+## Result
+
+Focused tests cover reservation limits, source rebinding, changed-page retries,
+fresh failures overriding earlier green results, missing transaction evidence and
+process cleanup. The source canonicalization and native fidelity recipe are unchanged.
+Fixed reservations trade possible reallocation efficiency for a hard resource bound:
+a page that grows beyond its reservation fails even if another context later shrinks.

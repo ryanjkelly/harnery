@@ -17,7 +17,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { basename, join } from "node:path";
 import { type CritiqueProvider, DEFAULT_CRITIQUE_RUBRIC } from "./critique.js";
-import { allocateTileBudget, validatePageReviewCapturePlan } from "./page-review-budget.js";
+import {
+  allocateTileBudget,
+  capturePlanDigest,
+  validatePageReviewCapturePlan,
+} from "./page-review-budget.js";
 import {
   PAGE_REVIEW_DEFAULT_TILE_BUDGET,
   type PageReviewCapturePlan,
@@ -781,6 +785,13 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
     ctx.viewport,
     ...(ctx.theme === "dark" ? ["--color-scheme", "dark"] : []),
     ...(ctx.args ?? []),
+    ...(job.interaction_states ?? [])
+      .filter((state) => state.name === ctx.state)
+      .flatMap((state) => [
+        ...state.setup,
+        ...state.assertions.flatMap((assertion) => ["--assert", assertion]),
+        "--assert-fail",
+      ]),
   ];
 
   // The planner's tile ceiling and every critique child must agree on the
@@ -1175,6 +1186,15 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
   enterStage("capture");
   const captureStart = Date.now();
   if (runsVisual) {
+    writeFileSync(
+      join(outDir, "preliminary-gates.json"),
+      `${JSON.stringify(gateOutcomes, null, 2)}\n`,
+    );
+    for (const gate of gateOutcomes)
+      if (gate) {
+        gate.outcome = "unknown";
+        gate.failures = ["Authoritative same-visit gates and capture have not completed."];
+      }
     const allocations = new Map<string, PageReviewContextAllocation>();
     try {
       const plans = contexts.map((ctx) => {
@@ -1234,8 +1254,13 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         ctx.theme,
         "--qa-state",
         ctx.state,
-        "--review-pack-allocation",
+        "--review-pack-reservation",
         allocationFile,
+        "--review-pack-plan",
+        ...manifestGateArgs,
+        ...checks
+          .filter((check) => check.contexts === undefined || check.contexts.includes(ctx.id))
+          .flatMap((check) => check.args),
         ...scopeArgs,
         ...critiqueMaxTilesArgs,
         ...bandArgs,
@@ -1250,15 +1275,54 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       const failures: string[] = [];
       let outcome: QaRunCommandOutcome["outcome"];
       let record: PageReviewContextRecord | undefined;
-      if (!res.error && res.exitCode === 0 && envelope && report?.context_id) {
+      if (
+        !res.error &&
+        (res.exitCode === 0 || res.exitCode === 2) &&
+        envelope &&
+        report?.context_id
+      ) {
         try {
           record = readPackContext(packDir, report.context_id);
-          outcome = "passed";
+          const currentPlan = validatePageReviewCapturePlan(envelope.review_pack_capture_plan);
+          const transaction = envelope.review_pack_transaction as
+            | { source_digest?: string; attempts?: Array<{ status?: string }> }
+            | undefined;
+          if (
+            !record.capture_plan ||
+            record.id !== ctx.id ||
+            capturePlanDigest(record.capture_plan) !== capturePlanDigest(currentPlan) ||
+            transaction?.source_digest !== currentPlan.source_digest ||
+            transaction.attempts?.at(-1)?.status !== "captured" ||
+            record.tiles.length > allocation.selected_ids.length
+          ) {
+            throw new Error(
+              "Fresh gates, source identity and native capture are not bound to the same transaction.",
+            );
+          }
+          const freshFailures = [
+            ...parseGateFailures(envelope),
+            ...(enforceConsole ? parseConsoleFailures(envelope) : []),
+          ];
+          if (res.exitCode === 2 && !freshFailures.length)
+            freshFailures.push("Fresh gate command returned exit code 2.");
+          const preliminaryGate = gateOutcomes[index];
+          if (!preliminaryGate) throw new Error("Missing context gate identity.");
+          Object.assign(preliminaryGate, {
+            argv,
+            exit_code: res.exitCode,
+            outcome: freshFailures.length ? "failed" : "passed",
+            failures: freshFailures,
+            artifacts: gatherArtifacts(outPrefix),
+            wall_time_ms: wallTimeMs,
+          });
+          outcome = freshFailures.length ? "failed" : "passed";
+          failures.push(...freshFailures);
         } catch (err: unknown) {
           outcome = "unknown";
           const reason = `pack context unreadable: ${err instanceof Error ? err.message : String(err)}`;
           failures.push(reason);
           blockers.push({ stage: "capture", context_id: ctx.id, reason });
+          record = undefined;
         }
       } else {
         outcome = "unknown";

@@ -94,6 +94,10 @@ interface FakeExecConfig {
   planManifest: QaManifest | null;
   /** Per-gate exit code by context id (default 0). */
   gateExit?: Record<string, number>;
+  freshGateExit?: Record<string, number>;
+  freshGateEnvelope?: Record<string, Record<string, unknown>>;
+  freshSourceDigest?: string;
+  omitTransaction?: boolean;
   /** Per-gate hard failure by context id (spawn error / timeout). */
   gateError?: Record<string, string>;
   /** Per-gate browse envelope fields by context id. */
@@ -273,10 +277,13 @@ function makeFakeExec(config: FakeExecConfig): {
         const scopes = argv.flatMap((arg, i) =>
           arg === "--review-pack-scope" ? [argv[i + 1] ?? ""] : [],
         );
-        const allocationFile = argvValue(argv, "--review-pack-allocation");
+        const allocationFile = argvValue(argv, "--review-pack-reservation");
         const allocation = allocationFile
           ? (JSON.parse(readFileSync(allocationFile, "utf8")) as PageReviewContextAllocation)
           : undefined;
+        if (allocation && config.freshSourceDigest)
+          allocation.plan.source_digest = config.freshSourceDigest;
+        const freshExit = config.freshGateExit?.[contextId] ?? config.gateExit?.[contextId] ?? 0;
         const candidates = allocation?.plan.candidates.filter((candidate) =>
           allocation.selected_ids.includes(candidate.id),
         );
@@ -355,12 +362,29 @@ function makeFakeExec(config: FakeExecConfig): {
             stylesheets: [],
           },
           domHtml: "<html><body>fixture</body></html>",
+          capturePlan: allocation?.plan,
         });
         writeFileSync(
           `${outPrefix}.json`,
-          JSON.stringify({ reviewPack: { context_id: record.id, tiles: record.tiles.length } }),
+          JSON.stringify({
+            ...(freshExit === 2
+              ? { overflow: { hasHorizontalOverflow: true, overflowPx: 42 } }
+              : {}),
+            ...(config.gateEnvelope?.[contextId] ?? {}),
+            ...(config.freshGateEnvelope?.[contextId] ?? {}),
+            reviewPack: { context_id: record.id, tiles: record.tiles.length },
+            review_pack_capture_plan: allocation?.plan,
+            ...(config.omitTransaction
+              ? {}
+              : {
+                  review_pack_transaction: {
+                    source_digest: allocation?.plan.source_digest,
+                    attempts: [{ status: "captured" }],
+                  },
+                }),
+          }),
         );
-        return ok();
+        return { exitCode: freshExit, stdout: "", stderr: "" };
       }
       if (argv.includes("--qa-snapshot")) {
         const envelope =
@@ -410,6 +434,118 @@ function makeFakeExec(config: FakeExecConfig): {
 }
 
 describe("runQaMatrix", () => {
+  test("fresh source replaces preliminary identity only with repeated checks and bound capture", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
+      }),
+      freshSourceDigest: "b".repeat(64),
+    });
+    const parent = outDir();
+    const result = await runQaMatrix({
+      job: job({
+        checks: [{ id: "specific", args: ["--check-visible", "article", "--check-visible-fail"] }],
+      }),
+      outParent: parent,
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+      runId: "fresh",
+    });
+    expect(result.verdict).toBe("passed");
+    expect(readFileSync(join(parent, "run-fresh", "preliminary-gates.json"), "utf8")).toContain(
+      "specific",
+    );
+    for (const call of fake.calls.filter((call) => call.argv.includes("--review-pack"))) {
+      expect(call.argv).toContain("--check-overflow-fail");
+      expect(call.argv).toContain("--check-visible-fail");
+      expect(call.argv).toContain("--review-pack-reservation");
+    }
+    const gate = result.commands.find((c) => c.check_id.includes("specific"));
+    expect(gate?.artifacts.json).toContain("-capture.json");
+    expect(
+      JSON.parse(readFileSync(gate!.artifacts.json!, "utf8")).review_pack_transaction.source_digest,
+    ).toBe("b".repeat(64));
+  });
+  test("fresh failed gates cannot inherit preliminary green or prevent diagnostic capture", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
+      }),
+      freshGateExit: { "mobile-light-default": 2 },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("failed");
+    expect(
+      result.commands
+        .find((c) => c.context_id === "mobile-light-default" && c.check_id !== "review-pack")
+        ?.failures.join(),
+    ).toContain("overflow");
+    expect(
+      result.commands.find(
+        (c) => c.context_id === "mobile-light-default" && c.check_id === "review-pack",
+      )?.outcome,
+    ).toBe("failed");
+  });
+  test("fresh console failures mark both command rows failed while retaining diagnostic tiles", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        checks: { deterministic: ["console"], interaction: [], visual: "full-page" },
+      }),
+      freshGateEnvelope: {
+        "mobile-light-default": {
+          consoleErrors: [{ type: "error", text: "fresh vendor refused" }],
+          pageErrors: [],
+          failedRequests: [],
+        },
+      },
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("failed");
+    const rows = result.commands.filter((c) => c.context_id === "mobile-light-default");
+    expect(rows).toHaveLength(2);
+    expect(
+      rows.every(
+        (row) =>
+          row.outcome === "failed" && row.failures.some((f) => f.includes("fresh vendor refused")),
+      ),
+    ).toBe(true);
+    expect(result.review_pack).not.toBeNull();
+    expect(fake.providerCalls.length).toBeGreaterThan(0);
+  });
+  test("capture without its fresh gate/source binding is unknown, never preliminary green", async () => {
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      omitTransaction: true,
+    });
+    const result = await runQaMatrix({
+      job: job(),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("incomplete");
+    expect(result.blockers.some((b) => b.reason.includes("same transaction"))).toBe(true);
+  });
   test("the gate pool never exceeds policy.command_concurrency", async () => {
     const contexts = ["a", "b", "c", "d", "e"].map((viewport) => ({
       viewport,
@@ -1241,7 +1377,7 @@ describe("runQaMatrix", () => {
     expect(rectsOf(mobile?.argv ?? [])).toEqual([]);
     for (const capture of captures) {
       const allocation = JSON.parse(
-        readFileSync(argvValue(capture.argv, "--review-pack-allocation")!, "utf8"),
+        readFileSync(argvValue(capture.argv, "--review-pack-reservation")!, "utf8"),
       );
       expect(allocation.selected_ids).toHaveLength(3);
       expect(allocation.context_id).toBe(argvValue(capture.argv, "--review-pack-context"));
@@ -1417,7 +1553,7 @@ describe("shared native evidence budget", () => {
     expect(captures).toHaveLength(3);
     for (const capture of captures) {
       const allocation = JSON.parse(
-        readFileSync(argvValue(capture.argv, "--review-pack-allocation")!, "utf8"),
+        readFileSync(argvValue(capture.argv, "--review-pack-reservation")!, "utf8"),
       );
       expect(allocation.selected_ids).toContain("B0");
       expect(allocation.selected_ids).toContain("B9");

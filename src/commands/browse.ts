@@ -85,6 +85,13 @@ import {
 } from "../lib/browser/qa-reuse.ts";
 import { loadQaSnapshot, resolveQaBaseline, saveQaSnapshot } from "../lib/browser/qa-snapshot.ts";
 import {
+  allocateCaptureReservation,
+  assertGatePlanStable,
+  CaptureSourceChanged,
+  runCaptureTransaction,
+  writeCaptureTransaction,
+} from "../lib/browser/review-capture-transaction.ts";
+import {
   type BrowserSessionServer,
   startBrowserSessionServer,
 } from "../lib/browser/session-control.ts";
@@ -129,6 +136,12 @@ const FALLBACK_OUT_PREFIX = resolve(homedir(), ".cache", "harnery", "browse", "l
 interface BrowseOpts {
   reviewPackPlan?: boolean;
   reviewPackAllocation?: string;
+  reviewPackReservation?: string;
+  captureTransactionAllocation?: PageReviewContextAllocation;
+  captureTransaction?: {
+    attempts: Array<{ attempt: number; status: string; source_digest?: string; error?: string }>;
+    source_digest?: string;
+  };
   capturePlanResult?: PageReviewCapturePlan;
   captureSourceEvidence?: PageReviewSourceEvidence;
   out?: string;
@@ -758,6 +771,10 @@ export function registerBrowseCommand(
       "Capture exactly the selected IDs in a verified context allocation.",
     )
     .option(
+      "--review-pack-reservation <json-file>",
+      "Reserve the preliminary allocation's tile count, then rerun supplied gates and allocate against the same page before capture. Full source checks and native coverage remain required.",
+    )
+    .option(
       "--review-pack-context <id>",
       "Context id inside the pack (default <viewport>-<theme>-<state> from --viewport, " +
         "--qa-theme, --qa-state).",
@@ -844,6 +861,14 @@ async function runBrowse(
   const deviceScaleFactor = parseDeviceScaleFactor(opts.deviceScaleFactor);
   if (opts.reviewPackAllocation && !opts.reviewPack) {
     throw new Error("--review-pack-allocation requires --review-pack <dir>.");
+  }
+  if (
+    opts.reviewPackReservation &&
+    (!opts.reviewPack || opts.reviewPackAllocation || opts.reviewPackExpand || opts.checkCritique)
+  ) {
+    throw new Error(
+      "--review-pack-reservation requires an ordinary --review-pack capture without allocation, expansion or inline critique.",
+    );
   }
   if (opts.reviewPackExpand !== undefined) {
     if (opts.reviewPack === undefined || opts.reviewPackContext === undefined) {
@@ -941,146 +966,210 @@ async function runBrowse(
     // screenshot. Annotation injection happens between sampling and capture
     // so the boxes show on the saved PNG; they're cleared post-screenshot
     // so the live profile state isn't polluted.
-    let visibility: VisibilityResult[] | undefined;
-    if (opts.checkVisible && opts.checkVisible.length > 0) {
-      visibility = await browser.checkVisibility(opts.checkVisible, {
-        sampleGrid: Number.parseInt(opts.checkVisibleSampleGrid ?? "3", 10),
-      });
-      if (opts.checkVisibleAnnotate !== false && !opts.reviewPackPlan && !opts.reviewPack) {
-        await browser.annotateVisibility(visibility);
+    const collectGates = async (attempt = 0) => {
+      const before = opts.reviewPackReservation
+        ? await buildReviewCapturePlan(browser, opts)
+        : undefined;
+      let visibility: VisibilityResult[] | undefined;
+      if (opts.checkVisible && opts.checkVisible.length > 0) {
+        visibility = await browser.checkVisibility(opts.checkVisible, {
+          sampleGrid: Number.parseInt(opts.checkVisibleSampleGrid ?? "3", 10),
+        });
+        if (opts.checkVisibleAnnotate !== false && !opts.reviewPackPlan && !opts.reviewPack) {
+          await browser.annotateVisibility(visibility);
+        }
       }
-    }
 
-    let widths: WidthResult[] | undefined;
-    if (opts.checkWidth && opts.checkWidth.length > 0) {
-      widths = await browser.checkWidth(opts.checkWidth);
-    }
-    let overflow: OverflowResult | undefined;
-    if (opts.checkOverflow) {
-      overflow = await browser.checkOverflow();
-    }
-    let runts: RuntsResult | undefined;
-    if (opts.checkRunts) {
-      runts = await browser.checkRunts({
-        scope: typeof opts.checkRunts === "string" ? opts.checkRunts : null,
-        minChars: Number.parseInt(opts.checkRuntsMinChars ?? "40", 10),
-      });
-    }
-    const hasLayoutLint =
-      (opts.checkAlign?.length ?? 0) > 0 ||
-      (opts.checkGap?.length ?? 0) > 0 ||
-      (opts.checkClip?.length ?? 0) > 0 ||
-      (opts.checkOverlap?.length ?? 0) > 0 ||
-      (opts.checkCrowd?.length ?? 0) > 0;
-    let layoutLint: LayoutLintResult | undefined;
-    if (hasLayoutLint) {
-      layoutLint = await browser.checkLayoutLint({
-        align: (opts.checkAlign ?? []).map((selector) => ({
-          selector,
-          axis: alignAxis,
-          tolerancePx: alignThreshold,
-        })),
-        gap: (opts.checkGap ?? []).map((selector) => ({
-          selector,
-          axis: gapAxis,
-          tolerancePx: gapThreshold,
-          expectedGapPx: gapExpected,
-        })),
-        clip: (opts.checkClip ?? []).map((selector) => ({
-          selector,
-          tolerancePx: clipThreshold,
-        })),
-        overlap: (opts.checkOverlap ?? []).map((selector) => ({
-          selector,
-          tolerancePx: overlapThreshold,
-        })),
-        crowd: (opts.checkCrowd ?? []).map((selector) => ({
-          selector,
-          minGapPx: crowdMin,
-        })),
-      });
-    }
-    let hit: TargetSizeResult[] | undefined;
-    if (opts.checkHit && opts.checkHit.length > 0) {
-      hit = await browser.checkTargetSize(opts.checkHit, hitProfile);
-    }
-    const hasContentChecks =
-      opts.checkPlaceholder !== undefined ||
-      opts.checkImages !== undefined ||
-      opts.checkTruncation !== undefined ||
-      opts.checkContrast !== undefined;
-    let content: ContentChecksResult | undefined;
-    if (hasContentChecks) {
-      content = await browser.checkContent({
-        placeholder:
-          opts.checkPlaceholder !== undefined
-            ? { scope: contentScope(opts.checkPlaceholder) }
-            : null,
-        image:
-          opts.checkImages !== undefined
-            ? {
-                scope: contentScope(opts.checkImages),
-                tolerance: parseNonNegativeNumber(
-                  opts.checkImagesTolerance ?? "0.1",
-                  "--check-images-tolerance",
-                ),
-              }
-            : null,
-        truncation:
-          opts.checkTruncation !== undefined
-            ? {
-                scope: contentScope(opts.checkTruncation),
-                tolerance: parseNonNegativeNumber(
-                  opts.checkTruncationTolerance ?? "2",
-                  "--check-truncation-tolerance",
-                ),
-              }
-            : null,
-        contrast:
-          opts.checkContrast !== undefined ? { scope: contentScope(opts.checkContrast) } : null,
-      });
-    }
-    // Diff-aware QA planning. Signature capture must also happen BEFORE any
-    // annotation overlays are injected — an annotation box is a DOM change.
-    let qaPlan: QaPlanReport | undefined;
-    let qaCapture: QaCaptureState | undefined;
-    if (opts.qaPlan || opts.qaSnapshot) {
-      const qa = await runQaPlanning(browser, url, navResult.url, opts);
-      qaPlan = qa.report;
-      qaCapture = qa.capture;
-      if (qaPlan?.manifest) {
-        const m = qaPlan.manifest;
-        emit.log(
-          `qa-plan: class=${m.change_class} scopes=${m.scopes.map((s) => s.selector).join(",") || "-"} ` +
-            `contexts=${m.contexts.length} model-calls<=${m.predicted.model_calls_ceiling} baseline=${m.baseline_source}`,
-          "info",
-        );
+      let widths: WidthResult[] | undefined;
+      if (opts.checkWidth && opts.checkWidth.length > 0) {
+        widths = await browser.checkWidth(opts.checkWidth);
       }
-    }
-    if (opts.reviewPackPlan) {
-      const gateEnvelope: Record<string, unknown> = { runts, overflow, hit, ...layoutLint };
-      if (content) assignContent(gateEnvelope, content);
-      opts.capturePlanResult = await buildReviewCapturePlan(browser, opts);
-      const hits = gateHitsFromEnvelope(gateEnvelope, Number.POSITIVE_INFINITY);
-      for (const candidate of opts.capturePlanResult.candidates) {
-        const r = candidate.rect;
-        candidate.gate_hits = hits.flatMap((hit, index) => {
-          const dpr = opts.capturePlanResult!.dpr;
-          const h = {
-            x: hit.rect.x * dpr,
-            y: hit.rect.y * dpr,
-            width: Math.max(1, hit.rect.width * dpr),
-            height: Math.max(1, hit.rect.height * dpr),
-          };
-          return r.x < h.x + h.width &&
-            r.x + r.width > h.x &&
-            r.y < h.y + h.height &&
-            r.y + r.height > h.y
-            ? [{ check_id: `${hit.rule}:${index + 1}`, severity: "high" as const }]
-            : [];
+      let overflow: OverflowResult | undefined;
+      if (opts.checkOverflow) {
+        overflow = await browser.checkOverflow();
+      }
+      let runts: RuntsResult | undefined;
+      if (opts.checkRunts) {
+        runts = await browser.checkRunts({
+          scope: typeof opts.checkRunts === "string" ? opts.checkRunts : null,
+          minChars: Number.parseInt(opts.checkRuntsMinChars ?? "40", 10),
         });
       }
-    }
+      const hasLayoutLint =
+        (opts.checkAlign?.length ?? 0) > 0 ||
+        (opts.checkGap?.length ?? 0) > 0 ||
+        (opts.checkClip?.length ?? 0) > 0 ||
+        (opts.checkOverlap?.length ?? 0) > 0 ||
+        (opts.checkCrowd?.length ?? 0) > 0;
+      let layoutLint: LayoutLintResult | undefined;
+      if (hasLayoutLint) {
+        layoutLint = await browser.checkLayoutLint({
+          align: (opts.checkAlign ?? []).map((selector) => ({
+            selector,
+            axis: alignAxis,
+            tolerancePx: alignThreshold,
+          })),
+          gap: (opts.checkGap ?? []).map((selector) => ({
+            selector,
+            axis: gapAxis,
+            tolerancePx: gapThreshold,
+            expectedGapPx: gapExpected,
+          })),
+          clip: (opts.checkClip ?? []).map((selector) => ({
+            selector,
+            tolerancePx: clipThreshold,
+          })),
+          overlap: (opts.checkOverlap ?? []).map((selector) => ({
+            selector,
+            tolerancePx: overlapThreshold,
+          })),
+          crowd: (opts.checkCrowd ?? []).map((selector) => ({
+            selector,
+            minGapPx: crowdMin,
+          })),
+        });
+      }
+      let hit: TargetSizeResult[] | undefined;
+      if (opts.checkHit && opts.checkHit.length > 0) {
+        hit = await browser.checkTargetSize(opts.checkHit, hitProfile);
+      }
+      const hasContentChecks =
+        opts.checkPlaceholder !== undefined ||
+        opts.checkImages !== undefined ||
+        opts.checkTruncation !== undefined ||
+        opts.checkContrast !== undefined;
+      let content: ContentChecksResult | undefined;
+      if (hasContentChecks) {
+        content = await browser.checkContent({
+          placeholder:
+            opts.checkPlaceholder !== undefined
+              ? { scope: contentScope(opts.checkPlaceholder) }
+              : null,
+          image:
+            opts.checkImages !== undefined
+              ? {
+                  scope: contentScope(opts.checkImages),
+                  tolerance: parseNonNegativeNumber(
+                    opts.checkImagesTolerance ?? "0.1",
+                    "--check-images-tolerance",
+                  ),
+                }
+              : null,
+          truncation:
+            opts.checkTruncation !== undefined
+              ? {
+                  scope: contentScope(opts.checkTruncation),
+                  tolerance: parseNonNegativeNumber(
+                    opts.checkTruncationTolerance ?? "2",
+                    "--check-truncation-tolerance",
+                  ),
+                }
+              : null,
+          contrast:
+            opts.checkContrast !== undefined ? { scope: contentScope(opts.checkContrast) } : null,
+        });
+      }
+      // Diff-aware QA planning. Signature capture must also happen BEFORE any
+      // annotation overlays are injected — an annotation box is a DOM change.
+      let qaPlan: QaPlanReport | undefined;
+      let qaCapture: QaCaptureState | undefined;
+      if (opts.qaPlan || opts.qaSnapshot) {
+        const qa = await runQaPlanning(browser, url, navResult.url, opts);
+        qaPlan = qa.report;
+        qaCapture = qa.capture;
+        if (qaPlan?.manifest) {
+          const m = qaPlan.manifest;
+          emit.log(
+            `qa-plan: class=${m.change_class} scopes=${m.scopes.map((s) => s.selector).join(",") || "-"} ` +
+              `contexts=${m.contexts.length} model-calls<=${m.predicted.model_calls_ceiling} baseline=${m.baseline_source}`,
+            "info",
+          );
+        }
+      }
+      let asserts: AssertResult[] | undefined;
+      if (opts.assert && opts.assert.length > 0) {
+        const specs = opts.assert.map(parseAssertSpec);
+        asserts = await browser.checkAsserts(specs);
+      }
+      if (opts.reviewPackPlan || opts.reviewPackReservation) {
+        const gateEnvelope: Record<string, unknown> = { runts, overflow, hit, ...layoutLint };
+        if (content) assignContent(gateEnvelope, content);
+        opts.capturePlanResult = await buildReviewCapturePlan(browser, opts);
+        const hits = gateHitsFromEnvelope(gateEnvelope, Number.POSITIVE_INFINITY);
+        for (const candidate of opts.capturePlanResult.candidates) {
+          const r = candidate.rect;
+          candidate.gate_hits = hits.flatMap((hit, index) => {
+            const dpr = opts.capturePlanResult!.dpr;
+            const h = {
+              x: hit.rect.x * dpr,
+              y: hit.rect.y * dpr,
+              width: Math.max(1, hit.rect.width * dpr),
+              height: Math.max(1, hit.rect.height * dpr),
+            };
+            return r.x < h.x + h.width &&
+              r.x + r.width > h.x &&
+              r.y < h.y + h.height &&
+              r.y + r.height > h.y
+              ? [{ check_id: `${hit.rule}:${index + 1}`, severity: "high" as const }]
+              : [];
+          });
+        }
+      }
+
+      if (opts.reviewPackReservation) {
+        const prefix = opts.out ?? resolve(opts.reviewPack!, opts.reviewPackContext ?? "capture");
+        mkdirSync(dirname(prefix), { recursive: true, mode: 0o700 });
+        writeFileSync(
+          `${prefix}.attempt-${attempt}.gates.json`,
+          JSON.stringify(
+            {
+              attempt,
+              source_before: before?.source_digest,
+              source_after: opts.capturePlanResult?.source_digest,
+              source_evidence: opts.captureSourceEvidence,
+              visibility,
+              widths,
+              overflow,
+              runts,
+              layoutLint,
+              hit,
+              content,
+              asserts,
+            },
+            null,
+            2,
+          ),
+          { mode: 0o600 },
+        );
+      }
+      if (before) assertGatePlanStable(before, opts.capturePlanResult!);
+      return {
+        visibility,
+        widths,
+        overflow,
+        runts,
+        layoutLint,
+        hit,
+        content,
+        qaPlan,
+        qaCapture,
+        asserts,
+      };
+    };
+    let {
+      visibility,
+      widths,
+      overflow,
+      runts,
+      layoutLint,
+      hit,
+      content,
+      qaPlan,
+      qaCapture,
+      asserts,
+    }: Partial<Awaited<ReturnType<typeof collectGates>>> = opts.reviewPackReservation
+      ? {}
+      : await collectGates();
     // Vision critique. Capture tiles BEFORE any annotation overlays are injected
     // so the model sees the real page, not our boxes.
     let critique: CritiqueResult | undefined;
@@ -1151,6 +1240,62 @@ async function runBrowse(
     let reviewPack: ReviewPackReport | undefined;
     if (opts.reviewPack !== undefined && opts.reviewPackExpand !== undefined) {
       reviewPack = await expandReviewPackTile(browser, opts, deviceScaleFactor ?? 1);
+    } else if (opts.reviewPackReservation) {
+      const reservation = JSON.parse(readFileSync(resolve(opts.reviewPackReservation), "utf8"));
+      opts.captureTransaction = { attempts: [] };
+      const persistTransaction = () => {
+        const prefix = opts.out ?? resolve(opts.reviewPack!, opts.reviewPackContext ?? "capture");
+        mkdirSync(dirname(prefix), { recursive: true, mode: 0o700 });
+        writeFileSync(
+          `${prefix}.capture-transaction.json`,
+          JSON.stringify(opts.captureTransaction, null, 2),
+          { mode: 0o600 },
+        );
+      };
+      reviewPack = await runCaptureTransaction(
+        async (attempt) => {
+          await browser.waitForReviewReady();
+          ({
+            visibility,
+            widths,
+            overflow,
+            runts,
+            layoutLint,
+            hit,
+            content,
+            qaPlan,
+            qaCapture,
+            asserts,
+          } = await collectGates(attempt));
+          opts.captureTransactionAllocation = allocateCaptureReservation(
+            reservation,
+            opts.capturePlanResult!,
+          );
+          opts.captureTransaction!.attempts.push({
+            attempt,
+            status: "gated",
+            source_digest: opts.capturePlanResult!.source_digest,
+          });
+          persistTransaction();
+        },
+        async () => {
+          const captured = await captureReviewPackContext(browser, url, navResult, opts, qaCapture);
+          opts.captureTransaction!.source_digest =
+            opts.captureTransactionAllocation!.plan.source_digest;
+          opts.captureTransaction!.attempts.at(-1)!.status = "captured";
+          persistTransaction();
+          return captured;
+        },
+        (attempt, error) => {
+          opts.captureTransaction!.attempts.push({
+            attempt,
+            status: "failed",
+            error: error instanceof Error ? error.message : String(error),
+            source_digest: opts.capturePlanResult?.source_digest,
+          });
+          persistTransaction();
+        },
+      );
     } else if (opts.reviewPack !== undefined) {
       reviewPack = await captureReviewPackContext(browser, url, navResult, opts, qaCapture);
     }
@@ -1209,11 +1354,7 @@ async function runBrowse(
         "info",
       );
     }
-    let asserts: AssertResult[] | undefined;
-    if (opts.assert && opts.assert.length > 0) {
-      const specs = opts.assert.map(parseAssertSpec);
-      asserts = await browser.checkAsserts(specs);
-    }
+
     const widthThreshold = Number.parseFloat(opts.checkWidthThreshold ?? "0.9");
     const annotateWidth = widths && opts.checkWidthAnnotate !== false;
     const annotateOverflow = overflow && opts.checkOverflowAnnotate !== false;
@@ -1636,6 +1777,7 @@ async function runPrintMode(
     if (reviewPack) result.reviewPack = reviewPack;
     if (opts.capturePlanResult) result.review_pack_capture_plan = opts.capturePlanResult;
     if (opts.captureSourceEvidence) result.review_pack_source_evidence = opts.captureSourceEvidence;
+    if (opts.captureTransaction) result.review_pack_transaction = opts.captureTransaction;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
     }
@@ -1791,6 +1933,7 @@ async function runTrioMode(
   if (reviewPack) envelope.reviewPack = reviewPack;
   if (opts.capturePlanResult) envelope.review_pack_capture_plan = opts.capturePlanResult;
   if (opts.captureSourceEvidence) envelope.review_pack_source_evidence = opts.captureSourceEvidence;
+  if (opts.captureTransaction) envelope.review_pack_transaction = opts.captureTransaction;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
   }
@@ -2617,7 +2760,13 @@ async function captureReviewPackContext(
   const packDir = opts.reviewPack as string;
   const plan = await buildReviewCapturePlan(browser, opts);
   let allocation: PageReviewContextAllocation;
-  if (opts.reviewPackAllocation) {
+  if (opts.captureTransactionAllocation) {
+    try {
+      allocation = validatePageReviewAllocation(opts.captureTransactionAllocation, plan);
+    } catch (error) {
+      throw new CaptureSourceChanged(String(error));
+    }
+  } else if (opts.reviewPackAllocation) {
     try {
       allocation = validatePageReviewAllocation(
         JSON.parse(readFileSync(resolve(opts.reviewPackAllocation), "utf8")),
@@ -2648,7 +2797,9 @@ async function captureReviewPackContext(
   const buffer = await browser.fullPageScreenshotBuffer();
   const size = pngDimensions(buffer);
   if (size.width !== plan.page_width || size.height !== plan.page_height)
-    throw new Error("Page review image geometry changed after planning; rerun the review.");
+    throw opts.captureTransactionAllocation
+      ? new CaptureSourceChanged("Page review image geometry changed after planning.")
+      : new Error("Page review image geometry changed after planning; rerun the review.");
   const decoded = PNG.sync.read(buffer);
   const fullPageMs = performance.now() - start;
   const byId = new Map(plan.candidates.map((c) => [c.id, c]));
@@ -2683,27 +2834,39 @@ async function captureReviewPackContext(
       scopes.set(c.scope, group);
     }
   }
+  if (opts.captureTransactionAllocation) {
+    const after = await buildReviewCapturePlan(browser, opts);
+    try {
+      validatePageReviewAllocation(allocation, after);
+    } catch (error) {
+      throw new CaptureSourceChanged(String(error));
+    }
+  }
   const capture = qaCapture ?? (await captureQaState(browser, targetArg, navResult.url, opts));
-  const record = writePackContext(packDir, {
-    context: { ...capture.context, id: plan.context_id },
-    url: navResult.url,
-    title: navResult.title,
-    fullPage: buffer,
-    pageWidth: plan.page_width / plan.dpr,
-    pageHeight: plan.page_height / plan.dpr,
-    tiles: bandTiles,
-    coverage: allocation.coverage,
-    scopeTiles: [...scopes].map(([selector, tiles]) => ({ selector, tiles })),
-    signature: capture.signature,
-    domHtml: capture.domHtml,
-    captureFidelity: reconciled.fidelity,
-    viewportSize: { width: plan.viewport_width, height: plan.viewport_height },
-    dpr: plan.dpr,
-    recipeVersion: plan.recipe_version,
-    allocationCoverage: allocation.coverage,
-    capturePlan: allocation.plan,
-    hitBands: 0,
-  });
+  const writeContext = (destination: string) =>
+    writePackContext(destination, {
+      context: { ...capture.context, id: plan.context_id },
+      url: navResult.url,
+      title: navResult.title,
+      fullPage: buffer,
+      pageWidth: plan.page_width / plan.dpr,
+      pageHeight: plan.page_height / plan.dpr,
+      tiles: bandTiles,
+      coverage: allocation.coverage,
+      scopeTiles: [...scopes].map(([selector, tiles]) => ({ selector, tiles })),
+      signature: capture.signature,
+      domHtml: capture.domHtml,
+      captureFidelity: reconciled.fidelity,
+      viewportSize: { width: plan.viewport_width, height: plan.viewport_height },
+      dpr: plan.dpr,
+      recipeVersion: plan.recipe_version,
+      allocationCoverage: allocation.coverage,
+      capturePlan: allocation.plan,
+      hitBands: 0,
+    });
+  const record = opts.captureTransactionAllocation
+    ? writeCaptureTransaction(packDir, plan.context_id, writeContext)
+    : writeContext(packDir);
   const warnings = [...reconciled.warnings];
   if (allocation.coverage.capped)
     warnings.push(
