@@ -748,10 +748,19 @@ export class Browser {
         priorTransition: string;
         priorTransitionPriority: string;
       }> = [];
-      const all = document.querySelectorAll<HTMLElement>("body *");
-      const limit = Math.min(all.length, 20_000);
-      for (let i = 0; i < limit; i++) {
-        const el = all[i] as HTMLElement;
+      // Fixed controls can live inside a static shadow host. Walk open roots
+      // without hiding their ordinary content or exceeding the total node cap.
+      const walkers = [document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT)];
+      let visited = 0;
+      while (walkers.length && visited < 20_000) {
+        const el = walkers[walkers.length - 1].nextNode() as HTMLElement | null;
+        if (!el) {
+          walkers.pop();
+          continue;
+        }
+        visited++;
+        if (el.shadowRoot)
+          walkers.push(document.createTreeWalker(el.shadowRoot, NodeFilter.SHOW_ELEMENT));
         const position = getComputedStyle(el).position;
         if (position !== "fixed" && position !== "sticky") continue;
         out.push({

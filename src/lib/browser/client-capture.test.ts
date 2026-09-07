@@ -152,3 +152,68 @@ for (const dpr of [1, 2])
       await browser.close();
     }
   }, 15000);
+
+test("stitched captures suppress nested shadow fixed controls without hiding static content", async () => {
+  const profile = mkdtempSync(join(tmpdir(), "native-shadow-pinned-"));
+  profiles.push(profile);
+  const browser = new Browser({
+    profileDir: profile,
+    viewport: { width: 320, height: 240 },
+    jar: null,
+  });
+  try {
+    await browser.open();
+    await browser.currentPage.setContent(
+      "<!doctype html><style>html,body{margin:0;background:white}body{height:960px}</style><div id='outer'></div>",
+    );
+    await browser.currentPage.evaluate(() => {
+      const outer = document.querySelector("#outer")!.attachShadow({ mode: "open" });
+      const inner = document.createElement("div");
+      inner.id = "inner";
+      outer.append(inner);
+      const shadow = inner.attachShadow({ mode: "open" });
+      shadow.innerHTML = `<style>.content{position:absolute;top:400px;left:30px;width:30px;height:30px;background:blue}.launcher{position:fixed;bottom:10px;right:10px;width:30px;height:30px;background:red}</style><div class="content"></div><div class="launcher" style="opacity: 1 !important; transition: opacity 1s !important;"></div>`;
+      scrollTo(0, 120);
+    });
+    const state = () =>
+      browser.currentPage.evaluate(() => {
+        const host = document.querySelector("#outer")!;
+        const inner = host.shadowRoot!.querySelector("#inner")!;
+        const launcher = inner.shadowRoot!.querySelector(".launcher") as HTMLElement;
+        return {
+          scroll: scrollY,
+          hostStyle: host.getAttribute("style"),
+          innerStyle: inner.getAttribute("style"),
+          launcherStyle: launcher.getAttribute("style"),
+          opacity: getComputedStyle(launcher).opacity,
+        };
+      });
+    const before = await state();
+    const shots = await browser.captureRegionsByScroll([
+      { x: 0, y: 0, width: 320, height: 720 },
+      { x: 0, y: 720, width: 320, height: 240 },
+    ]);
+    const colorCount = (image: PNG, color: number[]) => {
+      let count = 0;
+      for (let i = 0; i < image.data.length; i += 4)
+        if (color.every((channel, j) => image.data[i + j] === channel)) count++;
+      return count;
+    };
+    const first = PNG.sync.read(shots[0]);
+    expect({ width: first.width, height: first.height }).toEqual({ width: 320, height: 720 });
+    expect(colorCount(first, [255, 0, 0, 255])).toBe(900);
+    expect(colorCount(first, [0, 0, 255, 255])).toBe(900);
+    expect(colorCount(PNG.sync.read(shots[1]), [255, 0, 0, 255])).toBe(0);
+    expect(await state()).toEqual(before);
+    let failure: unknown;
+    try {
+      await browser.captureRegionByScroll({ x: 0, y: 2000, width: 320, height: 100 });
+    } catch (error) {
+      failure = error;
+    }
+    expect(String(failure)).toContain("not reachable");
+    expect(await state()).toEqual(before);
+  } finally {
+    await browser.close();
+  }
+}, 30000);
