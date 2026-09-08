@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createStorageCatalog } from "../../src/core/storage/catalog";
 import { inventoryStorage } from "../../src/core/storage/inventory";
 import { clearStorageFootprintCache, readStorageFootprint } from "./storage-reader";
-import { STORAGE_SNAPSHOT_MAX_AGE_MS, storageSnapshotPath } from "./storage-snapshot-cache";
+import { storageSnapshotPath } from "./storage-snapshot-cache";
 
 const roots: string[] = [];
 function fixture() {
@@ -161,7 +161,28 @@ describe("persistent storage display cache", () => {
     expect(calls).toBe(2);
   });
 
-  test("corrupt, structurally invalid, oversized, expired and future snapshots are discarded", async () => {
+  test("a days-old persisted snapshot is served at once while the refresh runs", async () => {
+    const root = fixture();
+    await readStorageFootprint(root, { inventoryReader: scan, now: () => 1000 });
+    clearStorageFootprintCache();
+    let calls = 0;
+    let finish!: () => void;
+    const served = await readStorageFootprint(root, {
+      now: () => 1000 + 3 * 24 * 60 * 60_000,
+      inventoryReader: () => {
+        calls++;
+        return new Promise((resolve) => {
+          finish = () => resolve(scan(root));
+        });
+      },
+    });
+    expect(served.inventory.captured_at).toBeDefined();
+    expect(calls).toBe(1);
+    finish();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  test("corrupt, structurally invalid, oversized and future snapshots are discarded", async () => {
     const root = fixture();
     await readStorageFootprint(root, { inventoryReader: scan, now: () => 1000 });
     const original = JSON.parse(readFileSync(storageSnapshotPath(root), "utf8"));
@@ -177,7 +198,6 @@ describe("persistent storage display cache", () => {
         }),
       () => " ".repeat(4 * 1024 * 1024 + 1),
       () => JSON.stringify({ ...original, savedAt: 2000 }),
-      () => JSON.stringify({ ...original, savedAt: 1000 - STORAGE_SNAPSHOT_MAX_AGE_MS - 1 }),
     ]) {
       clearStorageFootprintCache();
       writeFileSync(storageSnapshotPath(root), mutation());
@@ -189,7 +209,7 @@ describe("persistent storage display cache", () => {
         },
       });
     }
-    expect(calls).toBe(6);
+    expect(calls).toBe(5);
   });
 
   test("a failed cache write cannot fail the fresh inventory and disabled caching bypasses disk", async () => {

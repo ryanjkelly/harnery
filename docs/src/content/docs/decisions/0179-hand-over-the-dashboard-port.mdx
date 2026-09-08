@@ -1,0 +1,73 @@
+---
+title: "ADR 0179: hand over the dashboard port between processes"
+description: Warm the replacement dashboard and drain existing connections when switching its public port.
+sidebar:
+  order: 179
+---
+
+Date: 2026-09-08. Status: accepted.
+
+## Context
+
+A host that supervises the production dashboard rebuilds it when sources
+change. The swap was stop, promote, start: every pooled browser socket died at
+the stop, and the fresh process then spent about a minute loading routes on
+first use while the port answered slowly. On one host the storage page alone
+took the full warm-up budget, because its footprint snapshot had aged past a
+24 hour limit and the inventory that would refresh it walks over a million
+files and was killed at two minutes, so the cache never recovered.
+
+## Alternatives
+
+Stopping source watching removes the swaps but leaves the dashboard serving a
+stale reader until someone restarts it by hand, which is the failure the
+supervisor was built to prevent. Binding both processes to the port with
+`SO_REUSEPORT` splits new connections between a warm and a cold process for the
+whole warm-up. Signalling the new process with `SIGUSR2` fails when a script
+runner sits between the supervisor and Node and does not forward the signal.
+A warm replacement alone still resets sockets when the old process exits;
+a live pooled-request probe reproduced that failure. A permanent front proxy
+could retain the listener across every replacement, but adds another service
+to supervise. Draining accepted sockets addresses the observed reset within
+the existing process lifecycle.
+
+## Decision
+
+`web/server-handover.mjs` is preloaded by the `start` script and stays inert
+unless `HARNERY_WEB_PUBLIC_PORT` and `HARNERY_WEB_HANDOVER_FILE` are set. The
+supervisor starts the new process on an ephemeral port, warms it there, writes
+the handover file, and stops the old process. The preload polls for the file,
+opens a plain TCP listener on the public port, retries the bind while the old
+process still holds it, and hands each accepted socket to the HTTP server Next
+created, so keep-alive windows, upgrades and timeouts are unchanged. After the
+listener binds, it writes a `.ready` acknowledgement beside the handover file.
+The supervisor checks both that acknowledgement and an HTTP response. A failed
+warm-up leaves the previous process serving.
+
+The supervisor gives every child `HARNERY_WEB_DRAIN_FILE`. After warm-up, it
+requests the new listener and asks the old child to drain. The old child closes
+only its TCP listeners, preserves accepted sockets, and sends `Connection:
+close` on their next HTTP response. Once all sockets close it writes a
+`.drained` acknowledgement. The supervisor retains the old process and its
+bundle until that acknowledgement or a 75-second deadline, then stops it.
+This deadline bounds long-lived streams and exceeds the 72-second idle
+keep-alive window. A later build cannot reuse that directory before the old
+process stops.
+
+The storage page serves any structurally valid snapshot at once and refreshes
+in the background; age is shown, not enforced. The background inventory may
+run for ten minutes. A failed refresh is logged.
+
+## Result
+
+The replacement loads its routes before the old listener drains. Tests reuse
+pooled sockets across two successive handovers and verify that each retiring
+process finishes its response and requests a reconnect. New connections reach
+the replacement. A brief bind gap remains; streams or requests still open at
+the 75-second deadline are terminated, so this does not promise uninterrupted
+WebSocket sessions or arbitrarily long downloads.
+
+The supervisor alternates build directories while serving, then restores the
+newest bundle to `.next` on its next start. Tests cover port contention,
+listener acknowledgement, protocol upgrades, failed warm-up, and reuse of old
+storage snapshots.

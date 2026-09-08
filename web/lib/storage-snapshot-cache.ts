@@ -4,14 +4,21 @@ import { type FileHandle, lstat, mkdir, open, rename, unlink } from "node:fs/pro
 import { join } from "node:path";
 
 const MAX_BYTES = 4 * 1024 * 1024;
-export const STORAGE_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60_000;
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
 export function storageSnapshotPath(root: string): string {
   return join(root, ".harnery", "cache", "storage-footprint", "snapshot.json");
 }
 
-/** One bounded, disposable display snapshot. It never authorizes maintenance. */
+/**
+ * One bounded, disposable display snapshot. It never authorizes maintenance.
+ *
+ * Age is not a validity test here: the reader serves whatever valid snapshot
+ * exists and refreshes in the background, because on a large `.harnery` the
+ * fresh inventory can take minutes and a day-old footprint beats a blocked
+ * page. The page shows the capture time. A snapshot from the future is still
+ * rejected as corrupt.
+ */
 export async function readStorageSnapshot(
   root: string,
   key: string,
@@ -38,7 +45,6 @@ export async function readStorageSnapshot(
       envelope.key !== key ||
       !Number.isFinite(envelope.savedAt) ||
       envelope.savedAt > now ||
-      now - envelope.savedAt > STORAGE_SNAPSHOT_MAX_AGE_MS ||
       typeof envelope.body !== "string" ||
       digest(envelope.body) !== envelope.sha256
     )

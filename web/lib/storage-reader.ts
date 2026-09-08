@@ -16,11 +16,7 @@ import type {
 import { HARNERY_STORAGE_INVENTORY_SCHEMA } from "../../src/core/storage/contract";
 import { storageHealth } from "../../src/core/storage/health";
 import { coordRoot } from "./coord-reader";
-import {
-  readStorageSnapshot,
-  STORAGE_SNAPSHOT_MAX_AGE_MS,
-  writeStorageSnapshot,
-} from "./storage-snapshot-cache";
+import { readStorageSnapshot, writeStorageSnapshot } from "./storage-snapshot-cache";
 
 const execFile = promisify(execFileCallback);
 
@@ -106,9 +102,10 @@ cacheScope.__harneryStorageFootprintCacheV2 = cacheState;
  * Read the canonical, metadata-only storage inventory for one project root.
  *
  * The inventory walks every managed root, which on a large project takes
- * seconds. A fresh snapshot is served as-is. An expired snapshot is served
- * immediately while one refresh runs in the background, so a page load never
- * waits on the walk once the first snapshot exists. Only a cold cache blocks.
+ * minutes. A fresh snapshot is served as-is. An expired snapshot of any age is
+ * served immediately while one refresh runs in the background, so a page load
+ * never waits on the walk once the first snapshot exists. Only a cold cache
+ * blocks. A refresh that fails is logged, since nothing else would notice.
  */
 export async function readStorageFootprint(
   root = coordRoot(),
@@ -136,8 +133,7 @@ export async function readStorageFootprint(
     )
     .digest("hex");
   let cached = cacheMs > 0 && cacheState.cached?.key === key ? cacheState.cached : null;
-  if (cached && (now < cached.savedAt || now - cached.savedAt > STORAGE_SNAPSHOT_MAX_AGE_MS))
-    cached = null;
+  if (cached && now < cached.savedAt) cached = null;
   if (!cached && cacheMs > 0) {
     const disk = await readStorageSnapshot(root, key, now);
     if (disk && isStorageInventoryReport(disk.inventory)) {
@@ -163,7 +159,11 @@ export async function readStorageFootprint(
     clock,
   );
   if (cached) {
-    refresh.catch(() => {});
+    refresh.catch((error: unknown) => {
+      console.error(
+        `[storage] background inventory refresh failed; serving the snapshot from ${new Date(cached.savedAt).toISOString()}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
     return cached.report;
   }
   return refresh;
@@ -256,7 +256,10 @@ async function readInventoryFromCli(root: string): Promise<HarneryStorageInvento
     env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
-    timeout: 120_000,
+    // The walk is metadata-only but a large `.harnery` (1M files measured
+    // 2026-09-08) takes about 150 s; the refresh runs in the background, so
+    // a generous ceiling costs nothing and a tight one kept the cache cold.
+    timeout: 10 * 60_000,
   });
   let parsed: unknown;
   try {

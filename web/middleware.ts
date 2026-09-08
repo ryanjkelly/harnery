@@ -5,8 +5,8 @@
  * keyed off Host — never a client-supplied query flag.
  */
 
-import { FILES_ORIGIN_HEADER, FILES_ORIGIN_HOST, isFilesOriginHost } from "@/lib/files-origin";
 import { type NextRequest, NextResponse } from "next/server";
+import { FILES_ORIGIN_HEADER, FILES_ORIGIN_HOST, isFilesOriginHost } from "@/lib/files-origin";
 
 export function middleware(req: NextRequest) {
   if (!isFilesOriginHost(req.headers.get("host"))) {
@@ -18,6 +18,12 @@ export function middleware(req: NextRequest) {
   // Files host is file-bytes only — no dashboard routes or Next internals.
   if (pathname.startsWith("/_next/") || pathname.startsWith("/api/")) {
     return new NextResponse("Not found", { status: 404 });
+  }
+
+  // Browsers ask every origin for this; it is never a repo file, and a 400 put
+  // a red console line on every page served from this host.
+  if (pathname === "/favicon.ico") {
+    return new NextResponse(null, { status: 204 });
   }
 
   if (pathname === "/" || pathname === "") {
