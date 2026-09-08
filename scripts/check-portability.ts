@@ -81,6 +81,8 @@ const SKIP_DIR = new Set([
   ".git",
   "coverage",
   ".next",
+  ".next-staging",
+  ".next-previous",
   "build",
   "out",
   ".astro",

@@ -12,6 +12,28 @@ import { scanPortability } from "../../scripts/check-portability.ts";
 // runs standalone via `bun run scripts/check-portability.ts` and (host-side) in
 // the embedding monorepo's pre-commit hook.
 describe("portability", () => {
+  test("skips local staged bundles but scans them if deliberately staged in Git", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-portability-builds-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+    try {
+      git("init", "-q");
+      for (const name of [".next", ".next-staging", ".next-previous"]) {
+        const directory = join(root, "web", name);
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, "generated.js"), 'const merchant = "BARTN";\n');
+      }
+      expect(scanPortability(root)).toEqual([]);
+      git("add", "web/.next-staging/generated.js", "web/.next-previous/generated.js");
+      expect(scanPortability(root, "index").map((violation) => violation.file)).toEqual([
+        "web/.next-previous/generated.js",
+        "web/.next-staging/generated.js",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("no host-specific tokens in committable source", () => {
     const root = join(import.meta.dir, "..", "..");
     const violations = scanPortability(root);
