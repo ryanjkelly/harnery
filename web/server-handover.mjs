@@ -37,13 +37,42 @@ const BIND_LIMIT_MS = Number(process.env.HARNERY_WEB_HANDOVER_TIMEOUT_MS ?? 15_0
 if ((PUBLIC_PORT > 0 && HANDOVER_FILE) || DRAIN_FILE) {
   /** The HTTP server Next listens with; the front door feeds it sockets. */
   let target;
-  let door;
+  const doors = new Set();
   let draining = false;
+  let bindingFailed = false;
   const sockets = new Set();
   const acknowledgeDrain = () => {
     if (draining && sockets.size === 0) writeFileSync(`${DRAIN_FILE}.drained`, String(process.pid));
   };
   const originalListen = Server.prototype.listen;
+  // A single IPv6 dual-stack socket accepts IPv4 locally, but some host port
+  // forwarders expose only the socket's declared family. Bind both explicitly.
+  const listenDoor = (options, onReady, onFailure) => {
+    const started = Date.now();
+    const door = createServer((socket) => target.emit("connection", socket));
+    doors.add(door);
+    const bind = () => { if (!draining && !bindingFailed) door.listen(options); };
+    door.on("error", (error) => {
+      if (draining || bindingFailed) return;
+      if (error.code === "EADDRINUSE" && Date.now() - started < BIND_LIMIT_MS) {
+        setTimeout(bind, BIND_RETRY_MS).unref();
+        return;
+      }
+      // IPv4-only hosts still work; an occupied IPv6 port is not optional.
+      if (options.ipv6Only && ["EAFNOSUPPORT", "EADDRNOTAVAIL"].includes(error.code)) {
+        doors.delete(door);
+        onReady();
+        return;
+      }
+      bindingFailed = true;
+      onFailure(error);
+    });
+    door.once("listening", () => {
+      if (draining || bindingFailed) door.close();
+      else onReady();
+    });
+    bind();
+  };
   Server.prototype.listen = function listen(...args) {
     if (!target) {
       target = this;
@@ -54,6 +83,23 @@ if ((PUBLIC_PORT > 0 && HANDOVER_FILE) || DRAIN_FILE) {
       this.prependListener("request", (_request, response) => {
         if (draining) response.setHeader("Connection", "close");
       });
+      const options = typeof args[0] === "object" && args[0] !== null ? args[0] : null;
+      const port = options ? options.port : args[0];
+      const host = options ? options.host : typeof args[1] === "string" ? args[1] : undefined;
+      if (host === undefined && (typeof port === "number" || /^\d+$/.test(port))) {
+        // Preserve explicit host and Unix-socket binds. Only split the default
+        // wildcard TCP bind used by a supervised Next start.
+        if (options) args[0] = { ...options, host: "0.0.0.0" };
+        else if (typeof args[1] === "function") args.splice(1, 0, "0.0.0.0");
+        else args[1] = "0.0.0.0";
+        this.once("listening", () => {
+          listenDoor(
+            { port: this.address().port, host: "::", ipv6Only: true },
+            () => {},
+            (error) => this.emit("error", error),
+          );
+        });
+      }
     }
     return originalListen.apply(this, args);
   };
@@ -62,21 +108,20 @@ if ((PUBLIC_PORT > 0 && HANDOVER_FILE) || DRAIN_FILE) {
   const openFrontDoor = () => {
     if (opened || !target) return false;
     opened = true;
-    const started = Date.now();
-    door = createServer((socket) => target.emit("connection", socket));
-    door.on("error", (error) => {
-      if (error.code === "EADDRINUSE" && Date.now() - started < BIND_LIMIT_MS) {
-        setTimeout(() => door.listen(PUBLIC_PORT), BIND_RETRY_MS).unref();
-        return;
-      }
+    let pending = 2;
+    let failed = false;
+    const onFailure = (error) => {
+      failed = true;
       console.error(`[handover] could not take port ${PUBLIC_PORT}: ${error.message}`);
-      door.close();
-    });
-    door.on("listening", () => {
+      for (const door of doors) if (door.listening) door.close();
+    };
+    const onReady = () => {
+      if (--pending !== 0 || failed || draining) return;
       writeFileSync(`${HANDOVER_FILE}.ready`, String(process.pid));
       console.log(`[handover] serving public port ${PUBLIC_PORT}`);
-    });
-    door.listen(PUBLIC_PORT);
+    };
+    listenDoor({ port: PUBLIC_PORT, host: "0.0.0.0" }, onReady, onFailure);
+    listenDoor({ port: PUBLIC_PORT, host: "::", ipv6Only: true }, onReady, onFailure);
     return true;
   };
 
@@ -85,7 +130,7 @@ if ((PUBLIC_PORT > 0 && HANDOVER_FILE) || DRAIN_FILE) {
       draining = true;
       // http.Server.close() also closes idle keep-alive sockets. Close only
       // the TCP listeners so pooled requests can still finish on this process.
-      if (door?.listening) door.close();
+      for (const door of doors) if (door.listening) door.close();
       if (target.listening) NetServer.prototype.close.call(target);
       clearInterval(poll);
       unlinkSync(DRAIN_FILE);

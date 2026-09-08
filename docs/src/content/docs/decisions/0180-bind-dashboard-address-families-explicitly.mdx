@@ -1,0 +1,48 @@
+---
+title: "ADR 0180: bind dashboard address families explicitly"
+description: Preserve IPv4 and IPv6 reachability through host port forwarders during startup and handover.
+sidebar:
+  order: 180
+---
+
+Date: 2026-09-08. Status: accepted. Extends ADR 0179.
+
+## Context
+
+A dashboard bound to one IPv6 dual-stack socket answered both address families
+inside a Linux guest. Its Windows host created only an IPv6 forwarding
+listener. Windows IPv4 requests failed, while a probe that let the client
+choose its address family passed. Warming routes and draining accepted
+connections cannot repair a missing forwarding listener.
+
+## Alternatives
+
+Keeping the dual-stack socket relies on the forwarder recognizing its implicit
+IPv4 support. Binding only IPv4 removes IPv6 access. Reconfiguring the host's
+networking affects applications beyond the dashboard and is unnecessary to
+advertise both address families.
+
+## Decision
+
+The supervised dashboard's default TCP bind uses an explicit IPv4 HTTP
+listener and an IPv6-only TCP listener feeding the same HTTP server. Explicit
+host bindings and Unix sockets retain their caller-supplied behavior.
+
+A handover opens explicit IPv4 and IPv6-only public listeners. It acknowledges
+readiness after both bind. An unavailable IPv6 protocol or address permits an
+IPv4-only host; an occupied IPv6 port still retries and cannot acknowledge
+success. Drain closes every listener without destroying accepted sockets.
+Pending retries cannot reopen a retired listener.
+
+## Result and limits
+
+Windows exposes both forwarding listeners after this change. Separate IPv4 and
+IPv6 requests reach the dashboard, and the previously failing document renders
+in Chrome. Regression tests check the default listen overloads, both address
+families across successive handovers, partial binding, and drain cancellation.
+
+These bindings do not guarantee availability of a host's forwarding service.
+End-to-end checks must force each address family, include new connections, and
+compare failures with direct guest requests and an unchanged control server.
+A successful localhost request with automatic address selection is insufficient
+evidence that both paths work.
