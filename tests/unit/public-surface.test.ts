@@ -11,6 +11,33 @@ import {
 } from "../../scripts/check-public-surface.ts";
 
 describe("public-surface provenance guard", () => {
+  test("ignores alternate local bundles but scans them if added to Git", () => {
+    const repo = mkdtempSync(join(tmpdir(), "harnery-public-bundles-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+    try {
+      git("init", "-q");
+      git("config", "user.email", "test@example.com");
+      git("config", "user.name", "Test");
+      writeFileSync(join(repo, ".gitignore"), ".next-staging/\n.next-previous/\n");
+      git("add", ".gitignore");
+      git("commit", "-qm", "base");
+      const base = git("rev-parse", "HEAD");
+      for (const directory of [".next-staging", ".next-previous"]) {
+        const bundle = join(repo, "web", directory);
+        mkdirSync(bundle, { recursive: true });
+        writeFileSync(join(bundle, "bundle.js"), "private fixture sentinel\n");
+      }
+      expect(scanPublicSurface(repo)).toEqual([]);
+      git("add", "-f", "web/.next-staging/bundle.js", "web/.next-previous/bundle.js");
+      expect(scanPublicIndex(repo)).toHaveLength(2);
+      git("commit", "-qm", "include generated bundles");
+      expect(scanPublicHistory(repo, `${base}..HEAD`)).toHaveLength(2);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test(
     "the committable Harnery tree carries no restricted provenance",
     () => {

@@ -95,6 +95,10 @@ const SKIP_DIRECTORIES = new Set([
   ".astro",
   ".git",
   ".next",
+  // Alternate dashboard bundles are gitignored runtime output, like .next.
+  // Index and outgoing-history scans still inspect files force-added here.
+  ".next-staging",
+  ".next-previous",
   ".turbo",
   "build",
   "coverage",
@@ -245,10 +249,7 @@ export function scanPublicIndex(root: string): PublicSurfaceViolation[] {
       maxBuffer: 16 * 1024 * 1024,
     });
     if (content.status !== 0) return [];
-    return [
-      ...scanPublicText(path, `path ${path}`),
-      ...scanPublicText(content.stdout, path),
-    ];
+    return [...scanPublicText(path, `path ${path}`), ...scanPublicText(content.stdout, path)];
   });
 }
 
