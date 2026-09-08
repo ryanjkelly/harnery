@@ -5,11 +5,11 @@
   "description": "Standalone Next.js dashboard for the harnery coord layer. Booted by `harn web up`; not published to npm.",
   "type": "module",
   "scripts": {
-    "dev": "node --import ./server-performance.mjs node_modules/next/dist/bin/next dev --webpack -p ${HARNERY_WEB_PORT:-4276}",
+    "dev": "node --import ./server-keepalive.mjs --import ./server-performance.mjs node_modules/next/dist/bin/next dev --webpack -p ${HARNERY_WEB_PORT:-4276}",
     "build": "next build --webpack",
     "bench:browse": "bun scripts/browse-performance.ts",
     "codec:pack-assets": "bun scripts/codec-pack-assets.ts",
-    "start": "node --import ./server-performance.mjs node_modules/next/dist/bin/next start -p ${HARNERY_WEB_PORT:-4276}"
+    "start": "node --import ./server-keepalive.mjs --import ./server-performance.mjs node_modules/next/dist/bin/next start -p ${HARNERY_WEB_PORT:-4276}"
   },
   "dependencies": {
     "@shikijs/langs": "4.2.0",
