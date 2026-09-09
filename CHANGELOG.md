@@ -1,5 +1,123 @@
 # Changelog
 
+## 0.39.0
+
+### Minor Changes
+
+- 4874b4c: Add cached resource status for agents, disk capacity and Linux pressure measurements, and native macOS and Windows machine collectors. Keep WSL and Windows host measurements separate, report stale or unavailable data explicitly, and reuse supervisor diagnostics for resource advice.
+- 63858bb: Add zero-configuration delivery cards for managed artifact workspaces.
+
+  The new `artifacts delivery-card` command automatically lists safe, visible
+  root-level files and folders, capped at five entries. Optional saved web and
+  local destinations form an allowlist for remote results, friendly labels, and
+  nested files. The linked list uses concise labels, while the plain-text block
+  keeps the full copyable destinations. Artifact links automatically use a live
+  dashboard tunnel and fall back to the local dashboard when no matching tunnel
+  is running.
+
+- e744895: Clear resource pressure on the recovery dwell alone, raise the I/O entry bar, say when only the dwell holds a state, carry stall readings in supervisor history so the trend is real, and log every pressure state transition with its reasons.
+- b4ce66a: Derive resource pressure from contention evidence instead of finding severity,
+  and stop control-state reads from scaling with ledger history.
+
+  The assessment now comes from one pure policy module. State is set only by
+  signals that show a shared resource is actually contended: pressure-stall
+  averages, a new out-of-memory kill, swap-out rate, direct reclaim, exhausted
+  memory with exhausted swap, and exhausted storage. Findings that name who holds
+  a resource are carried as contributors and can no longer raise the state, so a
+  single large process no longer tells every agent to stop working while the
+  kernel reports no stalls. Entry and exit use different thresholds with a dwell,
+  a counter reset or observer restart starts a new baseline, and a dimension the
+  platform does not expose is reported as unavailable rather than healthy. New
+  `/proc/vmstat` rates (swap in and out, direct reclaim, major faults) back the
+  memory signals on Linux. `resources status`, the prompt notice, the dashboard,
+  `diagnostics explain`, bundle replay, and shadow admission all read the same
+  published assessment, and every threshold now lives in one policy object that
+  is included in the bundle threshold digest.
+
+  The authenticated storage witness now covers a validated candidate epoch, so a
+  hook no longer parses the whole active segment when the control state is
+  `candidate`. Candidate creation and activation became one locked step,
+  initialization can resume a stranded candidate, the route resolver repairs one
+  at its next boundary, size-based rotation applies to a candidate epoch, and a
+  non-active control state opens a diagnostic finding instead of showing up only
+  in an initialization check.
+
+  Breaking: diagnostic advice moves to schema version 2 and carries the
+  assessment plus the prior hysteresis state; there is no version 1 reader. The
+  resource snapshot moves to schema version 2 and supervisor findings to version
+  3, which adds a required finding class.
+
+- aba6664: Add `artifacts discard` to retire reviewed temporary evidence with a one-hour
+  grace period, a recorded reason, and existing ownership and hold protections.
+  Expose minute durations on artifact creation and renewal, surface discard advice
+  after QA, and check for expired artifacts hourly during active work.
+- 7646037: Add a project-owned prompt-context extension to the normalized hook path.
+
+  Embedding hosts can opt into one versioned provider contract while Harnery
+  keeps adapter routing, bounded execution, and redacted audit behavior in one
+  place. Claude Code, Codex, and Cursor receive context directly through their
+  prompt hooks.
+
+- 1b04d2d: Derive backup snapshots from the storage catalog, enforce a configurable size limit, add per-host freshness throttling, and allow SessionStart to launch scheduled snapshots without delaying the agent. The detached runner owns no hook stdio, records its exit status for the next session's start-up context, and a local per-host freshness cache bounds remote restic round trips to about one per window.
+- 16c1df9: Keep native tiles as the evidence for page review and snapshot reuse. Version 2 packs store a half-size overview, bind reviewer decisions to exact native pixels and finding text, and require recapture of older packs. QA runs allocate one tile budget across all contexts, report gaps explicitly, and retain capture evidence when a deterministic gate fails. Reviewed decisions survive pack expiry and can affect later signoffs only when explicitly enabled.
+- 0ae9c3f: Add an OpenClaw Event Ledger V3 adapter and a self-contained OpenClaw plugin with trusted-location redaction, memory-only raw intake, a bounded recorder worker, portable state roots, fingerprints for both runtime bundles, native-fixture intake, and Node 24 record-mode coverage.
+
+### Patch Changes
+
+- 8247625: Capture public cross-origin stylesheets and media without credentials so wildcard CORS responses can be inlined. Keep cookies for authenticated same-origin assets.
+- d67827d: Assign workflow children canonical roster names while keeping workflow labels as task descriptions.
+- 1e70296: Register the dashboard storage snapshot as a repairable cache so inventory and
+  maintenance account for its files.
+- 4963fcb: Preserve setup arguments when a QA job context exactly matches required planner coverage, so deterministic gates and visual captures use the same setup. Reject conflicting context IDs or rendering identities instead of silently dropping their arguments or check targets.
+- 20867a7: Automatically associate full-page standalone browser captures with their saved screenshots inside artifact workspaces, so file thumbnails can reuse verified captures. Selector fragments, unresolved assets, and changed outputs are excluded.
+- ec5a98a: Read the event ledger tail through the validated snapshot cache in `readLedgerV3Since`
+  instead of rediscovering and revalidating every frame per call. A poller now pays for the
+  bytes appended since its last read; on a 24 MB active segment a no-change read drops from
+  about half a second to nothing.
+
+  Back the semantic service's fallback wake timer off while sweeps find nothing (doubling up
+  to 30 seconds) and snap it back on the first new event or pass. The ledger watcher still
+  wakes it immediately on an append, and a stop request wakes a backed-off wait at once.
+
+- dbfd7e6: Report Linux full memory and I/O stalls separately from partial stalls, show their
+  direction, and detect recent kernel out-of-memory kills without treating old
+  counter totals as new incidents.
+- 7ac231e: Retry page-review gates and allocation when a lazy image changes document geometry during an incomplete native capture. Stable out-of-bounds captures still fail, and every tile must retain native coverage.
+- 5ae3d25: Name dropped evidence distinctly in the OpenClaw adapter's redacted failure log.
+
+  When the memory-only recorder reports `busy` and a signal is dropped, the
+  `record_failure` debug row now carries `error_name: "RecorderBusyError"`
+  instead of the generic `"Error"` shared with every other crash. The injected
+  `recorderFault` switch reports `"RecorderFaultInjectedError"`. Only the fixed
+  class name is logged, so error text still never reaches the debug log.
+
+- 2c507ab: Preserve rolling artifact expiry across manifest migrations, release, and hold
+  updates. Payload edits, renames, and deletions still extend retention. Add a
+  preview-first activity repair for unchanged older migrations with verified
+  preimages, preserving explicit retention windows and recording correction receipts.
+- 8f4ae0a: Stop the observer publishing a negative sample age, which made the resource
+  status reader reject its own assessment as malformed on about half of all
+  cycles. The observer read its clock before sampling, so the snapshot's time sat
+  a few milliseconds ahead of it. A sample time inside the tolerance now reads as
+  zero, one beyond it reports an unreadable age with a stale reason instead of a
+  negative number, and the observer assesses against a clock read after sampling.
+- af9b75b: Retain private source identity inputs beside explicit review capture outputs so a source mismatch can be reproduced from disk. Keep the digest and acceptance checks unchanged, preserve failed retry evidence, and reference the saved bytes without printing raw page source.
+- 8934bb5: Recover dead local artifact-lock owners, limit automatic cleanup slices, and
+  distinguish interrupted attempts from completed sweeps. Remind agents to retain
+  or discard reviewed evidence when releasing artifacts.
+
+  Require boot-scoped process tokens for PID-reuse recovery; wall-clock process
+  start times never justify removing a live PID's lock.
+
+  Release an initializing lock when writing its owner record fails, including a
+  partially written record.
+
+- 058854f: Include one-minute load average in supervisor history so the resource dashboard
+  can chart load alongside CPU, memory, and process count.
+- e4d8fb2: Run authoritative QA gates and native capture on the same page visit within a globally reserved tile budget. Retain preliminary and retry evidence, reject source changes, and allow one complete gate and allocation retry without increasing browser concurrency.
+- 476e38e: Include fixed and sticky controls inside open shadow roots when capturing native page tiles. This prevents repeated controls in stitched screenshots while preserving ordinary shadow content and restoring control styles afterward.
+- d0fb443: Skip hard-expired live-display generation files on read and sweep them from the supervisor every five minutes. A directory of stale generation files no longer costs the dashboard a full parse on every request.
+
 ## 0.38.0
 
 ### Minor Changes
