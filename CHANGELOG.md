@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.40.0
+
+### Minor Changes
+
+- d29d1c6: Keep name resolution out of the config and process-launching graph.
+
+  `readLiveNames` and `assignName` now require an explicit `freshnessSecs`
+  instead of falling back to `coordFreshnessSeconds()`. That fallback made
+  every consumer of the name pool import `core/config.ts`, which resolves the
+  coordination root through a `git rev-parse` spawn. The dashboard's read-only
+  Codec director reaches name resolution, so its dependency-boundary guard
+  failed on the transitive `node:child_process` import.
+
+  Callers that assign names already hold the coordination root and now pass the
+  configured freshness themselves. Resolution behavior is unchanged.
+
+### Patch Changes
+
+- d29d1c6: Gate the registered-screenshot thumbnail test on an installed browser, matching
+  the renderer suite. The dashboard workflow installs no Chromium, so the test's
+  post-edit re-render assertion failed there instead of skipping.
+
 ## 0.39.0
 
 ### Minor Changes
