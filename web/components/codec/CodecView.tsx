@@ -67,6 +67,14 @@ import { deriveCodecEffects, effectForPreview } from "@/lib/codec/effects/derive
 import { codecFeedHealth } from "@/lib/codec/feed-health";
 import { type CodecLayout, type CodecViewMode, deriveCodecLayout } from "@/lib/codec/layout";
 import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
+import {
+  beginPortraitRetry,
+  type PortraitFailure,
+  portraitImageSrc,
+  portraitRetryDelayMs,
+  portraitSource,
+  recordPortraitFailure,
+} from "@/lib/codec/portrait";
 import type { CodecReplayPhase } from "@/lib/codec/replay-scene";
 import { codecSemanticBriefLines } from "@/lib/codec/semantic-brief";
 import { codecSemantic } from "@/lib/codec/semantic-contract";
@@ -2009,23 +2017,42 @@ function FocusBubble({ panel }: { panel: CodecPanelScene }) {
 
 /** Character-pack portrait with the neutral-letter treatment as fallback.
  * The scanline frame matches the pack art; working portraits breathe gently
- * (motion-gated); offline/unknown presence renders subdued static. */
+ * (motion-gated); offline/unknown presence renders subdued static. A failed
+ * request is keyed to its exact source and retried on a bounded backoff
+ * (lib/codec/portrait.ts), so one transient miss never holds the letter for
+ * the life of the mount. */
 function Portrait({ panel }: { panel: CodecPanelScene }) {
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<PortraitFailure | null>(null);
   const letter = (panel.identity.display_name[0] ?? "?").toUpperCase();
-  const usePack = panel.character.pack_id !== "fallback-neutral" && !failed;
+  const source = portraitSource(panel);
+  const src = portraitImageSrc(source, failure);
   const online = panel.presence.value === "online";
+
+  useEffect(() => {
+    if (failure?.phase !== "waiting" || failure.source !== source) return;
+    const delay = portraitRetryDelayMs(failure);
+    if (delay === undefined) return;
+    const timer = setTimeout(() => {
+      setFailure((current) => (current === failure ? beginPortraitRetry(current) : current));
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [failure, source]);
 
   return (
     <span className={cn(styles.portraitFrame, !online && styles.portraitStatic)} aria-hidden>
-      {usePack ? (
+      {src ? (
         // biome-ignore lint/performance/noImgElement: local 512px WebP pack assets should not be re-encoded
         <img
-          src={`/api/codec-pack/${panel.character.pack_id}/${panel.expression.value}?v=${panel.character.pack_version}`}
+          src={src}
           alt=""
           width={512}
           height={512}
-          onError={() => setFailed(true)}
+          onLoad={() => {
+            if (failure) setFailure(null);
+          }}
+          onError={() => {
+            if (source) setFailure((current) => recordPortraitFailure(source, current));
+          }}
           className={cn(
             styles.portraitImage,
             online && panel.activity.value === "working" && styles.breathing,

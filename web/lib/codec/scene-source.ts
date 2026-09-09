@@ -34,7 +34,7 @@ import { readSemanticServiceStatus } from "../../../src/core/semantic/service-st
 import { artifactOwnerInstanceIds } from "../artifact-browser";
 import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { allocateCharacters } from "./packs";
-import { projectScene } from "./projector";
+import { canonicalInstanceIds, projectScene } from "./projector";
 import { deriveRelationships } from "./relationships";
 import { readRemotePresence } from "./remote-source";
 import { sanitizeLine } from "./sanitize";
@@ -430,16 +430,23 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
   // visible panel receives a local presentation pack, including remote,
   // offline, and unknown-presence sessions. Pack assets are served by this
   // dashboard, so the source machine does not need to own the selected pack.
+  // Bindings key by the canonical id: a panel's own id flips between the
+  // native and canonical spaces as its heartbeat registers or is swept, and
+  // keying by the panel id released and rebound the same session's pack at
+  // every flip.
   try {
+    const canonicalByNative = canonicalInstanceIds(snapshot);
+    const bindingKey = (instanceId: string): string =>
+      canonicalByNative.get(instanceId) ?? instanceId;
     const characters = allocateCharacters(
       scene.panels.map((panel) => ({
-        instance_id: panel.instance_id,
+        instance_id: bindingKey(panel.instance_id),
         display_name: panel.identity.display_name,
       })),
       scene.generated_at,
     );
     for (const panel of scene.panels) {
-      const assigned = characters.get(panel.instance_id);
+      const assigned = characters.get(bindingKey(panel.instance_id));
       if (assigned) panel.character = assigned;
     }
   } catch {

@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { AgentsSnapshot, Heartbeat } from "@/lib/coord-reader";
 
 import type { CodecSourceEvidence } from "./contracts";
-import { __resetContextBandMemory, alignEventInstanceIds, projectScene } from "./projector";
+import {
+  __resetContextBandMemory,
+  alignEventInstanceIds,
+  canonicalInstanceIds,
+  projectScene,
+} from "./projector";
 
 const NOW = "2026-08-16T10:05:00.000Z";
 
@@ -714,6 +719,101 @@ describe("projectScene", () => {
     expect(endedScene.panels[0]?.activity.value).toBe("idle");
   });
 
+  test("stale-sweep observations never resurrect a dormant instance as online", () => {
+    // The exact shape found on 2026-09-09: real work the previous evening, no
+    // session.ended (nobody ran harn-end), then two fresh sweep observations
+    // written by the sweeper and the finalizer about this instance.
+    const events = [
+      ev({
+        event_type: "coord.identity_attested",
+        identity_name: "Erika",
+        ts: "2026-08-15T21:57:00.000Z",
+      }),
+      ev({
+        event_type: "coord.task_changed",
+        task: "Shopify theme token auth",
+        ts: "2026-08-15T21:57:10.000Z",
+      }),
+      ev({ event_type: "turn.started", ts: "2026-08-15T21:57:20.000Z" }),
+      ev({
+        event_type: "tool.completed",
+        category: "edit",
+        outcome: "ok",
+        ts: "2026-08-15T21:57:59.000Z",
+      }),
+      ev({ event_type: "lifecycle.sweep_observed", ts: "2026-08-16T10:04:58.000Z" }),
+      ev({ event_type: "lifecycle.sweep_observed", ts: "2026-08-16T10:04:58.500Z" }),
+    ];
+    const scene = projectScene({ snapshot: snapshot([]), events, now: NOW });
+    expect(scene.panels.filter((p) => p.presence.value === "online")).toHaveLength(0);
+    expect(scene.panels).toHaveLength(0);
+
+    // A termination observation is the same kind of statement about absence.
+    const terminated = projectScene({
+      snapshot: snapshot([]),
+      events: [
+        ...events.slice(0, 4),
+        ev({ event_type: "session.termination_observed", ts: "2026-08-16T10:04:58.000Z" }),
+      ],
+      now: NOW,
+    });
+    expect(terminated.panels).toHaveLength(0);
+  });
+
+  test("a swept heartbeat with live work still renders online after a sweep observation", () => {
+    // The guard the evidence-backed path exists for: the sweeper can remove a
+    // heartbeat while the agent's own events keep arriving. The sweep must not
+    // demote that agent, and it must not be what keeps the agent visible either.
+    const events = [
+      ev({
+        event_type: "coord.identity_attested",
+        identity_name: "Quentin",
+        ts: "2026-08-16T10:02:00.000Z",
+      }),
+      ev({ event_type: "lifecycle.sweep_observed", ts: "2026-08-16T10:02:30.000Z" }),
+      ev({
+        event_type: "tool.requested",
+        category: "research",
+        outcome: "started",
+        ts: "2026-08-16T10:03:00.000Z",
+      }),
+      ev({ event_type: "lifecycle.sweep_observed", ts: "2026-08-16T10:04:50.000Z" }),
+    ];
+    const scene = projectScene({ snapshot: snapshot([]), events, now: NOW });
+    expect(scene.panels.map((p) => p.identity.display_name)).toEqual(["Quentin"]);
+    const q = scene.panels[0];
+    if (!q) throw new Error("panel missing");
+    expect(q.presence).toMatchObject({ value: "online", provenance: "event" });
+    // Recency is the agent's own newest event, not the sweeper's.
+    expect(q.presence.observed_at).toBe("2026-08-16T10:03:00.000Z");
+    expect(q.updated_at).toBe("2026-08-16T10:03:00.000Z");
+  });
+
+  test("a heartbeat panel's expression recency ignores sweep observations", () => {
+    const stale = hb({
+      instance_id: "inst-stale",
+      name: "Rafael",
+      last_heartbeat: "2026-08-16T09:30:00.000Z",
+      age_seconds: 2100,
+      ledger_state: "live",
+    });
+    const scene = projectScene({
+      snapshot: snapshot([], [stale]),
+      events: [
+        ev({
+          event_type: "lifecycle.sweep_observed",
+          instance_id: "inst-stale",
+          ts: "2026-08-16T10:04:58.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+    const panel = scene.panels.find((p) => p.instance_id === "inst-stale");
+    if (!panel) throw new Error("panel missing");
+    expect(panel.presence.value).toBe("unknown");
+    expect(panel.updated_at).toBe("2026-08-16T09:30:00.000Z");
+  });
+
   test("coord.identity_attested alone is incidental and does not create a panel", () => {
     const scene = projectScene({
       snapshot: snapshot([]),
@@ -1129,6 +1229,23 @@ describe("canonical and native instance ids", () => {
     expect(panel.instance_id).toBe(orphan);
     // The stub shows the native id, never eight characters of the `inst_` prefix.
     expect(panel.identity.display_name).toBe("ab12cd34");
+  });
+
+  test("canonicalInstanceIds maps attested native ids to their canonical id and nothing else", () => {
+    const snap = snapshot(
+      [hb({ instance_id: "native-1", v3_instance_id: "inst_native-1" })],
+      [hb({ instance_id: "inst_projection-only", v3_instance_id: "inst_projection-only" })],
+      [hb({ instance_id: "native-3", v3_instance_id: "inst_native-3" })],
+    );
+    const map = canonicalInstanceIds(snap);
+    expect([...map.entries()]).toEqual([
+      ["native-1", "inst_native-1"],
+      ["native-3", "inst_native-3"],
+    ]);
+    // A binding key derived from this map is stable across a panel's id flip:
+    // the evidence-only panel and the heartbeat panel resolve to one id.
+    expect(map.get("native-1") ?? "native-1").toBe("inst_native-1");
+    expect(map.get("inst_native-1") ?? "inst_native-1").toBe("inst_native-1");
   });
 
   test("aligning aligned events changes nothing", () => {

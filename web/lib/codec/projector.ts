@@ -105,6 +105,19 @@ interface InstanceEvidence {
 /** Enough history for turn-scoped expressive rules without unbounded growth. */
 const ACTIONS_FULL_CAP = 24;
 
+/**
+ * Events another producer records ABOUT an instance. They prove the observer
+ * ran, not that the subject did anything, so they never advance `lastEventTs`.
+ * A stale sweep is a verdict of absence: letting it count as the subject's
+ * newest event resurrected every dormant agent the sweeper had just declared
+ * dead, because the evidence-backed panel path read the fresh timestamp as
+ * work seconds ago. Any future observer-authored type belongs here too.
+ */
+const OBSERVER_AUTHORED_TYPES = new Set<string>([
+  "lifecycle.sweep_observed",
+  "session.termination_observed",
+]);
+
 const ACTION_TYPES = new Set([
   "tool.requested",
   "tool.completed",
@@ -142,7 +155,7 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     }
     if (ev.generation_id) slot.generationId = ev.generation_id;
     if (ev.child_generation_id) slot.childGenerationId = ev.child_generation_id;
-    slot.lastEventTs = ev.ts;
+    if (!OBSERVER_AUTHORED_TYPES.has(ev.event_type)) slot.lastEventTs = ev.ts;
     // V3 activity evidence: session boundaries are idle, turns and tools are
     // working, waits need input, and commands preserve an already-open turn.
     const setActivity = (value: CodecActivity) => {
@@ -654,10 +667,8 @@ export function alignEventInstanceIds(
   snapshot: AgentsSnapshot,
 ): readonly CodecSourceEvidence[] {
   const nativeByCanonical = new Map<string, string>();
-  for (const hb of [...snapshot.active, ...snapshot.stale, ...snapshot.terminal]) {
-    if (hb.v3_instance_id && hb.v3_instance_id !== hb.instance_id) {
-      nativeByCanonical.set(hb.v3_instance_id, hb.instance_id);
-    }
+  for (const [native, canonical] of canonicalInstanceIds(snapshot)) {
+    nativeByCanonical.set(canonical, native);
   }
   if (nativeByCanonical.size === 0) return events;
   return events.map((event) => {
@@ -670,6 +681,25 @@ export function alignEventInstanceIds(
       ...(pingTo ? { ping_to: pingTo } : {}),
     };
   });
+}
+
+/**
+ * Adapter-native id → canonical `inst_*` id, from the rows the coordination
+ * view attested. Panels are keyed by whichever id their source used (native
+ * for a heartbeat row, canonical for evidence alone), and the same session
+ * crosses between the two as its heartbeat registers or is swept. Anything
+ * that must stay durable across that crossing, such as a character-pack
+ * binding, keys by the canonical id this map resolves. Ids with no attested
+ * alias are absent and keep their own key.
+ */
+export function canonicalInstanceIds(snapshot: AgentsSnapshot): Map<string, string> {
+  const canonicalByNative = new Map<string, string>();
+  for (const hb of [...snapshot.active, ...snapshot.stale, ...snapshot.terminal]) {
+    if (hb.v3_instance_id && hb.v3_instance_id !== hb.instance_id) {
+      canonicalByNative.set(hb.instance_id, hb.v3_instance_id);
+    }
+  }
+  return canonicalByNative;
 }
 
 export function projectScene(inputs: ProjectSceneInputs): CodecScene {
