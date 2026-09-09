@@ -2456,6 +2456,14 @@ function reconcilePendingRuntimeContextsBeforeApprovedEnd(
   fingerprintContext: ReturnType<typeof fingerprintContextV3>,
 ): void {
   if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) return;
+  // Context reconciliation continues the hook boot's sequence, even when the
+  // finalizer drives it. Recover that producer identity from its validated
+  // session start instead of attaching the sequence to the finalizer's name.
+  const ledger = readLedgerV3(input.coordRoot, { authority: input.mode });
+  const start = ledger.events.find(({ event }) => event.event_id === state.started_event_id)?.event;
+  if (!ledger.complete || !start || start.producer.boot_id !== state.boot_id) {
+    throw new Error("event_v3_finalizer_context_producer_unavailable");
+  }
   for (const [index, delayMs] of APPROVED_END_RUNTIME_CONTEXT_RETRY_DELAYS_MS.entries()) {
     if (delayMs > 0) sleepSync(delayMs);
     reconcilePendingRuntimeContexts(
@@ -2466,7 +2474,7 @@ function reconcilePendingRuntimeContextsBeforeApprovedEnd(
         payload: { raw: {} },
         adapter: state.adapter,
         instance_id: state.instance_id,
-        producer_id: "prd_agent-finalizer",
+        producer_id: start.producer.producer_id as `prd_${string}`,
         build_id: input.build_id,
         platform: input.platform,
         observed_at: new Date().toISOString(),

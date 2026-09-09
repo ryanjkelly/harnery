@@ -2644,7 +2644,17 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(ended.state).toBe("recorded");
     expect(delays).toEqual(flushAtRetry === 1 ? [250] : [250, 250]);
 
-    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const ledger = readLedgerV3(root);
+    expect(ledger.diagnostics).toEqual([]);
+    expect(ledger.complete).toBe(true);
+    const events = ledger.events.map(({ event }) => event);
+    const hookChain = events.filter((event) => event.producer.boot_id === state.boot_id);
+    expect(new Set(hookChain.map((event) => event.producer.producer_id))).toEqual(
+      new Set(["prd_hook"]),
+    );
+    expect(hookChain.map((event) => event.producer.sequence)).toEqual(
+      hookChain.map((_, index) => index + 1),
+    );
     const contexts = events.filter((event) => event.event_type === "context.observed");
     expect(contexts).toHaveLength(2);
     expect(
