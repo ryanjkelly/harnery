@@ -10,8 +10,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { QaManifest } from "../lib/browser/qa-plan.ts";
 import { PAGE_REVIEW_CAPTURE_PLAN_SCHEMA } from "../lib/browser/page-review-contracts.ts";
+import type { QaManifest } from "../lib/browser/qa-plan.ts";
 import {
   QA_RUN_RESULT_FILENAME,
   QA_RUN_STATUS_FILENAME,

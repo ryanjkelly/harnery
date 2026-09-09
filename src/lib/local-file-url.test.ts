@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import {
-  encodeLinkSafeComponent,
   encodedRepoPath,
-  localFileViewerUrl,
+  encodeLinkSafeComponent,
   localFilesOriginUrl,
+  localFileViewerUrl,
 } from "./local-file-url.ts";
 
 // These URLs are pasted into Markdown for a human to click. A raw ")" ends a

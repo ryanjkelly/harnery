@@ -345,7 +345,6 @@ function artifactBrowserUrl(
   return `${base}/${directory ? "browse" : "files"}?${query}`;
 }
 
-
 /**
  * Render a destination for a Markdown inline link.
  *

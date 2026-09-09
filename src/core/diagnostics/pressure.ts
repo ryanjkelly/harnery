@@ -423,10 +423,7 @@ export const assessPressure: AssessPressure = (input) => {
   // reading that has not yet completed its entry streak is not clear, so the
   // dwell cannot be shortened by a single sample of relief.
   const exitClear =
-    rawState === "normal" &&
-    !Object.values(hot).some(Boolean) &&
-    !oom.hold_active &&
-    !oom.new_kill;
+    rawState === "normal" && !Object.values(hot).some(Boolean) && !oom.hold_active && !oom.new_kill;
   const transition = applyHysteresis(prior.state, rawState, exitClear, prior);
 
   if (STATE_RANK[transition.state] > STATE_RANK[rawState]) {

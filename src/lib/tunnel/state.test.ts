@@ -44,9 +44,9 @@ describe("findLiveTunnelForOrigin", () => {
       );
 
       const live = new Set([10, 20, 30, 40]);
-      expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => live.has(pid))?.url).toBe(
-        "https://new.example",
-      );
+      expect(
+        findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => live.has(pid))?.url,
+      ).toBe("https://new.example");
       expect(
         findLiveTunnelForOrigin(3000, "localhost:4276", root, (pid) => live.has(pid))?.name,
       ).toBe("other");
@@ -88,9 +88,9 @@ describe("findLiveTunnelForOrigin", () => {
       );
 
       const live = new Set([10, 20]);
-      expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => live.has(pid))?.url).toBe(
-        "https://dashboard.example",
-      );
+      expect(
+        findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => live.has(pid))?.url,
+      ).toBe("https://dashboard.example");
       expect(
         findLiveTunnelForOrigin(4276, "harnery-files.localhost", root, (pid) => live.has(pid))?.url,
       ).toBe("https://files.example");

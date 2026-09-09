@@ -130,7 +130,9 @@ describe("Codex WSL workspace file links", () => {
     // The angle-bracket destination form renders as unclickable styled text in
     // some renderers, so the example must not teach it.
     expect(text).not.toContain("](<");
-    expect(text).toContain("](//wsl.localhost/Ubuntu-22.04/home/dev/projects/example/path/to/file)");
+    expect(text).toContain(
+      "](//wsl.localhost/Ubuntu-22.04/home/dev/projects/example/path/to/file)",
+    );
     expect(text).toContain("angle brackets");
   });
 
