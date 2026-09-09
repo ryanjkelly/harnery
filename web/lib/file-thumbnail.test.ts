@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zipSync } from "fflate";
+import { chromium } from "playwright";
 import sharp from "sharp";
 import { __resetFilesCaches, __setResolveTestHooks, resolveFile } from "./files";
 import { __setThumbnailDiskTestHooks } from "./thumbnail-disk-cache";
@@ -21,6 +22,9 @@ import { registerThumbnailPreview } from "./thumbnail-reuse";
 import { __resetThumbnailMemory, serveFileThumbnail } from "./thumbnail-service";
 
 let root: string;
+// The Web workflow installs no browser; the sibling renderer suite gates the
+// same way so a missing Chromium skips rather than fails.
+const hasBrowser = existsSync(chromium.executablePath());
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "harn-thumbnail-"));
   mkdirSync(join(root, ".harnery"));
@@ -161,36 +165,39 @@ test("bounded completion requests deliver a cold text thumbnail without another 
   expect(result.headers.get("x-thumbnail-cache")).toBe("generated");
 });
 
-test("registered screenshots bypass HTML rendering and asset edits invalidate their cache", async () => {
-  const workspace = ".harnery/artifacts/registered";
-  mkdirSync(join(root, workspace), { recursive: true });
-  const source = `${workspace}/page.html`;
-  const preview = `${workspace}/capture.png`;
-  writeFileSync(
-    join(root, source),
-    '<link rel="stylesheet" href="style.css"><h1>Current page</h1>',
-  );
-  writeFileSync(join(root, workspace, "style.css"), "h1 { color: blue }");
-  writeFileSync(
-    join(root, preview),
-    await sharp({
-      create: { width: 800, height: 600, channels: 3, background: "red" },
-    })
-      .png()
-      .toBuffer(),
-  );
-  await registerThumbnailPreview(source, preview, { root });
-  const first = await serveFileThumbnail(request(source), { root, wait: true });
-  expect(first.status).toBe(200);
-  expect(first.headers.get("x-thumbnail-source")).toBe("registered-preview");
-  const firstStats = await sharp(Buffer.from(await first.arrayBuffer())).stats();
-  expect(firstStats.channels[0].mean).toBeGreaterThan(240);
-  writeFileSync(join(root, workspace, "style.css"), "h1 { color: green }");
-  const changed = await serveFileThumbnail(request(source), { root, wait: true });
-  expect(changed.status).toBe(200);
-  expect(changed.headers.get("x-thumbnail-source")).toBe("rendered");
-  expect(changed.headers.get("etag")).not.toBe(first.headers.get("etag"));
-});
+test.skipIf(!hasBrowser)(
+  "registered screenshots bypass HTML rendering and asset edits invalidate their cache",
+  async () => {
+    const workspace = ".harnery/artifacts/registered";
+    mkdirSync(join(root, workspace), { recursive: true });
+    const source = `${workspace}/page.html`;
+    const preview = `${workspace}/capture.png`;
+    writeFileSync(
+      join(root, source),
+      '<link rel="stylesheet" href="style.css"><h1>Current page</h1>',
+    );
+    writeFileSync(join(root, workspace, "style.css"), "h1 { color: blue }");
+    writeFileSync(
+      join(root, preview),
+      await sharp({
+        create: { width: 800, height: 600, channels: 3, background: "red" },
+      })
+        .png()
+        .toBuffer(),
+    );
+    await registerThumbnailPreview(source, preview, { root });
+    const first = await serveFileThumbnail(request(source), { root, wait: true });
+    expect(first.status).toBe(200);
+    expect(first.headers.get("x-thumbnail-source")).toBe("registered-preview");
+    const firstStats = await sharp(Buffer.from(await first.arrayBuffer())).stats();
+    expect(firstStats.channels[0].mean).toBeGreaterThan(240);
+    writeFileSync(join(root, workspace, "style.css"), "h1 { color: green }");
+    const changed = await serveFileThumbnail(request(source), { root, wait: true });
+    expect(changed.status).toBe(200);
+    expect(changed.headers.get("x-thumbnail-source")).toBe("rendered");
+    expect(changed.headers.get("etag")).not.toBe(first.headers.get("etag"));
+  },
+);
 
 test("embedded Office preview serves without requiring a convertible document body", async () => {
   const png = await sharp({

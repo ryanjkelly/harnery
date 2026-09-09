@@ -43,7 +43,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { coordFreshnessSeconds } from "../../config.ts";
 
 /** All 260 names. */
 export const COORD_NAMES = [
@@ -472,7 +471,7 @@ export function recordNameAssumption(
  */
 export function readLiveNames(
   coordRoot: string,
-  opts?: { nowMs?: number; freshnessSecs?: number },
+  opts: { freshnessSecs: number; nowMs?: number },
 ): Set<string> {
   const live = new Set<string>();
   const dir = join(coordRoot, ".harnery", "active");
@@ -483,9 +482,8 @@ export function readLiveNames(
     return live; // No cache yet (fresh checkout) → nothing is live.
   }
 
-  const nowMs = opts?.nowMs ?? Date.now();
-  const freshnessSecs = opts?.freshnessSecs ?? coordFreshnessSeconds(coordRoot);
-  const cutoffMs = nowMs - freshnessSecs * 1000;
+  const nowMs = opts.nowMs ?? Date.now();
+  const cutoffMs = nowMs - opts.freshnessSecs * 1000;
 
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
@@ -518,7 +516,7 @@ export function assignName(
   coordRoot: string,
   instanceId: string,
   kind: NameKind,
-  opts?: { forkedFrom?: string; nowMs?: number; freshnessSecs?: number },
+  opts: { freshnessSecs: number; forkedFrom?: string; nowMs?: number },
 ): string {
   // Check 1: existing history row → original name. A resume re-enters here,
   // which also makes fork stamping naturally idempotent: lineage lands only on
@@ -531,8 +529,8 @@ export function assignName(
   // concurrent assignments can collide on one slot; doing the directory scan
   // first keeps that window exactly as narrow as it was before the skip existed.
   const live = readLiveNames(coordRoot, {
-    ...(opts?.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
-    ...(opts?.freshnessSecs !== undefined ? { freshnessSecs: opts.freshnessSecs } : {}),
+    freshnessSecs: opts.freshnessSecs,
+    ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
   });
 
   const cPath = counterPath(coordRoot);
@@ -553,7 +551,7 @@ export function assignName(
 
   const name = COORD_NAMES[chosen % 260]!;
   atomicWrite(cPath, String(chosen + 1));
-  const forkedFrom = opts?.forkedFrom;
+  const forkedFrom = opts.forkedFrom;
   appendHistory(coordRoot, {
     instance_id: instanceId,
     name,

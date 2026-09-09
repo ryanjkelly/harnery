@@ -260,7 +260,10 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         // same durable, idempotent pool path used by normal SessionStart.
         if (task && before && humanFacing && !before.name?.trim()) {
           const { assignName } = await import("./state/names.ts");
-          const name = assignName(root, owner, "session");
+          const { coordFreshnessSeconds } = await import("../config.ts");
+          const name = assignName(root, owner, "session", {
+            freshnessSecs: coordFreshnessSeconds(root),
+          });
           before = writer.setAssignedNameCache(root, owner, name, "session");
           if (!before) {
             process.stderr.write(
@@ -302,7 +305,10 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
             (!hb.name?.trim() || /^Agent unknown - /.test(hb.suggested_session_name ?? ""))
           ) {
             const { assignName } = await import("./state/names.ts");
-            const name = hb.name?.trim() || assignName(root, owner, "session");
+            const { coordFreshnessSeconds } = await import("../config.ts");
+            const name =
+              hb.name?.trim() ||
+              assignName(root, owner, "session", { freshnessSecs: coordFreshnessSeconds(root) });
             hb = writer.setAssignedNameCache(root, owner, name, "session");
           }
         } catch (error) {
@@ -640,7 +646,11 @@ async function handleAssignName(root: string, rest: string[]): Promise<number> {
     process.stderr.write(`agent-coord assign-name: invalid kind ${kindArg}\n`);
     return 2;
   }
-  const name = assignName(root, owner, kindArg, forkedFrom ? { forkedFrom } : undefined);
+  const { coordFreshnessSeconds } = await import("../config.ts");
+  const name = assignName(root, owner, kindArg, {
+    freshnessSecs: coordFreshnessSeconds(root),
+    ...(forkedFrom ? { forkedFrom } : {}),
+  });
   process.stdout.write(
     `${JSON.stringify({
       instance_id: owner,

@@ -142,27 +142,27 @@ describe("assignName / resolveName", () => {
   });
 
   test("advances the alphabet across new sessions (counter slots 0,1,2)", () => {
-    expect(assignName(root, "sess-a", "session")).toBe(COORD_NAMES[0]); // Anna
-    expect(assignName(root, "sess-b", "session")).toBe(COORD_NAMES[1]); // Bob
-    expect(assignName(root, "sess-c", "session")).toBe(COORD_NAMES[2]); // Carlos
+    expect(assignName(root, "sess-a", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[0]); // Anna
+    expect(assignName(root, "sess-b", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[1]); // Bob
+    expect(assignName(root, "sess-c", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[2]); // Carlos
     // counter advanced exactly 3 slots
     expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8").trim()).toBe("3");
   });
 
   test("counter loops back at index 260 (260 % 260 = 0 → Anna)", () => {
     writeFileSync(path.join(root, ".harnery", ".name-counter"), "259");
-    expect(assignName(root, "sess-259", "session")).toBe(COORD_NAMES[259]); // Zora
+    expect(assignName(root, "sess-259", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[259]); // Zora
     // counter now 260; next assign wraps to index 0
-    expect(assignName(root, "sess-260", "session")).toBe(COORD_NAMES[0]); // Anna
+    expect(assignName(root, "sess-260", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[0]); // Anna
   });
 
   test("resume idempotency: same instance reuses its name, no counter burn", () => {
-    const first = assignName(root, "sess-x", "session");
+    const first = assignName(root, "sess-x", "session", { freshnessSecs: 600 });
     const counterAfterFirst = readFileSync(
       path.join(root, ".harnery", ".name-counter"),
       "utf8",
     ).trim();
-    const second = assignName(root, "sess-x", "session");
+    const second = assignName(root, "sess-x", "session", { freshnessSecs: 600 });
     expect(second).toBe(first);
     // counter unchanged on the idempotent re-assign
     expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8").trim()).toBe(
@@ -171,14 +171,14 @@ describe("assignName / resolveName", () => {
   });
 
   test("durable name-history resolves independent of any heartbeat", () => {
-    const name = assignName(root, "sess-durable", "session");
+    const name = assignName(root, "sess-durable", "session", { freshnessSecs: 600 });
     // No heartbeat file exists; resolveName reads only .name-history.
     expect(resolveName(root, "sess-durable")?.name).toBe(name);
     expect(resolveName(root, "sess-durable")?.kind).toBe("session");
   });
 
   test("resolveName 3 paths: own id, session inherit→transient, unknown→null", () => {
-    assignName(root, "parent-sess", "session");
+    assignName(root, "parent-sess", "session", { freshnessSecs: 600 });
     // path 1: own instance_id → original (name, kind)
     expect(resolveName(root, "parent-sess")).toEqual({
       name: COORD_NAMES[0]!,
@@ -194,7 +194,7 @@ describe("assignName / resolveName", () => {
   });
 
   test("explicit identity assumption appends history and latest binding wins", () => {
-    expect(assignName(root, "sess-role", "session")).toBe("Anna");
+    expect(assignName(root, "sess-role", "session", { freshnessSecs: 600 })).toBe("Anna");
     const first = recordNameAssumption(
       root,
       "sess-role",
@@ -226,7 +226,7 @@ describe("assignName / resolveName", () => {
   });
 
   test("transient resolution inherits the parent's assumed persona id", () => {
-    assignName(root, "parent-role", "session");
+    assignName(root, "parent-role", "session", { freshnessSecs: 600 });
     recordNameAssumption(root, "parent-role", "Beatrice", "22222222-2222-4222-8222-222222222222");
     expect(resolveName(root, "transient", "parent-role")).toEqual({
       name: "Beatrice",
@@ -248,10 +248,10 @@ describe("recorded fork lineage", () => {
   });
 
   test("assignName stamps forked_from on the first row only", () => {
-    assignName(root, "parent-1", "session");
-    assignName(root, "fork-1", "session", { forkedFrom: "parent-1" });
+    assignName(root, "parent-1", "session", { freshnessSecs: 600 });
+    assignName(root, "fork-1", "session", { freshnessSecs: 600, forkedFrom: "parent-1" });
     // Resume: idempotent, no second row, lineage intact.
-    assignName(root, "fork-1", "session", { forkedFrom: "parent-1" });
+    assignName(root, "fork-1", "session", { freshnessSecs: 600, forkedFrom: "parent-1" });
 
     const rows = readFileSync(path.join(root, ".harnery", ".name-history"), "utf8")
       .trim()
@@ -263,14 +263,14 @@ describe("recorded fork lineage", () => {
   });
 
   test("self-parent is refused at stamp time", () => {
-    assignName(root, "loop-1", "session", { forkedFrom: "loop-1" });
+    assignName(root, "loop-1", "session", { freshnessSecs: 600, forkedFrom: "loop-1" });
     const rows = readFileSync(path.join(root, ".harnery", ".name-history"), "utf8");
     expect(rows).not.toContain("forked_from");
   });
 
   test("readForkParent resolves the parent's latest name", () => {
-    const parentName = assignName(root, "parent-1", "session");
-    assignName(root, "fork-1", "session", { forkedFrom: "parent-1" });
+    const parentName = assignName(root, "parent-1", "session", { freshnessSecs: 600 });
+    assignName(root, "fork-1", "session", { freshnessSecs: 600, forkedFrom: "parent-1" });
     expect(readForkParent(root, "fork-1")).toEqual({
       instance_id: "parent-1",
       name: parentName,
@@ -282,9 +282,9 @@ describe("recorded fork lineage", () => {
   });
 
   test("resolveForkAncestry walks the chain nearest-first with depth + cycle guards", () => {
-    const gName = assignName(root, "gp-1", "session");
-    const pName = assignName(root, "parent-1", "session", { forkedFrom: "gp-1" });
-    assignName(root, "fork-1", "session", { forkedFrom: "parent-1" });
+    const gName = assignName(root, "gp-1", "session", { freshnessSecs: 600 });
+    const pName = assignName(root, "parent-1", "session", { freshnessSecs: 600, forkedFrom: "gp-1" });
+    assignName(root, "fork-1", "session", { freshnessSecs: 600, forkedFrom: "parent-1" });
     expect(resolveForkAncestry(root, "fork-1")).toEqual([
       { instance_id: "parent-1", name: pName },
       { instance_id: "gp-1", name: gName },

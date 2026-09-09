@@ -58,6 +58,7 @@ import { assignName } from "../agents/state/names.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import {
   agentsRequireGitFinalization,
+  coordFreshnessSeconds,
   hostPromptContextConfig,
   resolveBinName,
 } from "../config.ts";
@@ -251,7 +252,10 @@ function assignNameInProcess(
   forkedFrom?: string,
 ): { name: string; kind: string } | null {
   try {
-    const name = assignName(coordRoot, instanceId, kind, forkedFrom ? { forkedFrom } : undefined);
+    const name = assignName(coordRoot, instanceId, kind, {
+      freshnessSecs: coordFreshnessSeconds(coordRoot),
+      ...(forkedFrom ? { forkedFrom } : {}),
+    });
     return { name, kind };
   } catch {
     return null;
