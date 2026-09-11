@@ -85,6 +85,7 @@ export interface TurnRitualEvidenceV3 {
   status_box_present_strict: boolean;
   session_name_required: boolean;
   session_name_present: boolean;
+  session_name_unavailable_reason?: string;
 }
 
 type TurnRitualObservationV3 = NonNullable<
@@ -478,10 +479,16 @@ function turnRitualObservation(
   return {
     status_box_present: observed(evidence.status_box_present),
     status_box_present_strict: observed(evidence.status_box_present_strict),
-    session_name: observed({
-      required: evidence.session_name_required,
-      present: evidence.session_name_present,
-    }),
+    session_name: evidence.session_name_unavailable_reason
+      ? {
+          state: "expected_but_missing",
+          capability: "assistant_reply_text",
+          reason: evidence.session_name_unavailable_reason,
+        }
+      : observed({
+          required: evidence.session_name_required,
+          present: evidence.session_name_present,
+        }),
   };
 }
 

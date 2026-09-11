@@ -25,16 +25,18 @@
 import { sessionNameDisplayAcceptedNames } from "../agents/session-name-display.ts";
 import { stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
+import type { SessionNameDisplayInspection } from "./resolve/transcript.ts";
 
 export interface SessionNamePresence {
   session_name_present?: boolean;
   session_name_present_for?: string;
+  session_name_unavailable_reason?: string;
 }
 
 export function sessionNamePresence(
   coordRoot: string,
   instanceId: string,
-  scanAssistantText: (name: string) => boolean,
+  scanAssistantText: (name: string) => SessionNameDisplayInspection,
 ): SessionNamePresence {
   try {
     const row = readLiveCoordinationRow(coordRoot, instanceId);
@@ -45,12 +47,17 @@ export function sessionNamePresence(
     }
     // A display of the title Harnery last asked for counts here too, so Stop
     // and the PreToolUse gate cannot disagree about the same reply.
-    const present = sessionNameDisplayAcceptedNames(row).some((candidate) =>
+    const inspections = sessionNameDisplayAcceptedNames(row).map((candidate) =>
       scanAssistantText(candidate),
     );
+    const present = inspections.some((inspection) => inspection.state === "present");
+    const unavailable = inspections.find((inspection) => inspection.state === "unavailable");
+    if (!present && unavailable?.state === "unavailable") {
+      return { session_name_unavailable_reason: unavailable.reason };
+    }
     if (present) stampSessionNameSeen(coordRoot, instanceId, name);
     return { session_name_present: present, session_name_present_for: name };
   } catch {
-    return {};
+    return { session_name_unavailable_reason: "observation_error" };
   }
 }

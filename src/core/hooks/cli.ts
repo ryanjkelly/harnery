@@ -130,7 +130,6 @@ import type { SessionNameDisplayInspection } from "./resolve/transcript.ts";
 import {
   inspectSessionNameDisplayImmediately,
   scanAssistantStatusBoxPresent,
-  scanSessionNameDisplayedImmediately,
   scanStatusBoxPresent,
   scanTranscriptRuntime,
 } from "./resolve/transcript.ts";
@@ -471,7 +470,7 @@ function buildEventData(
         // exists (the stop-hook.session_name verdict reads it per turn); the
         // transcript scan itself stops once the name has been sighted.
         ...sessionNamePresence(ctx.coordRoot, ctx.instanceId, (name) =>
-          scanSessionNameDisplayedImmediately(
+          inspectSessionNameDisplayImmediately(
             // Codex stops carry no transcript_path; discover the rollout by
             // session id so the naming ritual can verify and stamp there too.
             p?.transcript_path ??
@@ -874,8 +873,20 @@ async function main(): Promise<number> {
           status_box_present_strict: data.status_box_present_strict === true,
           session_name_required: typeof data.session_name_present_for === "string",
           session_name_present: data.session_name_present === true,
+          ...(typeof data.session_name_unavailable_reason === "string"
+            ? { session_name_unavailable_reason: data.session_name_unavailable_reason }
+            : {}),
         }
       : undefined;
+  if (typeof data.session_name_unavailable_reason === "string") {
+    reportSessionNameObservationUnavailable(
+      coordRoot,
+      owner.instance_id,
+      adapter,
+      eventName,
+      data.session_name_unavailable_reason,
+    );
+  }
   const stopRemediation =
     norm.event_type === "turn.started" &&
     typeof data.prompt_text === "string" &&
@@ -1337,6 +1348,8 @@ async function main(): Promise<number> {
       adapter,
       stop_hook_active: payload?.stop_hook_active === true,
       status_box_present_strict: data.status_box_present_strict === true,
+      session_name_observation_unavailable:
+        typeof data.session_name_unavailable_reason === "string",
       bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
       workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
     });
@@ -1547,6 +1560,27 @@ async function runRuntimeContextRetryWorker(
   return 0;
 }
 
+function reportSessionNameObservationUnavailable(
+  coordRoot: string,
+  instanceId: string,
+  adapter: Adapter,
+  eventName: string,
+  reason: string,
+): void {
+  appendDebug(coordRoot, {
+    ts: new Date().toISOString(),
+    event_name: eventName,
+    adapter,
+    instance_id: instanceId,
+    effect: "session-name-observation-unavailable",
+    reason,
+    action: "fail-open",
+  });
+  process.stderr.write(
+    `Harnery: session-name observation unavailable (${reason}); allowing this ${eventName} without display enforcement. The name remains pending.\n`,
+  );
+}
+
 async function enforcePendingSessionNameDisplay(
   coordRoot: string,
   instanceId: string,
@@ -1567,11 +1601,13 @@ async function enforcePendingSessionNameDisplay(
   }
 
   if (inspection.state === "unavailable") {
-    // PostToolUse already delivered the exact block for this mint. An
-    // unavailable transcript cannot become evidence, and repeating a generic
-    // reminder on every tool creates an unbounded Codex loop. Keep the latch
-    // honestly pending and fail open without another instruction. A later
-    // readable transcript can still verify it.
+    reportSessionNameObservationUnavailable(
+      coordRoot,
+      instanceId,
+      adapter,
+      "pre-tool-use",
+      inspection.reason,
+    );
     return true;
   }
 

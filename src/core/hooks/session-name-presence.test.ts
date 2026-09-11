@@ -39,7 +39,7 @@ function rootWith(body: Record<string, unknown>): string {
   return root;
 }
 
-const noScan = () => false;
+const noScan = () => ({ state: "absent" as const });
 
 describe("sessionNamePresence", () => {
   test("reports nothing when no name has been suggested", () => {
@@ -57,7 +57,7 @@ describe("sessionNamePresence", () => {
 
   test("reports true from the strict transcript scan and stamps the sighting", () => {
     const root = rootWith({ suggested_session_name: NAME });
-    expect(sessionNamePresence(root, "self", () => true)).toEqual({
+    expect(sessionNamePresence(root, "self", () => ({ state: "present" as const }))).toEqual({
       session_name_present: true,
       session_name_present_for: NAME,
     });
@@ -98,12 +98,33 @@ describe("sessionNamePresence", () => {
     const scanned: string[] = [];
     const res = sessionNamePresence(root, "self", (name) => {
       scanned.push(name);
-      return true;
+      return { state: "present" };
     });
     expect(scanned).toEqual([NAME]);
     expect(res.session_name_present).toBe(true);
   });
 
+  test("keeps unavailable observation distinct from absence without stamping seen", () => {
+    const root = rootWith({ suggested_session_name: NAME });
+    expect(
+      sessionNamePresence(root, "self", () => ({
+        state: "unavailable",
+        reason: "missing_transcript",
+      })),
+    ).toEqual({ session_name_unavailable_reason: "missing_transcript" });
+    expect(sessionNamePresence(root, "self", noScan)).toEqual({
+      session_name_present: false,
+      session_name_present_for: NAME,
+    });
+  });
+  test("reports an unexpected observer failure without manufacturing absence", () => {
+    const root = rootWith({ suggested_session_name: NAME });
+    expect(
+      sessionNamePresence(root, "self", () => {
+        throw new Error("observer defect");
+      }),
+    ).toEqual({ session_name_unavailable_reason: "observation_error" });
+  });
   test("never throws on an unreadable coordination root", () => {
     expect(sessionNamePresence("/nonexistent/coord/root", "self", noScan)).toEqual({});
   });

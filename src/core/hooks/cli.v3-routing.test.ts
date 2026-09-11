@@ -876,6 +876,119 @@ describe("agent-hook V3 hard cut", () => {
     expect(repeated.stdout).not.toContain("transcript is unavailable or not flushed yet");
   });
 
+  test("Claude desktop name observation allows streamed text and diagnoses unavailable transcripts", () => {
+    const root = candidateRoot();
+    const owner = "desktop-name-observer";
+    const name = "Agent Maya - Auth refactor";
+    const hook = (event: string, payload: Record<string, unknown>) =>
+      run(
+        AGENT_HOOK,
+        [event, "--adapter", "claude-code"],
+        { session_id: owner, cwd: root, ...payload },
+        root,
+      );
+    expect(hook("session-start", { source: "startup" }).status).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("Missing owner");
+    writeFileSync(
+      join(root, ".harnery/active", `${instanceId}.json`),
+      JSON.stringify({
+        ...readLiveCoordinationRow(root, instanceId),
+        suggested_session_name: name,
+      }),
+    );
+    const transcript = join(root, "desktop.jsonl");
+    const mint = {
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            content: JSON.stringify({ first_of_session: true, suggested_session_name: name }),
+          },
+        ],
+      },
+    };
+    for (const corrupt of [false, true]) {
+      if (corrupt) writeFileSync(transcript, "{broken\n");
+      const result = hook("pre-tool-use", {
+        transcript_path: transcript,
+        tool_name: "Bash",
+        tool_use_id: `cat-${corrupt}`,
+        tool_input: { command: "cat README.md" },
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('"permissionDecision":"deny"');
+      expect(result.stderr).toContain(corrupt ? "transcript_parse_error" : "missing_transcript");
+      expect(result.stderr).toContain("without display enforcement");
+      expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
+      hook("user-prompt-submit", { prompt: "Continue", transcript_path: transcript });
+      hook("stop", { transcript_path: transcript, last_assistant_message: "Done" });
+      const events = readLedgerV3(root, { authority: "candidate" }).events.map(
+        ({ event }) => event,
+      );
+      const terminal = events.filter((event) => event.event_type === "turn.completed").at(-1);
+      expect(terminal?.payload).toMatchObject({
+        ritual: {
+          session_name: {
+            state: "expected_but_missing",
+            reason: corrupt ? "transcript_parse_error" : "missing_transcript",
+          },
+        },
+      });
+    }
+    writeFileSync(
+      transcript,
+      `${[
+        mint,
+        { type: "assistant", message: { content: [{ type: "text", text: "Working first." }] } },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    const denied = hook("pre-tool-use", {
+      transcript_path: transcript,
+      tool_name: "Read",
+      tool_use_id: "bad-display",
+      tool_input: { file_path: join(root, "README.md") },
+    });
+    expect(denied.stdout).toContain('"permissionDecision":"deny"');
+    writeFileSync(
+      transcript,
+      `${[
+        mint,
+        {
+          type: "assistant",
+          message: {
+            id: "streamed",
+            content: [{ type: "thinking", thinking: "fixture reasoning" }],
+          },
+        },
+        {
+          type: "assistant",
+          message: { id: "streamed", content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }] },
+        },
+        {
+          type: "assistant",
+          message: {
+            id: "streamed",
+            content: [{ type: "tool_use", name: "Bash", input: { command: "cat README.md" } }],
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    const allowed = hook("pre-tool-use", {
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_use_id: "good-display",
+      tool_input: { command: "cat README.md" },
+    });
+    expect(allowed.status).toBe(0);
+    expect(allowed.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
+  });
   test("Codex still denies a readable malformed session-name display", () => {
     const root = candidateRoot("codex");
     const owner = "codex-malformed-session-name-owner";

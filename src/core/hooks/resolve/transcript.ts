@@ -132,7 +132,10 @@ export function scanSessionNameDisplayedImmediately(
 export type SessionNameDisplayInspection =
   | { state: "present" }
   | { state: "absent" }
-  | { state: "unavailable"; reason: "missing_transcript" | "transcript_not_ready" };
+  | {
+      state: "unavailable";
+      reason: "missing_transcript" | "transcript_not_ready" | "transcript_parse_error";
+    };
 
 /**
  * Inspect the ordered post-mint reply without conflating a malformed display
@@ -152,17 +155,34 @@ export function inspectSessionNameDisplayImmediately(
   if (!text) return { state: "unavailable", reason: "transcript_not_ready" };
   let sawMintResult = false;
   let awaitingReply = false;
+  let sawParseError = false;
+  let missedReplyAtToolBoundary = false;
   for (const line of text.split("\n")) {
     const row = parseTranscriptRow(line);
-    if (!row) continue;
+    if (!row) {
+      if (line.trim()) {
+        sawParseError = true;
+        // A corrupt row inside the evidence window could be the display.
+        // Never turn lost evidence into a negative observation.
+        if (awaitingReply) return { state: "unavailable", reason: "transcript_parse_error" };
+      }
+      continue;
+    }
     if (toolResponseMintedSessionName(row, name)) {
       sawMintResult = true;
       awaitingReply = true;
+      missedReplyAtToolBoundary = false;
       continue;
     }
     if (!awaitingReply) continue;
     const assistantText = assistantTextFromRow(row);
-    if (assistantText !== null) {
+    if (!assistantText?.trim() && rowContainsAssistantToolCall(row)) {
+      missedReplyAtToolBoundary = true;
+    }
+    // Claude Code streams thinking, text, and tool_use as separate rows with
+    // the same message id. Only visible text can satisfy or violate the
+    // display contract; an empty extraction is not a mismatching reply.
+    if (assistantText !== null && assistantText.trim().length > 0) {
       if (startsWithBlock(assistantText, name)) return { state: "present" };
       awaitingReply = false;
     }
@@ -173,10 +193,27 @@ export function inspectSessionNameDisplayImmediately(
   // rather than proof that the agent displayed the title incorrectly. Only a
   // transcript that contains the mint followed by a non-matching assistant
   // reply can safely deny the next tool.
-  if (!sawMintResult || awaitingReply) {
-    return { state: "unavailable", reason: "transcript_not_ready" };
+  if (!sawMintResult || awaitingReply || missedReplyAtToolBoundary) {
+    return {
+      state: "unavailable",
+      reason: !sawMintResult && sawParseError ? "transcript_parse_error" : "transcript_not_ready",
+    };
   }
   return { state: "absent" };
+}
+
+function rowContainsAssistantToolCall(row: Record<string, unknown>): boolean {
+  if (row.type === "assistant") {
+    const content = objectValue(row.message)?.content;
+    return (
+      Array.isArray(content) && content.some((block) => objectValue(block)?.type === "tool_use")
+    );
+  }
+  if (row.type === "response_item") {
+    const type = objectValue(row.payload)?.type;
+    return type === "function_call" || type === "custom_tool_call";
+  }
+  return false;
 }
 
 /**

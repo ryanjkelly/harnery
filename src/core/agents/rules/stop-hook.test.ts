@@ -258,6 +258,24 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     ).toMatchObject({ allow: false, rule: "stop-hook.rule_3_3" });
   });
 
+  test("fails open for naming when a remediation transcript becomes unavailable", () => {
+    const events = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      status(2),
+      task(3),
+      turnCompleted(4, ritual(true, { required: true, present: false })),
+    ];
+    expect(
+      verdict("claude-code", events, {
+        session_name_observation_unavailable: true,
+        stop_hook_active: true,
+      }),
+    ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
+    expect(
+      verdict("claude-code", events, { session_name_observation_unavailable: false }),
+    ).toMatchObject({ allow: false, rule: "stop-hook.session_name" });
+  });
   test("enforces the Claude Code session-name observation without retaining the name", () => {
     const base = [turnStarted(0), event("tool.requested", 1), status(2), task(3)];
     expect(
@@ -347,7 +365,11 @@ function stampedRoot(suggestedName: string, seenFor: string): string {
 function verdict(
   adapter: "claude-code" | "cursor",
   events: EventV3[],
-  request: { stop_hook_active?: boolean; status_box_present_strict?: boolean } = {},
+  request: {
+    stop_hook_active?: boolean;
+    status_box_present_strict?: boolean;
+    session_name_observation_unavailable?: boolean;
+  } = {},
 ) {
   return evaluateStopHookV3Events(
     root(),

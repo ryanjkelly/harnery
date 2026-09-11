@@ -32,6 +32,8 @@ export interface StopHookRequest {
   turn_window?: { start_ms: number; end_ms: number };
   stop_hook_active?: boolean;
   status_box_present_strict?: boolean;
+  /** Current observation overrides an older failed terminal during remediation. */
+  session_name_observation_unavailable?: boolean;
   bypass?: boolean;
   workflow_child?: boolean;
 }
@@ -188,7 +190,7 @@ export function evaluateStopHookV3Events(
 
   // Claude Code can prove session-name presentation from assistant-only text.
   // Cursor cannot expose that text and Codex returned observe-only above.
-  if (req.adapter !== "cursor") {
+  if (req.adapter !== "cursor" && !req.session_name_observation_unavailable) {
     const naming = turnTerminals
       .map((event) => observedNaming(event.payload.ritual?.session_name))
       .filter((value): value is { required: boolean; present: boolean } => value !== undefined);

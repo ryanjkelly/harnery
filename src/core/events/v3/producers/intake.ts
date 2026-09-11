@@ -289,14 +289,25 @@ function validDelegatedChild(value: HookIntakeRecordV3["delegated_child"]): bool
 function validTurnRitual(value: TurnRitualEvidenceV3 | undefined): boolean {
   if (value === undefined) return true;
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const keys = Object.keys(value).sort();
+  const keys = Object.keys(value)
+    .filter((key) => key !== "session_name_unavailable_reason")
+    .sort();
   if (
     keys.join(",") !==
     "session_name_present,session_name_required,status_box_present,status_box_present_strict"
   ) {
     return false;
   }
-  return keys.every((key) => typeof value[key as keyof TurnRitualEvidenceV3] === "boolean");
+  return (
+    keys.every((key) => typeof value[key as keyof TurnRitualEvidenceV3] === "boolean") &&
+    (value.session_name_unavailable_reason === undefined ||
+      [
+        "missing_transcript",
+        "transcript_not_ready",
+        "transcript_parse_error",
+        "observation_error",
+      ].includes(value.session_name_unavailable_reason))
+  );
 }
 
 /**

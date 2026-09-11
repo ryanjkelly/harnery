@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -146,6 +146,181 @@ describe("ordered session-name transcript scans", () => {
     return p;
   }
 
+  test("accepts desktop streamed thinking before the first visible name text", () => {
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ first_of_session: true, suggested_session_name: NAME }),
+            },
+          ],
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          id: "desktop-message",
+          content: [{ type: "thinking", thinking: "fixture reasoning" }],
+        },
+      },
+      {
+        type: "assistant",
+        message: { id: "desktop-message", content: [{ type: "text", text: BLOCK }] },
+      },
+      {
+        type: "assistant",
+        message: {
+          id: "desktop-message",
+          content: [{ type: "tool_use", name: "Bash", input: { command: "cat README.md" } }],
+        },
+      },
+    ]);
+    expect(
+      inspectSessionNameDisplayImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toEqual({ state: "present" });
+  });
+
+  test("accepts thinking and text in one desktop content array", () => {
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ session_name_retry: true, suggested_session_name: NAME }),
+            },
+          ],
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "thinking", thinking: "fixture reasoning" },
+            { type: "text", text: BLOCK },
+          ],
+        },
+      },
+    ]);
+    expect(
+      inspectSessionNameDisplayImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toEqual({ state: "present" });
+  });
+
+  test("does not mistake thinking or tool-only rows for visible display evidence", () => {
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ first_of_session: true, suggested_session_name: NAME }),
+            },
+          ],
+        },
+      },
+      {
+        type: "assistant",
+        message: { content: [{ type: "thinking", thinking: "fixture reasoning" }] },
+      },
+      { type: "assistant", message: { content: [{ type: "tool_use", name: "Read" }] } },
+    ]);
+    expect(
+      inspectSessionNameDisplayImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toEqual({ state: "unavailable", reason: "transcript_not_ready" });
+  });
+
+  test("later prose cannot turn a missing tool-boundary reply into observed absence", () => {
+    const mint = {
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            content: JSON.stringify({ first_of_session: true, suggested_session_name: NAME }),
+          },
+        ],
+      },
+    };
+    const rows = [
+      mint,
+      {
+        type: "assistant",
+        message: { content: [{ type: "thinking", thinking: "fixture reasoning" }] },
+      },
+      { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } },
+      {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "The README read passed." }] },
+      },
+    ];
+    expect(
+      inspectSessionNameDisplayImmediately(
+        writeTranscript(rows),
+        NAME,
+        assistantTextStartsWithSessionNameBlock,
+      ),
+    ).toEqual({ state: "unavailable", reason: "transcript_not_ready" });
+    expect(
+      inspectSessionNameDisplayImmediately(
+        writeTranscript([
+          ...rows,
+          mint,
+          { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+        ]),
+        NAME,
+        assistantTextStartsWithSessionNameBlock,
+      ),
+    ).toEqual({ state: "present" });
+    expect(
+      inspectSessionNameDisplayImmediately(
+        writeTranscript([
+          ...rows,
+          mint,
+          { type: "assistant", message: { content: [{ type: "text", text: "Wrong opening." }] } },
+        ]),
+        NAME,
+        assistantTextStartsWithSessionNameBlock,
+      ),
+    ).toEqual({ state: "absent" });
+  });
+  test("fails open when a corrupt row may hide the first visible reply", () => {
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ first_of_session: true, suggested_session_name: NAME }),
+            },
+          ],
+        },
+      },
+    ]);
+    writeFileSync(
+      p,
+      readFileSync(p, "utf8") +
+        "{broken\n" +
+        JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Continuing." }] },
+        }) +
+        "\n",
+    );
+    expect(
+      inspectSessionNameDisplayImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toEqual({ state: "unavailable", reason: "transcript_parse_error" });
+    writeFileSync(p, "{broken\n");
+    expect(
+      inspectSessionNameDisplayImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toEqual({ state: "unavailable", reason: "transcript_parse_error" });
+  });
   test("reads the latest Claude Code and Codex assistant text", () => {
     const claude = writeTranscript([
       { type: "assistant", message: { content: [{ type: "text", text: "earlier" }] } },

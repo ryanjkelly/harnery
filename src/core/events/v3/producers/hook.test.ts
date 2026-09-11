@@ -169,6 +169,28 @@ describe("event ledger V3 hook producer", () => {
     ).toBeNull();
   });
 
+  test("records unavailable session-name evidence without claiming observed absence", () => {
+    const event = normalizeHookEventV3("stop", parsed({ session_id: "native-session" }), {
+      ...producerContext(),
+      terminal_span: terminalSpan(spanIdV3()),
+      turn_ritual: {
+        status_box_present: true,
+        status_box_present_strict: true,
+        session_name_required: true,
+        session_name_present: false,
+        session_name_unavailable_reason: "missing_transcript",
+      },
+    });
+    expect(event?.payload).toMatchObject({
+      ritual: {
+        session_name: {
+          state: "expected_but_missing",
+          capability: "assistant_reply_text",
+          reason: "missing_transcript",
+        },
+      },
+    });
+  });
   test("emits observed turn economics and bounded harness timing", () => {
     const timing = recordHarnessTimingV3(emptyHarnessTimingV3(), "Stop", 17.9);
     const event = normalizeHookEventV3(

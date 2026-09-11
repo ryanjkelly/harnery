@@ -1,0 +1,61 @@
+---
+title: "ADR 0182: require readable evidence for session-name enforcement"
+description: Treat streamed thinking and unavailable transcripts as missing display evidence, with diagnostics and continued tool access.
+sidebar:
+  order: 182
+---
+
+**Date:** 2026-09-11
+**Status:** Accepted
+
+## Context
+
+The ordered session-name scanner treated every assistant JSONL row as a
+visible reply. Claude Code can persist thinking, text, and tool requests in
+separate rows with the same message ID. A thinking-only row extracted to an
+empty string and closed the display window before the correct text arrived.
+Repeated recovery commands opened another window that failed the same way.
+
+PreToolUse already allowed unavailable transcripts, but did so silently.
+Stop converted the same unavailable result to a boolean false and could
+continue denying a session whose display it could not observe.
+
+## Alternatives considered
+
+- Remove naming enforcement. Rejected because readable mismatching replies
+  still provide enough evidence to enforce the display rule.
+- Count any mention of the name. Rejected because tool output and later prose
+  cannot prove the required opening block.
+- Retry a boolean scan. Rejected because retries cannot distinguish an absent
+  display from unavailable evidence or repair an empty-row classification.
+
+## Decision
+
+Only nonempty visible assistant text can satisfy or violate the ordered
+post-mint display check. Thinking-only and tool-only rows leave it pending.
+The scanner reads every text block in a content array. When a tool request
+arrives before any visible reply, later prose cannot retroactively establish
+that the missing reply violated the rule. That window remains unavailable
+until an explicit retry or a positive display supplies usable evidence. A
+corrupt row inside an open display window yields an unavailable result because it may hide the
+first visible reply.
+
+Both PreToolUse and Stop allow the naming check when its evidence is
+unavailable. They emit a reason to stderr and the structured hook diagnostic
+log, retain the pending name, and never manufacture a seen stamp. V3 records
+`expected_but_missing` for unavailable assistant text. A current unavailable
+observation also prevents an older failed Stop terminal from keeping a
+remediation cycle blocked. Other Stop rules still apply.
+
+The existing exact fence matching and explicit retry boundary remain in
+place. A readable first visible reply with the wrong block still fails.
+Routine `set-task` output remains title-silent; its false retry flag describes
+that command, not whether the stored display requirement has been satisfied.
+
+## Result
+
+Regression tests cover separate streamed thinking and text rows, thinking
+before text in one array, missing and corrupt transcripts, wrong visible
+openings, a later successful sighting, and Stop remediation with older failed
+evidence. The hook tests verify the diagnostic, pending state, and V3
+observation together.
