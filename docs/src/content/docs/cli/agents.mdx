@@ -142,7 +142,7 @@ The three orientation commands.
   `task_state` separate for local and remote agents. Older heartbeats read as
   `activity: unknown` and `task_state: active`.
 - **`status`** renders the end-of-turn status box: your name, session age,
-  elapsed time for the current turn, current activity, task lifecycle, declared
+  elapsed time and recorded line changes for the current turn, current activity, task lifecycle, declared
   task, context usage, files held, and a one-line peer roster. A blocked lifecycle includes
   its reason. `--json` returns the same data unformatted. `--session-id <id>`
   looks the heartbeat up by session id directly, for use from a hook whose
@@ -154,6 +154,14 @@ The three orientation commands.
   request an approved terminal event after this exact turn closes. It requires
   `--end-turn`; the status box reports `queued after this turn` while the stop
   hook finishes the sequence.
+
+  The `changes` row shows `+42 / -11 lines` for the turn being reported. It sums
+  successful recorded edits, including changes already committed. Repeated edits
+  count again; code, tests, and documentation all count. While idle, it reports
+  the latest recorded turn. Shell commands and unsupported tools make the count
+  partial. A row marked unavailable means Harnery lacks measurements, even if
+  files changed. The JSON field `turn_changes` includes `added`, `removed`,
+  `measured_tools`, and `unmeasured_tools`, or null when evidence is unavailable.
 
 ### set-task
 

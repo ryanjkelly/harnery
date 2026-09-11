@@ -61,6 +61,7 @@ import {
   recoverSpanUpperBoundV3,
   type SpanClockV3,
 } from "../span-state.ts";
+import { type LineChanges, prepareToolLineChanges } from "../tool-line-changes.ts";
 import {
   type ContextMeasurementV3,
   type ContextTelemetryProvenanceV3,
@@ -116,6 +117,7 @@ const RECOVERY_ENABLED_ADAPTERS: ReadonlySet<string> = new Set([
 ]);
 
 interface SpanStateV3 extends OpenSpanStateV3 {
+  line_changes?: LineChanges;
   source_id: `hid_${string}`;
   semantic_key?: `hid_${string}`;
   recovery_reason?: string;
@@ -1023,6 +1025,10 @@ function processHookSignalLocked(
         };
         state.spans.push(span);
       }
+      span.line_changes = prepareToolLineChanges(
+        input.payload,
+        input.payload.cwd ?? input.coordRoot,
+      );
     } else if (input.signal === "post-tool-use" || input.signal === "post-tool-use-failure") {
       span = sourceId
         ? state.spans.find((candidate) => candidate.source_id === sourceId)
@@ -1253,6 +1259,7 @@ function processHookSignalLocked(
       span_id: openingSpan?.span_id ?? closingSpan?.span_id,
       parent_span_id: openingSpan?.parent_span_id ?? closingSpan?.parent_span_id,
       terminal_span: terminalSpan,
+      tool_line_changes: span?.line_changes,
       harness_timing: state.turn_harness,
       turn_telemetry: turnTelemetry,
       caused_by: [

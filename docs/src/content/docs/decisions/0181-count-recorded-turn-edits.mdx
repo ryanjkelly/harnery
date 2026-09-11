@@ -1,0 +1,49 @@
+---
+title: "ADR 0181: count recorded turn edits"
+description: Report per-turn line additions and removals with explicit measurement gaps.
+sidebar:
+  order: 181
+---
+
+Date: 2026-09-11. Status: accepted. Scope: status CLI and V3 tool events.
+
+## Context
+
+The status box shows elapsed time and held files. Neither tells the operator
+whether an agent changed code during the turn. Commits release file claims,
+so an empty file list can follow substantial editing.
+
+## Alternatives
+
+A workspace Git diff includes pre-existing work and other agents' edits.
+Commits also remove changes from that diff. Counting commits would miss
+uncommitted work and include edits carried over from earlier turns.
+
+## Decision
+
+Capture proposed line counts before a supported edit tool executes and retain
+only the counts on its producer span. A successful completion publishes those
+counts in optional `tool.completed.payload.line_changes`. Failed or unmeasured
+calls publish missing evidence. Source text never enters the ledger or producer
+state. Write and replacement tools use a bounded Git comparison of private
+temporary files; patch tools count patch additions, removals, and deleted-file
+lines before deletion.
+
+The status reader sums successful tool spans for the newest turn of the current
+generation and owner. It folds Stop remediation into the same operator turn,
+deduplicates tool spans, and excludes late completions attributed to older turns.
+The closing box describes the turn being handed back. While idle, it describes
+the latest recorded turn.
+
+These are edit-activity counts: repeated edits count again. They include text
+files such as code, tests, and documentation. They do not represent a net Git
+diff. Shell commands and unknown tools remain unmeasured. A partial row reports
+the measured subset; missing evidence never proves that no changes occurred.
+Read-only tools with known semantics can report zero.
+
+## Verification
+
+Regression tests cover patch creation and deletion, full-file writes, literal
+and repeated replacements, binary files, failed tools, duplicate completions,
+peer isolation, turn boundaries, and producer-state privacy. The schema addition
+uses the existing init upgrade path. Earlier turns lack the new measurements.

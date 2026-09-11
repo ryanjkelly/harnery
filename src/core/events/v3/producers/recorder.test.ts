@@ -74,6 +74,84 @@ afterEach(() => {
 });
 
 describe("event ledger V3 persistent hook recorder", () => {
+  test("never reports proposed line counts when an edit fails", () => {
+    const root = candidateRoot();
+    const session_id = "failed-edit-session";
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id })));
+    recordHookSignalV3(
+      baseInput(root, "user-prompt-submit", parsed({ session_id, turn_id: "one" })),
+    );
+    for (const [index, signal] of (["post-tool-use-failure", "post-tool-use"] as const).entries()) {
+      const tool = { session_id, tool_use_id: `failed-${index}`, tool_name: "apply_patch" };
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "pre-tool-use",
+          parsed({
+            ...tool,
+            tool_input: {
+              command: "*** Begin Patch\n*** Add File: example.txt\n+new\n*** End Patch",
+            },
+          }),
+        ),
+      );
+      recordHookSignalV3(
+        baseInput(root, signal, parsed({ ...tool, tool_response: { isError: true } })),
+      );
+    }
+    const terminals = readLedgerV3(root)
+      .events.map((item) => item.event)
+      .filter((event) => event.event_type === "tool.completed");
+    expect(terminals).toHaveLength(2);
+    for (const event of terminals)
+      expect(event.payload.line_changes?.state).toBe("expected_but_missing");
+  });
+
+  test("retains only edit counts across hooks and records successful edits once", () => {
+    const root = candidateRoot();
+    const session_id = "line-count-session";
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id })));
+    recordHookSignalV3(
+      baseInput(root, "user-prompt-submit", parsed({ session_id, turn_id: "one" })),
+    );
+    const toolPayload = {
+      session_id,
+      tool_use_id: "patch-one",
+      tool_name: "apply_patch",
+      tool_input:
+        "*** Begin Patch\n*** Add File: example.txt\n+PRIVATE_FILE_CONTENT\n+second\n*** End Patch",
+    };
+    recordHookSignalV3(baseInput(root, "pre-tool-use", parsed(toolPayload)));
+    // The completion has no tool input; the producer must use its persisted counts.
+    const completion = baseInput(
+      root,
+      "post-tool-use",
+      parsed({ session_id, tool_use_id: "patch-one", tool_name: "apply_patch" }),
+    );
+    recordHookSignalV3(completion);
+    recordHookSignalV3(completion);
+    const ledger = readLedgerV3(root);
+    expect(ledger.complete).toBeTrue();
+    const terminals = ledger.events
+      .map((item) => item.event)
+      .filter((event) => event.event_type === "tool.completed");
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.payload.line_changes).toEqual({
+      state: "observed",
+      value: { added: 2, removed: 0 },
+      attestation: "derived",
+      confidence: "high",
+    });
+    expect(JSON.stringify(ledger.events)).not.toContain("PRIVATE_FILE_CONTENT");
+    const producerFiles = readdirSync(
+      join(root, ".harnery/ledgers/v3/private-producers/claude-code"),
+    ).filter((name) => name.endsWith(".json"));
+    for (const file of producerFiles)
+      expect(
+        readFileSync(join(root, ".harnery/ledgers/v3/private-producers/claude-code", file), "utf8"),
+      ).not.toContain("PRIVATE_FILE_CONTENT");
+  });
+
   test("describes Codex mid-flight recovery without recording environment values", () => {
     expect(
       codexMidFlightDiagnosticContext(parsed({ session_id: "private-thread-id" }), {

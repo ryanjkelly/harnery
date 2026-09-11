@@ -123,8 +123,15 @@ export const TurnCompletedV3Schema = eventV3("turn.completed", {
   }),
 });
 
+export const ToolLineChangesV3Schema = StrictObject({
+  added: Type.Integer({ minimum: 0 }),
+  removed: Type.Integer({ minimum: 0 }),
+});
+
 export const ToolCompletedV3Schema = eventV3("tool.completed", {
-  payload: terminalPayloadV3("tool.completed"),
+  payload: terminalPayloadV3("tool.completed", {
+    line_changes: Type.Optional(ObservationV3Schema(ToolLineChangesV3Schema)),
+  }),
 });
 
 export const CommandCompletedV3Schema = eventV3("command.completed", {
@@ -260,6 +267,7 @@ type ToolCompletedEventV3 = ReplaceEventV3<
   Omit<EventOfTypeV3Base<"tool.completed">["payload"], "duration_ms"> & {
     duration_ms: SpanSummaryValueV3["duration_ms"];
     span: SpanSummaryValueV3;
+    line_changes?: Static<ReturnType<typeof ObservationV3Schema<typeof ToolLineChangesV3Schema>>>;
   }
 >;
 type CommandCompletedEventV3 = ReplaceEventV3<

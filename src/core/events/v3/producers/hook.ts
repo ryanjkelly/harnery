@@ -4,6 +4,7 @@ import { adapterDurationSupportV3, adapterSignalSupportV3 } from "../capabilitie
 import type { EventOfTypeV3, EventTypeV3, SpanSummaryV3 } from "../contract.ts";
 import { EVENT_V3_CONTRACT_MAJOR, EVENT_V3_CONTRACT_NAME } from "../contract.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
+import type { LineChanges } from "../tool-line-changes.ts";
 import {
   emptyHarnessTimingV3,
   extractTurnTelemetryV3,
@@ -19,6 +20,7 @@ import {
 } from "./hook-base.ts";
 
 export interface HookProducerContextV3 extends HookProducerContextV3Base {
+  tool_line_changes?: LineChanges;
   /** Required for terminal events; captured when the corresponding span opens. */
   terminal_span?: SpanSummaryV3;
   /** Required by V3 delegation starts so the child span is anchored in its parent tree. */
@@ -111,7 +113,23 @@ function terminalPayload(
   const span =
     duration === sourceSpan.duration_ms ? sourceSpan : { ...sourceSpan, duration_ms: duration };
   if (eventType === "tool.completed") {
-    return { ...basePayload, duration_ms: duration, span };
+    const counts = context.tool_line_changes;
+    const response = source.tool_response as { isError?: boolean } | undefined;
+    return {
+      ...basePayload,
+      duration_ms: duration,
+      span,
+      line_changes:
+        counts &&
+        (basePayload as { outcome?: string }).outcome === "succeeded" &&
+        response?.isError !== true
+          ? { state: "observed", value: counts, attestation: "derived", confidence: "high" }
+          : {
+              state: "expected_but_missing",
+              reason: "tool_line_changes_unmeasured",
+              capability: "tool_line_changes",
+            },
+    };
   }
   if (eventType !== "turn.completed") return { ...basePayload, span };
 

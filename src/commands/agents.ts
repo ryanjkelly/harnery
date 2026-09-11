@@ -86,6 +86,7 @@ import {
   foldSessionState,
   type TaskState,
 } from "../core/agents/state/session-state.ts";
+import { turnChangesStatusRow } from "../core/agents/turn-changes.ts";
 import { turnElapsedStatusRow } from "../core/agents/turn-elapsed.ts";
 import {
   coordFreshnessSeconds,
@@ -2421,6 +2422,7 @@ function runStatus(opts: {
   // one inside the same session. Best-effort by contract — no turn evidence,
   // no row.
   const turnElapsed = turnElapsedStatusRow({ coordRoot: root, instanceId: hb.instance_id });
+  const turnChanges = turnChangesStatusRow({ coordRoot: root, instanceId: hb.instance_id });
   const resources = readResourceStatus(root);
 
   const data = {
@@ -2430,6 +2432,7 @@ function runStatus(opts: {
     session_age_secs: ageSecs,
     turn_elapsed_secs: turnElapsed ? turnElapsed.elapsed.secs : null,
     turn_complete: turnElapsed ? turnElapsed.elapsed.complete : null,
+    turn_changes: turnChanges.changes,
     activity: activityOf(hb),
     activity_updated_at: hb.activity_updated_at ?? null,
     activity_source: hb.activity_source ?? null,
@@ -2477,6 +2480,7 @@ function runStatus(opts: {
   const rows: Array<[string, string]> = [
     ["session", formatAge(ageSecs)],
     ...(turnElapsed ? ([["turn", turnElapsed.value]] as Array<[string, string]>) : []),
+    ["changes", turnChanges.value],
     ["activity", activityOf(hb)],
     ["lifecycle", lifecycleLabel(hb)],
     ["context", ctxStr],
