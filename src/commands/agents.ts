@@ -1276,7 +1276,7 @@ function runWhoami(opts: { json?: boolean }): void {
   if (!hb) {
     emit.error({
       code: "no_live_generation",
-      message: noLiveGenerationMessage(myOwner),
+      message: noLiveGenerationMessage(root, myOwner),
     });
     process.exit(1);
   }
@@ -1474,9 +1474,19 @@ function normalizeKind(kind: string | undefined | null): string {
  * This id is actionable: the reader may pass it to cache repair or explicit
  * finalization. Abbreviate ids for display elsewhere, never in a diagnostic
  * whose purpose is to hand the caller a canonical identity.
+ *
+ * The message also names the recovery. A session whose generation ended while
+ * it sat idle (a stale sweep, or a `done` it has since outlived) still has a
+ * live process, and `agents lifecycle active` is the one command that opens a
+ * fresh generation for it (ADR 0088). Without the pointer every coordination
+ * command refuses in turn and the caller has no way to guess the path back.
  */
-function noLiveGenerationMessage(owner: string): string {
-  return `resolved owner=${owner} but no authority-safe live V3 generation exists for it`;
+function noLiveGenerationMessage(root: string, owner: string): string {
+  return `resolved owner=${owner} but no authority-safe live V3 generation exists for it; ${lifecycleReopenHint(root)}`;
+}
+
+function lifecycleReopenHint(root: string): string {
+  return `run \`${resolveBinName(root)} agents lifecycle active\` to open a fresh generation for this continuing session`;
 }
 
 /**
@@ -2010,7 +2020,7 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     if (state !== "active") {
       emit.error({
         code: "no_live_generation",
-        message: `${noLiveGenerationMessage(myOwner)}; run \`${resolveBinName(root)} agents lifecycle active\` to open a fresh generation`,
+        message: noLiveGenerationMessage(root, myOwner),
       });
       process.exitCode = 1;
       return;
@@ -2270,7 +2280,7 @@ function runStatus(opts: {
   if (!hb) {
     emit.error({
       code: "no_live_generation",
-      message: noLiveGenerationMessage(myOwner),
+      message: noLiveGenerationMessage(root, myOwner),
     });
     process.exit(1);
   }
@@ -5318,7 +5328,7 @@ function cacheHealAuthorityRefusal(
   if (producer?.terminal) {
     return {
       reason: "terminal_generation",
-      message: "the matching generation is terminal and cannot be repaired or reopened by heal",
+      message: `the matching generation is terminal and cannot be repaired or reopened by heal; ${lifecycleReopenHint(root)}`,
     };
   }
   if (producer && producer.instance_id !== liveInstanceIdV3(owner)) {

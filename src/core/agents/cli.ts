@@ -13,6 +13,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
+import { resolveBinName } from "../config.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 
@@ -312,9 +313,14 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
             hb = writer.setAssignedNameCache(root, owner, name, "session");
           }
         } catch (error) {
-          process.stderr.write(
-            `agent-coord set-task: V3 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
-          );
+          const detail = error instanceof Error ? error.message : String(error);
+          // A missing heartbeat here means the session's generation ended
+          // while its process lived on. Name the reopen command (ADR 0088);
+          // set-task is usually the first thing such a session runs.
+          const hint = detail.includes("heartbeat_missing:")
+            ? `; run \`${resolveBinName(root)} agents lifecycle active\` to open a fresh generation for this continuing session`
+            : "";
+          process.stderr.write(`agent-coord set-task: V3 authority refused (${detail})${hint}\n`);
           return 1;
         }
         if (!hb) {

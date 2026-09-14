@@ -285,6 +285,13 @@ restore another title. Titles are projections for people; editing a title
 never changes the underlying lifecycle. Pass `--session-id <id>` when the
 calling process cannot resolve its session anchor.
 
+`lifecycle active` is also the way back for a session whose generation ended
+while its process lived on: a stale sweep after a long idle stretch, or a
+`done` the conversation has since outlived. In that state `whoami`, `status`,
+`set-task`, `identity assume`, and `heal` all refuse, and each refusal names
+this command. It opens a fresh generation for the continuing session and leaves
+the ended one untouched; a following `set-task` declares the new focus.
+
 ### end and reconcile
 
 `harn agents end` is a deliberate V3 session-finalization command. It refuses

@@ -462,6 +462,19 @@ describe("harn agents heal", () => {
     expect(terminal.status).toBe(1);
     expect(terminal.stderr).toContain("heal_failed");
     expect(terminal.stderr).toContain("reason=terminal_generation");
+    // Every refusal on a swept-but-continuing session names the one command
+    // that can reopen it (ADR 0088); heal must not leave the caller guessing.
+    expect(terminal.stderr).toContain("agents lifecycle active");
+    const refusedTask = harn(terminalRoot, [
+      "agents",
+      "set-task",
+      "Resume after sweep",
+      "--session-id",
+      OWNER,
+    ]);
+    expect(refusedTask.status).toBe(1);
+    expect(refusedTask.stderr).toContain("heartbeat_missing");
+    expect(refusedTask.stderr).toContain("agents lifecycle active");
     expect(readHeartbeat(terminalRoot, OWNER)).toBeNull();
     expect(readHookProducerStateV3(terminalRoot, "codex", OWNER)).toMatchObject({
       generation_id: terminalGeneration,

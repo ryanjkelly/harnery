@@ -25,7 +25,7 @@ import {
 } from "../../core/agents/state/live-coordination-view.ts";
 import { resolveForkAncestry } from "../../core/agents/state/names.ts";
 import { instanceHasLivePid, removePidmapRowsForInstance } from "../../core/agents/state/pidmap.ts";
-import { coordFreshnessSeconds } from "../../core/config.ts";
+import { coordFreshnessSeconds, resolveBinName } from "../../core/config.ts";
 import type { EventAdapterIdV3 } from "../../core/events/v3/adapter-id.ts";
 import { readRemoteMachines } from "../../core/presence/index.ts";
 import { type AgentIdentity, bareName, ensureIdentity, lookupById, lookupByName } from "./index.ts";
@@ -256,7 +256,7 @@ export function assumeIdentity(
     if (!hb) {
       throw new IdentityAssumeError(
         "no_live_generation",
-        `no authority-safe live V3 generation for instance '${instanceId}'`,
+        `no authority-safe live V3 generation for instance '${instanceId}'; run \`${resolveBinName(coordRoot)} agents lifecycle active\` to open a fresh generation for this continuing session, then assume again`,
       );
     }
     if (hb.kind && hb.kind !== "session") {
