@@ -43,12 +43,15 @@ import {
   sessionNameDisplayInstruction,
   sessionNameDisplayPending,
   sessionNameDisplayRecoveryInstruction,
+  sessionNameDisplayReminder,
+  sessionNameDisplayReminderDue,
   toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
 import type { Heartbeat } from "../agents/state/heartbeat-reader.ts";
 import {
   readHeartbeat,
   setAssignedNameCache,
+  stampSessionNameReminded,
   stampSessionNameRequested,
   stampSessionNameSeen,
 } from "../agents/state/heartbeat-writer.ts";
@@ -1483,14 +1486,25 @@ async function main(): Promise<number> {
   }
 
   if (norm.event_type === "tool.completed" && eventName === "post-tool-use") {
-    // Inject only at the successful tool boundary that actually minted or
-    // retried a name: the first non-empty set-task, a pending-name set-task
-    // retry, or the transition to lifecycle done. The
+    // Inject the full instruction only at the successful tool boundary that
+    // actually minted or retried a name: the first non-empty set-task, a
+    // pending-name set-task retry, or the transition to lifecycle done. The
     // coordination row intentionally remains pending until transcript evidence
-    // catches up; reading that latch alone here would re-inject after every
-    // later tool and make the agent print the same block repeatedly.
+    // catches up, so the latch alone cannot drive injection: that would print
+    // the same block after every later tool.
+    //
+    // Between those two extremes sits a bounded reminder. Since ADR 0182 the
+    // PreToolUse gate allows a tool when transcript evidence is unavailable
+    // and says so only on stderr, which the model never reads. A model that
+    // skipped the block after the mint was therefore never asked again
+    // (ADR 0183). While the requested title is still pending, ordinary tool
+    // results carry an idempotent reminder up to a fixed count; coordination
+    // chores (set-task, status, suggest-name) are skipped because a mint or
+    // retry response already carries the full instruction and an end-turn
+    // status is the wrong place to ask.
     try {
-      const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, owner.instance_id));
+      const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
+      const name = sessionNameDisplayPending(row);
       if (name && toolResponseMintedSessionName(payload?.tool_response, name)) {
         // Record the title before asking for it. The suggestion can still
         // change afterwards (an assigned-name rewrite, a lifecycle re-mint, a
@@ -1499,6 +1513,23 @@ async function main(): Promise<number> {
         stampSessionNameRequested(coordRoot, owner.instance_id, name);
         const { emitContext } = await import("./adapter/output.ts");
         emitContext(adapter, "PostToolUse", sessionNameDisplayInstruction(name));
+      } else if (name) {
+        const due = sessionNameDisplayReminderDue(row);
+        const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
+        if (due && !isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) {
+          stampSessionNameReminded(coordRoot, owner.instance_id, due);
+          appendDebug(coordRoot, {
+            ts: new Date().toISOString(),
+            event_name: eventName,
+            adapter,
+            instance_id: owner.instance_id,
+            effect: "session-name-display-reminded",
+            session_name_pending: due,
+            reminders: (row?.session_name_display_reminders ?? 0) + 1,
+          });
+          const { emitContext } = await import("./adapter/output.ts");
+          emitContext(adapter, "PostToolUse", sessionNameDisplayReminder(due));
+        }
       }
     } catch (err) {
       logError(coordRoot, err, { phase: "post-tool-use-session-name" });

@@ -1,0 +1,62 @@
+---
+title: "ADR 0183: bounded reminders for a pending session-name display"
+description: Re-attach the display instruction on a fixed number of ordinary tool results while the requested title stays pending, without reinstating a denial.
+sidebar:
+  order: 183
+---
+
+**Date:** 2026-09-14
+**Status:** Accepted
+
+## Context
+
+ADR 0182 made the naming gate allow a tool call when transcript evidence is
+unavailable, and it reports that decision on stderr and in the hook log. The
+model reads neither. The only instruction the model does see is the PostToolUse
+context attached to the mint result. A model that starts narrating, calls
+`set-task`, and moves straight to another tool is therefore asked exactly once
+and never again. On one desktop host the block appeared in 31 of 31 sessions
+before the change and failed to appear in 4 of the next 9; two more sessions
+showed it only after the operator's second prompt, when the per-prompt reminder
+fired.
+
+Reinstating the pre-0182 denial is not an option. The same investigation found
+a session whose block was rendered in the chat while the transcript persisted
+no text row for it. A strict gate would lock that session out of every tool.
+
+## Alternatives considered
+
+- Deny again when the first row after the mint is tool-only. Rejected: that is
+  the lockout ADR 0182 removed, and the dropped-row case shows the transcript
+  cannot carry the proof.
+- Re-attach the instruction on every tool result while the name is pending.
+  Rejected: an unreadable transcript would turn into a reminder on every tool
+  for the rest of the session, and a model that did display the block would be
+  nagged into printing it again.
+- Deny once at Stop instead. Rejected: the block is meant to open the turn, and
+  a Stop denial arrives after the operator has already read the reply.
+
+## Decision
+
+PostToolUse carries a bounded reminder. While the title recorded in
+`session_name_display_requested_for` is still pending, each ordinary tool
+result re-attaches a short instruction as PostToolUse context, up to
+`SESSION_NAME_DISPLAY_REMINDER_LIMIT` (two) times per requested title. The
+heartbeat counts reminders in `session_name_display_reminders`; requesting a
+different title resets the count. Coordination commands (`set-task`, `status`,
+`suggest-name`) never carry the reminder and never consume the budget, because a
+mint or retry result already carries the full instruction and an end-of-turn
+status is the wrong place to ask.
+
+The reminder is idempotent by wording: it asks the model to show the block only
+if it has not already done so this turn, and tells a model that did show it to
+do nothing. The transcript is not consulted for the decision. PreToolUse has
+already stamped any readable sighting, and an unreadable one is the case the
+reminder exists for.
+
+## Result
+
+The fail-open gate stays. Regression tests cover: two reminders then silence,
+a re-mint resetting the budget, chores neither consuming nor carrying it, and a
+readable sighting ending reminders early. The hook log records each reminder
+under `session-name-display-reminded`.

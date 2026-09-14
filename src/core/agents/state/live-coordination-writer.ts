@@ -112,6 +112,9 @@ function materializeLiveCoordinationHeartbeat(
                 session_name_display_requested_for: current.session_name_display_requested_for,
               }
             : {}),
+          ...(typeof current.session_name_display_reminders === "number"
+            ? { session_name_display_reminders: current.session_name_display_reminders }
+            : {}),
         }
       : {};
   const materialized: V3HeartbeatMaterialization = {

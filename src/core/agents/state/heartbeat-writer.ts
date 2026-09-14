@@ -196,10 +196,32 @@ export function stampSessionNameRequested(
   name: string,
 ): Heartbeat | null {
   if (!name) return null;
+  return mutate(coordRoot, instanceId, (hb) => {
+    if (hb.session_name_display_requested_for === name) return hb;
+    const { session_name_display_reminders: _reset, ...rest } = hb;
+    return { ...rest, session_name_display_requested_for: name };
+  });
+}
+
+/**
+ * Count one bounded PostToolUse reminder for the title currently requested.
+ *
+ * The mint-time instruction is the only thing that used to make the block
+ * appear; a model that went straight to another tool was never asked again,
+ * because the fail-open gate writes its reason to stderr, which the model
+ * cannot read. The counter lets the hook re-attach the instruction a fixed
+ * number of times and then stop, whatever the transcript can or cannot prove.
+ */
+export function stampSessionNameReminded(
+  coordRoot: string,
+  instanceId: string,
+  name: string,
+): Heartbeat | null {
+  if (!name) return null;
   return mutate(coordRoot, instanceId, (hb) =>
     hb.session_name_display_requested_for === name
-      ? hb
-      : { ...hb, session_name_display_requested_for: name },
+      ? { ...hb, session_name_display_reminders: (hb.session_name_display_reminders ?? 0) + 1 }
+      : hb,
   );
 }
 

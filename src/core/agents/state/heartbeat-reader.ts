@@ -40,6 +40,13 @@ export interface Heartbeat {
    * counts so that drift cannot strand the latch.
    */
   session_name_display_requested_for?: string;
+  /**
+   * How many bounded PostToolUse reminders have gone out for
+   * `session_name_display_requested_for`. Reset whenever a different title is
+   * requested. Caps the nudge so an unreadable transcript never turns into an
+   * endless stream of "show the block" context.
+   */
+  session_name_display_reminders?: number;
   last_status_at?: string;
   current_turn_id?: string;
   parent_instance_id?: string;

@@ -3,10 +3,13 @@ import {
   assistantTextStartsWithSessionNameBlock,
   isSessionNameRemediationCommand,
   matchSessionNameDisplay,
+  SESSION_NAME_DISPLAY_REMINDER_LIMIT,
   sessionNameDisplayAcceptedNames,
   sessionNameDisplayBlock,
   sessionNameDisplayPending,
   sessionNameDisplayRecoveryInstruction,
+  sessionNameDisplayReminder,
+  sessionNameDisplayReminderDue,
   toolResponseMintedSessionName,
 } from "./session-name-display.ts";
 
@@ -156,6 +159,39 @@ describe("session name display latch", () => {
     expect(isSessionNameRemediationCommand("harn agents status 2>&1 | tee /tmp/out", "harn")).toBe(
       false,
     );
+  });
+
+  test("owes a bounded reminder only after the instruction went out for the pending title", () => {
+    expect(sessionNameDisplayReminderDue(null)).toBeNull();
+    // Pending but never instructed: the mint boundary owns the first ask.
+    expect(sessionNameDisplayReminderDue({ suggested_session_name: NAME })).toBeNull();
+    const asked = { suggested_session_name: NAME, session_name_display_requested_for: NAME };
+    expect(sessionNameDisplayReminderDue(asked)).toBe(NAME);
+    expect(sessionNameDisplayReminderDue({ ...asked, session_name_display_reminders: 1 })).toBe(
+      NAME,
+    );
+    expect(
+      sessionNameDisplayReminderDue({
+        ...asked,
+        session_name_display_reminders: SESSION_NAME_DISPLAY_REMINDER_LIMIT,
+      }),
+    ).toBeNull();
+    // A sighting closes the latch; a drifted request must not nudge for a stale title.
+    expect(sessionNameDisplayReminderDue({ ...asked, session_name_seen_for: NAME })).toBeNull();
+    expect(
+      sessionNameDisplayReminderDue({
+        suggested_session_name: NAME,
+        session_name_display_requested_for: "Agent Maya - Earlier focus",
+      }),
+    ).toBeNull();
+  });
+
+  test("the reminder carries the exact block and tells an agent that already showed it to stand down", () => {
+    const reminder = sessionNameDisplayReminder(NAME);
+    expect(reminder.startsWith("Session name still pending.")).toBe(true);
+    expect(reminder).toContain(sessionNameDisplayBlock(NAME));
+    expect(reminder).toContain("If you already showed that block, do nothing");
+    expect(assistantTextStartsWithSessionNameBlock(sessionNameDisplayBlock(NAME), NAME)).toBe(true);
   });
 
   test("recognizes only start, done, and retry mint responses for the current name", () => {

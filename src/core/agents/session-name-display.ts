@@ -9,7 +9,16 @@ export interface SessionNameDisplayState {
   suggested_session_name?: string;
   session_name_seen_for?: string;
   session_name_display_requested_for?: string;
+  session_name_display_reminders?: number;
 }
+
+/**
+ * How many times PostToolUse may re-attach the display instruction after the
+ * mint-time one, per requested title. Two covers the observed miss (the model
+ * narrates, calls a tool, and forgets) without turning an unreadable
+ * transcript into a reminder on every tool for the rest of the session.
+ */
+export const SESSION_NAME_DISPLAY_REMINDER_LIMIT = 2;
 
 export const SESSION_NAME_DISPLAY_NOTE =
   "Next, before any prose or another tool call, send suggested_session_name verbatim by itself in a fenced code block.";
@@ -73,6 +82,45 @@ export function sessionNameDisplayInstruction(name: string): string {
     sessionNameDisplayBlock(name),
     "",
     "Do not put commentary before the block. Harnery will reject tool calls until it is shown.",
+  ].join("\n");
+}
+
+/**
+ * Whether an ordinary tool result should carry a bounded reminder.
+ *
+ * Only after the mint-time instruction has gone out (`requested_for` is set
+ * for the pending title), and only while the counter is under the cap. The
+ * transcript is deliberately not consulted: PreToolUse already stamped a
+ * readable sighting, and an unreadable one is exactly the case the reminder
+ * exists for.
+ */
+export function sessionNameDisplayReminderDue(
+  row: SessionNameDisplayState | null | undefined,
+): string | null {
+  const pending = sessionNameDisplayPending(row);
+  if (!pending || row?.session_name_display_requested_for !== pending) return null;
+  return (row.session_name_display_reminders ?? 0) < SESSION_NAME_DISPLAY_REMINDER_LIMIT
+    ? pending
+    : null;
+}
+
+/**
+ * The follow-up nudge for a title still pending after an ordinary tool.
+ *
+ * Worded so the model can answer it from its own memory: the desktop transcript
+ * sometimes drops a text row that the operator did see, so Harnery cannot tell
+ * a skipped block from an unrecorded one. A model that already showed the block
+ * is told to do nothing, which is what keeps the reminder from producing
+ * duplicate blocks in the chat.
+ */
+export function sessionNameDisplayReminder(name: string): string {
+  return [
+    "Session name still pending.",
+    "If you have not already shown it this turn, send this exact fenced block as your next assistant text, before any prose or another tool call:",
+    "",
+    sessionNameDisplayBlock(name),
+    "",
+    "If you already showed that block, do nothing; Harnery could not read the transcript row and is asking once more.",
   ].join("\n");
 }
 

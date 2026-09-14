@@ -208,10 +208,18 @@ exactly what it was handed.
 For transcript-backed adapters, the evidence boundary is the first assistant
 message after the mint result. Later commentary or a user prompt does not erase
 an exact display. If the adapter transcript is unavailable or has not flushed
-yet, Harnery keeps the check pending and allows the tool without injecting
-another reminder. The exact PostToolUse instruction was already delivered for
-that mint, so repeating a generic reminder on every tool cannot create an
-unbounded loop. A readable missing or malformed display is still denied.
+yet, Harnery keeps the check pending and allows the tool. A readable missing or
+malformed display is still denied.
+
+Allowing the tool is not the same as asking again. The gate's reason goes to
+stderr and the hook log, which the model never reads, so a model that skipped
+the block after the mint would otherwise never hear about it. While the title
+it was asked to show is still pending, the next ordinary tool results carry a
+short reminder as PostToolUse context, at most twice per requested title. The
+reminder is worded so a model that already showed the block does nothing, since
+a desktop transcript can drop a text row the operator did see. Coordination
+commands (`set-task`, `status`, `suggest-name`) never carry it, and a re-mint
+resets the budget. A mint or retry result still carries the full instruction.
 
 The gate always allows a single `agents set-task`, `agents status`, or
 `agents suggest-name` command. Those are the focus, recovery, and turn-closing

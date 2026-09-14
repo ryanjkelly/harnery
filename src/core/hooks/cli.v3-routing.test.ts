@@ -412,6 +412,135 @@ describe("agent-hook V3 hard cut", () => {
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
   });
 
+  test("PostToolUse re-attaches a bounded reminder while the requested title stays pending", () => {
+    const root = candidateRoot();
+    const owner = "session-name-reminder-owner";
+    const name = "Agent Maya - Auth refactor";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+    const ordinaryPost = (id: string, command = `echo ${id}`) =>
+      runHook("post-tool-use", {
+        session_id: owner,
+        cwd: root,
+        tool_name: "Bash",
+        tool_use_id: id,
+        tool_input: { command },
+        tool_response: "ok",
+      });
+
+    expect(
+      runHook("session-start", { session_id: owner, cwd: root, source: "startup" }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("session owner was not projected");
+    const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
+    const seedName = (suggested: string) =>
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          ...readLiveCoordinationRow(root, instanceId),
+          instance_id: instanceId,
+          suggested_session_name: suggested,
+        }),
+        "utf8",
+      );
+    seedName(name);
+
+    // The mint result carries the full instruction and records the request.
+    const mint = runHook("post-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "set-task-tool",
+      tool_response: {
+        output: JSON.stringify({ suggested_session_name: name, first_of_session: true }),
+      },
+    });
+    expect(mint.status).toBe(0);
+    expect(mint.stdout).toContain("Session name display required.");
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_display_requested_for).toBe(
+      name,
+    );
+
+    // Tool-only rows after the mint (the transcript never shows the block):
+    // the next ordinary tool results carry the idempotent reminder, twice.
+    for (const id of ["work-1", "work-2"]) {
+      const reminded = ordinaryPost(id);
+      expect(reminded.status).toBe(0);
+      expect(reminded.stdout).toContain('"hookEventName":"PostToolUse"');
+      expect(reminded.stdout).toContain("Session name still pending.");
+      expect(reminded.stdout).toContain(name);
+      expect(reminded.stdout).not.toContain("Session name display required.");
+    }
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_display_reminders).toBe(2);
+
+    // The cap holds: a third ordinary tool is silent.
+    const capped = ordinaryPost("work-3");
+    expect(capped.status).toBe(0);
+    expect(capped.stdout).not.toContain('"hookEventName":"PostToolUse"');
+    expect(capped.stdout).not.toContain(name);
+
+    // A re-mint for a different title resets the budget; coordination chores
+    // never consume it or carry the reminder.
+    const reminted = `[DONE] ${name}`;
+    seedName(reminted);
+    const remintPost = runHook("post-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "lifecycle-done",
+      tool_response: JSON.stringify({ suggested_session_name: reminted, name_reminted: true }),
+    });
+    expect(remintPost.stdout).toContain("Session name display required.");
+    expect(
+      readLiveCoordinationRow(root, instanceId)?.session_name_display_reminders,
+    ).toBeUndefined();
+    const chore = ordinaryPost("end-turn", "harn agents status --end-turn 2>&1");
+    expect(chore.status).toBe(0);
+    expect(chore.stdout).not.toContain('"hookEventName":"PostToolUse"');
+    expect(
+      readLiveCoordinationRow(root, instanceId)?.session_name_display_reminders,
+    ).toBeUndefined();
+    const afterRemint = ordinaryPost("work-4");
+    expect(afterRemint.stdout).toContain("Session name still pending.");
+    expect(afterRemint.stdout).toContain(reminted);
+
+    // A readable sighting closes the latch and ends the reminders early.
+    const transcript = join(root, "transcript.jsonl");
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ suggested_session_name: reminted, name_reminted: true }),
+            },
+          ],
+        },
+      })}\n${JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: `\`\`\`\n${reminted}\n\`\`\`` }] },
+      })}\n`,
+    );
+    const seen = runHook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_use_id: "after-display",
+      tool_input: { command: "echo allowed" },
+    });
+    expect(seen.status).toBe(0);
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(reminted);
+    const quiet = ordinaryPost("work-5");
+    expect(quiet.status).toBe(0);
+    expect(quiet.stdout).not.toContain('"hookEventName":"PostToolUse"');
+  });
+
   test("Cursor records response evidence and never treats later narration as an omission", () => {
     const root = candidateRoot("cursor");
     const owner = "cursor-session-name-owner";
