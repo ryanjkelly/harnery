@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { auditDocsMetadataText } from "../../src/lib/docs-metadata-audit.ts";
 import { initDocsMetadataExclusions } from "../../src/lib/docs-metadata-managed.ts";
 
@@ -135,6 +135,10 @@ describe("auditDocsMetadataText", () => {
 });
 
 describe("host-supplied metadata exclusions", () => {
+  // Module-level state shared with every other consumer in this process, so
+  // it is restored even when an expectation throws part-way through a test.
+  afterEach(() => initDocsMetadataExclusions([]));
+
   const vendored = "docs/openclaw/concepts/mantis-slack-desktop-runbook.md";
   const legacyRunbook = "---\nsummary: \"upstream page\"\ntitle: \"Runbook\"\n---\n";
 
@@ -162,6 +166,5 @@ describe("host-supplied metadata exclusions", () => {
     expect(
       auditDocsMetadataText(legacyRunbook, "docs/runbooks/deploy-runbook.md"),
     ).toEqual(expect.objectContaining({ state: "legacy", profile: "runbook" }));
-    initDocsMetadataExclusions([]);
   });
 });
