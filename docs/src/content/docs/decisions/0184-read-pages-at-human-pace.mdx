@@ -69,7 +69,10 @@ every page-loading surface consults before a load:
   `HARNERY_PACE=off` disables it machine-wide. Any non-zero wait is logged to
   stderr with the site and the two ways to skip it, so an agent that sees a slow
   load knows why.
-- The Playwright client gates `navigate`, `reload`, and the session verbs
+- The Playwright client gates top-level document requests, including links,
+  forms, scripts and popups. Redirect hops share the first reservation; assets
+  are exempt. Service workers are blocked while pacing is enabled because they
+  can bypass request routing. This covers `navigate`, `reload`, and the session verbs
   `sessionOpenTab`, `sessionGoto`, and `sessionReload`. The agent-browser client
   gates `open`, including `open` steps inside a batch, and blocks the thread
   because that client is synchronous. `fetch` gates the request itself; a

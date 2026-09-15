@@ -370,6 +370,8 @@ export class Browser {
     try {
       this.context = await chromium.launchPersistentContext(this.profileDir, {
         headless: !this.opts.headed,
+        // Service-worker-owned navigations bypass Playwright request routes.
+        ...(this.getPaceGate()?.policy.enabled ? { serviceWorkers: "block" as const } : {}),
         viewport: this.opts.viewport ?? { width: 1280, height: 800 },
         ...(this.opts.deviceScaleFactor !== undefined
           ? { deviceScaleFactor: this.opts.deviceScaleFactor }
@@ -398,13 +400,30 @@ export class Browser {
       await this.context.addCookies(jarCookies.map(toPWCookie));
     }
 
-    // Caller-injected extraHeaders callback (e.g., for Cloudflare-bypass
-    // or custom auth headers). Per-request route handler so headers only
-    // attach when the callback returns non-empty.
+    // Gate actual document requests, including links, forms, script navigation,
+    // and the first request of a popup. Method-level waits miss those loads.
+    // Redirect hops are part of the original load, not additional reservations.
     const headersCb = this.opts.extraHeaders;
-    if (headersCb) {
+    if (this.getPaceGate() || headersCb) {
       await this.context.route("**/*", async (route, request) => {
-        const extra = headersCb(request.url());
+        let mainDocument = false;
+        if (request.isNavigationRequest() && !request.redirectedFrom()) {
+          try {
+            mainDocument = request.frame() === request.frame().page().mainFrame();
+          } catch {
+            // A popup's first request can precede creation of its Page/Frame.
+            mainDocument = true;
+          }
+        }
+        if (mainDocument) {
+          try {
+            await this.getPaceGate()?.before(request.url());
+          } catch {
+            await route.abort("failed");
+            return;
+          }
+        }
+        const extra = headersCb?.(request.url()) ?? {};
         if (Object.keys(extra).length === 0) return route.continue();
         const headers = { ...request.headers(), ...extra };
         return route.continue({ headers });
@@ -614,18 +633,16 @@ export class Browser {
 
   private paceGate: PaceGate | null | undefined;
 
-  /** Wait out the human-pace slot for `url` before a page load. */
-  private async paceBefore(url: string): Promise<void> {
+  private getPaceGate(): PaceGate | null {
     if (this.paceGate === undefined) {
       this.paceGate =
         this.opts.pace === undefined ? new PaceGate(pacePolicyFromEnv()) : this.opts.pace;
     }
-    if (this.paceGate) await this.paceGate.before(url);
+    return this.paceGate;
   }
 
   async navigate(url: string): Promise<NavigateResult> {
     const page = this.currentPage;
-    await this.paceBefore(url);
     const response = await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
     return {
       url: page.url(),
@@ -642,7 +659,6 @@ export class Browser {
    */
   async reload(): Promise<NavigateResult> {
     const page = this.currentPage;
-    await this.paceBefore(page.url());
     const response = await page.reload({ waitUntil: this.opts.waitUntil ?? "load" });
     return {
       url: page.url(),
@@ -1437,7 +1453,6 @@ export class Browser {
     const page = await this.context.newPage();
     this.trackPage(page, true);
     try {
-      await this.paceBefore(url);
       await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
       this.sessionRevision++;
       return await this.describeTab(page);
@@ -1462,7 +1477,6 @@ export class Browser {
 
   async sessionGoto(url: string): Promise<BrowserSessionTab> {
     const page = this.currentPage;
-    await this.paceBefore(url);
     await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
     this.sessionRevision++;
     return this.describeTab(page);
@@ -1470,7 +1484,6 @@ export class Browser {
 
   async sessionReload(): Promise<BrowserSessionTab> {
     const page = this.currentPage;
-    await this.paceBefore(page.url());
     await page.reload({ waitUntil: this.opts.waitUntil ?? "load" });
     this.sessionRevision++;
     return this.describeTab(page);
