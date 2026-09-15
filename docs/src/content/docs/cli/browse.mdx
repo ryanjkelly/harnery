@@ -56,6 +56,7 @@ The trio's `<prefix>.html` is a **standalone snapshot**, not a raw DOM dump. Sty
 | `--browser-arg <flag>` | Extra Chromium launch flag, passed straight to the browser (repeatable). Also settable machine-wide via `HARNERY_BROWSER_ARGS` (whitespace-separated). See WSLg note below. |
 | `--proxy-from-env` | Pass `HTTPS_PROXY`/`HTTP_PROXY` to Playwright as an authenticated browser proxy. Credentials remain in the child environment instead of command arguments. |
 | `--no-cookies` | Skip cookie-jar attach and persist. Also skips a host `extraCookies` hook. |
+| `--no-pace` | Skip the human-pace gap between page loads of the same site for this run. See [Human pace](/cli/browse/#human-pace). |
 | `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
 | `--profile <dir>` | Persistent Chromium profile dir. Default `~/.cache/harnery/browser-profile`. |
 | `--export-cookies <path>` | Export the live profile to an owner-only Netscape `cookies.txt` file before closing. |
@@ -120,6 +121,20 @@ On WSL, a headed Chromium window composites its GPU-backed surface over an RDP s
 
 If headed windows stay blank regardless of flags, the failure is likely below Chromium: check `/mnt/wslg/weston.log` for `rdp_allocate_shared_memory … Input/output error`. That means WSLg's shared-memory pixel channel is dead (window metadata still flows, pixels don't; taskbar entries appear, frames never paint) and no browser flag will help; restart the WSL VM with `wsl --shutdown` from Windows.
 :::
+
+### Human pace
+
+Harnery reads pages at human pace by default. Consecutive loads of the same registrable site (`www.example.com` and `example.com` count as one site) wait a random 3 to 9 seconds, the way a person reads one page before opening the next. The reservation ledger at `~/.cache/harnery/pace.json` is shared by every process, so a shell loop of separate `harn fetch` calls is paced the same as one long `harn browse` session, and concurrent agents queue behind each other instead of firing together. Different sites never wait on each other. Loopback and private-network addresses, single-label hosts, and the `.localhost`, `.local`, `.test`, `.internal`, `.example`, and `.invalid` suffixes are exempt, so local development and page QA keep machine speed. A wait is logged to stderr as `paced 5.2s before example.com (human pace; --no-pace or HARNERY_PACE=off skips)`.
+
+| Control | Effect |
+| --- | --- |
+| `--no-pace` | Skip the gap for this run. |
+| `HARNERY_PACE=off` | Disable the gate machine-wide. |
+| `HARNERY_PACE_MIN_MS`, `HARNERY_PACE_MAX_MS` | Change the gap window. Defaults `3000` and `9000`. |
+| `HARNERY_PACE_EXEMPT` | Comma-separated host suffixes that never wait, for sites you operate. |
+| `HARNERY_PACE_LEDGER` | Ledger path override. |
+
+[`harn browse-ai`](/cli/browse-ai/), [`harn fetch`](/cli/fetch/), and the [`harn browse-session`](/cli/browse-session/) navigation verbs share the same gate and controls. Embedding hosts can pace their own page loaders through `harnery/lib/pace`. Decision record: [ADR 0184](/decisions/0184-read-pages-at-human-pace/).
 
 ### Visibility + layout checks
 

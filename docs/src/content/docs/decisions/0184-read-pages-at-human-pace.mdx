@@ -1,0 +1,87 @@
+---
+title: "ADR 0184: read pages at human pace by default"
+description: Space consecutive loads of one site by a random 3 to 9 seconds through a shared machine-local ledger, with local hosts exempt and a per-run and machine-wide opt-out.
+sidebar:
+  order: 184
+---
+
+**Date:** 2026-09-15
+**Status:** Accepted
+
+## Context
+
+Harnery loads web pages from several surfaces: `browse` (Playwright), `browse-ai`
+(agent-browser), `fetch` (plain HTTP with the shared cookie jar), and the headed
+browse-session verbs a second process drives. Every one of them ran at machine
+speed. An agent reading a signed-in site page by page issued loads a fraction of
+a second apart, and a shell loop of `fetch` calls did the same from separate
+processes with no shared memory of the last request.
+
+That is the request pattern sites with automated-access rules watch for. The
+account that pays for tripping it is the operator's own, and restoring a
+restricted account is slow and sometimes impossible. Agents cannot be expected
+to remember to add a sleep, and a sleep inside one process does nothing for the
+next process that hits the same site.
+
+Local development and page QA are the opposite case. They load one local page
+dozens of times per run, and any pacing there is pure cost.
+
+## Alternatives considered
+
+- Leave pacing to the caller (`--wait` flags, `sleep` in scripts). Rejected:
+  the failure is forgetting, and a default cannot be forgotten.
+- Pace per process only, in memory. Rejected: the common pattern is many short
+  processes against one site, which in-memory state cannot see.
+- Pace per hostname. Rejected: `www.example.com` and `example.com` are one
+  site to the operator of that site, and a registrable-domain key with a short
+  two-label-suffix list groups them at negligible cost.
+- A fixed interval. Rejected: a metronome is as recognizable as a burst. A
+  uniform random gap inside a window reads as a person.
+- A global rate limit across all sites. Rejected: two unrelated sites have no
+  reason to wait on each other, and a global limit would slow multi-site
+  research with no protective benefit.
+- Configuration in `.harnery/config.jsonc`. Rejected for now: the gate lives in
+  the toolkit tier, which may not import `core/config`, and environment
+  variables already govern the sibling browser settings (`HARNERY_BROWSER_ARGS`,
+  the proxy gate).
+
+## Decision
+
+Harnery paces page loads by default. `harnery/lib/pace` owns a `PaceGate` that
+every page-loading surface consults before a load:
+
+- The key is the registrable site of the URL. Consecutive loads of one site wait
+  a uniform random gap between `HARNERY_PACE_MIN_MS` and `HARNERY_PACE_MAX_MS`,
+  default 3000 and 9000. Different sites never wait on each other.
+- Reservations live in `~/.cache/harnery/pace.json`, shared by every process on
+  the machine. A caller reserves the next slot before it sleeps, so concurrent
+  processes queue behind each other instead of all firing at once. A short
+  exclusive lock file serializes the read-modify-write; a stale lock is
+  reclaimed and a caller that cannot acquire it within half a second proceeds,
+  because a bookkeeping file must never block a page load. Entries idle for an
+  hour are pruned on the next write, and a corrupt ledger is treated as empty.
+- Loopback and private-network addresses, single-label hosts, and the
+  `.localhost`, `.local`, `.test`, `.internal`, `.example`, and `.invalid`
+  suffixes are exempt. `HARNERY_PACE_EXEMPT` adds host suffixes the operator
+  runs and does not need to protect. Non-HTTP schemes (`file:`, `data:`,
+  `about:`) are exempt.
+- `--no-pace` on `browse`, `browse-ai`, and `fetch` skips the gate for one run.
+  `HARNERY_PACE=off` disables it machine-wide. Any non-zero wait is logged to
+  stderr with the site and the two ways to skip it, so an agent that sees a slow
+  load knows why.
+- The Playwright client gates `navigate`, `reload`, and the session verbs
+  `sessionOpenTab`, `sessionGoto`, and `sessionReload`. The agent-browser client
+  gates `open`, including `open` steps inside a batch, and blocks the thread
+  because that client is synchronous. `fetch` gates the request itself; a
+  redirect chain inside one request is not paced separately.
+- Clients resolve the default from the environment when no gate is passed, so
+  an embedding host that constructs `Browser` or `AgentBrowser` directly is
+  paced without changes. Passing `pace: null` opts a client out.
+
+## Result
+
+`src/lib/pace/pace.test.ts` covers the environment policy, site keying and
+exemptions, reservation math with an injected clock, cross-instance ledger
+sharing, corrupt-ledger recovery and pruning, and that the asynchronous and
+synchronous waits actually sleep. The `./lib/pace` export joins the toolkit
+tier for hosts that load pages through their own clients.

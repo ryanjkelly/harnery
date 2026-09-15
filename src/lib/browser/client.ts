@@ -16,6 +16,7 @@ import {
   CookieStoreParseError,
   type Cookie as JarCookie,
 } from "../cookies/index.ts";
+import { PaceGate, pacePolicyFromEnv } from "../pace/index.ts";
 import { type AssertResult, type AssertSpec, buildAssertCheck } from "./asserts.js";
 import { stitchPngRows } from "./capture-fidelity.js";
 import {
@@ -128,6 +129,13 @@ export interface BrowserOptions {
    * via this callback (e.g., a Cloudflare-bypass header for specific zones).
    */
   extraHeaders?: (url: string) => Record<string, string>;
+  /**
+   * Human-pace gate applied before every page load: `navigate`, `reload`, and
+   * the session tab verbs. Unset resolves the default from the `HARNERY_PACE*`
+   * environment (on, 3 to 9 seconds between loads of one site). `null`
+   * disables pacing for this client.
+   */
+  pace?: PaceGate | null;
   /**
    * Extra Chromium command-line flags, passed through to Playwright's
    * `launchPersistentContext` `args`. Used for environment-specific
@@ -569,8 +577,20 @@ export class Browser {
     };
   }
 
+  private paceGate: PaceGate | null | undefined;
+
+  /** Wait out the human-pace slot for `url` before a page load. */
+  private async paceBefore(url: string): Promise<void> {
+    if (this.paceGate === undefined) {
+      this.paceGate =
+        this.opts.pace === undefined ? new PaceGate(pacePolicyFromEnv()) : this.opts.pace;
+    }
+    if (this.paceGate) await this.paceGate.before(url);
+  }
+
   async navigate(url: string): Promise<NavigateResult> {
     const page = this.currentPage;
+    await this.paceBefore(url);
     const response = await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
     return {
       url: page.url(),
@@ -587,6 +607,7 @@ export class Browser {
    */
   async reload(): Promise<NavigateResult> {
     const page = this.currentPage;
+    await this.paceBefore(page.url());
     const response = await page.reload({ waitUntil: this.opts.waitUntil ?? "load" });
     return {
       url: page.url(),
@@ -1381,6 +1402,7 @@ export class Browser {
     const page = await this.context.newPage();
     this.trackPage(page, true);
     try {
+      await this.paceBefore(url);
       await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
       this.sessionRevision++;
       return await this.describeTab(page);
@@ -1405,6 +1427,7 @@ export class Browser {
 
   async sessionGoto(url: string): Promise<BrowserSessionTab> {
     const page = this.currentPage;
+    await this.paceBefore(url);
     await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
     this.sessionRevision++;
     return this.describeTab(page);
@@ -1412,6 +1435,7 @@ export class Browser {
 
   async sessionReload(): Promise<BrowserSessionTab> {
     const page = this.currentPage;
+    await this.paceBefore(page.url());
     await page.reload({ waitUntil: this.opts.waitUntil ?? "load" });
     this.sessionRevision++;
     return this.describeTab(page);

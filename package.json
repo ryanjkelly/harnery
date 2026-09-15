@@ -187,6 +187,11 @@
       "types": "./dist/lib/http/index.d.ts",
       "import": "./dist/lib/http/index.js"
     },
+    "./lib/pace": {
+      "bun": "./src/lib/pace/index.ts",
+      "types": "./dist/lib/pace/index.d.ts",
+      "import": "./dist/lib/pace/index.js"
+    },
     "./lib/machine": {
       "bun": "./src/lib/machine.ts",
       "types": "./dist/lib/machine.d.ts",

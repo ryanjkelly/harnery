@@ -21,11 +21,14 @@ An HTTP request that writes the response body to stdout and speaks to the **shar
 | `-o, --output <file>` | Write the response body to a file instead of stdout. |
 | `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
 | `--no-cookies` | Skip cookie-jar attach and persist (clean session). Also skips a host `extraCookies` hook. |
+| `--no-pace` | Skip the human-pace gap between requests to the same site for this run. See [Human pace](/cli/browse/#human-pace). |
 | `--redirect <mode>` | Redirect handling: `follow` \| `error` \| `manual`. Default `follow`. |
 | `--timeout <ms>` | Request timeout in milliseconds. Default `30000`. |
 | `--status` | Print the status line to stderr. |
 | `--headers` | Print response headers to stderr. |
 | `--json` | Output the full `FetchResult` (status, headers, body) as JSON. |
+
+Requests are paced like every other Harnery page load: consecutive requests to the same site wait a random 3 to 9 seconds, shared across processes through `~/.cache/harnery/pace.json`, with local and private hosts exempt. `--no-pace` skips it for one run and `HARNERY_PACE=off` disables it machine-wide. The full set of controls is in [Human pace](/cli/browse/#human-pace).
 
 ## Output
 

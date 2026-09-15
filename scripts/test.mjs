@@ -158,6 +158,10 @@ function run(label, files, extraArgs = []) {
   const result = spawnSync(process.execPath, ["test", ...files, ...extraArgs], {
     cwd: repoRoot,
     stdio: "inherit",
+    // Page loads are human-paced by default (ADR 0184). Tests that reach a
+    // real site must not sleep between loads or write the operator's ledger.
+    // Pace tests build their own policy, so this pin does not affect them.
+    env: { ...process.env, HARNERY_PACE: process.env.HARNERY_PACE ?? "off" },
   });
   const durationMs = performance.now() - startedAt;
   const outcome = result.status === 0 ? "passed" : "failed";

@@ -108,6 +108,7 @@ import {
   saveBaseline,
 } from "../lib/browser/visual-diff.ts";
 import { applyExtraCookies, CookieJar } from "../lib/cookies/index.ts";
+import { commandPaceGate } from "../lib/pace/index.ts";
 
 /**
  * `harn browse <url>`: Playwright-backed page navigation with shared
@@ -169,6 +170,7 @@ interface BrowseOpts {
   proxyFromEnv?: boolean;
   exportCookies?: string;
   cookies?: boolean;
+  pace?: boolean;
   store?: string;
   profile?: string;
   viewport?: string;
@@ -376,6 +378,11 @@ export function registerBrowseCommand(
         "the expected IP is verified before the requested URL opens.",
     )
     .option("--no-cookies", "Skip cookie-jar attach and persist")
+    .option(
+      "--no-pace",
+      "Skip the human-pace gap (3 to 9 s) between page loads of the same site for this run. " +
+        "HARNERY_PACE=off disables it machine-wide; local and private hosts never wait.",
+    )
     .option("--store <path>", `Cookie store path (default ${DEFAULT_STORE})`)
     .option("--profile <dir>", `Persistent Chromium profile dir (default ${DEFAULT_PROFILE})`)
     .option(
@@ -901,6 +908,7 @@ async function runBrowse(
     );
   }
 
+  const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
   const browser = new Browser({
     profileDir: opts.profile ?? DEFAULT_PROFILE,
     headed,
@@ -912,6 +920,7 @@ async function runBrowse(
     waitUntil: opts.waitUntil as BrowseOpts["waitUntil"] as never,
     recordHarPath: opts.networkHar ? resolve(opts.networkHar) : undefined,
     extraHeaders: context?.extraHeaders,
+    pace,
     launchArgs: resolveLaunchArgs(opts, Boolean(headed), Boolean(proxy)),
     proxy,
   });

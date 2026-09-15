@@ -4,6 +4,7 @@ import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { AgentBrowser, type ExecResult } from "../lib/agent-browser/index.ts";
 import { applyExtraCookies, CookieJar } from "../lib/cookies/index.ts";
+import { commandPaceGate } from "../lib/pace/index.ts";
 
 // Module-scoped emit assigned by registerBrowseAiCommand. Same pattern as
 // cookies/read/browse: helper functions close over `emit` so action
@@ -46,6 +47,7 @@ interface BrowseAiOpts {
   networkHar?: string;
   store?: string;
   cookies?: boolean;
+  pace?: boolean;
   json?: boolean;
   timeout: string;
 }
@@ -85,6 +87,11 @@ export function registerBrowseAiCommand(
     )
     .option("--network-har <path>", "Record a HAR file from open() through end of run")
     .option("--no-cookies", "Skip cookie-jar attach and persist")
+    .option(
+      "--no-pace",
+      "Skip the human-pace gap (3 to 9 s) between page loads of the same site for this run. " +
+        "HARNERY_PACE=off disables it machine-wide; local and private hosts never wait.",
+    )
     .option("--store <path>", `Cookie store path (default ${DEFAULT_STORE})`)
     .option("--json", "Emit a JSON envelope (snapshot, screenshot path, step results)")
     .option("--timeout <ms>", "Per-step timeout in ms", "60000")
@@ -108,6 +115,7 @@ function runBrowseAi(url: string, opts: BrowseAiOpts, context?: HarneryProgramCo
   const ab = new AgentBrowser({
     jar,
     timeoutMs: Number.parseInt(opts.timeout, 10),
+    pace: commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info")),
   });
 
   const stepLog: { step: string; ok: boolean; output: string }[] = [];

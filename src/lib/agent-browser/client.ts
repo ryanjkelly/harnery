@@ -1,6 +1,7 @@
 import { type SpawnSyncOptions, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import type { CookieJar, Cookie as JarCookie } from "../cookies/index.ts";
+import { PaceGate, pacePolicyFromEnv } from "../pace/index.ts";
 
 /**
  * Thin wrapper over Vercel Labs' `agent-browser` Rust CLI.
@@ -34,6 +35,11 @@ export interface AgentBrowserOptions {
    * agent-browser session. Defaults to a tmp file derived from the jar.
    */
   stateFilePath?: string;
+  /**
+   * Human-pace gate applied before every `open`. Unset resolves the default
+   * from the `HARNERY_PACE*` environment; `null` disables pacing.
+   */
+  pace?: PaceGate | null;
 }
 
 export interface ExecResult {
@@ -48,9 +54,19 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 export class AgentBrowser {
   private readonly opts: AgentBrowserOptions;
   private cookiesSeeded = false;
+  private paceGate: PaceGate | null | undefined;
 
   constructor(opts: AgentBrowserOptions = {}) {
     this.opts = opts;
+  }
+
+  /** Block for the human-pace slot before a page load. Synchronous like the rest of this client. */
+  private paceBefore(url: string): void {
+    if (this.paceGate === undefined) {
+      this.paceGate =
+        this.opts.pace === undefined ? new PaceGate(pacePolicyFromEnv()) : this.opts.pace;
+    }
+    this.paceGate?.beforeSync(url);
   }
 
   /**
@@ -132,6 +148,7 @@ export class AgentBrowser {
 
   open(url: string, timeoutMs?: number): ExecResult {
     this.seedCookies();
+    this.paceBefore(url);
     return this.execOrThrow(["open", url], timeoutMs);
   }
 
@@ -183,6 +200,7 @@ export class AgentBrowser {
       // Naive shell-like splitting; agent-browser's own argv parser handles
       // the actual command; we just split on whitespace for the wrapper.
       const args = trimmed.split(/\s+/);
+      if (args[0] === "open" && args[1]) this.paceBefore(args[1]);
       results.push(this.exec(args));
     }
     return results;

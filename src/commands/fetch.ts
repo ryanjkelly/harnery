@@ -5,6 +5,7 @@ import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { CookieJar } from "../lib/cookies/index.ts";
 import { fetchWithJar } from "../lib/http/index.ts";
+import { commandPaceGate } from "../lib/pace/index.ts";
 
 /**
  * `harn fetch`: HTTP request with cookie-jar attach + persist.
@@ -23,6 +24,7 @@ interface FetchOpts {
   output?: string;
   store?: string;
   cookies?: boolean;
+  pace?: boolean;
   redirect: string;
   timeout: string;
   status?: boolean;
@@ -47,6 +49,11 @@ export function registerFetchCommand(
     .option("-o, --output <file>", "Write response body to file (default: stdout)")
     .option("--store <path>", `Cookie store path (default ${DEFAULT_STORE})`)
     .option("--no-cookies", "Skip cookie-jar attach + persist")
+    .option(
+      "--no-pace",
+      "Skip the human-pace gap (3 to 9 s) between requests to the same site for this run. " +
+        "HARNERY_PACE=off disables it machine-wide; local and private hosts never wait.",
+    )
     .option("--redirect <mode>", "Redirect handling: follow | error | manual", "follow")
     .option("--timeout <ms>", "Request timeout in milliseconds", "30000")
     .option("--status", "Print status to stderr")
@@ -82,6 +89,8 @@ async function runFetch(
     opts.cookies !== false
       ? new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-fetch" })
       : null;
+
+  await commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"))?.before(url);
 
   const timeoutMs = Number.parseInt(opts.timeout, 10);
   const ac = new AbortController();
