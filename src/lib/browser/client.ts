@@ -152,10 +152,12 @@ export interface BrowserOptions {
    */
   channel?: "chrome" | "chrome-beta" | "msedge" | "chromium";
   /**
-   * Drop Playwright's `--enable-automation` default and disable Blink's
-   * AutomationControlled feature so pages do not see `navigator.webdriver`
-   * or the automation infobar. Headed sessions set this; sites that screen
-   * for automation otherwise refuse clicks a person makes in the window.
+   * Drop Playwright's `--enable-automation` default, disable Blink's
+   * AutomationControlled feature, and run with the Chromium sandbox on (no
+   * `--no-sandbox`), so pages do not see `navigator.webdriver`, the automation
+   * infobar, or the unsupported-flag banner. Headed sessions set this; sites
+   * that screen for automation otherwise refuse clicks a person makes in the
+   * window.
    */
   hideAutomation?: boolean;
   /** Authenticated browser proxy passed directly to Playwright. */
@@ -371,7 +373,7 @@ export class Browser {
           ? { channel: this.opts.channel }
           : {}),
         ...(this.opts.hideAutomation
-          ? { ignoreDefaultArgs: [...AUTOMATION_DEFAULT_ARGS_TO_DROP] }
+          ? { ignoreDefaultArgs: [...AUTOMATION_DEFAULT_ARGS_TO_DROP], chromiumSandbox: true }
           : {}),
         ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
         ...(this.opts.recordHarPath

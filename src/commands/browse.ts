@@ -373,9 +373,9 @@ export function registerBrowseCommand(
       "--browser-arg <flag>",
       "Extra Chromium launch flag, passed straight to the browser (repeatable). " +
         "e.g. --browser-arg --disable-gpu. Also settable machine-wide via the " +
-        "HARNERY_BROWSER_ARGS env var (whitespace-separated). Under WSL, headed " +
-        "launches auto-add --disable-gpu to fix blank-window paint; opt out with " +
-        "HARNERY_BROWSER_NO_WSL_DEFAULTS=1.",
+        "HARNERY_BROWSER_ARGS env var (whitespace-separated). Under WSL, set " +
+        "HARNERY_BROWSER_WSL_DISABLE_GPU=1 to add --disable-gpu when a headed window paints blank; " +
+        "it is off by default because software WebGL is a bot tell.",
       (value: string, prev: string[] = []) => [...prev, value],
       [] as string[],
     )
@@ -2996,9 +2996,11 @@ function summarizeDiagnostics(diag: Diagnostics): Record<string, unknown> {
 
 /**
  * Merge Chromium launch flags from three sources, in order, de-duped:
- *   1. WSLg headed default (`--disable-gpu`) — auto-applied for headed launches
- *      under WSL so the window actually paints. Opt out with
- *      HARNERY_BROWSER_NO_WSL_DEFAULTS=1.
+ *   1. WSLg `--disable-gpu`, only when HARNERY_BROWSER_WSL_DISABLE_GPU=1. It
+ *      was the default for headed launches, but software WebGL (SwiftShader)
+ *      is a bot tell that sign-in flows screen for, and current WSLg exposes
+ *      the host GPU through D3D12, so the flag is now opt-in for machines
+ *      that still paint a blank headed window without it.
  *   2. HARNERY_BROWSER_ARGS env (whitespace-separated) — a machine-wide default.
  *   3. --browser-arg flags on this invocation (repeatable).
  */
@@ -3027,7 +3029,7 @@ function resolveBrowserChannel(
 
 function resolveLaunchArgs(opts: BrowseOpts, headed: boolean, proxyEnabled: boolean): string[] {
   const args: string[] = [];
-  if (headed && !process.env.HARNERY_BROWSER_NO_WSL_DEFAULTS) {
+  if (headed && process.env.HARNERY_BROWSER_WSL_DISABLE_GPU === "1") {
     args.push(...wslHeadedLaunchArgs());
   }
   const envArgs = process.env.HARNERY_BROWSER_ARGS?.trim();
