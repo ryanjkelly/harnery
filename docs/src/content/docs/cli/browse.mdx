@@ -134,7 +134,7 @@ Harnery reads pages at human pace by default. Consecutive loads of the same regi
 | `HARNERY_PACE_EXEMPT` | Comma-separated host suffixes that never wait, for sites you operate. |
 | `HARNERY_PACE_LEDGER` | Ledger path override. |
 
-[`harn browse-ai`](/cli/browse-ai/), [`harn fetch`](/cli/fetch/), and the [`harn browse-session`](/cli/browse-session/) navigation verbs share the same gate and controls. Embedding hosts can pace their own page loaders through `harnery/lib/pace`. Decision record: [ADR 0184](/decisions/0184-read-pages-at-human-pace/).
+[`harn browse-ai`](/cli/browse-ai/), [`harn fetch`](/cli/fetch/), [`harn webview`](/cli/webview/), and the [`harn browse-session`](/cli/browse-session/) navigation verbs share the same gate and controls. Embedding hosts can pace their own page loaders through `harnery/lib/pace`. Decision record: [ADR 0184](/decisions/0184-read-pages-at-human-pace/).
 
 ### Visibility + layout checks
 

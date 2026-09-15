@@ -507,6 +507,13 @@ function harneryCommandBundles({
         (await import("./commands/browse-ai.ts")).registerBrowseAiCommand(program, emit, context),
       { hasOptions: true },
     ),
+    lazy(
+      "webview <url>",
+      `Lightweight headless page probe through Bun.WebView (experimental, Bun 1.4+). Fresh ephemeral browser per call; use ${binName} browse for login, cookies, HAR, and QA.`,
+      async (program) =>
+        (await import("./commands/webview.ts")).registerWebviewCommand(program, emit, binName),
+      { hasOptions: true },
+    ),
     {
       commands: [
         {

@@ -1,0 +1,70 @@
+---
+title: "ADR 0185: promote the Bun.WebView probe into Harnery"
+description: Ship `webview` as a Harnery command instead of a per-host copy, Bun-only with a fail-fast message on Node, so two embedding hosts stop carrying the same file.
+sidebar:
+  order: 185
+---
+
+**Date:** 2026-09-15
+**Status:** Accepted
+
+## Context
+
+Bun 1.4 introduced `Bun.WebView`, a built-in headless browser API. When it
+shipped, the first embedding host added a `webview` command at the host level
+and recorded a decision to keep it out of Harnery: the API was experimental,
+and Harnery's browser toolkit runs on Node while `Bun.WebView` is Bun-only. A
+second host then ported the same command and library verbatim.
+
+By this date both hosts carried identical copies of the command, the library,
+and the tests. ADR 0184 made every Harnery page load human-paced by default,
+and each host had to wire that gate into its own copy separately. That is the
+synchronization debt the toolkit tier exists to remove, and Harnery's own
+promotion rule (a utility joins Harnery once a second consumer needs it) was
+met.
+
+## Alternatives considered
+
+- Keep the host copies and port fixes between them. Rejected: two hosts already
+  drifted on comments and on pacing, and every future fix would be paid twice.
+- Make WebView a `browse` engine flag. Rejected, as before: `browse` has a
+  stable Playwright contract (headed login, cookie jar, HAR, full-page capture,
+  page QA) that WebView cannot honor, and one command would become two
+  partially compatible products.
+- Wait for `Bun.WebView` to stabilize. Rejected as the only action: the
+  duplication cost is paid now, and the experimental label is a documentation
+  matter that does not depend on where the file lives.
+- Export the library as `./lib/webview` for hosts to wrap. Rejected: no host
+  needs the library once the command is shared, and toolkit exports are not
+  added speculatively.
+
+## Decision
+
+Harnery owns `webview`. `src/commands/webview.ts` registers it lazily beside
+`browse-ai`, and `src/lib/webview/` holds the library, internal and unexported.
+The behavior is the host command's behavior: fresh browser per call, ephemeral
+storage unless `--profile` is given, never attaching to a running user browser,
+scroll-before-click, and same-URL replacement detection after actions.
+
+The command is Bun-only. `detectRuntime` throws `WebViewUnavailableError`
+(`webview_unavailable`) when `Bun.WebView` is absent, and the command reports
+it with a clear message, matching how `tunnel` handles its `Bun.serve` worker.
+Every other command keeps running on Node, so the published npm package stays
+installable and usable without Bun.
+
+Page loads go through the ADR 0184 pace gate. `runWebView` accepts
+`pace?: PaceGate | null` with the same contract as the Playwright client:
+unset resolves the environment default, `null` disables. The command exposes
+`--no-pace`.
+
+Hosts delete their copies and take the command from `createHarneryProgram`.
+The host-level decision that kept WebView out of Harnery is superseded by this
+one.
+
+## Result
+
+`src/lib/webview/webview.test.ts` carries the host tests (viewport and type
+step parsing, never auto-connecting to a user browser, scroll-safe interaction
+order, same-URL replacement settling) plus a test that a page load reserves a
+pace slot for the target site. `harn webview --help` loads through the lazy
+registry. The docs page is `cli/webview.mdx`.

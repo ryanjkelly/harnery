@@ -1,0 +1,59 @@
+---
+title: harn webview
+description: Lightweight headless page probe through Bun.WebView, Bun 1.4+, experimental.
+sidebar:
+  order: 29
+---
+
+```
+harn webview [options] <url>
+```
+
+An experimental, Bun-only page probe built on `Bun.WebView`, the headless browser API Bun 1.4 introduced. It uses the system WKWebView on macOS and a fresh headless Chrome-family process elsewhere. Every call starts a new browser with ephemeral storage unless `--profile` is given, and it never attaches to a running user browser. It is the quick way to get a page's title, body text, an evaluated expression, or a viewport screenshot without Playwright.
+
+It is a probe, not a [`harn browse`](/cli/browse/) backend. There is no headed login, shared cookie jar, HAR capture, full-page screenshot, or page QA; use `browse` for those and [`harn browse-ai`](/cli/browse-ai/) for accessibility-tree element references. On Node the command fails with a clear `webview_unavailable` error, the same way [`harn tunnel`](/cli/tunnel/) handles its Bun-only worker; every other command keeps running on Node.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--backend <engine>` | `auto` \| `chrome` \| `webkit`. Default `auto`: WebKit on macOS, Chrome elsewhere. |
+| `--viewport <WxH>` | Viewport in CSS pixels. Default `1280x800`. |
+| `--profile <dir>` | Persist cookies and local storage in this directory. Default is ephemeral. |
+| `--chrome-path <path>` | Chrome-family executable; implies the Chrome backend. |
+| `--browser-arg <flag>` | Extra Chrome launch flag. Repeatable. |
+| `--timeout <ms>` | Navigation and selector timeout. Default `30000`. |
+| `--wait-for <css>` | Wait for a CSS selector after navigation. |
+| `--type <css=>text>` | Focus a selector and insert text. Repeatable; runs before clicks. |
+| `--click <css>` | Scroll to and click a CSS selector. Repeatable. |
+| `--press <key>` | Press a key in the focused element. Repeatable. |
+| `--evaluate <expression>` | Evaluate a JavaScript expression after actions and print its value. |
+| `--settle <ms>` | Extra delay after actions before capture. Default `0`. |
+| `--screenshot <path>` | Save a viewport PNG. Bun.WebView has no full-page capture. |
+| `--html` | Print the final document HTML instead of body text. |
+| `--json` | Print the full result envelope. |
+| `--no-pace` | Skip the human-pace gap between page loads of the same site for this run. See [Human pace](/cli/browse/#human-pace). |
+
+## Behavior
+
+Clicks scroll the target into view first, because Bun.WebView requires action targets to already be inside the viewport. After a click or key press the command watches for a navigation, including a same-URL replacement document, and waits for the new document to settle before capturing. Page loads are human-paced like every other Harnery loader; see [Human pace](/cli/browse/#human-pace).
+
+## Output
+
+Body text by default. `--html` prints the document HTML, `--evaluate` prints the expression's value, and `--json` prints `{ backend, runtimeVersion, url, title, text, html?, evaluation?, screenshotPath?, consoleEvents, elapsedMs }`.
+
+## Examples
+
+```bash
+# Title of a page
+harn webview https://example.com --evaluate 'document.title'
+
+# Fill a form, submit, wait for the result, and save a viewport PNG
+harn webview https://example.com/form --type 'input[name=q]=>hello' --click 'button[type=submit]' \
+  --wait-for '.results' --screenshot /path/to/results.png
+
+# Full envelope, persisted profile
+harn webview https://example.com --profile ~/.cache/harnery/webview-profile --json
+```
+
+Decision record: [ADR 0185](/decisions/0185-promote-webview-into-harnery/).
