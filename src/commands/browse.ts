@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSyn
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { Command } from "commander";
+import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
@@ -25,6 +26,7 @@ import {
   type CritiqueResult,
   type CritiqueTile,
   captureDevOverlay,
+  chromeMajorFromExecutable,
   DEFAULT_CRITIQUE_RUBRIC,
   type DevOverlayResult,
   type Diagnostics,
@@ -36,6 +38,7 @@ import {
   type OverflowResult,
   parseAssertSpec,
   type RuntsResult,
+  resolveUserAgent,
   runCritique,
   type StandaloneHtmlResult,
   type TargetSizeProfile,
@@ -172,6 +175,7 @@ interface BrowseOpts {
   headed?: boolean;
   browserArg?: string[];
   browserChannel?: string;
+  userAgent?: string;
   proxyFromEnv?: boolean;
   exportCookies?: string;
   cookies?: boolean;
@@ -379,6 +383,13 @@ export function registerBrowseCommand(
         "default to the installed Google Chrome with the automation signals removed, because the bundled " +
         '"Chrome for Testing" build advertises itself and sign-in flows refuse clicks; chromium forces the ' +
         "bundled build. HARNERY_BROWSER_CHANNEL sets the default machine-wide.",
+    )
+    .option(
+      "--user-agent <ua|auto|native>",
+      "User agent to present. Default: a normal Windows (or macOS on a Mac) Chrome user agent at the launched " +
+        "Chrome's major version, stored at ~/.cache/harnery/user-agent.json and reused by every surface; never " +
+        "Linux, never HeadlessChrome. A string rewrites the store, auto refreshes it, native uses the browser's own. " +
+        "HARNERY_BROWSER_UA overrides for one environment.",
     )
     .option(
       "--browser-arg <flag>",
@@ -935,12 +946,23 @@ async function runBrowse(
         "--plain cannot take --control-file: nothing is attached to drive the window.",
       );
     }
-    await runPlainLogin(url, opts.profile ?? DEFAULT_PROFILE, loginCloseFile, emit);
+    const plainExecutable = installedChromePath();
+    const plainUa = resolveUserAgent({
+      requested: opts.userAgent,
+      env: process.env.HARNERY_BROWSER_UA,
+      chromeMajor: plainExecutable ? chromeMajorFromExecutable(plainExecutable) : undefined,
+    });
+    await runPlainLogin(url, opts.profile ?? DEFAULT_PROFILE, loginCloseFile, plainUa, emit);
     return;
   }
 
   const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
   const channel = resolveBrowserChannel(opts, Boolean(headed));
+  const userAgent = resolveUserAgent({
+    requested: opts.userAgent,
+    env: process.env.HARNERY_BROWSER_UA,
+    chromeMajor: launchedChromeMajor(channel),
+  });
   const browser = new Browser({
     profileDir: opts.profile ?? DEFAULT_PROFILE,
     headed,
@@ -956,8 +978,10 @@ async function runBrowse(
     launchArgs: resolveLaunchArgs(opts, Boolean(headed), Boolean(proxy)),
     ...(channel ? { channel } : {}),
     hideAutomation: Boolean(headed),
+    ...(userAgent ? { userAgent } : {}),
     proxy,
   });
+  if (userAgent) emit.log(`Presenting as: ${userAgent}`, "debug");
   if (headed) {
     emit.log(
       channel && channel !== "chromium"
@@ -3049,6 +3073,23 @@ function resolveBrowserChannel(
   return headed ? installedChromeChannel() : undefined;
 }
 
+/**
+ * Major version of the Chrome that will launch: the installed Chrome for the
+ * `chrome` channel, else Playwright's bundled Chromium. Unknown when neither
+ * answers `--version`; the user-agent store then keeps its last value.
+ */
+function launchedChromeMajor(channel: string | undefined): number | undefined {
+  if (channel === "chrome") {
+    const exe = installedChromePath();
+    return exe ? chromeMajorFromExecutable(exe) : undefined;
+  }
+  try {
+    return chromeMajorFromExecutable(chromium.executablePath());
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveLaunchArgs(opts: BrowseOpts, headed: boolean, proxyEnabled: boolean): string[] {
   const args: string[] = [];
   if (headed && process.env.HARNERY_BROWSER_WSL_DISABLE_GPU === "1") {
@@ -3094,6 +3135,7 @@ async function runPlainLogin(
   url: string,
   profileDir: string,
   loginCloseFile: string | null,
+  userAgent: string | undefined,
   emit: { log: (message: string, level: "info" | "warn" | "error" | "debug") => void },
 ): Promise<void> {
   const executable = installedChromePath();
@@ -3105,7 +3147,13 @@ async function runPlainLogin(
   mkdirSync(profileDir, { recursive: true });
   const child = spawn(
     executable,
-    [`--user-data-dir=${profileDir}`, "--no-first-run", "--no-default-browser-check", url],
+    [
+      `--user-data-dir=${profileDir}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      ...(userAgent ? [`--user-agent=${userAgent}`] : []),
+      url,
+    ],
     { stdio: "ignore" },
   );
   const exited = new Promise<void>((resolveExit) => {

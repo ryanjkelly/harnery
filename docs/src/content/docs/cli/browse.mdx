@@ -55,6 +55,7 @@ The trio's `<prefix>.html` is a **standalone snapshot**, not a raw DOM dump. Sty
 | `--control-file <path>` | With `--login`, publish an owner-only descriptor for repeated [`harn browse-session`](/cli/browse-session/) control. |
 | `--headed` | Headed mode for a one-off (no auth-flow framing). |
 | `--browser-channel <name>` | Browser to launch: `chrome`, `chrome-beta`, `msedge`, or `chromium`. Headed launches default to the installed Google Chrome with automation signals hidden; `chromium` forces the bundled build. `HARNERY_BROWSER_CHANNEL` sets the machine-wide default. |
+| `--user-agent <ua\|auto\|native>` | User agent to present. Default: a normal Windows (macOS on a Mac) Chrome string at the launched Chrome's major, stored at `~/.cache/harnery/user-agent.json` and reused by `browse`, `browse-session`, and `fetch`; never Linux, never HeadlessChrome. A string rewrites the store, `auto` refreshes it, `native` uses the browser's own. `HARNERY_BROWSER_UA` overrides per environment. |
 | `--browser-arg <flag>` | Extra Chromium launch flag, passed straight to the browser (repeatable). Also settable machine-wide via `HARNERY_BROWSER_ARGS` (whitespace-separated). See WSLg note below. |
 | `--proxy-from-env` | Pass `HTTPS_PROXY`/`HTTP_PROXY` to Playwright as an authenticated browser proxy. Credentials remain in the child environment instead of command arguments. |
 | `--no-cookies` | Skip cookie-jar attach and persist. Also skips a host `extraCookies` hook. |
@@ -119,6 +120,8 @@ harn browse --login \
 ```
 
 :::note[Headed windows under WSLg]
+Harnery never presents as desktop Linux. Web application firewalls commonly deny an `X11; Linux` user agent outright (Sunbelt Network's Cloudflare rule answered 200 the moment the browser said Windows), and headless builds announce `HeadlessChrome`. Every page load uses a normal Chrome user agent for the host the operator sits at, at the real Chrome major, persisted machine-locally so all surfaces reuse the one that works.
+
 Some sign-in verification steps detect the DevTools protocol itself, not just launch flags; X fails with "Something went wrong" at its verification gate under any Playwright-driven window. For those, run `harn browse --login --plain <url>`: Harnery spawns the installed Google Chrome directly on the shared profile with nothing attached, you sign in as in any browser, and once the window closes every later `browse` or `browse-session` run opens that profile already signed in.
 
 A headed window (`--login` or `--headed`) launches the operator's installed Google Chrome when one exists at a standard path, drops Playwright's `--enable-automation` default, and disables Blink's AutomationControlled feature. Playwright's bundled browser is "Chrome for Testing" and announces itself through its brand list and `navigator.webdriver`; sign-in flows on sites that screen for automation silently refuse clicks a person makes in that window. Headless runs keep the bundled Chromium so page QA renders stay stable. Pass `--browser-channel chromium` to force the bundled build in a headed window.

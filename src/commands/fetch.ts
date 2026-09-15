@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { resolveUserAgent } from "../lib/browser/user-agent.js";
 import { CookieJar } from "../lib/cookies/index.ts";
 import { fetchWithJar } from "../lib/http/index.ts";
 import { commandPaceGate } from "../lib/pace/index.ts";
@@ -77,6 +78,10 @@ async function runFetch(
   context: HarneryProgramContext | undefined,
 ): Promise<void> {
   const headers: Record<string, string> = {};
+  {
+    const ua = resolveUserAgent({ env: process.env.HARNERY_BROWSER_UA });
+    if (ua) headers["User-Agent"] = ua;
+  }
   for (const h of opts.header ?? []) {
     const idx = h.indexOf(":");
     if (idx < 0) {

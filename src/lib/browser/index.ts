@@ -244,6 +244,13 @@ export {
   snappedBandRects,
   type VisualAtom,
 } from "./tiling.js";
+export {
+  chromeMajorFromExecutable,
+  hostFamily,
+  normalUserAgent,
+  readStoredUserAgent,
+  resolveUserAgent,
+} from "./user-agent.js";
 export type {
   CheckVisibilityOptions,
   VisibilityResult,

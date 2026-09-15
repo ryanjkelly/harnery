@@ -160,6 +160,13 @@ export interface BrowserOptions {
    * window.
    */
   hideAutomation?: boolean;
+  /**
+   * User agent to present. Set by `browse` from `lib/browser/user-agent`
+   * (never Linux, never HeadlessChrome). Applied both as the Playwright
+   * context override and as `--user-agent` so workers and frames agree.
+   * Unset keeps the browser's native string.
+   */
+  userAgent?: string;
   /** Authenticated browser proxy passed directly to Playwright. */
   proxy?: { server: string; username?: string; password?: string };
 }
@@ -354,6 +361,7 @@ export class Browser {
       ...new Set([
         ...(this.opts.launchArgs ?? []),
         ...(this.opts.hideAutomation ? automationDisguiseArgs() : []),
+        ...(this.opts.userAgent ? [`--user-agent=${this.opts.userAgent}`] : []),
       ]),
     ];
 
@@ -367,6 +375,7 @@ export class Browser {
           ? { deviceScaleFactor: this.opts.deviceScaleFactor }
           : {}),
         ...(this.opts.colorScheme ? { colorScheme: this.opts.colorScheme } : {}),
+        ...(this.opts.userAgent ? { userAgent: this.opts.userAgent } : {}),
         ...(this.opts.launchTimeout !== undefined ? { timeout: this.opts.launchTimeout } : {}),
         ...(launchArgs.length > 0 ? { args: launchArgs } : {}),
         ...(this.opts.channel && this.opts.channel !== "chromium"
