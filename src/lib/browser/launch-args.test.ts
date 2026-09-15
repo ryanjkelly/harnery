@@ -4,6 +4,7 @@ import {
   AUTOMATION_DEFAULT_ARGS_TO_DROP,
   automationDisguiseArgs,
   installedChromeChannel,
+  installedChromePath,
 } from "./launch-args.ts";
 
 describe("installedChromeChannel", () => {
@@ -31,5 +32,16 @@ describe("automation disguise", () => {
   test("drops --enable-automation and disables the AutomationControlled blink feature", () => {
     expect(AUTOMATION_DEFAULT_ARGS_TO_DROP).toEqual(["--enable-automation"]);
     expect(automationDisguiseArgs()).toEqual(["--disable-blink-features=AutomationControlled"]);
+  });
+});
+
+describe("installedChromePath", () => {
+  test("returns the first existing candidate", () => {
+    const exists = (p: string) => p === "/usr/bin/google-chrome-stable";
+    expect(installedChromePath("linux", exists)).toBe("/usr/bin/google-chrome-stable");
+  });
+
+  test("returns undefined when nothing exists", () => {
+    expect(installedChromePath("linux", () => false)).toBeUndefined();
   });
 });

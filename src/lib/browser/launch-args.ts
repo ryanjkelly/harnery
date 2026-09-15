@@ -69,6 +69,17 @@ export function installedChromeChannel(
   platform: NodeJS.Platform = process.platform,
   exists: (path: string) => boolean = existsSync,
 ): "chrome" | undefined {
-  const candidates = CHROME_PATHS[platform] ?? [];
-  return candidates.some((candidate) => exists(candidate)) ? "chrome" : undefined;
+  return installedChromePath(platform, exists) ? "chrome" : undefined;
+}
+
+/**
+ * Filesystem path of the installed stable Google Chrome for this platform, or
+ * `undefined`. Used to spawn Chrome with nothing attached for sign-in flows
+ * whose verification vendors detect the DevTools protocol itself.
+ */
+export function installedChromePath(
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync,
+): string | undefined {
+  return (CHROME_PATHS[platform] ?? []).find((candidate) => exists(candidate));
 }

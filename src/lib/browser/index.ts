@@ -80,6 +80,7 @@ export {
   AUTOMATION_DEFAULT_ARGS_TO_DROP,
   automationDisguiseArgs,
   installedChromeChannel,
+  installedChromePath,
   isWSL,
   wslHeadedLaunchArgs,
 } from "./launch-args.js";

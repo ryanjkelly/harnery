@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -29,6 +30,7 @@ import {
   type Diagnostics,
   extractObservedIp,
   installedChromeChannel,
+  installedChromePath,
   type LayoutAxis,
   type LayoutLintResult,
   type OverflowResult,
@@ -164,6 +166,7 @@ interface BrowseOpts {
   batch?: string;
   networkHar?: string;
   login?: boolean;
+  plain?: boolean;
   loginCloseFile?: string;
   controlFile?: string;
   headed?: boolean;
@@ -353,6 +356,14 @@ export function registerBrowseCommand(
         "Absent = browser default (unchanged behavior).",
     )
     .option("--login", "Headed mode for one-time auth flow (cookies persist in profile)")
+    .option(
+      "--plain",
+      "With --login: open the URL in the installed Google Chrome with nothing attached (no DevTools " +
+        "protocol, no Playwright) on the same persistent profile. Use it for sign-in flows whose " +
+        "verification step detects automation itself (X does). Sign in, then close the window or " +
+        "create the --login-close-file; later browse and browse-session runs reuse the profile's cookies. " +
+        "Not compatible with --control-file, because nothing is attached to drive.",
+    )
     .option(
       "--login-close-file <path>",
       "With --login, wait for this file instead of terminal Enter, then remove it and close cleanly",
@@ -915,6 +926,17 @@ async function runBrowse(
     throw new Error(
       `Login close signal already exists at ${loginCloseFile}. Remove the stale file before launching.`,
     );
+  }
+
+  if (opts.plain) {
+    if (!opts.login) throw new Error("--plain requires --login.");
+    if (opts.controlFile) {
+      throw new Error(
+        "--plain cannot take --control-file: nothing is attached to drive the window.",
+      );
+    }
+    await runPlainLogin(url, opts.profile ?? DEFAULT_PROFILE, loginCloseFile, emit);
+    return;
   }
 
   const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
@@ -3057,6 +3079,61 @@ async function verifyBrowserProxyGate(
     );
   }
   emit.log(`browser proxy gate: ${observedIp} · expected IP confirmed`, "info");
+}
+
+/**
+ * `--login --plain`: spawn the installed Google Chrome directly on the shared
+ * persistent profile, with no DevTools protocol attached. Playwright enables
+ * its runtime hooks in every frame it drives, and sign-in verification vendors
+ * (X's is the reported case) detect that and fail the flow with no explanation.
+ * The person signs in here; cookies land in the same profile that later
+ * `browse` and `browse-session` runs open, so read-only captures inherit the
+ * session without ever repeating the sign-in under automation.
+ */
+async function runPlainLogin(
+  url: string,
+  profileDir: string,
+  loginCloseFile: string | null,
+  emit: { log: (message: string, level: "info" | "warn" | "error" | "debug") => void },
+): Promise<void> {
+  const executable = installedChromePath();
+  if (!executable) {
+    throw new Error(
+      "--plain needs an installed Google Chrome at a standard path; none was found on this machine.",
+    );
+  }
+  mkdirSync(profileDir, { recursive: true });
+  const child = spawn(
+    executable,
+    [`--user-data-dir=${profileDir}`, "--no-first-run", "--no-default-browser-check", url],
+    { stdio: "ignore" },
+  );
+  const exited = new Promise<void>((resolveExit) => {
+    child.once("exit", () => resolveExit());
+    child.once("error", () => resolveExit());
+  });
+  const lifecycleAbort = new AbortController();
+  const waits: Promise<void>[] = [exited];
+  if (loginCloseFile) {
+    emit.log(
+      `[--login --plain] Plain Google Chrome is open with nothing attached. Sign in, then close the window or create ${loginCloseFile}.`,
+      "info",
+    );
+    waits.push(waitForLoginCloseFile(loginCloseFile, lifecycleAbort.signal));
+  } else {
+    emit.log(
+      "[--login --plain] Plain Google Chrome is open with nothing attached. Sign in, then close the window or press Enter here.",
+      "info",
+    );
+    waits.push(waitForTerminalEnter(lifecycleAbort.signal));
+  }
+  await Promise.race(waits);
+  lifecycleAbort.abort();
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGTERM");
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
+  }
+  emit.log(`[--login --plain] Chrome closed; cookies persisted in ${profileDir}.`, "info");
 }
 
 async function waitForLoginCloseFile(path: string, signal?: AbortSignal): Promise<void> {

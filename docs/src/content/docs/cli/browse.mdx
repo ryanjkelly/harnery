@@ -50,6 +50,7 @@ The trio's `<prefix>.html` is a **standalone snapshot**, not a raw DOM dump. Sty
 | Flag | Description |
 | --- | --- |
 | `--login` | Headed mode for a one-time auth flow; cookies persist in the profile. |
+| `--plain` | With `--login`: open the URL in the installed Google Chrome with nothing attached, on the same persistent profile. For sign-in flows whose verification step detects DevTools automation itself. Sign in, close the window (or create the close file); later `browse` and `browse-session` runs inherit the cookies. Not compatible with `--control-file`. |
 | `--login-close-file <path>` | With `--login`, keep the process open until another process creates this signal file, then remove it and close cleanly. |
 | `--control-file <path>` | With `--login`, publish an owner-only descriptor for repeated [`harn browse-session`](/cli/browse-session/) control. |
 | `--headed` | Headed mode for a one-off (no auth-flow framing). |
@@ -118,6 +119,8 @@ harn browse --login \
 ```
 
 :::note[Headed windows under WSLg]
+Some sign-in verification steps detect the DevTools protocol itself, not just launch flags; X fails with "Something went wrong" at its verification gate under any Playwright-driven window. For those, run `harn browse --login --plain <url>`: Harnery spawns the installed Google Chrome directly on the shared profile with nothing attached, you sign in as in any browser, and once the window closes every later `browse` or `browse-session` run opens that profile already signed in.
+
 A headed window (`--login` or `--headed`) launches the operator's installed Google Chrome when one exists at a standard path, drops Playwright's `--enable-automation` default, and disables Blink's AutomationControlled feature. Playwright's bundled browser is "Chrome for Testing" and announces itself through its brand list and `navigator.webdriver`; sign-in flows on sites that screen for automation silently refuse clicks a person makes in that window. Headless runs keep the bundled Chromium so page QA renders stay stable. Pass `--browser-channel chromium` to force the bundled build in a headed window.
 
 On WSL, some Windows/GPU/WSLg combinations never present a headed window's GPU-composited surface, so the window shows in the taskbar but paints blank (the page still runs). `browse` used to add `--disable-gpu` to every headed launch under WSL for that case. It no longer does: software WebGL reports the SwiftShader renderer, which sign-in flows treat as a bot signal, and current WSLg exposes the host GPU through D3D12. If a headed window paints blank on your machine, set `HARNERY_BROWSER_WSL_DISABLE_GPU=1`; add other flags with `--browser-arg` or `HARNERY_BROWSER_ARGS`. Headed sessions also run with the Chromium sandbox on, so the "unsupported command-line flag: --no-sandbox" banner is gone.
