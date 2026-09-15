@@ -34,6 +34,7 @@ import {
   type LayoutLintRequest,
   type LayoutLintResult,
 } from "./geometry.js";
+import { AUTOMATION_DEFAULT_ARGS_TO_DROP, automationDisguiseArgs } from "./launch-args.js";
 import {
   buildClearLayoutAnnotationsScript,
   buildLayoutAnnotateScript,
@@ -144,6 +145,19 @@ export interface BrowserOptions {
    * defaults only.
    */
   launchArgs?: string[];
+  /**
+   * Playwright browser channel. `"chrome"` launches the operator's installed
+   * Google Chrome instead of the bundled "Chrome for Testing" build. Unset or
+   * `"chromium"` keeps the bundled browser.
+   */
+  channel?: "chrome" | "chrome-beta" | "msedge" | "chromium";
+  /**
+   * Drop Playwright's `--enable-automation` default and disable Blink's
+   * AutomationControlled feature so pages do not see `navigator.webdriver`
+   * or the automation infobar. Headed sessions set this; sites that screen
+   * for automation otherwise refuse clicks a person makes in the window.
+   */
+  hideAutomation?: boolean;
   /** Authenticated browser proxy passed directly to Playwright. */
   proxy?: { server: string; username?: string; password?: string };
 }
@@ -334,6 +348,12 @@ export class Browser {
    */
   private async openOnce(): Promise<void> {
     const jarCookies = this.opts.jar?.list() ?? [];
+    const launchArgs = [
+      ...new Set([
+        ...(this.opts.launchArgs ?? []),
+        ...(this.opts.hideAutomation ? automationDisguiseArgs() : []),
+      ]),
+    ];
 
     // Hold a launch slot only across the spawn itself, not the browser's life.
     await acquireLaunchSlot();
@@ -346,8 +366,12 @@ export class Browser {
           : {}),
         ...(this.opts.colorScheme ? { colorScheme: this.opts.colorScheme } : {}),
         ...(this.opts.launchTimeout !== undefined ? { timeout: this.opts.launchTimeout } : {}),
-        ...(this.opts.launchArgs && this.opts.launchArgs.length > 0
-          ? { args: this.opts.launchArgs }
+        ...(launchArgs.length > 0 ? { args: launchArgs } : {}),
+        ...(this.opts.channel && this.opts.channel !== "chromium"
+          ? { channel: this.opts.channel }
+          : {}),
+        ...(this.opts.hideAutomation
+          ? { ignoreDefaultArgs: [...AUTOMATION_DEFAULT_ARGS_TO_DROP] }
           : {}),
         ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
         ...(this.opts.recordHarPath

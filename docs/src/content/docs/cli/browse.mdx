@@ -53,6 +53,7 @@ The trio's `<prefix>.html` is a **standalone snapshot**, not a raw DOM dump. Sty
 | `--login-close-file <path>` | With `--login`, keep the process open until another process creates this signal file, then remove it and close cleanly. |
 | `--control-file <path>` | With `--login`, publish an owner-only descriptor for repeated [`harn browse-session`](/cli/browse-session/) control. |
 | `--headed` | Headed mode for a one-off (no auth-flow framing). |
+| `--browser-channel <name>` | Browser to launch: `chrome`, `chrome-beta`, `msedge`, or `chromium`. Headed launches default to the installed Google Chrome with automation signals hidden; `chromium` forces the bundled build. `HARNERY_BROWSER_CHANNEL` sets the machine-wide default. |
 | `--browser-arg <flag>` | Extra Chromium launch flag, passed straight to the browser (repeatable). Also settable machine-wide via `HARNERY_BROWSER_ARGS` (whitespace-separated). See WSLg note below. |
 | `--proxy-from-env` | Pass `HTTPS_PROXY`/`HTTP_PROXY` to Playwright as an authenticated browser proxy. Credentials remain in the child environment instead of command arguments. |
 | `--no-cookies` | Skip cookie-jar attach and persist. Also skips a host `extraCookies` hook. |
@@ -117,6 +118,8 @@ harn browse --login \
 ```
 
 :::note[Headed windows under WSLg]
+A headed window (`--login` or `--headed`) launches the operator's installed Google Chrome when one exists at a standard path, drops Playwright's `--enable-automation` default, and disables Blink's AutomationControlled feature. Playwright's bundled browser is "Chrome for Testing" and announces itself through its brand list and `navigator.webdriver`; sign-in flows on sites that screen for automation silently refuse clicks a person makes in that window. Headless runs keep the bundled Chromium so page QA renders stay stable. Pass `--browser-channel chromium` to force the bundled build in a headed window.
+
 On WSL, a headed Chromium window composites its GPU-backed surface over an RDP stream to Windows; on some Windows/GPU/WSLg combinations that surface never presents, so the window shows in the taskbar but paints blank (the page still runs; JS, navigation, and DOM all work). `browse` auto-adds `--disable-gpu` to headed launches under WSL to mitigate that mode. Opt out with `HARNERY_BROWSER_NO_WSL_DEFAULTS=1`; add alternative flags with `--browser-arg` or `HARNERY_BROWSER_ARGS`.
 
 If headed windows stay blank regardless of flags, the failure is likely below Chromium: check `/mnt/wslg/weston.log` for `rdp_allocate_shared_memory … Input/output error`. That means WSLg's shared-memory pixel channel is dead (window metadata still flows, pixels don't; taskbar entries appear, frames never paint) and no browser flag will help; restart the WSL VM with `wsl --shutdown` from Windows.

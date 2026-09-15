@@ -76,7 +76,13 @@ export type {
   OverlapResult,
 } from "./geometry.js";
 export { buildLayoutLintCheck } from "./geometry.js";
-export { isWSL, wslHeadedLaunchArgs } from "./launch-args.js";
+export {
+  AUTOMATION_DEFAULT_ARGS_TO_DROP,
+  automationDisguiseArgs,
+  installedChromeChannel,
+  isWSL,
+  wslHeadedLaunchArgs,
+} from "./launch-args.js";
 export type {
   OverflowElement,
   OverflowResult,

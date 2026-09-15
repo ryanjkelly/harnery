@@ -28,6 +28,7 @@ import {
   type DevOverlayResult,
   type Diagnostics,
   extractObservedIp,
+  installedChromeChannel,
   type LayoutAxis,
   type LayoutLintResult,
   type OverflowResult,
@@ -167,6 +168,7 @@ interface BrowseOpts {
   controlFile?: string;
   headed?: boolean;
   browserArg?: string[];
+  browserChannel?: string;
   proxyFromEnv?: boolean;
   exportCookies?: string;
   cookies?: boolean;
@@ -360,6 +362,13 @@ export function registerBrowseCommand(
       "With --login, publish an owner-only descriptor for repeated browse-session control",
     )
     .option("--headed", "Headed mode for one-off (no auth-flow framing)")
+    .option(
+      "--browser-channel <name>",
+      "Browser to launch: chrome | chrome-beta | msedge | chromium. Headed launches (--login, --headed) " +
+        "default to the installed Google Chrome with the automation signals removed, because the bundled " +
+        '"Chrome for Testing" build advertises itself and sign-in flows refuse clicks; chromium forces the ' +
+        "bundled build. HARNERY_BROWSER_CHANNEL sets the default machine-wide.",
+    )
     .option(
       "--browser-arg <flag>",
       "Extra Chromium launch flag, passed straight to the browser (repeatable). " +
@@ -909,6 +918,7 @@ async function runBrowse(
   }
 
   const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
+  const channel = resolveBrowserChannel(opts, Boolean(headed));
   const browser = new Browser({
     profileDir: opts.profile ?? DEFAULT_PROFILE,
     headed,
@@ -922,8 +932,18 @@ async function runBrowse(
     extraHeaders: context?.extraHeaders,
     pace,
     launchArgs: resolveLaunchArgs(opts, Boolean(headed), Boolean(proxy)),
+    ...(channel ? { channel } : {}),
+    hideAutomation: Boolean(headed),
     proxy,
   });
+  if (headed) {
+    emit.log(
+      channel && channel !== "chromium"
+        ? `Headed session uses the installed ${channel} channel with automation signals hidden.`
+        : "Headed session uses Playwright's bundled Chromium (no Google Chrome found); automation signals hidden.",
+      "info",
+    );
+  }
 
   // Print mode: --snapshot / --html / --json all suppress file writes.
   const printMode = opts.snapshot || opts.html || opts.json;
@@ -2982,6 +3002,29 @@ function summarizeDiagnostics(diag: Diagnostics): Record<string, unknown> {
  *   2. HARNERY_BROWSER_ARGS env (whitespace-separated) — a machine-wide default.
  *   3. --browser-arg flags on this invocation (repeatable).
  */
+const BROWSER_CHANNELS = new Set(["chrome", "chrome-beta", "msedge", "chromium"]);
+
+/**
+ * Pick the browser channel: `--browser-channel`, then `HARNERY_BROWSER_CHANNEL`,
+ * then (headed only) the installed Google Chrome when one exists. Headless runs
+ * keep the bundled Chromium unless told otherwise, so QA renders stay stable.
+ */
+function resolveBrowserChannel(
+  opts: BrowseOpts,
+  headed: boolean,
+): "chrome" | "chrome-beta" | "msedge" | "chromium" | undefined {
+  const requested = (opts.browserChannel ?? process.env.HARNERY_BROWSER_CHANNEL)?.trim();
+  if (requested) {
+    if (!BROWSER_CHANNELS.has(requested)) {
+      throw new Error(
+        `Unknown --browser-channel "${requested}". Use chrome, chrome-beta, msedge, or chromium.`,
+      );
+    }
+    return requested as "chrome" | "chrome-beta" | "msedge" | "chromium";
+  }
+  return headed ? installedChromeChannel() : undefined;
+}
+
 function resolveLaunchArgs(opts: BrowseOpts, headed: boolean, proxyEnabled: boolean): string[] {
   const args: string[] = [];
   if (headed && !process.env.HARNERY_BROWSER_NO_WSL_DEFAULTS) {
