@@ -6,6 +6,7 @@ import { initDocsContext as initDocsLinks, runLinks } from "../lib/docs-links.ts
 import { initDocsContext as initDocsLint, runLint } from "../lib/docs-lint.ts";
 import { readDocsMetadata, readDocsMetadataKey } from "../lib/docs-meta.ts";
 import { initDocsMetadataAuditContext, runDocsMetadataAudit } from "../lib/docs-metadata-audit.ts";
+import { initDocsMetadataExclusions } from "../lib/docs-metadata-managed.ts";
 import { initDocsMetadataSyncContext, runDocsMetadataSync } from "../lib/docs-metadata-sync.ts";
 import { createDocsFile } from "../lib/docs-new.ts";
 import {
@@ -27,6 +28,7 @@ function ensureContext(context: HarneryProgramContext | undefined): void {
     docsRootAllowlist: context.docsRootAllowlist,
   });
   initDocsLinks({ ...opts, extraExcludedPrefixes: context.extraDocsExcludedPrefixes });
+  initDocsMetadataExclusions(context.extraDocsExcludedPrefixes);
   initDocsMetadataAuditContext(opts);
   initDocsMetadataSyncContext(opts);
   initDocsSweep(opts);

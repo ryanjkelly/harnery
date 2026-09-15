@@ -5,6 +5,26 @@ function normalized(path: string): string {
   return path.replaceAll("\\", "/");
 }
 
+/** Host-supplied path prefixes that carry another system's frontmatter.
+ *
+ * Hosts declare these once (harnery's `extraDocsExcludedPrefixes`) for
+ * generated reference dumps and vendored upstream trees. Every metadata
+ * consumer reads them through `isExcludedDocsMetadataPath`, so a prefix
+ * listed by the host is honored by the audit and the sync, not only by the
+ * lint's own file discovery.
+ */
+let EXTRA_EXCLUDED_PREFIXES: readonly string[] = [];
+
+export function initDocsMetadataExclusions(prefixes: readonly string[] | undefined): void {
+  EXTRA_EXCLUDED_PREFIXES = prefixes ?? [];
+}
+
+function hasExcludedPrefix(rel: string): boolean {
+  return EXTRA_EXCLUDED_PREFIXES.some(
+    (prefix) => rel.startsWith(prefix) || rel.includes(`/${prefix}`),
+  );
+}
+
 /**
  * Paths whose Markdown carries frontmatter belonging to another system:
  * generated mirrors of documents that live elsewhere, vendored vendor
@@ -14,6 +34,7 @@ export function isExcludedDocsMetadataPath(path: string): boolean {
   const rel = normalized(path);
   const segments = rel.split("/");
   return (
+    hasExcludedPrefix(rel) ||
     segments.includes(".wiki-data") ||
     // Dashboard surfaces render from copies of other repositories' documents.
     /(?:^|\/)content\/dashboards\//.test(rel) ||

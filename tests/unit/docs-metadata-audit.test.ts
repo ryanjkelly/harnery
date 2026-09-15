@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { auditDocsMetadataText } from "../../src/lib/docs-metadata-audit.ts";
+import { initDocsMetadataExclusions } from "../../src/lib/docs-metadata-managed.ts";
 
 describe("auditDocsMetadataText", () => {
   test("reports legacy lifecycle metadata as an error", () => {
@@ -130,5 +131,37 @@ describe("auditDocsMetadataText", () => {
         "docs/templates/plan.md",
       ),
     ).toBeNull();
+  });
+});
+
+describe("host-supplied metadata exclusions", () => {
+  const vendored = "docs/openclaw/concepts/mantis-slack-desktop-runbook.md";
+  const legacyRunbook = "---\nsummary: \"upstream page\"\ntitle: \"Runbook\"\n---\n";
+
+  test("a vendored runbook is audited when the host declares no prefixes", () => {
+    initDocsMetadataExclusions([]);
+    expect(auditDocsMetadataText(legacyRunbook, vendored)).toEqual(
+      expect.objectContaining({ state: "legacy", profile: "runbook" }),
+    );
+  });
+
+  test("a host-declared prefix exempts the vendored tree from the contract", () => {
+    initDocsMetadataExclusions(["docs/openclaw/"]);
+    expect(auditDocsMetadataText(legacyRunbook, vendored)).toBeNull();
+  });
+
+  test("a declared prefix also matches a repository nested inside the host", () => {
+    initDocsMetadataExclusions(["docs/openclaw/"]);
+    expect(
+      auditDocsMetadataText(legacyRunbook, `acme-company/${vendored}`),
+    ).toBeNull();
+  });
+
+  test("an undeclared sibling tree is still audited", () => {
+    initDocsMetadataExclusions(["docs/openclaw/"]);
+    expect(
+      auditDocsMetadataText(legacyRunbook, "docs/runbooks/deploy-runbook.md"),
+    ).toEqual(expect.objectContaining({ state: "legacy", profile: "runbook" }));
+    initDocsMetadataExclusions([]);
   });
 });
