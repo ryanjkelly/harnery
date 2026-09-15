@@ -48,8 +48,11 @@ Every command below links to its own page. Run `harn <command> --help` for the l
 - [`harn browse`](./browse/): Playwright-driven browser automation + visibility/layout checks
 - [`harn browse-ai`](./browse-ai/): accessibility-tree snapshots with element refs
 - [`harn fetch`](./fetch/): cookie-aware HTTP with a shared jar
+- [`harn webview`](./webview/): Bun.WebView page probe (experimental, Bun 1.4+)
 - [`harn read`](./read/): HTML → markdown via Readability + Turndown
 - [`harn cookies`](./cookies/): manage the shared cookie jar
+
+Every page loader above reads at human pace by default: 3 to 9 seconds between loads of one site, shared across processes, with `--no-pace` and `HARNERY_PACE=off` to opt out. See [Human pace](./browse/#human-pace).
 
 ## Utilities
 
