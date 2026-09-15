@@ -27,6 +27,7 @@ for (const file of dashboardReaderFiles) {
 // stalls Chromium startup, even when launches are serialized. Keep the
 // stateful browser partition in a fresh process without dropping any tests.
 const browserFiles = new Set([
+  "src/lib/browser/identity.test.ts",
   "src/lib/browser/navigation-pace.test.ts",
   "src/lib/browser/client-capture.test.ts",
   "src/lib/browser/netscape-cookies.test.ts",
@@ -46,6 +47,7 @@ const browserFiles = new Set([
 // Playwright operations even when Bun runs tests serially. Give them fresh Bun
 // processes so each suite starts with clean browser transport state.
 const browserProcessFiles = new Set([
+  "src/lib/browser/identity.test.ts",
   "src/lib/browser/navigation-pace.test.ts",
   "src/lib/browser/client-capture.test.ts",
   "src/lib/browser/session-browser.test.ts",

@@ -11,6 +11,8 @@
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { installedChromePath } from "../browser/launch-args.ts";
+import { chromeMajorFromExecutable, resolveUserAgent } from "../browser/user-agent.ts";
 import { PaceGate, pacePolicyFromEnv } from "../pace/index.ts";
 
 export type WebViewBackend = "auto" | "chrome" | "webkit";
@@ -68,6 +70,8 @@ export interface WebViewTypeStep {
 }
 
 export interface RunWebViewOptions {
+  /** Explicit UA, "auto", or "native"; Chrome uses the shared store by default. */
+  userAgent?: string;
   backend?: WebViewBackend;
   viewport?: { width: number; height: number };
   profileDir?: string;
@@ -200,6 +204,24 @@ export async function runWebView(
     chromePath: options.chromePath,
     browserArgs: options.browserArgs,
   });
+  if (typeof selected.backend === "object") {
+    const executable = options.chromePath ?? installedChromePath(platform);
+    const existingUa = options.browserArgs
+      ?.find((arg) => arg.startsWith("--user-agent="))
+      ?.slice(13);
+    const userAgent = resolveUserAgent({
+      requested: options.userAgent ?? existingUa,
+      env: process.env.HARNERY_BROWSER_UA,
+      chromeMajor: executable ? chromeMajorFromExecutable(executable) : undefined,
+      platform,
+    });
+    const argv = [
+      ...(selected.backend.argv ?? []).filter((arg) => !arg.startsWith("--user-agent=")),
+      ...(userAgent ? [`--user-agent=${userAgent}`] : []),
+    ];
+    if (argv.length) selected.backend.argv = argv;
+    else delete selected.backend.argv;
+  }
   const viewport = options.viewport ?? { width: 1280, height: 800 };
   const timeoutMs = options.timeoutMs ?? 30_000;
   const consoleEvents: WebViewConsoleEvent[] = [];

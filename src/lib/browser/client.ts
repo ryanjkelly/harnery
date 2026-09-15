@@ -34,6 +34,7 @@ import {
   type LayoutLintRequest,
   type LayoutLintResult,
 } from "./geometry.js";
+import { browserIdentity, installDocumentIdentity } from "./identity.js";
 import { AUTOMATION_DEFAULT_ARGS_TO_DROP, automationDisguiseArgs } from "./launch-args.js";
 import {
   buildClearLayoutAnnotationsScript,
@@ -93,7 +94,7 @@ export interface BrowserOptions {
   /** Cookie jar to seed/sync with. Pass `null` to skip jar entirely. */
   jar?: CookieJar | null;
   /** Viewport. Default 1280x800. */
-  viewport?: { width: number; height: number };
+  viewport?: { width: number; height: number } | null;
   /**
    * Device scale factor (DPR) for the context. Unset keeps Playwright's
    * default of 1, so screenshots are CSS-pixel sized. A higher value renders
@@ -337,6 +338,7 @@ export class Browser {
   private consoleEvents: ConsoleEvent[] = [];
   private pageErrors: PageErrorEvent[] = [];
   private failedRequests: FailedRequest[] = [];
+  private identityReady = new WeakMap<Page, Promise<void>>();
 
   constructor(private opts: BrowserOptions = {}) {
     this.profileDir = opts.profileDir ?? DEFAULT_PROFILE;
@@ -357,8 +359,10 @@ export class Browser {
    */
   private async openOnce(): Promise<void> {
     const jarCookies = this.opts.jar?.list() ?? [];
+    const launchIdentity = this.opts.userAgent ? browserIdentity(this.opts.userAgent) : undefined;
     const launchArgs = [
       ...new Set([
+        ...(this.opts.headed && this.opts.viewport == null ? ["--window-size=1536,864"] : []),
         ...(this.opts.launchArgs ?? []),
         ...(this.opts.hideAutomation ? automationDisguiseArgs() : []),
         ...(this.opts.userAgent ? [`--user-agent=${this.opts.userAgent}`] : []),
@@ -372,12 +376,30 @@ export class Browser {
         headless: !this.opts.headed,
         // Service-worker-owned navigations bypass Playwright request routes.
         ...(this.getPaceGate()?.policy.enabled ? { serviceWorkers: "block" as const } : {}),
-        viewport: this.opts.viewport ?? { width: 1280, height: 800 },
+        viewport:
+          this.opts.viewport !== undefined
+            ? this.opts.viewport
+            : this.opts.headed
+              ? null
+              : { width: 1280, height: 800 },
         ...(this.opts.deviceScaleFactor !== undefined
           ? { deviceScaleFactor: this.opts.deviceScaleFactor }
           : {}),
         ...(this.opts.colorScheme ? { colorScheme: this.opts.colorScheme } : {}),
         ...(this.opts.userAgent ? { userAgent: this.opts.userAgent } : {}),
+        ...(launchIdentity
+          ? {
+              extraHTTPHeaders: {
+                "sec-ch-ua-platform": JSON.stringify(launchIdentity.userAgentMetadata.platform),
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua": launchIdentity.userAgentMetadata.brands
+                  .map(
+                    ({ brand, version }) => `${JSON.stringify(brand)};v=${JSON.stringify(version)}`,
+                  )
+                  .join(", "),
+              },
+            }
+          : {}),
         ...(this.opts.launchTimeout !== undefined ? { timeout: this.opts.launchTimeout } : {}),
         ...(launchArgs.length > 0 ? { args: launchArgs } : {}),
         ...(this.opts.channel && this.opts.channel !== "chromium"
@@ -395,6 +417,10 @@ export class Browser {
       releaseLaunchSlot();
     }
     this.context.setDefaultNavigationTimeout(this.opts.navigationTimeout ?? 30_000);
+    const identity = this.opts.userAgent
+      ? browserIdentity(this.opts.userAgent, this.context.browser()?.version())
+      : undefined;
+    if (identity) await this.context.addInitScript(installDocumentIdentity, identity);
 
     if (jarCookies.length > 0) {
       await this.context.addCookies(jarCookies.map(toPWCookie));
@@ -404,7 +430,7 @@ export class Browser {
     // and the first request of a popup. Method-level waits miss those loads.
     // Redirect hops are part of the original load, not additional reservations.
     const headersCb = this.opts.extraHeaders;
-    if (this.getPaceGate() || headersCb) {
+    if (this.getPaceGate()?.policy.enabled || headersCb || this.opts.userAgent) {
       await this.context.route("**/*", async (route, request) => {
         let mainDocument = false;
         if (request.isNavigationRequest() && !request.redirectedFrom()) {
@@ -423,7 +449,23 @@ export class Browser {
             return;
           }
         }
-        const extra = headersCb?.(request.url()) ?? {};
+        const extra = { ...headersCb?.(request.url()) };
+        // Popup request headers are already computed before its CDP session is
+        // available. Keep negotiated hints consistent on that first request too.
+        if (identity) {
+          const metadata = identity.userAgentMetadata;
+          extra["sec-ch-ua-platform"] = JSON.stringify(metadata.platform);
+          extra["sec-ch-ua-mobile"] = "?0";
+          extra["sec-ch-ua"] = metadata.brands
+            .map(({ brand, version }) => `${JSON.stringify(brand)};v=${JSON.stringify(version)}`)
+            .join(", ");
+          for (const [header, value] of Object.entries({
+            "sec-ch-ua-platform-version": metadata.platformVersion,
+            "sec-ch-ua-arch": metadata.architecture,
+            "sec-ch-ua-bitness": metadata.bitness,
+          }))
+            if (header in request.headers()) extra[header] = JSON.stringify(value);
+        }
         if (Object.keys(extra).length === 0) return route.continue();
         const headers = { ...request.headers(), ...extra };
         return route.continue({ headers });
@@ -432,6 +474,7 @@ export class Browser {
 
     const pages = this.context.pages();
     const firstPage = pages[0] ?? (await this.context.newPage());
+    await Promise.all(this.context.pages().map((page) => this.preparePageIdentity(page)));
     for (const page of this.context.pages()) this.trackPage(page, page === firstPage);
     this.context.on("page", (page) => this.trackPage(page, true));
   }
@@ -553,6 +596,10 @@ export class Browser {
         type: "unknown",
       });
       this.attachDiagnosticListeners(page);
+      void this.preparePageIdentity(page).catch((error) => {
+        if (!page.isClosed())
+          this.pageErrors.push({ message: `Browser identity setup failed: ${String(error)}` });
+      });
       page.on("domcontentloaded", () => this.recordDocumentNavigation(page));
       page.once("close", () => {
         this.pageRecency.delete(page);
@@ -561,6 +608,23 @@ export class Browser {
       });
     }
     if (makeActive) this.setActivePage(page);
+  }
+
+  private preparePageIdentity(page: Page): Promise<void> {
+    if (!this.opts.userAgent || !this.context) return Promise.resolve();
+    let ready = this.identityReady.get(page);
+    if (!ready) {
+      const context = this.context;
+      const userAgent = this.opts.userAgent;
+      ready = (async () => {
+        const identity = browserIdentity(userAgent, context.browser()?.version());
+        if (!identity) return;
+        const session = await context.newCDPSession(page);
+        await session.send("Emulation.setUserAgentOverride", identity);
+      })();
+      this.identityReady.set(page, ready);
+    }
+    return ready;
   }
 
   private setActivePage(page: Page): void {
@@ -643,6 +707,7 @@ export class Browser {
 
   async navigate(url: string): Promise<NavigateResult> {
     const page = this.currentPage;
+    await this.preparePageIdentity(page);
     const response = await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
     return {
       url: page.url(),
@@ -1453,6 +1518,7 @@ export class Browser {
     const page = await this.context.newPage();
     this.trackPage(page, true);
     try {
+      await this.preparePageIdentity(page);
       await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
       this.sessionRevision++;
       return await this.describeTab(page);

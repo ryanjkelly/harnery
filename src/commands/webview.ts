@@ -22,6 +22,7 @@ import {
  */
 
 interface WebviewOpts {
+  userAgent?: string;
   backend: string;
   viewport: string;
   profile?: string;
@@ -48,6 +49,10 @@ export function registerWebviewCommand(program: Command, emit: EmitContext, binN
         `Fresh ephemeral browser per call; use ${binName} browse for login, cookies, HAR, and QA.`,
     )
     .option("--backend <engine>", "Browser engine: auto | chrome | webkit", "auto")
+    .option(
+      "--user-agent <ua>",
+      "Chrome user agent: shared store by default; auto refreshes, native disables",
+    )
     .option("--viewport <WxH>", "Viewport in CSS pixels", "1280x800")
     .option(
       "--profile <dir>",
@@ -118,6 +123,7 @@ async function runWebview(url: string, opts: WebviewOpts, emit: EmitContext): Pr
     screenshotPath: opts.screenshot ? resolve(opts.screenshot) : undefined,
     captureHtml: opts.html === true,
     pace: commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info")),
+    userAgent: opts.userAgent,
   });
 
   if (opts.json) {

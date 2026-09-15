@@ -105,6 +105,7 @@ describe("Bun.WebView integration", () => {
         WebView: FakeWebView,
       } as unknown as BunWebViewRuntime,
       platform: "linux",
+      userAgent: "native",
       pace: null,
       typeSteps: [{ selector: "#name", text: "Example" }],
       clicks: ["#submit"],
@@ -136,6 +137,20 @@ describe("Bun.WebView integration", () => {
     expect(calls).toContain("evaluate:document.body?.innerText ?? ''");
     expect(calls).toContain("evaluate:document.documentElement?.outerHTML ?? ''");
     expect(calls.at(-1)).toBe("close");
+    const previousUa = process.env.HARNERY_BROWSER_UA;
+    process.env.HARNERY_BROWSER_UA = "FixtureBrowser/1";
+    try {
+      calls.length = 0;
+      await runWebView("https://example.com", {
+        runtime: { WebView: FakeWebView } as unknown as BunWebViewRuntime,
+        platform: "linux",
+        pace: null,
+      });
+      expect(calls[0]).toContain("--user-agent=FixtureBrowser/1");
+    } finally {
+      if (previousUa === undefined) delete process.env.HARNERY_BROWSER_UA;
+      else process.env.HARNERY_BROWSER_UA = previousUa;
+    }
   });
 
   test("reserves a human-pace slot for the target site before navigating", async () => {
@@ -179,6 +194,7 @@ describe("Bun.WebView integration", () => {
         runtime: { version: "1.4.0", WebView: QuietWebView } as unknown as BunWebViewRuntime,
         platform: "linux",
         pace: gate,
+        userAgent: "native",
       });
       expect(waits).toEqual(["example.com"]);
       expect(calls).toEqual(["navigate:https://www.example.com/page"]);
@@ -234,6 +250,7 @@ describe("Bun.WebView integration", () => {
       } as unknown as BunWebViewRuntime,
       platform: "linux",
       pace: null,
+      userAgent: "native",
       clicks: ["#submit"],
     });
 

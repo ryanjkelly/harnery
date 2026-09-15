@@ -350,8 +350,7 @@ export function registerBrowseCommand(
     .option("--network-har <path>", "Record network traffic to a HAR file (finalized on close)")
     .option(
       "--viewport <preset|WxH>",
-      "Viewport: mobile (390x844), tablet (820x1180), desktop (1280x800), hd (1920x1080), or explicit '1920x1080'",
-      "desktop",
+      "Viewport: mobile (390x844), tablet (820x1180), desktop (1280x800), hd (1920x1080), or explicit '1920x1080'. Default: real window in headed mode, desktop in headless mode",
     )
     .option(
       "--color-scheme <scheme>",
@@ -939,6 +938,7 @@ async function runBrowse(
     );
   }
 
+  const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
   if (opts.plain) {
     if (!opts.login) throw new Error("--plain requires --login.");
     if (opts.controlFile) {
@@ -952,11 +952,11 @@ async function runBrowse(
       env: process.env.HARNERY_BROWSER_UA,
       chromeMajor: plainExecutable ? chromeMajorFromExecutable(plainExecutable) : undefined,
     });
+    await pace?.before(url);
     await runPlainLogin(url, opts.profile ?? DEFAULT_PROFILE, loginCloseFile, plainUa, emit);
     return;
   }
 
-  const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
   const channel = resolveBrowserChannel(opts, Boolean(headed));
   const userAgent = resolveUserAgent({
     requested: opts.userAgent,
@@ -967,7 +967,7 @@ async function runBrowse(
     profileDir: opts.profile ?? DEFAULT_PROFILE,
     headed,
     jar,
-    viewport,
+    viewport: headed && !opts.viewport ? null : viewport,
     ...(deviceScaleFactor !== undefined ? { deviceScaleFactor } : {}),
     ...(colorScheme ? { colorScheme } : {}),
     navigationTimeout: Number.parseInt(opts.timeout, 10),

@@ -18,6 +18,7 @@ It is a probe, not a [`harn browse`](/cli/browse/) backend. There is no headed l
 | Flag | Description |
 | --- | --- |
 | `--backend <engine>` | `auto` \| `chrome` \| `webkit`. Default `auto`: WebKit on macOS, Chrome elsewhere. |
+| `--user-agent <ua>` | Chrome UA from the shared browser store by default. `auto` refreshes it; `native` disables the override. WebKit keeps its native identity. |
 | `--viewport <WxH>` | Viewport in CSS pixels. Default `1280x800`. |
 | `--profile <dir>` | Persist cookies and local storage in this directory. Default is ephemeral. |
 | `--chrome-path <path>` | Chrome-family executable; implies the Chrome backend. |

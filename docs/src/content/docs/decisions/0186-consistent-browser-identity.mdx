@@ -1,0 +1,65 @@
+---
+title: "ADR 0186: keep browser identity consistent"
+description: Align driven Chromium user agents, client hints, navigator platform and headed window geometry while documenting native-browser limits.
+sidebar:
+  order: 186
+---
+
+**Date:** 2026-09-15
+**Status:** Accepted
+
+## Context
+
+A user-agent string alone does not change Chromium client hints or
+`navigator.platform`. A desktop profile can therefore contradict itself.
+Headed Playwright contexts also used a fixed viewport that replaced the real
+screen geometry. The existing machine-local UA store remains the source of
+the requested desktop profile.
+
+## Alternatives considered
+
+- Keep only `--user-agent`: rejected because both network headers and script
+  APIs can still report another platform.
+- Patch Playwright's internal Runtime domain behavior: rejected for this
+  implementation. A maintained private fork is a separate backend decision,
+  and removing one debugger signal does not create a native browser.
+- Wait for a popup's CDP session inside its paused initial request: rejected.
+  The popup is not fully initialized until that request continues, causing a
+  deadlock.
+- Force every session to a synthetic screen: rejected for headed browsing.
+  Explicit viewport requests and headless QA still need deterministic sizing.
+
+## Decision
+
+Use Chromium's supported
+[`Emulation.setUserAgentOverride`](https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride)
+with matching desktop metadata and platform. Retain the real full browser
+version when its major agrees with the selected UA.
+
+Apply the same low-entropy headers at context creation, before the first popup
+request. A document init script supplies the matching platform and UA data
+before page scripts run, including popups and child documents. Page CDP setup
+runs independently of paused request handlers. These are compatibility
+overrides, not a promise that automation is undetectable.
+
+Headed sessions without an explicit viewport use `viewport: null` and an initial
+1536 by 864 window. The browser reports the real screen. An explicit viewport
+continues to control QA rendering; headless default remains 1280 by 800.
+
+The Chrome WebView probe uses the same UA resolver. Native macOS WebKit retains
+its own identity. Plain Chrome has no attached protocol session or init script,
+so it receives only the UA launch argument; its platform and hints remain native.
+No unverified metadata command-line switch is added.
+
+## Result
+
+Browser regression tests check network hints and JavaScript identity on an
+initial document, a new tab and a popup. A live headed fingerprint probe showed
+matching desktop platform and version, with a viewport distinct from its screen.
+WebView tests cover the shared environment override and native opt-out.
+
+Fonts, speech voices, workers, debugger side effects and operating-system
+integration can still distinguish an emulated profile from a native browser.
+The package does not install host fonts or voice services. An extension backend
+for an explicitly selected native tab is a separate proposed increment; the
+supported Playwright dependency remains intact.

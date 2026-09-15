@@ -17,6 +17,16 @@ The trio's `<prefix>.html` is a **standalone snapshot**, not a raw DOM dump. Sty
 
 ## Options
 
+Driven Chromium keeps the selected desktop UA, client-hint headers and
+`navigator.platform` consistent. This includes the first document of a popup.
+Headed sessions use a real 1536 by 864 window by default; the content area follows
+the window and the screen dimensions come from the display. Pass `--viewport`
+for an emulated QA size. Headless default remains 1280 by 800.
+
+Plain login only changes the UA string: with nothing attached, its client hints
+and navigator platform remain native. Fonts, speech voices and debugger-related
+signals are outside the identity override. See [ADR 0186](/decisions/0186-consistent-browser-identity/).
+
 ### Output
 
 | Flag | Description |
