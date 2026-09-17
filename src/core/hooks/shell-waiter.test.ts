@@ -32,6 +32,8 @@ describe("inline shell waiter guard", () => {
     "sleep 1",
     "sleep 1; npm test",
     "npm test; sleep 1; cat /tmp/result",
+    "sleep 1; sed -i 's/old/new/' config.txt",
+    "sleep 1; sed --in-place=.bak 's/old/new/' config.txt; tail config.txt",
     'wait "$pid"',
     "ps -eo pid,ppid,etimes,args",
     'pgrep -af "[i]mage-builder"',

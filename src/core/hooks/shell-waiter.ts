@@ -137,7 +137,8 @@ function isWaiter(source: string, depth = 0): boolean {
     }
   }
   const sleep = commands.indexOf("sleep");
-  const readers = new Set(["tail", "cat", "head", "grep", "rg", "sed", "wc"]);
+  // sed can edit files or execute commands; its name alone does not prove a log read.
+  const readers = new Set(["tail", "cat", "head", "grep", "rg", "wc"]);
   const harmless = new Set(["sleep", "cd", "pwd", "echo", "printf", "date", ...readers]);
   return (
     sleep !== -1 &&

@@ -47,3 +47,9 @@ Regression cases cover polling without a verdict, process-name polling, delayed
 reads, shell wrappers, quoted examples, heredocs, immediate reads, ordinary work,
 and tool payload shapes. Hook integration cases verify denial responses for
 Claude Code, Cursor, and Codex without launching the rejected commands.
+
+A closeout review reproduced false denials for `sleep 1; sed -i ...` and for
+an in-place edit followed by `tail`. The log-reader set now excludes `sed`:
+its name alone cannot establish read-only behavior. Two regression cases
+cover those edits. This deliberately leaves delayed `sed` reads outside the
+heuristic instead of attempting to interpret sed programs and options.
