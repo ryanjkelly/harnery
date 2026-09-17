@@ -137,6 +137,7 @@ import {
   scanTranscriptRuntime,
 } from "./resolve/transcript.ts";
 import { sessionNamePresence } from "./session-name-presence.ts";
+import { shellWaiterReason } from "./shell-waiter.ts";
 import { unsafeCrossShellReason } from "./unsafe-cross-shell.ts";
 
 interface Argv {
@@ -1459,6 +1460,13 @@ async function main(): Promise<number> {
     if (unsafeShellReason) {
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(adapter, unsafeShellReason);
+      return 0;
+    }
+
+    const waiterReason = shellWaiterReason(payload?.tool_name, payload?.tool_input);
+    if (waiterReason) {
+      const { emitDeny } = await import("./adapter/output.ts");
+      emitDeny(adapter, waiterReason);
       return 0;
     }
 

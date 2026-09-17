@@ -48,6 +48,56 @@ afterEach(() => {
 });
 
 describe("agent-hook V3 hard cut", () => {
+  test("denies inline waiters through each shell adapter and permits immediate reads", () => {
+    for (const adapter of ["claude-code", "cursor", "codex"] as const) {
+      const root = candidateRoot(adapter);
+      const session = `waiter-${adapter}`;
+      for (const [tool, input] of [
+        ["Bash", { command: "until grep -q PASS /tmp/job.log; do sleep 45; done" }],
+        ["Shell", { command: "sleep 45; tail -40 /tmp/job.log" }],
+        ["functions.exec_command", { cmd: "while pgrep -f image-builder; do sleep 1; done" }],
+      ] as const) {
+        const result = run(
+          AGENT_HOOK,
+          ["pre-tool-use", "--adapter", adapter],
+          {
+            session_id: session,
+            conversation_id: session,
+            thread_id: session,
+            cwd: root,
+            tool_name: tool,
+            tool_input: input,
+            tool_use_id: `${adapter}-${tool}`,
+          },
+          root,
+        );
+        expect(result.status).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(
+          adapter === "cursor" ? output.permission : output.hookSpecificOutput.permissionDecision,
+        ).toBe("deny");
+        expect(result.stdout).toContain("Inline shell waiter blocked");
+      }
+      const allowed = run(
+        AGENT_HOOK,
+        ["pre-tool-use", "--adapter", adapter],
+        {
+          session_id: session,
+          conversation_id: session,
+          thread_id: session,
+          cwd: root,
+          tool_name: "Bash",
+          tool_input: { command: "tail -40 /tmp/job.log" },
+          tool_use_id: `${adapter}-read`,
+        },
+        root,
+      );
+      expect(allowed.status).toBe(0);
+      expect(allowed.stdout).not.toContain("Inline shell waiter blocked");
+      expect(allowed.stdout).not.toContain('"deny"');
+    }
+  });
+
   test("runs coordination effects in-process without spawning agent-coord", () => {
     const root = candidateRoot();
     const owner = "in-process-hook-owner";

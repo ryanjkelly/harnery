@@ -1,0 +1,49 @@
+---
+title: "0187: Reject inline shell waiters"
+description: "Prevent accidental background polling tasks at the shell hook boundary."
+---
+
+**Status:** accepted (2026-09-17)
+
+## Context
+
+A shell loop that waits for a success string can survive the producer's failure.
+Repeated delayed output checks create more tasks, and process-name polling can
+match the checking shell itself. A tool timeout does not prove that a task will
+terminate after the adapter backgrounds it.
+
+## Decision
+
+The shared PreToolUse path calls `shellWaiterReason` before the write guard.
+It rejects recognizable inline loops containing `sleep` or `pgrep`, and command
+sequences that delay before reading output without doing other work. It inspects
+literal shell `-c` arguments, including those wrapped in `timeout`. Shell tools
+using either `command` or `cmd`, including serialized inputs, use the same rule.
+
+Agents should read an existing output file immediately or wait on the existing
+task handle. When polling is necessary, a reviewed script must own the deadline,
+nonzero timeout exit, and detection of producer exit or failure. The guard does
+not treat a timeout annotation as proof of these properties.
+
+Quoted examples, comments, and heredoc bodies are opaque. Ordinary commands,
+immediate log reads, native task tools, and script-file invocations are allowed.
+The scanner is a narrow accident guard, not a shell interpreter or security
+boundary. Dynamic commands, other languages, remote command strings, and script
+bodies are outside its inspection. It neither enumerates nor kills processes.
+
+## Alternatives considered
+
+- Instructions alone leave the recurring mistake executable without feedback.
+- Recognizing a deadline variable cannot establish correct termination or
+  failure handling, so even inline polling with an apparent bound is rejected.
+- Killing tasks by age or command pattern risks stopping useful work owned by
+  another session. Cleanup requires identity and ownership evidence.
+- A new task manager would duplicate the adapter's existing task handles and
+  would not cover tasks launched outside it.
+
+## Validation
+
+Regression cases cover polling without a verdict, process-name polling, delayed
+reads, shell wrappers, quoted examples, heredocs, immediate reads, ordinary work,
+and tool payload shapes. Hook integration cases verify denial responses for
+Claude Code, Cursor, and Codex without launching the rejected commands.
