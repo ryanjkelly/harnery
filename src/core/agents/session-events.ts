@@ -4,7 +4,7 @@
  * `writeSessionEvent` records command spans in the canonical V3 ledger.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, type Hash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 // Kept dependency-light: vendored verbatim into a downstream consumer, so no coordEnv import.
@@ -64,18 +64,52 @@ export function readLastIntent(instanceId?: string): string | null {
   }
 }
 
-const outputSequence = new Map<string, number>();
+type OutputStream = "stdout" | "stderr" | "combined";
+
+interface OutputSummary {
+  stream: OutputStream;
+  bytes: number;
+  lines: number;
+  chunks: number;
+  hash: Hash;
+}
+
+interface PendingCommand {
+  coordRoot: string;
+  fields: Record<string, unknown>;
+  streams: Map<OutputStream, OutputSummary>;
+}
+
+const pendingCommands = new Map<string, PendingCommand>();
+let exitFlushInstalled = false;
+
+function commandKey(fields: Record<string, unknown>): string | undefined {
+  return typeof fields.instance_id === "string" && typeof fields.cmd_id === "string"
+    ? JSON.stringify([fields.instance_id, fields.cmd_id])
+    : undefined;
+}
+
+function flushCommandOutput(command: PendingCommand): void {
+  for (const summary of command.streams.values()) {
+    recordCommandObservation("command.output_observed", command.fields, command.coordRoot, summary);
+  }
+  command.streams.clear();
+}
 
 /** Emit a command/narration event to the canonical stream. Swallows every
  * error and skips when identity can't be resolved: telemetry must never break
  * or slow down a command. */
-function recordCommandObservation(type: SessionEventType, fields: Record<string, unknown>): void {
+function recordCommandObservation(
+  type: SessionEventType,
+  fields: Record<string, unknown>,
+  coordRoot: string,
+  summary?: OutputSummary,
+): boolean {
   const instanceId = typeof fields.instance_id === "string" ? fields.instance_id : undefined;
-  if (!instanceId) return;
+  if (!instanceId) return false;
   try {
-    const coordRoot = coordinationRootPath();
     const route = resolveLiveEventLedgerRouteV3(coordRoot);
-    if (route.state === "blocked") return;
+    if (route.state === "blocked") return false;
     const liveInstanceId = liveInstanceIdV3(instanceId);
     const hook = readHookProducerStateByInstanceV3(coordRoot, liveInstanceId);
     if (!hook) {
@@ -84,10 +118,10 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
         instance_id: instanceId,
         reason: "hook_generation_not_found",
       });
-      return;
+      return false;
     }
-    const command = commandSignalAndObservation(type, fields);
-    if (!command) return;
+    const command = commandSignalAndObservation(type, fields, summary);
+    if (!command) return false;
     const result = recordCommandSignalV3({
       coordRoot,
       mode: route.mode,
@@ -105,7 +139,7 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
       const expectedLifecycleReopenGap =
         result.reason === "turn_not_started" &&
         hook.session_start_derivation === "approved_lifecycle_reopen";
-      if (expectedLifecycleReopenGap) return;
+      if (expectedLifecycleReopenGap) return false;
       writeProducerDiagnosticV3(coordRoot, "command_emit_unjoinable", {
         type,
         instance_id: instanceId,
@@ -120,10 +154,10 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
         result_state: result.state,
       });
     }
+    return result.state === "recorded" || result.state === "already_recorded";
   } catch (error) {
     // Telemetry must never break the command, but the loss is preserved.
     try {
-      const coordRoot = coordinationRootPath();
       writeProducerDiagnosticV3(coordRoot, "command_emit_failed", {
         type,
         instance_id: instanceId,
@@ -132,6 +166,7 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
     } catch {
       /* diagnostics are best-effort */
     }
+    return false;
   }
 }
 
@@ -146,11 +181,11 @@ export function countOutputLines(text: string): number {
 function commandSignalAndObservation(
   type: SessionEventType,
   fields: Record<string, unknown>,
+  summary?: OutputSummary,
 ): { signal: CommandSignalV3; observation: CommandObservationV3 } | undefined {
   const commandId = typeof fields.cmd_id === "string" ? fields.cmd_id : undefined;
   if (!commandId) return undefined;
   if (type === "command.started") {
-    outputSequence.set(commandId, 0);
     const command = typeof fields.cmd === "string" ? fields.cmd : "";
     const executable = command.trim().split(/\s+/, 1)[0] || "unknown";
     return {
@@ -169,24 +204,25 @@ function commandSignalAndObservation(
     };
   }
   if (type === "command.output_observed") {
-    const sequence = (outputSequence.get(commandId) ?? 0) + 1;
-    outputSequence.set(commandId, sequence);
-    const line = typeof fields.line === "string" ? fields.line : "";
-    const stream =
-      fields.stream === "stdout" || fields.stream === "stderr" ? fields.stream : "combined";
+    if (!summary) return undefined;
     return {
       signal: "command.output_observed",
       observation: {
         native_command_id: commandId,
-        native_observation_id: `${commandId}:output:${sequence}`,
-        stream,
-        output: line,
-        output_bytes: Buffer.byteLength(line, "utf8"),
-        output_lines: countOutputLines(line),
+        native_observation_id: `${commandId}:output-summary:${summary.stream}`,
+        stream: summary.stream,
+        // The normalizer HMACs this bounded descriptor with the generation key.
+        // Neither raw output nor its unkeyed digest is written to the ledger.
+        output: {
+          format: "harnery-command-output-chunks-v1",
+          chunks: summary.chunks,
+          sha256: summary.hash.digest("hex"),
+        },
+        output_bytes: summary.bytes,
+        output_lines: summary.lines,
       },
     };
   }
-  outputSequence.delete(commandId);
   const exitCode =
     typeof fields.exit === "number" && Number.isSafeInteger(fields.exit) ? fields.exit : undefined;
   return {
@@ -205,14 +241,64 @@ function commandSignalAndObservation(
 }
 
 /**
- * Record a command event in V3. Best-effort, never throws into the caller;
- * telemetry must not break or slow a command.
+ * Start/completion use the durable V3 recorder. Output only updates bounded
+ * per-stream counters and hashes; summaries flush before completion or at
+ * process exit. A forced kill can lose unflushed summaries (ADR 0188).
+ * Best-effort: telemetry never throws into the caller.
  */
 export function writeSessionEvent(
   type: SessionEventType,
   fields: Record<string, unknown> = {},
 ): void {
-  recordCommandObservation(type, fields);
+  try {
+    const key = commandKey(fields);
+    if (!key) return;
+    if (type === "command.output_observed") {
+      const command = pendingCommands.get(key);
+      if (!command) return;
+      const stream =
+        fields.stream === "stdout" || fields.stream === "stderr" ? fields.stream : "combined";
+      let summary = command.streams.get(stream);
+      if (!summary) {
+        summary = { stream, bytes: 0, lines: 0, chunks: 0, hash: createHash("sha256") };
+        command.streams.set(stream, summary);
+      }
+      const line = typeof fields.line === "string" ? fields.line : "";
+      const normalized = line.normalize("NFC");
+      // Length framing preserves chunk boundaries, including empty chunks.
+      summary.hash.update(`${Buffer.byteLength(normalized, "utf8")}:`).update(normalized);
+      summary.bytes += Buffer.byteLength(line, "utf8");
+      summary.lines += countOutputLines(line);
+      summary.chunks += 1;
+      return;
+    }
+    const command = pendingCommands.get(key);
+    const coordRoot = command?.coordRoot ?? coordinationRootPath();
+    if (type === "command.completed") {
+      pendingCommands.delete(key);
+      if (command) flushCommandOutput(command);
+      recordCommandObservation(type, fields, coordRoot);
+    } else if (recordCommandObservation(type, fields, coordRoot) && !command) {
+      pendingCommands.set(key, {
+        coordRoot,
+        fields: {
+          instance_id: fields.instance_id,
+          cmd_id: fields.cmd_id,
+          bridge: fields.bridge,
+        },
+        streams: new Map(),
+      });
+      if (!exitFlushInstalled) {
+        exitFlushInstalled = true;
+        process.once("exit", () => {
+          for (const pending of pendingCommands.values()) flushCommandOutput(pending);
+          pendingCommands.clear();
+        });
+      }
+    }
+  } catch {
+    // Root resolution and in-memory bookkeeping must not break the command.
+  }
 }
 
 /** Trim long values to keep individual events small. */

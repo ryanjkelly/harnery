@@ -111,20 +111,38 @@ describe("session event live ledger routing", () => {
     if (route.state !== "v3") throw new Error("expected V3 route");
     for (const [eventName, payload] of [
       ["session-start", { session_id: nativeSession, raw: {} }],
-      ["user-prompt-submit", { session_id: nativeSession, turn_id: "turn-1", prompt: "run it", raw: {} }],
+      [
+        "user-prompt-submit",
+        { session_id: nativeSession, turn_id: "turn-1", prompt: "run it", raw: {} },
+      ],
     ] as const) {
       expect(
-        recordLiveHookSignalV3({ coordRoot: root, route, eventName, payload, adapter: "claude-code", instanceId })
-          .state,
+        recordLiveHookSignalV3({
+          coordRoot: root,
+          route,
+          eventName,
+          payload,
+          adapter: "claude-code",
+          instanceId,
+        }).state,
       ).toBe("recorded");
     }
     const chunk = "first line\nsecond line\n\nthird line";
-    writeSessionEvent("command.started", { instance_id: instanceId, cmd_id: "cmd-chunk", cmd: "acme fetch x" });
+    writeSessionEvent("command.started", {
+      instance_id: instanceId,
+      cmd_id: "cmd-chunk",
+      cmd: "acme fetch x",
+    });
     writeSessionEvent("command.output_observed", {
       instance_id: instanceId,
       cmd_id: "cmd-chunk",
       stream: "stdout",
       line: chunk,
+    });
+    writeSessionEvent("command.completed", {
+      instance_id: instanceId,
+      cmd_id: "cmd-chunk",
+      exit: 0,
     });
 
     const observed = readLedgerV3(root)
@@ -138,6 +156,101 @@ describe("session event live ledger routing", () => {
     });
     expect(countOutputLines("")).toBe(0);
     expect(countOutputLines("one")).toBe(1);
+  });
+
+  test("buffers a burst without disk writes and flushes separate stream totals once", () => {
+    const instanceId = "agent-output-burst";
+    const root = startedRoot(instanceId);
+    const fields = { instance_id: instanceId, cmd_id: "burst" };
+    writeSessionEvent("command.started", { ...fields, cmd: "acme progress" });
+    const before = snapshot(root);
+    const chunk = "private-é-output\n\nnext";
+    for (let index = 0; index < 100; index++) {
+      writeSessionEvent("command.output_observed", { ...fields, stream: "stdout", line: chunk });
+      writeSessionEvent("command.output_observed", {
+        ...fields,
+        stream: "stderr",
+        line: "warning",
+      });
+    }
+    expect(snapshot(root)).toEqual(before);
+    writeSessionEvent("command.completed", { ...fields, exit: 7 });
+    writeSessionEvent("command.completed", { ...fields, exit: 7 });
+    const events = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.producer.component === "session-tee");
+    expect(events.map((event) => event.event_type)).toEqual([
+      "command.started",
+      "command.output_observed",
+      "command.output_observed",
+      "command.completed",
+    ]);
+    expect(events[1]!.payload).toMatchObject({
+      stream: "stdout",
+      bytes: 100 * Buffer.byteLength(chunk),
+      lines: 200,
+    });
+    expect(events[2]!.payload).toMatchObject({ stream: "stderr", bytes: 700, lines: 100 });
+    expect(events[3]!.payload).toMatchObject({ exit_code: 7, outcome: "failed" });
+    expect(events.map((event) => event.producer.sequence)).toEqual([1, 2, 3, 4]);
+    expect(JSON.stringify(snapshot(root))).not.toContain(chunk);
+    expect(JSON.stringify(snapshot(root))).not.toContain("private-é-output");
+  });
+
+  test("keeps interleaved commands separate and pins their original root", () => {
+    const instanceId = "agent-interleaved";
+    const root = startedRoot(instanceId);
+    for (const cmd_id of ["one", "two"]) {
+      writeSessionEvent("command.started", {
+        instance_id: instanceId,
+        cmd_id,
+        cmd: "acme progress",
+      });
+    }
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = temporaryRoot();
+    for (const [cmd_id, line] of [
+      ["one", "first"],
+      ["two", "second"],
+      ["one", "third"],
+    ]) {
+      writeSessionEvent("command.output_observed", { instance_id: instanceId, cmd_id, line });
+    }
+    for (const cmd_id of ["two", "one"]) {
+      writeSessionEvent("command.completed", { instance_id: instanceId, cmd_id, exit: 0 });
+    }
+    const outputs = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "command.output_observed");
+    expect(outputs.map((event) => event.payload.bytes)).toEqual([6, 10]);
+    expect(outputs.map((event) => event.payload.lines)).toEqual([1, 2]);
+    expect(outputs.every((event) => event.payload.stream === "combined")).toBeTrue();
+  });
+
+  test("flushes output on process.exit without inventing successful completion", () => {
+    const instanceId = "agent-exit-output";
+    const root = startedRoot(instanceId);
+    const source = `
+      import { writeSessionEvent } from ${JSON.stringify(join(import.meta.dir, "session-events.ts"))};
+      const fields = { instance_id: ${JSON.stringify(instanceId)}, cmd_id: "exiting" };
+      writeSessionEvent("command.started", { ...fields, cmd: "acme exit" });
+      writeSessionEvent("command.output_observed", { ...fields, stream: "stdout", line: "exit output" });
+      process.exit(9);
+    `;
+    const child = Bun.spawnSync([process.execPath, "--eval", source], {
+      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(9);
+    expect(child.stderr.toString()).toBe("");
+    const events = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.producer.component === "session-tee");
+    expect(events.map((event) => event.event_type)).toEqual([
+      "command.started",
+      "command.output_observed",
+    ]);
+    expect(events[1]!.payload).toMatchObject({ stream: "stdout", bytes: 11, lines: 1 });
   });
 
   test("classifies a command outside an open turn as unjoinable", () => {
@@ -277,6 +390,40 @@ function activeRoot(): string {
     now: () => new Date("2026-08-16T18:00:00.000Z"),
   });
   return root;
+}
+
+function startedRoot(instanceId: string): string {
+  const root = activeRoot();
+  process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state !== "v3") throw new Error("expected V3 route");
+  for (const [eventName, payload] of [
+    ["session-start", { session_id: instanceId, raw: {} }],
+    ["user-prompt-submit", { session_id: instanceId, turn_id: "turn-1", raw: {} }],
+  ] as const) {
+    expect(
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName,
+        payload,
+        adapter: "claude-code",
+        instanceId,
+      }).state,
+    ).toBe("recorded");
+  }
+  return root;
+}
+
+function snapshot(root: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+    if (entry.isFile()) {
+      const path = join(entry.parentPath, entry.name);
+      files[path] = readFileSync(path, "utf8");
+    }
+  }
+  return files;
 }
 
 function temporaryRoot(): string {

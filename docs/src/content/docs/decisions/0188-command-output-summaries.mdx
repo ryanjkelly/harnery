@@ -1,0 +1,62 @@
+---
+title: "0188: Summarize command output at completion"
+description: "Remove durable ledger writes from each command output emission."
+---
+
+**Status:** accepted (2026-09-17)
+
+## Context
+
+Each `writeSessionEvent("command.output_observed", ...)` previously used the
+durable command recorder immediately. A profile of 20 observations on a Linux
+guest measured about 290 ms per observation. Disk flushes dominated: producer
+state, leases, the ready record, active append, receipts, and control witness
+each contributed synchronous work. These costs multiplied with output volume.
+
+## Decision
+
+The session emitter accumulates counts and a SHA-256 hash for each command and
+stream in memory. It writes at most one output summary for each of stdout,
+stderr, and combined output before recording completion. A synchronous process
+exit handler flushes commands that did not complete. It does not invent a
+successful completion for them; abandoned-span recovery remains responsible.
+
+Each chunk contributes its UTF-8 byte count and nonempty-line count. The hash
+receives each NFC-normalized chunk prefixed with its decimal UTF-8 length and
+a colon, preserving chunk boundaries and order. At flush, the existing
+generation-scoped HMAC fingerprints a versioned descriptor containing the
+chunk count and digest. Neither the raw output nor its unkeyed digest reaches
+durable storage. Memory per command is bounded by three counters/hash states,
+regardless of output size. Fingerprints describe ordered chunks within one
+stream; they do not preserve interleaving between different streams.
+
+Only successfully joined command starts receive an accumulator. The command's
+coordination root is pinned at start; changing working directory or root
+environment during execution cannot redirect its buffered output. The normal
+recorder revalidates live authority when flushing. Duplicate completion does
+not emit a second summary.
+
+Start and completion retain their existing durable recorder. Shared append,
+recovery, leases, and control-witness semantics stay unchanged. Output totals
+become visible at completion or ordinary exit. SIGKILL, fatal process crashes,
+and power loss can discard unfinished summaries. That loss is accepted for
+output telemetry; an unfinished command remains distinguishable from success.
+
+## Alternatives considered
+
+- Deferring only the active-ledger drain still leaves per-emission producer
+  state, lease, and ready-record flushes on the command's critical path.
+- Reducing shared writer durability affects every producer and crash recovery,
+  while output summaries solve this specific multiplicative cost.
+- A background writer introduces process supervision, shutdown, and delivery
+  concerns for three small summaries per command.
+- Retaining output strings until completion consumes memory in proportion to
+  output and unnecessarily retains sensitive text.
+
+## Validation
+
+Regression tests cover a burst with no filesystem changes, separate stream
+totals, multibyte text, interleaved commands, root pinning, duplicate completion,
+privacy, causal sequences, and explicit process exit without completion.
+The existing command-recorder recovery tests continue to exercise the durable
+path used by the summaries.
