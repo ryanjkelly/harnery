@@ -14,7 +14,7 @@ import {
 } from "../events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
 import { reopenLiveCoordinationGenerationV3 } from "./live-authority-v3.ts";
-import { writeSessionEvent } from "./session-events.ts";
+import { countOutputLines, writeSessionEvent } from "./session-events.ts";
 
 const roots: string[] = [];
 const priorCoordRoot = process.env.HARNERY_COORD_ROOT_OVERRIDE;
@@ -100,6 +100,44 @@ describe("session event live ledger routing", () => {
     expect(readFileSync(join(root, ".harnery/ledgers/v3/active.ndjson"), "utf8")).not.toContain(
       secret,
     );
+  });
+
+  test("counts the lines and bytes of a multi-line output chunk", () => {
+    const root = activeRoot();
+    const instanceId = "agent-v3-chunk";
+    const nativeSession = "native-v3-chunk";
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    for (const [eventName, payload] of [
+      ["session-start", { session_id: nativeSession, raw: {} }],
+      ["user-prompt-submit", { session_id: nativeSession, turn_id: "turn-1", prompt: "run it", raw: {} }],
+    ] as const) {
+      expect(
+        recordLiveHookSignalV3({ coordRoot: root, route, eventName, payload, adapter: "claude-code", instanceId })
+          .state,
+      ).toBe("recorded");
+    }
+    const chunk = "first line\nsecond line\n\nthird line";
+    writeSessionEvent("command.started", { instance_id: instanceId, cmd_id: "cmd-chunk", cmd: "acme fetch x" });
+    writeSessionEvent("command.output_observed", {
+      instance_id: instanceId,
+      cmd_id: "cmd-chunk",
+      stream: "stdout",
+      line: chunk,
+    });
+
+    const observed = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "command.output_observed");
+    expect(observed).toHaveLength(1);
+    expect(observed[0]!.payload).toMatchObject({
+      stream: "stdout",
+      lines: 3,
+      bytes: Buffer.byteLength(chunk, "utf8"),
+    });
+    expect(countOutputLines("")).toBe(0);
+    expect(countOutputLines("one")).toBe(1);
   });
 
   test("classifies a command outside an open turn as unjoinable", () => {

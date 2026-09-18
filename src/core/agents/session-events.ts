@@ -135,6 +135,14 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
   }
 }
 
+/** Count the non-empty lines in one output chunk; a single event may carry many. */
+export function countOutputLines(text: string): number {
+  if (!text) return 0;
+  let count = 0;
+  for (const line of text.split("\n")) if (line.length > 0) count += 1;
+  return count;
+}
+
 function commandSignalAndObservation(
   type: SessionEventType,
   fields: Record<string, unknown>,
@@ -174,7 +182,7 @@ function commandSignalAndObservation(
         stream,
         output: line,
         output_bytes: Buffer.byteLength(line, "utf8"),
-        output_lines: line ? 1 : 0,
+        output_lines: countOutputLines(line),
       },
     };
   }
