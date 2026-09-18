@@ -82,6 +82,55 @@ describe("lazy top-level commands", () => {
     expect(ran).toBeTrue();
   });
 
+  test("an option carrying its value inline does not consume the command", async () => {
+    // `--format=json` holds its value in the same token, so advancing past the
+    // next one ate the command name and nothing was materialized. Downstream
+    // that reads as empty output or "too many arguments" for a bare stub.
+    for (const argv of [
+      ["--format=json", "a"],
+      ["--format=json", "alpha"],
+      ["--format=json", "--flag", "alpha"],
+    ]) {
+      let ran = false;
+      const program = new Command().option("--format <format>").option("--flag");
+      registerLazyCommandBundles(program, [
+        {
+          commands: [{ command: "alpha", description: "Alpha", aliases: ["a"] }],
+          load(root) {
+            root
+              .command("alpha")
+              .alias("a")
+              .action(() => {
+                ran = true;
+              });
+          },
+        },
+      ]);
+      await program.parseAsync(argv, { from: "user" });
+      expect({ argv, ran }).toEqual({ argv, ran: true });
+    }
+  });
+
+  test("a separated value is still skipped, so it is never read as a command", async () => {
+    // The inline fix must not stop the space form from skipping its value: a
+    // value that happens to share a command's name would otherwise route to it.
+    let ran = false;
+    const program = new Command().option("--format <format>");
+    registerLazyCommandBundles(program, [
+      {
+        commands: [{ command: "alpha", description: "Alpha" }],
+        load(root) {
+          root.command("alpha").action(() => {
+            ran = true;
+          });
+        },
+      },
+    ]);
+    await program.parseAsync(["--format", "alpha", "alpha"], { from: "user" });
+    expect(ran).toBeTrue();
+    expect(program.opts().format).toBe("alpha");
+  });
+
   test("materializes bundles and runs load hooks once", async () => {
     const program = new Command();
     program.command("static");
@@ -105,11 +154,7 @@ describe("lazy top-level commands", () => {
     expect((await loadLazyCommand(program, "alpha"))?.name()).toBe("alpha");
     await loadAllLazyCommands(program);
     expect(hookCalls).toBe(1);
-    expect(program.commands.map((command) => command.name())).toEqual([
-      "static",
-      "alpha",
-      "beta",
-    ]);
+    expect(program.commands.map((command) => command.name())).toEqual(["static", "alpha", "beta"]);
   });
 
   test("restores placeholders when a loader fails", async () => {

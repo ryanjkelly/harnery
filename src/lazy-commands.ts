@@ -256,7 +256,17 @@ function selectedCommand(
     if (token === "--") return undefined;
     if (token.startsWith("-")) {
       const option = findRootOption(program, token);
-      if (option?.required || (option?.optional && !args[index + 1]?.startsWith("-"))) index++;
+      // `--format=json` carries its value inline, so the next token is the
+      // command, not the value. Skipping it here consumed the command name and
+      // the wrong bundle (or none) was materialized, which surfaced downstream
+      // as empty output or a bogus "too many arguments" error.
+      const inlineValue = token.includes("=");
+      if (
+        !inlineValue &&
+        (option?.required || (option?.optional && !args[index + 1]?.startsWith("-")))
+      ) {
+        index++;
+      }
       continue;
     }
     if (token === "help") return state.byName.get(args[index + 1] ?? "");
