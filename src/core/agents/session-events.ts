@@ -214,7 +214,7 @@ function commandSignalAndObservation(
         // The normalizer HMACs this bounded descriptor with the generation key.
         // Neither raw output nor its unkeyed digest is written to the ledger.
         output: {
-          format: "harnery-command-output-chunks-v1",
+          format: "harnery-output-chunks-v1",
           chunks: summary.chunks,
           sha256: summary.hash.digest("hex"),
         },
