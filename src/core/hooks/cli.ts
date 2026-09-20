@@ -811,12 +811,12 @@ async function main(): Promise<number> {
       effect: "cursor-response-ritual-observed",
       owner_source: owner.source,
       event_v3_state: v3Result.state,
+      status_box_present_strict: statusBoxPresentStrict,
       ...(v3Result.state === "observed"
         ? {
             generation_id: v3Result.generation_id,
             turn_id: v3Result.turn_id,
             response_observed_at: v3Result.observed_at,
-            status_box_present_strict: statusBoxPresentStrict,
           }
         : {}),
     });

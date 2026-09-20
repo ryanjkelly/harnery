@@ -764,6 +764,70 @@ describe("event ledger V3 persistent hook recorder", () => {
     ).toBeUndefined();
   });
 
+  test("recovers a Cursor Stop followup reply after the human turn already closed", () => {
+    const root = candidateRoot("cursor");
+    const nativeSession = "cursor-followup-ritual";
+    const base = (signal: Parameters<typeof recordHookSignalV3>[0]["signal"]) =>
+      baseInput(
+        root,
+        signal,
+        parsed({ conversation_id: nativeSession, turn_id: "cursor-generation-one" }),
+        "cursor",
+      );
+    const ritual = (present: boolean) => ({
+      status_box_present: present,
+      status_box_present_strict: present,
+      session_name_required: false,
+      session_name_present: false,
+    });
+
+    expect(recordHookSignalV3(base("session-start")).state).toBe("recorded");
+    expect(recordHookSignalV3(base("user-prompt-submit")).state).toBe("recorded");
+    expect(
+      recordHookSignalV3({
+        ...base("after-agent-response"),
+        turn_ritual: ritual(false),
+      }).state,
+    ).toBe("observed");
+    expect(recordHookSignalV3(base("stop")).state).toBe("recorded");
+
+    const followup = recordHookSignalV3({
+      ...base("after-agent-response"),
+      turn_ritual: ritual(true),
+    });
+    expect(["observed", "spooled"]).toContain(followup.state);
+    expect(followup.state).not.toBe("ignored");
+    expect(recordHookSignalV3(base("stop")).state).toBe("recorded");
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const starts = events.filter((event) => event.event_type === "turn.started");
+    const terminals = events.filter((event) => event.event_type === "turn.completed");
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.payload).toMatchObject({ stop_remediation: true });
+    expect(starts[1]?.provenance.source_event).toBe("cursor.recovery");
+    expect(terminals).toHaveLength(2);
+    expect(terminals[0]?.payload).toMatchObject({
+      ritual: { status_box_present_strict: { state: "observed", value: false } },
+    });
+    expect(terminals[1]?.payload).toMatchObject({
+      ritual: { status_box_present_strict: { state: "observed", value: true } },
+    });
+
+    const diagnosticsDir = join(root, ".harnery/ledgers/v3/diagnostics");
+    const recovered = existsSync(diagnosticsDir)
+      ? readdirSync(diagnosticsDir).filter((name) =>
+          name.startsWith("cursor_response_ritual_recovered_turn-"),
+        )
+      : [];
+    expect(recovered.length).toBeGreaterThan(0);
+    const unbound = existsSync(diagnosticsDir)
+      ? readdirSync(diagnosticsDir).filter((name) =>
+          name.startsWith("cursor_response_ritual_unbound-"),
+        )
+      : [];
+    expect(unbound).toHaveLength(0);
+  });
+
   test("accumulates bounded hook CLI time inside the active turn", () => {
     const root = candidateRoot();
     const nativeSession = "hook-timing-session";

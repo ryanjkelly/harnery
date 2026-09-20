@@ -925,6 +925,29 @@ function processHookSignalLocked(
     // their self-contained timing cannot drift by a millisecond.
     const eventClock = signalClock(input);
     if (input.signal === "after-agent-response") {
+      // Cursor Stop followups auto-submit without beforeSubmitPrompt, so they
+      // never open a turn. The first stop already closed the human turn.
+      // Later completed replies still fire afterAgentResponse; bind them to a
+      // derived remediation turn so Stop can consume the new ritual instead of
+      // looping on the frozen first terminal.
+      if (
+        input.adapter === "cursor" &&
+        input.turn_ritual &&
+        (!state.current_turn_id || !state.current_turn_span)
+      ) {
+        commitRecoveredToolTurnStart(input, state, path, rootId, fingerprintContext, {
+          stop_remediation: true,
+        });
+        writeProducerDiagnosticV3(input.coordRoot, "cursor_response_ritual_recovered_turn", {
+          adapter: input.adapter,
+          instance_id: input.instance_id,
+          generation_id: state.generation_id,
+          signal: input.signal,
+          reason: "no_open_turn",
+          turn_id: state.current_turn_id,
+          status_box_present_strict: input.turn_ritual.status_box_present_strict,
+        });
+      }
       if (
         input.adapter !== "cursor" ||
         !state.current_turn_id ||
@@ -1784,13 +1807,14 @@ function commitRecoveredTurnCompleted(
   commitEventLocked(input, state, path, event);
 }
 
-/** Open a derived turn for tools that arrive after their native turn closed. */
+/** Open a derived turn for signals that arrive after their native turn closed. */
 function commitRecoveredToolTurnStart(
   input: RecordHookSignalV3Input,
   state: HookProducerStateV3,
   path: string,
   rootId: `root_${string}`,
   fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+  options?: { stop_remediation?: boolean },
 ): void {
   const clock = signalClock(input);
   const span = openSpanStateV3({
@@ -1826,6 +1850,7 @@ function commitRecoveredToolTurnStart(
     observed_at: clock.observed_at,
     monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
     clock_id: state.clock_id,
+    ...(options?.stop_remediation ? { stop_remediation: true } : {}),
   });
   if (event?.event_type !== "turn.started") {
     throw new Error("recovered tool turn start could not be normalized");
