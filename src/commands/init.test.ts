@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
@@ -22,6 +30,17 @@ const CLAUDE_HOOK = `"\${CLAUDE_PROJECT_DIR:-.}"/${HOOK}`;
 const CLAUDE = ADAPTER_SPECS["claude-code"];
 const CURSOR = ADAPTER_SPECS.cursor;
 const CODEX = ADAPTER_SPECS.codex;
+
+/** Run with a PATH that carries no harness CLI, so installed-adapter detection is empty. */
+async function withoutInstalledHarnesses<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = process.env.PATH;
+  process.env.PATH = "/usr/bin:/bin";
+  try {
+    return await fn();
+  } finally {
+    process.env.PATH = previous;
+  }
+}
 
 async function runInit(root: string, args: string[]): Promise<{ text: string; exitCode: number }> {
   const lines: string[] = [];
@@ -657,11 +676,15 @@ describe("init adapter set", () => {
     expect(bad.error).toContain("all");
   });
 
-  test("defaults to wired adapters, and to claude-code on a fresh project", async () => {
+  test("defaults to installed harnesses plus wired adapters, else claude-code", async () => {
     const root = fixture();
-    expect(resolveInitAdapters(root, []).adapters).toEqual(["claude-code"]);
+    expect(resolveInitAdapters(root, [], []).adapters).toEqual(["claude-code"]);
+    expect(resolveInitAdapters(root, [], ["opencode"]).adapters).toEqual(["opencode"]);
     await runInit(root, ["--adapter", "cursor"]);
-    expect(resolveInitAdapters(root, []).adapters).toEqual(["cursor"]);
+    // Committed wiring keeps refreshing even when its CLI is not on PATH.
+    expect(resolveInitAdapters(root, [], []).adapters).toEqual(["cursor"]);
+    // Installed and wired union, in canonical adapter order.
+    expect(resolveInitAdapters(root, [], ["opencode"]).adapters).toEqual(["cursor", "opencode"]);
   });
 
   test("plain init refreshes every wired adapter, including a stale opencode plugin", async () => {
@@ -671,7 +694,7 @@ describe("init adapter set", () => {
     const entry = join(root, ".opencode", "plugins", "harnery", "index.ts");
     writeFileSync(entry, `${readFileSync(entry, "utf8")}// edited\n`);
 
-    const result = await runInit(root, []);
+    const result = await withoutInstalledHarnesses(() => runInit(root, []));
     expect(result.exitCode).toBe(0);
     expect(result.text).toContain(".claude/settings.json");
     expect(result.text).toContain("refreshed the opencode plugin");
@@ -689,6 +712,33 @@ describe("init adapter set", () => {
 
     const check = await runInit(root, ["--adapter", "all", "--check"]);
     expect(check.exitCode).toBe(0);
+  });
+
+  test("plain init wires harnesses detected as installed on PATH", async () => {
+    const root = fixture();
+    const bin = mkdtempSync(join(tmpdir(), "harnery-init-shims-"));
+    try {
+      for (const name of ["claude", "opencode"]) {
+        const shim = join(bin, name);
+        writeFileSync(shim, "#!/bin/sh\nexit 0\n");
+        chmodSync(shim, 0o755);
+      }
+      const previous = process.env.PATH;
+      process.env.PATH = `${bin}:/usr/bin:/bin`;
+      let result: { text: string; exitCode: number };
+      try {
+        result = await runInit(root, []);
+      } finally {
+        process.env.PATH = previous;
+      }
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(join(root, ".claude", "settings.json"))).toBe(true);
+      expect(existsSync(join(root, ".opencode", "plugins", "harnery", "index.ts"))).toBe(true);
+      expect(existsSync(join(root, ".cursor", "hooks.json"))).toBe(false);
+      expect(existsSync(join(root, ".codex", "hooks.json"))).toBe(false);
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
   });
 
   test("reports an unknown adapter with the accepted set", async () => {

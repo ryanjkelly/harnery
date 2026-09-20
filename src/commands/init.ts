@@ -11,8 +11,9 @@
  * Cursor `.cursor/hooks.json`, Codex `.codex/hooks.json`, or the OpenCode plugin
  * directory `.opencode/plugins/harnery/`): the per-adapter file path, event list,
  * and hook-entry shape all come from ADAPTER_SPECS. `--adapter` is repeatable (or
- * comma-separated, or `all`); with no flag, init refreshes every adapter the
- * project already has wired, else claude-code.
+ * comma-separated, or `all`); with no flag, init wires every adapter whose CLI is
+ * installed on this machine, plus any adapter the project already has wired, else
+ * claude-code.
  *
  * `harn init` does both, non-destructively: it merges hook entries into an
  * existing settings file (preserving any other hooks) and skips entries that are
@@ -55,6 +56,7 @@ import {
   type SettingsFile,
   summarizeAdapterWiring,
 } from "../core/hooks/adapter/wiring.ts";
+import { detectInstalledAdapters } from "../core/workflow/adapters.ts";
 import { applyIndexerExclusions } from "../lib/indexer-exclusions.ts";
 import {
   type ApplyResult,
@@ -96,20 +98,23 @@ function parseAdapterIds(requested: string[]): { adapters: AdapterId[]; error?: 
 }
 
 /**
- * Which adapters `init` should wire. An explicit `--adapter` wins; without one the
- * project's already-wired adapters are refreshed (a fresh project keeps the
- * historical claude-code default), so a re-run keeps every harness in step instead
- * of silently refreshing only one.
+ * Which adapters `init` should wire. An explicit `--adapter` wins. Without one:
+ * every adapter whose CLI is installed on this machine, plus every adapter the
+ * project already has wired (committed wiring stays current on a box whose CLI is
+ * absent, e.g. CI). A machine with neither falls back to the historical
+ * claude-code default. `installed` is injectable so tests never key on the host's
+ * toolchain.
  */
 export function resolveInitAdapters(
   projectRoot: string,
   requested: string[],
+  installed?: AdapterId[],
 ): { adapters: AdapterId[]; error?: string } {
-  if (requested.length === 0) {
-    const wired = summarizeAdapterWiring(projectRoot).wired;
-    return { adapters: wired.length > 0 ? wired : ["claude-code"] };
-  }
-  return parseAdapterIds(requested);
+  if (requested.length > 0) return parseAdapterIds(requested);
+  const detected = installed ?? detectInstalledAdapters();
+  const wired = summarizeAdapterWiring(projectRoot).wired;
+  const adapters = ADAPTER_IDS.filter((id) => detected.includes(id) || wired.includes(id));
+  return { adapters: adapters.length > 0 ? adapters : ["claude-code"] };
 }
 
 /** Drift check for one adapter's runtime wiring (settings hooks or the OpenCode plugin). */
@@ -211,7 +216,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
     .option(
       "--adapter <id>",
       "claude-code | cursor | codex | opencode | all; repeatable or comma-separated. " +
-        "Default: every adapter already wired in the project, else claude-code",
+        "Default: every adapter installed on this machine plus every adapter already wired, else claude-code",
       (value: string, previous: string[]) =>
         previous.concat(
           value

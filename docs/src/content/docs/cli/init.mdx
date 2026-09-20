@@ -11,10 +11,10 @@ harn init [--adapter <id> ...] [--instructions-only] [--dry-run] [--check] [--pr
 ```
 
 `--adapter` is repeatable and also accepts comma-separated ids or `all`. With
-no `--adapter` flag, `init` refreshes every adapter the project already has
-wired; a project with no wiring yet gets `claude-code`, the historical
-default. Re-running `init` therefore keeps every harness in step instead of
-silently refreshing only one.
+no `--adapter` flag, `init` wires every adapter whose CLI is installed on this
+machine, plus every adapter the project already has wired, so committed wiring
+keeps refreshing on a box whose CLI is absent (CI, containers). A machine with
+neither signal falls back to `claude-code`, the historical default.
 
 One command to make a project harnery-ready. It does the setup steps that are otherwise easy to miss, and that fail **silently** when missed:
 
@@ -146,8 +146,9 @@ All four adapters are fully auto-wired. Pass `--adapter`:
 | `opencode` | `.opencode/plugins/harnery/index.ts` | 12 events delivered by an in-process plugin, not a hooks map; see below |
 
 Each writes only its own file, so several adapters can share one project: pass
-`--adapter` more than once (or `all`), or re-run `init` with no flag after a
-first explicit run to refresh everything already wired. The canonical file path + event→subcommand map + entry shape for every adapter lives in [`src/core/hooks/adapter/events.ts`](https://github.com/ryanjkelly/harnery/blob/main/src/core/hooks/adapter/events.ts) (`ADAPTER_SPECS`).
+`--adapter` more than once (or `all`), or just run `init` with no flag to wire
+the harnesses installed on this machine and refresh everything already wired.
+The canonical file path + event→subcommand map + entry shape for every adapter lives in [`src/core/hooks/adapter/events.ts`](https://github.com/ryanjkelly/harnery/blob/main/src/core/hooks/adapter/events.ts) (`ADAPTER_SPECS`).
 
 ### OpenCode is wired through a plugin
 
