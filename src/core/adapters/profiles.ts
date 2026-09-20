@@ -106,7 +106,7 @@ export const BUILTIN_ADAPTER_PROFILES = {
     authModel: "own-auth",
     modelFamily: "multi",
     effortValues: [],
-    verified: { date: "2026-08-18", version: "2026.08.11-e8db854" },
+    verified: { date: "2026-09-20", version: "2026.09.18-9a7762b" },
     capabilities: capabilities({
       effortSelection: unsupported(
         "Cursor embeds effort in some parameterized model ids; Harnery does not rewrite model ids.",
