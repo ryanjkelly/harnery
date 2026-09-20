@@ -42,8 +42,8 @@ import {
 import {
   agentHookPathForProject,
   applyCursorStopLoopLimit,
-  commandWiresSubcommand,
   CURSOR_STOP_FOLLOWUP_LOOP_LIMIT,
+  commandWiresSubcommand,
   diffWiring,
   groupCommands,
   type HookGroup,

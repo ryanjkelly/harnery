@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readCodexArchiveObservationsV3 } from "../../../agents/codex-archive-v3.ts";
+import { evaluateStopHook } from "../../../agents/rules/stop-hook.ts";
 import {
   listSessionFinalizationRequestsV3,
   observeHostDisappearedV3,
@@ -39,7 +40,6 @@ import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
 import { projectLatencyV3 } from "../latency.ts";
 import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths } from "../writer.ts";
-import { evaluateStopHook } from "../../../agents/rules/stop-hook.ts";
 import {
   drainHookIntakeSpoolV3,
   readHookProducerStateV3,
