@@ -83,11 +83,12 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
+import type { TurnRitualEvidenceV3 } from "../events/v3/producers/hook-base.ts";
 import { captureSpanClockV3 } from "../events/v3/span-state.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
-import { adapterBehavior } from "./adapter/behaviors/index.ts";
+import { type AdapterBehavior, adapterBehavior } from "./adapter/behaviors/index.ts";
 import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
 import {
   extractBashCommand,
@@ -616,6 +617,45 @@ function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+/** Everything one hook invocation resolved before its event handlers run. */
+interface HookRun {
+  coordRoot: string;
+  adapter: Adapter;
+  behavior: AdapterBehavior;
+  eventName: string;
+  norm: NonNullable<ReturnType<typeof normalizeEventName>>;
+  payload: ParsedPayload | null;
+  raw: string;
+  owner: NonNullable<ReturnType<typeof resolveOwner>>;
+  sessionId: string;
+  data: Record<string, unknown>;
+  debugBase: Record<string, unknown>;
+  ledgerRoute: Exclude<ReturnType<typeof resolveLiveEventLedgerRouteV3>, { state: "blocked" }>;
+  hookStartedAt: number;
+  hookClock: ReturnType<typeof captureSpanClockV3>;
+  priorCoordination: Heartbeat | null;
+  topLevelSession: boolean;
+  stopRemediation: boolean;
+  bridge: ReturnType<AdapterBehavior["bridgeFor"]>;
+  turnRitual: TurnRitualEvidenceV3 | undefined;
+  /** Set by recordSignal once the canonical V3 event has landed. */
+  v3Result?: ReturnType<typeof recordLiveHookSignalV3>;
+  v3EventId?: string;
+  recordedGenerationId?: `gen_${string}`;
+}
+
+/** The completed-reply ritual path runs before event normalization and owner resolution. */
+interface CompletedResponseRun {
+  coordRoot: string;
+  adapter: Adapter;
+  eventName: string;
+  raw: string;
+  debugBase: Record<string, unknown>;
+  ledgerRoute: ReturnType<typeof resolveLiveEventLedgerRouteV3>;
+  hookStartedAt: number;
+  hookClock: ReturnType<typeof captureSpanClockV3>;
+}
+
 async function main(): Promise<number> {
   const hookStartedAt = performance.now();
   const hookStartedRss = process.memoryUsage().rss;
@@ -732,87 +772,16 @@ async function main(): Promise<number> {
   // producer's open-turn state; Stop consumes them into the authoritative
   // turn.completed event. The response body never enters V3 or heartbeat.
   if (behavior && eventName && eventName === behavior.completedResponseEvent) {
-    const payload = parsePayload(raw, adapter);
-    const owner = resolveOwner({ payload: payload?.raw ?? null, coordRoot });
-    if (!owner) {
-      appendDebug(coordRoot, { ...debugBase, skipped: "no-owner-resolved" });
-      return 0;
-    }
-    const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
-    const name = sessionNameDisplayPending(row);
-    const text = typeof payload?.raw.text === "string" ? payload.raw.text : "";
-    const sighting = matchSessionNameDisplay(row, text);
-    if (sighting) {
-      stampSessionNameSeen(coordRoot, owner.instance_id, sighting.pending);
-      appendDebug(coordRoot, {
-        ...debugBase,
-        effect: "session-name-display-stamped",
-        session_name_pending: sighting.pending,
-        ...(sighting.displayed === sighting.pending
-          ? {}
-          : { session_name_displayed: sighting.displayed, session_name_drift: true }),
-      });
-    } else if (!name) {
-      // Nothing was owed. Distinct from a miss: conflating the two is what made
-      // a latched Cursor session undiagnosable from this log.
-      appendDebug(coordRoot, { ...debugBase, skipped: "no-pending-session-name" });
-    } else {
-      appendDebug(coordRoot, {
-        ...debugBase,
-        skipped: "session-name-block-absent",
-        session_name_pending: name,
-        reply_bytes: text.length,
-        reply_leads_with_fence: /^\s*`{3,}/.test(text),
-      });
-    }
-    if (ledgerRoute.state === "blocked") {
-      appendDebug(coordRoot, {
-        ...debugBase,
-        skipped: "v3-control-blocked",
-        reason: ledgerRoute.reason,
-        owner_source: owner.source,
-      });
-      return 0;
-    }
-    const statusBoxPresentStrict = scanAssistantStatusBoxPresent(undefined, text);
-    // The hook parser needs the completed reply long enough to scan it, but
-    // durable hook intake must never retain that body. Keep every other native
-    // field so turn correlation remains available to the producer.
-    const { text: _completedReply, ...privacySafeRaw } = payload?.raw ?? {};
-    const privacySafePayload = payload ? { ...payload, raw: privacySafeRaw } : null;
-    const v3Result = recordLiveHookSignalV3({
+    return handleCompletedResponse({
       coordRoot,
-      route: ledgerRoute,
-      eventName,
-      payload: privacySafePayload,
       adapter,
-      instanceId: owner.instance_id,
-      hook_name: eventName,
-      hook_duration_ms: Math.max(0, Math.floor(performance.now() - hookStartedAt)),
-      monotonic_ns: hookClock.monotonic_ns,
-      turn_ritual: {
-        status_box_present: statusBoxPresentStrict,
-        status_box_present_strict: statusBoxPresentStrict,
-        session_name_required: name !== undefined,
-        session_name_present: name ? assistantTextStartsWithSessionNameBlock(text, name) : false,
-      },
+      eventName,
+      raw,
+      debugBase,
+      ledgerRoute,
+      hookStartedAt,
+      hookClock,
     });
-    observeHookDebug(hookHealthState, { event_v3_state: v3Result.state });
-    appendDebug(coordRoot, {
-      ...debugBase,
-      effect: "cursor-response-ritual-observed",
-      owner_source: owner.source,
-      event_v3_state: v3Result.state,
-      status_box_present_strict: statusBoxPresentStrict,
-      ...(v3Result.state === "observed"
-        ? {
-            generation_id: v3Result.generation_id,
-            turn_id: v3Result.turn_id,
-            response_observed_at: v3Result.observed_at,
-          }
-        : {}),
-    });
-    return 0;
   }
 
   const norm = normalizeEventName(eventName);
@@ -900,6 +869,107 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  const run: HookRun = {
+    coordRoot,
+    adapter,
+    behavior,
+    eventName,
+    norm,
+    payload,
+    raw,
+    owner,
+    sessionId,
+    data,
+    debugBase,
+    ledgerRoute,
+    hookStartedAt,
+    hookClock,
+    priorCoordination,
+    topLevelSession,
+    stopRemediation,
+    bridge,
+    turnRitual,
+  };
+  recordSignal(run);
+  recordContextTelemetry(run);
+
+  // Phase 8: SessionStart post-emit: project the event so the heartbeat
+  // lands synchronously, run stale-sweep, and emit the adapter-shaped
+  // systemMessage JSON (peer table + wiring check + council invites).
+  // Adapter-agnostic since v0.5.0; replaces the previous bash UX layer
+  // and the equivalent per-adapter bash session_start handlers.
+  if (norm.event_type === "session.started") await handleSessionStarted(run);
+
+  // Phase 8: SessionEnd cleanup: delete heartbeat + pid-map rows. Adapter-
+  // agnostic since v0.5.0.
+  if (norm.event_type === "session.ended") handleSessionEnded(run);
+
+  // Phase 8: SubagentStart: the child generation was opened above from the
+  // native delegation identity. Refresh its disposable projection, log the
+  // lifecycle event, and emit a context message announcing the subagent.
+  if (norm.event_type === "agent.started") await handleAgentStarted(run);
+
+  // Phase 8: SubagentStop: delete subagent heartbeat + log.
+  if (norm.event_type === "agent.completed") await handleAgentCompleted(run);
+
+  // Phase 8: UserPromptSubmit: render dedup'd peer table + council pending
+  // and emit the adapter-shaped systemMessage JSON. Adapter-agnostic since v0.5.0.
+  if (norm.event_type === "turn.started") await handleTurnStarted(run);
+
+  // turn.completed: telemetry, then the stop verdict. The
+  // verdict + codex-replay previously lived in the per-adapter shell adapters;
+  // agent-hook owns them now. Runs on the normal "stop" event only;
+  // "stop-failure" (API error) gets no gate, matching the previous
+  // stop vs stop-failure split.
+  if (norm.event_type === "turn.completed" && eventName === "stop") {
+    const exit = await handleStop(run);
+    if (exit !== undefined) return exit;
+  }
+
+  // Phase 7: PreToolUse: heartbeat + pid-map self-heal on every tool call.
+  // Adapter-agnostic: both writes have the same shape regardless of who fired.
+  // Cursor/Codex bash dispatchers still fire their own G-guard logic, but the
+  // heals here keep the agent-coord layer's view of liveness fresh.
+  //
+  // The heartbeat + pid-map heals are paired by design; they were wired
+  // side-by-side in the previous pre-tool-use adapter. The Phase 4-6 refactor
+  // preserved the heartbeat half but dropped the pid-map half; the pid-map
+  // call was restored here afterward.
+  if (norm.event_type === "tool.requested") {
+    const exit = await handleToolRequested(run);
+    if (exit !== undefined) return exit;
+  }
+
+  if (norm.event_type === "tool.completed" && eventName === "post-tool-use")
+    await handlePostToolUse(run);
+
+  // Phase 7: PostToolUseFailure: release claim on failed Edit (the file
+  // never landed; the claim is stale). Adapter-agnostic.
+  if (norm.event_type === "tool.completed" && eventName === "post-tool-use-failure")
+    handlePostToolUseFailure(run);
+
+  return 0;
+}
+
+function recordSignal(run: HookRun): void {
+  const {
+    coordRoot,
+    adapter,
+    eventName,
+    norm,
+    payload,
+    owner,
+    sessionId,
+    data,
+    debugBase,
+    ledgerRoute,
+    hookStartedAt,
+    hookClock,
+    priorCoordination,
+    stopRemediation,
+    bridge,
+    turnRitual,
+  } = run;
   let capturedImages: ReturnType<typeof captureImages> = [];
   if (
     norm.event_type === "tool.requested" ||
@@ -1036,7 +1106,13 @@ async function main(): Promise<number> {
     ...(v3Result ? { event_v3_state: v3Result.state } : {}),
     ...(v3Result && "reason" in v3Result ? { event_v3_reason: v3Result.reason } : {}),
   });
+  run.v3Result = v3Result;
+  run.v3EventId = v3EventId;
+  run.recordedGenerationId = recordedGenerationId;
+}
 
+function recordContextTelemetry(run: HookRun): void {
+  const { coordRoot, adapter, norm, payload, owner, sessionId } = run;
   // Context telemetry is opportunistic and truthful: only persist a sample
   // when the adapter payload actually exposes usage/window data. Identical
   // measurements are de-duplicated before they reach the canonical stream.
@@ -1087,460 +1163,531 @@ async function main(): Promise<number> {
       logError(coordRoot, err, { phase: "context-compaction-completed" });
     }
   }
+}
 
-  // Phase 8: SessionStart post-emit: project the event so the heartbeat
-  // lands synchronously, run stale-sweep, and emit the adapter-shaped
-  // systemMessage JSON (peer table + wiring check + council invites).
-  // Adapter-agnostic since v0.5.0; replaces the previous bash UX layer
-  // and the equivalent per-adapter bash session_start handlers.
-  if (norm.event_type === "session.started") {
-    // A configured backup runs out of process and is freshness-gated per host.
-    // Startup never waits for restic or a remote provider; the child owns no
-    // hook stdio, so the harness is not held open until it finishes. A failed
-    // previous run surfaces as one line in this session's context.
-    let backupCue = "";
-    try {
-      backupCue = scheduleBackupSnapshot(coordRoot).cue ?? "";
-    } catch (err) {
-      logError(coordRoot, err, { phase: "backup-schedule" });
-    }
-    // Effect (journal-maintaining adapters): prune stale journal archives +
-    // sweep orphans. The recovery-cue is merged into the session-start
-    // additionalContext inside emitSessionStartSystemMessage.
-    if (behavior.journalMaintenance) journalJanitor(coordRoot);
-    imageJanitor(coordRoot);
-    // Session start is the only caller of the artifact janitor and the storage
-    // maintenance pass, so both load here instead of on every tool call.
-    const { autoCleanArtifacts } = await import("../artifacts/index.ts");
-    const { autoCleanEventV3Archives } = await import("../events/v3/archive-retention.ts");
-    const { createAutomaticMaintenanceComposition, runAutomaticMaintenancePass } = await import(
-      "../storage/maintenance-providers.ts"
+async function handleSessionStarted(run: HookRun): Promise<void> {
+  const { coordRoot, adapter, behavior, payload, owner, sessionId, data } = run;
+  // A configured backup runs out of process and is freshness-gated per host.
+  // Startup never waits for restic or a remote provider; the child owns no
+  // hook stdio, so the harness is not held open until it finishes. A failed
+  // previous run surfaces as one line in this session's context.
+  let backupCue = "";
+  try {
+    backupCue = scheduleBackupSnapshot(coordRoot).cue ?? "";
+  } catch (err) {
+    logError(coordRoot, err, { phase: "backup-schedule" });
+  }
+  // Effect (journal-maintaining adapters): prune stale journal archives +
+  // sweep orphans. The recovery-cue is merged into the session-start
+  // additionalContext inside emitSessionStartSystemMessage.
+  if (behavior.journalMaintenance) journalJanitor(coordRoot);
+  imageJanitor(coordRoot);
+  // Session start is the only caller of the artifact janitor and the storage
+  // maintenance pass, so both load here instead of on every tool call.
+  const { autoCleanArtifacts } = await import("../artifacts/index.ts");
+  const { autoCleanEventV3Archives } = await import("../events/v3/archive-retention.ts");
+  const { createAutomaticMaintenanceComposition, runAutomaticMaintenancePass } = await import(
+    "../storage/maintenance-providers.ts"
+  );
+  // Effect: throttled daily sweep of expired artifact workspaces (guarded,
+  // managed-expired only; see autoCleanArtifacts). Best-effort like every
+  // janitor here: a failure logs and never blocks session start.
+  try {
+    autoCleanArtifacts(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "artifact-auto-clean" });
+  }
+  // Effect: apply the same daily throttle to closed V3 epochs. The newest
+  // recovery epochs remain protected by the archive retention policy.
+  try {
+    autoCleanEventV3Archives(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "event-v3-archive-auto-clean" });
+  }
+  // Plan one bounded, claim-first global slice from cached pressure only.
+  // Existing owner janitors above remain the only active executors until
+  // each provider receives a separate production activation.
+  try {
+    await runAutomaticMaintenancePass(
+      createAutomaticMaintenanceComposition(coordRoot, {
+        journal: () => {
+          if (behavior.journalMaintenance) journalJanitor(coordRoot);
+        },
+        images: () => imageJanitor(coordRoot),
+        artifacts: () => autoCleanArtifacts(coordRoot),
+      }),
     );
-    // Effect: throttled daily sweep of expired artifact workspaces (guarded,
-    // managed-expired only; see autoCleanArtifacts). Best-effort like every
-    // janitor here: a failure logs and never blocks session start.
+  } catch (err) {
+    logError(coordRoot, err, { phase: "storage-maintenance-auto" });
+  }
+  let recovery: PreparedContextRecovery | null = null;
+  if (payload?.source === "compact") {
     try {
-      autoCleanArtifacts(coordRoot);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "artifact-auto-clean" });
-    }
-    // Effect: apply the same daily throttle to closed V3 epochs. The newest
-    // recovery epochs remain protected by the archive retention policy.
-    try {
-      autoCleanEventV3Archives(coordRoot);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "event-v3-archive-auto-clean" });
-    }
-    // Plan one bounded, claim-first global slice from cached pressure only.
-    // Existing owner janitors above remain the only active executors until
-    // each provider receives a separate production activation.
-    try {
-      await runAutomaticMaintenancePass(
-        createAutomaticMaintenanceComposition(coordRoot, {
-          journal: () => {
-            if (behavior.journalMaintenance) journalJanitor(coordRoot);
-          },
-          images: () => imageJanitor(coordRoot),
-          artifacts: () => autoCleanArtifacts(coordRoot),
-        }),
-      );
-    } catch (err) {
-      logError(coordRoot, err, { phase: "storage-maintenance-auto" });
-    }
-    let recovery: PreparedContextRecovery | null = null;
-    if (payload?.source === "compact") {
-      try {
-        markContextCompactionCompleted(coordRoot, {
-          sessionId,
-          instanceId: owner.instance_id,
-        });
-        recovery = prepareContextRecovery(coordRoot, {
-          instanceId: owner.instance_id,
-          sessionId,
-          cwd: payload?.cwd ?? process.cwd(),
-        });
-      } catch (err) {
-        logError(coordRoot, err, { phase: "context-recovery-session-start" });
-      }
-    }
-    try {
-      const injected = await emitSessionStartSystemMessage(
-        coordRoot,
-        owner.instance_id,
+      markContextCompactionCompleted(coordRoot, {
         sessionId,
-        data,
-        adapter,
-        recovery?.briefing ?? "",
-        backupCue,
-      );
-      if (injected && recovery) {
-        completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
-      }
-    } catch (err) {
-      logError(coordRoot, err, { phase: "session-start-systemMessage" });
-    }
-    // Cross-machine presence is derived from the authority-safe V3 projection,
-    // not the disposable heartbeat cache. Announce this session, pull peers,
-    // and keep the optional live relay connected.
-    try {
-      publishPresence(coordRoot);
-      fetchPresence(coordRoot);
-      ensureRelayDaemon(coordRoot);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "session-start-presence" });
-    }
-  }
-
-  // Phase 8: SessionEnd cleanup: delete heartbeat + pid-map rows. Adapter-
-  // agnostic since v0.5.0.
-  if (norm.event_type === "session.ended") {
-    try {
-      cleanupSessionEnd(coordRoot, owner.instance_id);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "session-end-cleanup" });
-    }
-    // Effects: archive the ending agent's journal + force a session-telemetry
-    // sync (via HARNERY_CLAUDE_SESSIONS_FORCE=1), each gated by the behavior.
-    if (behavior.journalMaintenance) journalArchive(coordRoot, owner.instance_id);
-    if (behavior.sessionTelemetrySync) runSessionSyncExtension(coordRoot, true);
-    // Publish the post-cleanup V3 projection so remote machines see this
-    // session disappear without waiting for the stale window.
-    try {
-      publishPresence(coordRoot);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "session-end-presence" });
-    }
-  }
-
-  // Phase 8: SubagentStart: the child generation was opened above from the
-  // native delegation identity. Refresh its disposable projection, log the
-  // lifecycle event, and emit a context message announcing the subagent.
-  if (norm.event_type === "agent.started") {
-    try {
-      const childInstanceId = (data.agent_id as string | undefined) ?? owner.instance_id;
-      await emitSubagentStartContext(coordRoot, childInstanceId, sessionId, data, adapter);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "subagent-start-context" });
-    }
-  }
-
-  // Phase 8: SubagentStop: delete subagent heartbeat + log.
-  if (norm.event_type === "agent.completed") {
-    try {
-      const childInstanceId = payload?.subagent_id ?? payload?.agent_id ?? owner.instance_id;
-      cleanupSessionEnd(coordRoot, childInstanceId);
-      const { reconcileSessionFinalizationV3 } = await import("../agents/session-finalizer-v3.ts");
-      reconcileSessionFinalizationV3(coordRoot, { archive_observations: [] });
-    } catch (err) {
-      logError(coordRoot, err, { phase: "subagent-stop-cleanup" });
-    }
-  }
-
-  // Phase 8: UserPromptSubmit: render dedup'd peer table + council pending
-  // and emit the adapter-shaped systemMessage JSON. Adapter-agnostic since v0.5.0.
-  if (norm.event_type === "turn.started") {
-    // Effects: reset per-turn sound rate-limit counters + run presence
-    // detection on the prompt, each gated by the behavior.
-    if (behavior.soundEffects) resetSoundCounters(sessionId);
-    if (behavior.promptPresenceDetection) {
-      const prompt = (payload?.raw?.prompt as string | undefined) ?? "";
-      if (prompt) detectPresence(prompt);
-    }
-    // Presence: throttled pull of peer machines' presence refs (default 60s
-    // interval; the systemMessage below reads whatever is locally known).
-    try {
-      fetchPresence(coordRoot);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "user-prompt-submit-presence" });
-    }
-    let recovery: PreparedContextRecovery | null = null;
-    const continuityState = readContextState(coordRoot, sessionId);
-    if (
-      continuityState?.phase === "checkpointed" &&
-      continuityState.compaction_completed_at !== undefined
-    ) {
-      try {
-        recovery = prepareContextRecovery(coordRoot, {
-          instanceId: owner.instance_id,
-          sessionId,
-          cwd: payload?.cwd ?? process.cwd(),
-        });
-      } catch (err) {
-        logError(coordRoot, err, { phase: "context-recovery-user-prompt" });
-      }
-    }
-    let hostPromptContext = "";
-    const hostPromptEnabled = hostPromptContextConfig(coordRoot)?.enabled === true;
-    if (hostPromptEnabled && topLevelSession && !stopRemediation) {
-      try {
-        const { runPromptContext } = await import("./prompt-context/runner.ts");
-        const result = await runPromptContext({
-          coordRoot,
-          adapter,
-          sessionId,
-          turnId: payload?.turn_id ?? v3EventId ?? sessionId,
-          cwd: payload?.cwd ?? process.cwd(),
-          prompt: payload?.prompt ?? "",
-        });
-        appendDebug(coordRoot, {
-          ...debugBase,
-          effect: "prompt-context",
-          ...result.audit,
-        });
-        hostPromptContext = result.context ?? "";
-      } catch (err) {
-        logError(coordRoot, err, { phase: "prompt-context-user-prompt" });
-      }
-    }
-    try {
-      const injected = await emitUserPromptSubmitSystemMessage(
-        coordRoot,
-        owner.instance_id,
+        instanceId: owner.instance_id,
+      });
+      recovery = prepareContextRecovery(coordRoot, {
+        instanceId: owner.instance_id,
         sessionId,
-        adapter,
-        payload?.cwd,
-        recovery?.briefing ?? "",
-        hostPromptContext,
-      );
-      if (injected && recovery) {
-        completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
-      }
+        cwd: payload?.cwd ?? process.cwd(),
+      });
     } catch (err) {
-      logError(coordRoot, err, { phase: "user-prompt-submit-systemMessage" });
+      logError(coordRoot, err, { phase: "context-recovery-session-start" });
     }
   }
-
-  // turn.completed: telemetry, then the stop verdict. The
-  // verdict + codex-replay previously lived in the per-adapter shell adapters;
-  // agent-hook owns them now. Runs on the normal "stop" event only;
-  // "stop-failure" (API error) gets no gate, matching the previous
-  // stop vs stop-failure split.
-  if (norm.event_type === "turn.completed" && eventName === "stop") {
-    // Session telemetry sync remains an independent side effect.
-    if (behavior.sessionTelemetrySync) runSessionSyncExtension(coordRoot, false);
-
-    // Publish after the canonical turn event has landed so the blob carries
-    // current task, activity, and claim state. Re-ensure the relay here because
-    // its daemon intentionally exits when a machine has no live sessions.
-    try {
-      publishPresence(coordRoot);
-      ensureRelayDaemon(coordRoot);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "stop-presence" });
-    }
-
-    // Stop verdict (V3 ritual + task/status gate). Direct in-process call: the
-    // rule lives in Harnery. agent-hook already emitted this turn.completed
-    // with privacy-safe ritual observations, so the evidence is in the stream.
-    const verdict = evaluateStopHook(coordRoot, {
-      rule: "stop-hook",
-      instance_id: owner.instance_id,
-      session_id: sessionId,
+  try {
+    const injected = await emitSessionStartSystemMessage(
+      coordRoot,
+      owner.instance_id,
+      sessionId,
+      data,
       adapter,
-      stop_hook_active: payload?.stop_hook_active === true,
-      status_box_present_strict: data.status_box_present_strict === true,
-      session_name_observation_unavailable:
-        typeof data.session_name_unavailable_reason === "string",
-      bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
-      workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
-    });
-    if (!verdict.allow) {
-      // Backstop for sessions whose evidence can never land (e.g. a headless
-      // child whose status command resolves to a different owner): after
-      // `cap` consecutive blocked stops in one cycle, allow the stop instead
-      // of bouncing the model forever. Cycle boundaries come from the
-      // adapter's continuation flag, so adapters without one are unaffected.
-      const { recordRemediationBlock } = await import("./remediation-cap.ts");
-      const remediation = recordRemediationBlock(sessionId, payload?.stop_hook_active === true);
-      if (remediation.exceeded) {
-        appendDebug(coordRoot, {
-          ...debugBase,
-          skipped: "stop-remediation-cap-exhausted",
-          blocked_rule: verdict.rule,
-          blocked_count: remediation.count,
-          session_id: sessionId,
-          remediation_cycle_anchor: verdict.remediation_cycle_anchor,
-        });
-      } else {
-        // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr
-        // as a turn block; Cursor ignores exit codes and re-prompts only via a
-        // `followup_message` it auto-submits.
-        const { emitStopOutcome } = await import("./adapter/output.ts");
-        return emitStopOutcome(adapter, { verdict }, coordRoot);
-      }
-    } else {
-      const { clearRemediationCount } = await import("./remediation-cap.ts");
-      clearRemediationCount(sessionId);
+      recovery?.briefing ?? "",
+      backupCue,
+    );
+    if (injected && recovery) {
+      completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
     }
-
-    // An explicit end requested from inside this turn cannot be authoritative
-    // until the adapter has committed turn.completed above. Reconcile only
-    // when such a request exists; any later real work cancels it in the
-    // finalizer instead of being terminated underneath the agent.
-    try {
-      const { hasPendingExplicitSessionEndV3, reconcileSessionFinalizationV3 } = await import(
-        "../agents/session-finalizer-v3.ts"
-      );
-      if (hasPendingExplicitSessionEndV3(coordRoot)) {
-        reconcileSessionFinalizationV3(coordRoot);
-      }
-    } catch (err) {
-      logError(coordRoot, err, { phase: "stop-explicit-session-finalization" });
-    }
-    if (behavior.runtimeContextRetry) scheduleRuntimeContextRetry(coordRoot, adapter, sessionId);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "session-start-systemMessage" });
   }
+  // Cross-machine presence is derived from the authority-safe V3 projection,
+  // not the disposable heartbeat cache. Announce this session, pull peers,
+  // and keep the optional live relay connected.
+  try {
+    publishPresence(coordRoot);
+    fetchPresence(coordRoot);
+    ensureRelayDaemon(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "session-start-presence" });
+  }
+}
 
-  // Phase 7: PreToolUse: heartbeat + pid-map self-heal on every tool call.
-  // Adapter-agnostic: both writes have the same shape regardless of who fired.
-  // Cursor/Codex bash dispatchers still fire their own G-guard logic, but the
-  // heals here keep the agent-coord layer's view of liveness fresh.
-  //
-  // The heartbeat + pid-map heals are paired by design; they were wired
-  // side-by-side in the previous pre-tool-use adapter. The Phase 4-6 refactor
-  // preserved the heartbeat half but dropped the pid-map half; the pid-map
-  // call was restored here afterward.
-  if (norm.event_type === "tool.requested") {
+function handleSessionEnded(run: HookRun): void {
+  const { coordRoot, behavior, owner } = run;
+  try {
+    cleanupSessionEnd(coordRoot, owner.instance_id);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "session-end-cleanup" });
+  }
+  // Effects: archive the ending agent's journal + force a session-telemetry
+  // sync (via HARNERY_CLAUDE_SESSIONS_FORCE=1), each gated by the behavior.
+  if (behavior.journalMaintenance) journalArchive(coordRoot, owner.instance_id);
+  if (behavior.sessionTelemetrySync) runSessionSyncExtension(coordRoot, true);
+  // Publish the post-cleanup V3 projection so remote machines see this
+  // session disappear without waiting for the stale window.
+  try {
+    publishPresence(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "session-end-presence" });
+  }
+}
+
+async function handleAgentStarted(run: HookRun): Promise<void> {
+  const { coordRoot, adapter, owner, sessionId, data } = run;
+  try {
+    const childInstanceId = (data.agent_id as string | undefined) ?? owner.instance_id;
+    await emitSubagentStartContext(coordRoot, childInstanceId, sessionId, data, adapter);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "subagent-start-context" });
+  }
+}
+
+async function handleAgentCompleted(run: HookRun): Promise<void> {
+  const { coordRoot, payload, owner } = run;
+  try {
+    const childInstanceId = payload?.subagent_id ?? payload?.agent_id ?? owner.instance_id;
+    cleanupSessionEnd(coordRoot, childInstanceId);
+    const { reconcileSessionFinalizationV3 } = await import("../agents/session-finalizer-v3.ts");
+    reconcileSessionFinalizationV3(coordRoot, { archive_observations: [] });
+  } catch (err) {
+    logError(coordRoot, err, { phase: "subagent-stop-cleanup" });
+  }
+}
+
+async function handleTurnStarted(run: HookRun): Promise<void> {
+  const {
+    coordRoot,
+    adapter,
+    behavior,
+    payload,
+    owner,
+    sessionId,
+    debugBase,
+    topLevelSession,
+    stopRemediation,
+    v3EventId,
+  } = run;
+  // Effects: reset per-turn sound rate-limit counters + run presence
+  // detection on the prompt, each gated by the behavior.
+  if (behavior.soundEffects) resetSoundCounters(sessionId);
+  if (behavior.promptPresenceDetection) {
+    const prompt = (payload?.raw?.prompt as string | undefined) ?? "";
+    if (prompt) detectPresence(prompt);
+  }
+  // Presence: throttled pull of peer machines' presence refs (default 60s
+  // interval; the systemMessage below reads whatever is locally known).
+  try {
+    fetchPresence(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "user-prompt-submit-presence" });
+  }
+  let recovery: PreparedContextRecovery | null = null;
+  const continuityState = readContextState(coordRoot, sessionId);
+  if (
+    continuityState?.phase === "checkpointed" &&
+    continuityState.compaction_completed_at !== undefined
+  ) {
     try {
-      // Recorded fork lineage, heal-path flavor. A forked CC conversation
-      // never fires its own session.started (SessionStart fires under the
-      // PARENT's session id with source=resume, before the fork id is
-      // minted; verified 2026-08-05), so the fork's new instance first
-      // materializes right here. Gate detection on "no heartbeat yet" so the
-      // transcript scan runs once per instance lifetime, not per tool call.
-      refreshPidmap(coordRoot, owner.instance_id, adapter, payload?.pid);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "pre-tool-use-heal" });
-    }
-
-    // The suggested name is a pending display latch. The set-task call itself
-    // runs before a name exists; every later tool waits until the exact block
-    // is the first assistant text after the mint result. Cursor supplies
-    // agent_message directly; Claude Code and Codex are resolved from their
-    // JSONL transcripts. Cursor's current narration can provide positive
-    // evidence, but cannot disprove an earlier response; afterAgentResponse
-    // stamps that durable sighting. Later commentary must not erase an
-    // already-correct display, and unavailable evidence must not deadlock
-    // every tool.
-    try {
-      const displayAllowed = await enforcePendingSessionNameDisplay(
-        coordRoot,
-        owner.instance_id,
-        adapter,
-        payload,
-        generationBoundHeartbeat(readHeartbeat(coordRoot, owner.instance_id), recordedGenerationId),
-      );
-      if (!displayAllowed) return 0;
-    } catch (err) {
-      logError(coordRoot, err, { phase: "pre-tool-use-session-name" });
-    }
-
-    // Windows-native Codex + WSL UNC only: block the one cross-shell shape
-    // proven to corrupt argument boundaries. Normal WSL argv calls, literal
-    // bash -s scripts, native Linux/macOS sessions, and every other adapter
-    // pass through. The host instructions name its concrete safe bridge.
-    const unsafeShellReason =
-      behavior.unsafeCrossShellReason?.({
-        cwd: payload?.cwd,
-        toolName: payload?.tool_name,
-        toolInput: payload?.tool_input,
-      }) ?? null;
-    if (unsafeShellReason) {
-      const { emitDeny } = await import("./adapter/output.ts");
-      emitDeny(adapter, unsafeShellReason);
-      return 0;
-    }
-
-    const waiterReason = shellWaiterReason(payload?.tool_name, payload?.tool_input);
-    if (waiterReason) {
-      const { emitDeny } = await import("./adapter/output.ts");
-      emitDeny(adapter, waiterReason);
-      return 0;
-    }
-
-    // G-guard for ALL adapters. Claude Code previously ran this via a
-    // pre-tool-use bash adapter (which called `agent-coord verdict --rule=claim`);
-    // that adapter is now deleted, so agent-hook owns the deny for every adapter.
-    // emitDeny() inside emits the adapter-shaped permission JSON (claude-code +
-    // codex use hookSpecificOutput.permissionDecision; cursor uses .permission).
-    // apply_patch (codex) parses paths from the patch body and runs verdict
-    // per-path; Edit/Write/NotebookEdit resolve a single target. Non-write tools
-    // (incl. Agent) yield no targets and pass through with no deny.
-    let guardAllowed = true;
-    try {
-      guardAllowed = await runPreToolUseGuard(
-        coordRoot,
-        owner.instance_id,
+      recovery = prepareContextRecovery(coordRoot, {
+        instanceId: owner.instance_id,
         sessionId,
-        data,
+        cwd: payload?.cwd ?? process.cwd(),
+      });
+    } catch (err) {
+      logError(coordRoot, err, { phase: "context-recovery-user-prompt" });
+    }
+  }
+  let hostPromptContext = "";
+  const hostPromptEnabled = hostPromptContextConfig(coordRoot)?.enabled === true;
+  if (hostPromptEnabled && topLevelSession && !stopRemediation) {
+    try {
+      const { runPromptContext } = await import("./prompt-context/runner.ts");
+      const result = await runPromptContext({
+        coordRoot,
         adapter,
-      );
+        sessionId,
+        turnId: payload?.turn_id ?? v3EventId ?? sessionId,
+        cwd: payload?.cwd ?? process.cwd(),
+        prompt: payload?.prompt ?? "",
+      });
+      appendDebug(coordRoot, {
+        ...debugBase,
+        effect: "prompt-context",
+        ...result.audit,
+      });
+      hostPromptContext = result.context ?? "";
     } catch (err) {
-      logError(coordRoot, err, { phase: "pre-tool-use-guard" });
+      logError(coordRoot, err, { phase: "prompt-context-user-prompt" });
     }
-    if (!guardAllowed) return 0;
+  }
+  try {
+    const injected = await emitUserPromptSubmitSystemMessage(
+      coordRoot,
+      owner.instance_id,
+      sessionId,
+      adapter,
+      payload?.cwd,
+      recovery?.briefing ?? "",
+      hostPromptContext,
+    );
+    if (injected && recovery) {
+      completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
+    }
+  } catch (err) {
+    logError(coordRoot, err, { phase: "user-prompt-submit-systemMessage" });
+  }
+}
+
+async function handleStop(run: HookRun): Promise<number | undefined> {
+  const { coordRoot, adapter, behavior, payload, owner, sessionId, data, debugBase } = run;
+  // Session telemetry sync remains an independent side effect.
+  if (behavior.sessionTelemetrySync) runSessionSyncExtension(coordRoot, false);
+
+  // Publish after the canonical turn event has landed so the blob carries
+  // current task, activity, and claim state. Re-ensure the relay here because
+  // its daemon intentionally exits when a machine has no live sessions.
+  try {
+    publishPresence(coordRoot);
+    ensureRelayDaemon(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "stop-presence" });
   }
 
-  if (norm.event_type === "tool.completed" && eventName === "post-tool-use") {
-    // Inject the full instruction only at the successful tool boundary that
-    // actually minted or retried a name: the first non-empty set-task, a
-    // pending-name set-task retry, or the transition to lifecycle done. The
-    // coordination row intentionally remains pending until transcript evidence
-    // catches up, so the latch alone cannot drive injection: that would print
-    // the same block after every later tool.
-    //
-    // Between those two extremes sits a bounded reminder. Since ADR 0182 the
-    // PreToolUse gate allows a tool when transcript evidence is unavailable
-    // and says so only on stderr, which the model never reads. A model that
-    // skipped the block after the mint was therefore never asked again
-    // (ADR 0183). While the requested title is still pending, ordinary tool
-    // results carry an idempotent reminder up to a fixed count; coordination
-    // chores (set-task, status, suggest-name) are skipped because a mint or
-    // retry response already carries the full instruction and an end-turn
-    // status is the wrong place to ask.
-    try {
-      const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
-      const name = sessionNameDisplayPending(row);
-      if (name && toolResponseMintedSessionName(payload?.tool_response, name)) {
-        // Record the title before asking for it. The suggestion can still
-        // change afterwards (an assigned-name rewrite, a lifecycle re-mint, a
-        // rebuilt cache), and the agent must not be stranded for displaying
-        // exactly what it was handed.
-        stampSessionNameRequested(coordRoot, owner.instance_id, name);
+  // Stop verdict (V3 ritual + task/status gate). Direct in-process call: the
+  // rule lives in Harnery. agent-hook already emitted this turn.completed
+  // with privacy-safe ritual observations, so the evidence is in the stream.
+  const verdict = evaluateStopHook(coordRoot, {
+    rule: "stop-hook",
+    instance_id: owner.instance_id,
+    session_id: sessionId,
+    adapter,
+    stop_hook_active: payload?.stop_hook_active === true,
+    status_box_present_strict: data.status_box_present_strict === true,
+    session_name_observation_unavailable: typeof data.session_name_unavailable_reason === "string",
+    bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
+    workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
+  });
+  if (!verdict.allow) {
+    // Backstop for sessions whose evidence can never land (e.g. a headless
+    // child whose status command resolves to a different owner): after
+    // `cap` consecutive blocked stops in one cycle, allow the stop instead
+    // of bouncing the model forever. Cycle boundaries come from the
+    // adapter's continuation flag, so adapters without one are unaffected.
+    const { recordRemediationBlock } = await import("./remediation-cap.ts");
+    const remediation = recordRemediationBlock(sessionId, payload?.stop_hook_active === true);
+    if (remediation.exceeded) {
+      appendDebug(coordRoot, {
+        ...debugBase,
+        skipped: "stop-remediation-cap-exhausted",
+        blocked_rule: verdict.rule,
+        blocked_count: remediation.count,
+        session_id: sessionId,
+        remediation_cycle_anchor: verdict.remediation_cycle_anchor,
+      });
+    } else {
+      // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr
+      // as a turn block; Cursor ignores exit codes and re-prompts only via a
+      // `followup_message` it auto-submits.
+      const { emitStopOutcome } = await import("./adapter/output.ts");
+      return emitStopOutcome(adapter, { verdict }, coordRoot);
+    }
+  } else {
+    const { clearRemediationCount } = await import("./remediation-cap.ts");
+    clearRemediationCount(sessionId);
+  }
+
+  // An explicit end requested from inside this turn cannot be authoritative
+  // until the adapter has committed turn.completed above. Reconcile only
+  // when such a request exists; any later real work cancels it in the
+  // finalizer instead of being terminated underneath the agent.
+  try {
+    const { hasPendingExplicitSessionEndV3, reconcileSessionFinalizationV3 } = await import(
+      "../agents/session-finalizer-v3.ts"
+    );
+    if (hasPendingExplicitSessionEndV3(coordRoot)) {
+      reconcileSessionFinalizationV3(coordRoot);
+    }
+  } catch (err) {
+    logError(coordRoot, err, { phase: "stop-explicit-session-finalization" });
+  }
+  if (behavior.runtimeContextRetry) scheduleRuntimeContextRetry(coordRoot, adapter, sessionId);
+  return undefined;
+}
+
+async function handleToolRequested(run: HookRun): Promise<number | undefined> {
+  const { coordRoot, adapter, behavior, payload, owner, sessionId, data, recordedGenerationId } =
+    run;
+  try {
+    // Recorded fork lineage, heal-path flavor. A forked CC conversation
+    // never fires its own session.started (SessionStart fires under the
+    // PARENT's session id with source=resume, before the fork id is
+    // minted; verified 2026-08-05), so the fork's new instance first
+    // materializes right here. Gate detection on "no heartbeat yet" so the
+    // transcript scan runs once per instance lifetime, not per tool call.
+    refreshPidmap(coordRoot, owner.instance_id, adapter, payload?.pid);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "pre-tool-use-heal" });
+  }
+
+  // The suggested name is a pending display latch. The set-task call itself
+  // runs before a name exists; every later tool waits until the exact block
+  // is the first assistant text after the mint result. Cursor supplies
+  // agent_message directly; Claude Code and Codex are resolved from their
+  // JSONL transcripts. Cursor's current narration can provide positive
+  // evidence, but cannot disprove an earlier response; afterAgentResponse
+  // stamps that durable sighting. Later commentary must not erase an
+  // already-correct display, and unavailable evidence must not deadlock
+  // every tool.
+  try {
+    const displayAllowed = await enforcePendingSessionNameDisplay(
+      coordRoot,
+      owner.instance_id,
+      adapter,
+      payload,
+      generationBoundHeartbeat(readHeartbeat(coordRoot, owner.instance_id), recordedGenerationId),
+    );
+    if (!displayAllowed) return 0;
+  } catch (err) {
+    logError(coordRoot, err, { phase: "pre-tool-use-session-name" });
+  }
+
+  // Windows-native Codex + WSL UNC only: block the one cross-shell shape
+  // proven to corrupt argument boundaries. Normal WSL argv calls, literal
+  // bash -s scripts, native Linux/macOS sessions, and every other adapter
+  // pass through. The host instructions name its concrete safe bridge.
+  const unsafeShellReason =
+    behavior.unsafeCrossShellReason?.({
+      cwd: payload?.cwd,
+      toolName: payload?.tool_name,
+      toolInput: payload?.tool_input,
+    }) ?? null;
+  if (unsafeShellReason) {
+    const { emitDeny } = await import("./adapter/output.ts");
+    emitDeny(adapter, unsafeShellReason);
+    return 0;
+  }
+
+  const waiterReason = shellWaiterReason(payload?.tool_name, payload?.tool_input);
+  if (waiterReason) {
+    const { emitDeny } = await import("./adapter/output.ts");
+    emitDeny(adapter, waiterReason);
+    return 0;
+  }
+
+  // G-guard for ALL adapters. Claude Code previously ran this via a
+  // pre-tool-use bash adapter (which called `agent-coord verdict --rule=claim`);
+  // that adapter is now deleted, so agent-hook owns the deny for every adapter.
+  // emitDeny() inside emits the adapter-shaped permission JSON (claude-code +
+  // codex use hookSpecificOutput.permissionDecision; cursor uses .permission).
+  // apply_patch (codex) parses paths from the patch body and runs verdict
+  // per-path; Edit/Write/NotebookEdit resolve a single target. Non-write tools
+  // (incl. Agent) yield no targets and pass through with no deny.
+  let guardAllowed = true;
+  try {
+    guardAllowed = await runPreToolUseGuard(coordRoot, owner.instance_id, sessionId, data, adapter);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "pre-tool-use-guard" });
+  }
+  if (!guardAllowed) return 0;
+  return undefined;
+}
+
+async function handlePostToolUse(run: HookRun): Promise<void> {
+  const { coordRoot, adapter, eventName, payload, owner } = run;
+  // Inject the full instruction only at the successful tool boundary that
+  // actually minted or retried a name: the first non-empty set-task, a
+  // pending-name set-task retry, or the transition to lifecycle done. The
+  // coordination row intentionally remains pending until transcript evidence
+  // catches up, so the latch alone cannot drive injection: that would print
+  // the same block after every later tool.
+  //
+  // Between those two extremes sits a bounded reminder. Since ADR 0182 the
+  // PreToolUse gate allows a tool when transcript evidence is unavailable
+  // and says so only on stderr, which the model never reads. A model that
+  // skipped the block after the mint was therefore never asked again
+  // (ADR 0183). While the requested title is still pending, ordinary tool
+  // results carry an idempotent reminder up to a fixed count; coordination
+  // chores (set-task, status, suggest-name) are skipped because a mint or
+  // retry response already carries the full instruction and an end-turn
+  // status is the wrong place to ask.
+  try {
+    const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
+    const name = sessionNameDisplayPending(row);
+    if (name && toolResponseMintedSessionName(payload?.tool_response, name)) {
+      // Record the title before asking for it. The suggestion can still
+      // change afterwards (an assigned-name rewrite, a lifecycle re-mint, a
+      // rebuilt cache), and the agent must not be stranded for displaying
+      // exactly what it was handed.
+      stampSessionNameRequested(coordRoot, owner.instance_id, name);
+      const { emitContext } = await import("./adapter/output.ts");
+      emitContext(adapter, "PostToolUse", sessionNameDisplayInstruction(name));
+    } else if (name) {
+      const due = sessionNameDisplayReminderDue(row);
+      const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
+      if (due && !isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) {
+        stampSessionNameReminded(coordRoot, owner.instance_id, due);
+        appendDebug(coordRoot, {
+          ts: new Date().toISOString(),
+          event_name: eventName,
+          adapter,
+          instance_id: owner.instance_id,
+          effect: "session-name-display-reminded",
+          session_name_pending: due,
+          reminders: (row?.session_name_display_reminders ?? 0) + 1,
+        });
         const { emitContext } = await import("./adapter/output.ts");
-        emitContext(adapter, "PostToolUse", sessionNameDisplayInstruction(name));
-      } else if (name) {
-        const due = sessionNameDisplayReminderDue(row);
-        const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
-        if (due && !isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) {
-          stampSessionNameReminded(coordRoot, owner.instance_id, due);
-          appendDebug(coordRoot, {
-            ts: new Date().toISOString(),
-            event_name: eventName,
-            adapter,
-            instance_id: owner.instance_id,
-            effect: "session-name-display-reminded",
-            session_name_pending: due,
-            reminders: (row?.session_name_display_reminders ?? 0) + 1,
-          });
-          const { emitContext } = await import("./adapter/output.ts");
-          emitContext(adapter, "PostToolUse", sessionNameDisplayReminder(due));
-        }
+        emitContext(adapter, "PostToolUse", sessionNameDisplayReminder(due));
       }
-    } catch (err) {
-      logError(coordRoot, err, { phase: "post-tool-use-session-name" });
     }
+  } catch (err) {
+    logError(coordRoot, err, { phase: "post-tool-use-session-name" });
   }
+}
 
-  // Phase 7: PostToolUseFailure: release claim on failed Edit (the file
-  // never landed; the claim is stale). Adapter-agnostic.
-  if (norm.event_type === "tool.completed" && eventName === "post-tool-use-failure") {
-    try {
-      releaseClaimOnFailure(coordRoot, owner.instance_id, data, payload?.raw);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "post-tool-use-failure-release" });
-    }
+function handlePostToolUseFailure(run: HookRun): void {
+  const { coordRoot, payload, owner, data } = run;
+  try {
+    releaseClaimOnFailure(coordRoot, owner.instance_id, data, payload?.raw);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "post-tool-use-failure-release" });
   }
+}
 
+async function handleCompletedResponse(run: CompletedResponseRun): Promise<number> {
+  const { coordRoot, adapter, eventName, raw, debugBase, ledgerRoute, hookStartedAt, hookClock } =
+    run;
+  const payload = parsePayload(raw, adapter);
+  const owner = resolveOwner({ payload: payload?.raw ?? null, coordRoot });
+  if (!owner) {
+    appendDebug(coordRoot, { ...debugBase, skipped: "no-owner-resolved" });
+    return 0;
+  }
+  const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
+  const name = sessionNameDisplayPending(row);
+  const text = typeof payload?.raw.text === "string" ? payload.raw.text : "";
+  const sighting = matchSessionNameDisplay(row, text);
+  if (sighting) {
+    stampSessionNameSeen(coordRoot, owner.instance_id, sighting.pending);
+    appendDebug(coordRoot, {
+      ...debugBase,
+      effect: "session-name-display-stamped",
+      session_name_pending: sighting.pending,
+      ...(sighting.displayed === sighting.pending
+        ? {}
+        : { session_name_displayed: sighting.displayed, session_name_drift: true }),
+    });
+  } else if (!name) {
+    // Nothing was owed. Distinct from a miss: conflating the two is what made
+    // a latched Cursor session undiagnosable from this log.
+    appendDebug(coordRoot, { ...debugBase, skipped: "no-pending-session-name" });
+  } else {
+    appendDebug(coordRoot, {
+      ...debugBase,
+      skipped: "session-name-block-absent",
+      session_name_pending: name,
+      reply_bytes: text.length,
+      reply_leads_with_fence: /^\s*`{3,}/.test(text),
+    });
+  }
+  if (ledgerRoute.state === "blocked") {
+    appendDebug(coordRoot, {
+      ...debugBase,
+      skipped: "v3-control-blocked",
+      reason: ledgerRoute.reason,
+      owner_source: owner.source,
+    });
+    return 0;
+  }
+  const statusBoxPresentStrict = scanAssistantStatusBoxPresent(undefined, text);
+  // The hook parser needs the completed reply long enough to scan it, but
+  // durable hook intake must never retain that body. Keep every other native
+  // field so turn correlation remains available to the producer.
+  const { text: _completedReply, ...privacySafeRaw } = payload?.raw ?? {};
+  const privacySafePayload = payload ? { ...payload, raw: privacySafeRaw } : null;
+  const v3Result = recordLiveHookSignalV3({
+    coordRoot,
+    route: ledgerRoute,
+    eventName,
+    payload: privacySafePayload,
+    adapter,
+    instanceId: owner.instance_id,
+    hook_name: eventName,
+    hook_duration_ms: Math.max(0, Math.floor(performance.now() - hookStartedAt)),
+    monotonic_ns: hookClock.monotonic_ns,
+    turn_ritual: {
+      status_box_present: statusBoxPresentStrict,
+      status_box_present_strict: statusBoxPresentStrict,
+      session_name_required: name !== undefined,
+      session_name_present: name ? assistantTextStartsWithSessionNameBlock(text, name) : false,
+    },
+  });
+  observeHookDebug(hookHealthState, { event_v3_state: v3Result.state });
+  appendDebug(coordRoot, {
+    ...debugBase,
+    effect: "cursor-response-ritual-observed",
+    owner_source: owner.source,
+    event_v3_state: v3Result.state,
+    status_box_present_strict: statusBoxPresentStrict,
+    ...(v3Result.state === "observed"
+      ? {
+          generation_id: v3Result.generation_id,
+          turn_id: v3Result.turn_id,
+          response_observed_at: v3Result.observed_at,
+        }
+      : {}),
+  });
   return 0;
 }
 
