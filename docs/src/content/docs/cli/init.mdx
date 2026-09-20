@@ -152,6 +152,12 @@ edited. The plugin bridges each lifecycle hook (`session.hook("prompt")`,
 own channels. OpenCode reads `AGENTS.md` and `.agents/skills` natively, so no
 `CLAUDE.md` shim or skills mirror is written.
 
+The plugin spawns the launcher from inside OpenCode's shared background
+service, so a standalone project (Harnery installed from npm, launcher written
+as the bare `agent-hook`) needs `agent-hook` on the PATH that service was
+started with; restart the service after installing Harnery. A project that
+contains Harnery gets a repo-relative launcher and needs nothing on PATH.
+
 `--check` treats a hand-edited plugin as drift and a foreign file at that path as
 an error, and `init` refuses to overwrite a file it does not own. `harn deinit
 --adapter opencode` removes the directory when Harnery owns it. The plugin

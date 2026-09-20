@@ -125,6 +125,13 @@ Add first-class `"opencode"` support on both axes.
   pending shell by its command string (recorded in `execute.before`) and falls
   back to the last tool-calling session; a wrong stamp is possible only when two
   sessions run the same command concurrently.
+- Verified live against OpenCode v2.0.11: one headless `opencode run` in a
+  plugin-wired project produced `session.started`, `turn.started`,
+  `tool.requested`, `wait.started`/`wait.ended`, `tool.completed`, and
+  `turn.completed` with zero diagnostics, the session-start context arrived as a
+  synthetic message, and the tool shell carried `OPENCODE_SESSION_ID`. The
+  bridge runs inside the shared service, so a standalone consumer needs
+  `agent-hook` on the PATH that service started with.
 - Enforced Stop re-prompting and SQLite-backed context-window telemetry are
   tracked follow-ups; `emitStopOutcome` returns success without output for
   `opencode`, the same observe-only posture as Codex. ADR 0074 (Antigravity, accepted but
