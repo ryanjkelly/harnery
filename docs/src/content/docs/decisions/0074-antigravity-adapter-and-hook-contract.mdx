@@ -3,7 +3,15 @@ title: "0074: Google Antigravity adapter and hook lifecycle contract"
 description: "ADR: add first-class Google Antigravity (AGY) support across the adapter registry, workflow spawner, lifecycle hook translation, and instructions management."
 ---
 
-**Status:** accepted (2026-08-15) · **Scope:** product tier (`core/adapters`, `core/hooks`, `core/workflow`, `commands/init`, `commands/doctor`)
+**Status:** deferred (2026-09-20; accepted 2026-08-15, never implemented) · **Scope:** product tier (`core/adapters`, `core/hooks`, `core/workflow`, `commands/init`, `commands/doctor`)
+
+> **Deferred.** No Antigravity code exists in Harnery as of 2026-09-20; the four
+> shipped adapters are Claude Code, Codex, Cursor, and OpenCode. The integration
+> recipe below (registry profile, spawner with offline fixture, payload
+> normalization, `init`/`doctor` wiring) was reused by
+> [ADR 0189](./0189-opencode-adapter) and is the template to follow if this
+> decision is picked up. Reactivate it with a dated status change and a plan;
+> supersede it if Antigravity support is dropped for good.
 
 ## Context
 
@@ -81,7 +89,15 @@ Register `BUILTIN_ADAPTER_PROFILES["antigravity"]`:
 
 ## Result
 
+Not implemented. The decision was accepted on 2026-08-15 but no slice shipped:
+there is no `antigravity` adapter id, profile, spawner, hook translation, or
+`init` branch in the codebase. The expected outcomes when the work is picked up
+are unchanged:
+
 - `harn adapter list` and `harn adapter show antigravity` display verified capability claims.
 - `harn adapter bench antigravity` executes offline conformance checks verifying invocation planning and result normalization without requiring live model calls.
 - `harn init --adapter antigravity` bootstraps Harnery coordination in Antigravity projects in a single idempotent step.
-- Lifecycle events, tool auditing, and turn-stop policies function seamlessly in Antigravity environments.
+- Lifecycle events, tool auditing, and turn-stop policies function in Antigravity environments.
+
+ADR 0189 delivered the same recipe for OpenCode on 2026-09-20 and is the
+worked example of every step above.
