@@ -14,6 +14,11 @@ import {
   normalizeCursorResult,
 } from "../workflow/spawn-cursor.ts";
 import {
+  buildOpenCodeInvocation,
+  normalizeOpenCodeResult,
+  openCodeSpawner,
+} from "../workflow/spawn-opencode.ts";
+import {
   BUILTIN_ADAPTER_IDS,
   BUILTIN_ADAPTER_PROFILES,
   type BuiltinAdapterId,
@@ -82,6 +87,38 @@ const BUILTIN_ADAPTERS: Record<BuiltinAdapterId, Adapter> = {
         ok: true,
         text: "HARNERY_BENCH_OK",
         sessionId: "cursor-bench-session",
+      },
+    },
+  },
+  opencode: {
+    profile: BUILTIN_ADAPTER_PROFILES.opencode,
+    spawn: openCodeSpawner,
+    buildInvocation: buildOpenCodeInvocation,
+    normalizeResult: normalizeOpenCodeResult,
+    fixture: {
+      // `opencode run --format json` streams NDJSON: a step-start line then one
+      // or more text parts, each carrying the same sessionID.
+      raw: {
+        stdout: [
+          JSON.stringify({
+            type: "step_start",
+            sessionID: "opencode-bench-session",
+            part: { type: "step-start" },
+          }),
+          JSON.stringify({
+            type: "text",
+            sessionID: "opencode-bench-session",
+            part: { type: "text", text: "HARNERY_BENCH_OK" },
+          }),
+        ].join("\n"),
+        stderr: "",
+        exitCode: 0,
+        durationMs: 11,
+      },
+      expected: {
+        ok: true,
+        text: "HARNERY_BENCH_OK",
+        sessionId: "opencode-bench-session",
       },
     },
   },

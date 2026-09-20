@@ -344,12 +344,9 @@ function buildEventData(
   const p = ctx.payload;
   switch (eventType) {
     case "session.started": {
-      const adapterPlatform =
-        ctx.adapter === "claude-code"
-          ? "claude-code"
-          : ctx.adapter === "cursor"
-            ? "cursor"
-            : "codex";
+      // The platform label is the adapter id itself; enumerating and defaulting
+      // to codex silently mislabels any adapter not in the list.
+      const adapterPlatform = ctx.adapter;
       // Recorded fork lineage is NOT detected here. On claude-code a fork
       // never fires its own session.started — SessionStart fires under the
       // PARENT's session id (source=resume) before the fork id is minted
@@ -2104,6 +2101,7 @@ function adapterPlatform(adapter: Adapter): string {
 function adapterFromPlatform(platform: unknown): Adapter {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
+  if (platform === "opencode") return "opencode";
   return "claude-code";
 }
 
@@ -2137,7 +2135,13 @@ async function emitSessionStartSystemMessage(
       sessionId,
       agentName: agentName || undefined,
       platformLabel:
-        adapter === "claude-code" ? undefined : adapter === "cursor" ? "Cursor" : "Codex",
+        adapter === "claude-code"
+          ? undefined
+          : adapter === "cursor"
+            ? "Cursor"
+            : adapter === "opencode"
+              ? "OpenCode"
+              : "Codex",
     }).trim();
   }
 

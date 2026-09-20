@@ -115,6 +115,19 @@ const BASE_SIGNAL_SUPPORT: Record<
     post_compaction: "unsupported",
     context_usage: "conditional",
   },
+  opencode: {
+    ...SHARED_SIGNAL_SUPPORT,
+    // OpenCode sessions are persistent server objects; the plugin observes a
+    // turn boundary (session.idle) rather than a clean session close, so end is
+    // conditional. Turns group by messageID without a first-class turn id.
+    session_end: "conditional",
+    turn_id: "conditional",
+    permission: "native",
+    // Compaction is intercepted (session.hook("compaction")); post-compaction
+    // recovery and SQLite-backed context usage are not yet certified.
+    post_compaction: "unsupported",
+    context_usage: "unsupported",
+  },
   openclaw: {
     session_start: "conditional",
     session_end: "native",
@@ -167,6 +180,10 @@ export const ADAPTER_CAPABILITY_PROFILES_V3: Record<EventAdapterIdV3, AdapterCap
     }),
     cursor: profile("cursor", {
       model_usage: "unsupported",
+      inference_timing: "unsupported",
+    }),
+    opencode: profile("opencode", {
+      model_usage: "conditional",
       inference_timing: "unsupported",
     }),
     openclaw: profile(

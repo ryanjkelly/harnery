@@ -8,9 +8,9 @@ import { AdapterRegistry, createBuiltinAdapterRegistry } from "./registry.ts";
 import { ADAPTER_CAPABILITY_DIMENSIONS } from "./types.ts";
 
 describe("adapter registry", () => {
-  test("ships exactly the agreed Claude, Codex, and Cursor adapters", () => {
+  test("ships exactly the agreed Claude, Codex, Cursor, and OpenCode adapters", () => {
     const registry = createBuiltinAdapterRegistry();
-    expect(registry.ids()).toEqual(["claude-code", "codex", "cursor"]);
+    expect(registry.ids()).toEqual(["claude-code", "codex", "cursor", "opencode"]);
     expect<string[]>([...BUILTIN_ADAPTER_IDS]).toEqual(registry.ids());
     expect(Object.keys(registry.spawners())).toEqual(registry.ids());
   });

@@ -527,6 +527,10 @@ const SESSION_ID_ENV_VARS = [
   "CURSOR_CONVERSATION_ID",
   "CODEX_SESSION_ID",
   "CODEX_THREAD_ID",
+  // OpenCode exports no session id into the tool shell; the Harnery OpenCode
+  // plugin stamps this via shell.hook("create.before") so a coord CLI run as a
+  // Bash tool recovers its identity.
+  "OPENCODE_SESSION_ID",
 ] as const;
 
 /** Read normalized candidates from the first non-empty adapter session-id env var. */
@@ -637,10 +641,17 @@ export function resolveSingleActiveOwner(root: string): string | null {
   return live.size === 1 ? [...live][0]! : null;
 }
 
-function adapterCandidatesFromEnv(): Array<"claude-code" | "codex" | "cursor"> {
+function adapterCandidatesFromEnv(): Array<"claude-code" | "codex" | "cursor" | "opencode"> {
   const value = process.env.HARNERY_AGENT_COORD_PLATFORM?.trim();
-  if (value === "claude-code" || value === "codex" || value === "cursor") return [value];
-  return ["claude-code", "codex", "cursor"];
+  if (
+    value === "claude-code" ||
+    value === "codex" ||
+    value === "cursor" ||
+    value === "opencode"
+  ) {
+    return [value];
+  }
+  return ["claude-code", "codex", "cursor", "opencode"];
 }
 
 function nativeOwnerForV3Instance(root: string, instanceId: string): string {

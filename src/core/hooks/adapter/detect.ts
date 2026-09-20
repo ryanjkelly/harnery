@@ -21,7 +21,7 @@ export function detectAdapter(argv: readonly string[]): Adapter | null {
 }
 
 function validate(v: string | undefined): Adapter | null {
-  if (v === "claude-code" || v === "cursor" || v === "codex") return v;
+  if (v === "claude-code" || v === "cursor" || v === "codex" || v === "opencode") return v;
   return null;
 }
 

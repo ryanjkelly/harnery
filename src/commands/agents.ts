@@ -5307,7 +5307,7 @@ function cacheHealAuthorityRefusal(
   root: string,
   owner: string,
   sessionId: string,
-  adapter: "claude-code" | "cursor" | "codex",
+  adapter: Adapter,
   currentRow: LiveCoordinationRow | null,
 ): HealAuthorityRefusal | null {
   if (currentRow && normalizeAdapter(currentRow.platform) !== adapter) {
@@ -5370,7 +5370,7 @@ function healFailureReason(
   root: string,
   owner: string,
   sessionId: string,
-  adapter: "claude-code" | "cursor" | "codex",
+  adapter: Adapter,
 ): string {
   const refusal = cacheHealAuthorityRefusal(
     root,

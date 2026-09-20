@@ -8,5 +8,6 @@ export const EVENT_ADAPTER_IDS_V3 = [
   "claude-code",
   "codex",
   "cursor",
+  "opencode",
   "openclaw",
 ] as const satisfies readonly EventAdapterIdV3[];

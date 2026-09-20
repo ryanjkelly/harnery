@@ -71,6 +71,7 @@ const DELIVERY_BY_ADAPTER: Readonly<Record<Adapter, PromptContextDelivery>> = {
   "claude-code": "direct",
   codex: "direct",
   cursor: "direct",
+  opencode: "direct",
 };
 
 export function promptContextDelivery(adapter: Adapter): PromptContextDelivery {

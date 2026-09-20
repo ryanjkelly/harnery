@@ -27,6 +27,19 @@ export interface HookEvent {
  */
 export type HookEntryShape = "claude" | "cursor";
 
+/**
+ * How `harn init` installs this adapter's lifecycle capture:
+ * - `settings-hooks` (default): merge `agent-hook <subcommand>` command hooks
+ *   into a settings file's `hooks` map (Claude Code, Codex, Cursor).
+ * - `opencode-plugin`: OpenCode V2 has no command-hook file; interception is an
+ *   in-process plugin. `init` installs a Harnery plugin and registers it in
+ *   `opencode.json` `plugins`, and wiring inspection checks that registration
+ *   rather than a `hooks` map. The plugin bridges each lifecycle hook to
+ *   `agent-hook <subcommand> --adapter opencode`, so `events` still names the
+ *   subcommands it delivers.
+ */
+export type AdapterInstallMode = "settings-hooks" | "opencode-plugin";
+
 export interface AdapterSpec {
   /** Settings file to wire, relative to the project root. */
   settingsFile: string;
@@ -34,6 +47,10 @@ export interface AdapterSpec {
   events: HookEvent[];
   /** Per-entry encoding under the root `hooks` object. */
   entryShape: HookEntryShape;
+  /** Install mechanism; absent means the default settings-file command hooks. */
+  installMode?: AdapterInstallMode;
+  /** For `opencode-plugin`: the plugin identifier registered in `plugins`. */
+  pluginId?: string;
   /** When set, ensure this top-level `version` key in the file (Cursor requires `1`). */
   rootVersion?: number;
   /** Adapter-owned entries from older specs that `init` should remove during migration. */
@@ -112,6 +129,27 @@ export const LEGACY_CODEX_EVENTS: HookEvent[] = [
   { settingsKey: "StopFailure", subcommand: "stop-failure" },
 ];
 
+/**
+ * OpenCode V2: delivered by the Harnery OpenCode plugin, which registers
+ * in-process hooks and bridges each to `agent-hook <subcommand> --adapter
+ * opencode`. There is no settings-file `hooks` map; `settingsKey` here is the
+ * originating OpenCode plugin hook, kept for documentation. `post-compact` is
+ * omitted because OpenCode post-compaction recovery is not yet certified.
+ */
+export const OPENCODE_EVENTS: HookEvent[] = [
+  { settingsKey: "session.created", subcommand: "session-start" },
+  { settingsKey: "session.hook:prompt", subcommand: "user-prompt-submit" },
+  { settingsKey: "tool.hook:execute.before", subcommand: "pre-tool-use" },
+  { settingsKey: "tool.hook:execute.after", subcommand: "post-tool-use" },
+  { settingsKey: "tool.hook:execute.after:error", subcommand: "post-tool-use-failure" },
+  { settingsKey: "permission.hook:evaluate", subcommand: "permission-request" },
+  { settingsKey: "event:session.created:child", subcommand: "sub-agent-start" },
+  { settingsKey: "event:session.execution.succeeded:child", subcommand: "sub-agent-stop" },
+  { settingsKey: "event:session.execution.succeeded", subcommand: "stop" },
+  { settingsKey: "event:session.deleted", subcommand: "session-end" },
+  { settingsKey: "session.hook:compaction", subcommand: "pre-compact" },
+];
+
 /** Every hook key accepted by Codex's current native hook schema. */
 export const CODEX_ALLOWED_EVENT_KEYS = [
   "SessionStart",
@@ -148,5 +186,14 @@ export const ADAPTER_SPECS: Record<AdapterId, AdapterSpec> = {
     legacyEvents: LEGACY_CODEX_EVENTS,
     allowedTopLevelKeys: ["description", "hooks"],
     allowedEventKeys: CODEX_ALLOWED_EVENT_KEYS,
+  },
+  opencode: {
+    settingsFile: "opencode.json",
+    events: OPENCODE_EVENTS,
+    // entryShape is unused for the plugin install mode but required by the type;
+    // the plugin, not a hooks-map entry, carries the wiring.
+    entryShape: "claude",
+    installMode: "opencode-plugin",
+    pluginId: "@harnery/opencode",
   },
 };

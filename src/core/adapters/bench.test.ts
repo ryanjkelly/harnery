@@ -22,7 +22,7 @@ describe("adapter conformance bench", () => {
       versionProbe: matchingVersionProbe(),
     });
     expect(report.mode).toBe("offline");
-    expect(report.adapters).toEqual(["claude-code", "codex", "cursor"]);
+    expect(report.adapters).toEqual(["claude-code", "codex", "cursor", "opencode"]);
     expect(report.drift).toBe(false);
     expect(report.summary.drift).toBe(0);
     expect(report.summary.supported).toBeGreaterThan(0);

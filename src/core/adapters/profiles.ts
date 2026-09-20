@@ -121,6 +121,43 @@ export const BUILTIN_ADAPTER_PROFILES = {
       ),
     }),
   },
+  opencode: {
+    id: "opencode",
+    displayName: "OpenCode",
+    binary: "opencode",
+    installHint: "curl -fsSL https://opencode.ai/install | bash",
+    loginHint: "opencode auth login",
+    apiKeyEnv: "OPENCODE_API_KEY",
+    integrationMode: "cli-subprocess",
+    authModel: "own-auth",
+    modelFamily: "multi",
+    // Model reasoning is selected through the `provider/model#variant` id;
+    // OpenCode exposes no separate effort dial for Harnery to map.
+    effortValues: [],
+    verified: { date: "2026-09-20", version: "opencode v2.0.11" },
+    capabilities: capabilities({
+      effortSelection: unsupported(
+        "OpenCode selects reasoning through the model id variant; there is no separate effort flag.",
+      ),
+      maxTurns: unsupported("`opencode run` exposes no turn-ceiling flag."),
+      sessionId: supported("Read from the `sessionID` on every `--format json` NDJSON line."),
+      cost: unsupported(
+        "`opencode run --format json` streams parts without a final cost; cost lives in `session export`.",
+      ),
+      // Tool evidence is delivered on the event axis by the Harnery OpenCode
+      // plugin, not by the final-result workflow spawn, which retains no tool
+      // events (as with Codex and Cursor).
+      contextTelemetry: unknown(
+        "OpenCode stores context in SQLite; no context-window bridge is certified yet.",
+      ),
+      preCompactionSignal: supported(
+        'OpenCode session.hook("compaction") is bridged to a durable checkpoint.',
+      ),
+      postCompactionSignal: unsupported(
+        "No post-compact hook is wired; OpenCode post-compaction recovery is not yet certified.",
+      ),
+    }),
+  },
 } as const satisfies Record<string, AdapterProfile>;
 
 export type BuiltinAdapterId = keyof typeof BUILTIN_ADAPTER_PROFILES;

@@ -185,6 +185,7 @@ function attestedContextSource(
     "claude-code": ["hook", "native_event", "result"],
     codex: ["native_event", "result", "transcript"],
     cursor: ["native_event"],
+    opencode: ["native_event", "result"],
   };
   return !!source && (allowed[adapter] ?? []).includes(source);
 }

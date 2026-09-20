@@ -58,6 +58,8 @@ const ADAPTER_SKILLS_DIR: Readonly<Record<string, string>> = {
   "claude-code": join(".claude", "skills"),
   cursor: join(".agents", "skills"),
   codex: join(".agents", "skills"),
+  // OpenCode natively discovers .agents/skills (and .claude/skills); no mirror needed.
+  opencode: join(".agents", "skills"),
 };
 
 function adapterSkillsDir(adapter: string): string | null {
