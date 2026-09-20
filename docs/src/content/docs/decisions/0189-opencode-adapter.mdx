@@ -1,0 +1,123 @@
+---
+title: "0189: OpenCode adapter — launchable workflow child plus plugin-delivered event evidence"
+description: "ADR: add first-class OpenCode (V2) support as both a workflow spawn adapter and an event adapter whose lifecycle hooks are delivered by a Harnery-owned in-process plugin that bridges to agent-hook."
+---
+
+**Status:** accepted (2026-09-20) · **Scope:** product tier (`core/adapters`, `core/hooks`, `core/workflow`, `core/events/v3`, `commands/init`, `commands/doctor`) plus a new `opencode-plugin/` package
+
+## Context
+
+Harnery supports three execution harnesses as both workflow adapters and event
+adapters (ADR 0018, ADR 0125), and OpenClaw as an event-only adapter delivered
+by a resident plugin (ADR 0164). OpenCode V2 (`opencode` CLI, v2.0.11 verified
+on 2026-09-20) has emerged as a widely used harness, including a desktop app.
+
+OpenCode V2 differs structurally from all four existing integrations:
+
+1. **Client/server, not one-shot CLI.** A persistent background service owns
+   sessions, config, plugins, permissions, and tool execution. The TUI, desktop
+   app, `opencode run`, and `opencode api` are all clients of that one server.
+   Sessions persist in SQLite (`session_v2`, `session_message`, `event`), not in
+   per-session `.jsonl` transcript files.
+2. **Lifecycle interception is plugin-only.** OpenCode V2 has no
+   `hooks.json`-style command-hook mechanism. All interception is done by
+   in-process TypeScript plugins (`.opencode/plugins/*.ts` or `opencode.json`
+   `plugins: []`) that register hooks on a rich context object
+   (`ctx.session.hook`, `ctx.tool.hook`, `ctx.permission.hook`,
+   `ctx.shell.hook`, `ctx.event.subscribe`). Plugins run inside the server
+   process, see every project session, and can spawn subprocesses (verified).
+3. **It is launchable headless.** `opencode run --format json` streams NDJSON
+   with a session id on every line and the final answer as `text` parts, so
+   OpenCode is a real workflow-spawn backend, unlike OpenClaw.
+4. **It natively reads `AGENTS.md` and `.agents/skills` (and `.claude/skills`).**
+   It does not read `CLAUDE.md`. Harnery's existing instruction and skills
+   surfaces already reach OpenCode with no shim or mirror.
+
+Without a native adapter, OpenCode users get none of `harn init`, `harn doctor`,
+workflow child spawning, tool-use auditing, turn governance, or offline bench.
+
+## Alternatives considered
+
+- **Event-only adapter (like OpenClaw).** Rejected: OpenCode *is* launchable and
+  normalizable through `opencode run`, so restricting it to the event axis would
+  deny real workflow-spawn support that exists.
+- **Bundle the V3 recorder into the OpenCode plugin (like OpenClaw's
+  `@harnery/openclaw`).** Rejected for the in-repo path: OpenClaw runs on a
+  separate gateway host with no Harnery checkout, so it must carry the recorder.
+  OpenCode shares the project checkout, so the plugin can shell out to the
+  existing `agent-hook` binary and reuse the entire parse → recorder →
+  stop-ritual → prompt-context → guard pipeline with zero new recorder code.
+- **Write a `hooks.json` for OpenCode.** Rejected: OpenCode V2 has no such file;
+  the only interception contract is the plugin API.
+- **Coerce OpenCode into an existing adapter id.** Rejected per ADR 0125:
+  adapter identity fixes capability promises and drift checks.
+- **Enforce the Stop ritual by blocking the turn (like Claude Code `exit 2`).**
+  Deferred: OpenCode has no non-zero-exit turn-block channel. The available
+  re-prompt path is `session.idle` → `ctx.session.synthetic`/`prompt`, which can
+  replace a completed answer if used carelessly. Sprint 1 declares Stop
+  observe-only (as Codex, ADR 0051); enforced re-prompting is a follow-up once
+  the idle→synthetic loop is proven safe.
+
+## Decision
+
+Add first-class `"opencode"` support on both axes.
+
+### 1. Workflow adapter (`core/adapters`, `core/workflow`)
+- Add `"opencode"` to the `Adapter` union (`core/adapter.ts`).
+- Register `BUILTIN_ADAPTER_PROFILES.opencode`: `binary: "opencode"`,
+  `installHint`, `loginHint: "opencode auth login"`, `apiKeyEnv`,
+  `modelFamily: "multi"`, `effortValues: []` (model selection is
+  `provider/model#variant`), no `sandboxProjection`.
+- `spawn-opencode.ts`: `opencode run --format json --model <m> --title <t>
+  "<prompt>"`; normalize NDJSON to `SpawnResult` (session id from any line, text
+  from joined `type:"text"` parts). Registry entry + offline bench fixture.
+
+### 2. Event adapter (`core/events/v3`)
+- Add `"opencode"` to `EVENT_ADAPTER_IDS_V3`, `BASE_SIGNAL_SUPPORT`, and
+  `ADAPTER_CAPABILITY_PROFILES_V3`. The three prior profile digests stay
+  byte-identical; the new id is additive, so `harn init` archives the prior
+  epoch and mints a new one on next run (expected, handled by
+  `eventLedgerV3RuntimeIssues`).
+
+### 3. Hook delivery via a Harnery-owned OpenCode plugin
+- Ship `opencode-plugin/` (`@harnery/opencode`) and a local
+  `.opencode/plugins/harnery.ts` template. The plugin registers
+  `session.hook("prompt")`, `session.hook("context")`,
+  `session.hook("compaction")`, `tool.hook("execute.before")`,
+  `tool.hook("execute.after")`, `permission.hook("evaluate")`,
+  `shell.hook("create.before")`, and `event.subscribe`, and bridges each to
+  `agent-hook <subcommand> --adapter opencode`, translating plugin event objects
+  into the payload shape `parse.ts` expects and returning hook stdout through the
+  matching mutation channel (context injection, deny, synthetic message). The
+  `shell.hook` stamps `OPENCODE_SESSION_ID` into every shell tool's env so a
+  coord CLI invoked as a Bash tool recovers its identity.
+- `harn init --adapter opencode` installs the plugin and adds it to
+  `opencode.json` `plugins` rather than writing a settings-file hook map, injects
+  the managed `AGENTS.md` regions, and skips the CLAUDE.md shim and the skills
+  mirror because OpenCode reads `AGENTS.md` and `.agents/skills` natively.
+- `harn doctor` probes the `opencode` binary, the background service, and plugin
+  registration.
+
+### 4. Cross-cutting correctness (audit fixes forced by the new id)
+- Replace the ternary fall-throughs that would mislabel `opencode` as Codex
+  (`hooks/cli.ts` platform labels, `lib/instructions/bundle.ts` else-branch).
+- Give `guard/evaluator.ts` and `ADAPTER_SKILLS_DIR` explicit `opencode` entries
+  so evidence is not silently rejected and skills install is not a silent no-op.
+- Add `OPENCODE_SESSION_ID` to `SESSION_ID_ENV_VARS`.
+
+## Result
+
+- `harn adapter list`/`show opencode`/`bench opencode` work offline.
+- `harn init --adapter opencode` bootstraps an OpenCode project in one idempotent
+  step (plugin + `AGENTS.md`), reusing native `.agents/skills`.
+- `harn run --adapter opencode` launches a headless OpenCode child.
+- OpenCode sessions (TUI, desktop app, headless) produce native V3 session,
+  prompt, tool, and turn evidence through the plugin bridge.
+- Enforced Stop re-prompting, SQLite-backed context-window telemetry, and docs
+  pages are tracked follow-ups. ADR 0074 (Antigravity, accepted but
+  unimplemented) is flagged for reconciliation; this ADR reuses its integration
+  recipe.
+
+This decision follows the adapter registry in ADR 0018, the workflow/event
+adapter separation in ADR 0125, the resident-plugin precedent in ADR 0164, and
+the adapter integration recipe in ADR 0074.
