@@ -69,6 +69,7 @@ const SCAN_ROOTS = [
   "bin",
   "examples",
   "openclaw-plugin",
+  "opencode-plugin",
   ".changeset",
   "AGENTS.md",
   "CLAUDE.md",

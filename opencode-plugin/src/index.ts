@@ -36,7 +36,8 @@
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const HARNERY_OPENCODE_PLUGIN_ID = "harnery";
@@ -182,6 +183,37 @@ export function agentHookArgv(config: HarneryOpenCodeConfig, subcommand: string)
     ? config.agentHook
     : resolve(config.projectRoot, config.agentHook);
   return ["bash", launcher, ...tail];
+}
+
+/**
+ * Directories a tool shell needs so the project's bare launchers resolve: its
+ * own `bin/`, plus whichever Bun install directory exists (a project launcher is
+ * commonly a shim that execs `bun`). Only existing directories are returned, so
+ * a PATH is never padded with dead entries.
+ */
+export function shellPathDirs(projectRoot: string, home = homedir()): string[] {
+  const dirs = [join(projectRoot, "bin")];
+  for (const bin of [join(home, ".bun", "bin"), "/usr/local/bin", "/opt/homebrew/bin"]) {
+    if (existsSync(join(bin, "bun"))) dirs.push(bin);
+  }
+  return dirs.filter((dir) => existsSync(dir));
+}
+
+/**
+ * Prepend {@link shellPathDirs} to a tool shell's PATH, preserving order and
+ * skipping entries already present. An OpenCode server can start from a
+ * GUI-launched environment whose PATH lacks the project's own tools, which would
+ * make an otherwise-valid `bin/<launcher>` call fail as "command not found".
+ */
+export function prependShellPath(
+  env: Record<string, string | undefined>,
+  projectRoot: string,
+  home = homedir(),
+): void {
+  const current = env.PATH ?? process.env.PATH ?? "";
+  const parts = current.split(delimiter).filter((part) => part.length > 0);
+  const additions = shellPathDirs(projectRoot, home).filter((dir) => !parts.includes(dir));
+  env.PATH = [...additions, ...parts].join(delimiter);
 }
 
 // ── Payload translation (pure; unit-tested) ──────────────────────────────────
@@ -661,7 +693,11 @@ export function createHarneryOpenCodePlugin(deps: PluginDependencies = {}) {
       await register<OpenCodeShellCreateBefore>(ctx.shell.hook, "create.before", (event) => {
         const sessionID = pendingShells.get(event.command) ?? lastToolSession;
         if (typeof event.command === "string") pendingShells.delete(event.command);
-        if (!sessionID || !event.env) return;
+        if (!event.env) return;
+        // PATH is session-independent, so stamp it even for a shell the plugin
+        // cannot attribute to a session.
+        prependShellPath(event.env, config.projectRoot);
+        if (!sessionID) return;
         event.env[OPENCODE_SESSION_ENV] = sessionID;
         event.env.HARNERY_AGENT_COORD_PLATFORM = ADAPTER;
       });

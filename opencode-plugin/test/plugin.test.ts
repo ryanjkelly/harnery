@@ -15,6 +15,8 @@ import {
   OPENCODE_SESSION_ENV,
   type OpenCodeBusEvent,
   type OpenCodePluginContext,
+  prependShellPath,
+  shellPathDirs,
   toolResultText,
 } from "../src/index.ts";
 
@@ -262,6 +264,29 @@ describe("Harnery OpenCode plugin", () => {
     };
     await h.fire("shell:create.before", other);
     expect(other.env[OPENCODE_SESSION_ENV]).toBe("ses_7");
+  });
+
+  test("shell PATH stamping adds the project bin and an existing Bun dir once", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-opencode-root-"));
+    const home = mkdtempSync(join(tmpdir(), "harnery-opencode-home-"));
+    try {
+      mkdirSync(join(root, "bin"));
+      mkdirSync(join(home, ".bun", "bin"), { recursive: true });
+      writeFileSync(join(home, ".bun", "bin", "bun"), "");
+      expect(shellPathDirs(root, home)).toEqual([join(root, "bin"), join(home, ".bun", "bin")]);
+      const env: Record<string, string | undefined> = { PATH: "/usr/bin" };
+      prependShellPath(env, root, home);
+      expect(env.PATH?.split(":")).toEqual([
+        join(root, "bin"),
+        join(home, ".bun", "bin"),
+        "/usr/bin",
+      ]);
+      prependShellPath(env, root, home);
+      expect(env.PATH?.split(":").filter((dir) => dir === join(root, "bin")).length).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("compaction hook bridges pre-compact", async () => {
