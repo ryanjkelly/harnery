@@ -138,6 +138,23 @@ Add first-class `"opencode"` support on both axes.
   unimplemented) is flagged for reconciliation; this ADR reuses its integration
   recipe.
 
+- The cross-cutting fixes from § 4 landed on 2026-09-20: one shared
+  platform-to-adapter normalizer next to the `Adapter` union replaced seven
+  copies (three of which folded OpenCode into Claude Code), and the hook CLI and
+  V3 producer now read per-adapter decisions from
+  `src/core/hooks/adapter/behaviors/` instead of adapter equality checks.
+- The `bridge: "codex-wsl"` literal in the V3 base contract was reviewed on
+  2026-09-20 as a candidate for an adapter-neutral bridge descriptor (a
+  Windows-native harness driving a WSL workspace is a deployment shape, not a
+  Codex property). It stays as it is. The literal appears in 43 places in the
+  published schema and in every consumer's recorded events, so widening it is a
+  schema-digest change that rotates every V3 epoch, and no second adapter needs
+  a bridge today: Claude Code, Cursor, and OpenCode all run natively inside the
+  workspace shell. The per-adapter behavior modules now own the *decision* to
+  stamp a bridge (`bridgeFor`), so a second bridged adapter can be added in
+  code first and the schema generalized in one deliberate epoch when that
+  adapter actually exists.
+
 This decision follows the adapter registry in ADR 0018, the workflow/event
 adapter separation in ADR 0125, the resident-plugin precedent in ADR 0164, and
 the adapter integration recipe in ADR 0074.
