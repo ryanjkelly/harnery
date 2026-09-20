@@ -98,14 +98,7 @@ describe("probeBilling: codex", () => {
   });
 });
 
-describe("probeBilling: cursor", () => {
-  test("login is always unknown (unverified storage), so override can never fire", () => {
-    const p = probeBilling("cursor", { env: { CURSOR_API_KEY: "k" }, home });
-    expect(p.login).toBe("unknown");
-    expect(p.mode).toBe("api-key");
-    expect(probeBilling("cursor", { env: {}, home }).mode).toBe("subscription");
-  });
-});
+describe("probeBilling: cursor", () => {});
 
 describe("buildChildEnv billing behavior", () => {
   const SAVED = [
@@ -178,5 +171,59 @@ describe("buildChildEnv billing behavior", () => {
   test("omits the agent id when the caller has none", () => {
     const env = buildChildEnv("wf-1");
     expect(env.HARNERY_WORKFLOW_AGENT_ID).toBeUndefined();
+  });
+});
+
+describe("probeBilling: cursor", () => {
+  const io = (env: NodeJS.ProcessEnv = {}) => ({
+    env: { HARNERY_BILLING_PLATFORM: "linux", ...env },
+    home,
+  });
+  const writeAuth = (dir: string, body: unknown) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "auth.json"), JSON.stringify(body));
+  };
+
+  test("auth.json with tokens under ~/.config/cursor → subscription login", () => {
+    writeAuth(join(home, ".config", "cursor"), { accessToken: "a", refreshToken: "r" });
+    const p = probeBilling("cursor", io());
+    expect(p.login).toBe("present");
+    expect(p.mode).toBe("subscription");
+  });
+
+  test("no auth.json → login absent", () => {
+    expect(probeBilling("cursor", io()).login).toBe("absent");
+  });
+
+  test("auth.json without tokens → login absent", () => {
+    writeAuth(join(home, ".config", "cursor"), {});
+    expect(probeBilling("cursor", io()).login).toBe("absent");
+  });
+
+  test("XDG_CONFIG_HOME and CURSOR_CONFIG_DIR follow the CLI's precedence", () => {
+    const xdg = join(home, "xdg");
+    writeAuth(join(xdg, "cursor"), { accessToken: "a" });
+    expect(probeBilling("cursor", io({ XDG_CONFIG_HOME: xdg })).login).toBe("present");
+    const override = join(home, "override");
+    writeAuth(override, { refreshToken: "r" });
+    expect(
+      probeBilling("cursor", io({ XDG_CONFIG_HOME: xdg, CURSOR_CONFIG_DIR: override })).login,
+    ).toBe("present");
+    expect(probeBilling("cursor", io({ CURSOR_CONFIG_DIR: join(home, "missing") })).login).toBe(
+      "absent",
+    );
+  });
+
+  test("macOS reads ~/.cursor/auth.json", () => {
+    writeAuth(join(home, ".cursor"), { accessToken: "a" });
+    expect(probeBilling("cursor", io({ HARNERY_BILLING_PLATFORM: "darwin" })).login).toBe(
+      "present",
+    );
+    expect(probeBilling("cursor", io()).login).toBe("absent");
+  });
+
+  test("CURSOR_API_KEY plus a stored login → api-key-override", () => {
+    writeAuth(join(home, ".config", "cursor"), { accessToken: "a" });
+    expect(probeBilling("cursor", io({ CURSOR_API_KEY: "k" })).mode).toBe("api-key-override");
   });
 });

@@ -114,6 +114,10 @@ export const BUILTIN_ADAPTER_PROFILES = {
       maxTurns: unsupported("cursor-agent exposes no turn-ceiling flag."),
       sessionId: supported("Read from the JSON result envelope."),
       cost: unsupported("The JSON result envelope carries no cost."),
+      // Still unknown on 2026-09-20 against cursor-agent 2026.09.18: the live
+      // `cursor_composer_context_percent` reader serves IDE hook sessions from
+      // the composer `state.vscdb`, and headless `cursor-agent` children (this
+      // workflow adapter) leave no composer row and no usage in the JSON result.
       contextTelemetry: unknown("No stable Cursor context-usage payload has been certified."),
       preCompactionSignal: supported("Cursor preCompact is wired to a durable checkpoint."),
       postCompactionSignal: unsupported(

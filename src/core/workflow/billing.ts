@@ -85,10 +85,7 @@ export function probeBilling(adapter: AdapterName, io: ProbeIo = {}): BillingPro
       break;
     }
     case "cursor":
-      // cursor-agent's stored-login location is not yet verified against a
-      // live install (adapter itself is pending verification); never claim
-      // presence or absence we can't prove.
-      login = "unknown";
+      login = probeCursorLogin(env, home);
       break;
     default:
       // External adapters own their authentication. The generic engine must
@@ -124,6 +121,39 @@ function probeClaudeLogin(home: string): LoginState {
     }
   }
   return existsSync(dir) ? "unknown" : "absent";
+}
+
+/**
+ * cursor-agent: the stored login is `auth.json` holding `accessToken` and
+ * `refreshToken`. The path follows the CLI's own resolution, read from the
+ * installed 2026.09.18 build: `$CURSOR_CONFIG_DIR` when set, else
+ * `%APPDATA%\\cursor` on Windows, `~/.cursor` on macOS, and
+ * `$XDG_CONFIG_HOME/cursor` (default `~/.config/cursor`) elsewhere.
+ * `cursor-agent status --format json` reports the same two tokens as
+ * `hasAccessToken` / `hasRefreshToken`.
+ */
+function probeCursorLogin(env: NodeJS.ProcessEnv, home: string): LoginState {
+  const authPath = join(cursorConfigDir(env, home), "auth.json");
+  if (!existsSync(authPath)) return "absent";
+  try {
+    const parsed = JSON.parse(readFileSync(authPath, "utf8")) as {
+      accessToken?: string;
+      refreshToken?: string;
+    };
+    return parsed.accessToken?.trim() || parsed.refreshToken?.trim() ? "present" : "absent";
+  } catch {
+    return "unknown";
+  }
+}
+
+function cursorConfigDir(env: NodeJS.ProcessEnv, home: string): string {
+  const override = env.CURSOR_CONFIG_DIR?.trim();
+  if (override) return override;
+  const platform = env.HARNERY_BILLING_PLATFORM?.trim() || process.platform;
+  if (platform === "win32")
+    return join(env.APPDATA?.trim() || join(home, "AppData", "Roaming"), "cursor");
+  if (platform === "darwin") return join(home, ".cursor");
+  return join(env.XDG_CONFIG_HOME?.trim() || join(home, ".config"), "cursor");
 }
 
 /** codex: auth lives at $CODEX_HOME/auth.json (default ~/.codex). A `tokens`
