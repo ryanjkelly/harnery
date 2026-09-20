@@ -13,6 +13,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
+import { normalizeAdapter, adapterFromPlatform as sharedAdapterFromPlatform } from "../adapter.ts";
 import { resolveBinName } from "../config.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
@@ -167,12 +168,6 @@ async function handleProject(root: string, rest: string[]): Promise<number> {
   return view.authority_safe ? 0 : 1;
 }
 
-function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
-  if (platform === "cursor") return "cursor";
-  if (platform === "codex") return "codex";
-  return "claude-code";
-}
-
 const coordinationRetryCell = new Int32Array(new SharedArrayBuffer(4));
 const COORDINATION_RETRY_ATTEMPTS = 240;
 const COORDINATION_RETRY_DELAY_MS = 25;
@@ -282,7 +277,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
                 coordRoot: root,
                 owner,
                 nativeSessionId: before?.session_id ?? owner,
-                adapter: adapterFromPlatform(before?.platform),
+                adapter: sharedAdapterFromPlatform(before?.platform, { context: "agent-coord" }),
                 task,
               });
               break;
@@ -353,7 +348,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
           coordRoot: root,
           owner,
           nativeSessionId: before?.session_id ?? owner,
-          adapter: adapterFromPlatform(before?.platform),
+          adapter: sharedAdapterFromPlatform(before?.platform, { context: "agent-coord" }),
           operation: "released",
           path,
           access: "write",
@@ -414,7 +409,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
             coordRoot: root,
             owner,
             nativeSessionId: sessionId ?? owner,
-            adapter: adapterFromPlatform(adapter),
+            adapter: sharedAdapterFromPlatform(adapter, { context: "agent-coord" }),
           });
         }
         const { repairLiveCoordinationHeartbeat } = await import(
@@ -424,7 +419,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
           root,
           owner,
           sessionId ?? owner,
-          adapterFromPlatform(adapter),
+          sharedAdapterFromPlatform(adapter, { context: "agent-coord" }),
           model,
         );
       } catch (error) {
@@ -459,7 +454,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
           root,
           owner,
           sessionId ?? owner,
-          adapterFromPlatform(adapter),
+          sharedAdapterFromPlatform(adapter, { context: "agent-coord" }),
         );
         if (!heartbeat) {
           throw new Error("authoritative coordination cache could not be materialized");
@@ -477,7 +472,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
           root,
           owner,
           sessionId ?? owner,
-          adapterFromPlatform(adapter),
+          sharedAdapterFromPlatform(adapter, { context: "agent-coord" }),
         );
         process.stdout.write(
           `${JSON.stringify({
@@ -881,7 +876,7 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
   const eventType = args.type;
   const instanceId = args.owner;
   const sessionId = args.session;
-  const adapter = args.adapter as "claude-code" | "cursor" | "codex" | undefined;
+  const adapter = normalizeAdapter(args.adapter) ?? undefined;
   const dataJson = args["data-stdin"] === "true" ? await readStdin() : "";
 
   if (!eventType || !instanceId || !sessionId || !adapter || !dataJson) {
@@ -1069,7 +1064,7 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
               owner,
               subject: hit.instance_id,
               nativeSessionId: hit.session_id ?? owner,
-              adapter: adapterFromPlatform(hit.platform),
+              adapter: sharedAdapterFromPlatform(hit.platform, { context: "agent-coord" }),
               operation: "released",
               path,
               access: "write",

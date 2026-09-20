@@ -23,6 +23,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { adapterFromPlatform as sharedAdapterFromPlatform } from "../../adapter.ts";
 import { coordFreshnessSeconds } from "../../config.ts";
 import { resolveOwner } from "../../hooks/resolve/owner.ts";
 import { recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
@@ -232,7 +233,7 @@ function retainBlockedStagedPaths(
         coordRoot,
         owner: instanceId,
         nativeSessionId: self.session_id ?? sessionId,
-        adapter: adapterFromPlatform(self.platform),
+        adapter: sharedAdapterFromPlatform(self.platform, { context: "commit-conflict" }),
         operation: "acquired",
         path,
         access: "write",
@@ -242,12 +243,6 @@ function retainBlockedStagedPaths(
       // authority-write failures so a damaged cache cannot brick Git.
     }
   }
-}
-
-function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
-  if (platform === "cursor") return "cursor";
-  if (platform === "codex") return "codex";
-  return "claude-code";
 }
 
 function findOverlap(

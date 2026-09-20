@@ -17,6 +17,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { adapterFromPlatform as sharedAdapterFromPlatform } from "../../adapter.ts";
 import { recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 
@@ -248,7 +249,7 @@ function acquireClaimThroughLedger(coordRoot: string, req: ClaimRequest): boolea
       coordRoot,
       owner: req.instance_id,
       nativeSessionId: req.session_id ?? owner?.session_id ?? req.instance_id,
-      adapter: adapterFromPlatform(owner?.platform),
+      adapter: sharedAdapterFromPlatform(owner?.platform, { context: "claim-conflict" }),
       operation: "acquired",
       path: req.path,
       access: "write",
@@ -272,7 +273,7 @@ function releaseClaimThroughLedger(
       owner: actor.instance_id,
       subject: subjectInstanceId,
       nativeSessionId: actor.session_id ?? owner?.session_id ?? actor.instance_id,
-      adapter: adapterFromPlatform(owner?.platform),
+      adapter: sharedAdapterFromPlatform(owner?.platform, { context: "claim-conflict" }),
       operation: "released",
       path: relPath,
       access: "write",
@@ -281,12 +282,6 @@ function releaseClaimThroughLedger(
   } catch {
     return false;
   }
-}
-
-function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
-  if (platform === "cursor") return "cursor";
-  if (platform === "codex") return "codex";
-  return "claude-code";
 }
 
 function authorityUnavailable(path: string, operation: string): VerdictResult {

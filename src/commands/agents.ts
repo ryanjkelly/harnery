@@ -93,7 +93,11 @@ import {
   resolveBinName,
   sessionFinalizationConfig,
 } from "../core/config.ts";
-import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../core/events/v3/adapter-id.ts";
+import {
+  EVENT_ADAPTER_IDS_V3,
+  type EventAdapterIdV3,
+  normalizeEventAdapterIdV3,
+} from "../core/events/v3/adapter-id.ts";
 import type { EventTypeV3 } from "../core/events/v3/contract.ts";
 import { readEventV3ControlState } from "../core/events/v3/control.ts";
 import {
@@ -1761,7 +1765,7 @@ function cursorEnvSessionId(): string | null {
 }
 
 interface CommandSessionBootstrap {
-  adapter: "claude-code" | "cursor" | "codex";
+  adapter: Adapter;
   sessionId: string;
 }
 
@@ -2791,11 +2795,7 @@ export function readAgentDiagnosticEventsInWindow(
 
 /** Normalize adapter event data into the heartbeat platform value. */
 function adapterToPlatform(adapter: string | undefined): string {
-  if (adapter === "claude-code") return "claude-code";
-  if (adapter === "cursor") return "cursor";
-  if (adapter === "codex") return "codex";
-  if (adapter === "openclaw") return "openclaw";
-  return "unknown";
+  return normalizeEventAdapterIdV3(adapter) ?? "unknown";
 }
 
 /** Project a canonical health.* event into the HealEvent shape the aggregators

@@ -13,18 +13,11 @@
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
-import type { EventAdapterIdV3 } from "../../events/v3/adapter-id.ts";
+import { type EventAdapterIdV3, eventAdapterIdV3FromPlatform } from "../../events/v3/adapter-id.ts";
 import { writeProducerDiagnosticV3 } from "../../events/v3/producers/intake.ts";
 import { recordLiveSweepObservationV3 } from "../live-lifecycle-v3.ts";
 
 /** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
-function adapterFromPlatform(platform: unknown): EventAdapterIdV3 {
-  if (platform === "cursor") return "cursor";
-  if (platform === "codex") return "codex";
-  if (platform === "openclaw") return "openclaw";
-  return "claude-code";
-}
-
 /**
  * Record the sweep before deleting disposable cache state.
  *
@@ -150,7 +143,7 @@ export function staleSweep(coordRoot: string): {
       }
 
       const instanceId = parsed.instance_id ?? idFromFile;
-      const adapter = adapterFromPlatform(parsed.platform);
+      const adapter = eventAdapterIdV3FromPlatform(parsed.platform, { context: "stale-sweep" });
       const sessionId = parsed.session_id ?? instanceId;
       const ts = parsed.last_heartbeat
         ? Math.floor(Date.parse(parsed.last_heartbeat) / 1000)

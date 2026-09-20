@@ -26,7 +26,10 @@ import {
 import { resolveForkAncestry } from "../../core/agents/state/names.ts";
 import { instanceHasLivePid, removePidmapRowsForInstance } from "../../core/agents/state/pidmap.ts";
 import { coordFreshnessSeconds, resolveBinName } from "../../core/config.ts";
-import type { EventAdapterIdV3 } from "../../core/events/v3/adapter-id.ts";
+import {
+  type EventAdapterIdV3,
+  eventAdapterIdV3FromPlatform,
+} from "../../core/events/v3/adapter-id.ts";
 import { readRemoteMachines } from "../../core/presence/index.ts";
 import { type AgentIdentity, bareName, ensureIdentity, lookupById, lookupByName } from "./index.ts";
 
@@ -237,10 +240,7 @@ function acquireLock(coordRoot: string): () => void {
 }
 
 function adapterOf(platform: string | undefined): EventAdapterIdV3 {
-  if (platform === "cursor") return "cursor";
-  if (platform === "codex") return "codex";
-  if (platform === "openclaw") return "openclaw";
-  return "claude-code";
+  return eventAdapterIdV3FromPlatform(platform, { context: "identity-assume" });
 }
 
 /** Assume `target` for one live main session. Safe to retry. */

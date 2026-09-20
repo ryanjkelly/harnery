@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
-import type { Adapter } from "../core/adapter.ts";
+import { ADAPTERS, type Adapter, normalizeAdapter } from "../core/adapter.ts";
 import { monorepoRoot, resolveOwner } from "../core/agents/index.ts";
 import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import {
@@ -76,7 +76,7 @@ export function registerCheckpointCommand(
     .description("Create a durable context-continuity capsule for the current work")
     .option("--session <id>", "Session id (defaults to the current agent heartbeat)")
     .option("--instance <id>", "Agent instance id (defaults to the current owner)")
-    .option("--adapter <id>", "claude-code, codex, or cursor (inferred from heartbeat)")
+    .option("--adapter <id>", `${ADAPTERS.join(", ")} (inferred from heartbeat)`)
     .option("--reason <reason>", "manual, pressure, pre_compact, or session_end", "manual")
     .option("--note <text>", "Short continuation note for the recovered agent")
     .option("--json", "Structured JSON output")
@@ -94,7 +94,7 @@ export function registerCheckpointCommand(
           const reason = parseCheckpointReason(opts.reason);
           const identity = resolveContinuityIdentity(context, opts);
           if (!identity.adapter) {
-            throw new Error("could not infer the adapter; pass --adapter claude-code|codex|cursor");
+            throw new Error(`could not infer the adapter; pass --adapter ${ADAPTERS.join("|")}`);
           }
           const result = checkpointContext(identity.coordRoot, {
             sessionId: identity.sessionId,
@@ -166,15 +166,13 @@ function resolveContinuityIdentity(
 }
 
 function adapterFromPlatform(platform: string | undefined): Adapter | null {
-  if (platform === "claude-code") return "claude-code";
-  if (platform === "cursor") return "cursor";
-  if (platform === "codex") return "codex";
-  return null;
+  return normalizeAdapter(platform);
 }
 
 function parseAdapter(value: string): Adapter {
-  if (value === "claude-code" || value === "codex" || value === "cursor") return value;
-  throw new Error(`invalid adapter "${value}"; expected claude-code, codex, or cursor`);
+  const adapter = normalizeAdapter(value);
+  if (adapter) return adapter;
+  throw new Error(`invalid adapter "${value}"; expected one of ${ADAPTERS.join(", ")}`);
 }
 
 function parseCheckpointReason(value: string): CheckpointReason {

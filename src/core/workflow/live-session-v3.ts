@@ -1,4 +1,4 @@
-import type { Adapter } from "../adapter.ts";
+import { type Adapter, adapterFromPlatform } from "../adapter.ts";
 import { recordLiveTaskChangeV3 } from "../agents/live-authority-v3.ts";
 import { endSessionExplicitV3 } from "../agents/session-finalizer-v3.ts";
 import {
@@ -115,8 +115,7 @@ function requireV3Route(coordRoot: string) {
 }
 
 function workflowAdapter(adapter: string | undefined): Adapter {
-  if (adapter === "codex" || adapter === "cursor" || adapter === "claude-code") return adapter;
-  return "claude-code";
+  return adapterFromPlatform(adapter, { context: "workflow-child" });
 }
 
 export { stableScopeId } from "./scope-id.ts";

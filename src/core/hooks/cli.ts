@@ -22,7 +22,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { buildInstructionBundle } from "../../lib/instructions/bundle.ts";
-import type { Adapter } from "../adapter.ts";
+import { type Adapter, adapterFromPlatform as sharedAdapterFromPlatform } from "../adapter.ts";
 import { resolveCoordRoot } from "../agents/coord-client.ts";
 import {
   type ClaimFinalizationDecision,
@@ -1985,7 +1985,7 @@ function releaseClaimOnFailure(
       coordRoot,
       owner: instanceId,
       nativeSessionId: before?.session_id ?? instanceId,
-      adapter: adapterFromPlatform(before?.platform),
+      adapter: sharedAdapterFromPlatform(before?.platform, { context: "hook-claim-release" }),
       operation: "released",
       path: canonical,
       access: "write",
@@ -2094,15 +2094,7 @@ async function emitSubagentStartContext(
 }
 
 function adapterPlatform(adapter: Adapter): string {
-  if (adapter === "claude-code") return "claude-code";
   return adapter;
-}
-
-function adapterFromPlatform(platform: unknown): Adapter {
-  if (platform === "cursor") return "cursor";
-  if (platform === "codex") return "codex";
-  if (platform === "opencode") return "opencode";
-  return "claude-code";
 }
 
 async function emitSessionStartSystemMessage(

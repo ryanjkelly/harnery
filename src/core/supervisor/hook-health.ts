@@ -1,3 +1,4 @@
+import { type EventAdapterIdV3, normalizeEventAdapterIdV3 } from "../events/v3/adapter-id.ts";
 import {
   HOOK_HEALTH_EVENT,
   HOOK_HEALTH_RECEIPT_VERSION,
@@ -18,7 +19,7 @@ export interface CompletedHookHealth {
   id: string;
   observed_at: string;
   hook_name: string;
-  adapter: "claude-code" | "codex" | "cursor" | "unknown";
+  adapter: EventAdapterIdV3 | "unknown";
   outcome: HookHealthOutcome;
   duration_ms: number;
   rss_start_bytes: number;
@@ -267,9 +268,8 @@ function token(value: unknown): string | undefined {
 }
 
 function adapterValue(value: unknown): CompletedHookHealth["adapter"] | undefined {
-  return value === "claude-code" || value === "codex" || value === "cursor" || value === "unknown"
-    ? value
-    : undefined;
+  if (value === "unknown") return value;
+  return normalizeEventAdapterIdV3(value) ?? undefined;
 }
 
 function outcomeValue(value: unknown): HookHealthOutcome | undefined {
