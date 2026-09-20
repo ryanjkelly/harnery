@@ -34,8 +34,13 @@ export interface CursorHookGroup {
   command: string;
   type?: string;
   matcher?: string;
+  /** Cursor Stop followup cap. Harnery pins 2; Cursor's own default is 5. */
+  loop_limit?: number;
 }
 export type HookGroup = ClaudeHookGroup | CursorHookGroup;
+
+/** Bound Cursor Stop `followup_message` retries so a missed ritual cannot loop 5 times. */
+export const CURSOR_STOP_FOLLOWUP_LOOP_LIMIT = 2;
 
 export interface SettingsFile {
   version?: number;
@@ -45,8 +50,24 @@ export interface SettingsFile {
 }
 
 /** Build a hook entry in the adapter's shape. */
-export function makeEntry(shape: HookEntryShape, command: string): HookGroup {
-  return shape === "cursor" ? { command } : { hooks: [{ type: "command", command }] };
+export function makeEntry(
+  shape: HookEntryShape,
+  command: string,
+  extras?: { loop_limit?: number },
+): HookGroup {
+  if (shape !== "cursor") return { hooks: [{ type: "command", command }] };
+  return extras?.loop_limit !== undefined
+    ? { command, loop_limit: extras.loop_limit }
+    : { command };
+}
+
+/** Pin Cursor Stop followups to Harnery's loop cap. Returns true when the entry changed. */
+export function applyCursorStopLoopLimit(group: HookGroup, subcommand: string): boolean {
+  if (subcommand !== "stop") return false;
+  if (!("command" in group) || typeof group.command !== "string") return false;
+  if (group.loop_limit === CURSOR_STOP_FOLLOWUP_LOOP_LIMIT) return false;
+  group.loop_limit = CURSOR_STOP_FOLLOWUP_LOOP_LIMIT;
+  return true;
 }
 
 /** Pull every command string out of a hook entry, regardless of shape. */

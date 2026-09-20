@@ -38,6 +38,7 @@ import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
 import { projectLatencyV3 } from "../latency.ts";
 import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths } from "../writer.ts";
+import { evaluateStopHook } from "../../../agents/rules/stop-hook.ts";
 import {
   codexMidFlightDiagnosticContext,
   drainHookIntakeSpoolV3,
@@ -826,6 +827,13 @@ describe("event ledger V3 persistent hook recorder", () => {
         )
       : [];
     expect(unbound).toHaveLength(0);
+    expect(
+      evaluateStopHook(root, {
+        rule: "stop-hook",
+        instance_id: "inst_fixture",
+        adapter: "cursor",
+      }),
+    ).toMatchObject({ allow: true, rule: "stop-hook.pure_prose_pass" });
   });
 
   test("accumulates bounded hook CLI time inside the active turn", () => {

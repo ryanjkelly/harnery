@@ -158,6 +158,23 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
       rule: "stop-hook.pass",
     });
 
+    const frozen = [turnStarted(0), task(1), turnCompleted(2, ritual(false))];
+    expect(verdict("cursor", frozen)).toMatchObject({
+      allow: false,
+      rule: "stop-hook.rule_2_3",
+    });
+    const recoveredFollowup = [
+      turnStarted(0),
+      task(1),
+      turnCompleted(2, ritual(false)),
+      turnStarted(3, true),
+      turnCompleted(4, ritual(true)),
+    ];
+    expect(verdict("cursor", recoveredFollowup)).toMatchObject({
+      allow: true,
+      rule: "stop-hook.pure_prose_pass",
+    });
+
     const nextHumanTurn = repaired.map((item) => structuredClone(item));
     fixtureObject(nextHumanTurn[4]!.payload).stop_remediation = false;
     expect(verdict("cursor", nextHumanTurn)).toMatchObject({

@@ -41,7 +41,9 @@ import {
 } from "../core/hooks/adapter/opencode-plugin.ts";
 import {
   agentHookPathForProject,
+  applyCursorStopLoopLimit,
   commandWiresSubcommand,
+  CURSOR_STOP_FOLLOWUP_LOOP_LIMIT,
   diffWiring,
   groupCommands,
   type HookGroup,
@@ -509,7 +511,15 @@ export function wireHooks(
       continue;
     }
     const current = settings.hooks[settingsKey] ?? [];
-    current.push(makeEntry(spec.entryShape, command));
+    current.push(
+      makeEntry(
+        spec.entryShape,
+        command,
+        spec.entryShape === "cursor" && subcommand === "stop"
+          ? { loop_limit: CURSOR_STOP_FOLLOWUP_LOOP_LIMIT }
+          : undefined,
+      ),
+    );
     settings.hooks[settingsKey] = current;
     wired++;
   }
@@ -543,6 +553,7 @@ function normalizeEventGroup(
         group.command = canonical;
         upgraded++;
       }
+      if (applyCursorStopLoopLimit(group, subcommand)) upgraded++;
     }
   }
   if ("hooks" in group && Array.isArray(group.hooks)) {

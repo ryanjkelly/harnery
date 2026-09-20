@@ -300,7 +300,10 @@ describe("wireHooks: Cursor", () => {
     expect((settings as { version: number }).version).toBe(1);
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     // Flat `{ command }`, no inner `hooks` array.
-    expect(hooks.stop[0]).toEqual({ command: `bash ${HOOK} stop --adapter cursor` });
+    expect(hooks.stop[0]).toEqual({
+      command: `bash ${HOOK} stop --adapter cursor`,
+      loop_limit: 2,
+    });
     expect(hooks.preCompact[0]).toEqual({ command: `bash ${HOOK} pre-compact --adapter cursor` });
     expect(hooks.beforeShellExecution[0]).toEqual({
       command: `bash ${HOOK} before-shell-execution --adapter cursor`,
@@ -457,6 +460,26 @@ describe("wireHooks: migration cleanup", () => {
     expect(settings.hooks.stop).toEqual([
       { command: `bash ${HOOK} stop --adapter cursor`, loop_limit: 2 },
     ]);
+  });
+
+  test("pins Cursor stop followups to loop_limit 2 and upgrades a missing cap", () => {
+    const settings: {
+      version: number;
+      hooks: { stop: Array<{ command: string; loop_limit?: number }> };
+    } = {
+      version: 1,
+      hooks: {
+        stop: [{ command: `bash ${HOOK} stop --adapter cursor` }],
+      },
+    };
+    const result = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    expect(result.upgraded).toBeGreaterThan(0);
+    expect(settings.hooks.stop).toEqual([
+      { command: `bash ${HOOK} stop --adapter cursor`, loop_limit: 2 },
+    ]);
+    const second = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    expect(second.upgraded).toBe(0);
+    expect(second.already).toBe(CURSOR.events.length);
   });
 });
 
