@@ -87,4 +87,36 @@ describe("adapter behaviors", () => {
     ).toBe("hello");
     expect(adapterBehavior("codex").inlineAssistantText).toBeUndefined();
   });
+
+  test("producer-side turn flags match the previous per-adapter branches", () => {
+    for (const id of EVENT_ADAPTER_IDS_V3) {
+      const b = adapterBehavior(id);
+      const isCursor = id === "cursor";
+      expect(b.sessionIdentityOnStartOnly).toBe(isCursor);
+      expect(b.nativeTurnIdOptional).toBe(isCursor);
+      expect(b.tracksExecutionMode).toBe(isCursor);
+      expect(b.shellOperationDedup).toBe(isCursor);
+      expect(b.promptMayPrecedeSessionStart).toBe(isCursor);
+      expect(b.promptContinuesOpenTurn).toBe(isCursor);
+      expect(b.runtimeContextTranscriptOptional).toBe(isCursor);
+      expect(b.completedResponseEvent).toBe(isCursor ? "after-agent-response" : undefined);
+      expect(b.runtimeContextRetry).toBe(id === "codex");
+      expect(b.transcriptTuningRefresh).toBe(id === "claude-code");
+      expect(b.nativeTelemetryOnly).toBe(id === "openclaw");
+      // Recovery stays off for OpenCode until its onboarding is certified.
+      expect(b.turnRecovery).toBe(id !== "opencode");
+    }
+  });
+
+  test("Codex owns the mid-flight diagnostic context and transcript verification", () => {
+    const codex = adapterBehavior("codex");
+    expect(codex.midFlightDiagnosticContext?.({ raw: {}, session_id: "abc" })).toMatchObject({
+      identity_recovery_source: "native_session_id",
+    });
+    expect(codex.discoverTranscript?.("not-a-session-id")).toBeUndefined();
+    for (const id of EVENT_ADAPTER_IDS_V3) {
+      if (id === "codex") continue;
+      expect(adapterBehavior(id).midFlightDiagnosticContext).toBeUndefined();
+    }
+  });
 });

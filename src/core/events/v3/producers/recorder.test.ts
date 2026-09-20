@@ -20,6 +20,7 @@ import {
   reconcileSessionFinalizationV3,
   requestSessionEndExplicitV3,
 } from "../../../agents/session-finalizer-v3.ts";
+import { codexMidFlightDiagnosticContext } from "../../../hooks/adapter/behaviors/codex.ts";
 import { type ParsedPayload, parsePayload } from "../../../hooks/adapter/parse.ts";
 import { clearRuntimeTelemetryCachesForTest } from "../../../hooks/adapter/runtime-telemetry.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
@@ -40,7 +41,6 @@ import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths } from "../writer.ts";
 import { evaluateStopHook } from "../../../agents/rules/stop-hook.ts";
 import {
-  codexMidFlightDiagnosticContext,
   drainHookIntakeSpoolV3,
   readHookProducerStateV3,
   reconcilePendingRuntimeContextV3,

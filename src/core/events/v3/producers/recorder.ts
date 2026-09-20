@@ -15,9 +15,10 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { normalizeAdapter } from "../../../adapter.ts";
+import { adapterBehavior } from "../../../hooks/adapter/behaviors/index.ts";
 import { extractBashCommand, type ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import {
-  discoverCodexSessionTranscript,
   type RuntimeContextTelemetry,
   type RuntimeTelemetryOptions,
   readRuntimeContextTelemetry,
@@ -104,17 +105,6 @@ const ACTIVE_RUNTIME_CONTEXT_PROBE_INTERVAL_MS = 15_000;
 const STOP_RUNTIME_CONTEXT_RETRY_DELAYS_MS = [75, 175] as const;
 /** Finalization is off the interactive hook path; briefly cover Codex's delayed transcript flush. */
 const APPROVED_END_RUNTIME_CONTEXT_RETRY_DELAYS_MS = [0, 250, 250] as const;
-/**
- * Adapters whose turn-boundary recovery and mid-flight onboarding are enabled.
- * Kept in code, outside the digested capability profiles, so tuning recovery
- * never changes an adapter capability digest (ADR 0078).
- */
-const RECOVERY_ENABLED_ADAPTERS: ReadonlySet<string> = new Set([
-  "claude-code",
-  "codex",
-  "cursor",
-  "openclaw",
-]);
 
 interface SpanStateV3 extends OpenSpanStateV3 {
   line_changes?: LineChanges;
@@ -469,11 +459,11 @@ function sessionHashForSignal(
     return normalizeNativeIdV3(context, `${input.adapter}.session`, nativeSession);
   }
 
-  // Cursor carries native session identity only on its start signal. Later
-  // hooks may still have an exact coordination instance, so reuse its single
-  // live producer authority instead of hashing the instance into a second
-  // state path. Ambiguous or absent matches keep the fail-closed fallback.
-  if (input.adapter === "cursor") {
+  // Some adapters carry native session identity only on their start signal.
+  // Later hooks may still have an exact coordination instance, so reuse its
+  // single live producer authority instead of hashing the instance into a
+  // second state path. Ambiguous or absent matches keep the fail-closed fallback.
+  if (adapterBehavior(input.adapter).sessionIdentityOnStartOnly) {
     const matches = listHookProducerStateRecordsV3(input.coordRoot).filter(
       ({ state }) => state.adapter === input.adapter && state.instance_id === input.instance_id,
     );
@@ -668,6 +658,7 @@ function processHookSignalLocked(
   sessionHash: `hid_${string}`,
   path: string,
 ): RecordHookSignalV3Result {
+  const behavior = adapterBehavior(input.adapter);
   const rootId = control.genesis.event.scope.root_id as `root_${string}`;
   const epochId = control.genesis.profile.privacy_key_epoch;
   const boundaryEventId =
@@ -703,14 +694,15 @@ function processHookSignalLocked(
       throw new Error("V3 producer state authority does not match the active boundary");
     }
     if (
-      state?.adapter === "cursor" &&
+      state &&
+      behavior.tracksExecutionMode &&
       input.payload.cursor_mode &&
       input.payload.cursor_mode !== "unknown"
     ) {
       if (!state.cursor_mode || state.cursor_mode === "unknown") {
         state.cursor_mode = input.payload.cursor_mode;
       } else if (state.cursor_mode !== input.payload.cursor_mode) {
-        throw new Error("Cursor execution mode changed within one V3 generation");
+        throw new Error("Execution mode changed within one V3 generation");
       }
     }
     let recovered: RecordHookSignalV3Result | undefined;
@@ -758,7 +750,7 @@ function processHookSignalLocked(
         input.payload.session_id ?? input.payload.conversation_id ?? input.payload.agent_id;
       const onboardable =
         !state &&
-        RECOVERY_ENABLED_ADAPTERS.has(input.adapter) &&
+        behavior.turnRecovery &&
         input.signal !== "session-end" &&
         nativeSessionIdentity !== undefined;
       if (!onboardable) {
@@ -796,7 +788,7 @@ function processHookSignalLocked(
           instance_id: input.instance_id,
           signal: input.signal,
           session_hash: sessionHash,
-          ...(input.adapter === "codex" ? codexMidFlightDiagnosticContext(input.payload) : {}),
+          ...(behavior.midFlightDiagnosticContext?.(input.payload) ?? {}),
         });
       }
     }
@@ -807,7 +799,7 @@ function processHookSignalLocked(
       state.generation_id,
       state.privacy_epoch_id,
     );
-    const recoveryEnabled = RECOVERY_ENABLED_ADAPTERS.has(input.adapter);
+    const recoveryEnabled = behavior.turnRecovery;
     const nativeTid = input.payload.turn_id
       ? (normalizeNativeIdV3(
           fingerprintContext,
@@ -816,7 +808,7 @@ function processHookSignalLocked(
         ).replace(/^hid_/, "tid_") as `tid_${string}`)
       : undefined;
     const cursorPromptWithinOpenTurn =
-      input.adapter === "cursor" &&
+      behavior.promptContinuesOpenTurn &&
       input.signal === "user-prompt-submit" &&
       state.current_turn_id !== undefined &&
       state.current_turn_span !== undefined;
@@ -930,8 +922,9 @@ function processHookSignalLocked(
       // Later completed replies still fire afterAgentResponse; bind them to a
       // derived remediation turn so Stop can consume the new ritual instead of
       // looping on the frozen first terminal.
+      const ritualFromResponseEvent = behavior.completedResponseEvent === input.signal;
       if (
-        input.adapter === "cursor" &&
+        ritualFromResponseEvent &&
         input.turn_ritual &&
         (!state.current_turn_id || !state.current_turn_span)
       ) {
@@ -949,7 +942,7 @@ function processHookSignalLocked(
         });
       }
       if (
-        input.adapter !== "cursor" ||
+        !ritualFromResponseEvent ||
         !state.current_turn_id ||
         !state.current_turn_span ||
         !input.turn_ritual
@@ -1203,13 +1196,12 @@ function processHookSignalLocked(
       input.signal === "stop" || input.signal === "stop-failure"
         ? turnTelemetryForTerminal(input, state, eventClock.observed_at)
         : undefined;
-    const cursorToolChannelSupport =
-      input.adapter === "cursor"
-        ? cursorToolChannelSupportV3(state.cursor_mode ?? "unknown")
-        : undefined;
+    const cursorToolChannelSupport = behavior.tracksExecutionMode
+      ? cursorToolChannelSupportV3(state.cursor_mode ?? "unknown")
+      : undefined;
     const cursorToolChannelUnattested =
       (input.signal === "stop" || input.signal === "stop-failure") &&
-      input.adapter === "cursor" &&
+      behavior.tracksExecutionMode &&
       cursorToolChannelSupport !== "unsupported" &&
       state.tool_call_count === 0;
     if (input.signal === "sub-agent-start" && delegation && !delegation.open_event_id) {
@@ -1221,15 +1213,16 @@ function processHookSignalLocked(
     // Before the signal's own event: the tool call or turn that carries the
     // new effort already ran under it, so it must ride the new attestation.
     maybeAttestTuningChange(input, state, path, rootId);
+    const ritualArrivesSeparately = behavior.completedResponseEvent !== undefined;
     const cursorResponseRitual =
-      input.adapter === "cursor" &&
+      ritualArrivesSeparately &&
       (input.signal === "stop" || input.signal === "stop-failure") &&
       state.current_turn_id &&
       state.cursor_response_ritual?.turn_id === state.current_turn_id
         ? state.cursor_response_ritual
         : undefined;
     const terminalTurnRitual =
-      input.adapter === "cursor" && (input.signal === "stop" || input.signal === "stop-failure")
+      ritualArrivesSeparately && (input.signal === "stop" || input.signal === "stop-failure")
         ? cursorResponseRitual
           ? {
               status_box_present: cursorResponseRitual.status_box_present,
@@ -2137,7 +2130,8 @@ function maybeCommitActiveRuntimeContextObservation(
   }
   const nativeSessionId = input.payload.session_id ?? input.payload.conversation_id;
   const nativeTurnId = input.payload.turn_id ?? state.current_native_turn_id;
-  if (!nativeSessionId || (!nativeTurnId && input.adapter !== "cursor")) return;
+  const behavior = adapterBehavior(input.adapter);
+  if (!nativeSessionId || (!nativeTurnId && !behavior.nativeTurnIdOptional)) return;
 
   const now = Date.now();
   const configuredInterval = input.runtimeTelemetryOptions?.activeContextProbeIntervalMs;
@@ -2180,23 +2174,22 @@ function maybeCommitActiveRuntimeContextObservation(
     );
     return;
   }
-  if (input.adapter === "cursor" && state.cursor_mode === "cloud") {
-    publishProducerState(input.coordRoot, path, state);
-    return;
-  }
-  if (input.adapter === "openclaw") {
+  // Runtime readers exist only for workflow adapters; an event-only adapter
+  // has no transcript to read.
+  const runtimeAdapter = normalizeAdapter(input.adapter);
+  if (!runtimeAdapter || !behavior.runtimeContextAvailable(state.cursor_mode)) {
     publishProducerState(input.coordRoot, path, state);
     return;
   }
 
   const transcriptPath = runtimeTranscriptPath(input, state);
-  if (!transcriptPath && input.adapter !== "cursor") {
+  if (!transcriptPath && !behavior.runtimeContextTranscriptOptional) {
     publishProducerState(input.coordRoot, path, state);
     return;
   }
   const runtime = readRuntimeContextTelemetry(
     {
-      adapter: input.adapter,
+      adapter: runtimeAdapter,
       session_id: nativeSessionId,
       ...(nativeTurnId ? { turn_id: nativeTurnId } : {}),
       ...(state.current_turn_span?.opened_at
@@ -2386,7 +2379,7 @@ function queuePendingRuntimeContext(
   nativeTurnId: string | undefined,
 ): void {
   if (
-    input.adapter !== "codex" ||
+    !adapterBehavior(input.adapter).runtimeContextRetry ||
     !target ||
     measurement.state !== "expected_but_missing" ||
     !retryableRuntimeContextReason(measurement.reason)
@@ -2421,7 +2414,12 @@ function reconcilePendingRuntimeContexts(
   fingerprintContext: ReturnType<typeof fingerprintContextV3>,
   options: { deferRetryLimit?: boolean; finalAttempt?: boolean } = {},
 ): void {
-  if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) return;
+  if (
+    !adapterBehavior(state.adapter).runtimeContextRetry ||
+    !state.pending_runtime_contexts?.length
+  ) {
+    return;
+  }
   for (const pending of [...state.pending_runtime_contexts]) {
     const runtime = readRuntimeContextTelemetry(
       {
@@ -2487,7 +2485,12 @@ function reconcilePendingRuntimeContextsBeforeApprovedEnd(
   rootId: `root_${string}`,
   fingerprintContext: ReturnType<typeof fingerprintContextV3>,
 ): void {
-  if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) return;
+  if (
+    !adapterBehavior(state.adapter).runtimeContextRetry ||
+    !state.pending_runtime_contexts?.length
+  ) {
+    return;
+  }
   // Context reconciliation continues the hook boot's sequence, even when the
   // finalizer drives it. Recover that producer identity from its validated
   // session start instead of attaching the sequence to the finalizer's name.
@@ -2539,9 +2542,11 @@ function turnTelemetryForTerminal(
   observedAt: string,
 ): TurnTelemetryV3 {
   const native = extractTurnTelemetryV3(input.adapter, input.payload.raw, observedAt);
+  const behavior = adapterBehavior(input.adapter);
   if (native.context.state === "observed") return native;
-  if (input.adapter === "openclaw") return native;
-  if (input.adapter === "cursor" && state.cursor_mode === "cloud") {
+  const runtimeAdapter = normalizeAdapter(input.adapter);
+  if (!runtimeAdapter || behavior.nativeTelemetryOnly) return native;
+  if (!behavior.runtimeContextAvailable(state.cursor_mode)) {
     return {
       ...native,
       context: { state: "unsupported", capability: "context_usage" },
@@ -2549,7 +2554,7 @@ function turnTelemetryForTerminal(
   }
 
   const request = {
-    adapter: input.adapter,
+    adapter: runtimeAdapter,
     session_id: input.payload.session_id ?? input.payload.conversation_id,
     turn_id: input.payload.turn_id ?? state.current_native_turn_id,
     transcript_path: runtimeTranscriptPath(input, state),
@@ -2559,7 +2564,7 @@ function turnTelemetryForTerminal(
   let runtime = readRuntimeContextTelemetry(request, input.runtimeTelemetryOptions);
   if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
   if (
-    input.adapter === "codex" &&
+    behavior.runtimeContextRetry &&
     runtime.state === "partial" &&
     retryableRuntimeContextReason(runtime.reason)
   ) {
@@ -2594,24 +2599,21 @@ function runtimeTranscriptPath(
   input: RecordHookSignalV3Input,
   state: HookProducerStateV3,
 ): string | undefined {
-  if (input.adapter !== "codex") return input.payload.transcript_path;
+  const discover = adapterBehavior(input.adapter).discoverTranscript;
+  if (!discover) return input.payload.transcript_path;
   const nativeSessionId = input.payload.session_id ?? input.payload.conversation_id;
   if (!nativeSessionId) return input.payload.transcript_path;
 
   const supplied = input.payload.transcript_path;
   if (supplied) {
-    const verified = discoverCodexSessionTranscript(
-      nativeSessionId,
-      supplied,
-      input.runtimeTelemetryOptions,
-    );
+    const verified = discover(nativeSessionId, supplied, input.runtimeTelemetryOptions);
     if (verified) state.runtime_transcript_path = verified;
     // Preserve a supplied mismatch so the typed reader reports it honestly.
     return verified ?? supplied;
   }
 
   if (state.runtime_transcript_path) {
-    const verified = discoverCodexSessionTranscript(
+    const verified = discover(
       nativeSessionId,
       state.runtime_transcript_path,
       input.runtimeTelemetryOptions,
@@ -2620,11 +2622,7 @@ function runtimeTranscriptPath(
     state.runtime_transcript_path = undefined;
   }
 
-  const discovered = discoverCodexSessionTranscript(
-    nativeSessionId,
-    undefined,
-    input.runtimeTelemetryOptions,
-  );
+  const discovered = discover(nativeSessionId, undefined, input.runtimeTelemetryOptions);
   if (discovered) state.runtime_transcript_path = discovered;
   return discovered;
 }
@@ -2716,11 +2714,12 @@ function maybeAttestTuningChange(
   let candidate: { effort?: string; speed?: string; model?: string } | undefined;
   let attestationSource: "native" | "derived" = "native";
   let sourceEvent = `${input.adapter}.effort-payload`;
-  if (input.adapter === "claude-code" || input.adapter === "cursor") {
+  const behavior = adapterBehavior(input.adapter);
+  if (behavior.effortAttestation === "payload") {
     if (!input.payload.effort) return;
     candidate = { effort: input.payload.effort };
   } else if (
-    input.adapter === "codex" &&
+    behavior.effortAttestation === "rollout-probe" &&
     (input.signal === "stop" ||
       // Early probe: without it, a Codex card shows no effort until the first
       // turn terminal. One rollout read per turn while effort is unknown.
@@ -2763,9 +2762,9 @@ function maybeAttestTuningChange(
     return;
   }
 
-  // CC change detection rides the payload; the paired transcript row also
-  // carries speed and the (possibly swapped) model, so refresh from it.
-  if (input.adapter === "claude-code") {
+  // Payload change detection rides the payload; the paired transcript row
+  // also carries speed and the (possibly swapped) model, so refresh from it.
+  if (behavior.transcriptTuningRefresh) {
     const runtime = readRuntimeTuning({
       adapter: "claude-code",
       transcript_path: input.payload.transcript_path,
@@ -2918,9 +2917,7 @@ function commitRuntimeAttestationChange(
 }
 
 function modelProviderFor(adapter: EventAdapterIdV3): string {
-  if (adapter === "claude-code") return "anthropic";
-  if (adapter === "codex") return "openai";
-  return adapter;
+  return adapterBehavior(adapter).modelProvider;
 }
 
 function recordRuntimeTelemetryTiming(state: HookProducerStateV3, durationMs: number): void {
@@ -3165,45 +3162,11 @@ function buildMidFlightSessionStart(
  */
 function isCursorPromptBootstrap(input: RecordHookSignalV3Input): boolean {
   return (
-    input.adapter === "cursor" &&
+    adapterBehavior(input.adapter).promptMayPrecedeSessionStart &&
     input.signal === "user-prompt-submit" &&
     (input.payload.conversation_id !== undefined || input.payload.session_id !== undefined) &&
     input.payload.turn_id !== undefined
   );
-}
-
-/** Privacy-safe environment and recovery provenance for Codex mid-flight
- * onboarding. WSLENV values are never recorded, only normalized variable
- * names, and the native session identifier itself remains fingerprinted. */
-export function codexMidFlightDiagnosticContext(
-  payload: ParsedPayload,
-  env: NodeJS.ProcessEnv = process.env,
-): Record<string, string | boolean> {
-  const wslenv = env.WSLENV?.trim() ?? "";
-  const wslenvNames = [
-    ...new Set(
-      wslenv
-        .split(":")
-        .map((entry) => entry.split("/", 1)[0]?.trim() ?? "")
-        .filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)),
-    ),
-  ]
-    .sort()
-    .join(":")
-    .slice(0, 512);
-  const identityRecoverySource = payload.session_id
-    ? "native_session_id"
-    : payload.conversation_id
-      ? "native_conversation_id"
-      : payload.agent_id
-        ? "native_agent_id"
-        : "unavailable";
-  return {
-    thread_id_present: Boolean(env.CODEX_THREAD_ID?.trim()),
-    wslenv_present: wslenv.length > 0,
-    wslenv_names: wslenvNames,
-    identity_recovery_source: identityRecoverySource,
-  };
 }
 
 function suppressClosedSpanSignal(
@@ -3594,7 +3557,7 @@ export function reanchorArchivedHookProducersV3(
         payload: {
           raw: {},
           ...(previous.current_native_turn_id ? { turn_id: previous.current_native_turn_id } : {}),
-          ...(previous.adapter === "cursor" && previous.cursor_mode
+          ...(adapterBehavior(previous.adapter).tracksExecutionMode && previous.cursor_mode
             ? { cursor_mode: previous.cursor_mode }
             : {}),
         },
@@ -3785,7 +3748,10 @@ export function reconcilePendingRuntimeContextV3(
       // holds everything this producer durably recorded.
       return { state: "missing" };
     }
-    if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) {
+    if (
+      !adapterBehavior(state.adapter).runtimeContextRetry ||
+      !state.pending_runtime_contexts?.length
+    ) {
       return { state: "not_pending" };
     }
     const context = fingerprintContextV3(
@@ -3903,7 +3869,9 @@ function newProducerState(
     generation_id: input.delegated_child?.generation_id ?? generationIdV3(),
     attestation_id: attestationIdV3(),
     capability_profile: adapterCapabilityProfileDigestV3(input.adapter),
-    cursor_mode: input.adapter === "cursor" ? (input.payload.cursor_mode ?? "unknown") : undefined,
+    cursor_mode: adapterBehavior(input.adapter).tracksExecutionMode
+      ? (input.payload.cursor_mode ?? "unknown")
+      : undefined,
     privacy_epoch_id: epochId,
     epoch_genesis_id: genesisId,
     boot_id: bootId,
@@ -4088,7 +4056,7 @@ function cursorShellSemanticKey(
   input: RecordHookSignalV3Input,
   context: ReturnType<typeof fingerprintContextV3>,
 ): `hid_${string}` | undefined {
-  if (input.adapter !== "cursor") return undefined;
+  if (!adapterBehavior(input.adapter).shellOperationDedup) return undefined;
   const command = extractBashCommand(input.payload.tool_name, input.payload.tool_input);
   return command
     ? normalizeNativeIdV3(context, "cursor.shell-operation", command.normalize("NFC"))
@@ -4352,7 +4320,7 @@ function readProducerState(path: string): HookProducerStateV3 {
   ) {
     state.pending_runtime_contexts = undefined;
   }
-  if (state.adapter === "cursor") state.cursor_mode ??= "unknown";
+  if (adapterBehavior(state.adapter).tracksExecutionMode) state.cursor_mode ??= "unknown";
   const allowedKeys = new Set([
     "active_runtime_context_probe",
     "adapter",

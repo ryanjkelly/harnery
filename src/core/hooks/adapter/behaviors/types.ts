@@ -2,6 +2,7 @@ import type { Adapter } from "../../../adapter.ts";
 import type { EventAdapterIdV3 } from "../../../events/v3/adapter-id.ts";
 import type { CodexWslFileLinkTelemetry } from "../../codex-wsl-bridge.ts";
 import type { ParsedPayload } from "../parse.ts";
+import type { RuntimeTelemetryOptions } from "../runtime-telemetry.ts";
 
 /** Flags passed to the prompt-context renderer on every user prompt. */
 export interface PromptContextNudges {
@@ -57,6 +58,12 @@ export interface AdapterBehavior {
   readonly tracksExecutionMode: boolean;
   /** Shell hooks may deliver the same command twice; dedupe by a command fingerprint. */
   readonly shellOperationDedup: boolean;
+  /** The native prompt signal can arrive before session start and is a trusted boundary. */
+  readonly promptMayPrecedeSessionStart: boolean;
+  /** A prompt signal inside an open turn continues that turn instead of starting a new one. */
+  readonly promptContinuesOpenTurn: boolean;
+  /** Missed hook signals may be recovered into derived turns and spans. */
+  readonly turnRecovery: boolean;
 
   // ── Runtime telemetry ───────────────────────────────────────────────────
   /** Turn telemetry comes only from the native payload; no runtime transcript read. */
@@ -66,6 +73,8 @@ export interface AdapterBehavior {
   /** Late runtime-context samples are retried after stop (rollout flush lag). */
   readonly runtimeContextRetry: boolean;
   readonly effortAttestation: EffortAttestationSource;
+  /** After a payload effort change, refresh speed and model from the transcript row. */
+  readonly transcriptTuningRefresh: boolean;
   /** Provider label attached to attested model identity. */
   readonly modelProvider: string;
   /** Whether runtime context can be read at all under the given execution mode. */
@@ -76,8 +85,14 @@ export interface AdapterBehavior {
   bridgeFor(cwd: unknown): "codex-wsl" | undefined;
 
   // ── Adapter-native helpers (present only where the adapter needs them) ──
-  /** Locate the session transcript when hook payloads omit `transcript_path`. */
-  discoverTranscript?(nativeSessionId: string): string | undefined;
+  /** Locate (or verify) the session transcript when hook payloads omit `transcript_path`. */
+  discoverTranscript?(
+    nativeSessionId: string,
+    candidate?: string,
+    options?: RuntimeTelemetryOptions,
+  ): string | undefined;
+  /** Privacy-safe environment provenance recorded when a session onboards mid-flight. */
+  midFlightDiagnosticContext?(payload: ParsedPayload): Record<string, string | boolean>;
   /** Completed-reply text supplied inline on tool hooks (no transcript needed). */
   inlineAssistantText?(payload: ParsedPayload | null): string | undefined;
   /** Extra turn.completed telemetry about file links under a bridged deployment. */
