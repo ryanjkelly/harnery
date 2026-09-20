@@ -87,6 +87,7 @@ import { captureSpanClockV3 } from "../events/v3/span-state.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
+import { adapterBehavior } from "./adapter/behaviors/index.ts";
 import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
 import {
   extractBashCommand,
@@ -96,14 +97,7 @@ import {
   type ParsedPayload,
   parsePayload,
 } from "./adapter/parse.ts";
-import { discoverCodexSessionTranscript } from "./adapter/runtime-telemetry.ts";
 import { scheduleBackupSnapshot } from "./backup-schedule.ts";
-import {
-  codexWslFileLinkTelemetry,
-  inspectCodexWslBridge,
-  isWslUncPath,
-  renderCodexWslFileLinkContext,
-} from "./codex-wsl-bridge.ts";
 import {
   captureImages,
   detectPresence,
@@ -138,7 +132,6 @@ import {
 } from "./resolve/transcript.ts";
 import { sessionNamePresence } from "./session-name-presence.ts";
 import { shellWaiterReason } from "./shell-waiter.ts";
-import { unsafeCrossShellReason } from "./unsafe-cross-shell.ts";
 
 interface Argv {
   eventName: string | null;
@@ -433,9 +426,11 @@ function buildEventData(
     case "turn.completed": {
       const lastAssistantMessage = (p?.raw.last_assistant_message as string | undefined) ?? "";
       const fileLinkTelemetry =
-        ctx.adapter === "codex"
-          ? codexWslFileLinkTelemetry(ctx.coordRoot, p?.cwd, lastAssistantMessage)
-          : null;
+        adapterBehavior(ctx.adapter).fileLinkTelemetry?.(
+          ctx.coordRoot,
+          p?.cwd,
+          lastAssistantMessage,
+        ) ?? null;
       return {
         // Backfill the model for adapters that omit it at session.started
         // (Claude Code). The transcript is populated with assistant turns by
@@ -472,12 +467,11 @@ function buildEventData(
         // transcript scan itself stops once the name has been sighted.
         ...sessionNamePresence(ctx.coordRoot, ctx.instanceId, (name) =>
           inspectSessionNameDisplayImmediately(
-            // Codex stops carry no transcript_path; discover the rollout by
-            // session id so the naming ritual can verify and stamp there too.
+            // Some adapters omit transcript_path on stop; the behavior may
+            // discover the transcript by session id so the naming ritual can
+            // verify and stamp there too.
             p?.transcript_path ??
-              (ctx.adapter === "codex"
-                ? discoverCodexSessionTranscript(p?.session_id ?? ctx.instanceId)
-                : undefined),
+              adapterBehavior(ctx.adapter).discoverTranscript?.(p?.session_id ?? ctx.instanceId),
             name,
             assistantTextStartsWithSessionNameBlock,
           ),
@@ -628,6 +622,7 @@ async function main(): Promise<number> {
   const hookClock = captureSpanClockV3();
   const { eventName, extra } = parseArgv(process.argv.slice(2));
   const adapter = detectAdapter(process.argv.slice(2));
+  const behavior = adapter ? adapterBehavior(adapter) : null;
   const raw = await readStdin();
   hookHealthState = beginHookHealth({
     started_at_ms: hookStartedAt,
@@ -667,8 +662,8 @@ async function main(): Promise<number> {
   // Kill-switch-INDEPENDENT effects: notification sounds fire BEFORE the
   // HARNERY_AGENT_COORD_OFF gate so audible feedback survives incident-triage
   // bypass: sound playback happens before the kill-switch bailout.
-  // Claude-Code-only; stop-failure → error, sub-agent-start → subagent-start.
-  if (adapter === "claude-code" && eventName) {
+  // Behavior-gated; stop-failure → error, sub-agent-start → subagent-start.
+  if (behavior?.soundEffects && eventName) {
     const s = soundForEvent(eventName);
     if (s) {
       const repoRoot = resolveCoordRoot(process.cwd());
@@ -724,7 +719,7 @@ async function main(): Promise<number> {
     ppid: process.ppid,
   };
 
-  if (!eventName || !adapter) {
+  if (!eventName || !adapter || !behavior) {
     appendDebug(coordRoot, { ...debugBase, skipped: "missing-event-or-adapter" });
     return 0;
   }
@@ -736,7 +731,7 @@ async function main(): Promise<number> {
   // assistant text. Preserve only privacy-safe ritual booleans in the V3
   // producer's open-turn state; Stop consumes them into the authoritative
   // turn.completed event. The response body never enters V3 or heartbeat.
-  if (adapter === "cursor" && eventName === "after-agent-response") {
+  if (behavior && eventName && eventName === behavior.completedResponseEvent) {
     const payload = parsePayload(raw, adapter);
     const owner = resolveOwner({ payload: payload?.raw ?? null, coordRoot });
     if (!owner) {
@@ -827,6 +822,7 @@ async function main(): Promise<number> {
   }
 
   const payload = parsePayload(raw, adapter);
+  const bridge = behavior.bridgeFor(payload?.cwd);
   const owner = resolveOwner({
     payload: payload?.raw ?? null,
     coordRoot,
@@ -936,7 +932,7 @@ async function main(): Promise<number> {
             : {}),
         }
       : {}),
-    ...(adapter === "codex" && isWslUncPath(payload?.cwd) ? { bridge: "codex-wsl" as const } : {}),
+    ...(bridge ? { bridge } : {}),
     hook_name: eventName,
     hook_duration_ms: Math.max(0, Math.floor(performance.now() - hookStartedAt)),
     monotonic_ns: hookClock.monotonic_ns,
@@ -992,9 +988,7 @@ async function main(): Promise<number> {
         parentEvent: v3Result.event,
         payload,
         adapter,
-        ...(adapter === "codex" && isWslUncPath(payload.cwd)
-          ? { bridge: "codex-wsl" as const }
-          : {}),
+        ...(bridge ? { bridge } : {}),
         monotonic_ns: hookClock.monotonic_ns,
       });
       const nativeChild = payload.subagent_id ?? payload.agent_id;
@@ -1110,10 +1104,10 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "backup-schedule" });
     }
-    // Effect (claude-code): prune stale journal archives + sweep orphans.
-    // The recovery-cue is merged into the
-    // session-start additionalContext inside emitSessionStartSystemMessage.
-    if (adapter === "claude-code") journalJanitor(coordRoot);
+    // Effect (journal-maintaining adapters): prune stale journal archives +
+    // sweep orphans. The recovery-cue is merged into the session-start
+    // additionalContext inside emitSessionStartSystemMessage.
+    if (behavior.journalMaintenance) journalJanitor(coordRoot);
     imageJanitor(coordRoot);
     // Session start is the only caller of the artifact janitor and the storage
     // maintenance pass, so both load here instead of on every tool call.
@@ -1144,7 +1138,7 @@ async function main(): Promise<number> {
       await runAutomaticMaintenancePass(
         createAutomaticMaintenanceComposition(coordRoot, {
           journal: () => {
-            if (adapter === "claude-code") journalJanitor(coordRoot);
+            if (behavior.journalMaintenance) journalJanitor(coordRoot);
           },
           images: () => imageJanitor(coordRoot),
           artifacts: () => autoCleanArtifacts(coordRoot),
@@ -1205,12 +1199,10 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "session-end-cleanup" });
     }
-    // Effects (claude-code): archive the ending agent's journal + force a
-    // session-telemetry sync (via HARNERY_CLAUDE_SESSIONS_FORCE=1).
-    if (adapter === "claude-code") {
-      journalArchive(coordRoot, owner.instance_id);
-      runSessionSyncExtension(coordRoot, true);
-    }
+    // Effects: archive the ending agent's journal + force a session-telemetry
+    // sync (via HARNERY_CLAUDE_SESSIONS_FORCE=1), each gated by the behavior.
+    if (behavior.journalMaintenance) journalArchive(coordRoot, owner.instance_id);
+    if (behavior.sessionTelemetrySync) runSessionSyncExtension(coordRoot, true);
     // Publish the post-cleanup V3 projection so remote machines see this
     // session disappear without waiting for the stale window.
     try {
@@ -1247,10 +1239,10 @@ async function main(): Promise<number> {
   // Phase 8: UserPromptSubmit: render dedup'd peer table + council pending
   // and emit the adapter-shaped systemMessage JSON. Adapter-agnostic since v0.5.0.
   if (norm.event_type === "turn.started") {
-    // Effects (claude-code): reset per-turn sound rate-limit counters + run
-    // presence detection on the prompt.
-    if (adapter === "claude-code") {
-      resetSoundCounters(sessionId);
+    // Effects: reset per-turn sound rate-limit counters + run presence
+    // detection on the prompt, each gated by the behavior.
+    if (behavior.soundEffects) resetSoundCounters(sessionId);
+    if (behavior.promptPresenceDetection) {
       const prompt = (payload?.raw?.prompt as string | undefined) ?? "";
       if (prompt) detectPresence(prompt);
     }
@@ -1324,10 +1316,8 @@ async function main(): Promise<number> {
   // "stop-failure" (API error) gets no gate, matching the previous
   // stop vs stop-failure split.
   if (norm.event_type === "turn.completed" && eventName === "stop") {
-    // Claude Code session telemetry sync remains an independent side effect.
-    if (adapter === "claude-code") {
-      runSessionSyncExtension(coordRoot, false);
-    }
+    // Session telemetry sync remains an independent side effect.
+    if (behavior.sessionTelemetrySync) runSessionSyncExtension(coordRoot, false);
 
     // Publish after the canonical turn event has landed so the blob carries
     // current task, activity, and claim state. Re-ensure the relay here because
@@ -1397,7 +1387,7 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "stop-explicit-session-finalization" });
     }
-    if (adapter === "codex") scheduleCodexRuntimeContextRetry(coordRoot, sessionId);
+    if (behavior.runtimeContextRetry) scheduleRuntimeContextRetry(coordRoot, adapter, sessionId);
   }
 
   // Phase 7: PreToolUse: heartbeat + pid-map self-heal on every tool call.
@@ -1448,12 +1438,12 @@ async function main(): Promise<number> {
     // proven to corrupt argument boundaries. Normal WSL argv calls, literal
     // bash -s scripts, native Linux/macOS sessions, and every other adapter
     // pass through. The host instructions name its concrete safe bridge.
-    const unsafeShellReason = unsafeCrossShellReason({
-      adapter,
-      cwd: payload?.cwd,
-      toolName: payload?.tool_name,
-      toolInput: payload?.tool_input,
-    });
+    const unsafeShellReason =
+      behavior.unsafeCrossShellReason?.({
+        cwd: payload?.cwd,
+        toolName: payload?.tool_name,
+        toolInput: payload?.tool_input,
+      }) ?? null;
     if (unsafeShellReason) {
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(adapter, unsafeShellReason);
@@ -1554,13 +1544,17 @@ async function main(): Promise<number> {
   return 0;
 }
 
-function scheduleCodexRuntimeContextRetry(coordRoot: string, nativeSessionId: string): void {
+function scheduleRuntimeContextRetry(
+  coordRoot: string,
+  adapter: Adapter,
+  nativeSessionId: string,
+): void {
   const modulePath = process.argv[1];
   if (!modulePath) return;
   try {
     const child = spawn(
       process.execPath,
-      [modulePath, "runtime-context-retry", "--adapter", "codex", "--session-id", nativeSessionId],
+      [modulePath, "runtime-context-retry", "--adapter", adapter, "--session-id", nativeSessionId],
       {
         cwd: coordRoot,
         detached: true,
@@ -1580,7 +1574,7 @@ async function runRuntimeContextRetryWorker(
   extra: string[],
 ): Promise<number> {
   const nativeSessionId = extraArg(extra, "--session-id");
-  if (adapter !== "codex" || !nativeSessionId) return 0;
+  if (!adapter || !adapterBehavior(adapter).runtimeContextRetry || !nativeSessionId) return 0;
   for (const [index, delayMs] of [400, 1_000].entries()) {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
     const route = resolveLiveEventLedgerRouteV3(coordRoot);
@@ -1677,21 +1671,20 @@ function inspectDisplayEvidence(
   payload: ParsedPayload | null,
   coordination: Heartbeat | null,
 ): SessionNameDisplayInspection {
-  if (adapter === "cursor" && payload?.agent_message !== undefined) {
-    return matchSessionNameDisplay(coordination, payload.agent_message)
+  const behavior = adapterBehavior(adapter);
+  const inlineText = behavior.inlineAssistantText?.(payload);
+  if (inlineText !== undefined) {
+    return matchSessionNameDisplay(coordination, inlineText)
       ? { state: "present" }
       : { state: "unavailable", reason: "transcript_not_ready" };
   }
 
-  // Codex hook payloads omit transcript_path on every event, which left this
-  // inspection permanently unavailable and the latch never stamped. Discover
-  // the rollout by session id; the scan only runs while a name is pending, so
-  // the latch closes after one success.
+  // Some adapters omit transcript_path on every event, which left this
+  // inspection permanently unavailable and the latch never stamped. The
+  // behavior may discover the transcript by session id; the scan only runs
+  // while a name is pending, so the latch closes after one success.
   const transcriptPath =
-    payload?.transcript_path ??
-    (adapter === "codex"
-      ? discoverCodexSessionTranscript(payload?.session_id ?? instanceId)
-      : undefined);
+    payload?.transcript_path ?? behavior.discoverTranscript?.(payload?.session_id ?? instanceId);
 
   let verdict: SessionNameDisplayInspection = { state: "absent" };
   for (const candidate of sessionNameDisplayAcceptedNames(coordination)) {
@@ -2028,22 +2021,18 @@ async function emitUserPromptSubmitSystemMessage(
   recoveryBriefing = "",
   hostPromptContext = "",
 ): Promise<boolean> {
+  const behavior = adapterBehavior(adapter);
   const { renderPromptContext } = await import("../agents/render/prompt-context.ts");
   let additionalContext = renderPromptContext({
     coordRoot,
     instanceId,
     sessionId,
     sessionNameNudge: true,
-    taskNudge: adapter === "cursor" || adapter === "codex",
-    hostPromptReminder: adapter === "codex" || adapter === "cursor",
-    statusFooterNudge: adapter === "codex",
-    turnRitualNudge: adapter === "claude-code" ? adapter : undefined,
+    ...behavior.promptContextNudges,
   }).trim();
-  if (adapter === "codex") {
-    const fileLinkContext = renderCodexWslFileLinkContext(coordRoot, workspaceCwd);
-    if (fileLinkContext) {
-      additionalContext = [additionalContext, fileLinkContext].filter(Boolean).join("\n\n");
-    }
+  const fileLinkContext = behavior.fileLinkContext?.(coordRoot, workspaceCwd) ?? "";
+  if (fileLinkContext) {
+    additionalContext = [additionalContext, fileLinkContext].filter(Boolean).join("\n\n");
   }
   if (recoveryBriefing) {
     additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
@@ -2106,6 +2095,7 @@ async function emitSessionStartSystemMessage(
   recoveryBriefing = "",
   backupCue = "",
 ): Promise<boolean> {
+  const behavior = adapterBehavior(adapter);
   const workflowChild = coordEnv("WORKFLOW_CHILD") === "1";
   let additionalContext = "";
   // Opportunistic reconciliation makes normal session starts a failsafe for
@@ -2126,22 +2116,15 @@ async function emitSessionStartSystemMessage(
       instanceId,
       sessionId,
       agentName: agentName || undefined,
-      platformLabel:
-        adapter === "claude-code"
-          ? undefined
-          : adapter === "cursor"
-            ? "Cursor"
-            : adapter === "opencode"
-              ? "OpenCode"
-              : "Codex",
+      platformLabel: behavior.sessionStartPlatformLabel,
     }).trim();
   }
 
-  // Effect (claude-code): merge the journal recovery cue into the session-start
-  // context. Was a standalone additionalContext emission from the previous
-  // journal-on-start adapter; now that agent-hook is the single SessionStart
-  // entry, it folds in here.
-  if (adapter === "claude-code" && !workflowChild) {
+  // Effect (journal-maintaining adapters): merge the journal recovery cue into
+  // the session-start context. Was a standalone additionalContext emission
+  // from the previous journal-on-start adapter; now that agent-hook is the
+  // single SessionStart entry, it folds in here.
+  if (behavior.journalMaintenance && !workflowChild) {
     const cue = journalRecoveryCue(coordRoot);
     if (cue) additionalContext = [additionalContext, cue].filter(Boolean).join("\n\n");
   }
@@ -2151,19 +2134,14 @@ async function emitSessionStartSystemMessage(
   if (backupCue && !workflowChild) {
     additionalContext = [additionalContext, backupCue].filter(Boolean).join("\n\n");
   }
-  if (adapter === "codex" && !workflowChild && isWslUncPath(emittedData.cwd)) {
-    const fileLinkContext = renderCodexWslFileLinkContext(coordRoot, emittedData.cwd);
+  if (!workflowChild && behavior.bridgeFor(emittedData.cwd)) {
+    const fileLinkContext = behavior.fileLinkContext?.(coordRoot, emittedData.cwd) ?? "";
     if (fileLinkContext) {
       additionalContext = [additionalContext, fileLinkContext].filter(Boolean).join("\n\n");
     }
-    const bridge = inspectCodexWslBridge(process.env, { expected: true });
-    if (bridge && !bridge.ok) {
-      additionalContext = [
-        additionalContext,
-        `Harnery hybrid warning: ${bridge.detail}. Run \`${resolveBinName(coordRoot)} doctor\` for the repair hint.`,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+    const warning = behavior.bridgeWarning?.(coordRoot, emittedData.cwd);
+    if (warning) {
+      additionalContext = [additionalContext, warning].filter(Boolean).join("\n\n");
     }
   }
   const { emitContext } = await import("./adapter/output.ts");

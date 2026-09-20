@@ -1,5 +1,5 @@
 import { coordEnv } from "../../../lib/env.ts";
-import type { Adapter } from "../../adapter.ts";
+import { type Adapter, normalizeAdapter } from "../../adapter.ts";
 
 /**
  * Resolve the adapter firing the hook. The dispatcher binary is always
@@ -21,8 +21,7 @@ export function detectAdapter(argv: readonly string[]): Adapter | null {
 }
 
 function validate(v: string | undefined): Adapter | null {
-  if (v === "claude-code" || v === "cursor" || v === "codex" || v === "opencode") return v;
-  return null;
+  return normalizeAdapter(v);
 }
 
 /**
