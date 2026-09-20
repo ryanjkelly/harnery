@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```
-harn deinit [--adapter claude-code|cursor|codex] [--dry-run] [--project-root <path>] [--purge-state]
+harn deinit [--adapter claude-code|cursor|codex|opencode] [--dry-run] [--project-root <path>] [--purge-state]
 ```
 
 The inverse of [`harn init`](/cli/init/) (the same pairing as `git submodule deinit`). It undoes the project-level changes `init` made, surgically, so anything you added by hand survives. It removes the *project wiring*, not the CLI itself; to remove the `harn` binary from your machine, see [Removing the CLI](#removing-the-cli) below.
@@ -77,5 +77,6 @@ Same matrix as `init`; pass `--adapter` to target a specific one. `deinit` scans
 | `claude-code` (default) | `.claude/settings.json` |
 | `cursor` | `.cursor/hooks.json` |
 | `codex` | `.codex/hooks.json` |
+| `opencode` | `.opencode/plugins/harnery/` (removed whole when Harnery owns it) |
 
 To fully remove Harnery from a project that wired several adapters, run `deinit` once per adapter, then `--purge-state` on the last call.

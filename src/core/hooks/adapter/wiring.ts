@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBinName } from "../../config.ts";
 import {
   ADAPTER_SPECS,
   type AdapterId,
@@ -21,6 +22,7 @@ import {
   type HookEntryShape,
   type HookEvent,
 } from "./events.ts";
+import { checkOpenCodePlugin, isOwnedOpenCodePlugin } from "./opencode-plugin.ts";
 
 /** Claude Code + Codex entry: `{ hooks: [{ type, command }] }`. */
 export interface ClaudeHookGroup {
@@ -219,6 +221,48 @@ export interface AdapterWiringStatus {
   invalidTopLevelKeys: string[];
   invalidEventKeys: string[];
   parseError?: string;
+  /**
+   * `opencode-plugin` install mode only: why the installed plugin differs from
+   * what init writes now (stale source, missing/stale `harnery.json`, or a
+   * foreign file at the harnery path). Hook-map fields stay empty for it.
+   */
+  pluginIssues?: string[];
+}
+
+function emptyWiringStatus(adapter: AdapterId, settingsFile: string): AdapterWiringStatus {
+  return {
+    adapter,
+    settingsFile,
+    missing: [],
+    orphans: [],
+    duplicates: [],
+    misplaced: [],
+    stale: [],
+    invalidTopLevelKeys: [],
+    invalidEventKeys: [],
+  };
+}
+
+/**
+ * Plugin-mode drift: the installed entry exists but is not what init would
+ * write now. Absent entry → not opted in → null (mirrors the hook-map rule).
+ * Without a resolvable package root the launcher cannot be compared, so only
+ * the source freshness is judged.
+ */
+function pluginDrift(
+  projectRoot: string,
+  id: AdapterId,
+  spec: AdapterSpec,
+): AdapterWiringStatus | null {
+  if (!existsSync(resolve(projectRoot, spec.settingsFile))) return null;
+  const packageRoot = harneryPackageRoot();
+  const check = checkOpenCodePlugin(projectRoot, {
+    binName: resolveBinName(projectRoot),
+    agentHook: packageRoot ? agentHookPathForProject(projectRoot, packageRoot) : "agent-hook",
+  });
+  if (check.status === "fresh") return null;
+  if (check.status === "missing") return null;
+  return { ...emptyWiringStatus(id, spec.settingsFile), pluginIssues: check.issues };
 }
 
 /**
@@ -235,6 +279,11 @@ export interface AdapterWiringStatus {
 export function loadAdapterWiring(projectRoot: string): AdapterWiringStatus[] {
   const out: AdapterWiringStatus[] = [];
   for (const [id, spec] of Object.entries(ADAPTER_SPECS) as [AdapterId, AdapterSpec][]) {
+    if (spec.installMode === "opencode-plugin") {
+      const drift = pluginDrift(projectRoot, id, spec);
+      if (drift) out.push(drift);
+      continue;
+    }
     const settingsPath = resolve(projectRoot, spec.settingsFile);
     if (!existsSync(settingsPath)) continue;
     let settings: SettingsFile;
@@ -242,15 +291,7 @@ export function loadAdapterWiring(projectRoot: string): AdapterWiringStatus[] {
       settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
     } catch (error) {
       out.push({
-        adapter: id,
-        settingsFile: spec.settingsFile,
-        missing: [],
-        orphans: [],
-        duplicates: [],
-        misplaced: [],
-        stale: [],
-        invalidTopLevelKeys: [],
-        invalidEventKeys: [],
+        ...emptyWiringStatus(id, spec.settingsFile),
         parseError: (error as Error).message,
       });
       continue;
@@ -323,6 +364,18 @@ export function summarizeAdapterWiring(projectRoot: string): AdapterWiringSummar
     const settingsPath = resolve(projectRoot, spec.settingsFile);
     if (!existsSync(settingsPath)) {
       unwired.push(id);
+      continue;
+    }
+    if (spec.installMode === "opencode-plugin") {
+      // The entry counts as wired only when harnery owns it; a foreign file at
+      // that path is drift (surfaced by loadAdapterWiring), not a wiring.
+      let content: string;
+      try {
+        content = readFileSync(settingsPath, "utf8");
+      } catch {
+        continue;
+      }
+      (isOwnedOpenCodePlugin(content) ? wired : unwired).push(id);
       continue;
     }
     let settings: SettingsFile;

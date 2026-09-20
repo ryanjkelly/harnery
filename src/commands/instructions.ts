@@ -27,7 +27,7 @@ export function registerInstructionsCommand(program: Command, emit: EmitContext)
   command
     .command("manifest [paths...]")
     .description("Emit a machine-readable bundle manifest for one or more working paths")
-    .option("--adapter <adapter>", "claude-code, cursor, codex, or all", "all")
+    .option("--adapter <adapter>", "claude-code, cursor, codex, opencode, or all", "all")
     .option("--format <type>", "Output format: json or table", "json")
     .option("-o, --output <file>", "Write the complete JSON manifest to a file")
     .action((paths: string[], options: ManifestOptions) => {
@@ -71,9 +71,13 @@ export function registerInstructionsCommand(program: Command, emit: EmitContext)
 }
 
 function parseAdapters(value: string): Adapter[] {
-  if (value === "all") return ["claude-code", "cursor", "codex"];
-  if (value === "claude-code" || value === "cursor" || value === "codex") return [value];
-  throw new Error(`unsupported adapter '${value}' (expected claude-code, cursor, codex, or all)`);
+  if (value === "all") return ["claude-code", "cursor", "codex", "opencode"];
+  if (value === "claude-code" || value === "cursor" || value === "codex" || value === "opencode") {
+    return [value];
+  }
+  throw new Error(
+    `unsupported adapter '${value}' (expected claude-code, cursor, codex, opencode, or all)`,
+  );
 }
 
 function enrichBundle(bundle: ReturnType<typeof buildInstructionBundle>, coordRoot: string) {

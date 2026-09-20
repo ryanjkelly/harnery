@@ -6,10 +6,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ADAPTER_SPECS, type AdapterId, CLAUDE_CODE_EVENTS } from "./events.ts";
+import { installOpenCodePlugin, OPENCODE_PLUGIN_ENTRY } from "./opencode-plugin.ts";
 import {
   agentHookPathForProject,
   diffWiring,
@@ -372,6 +373,75 @@ describe("summarizeAdapterWiring (fs-backed)", () => {
       const summary = summarizeAdapterWiring(root);
       expect(summary.wired).not.toContain("claude-code");
       expect(summary.unwired).not.toContain("claude-code");
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("opencode plugin install mode (fs-backed)", () => {
+  let dir: string;
+  function setup(): string {
+    dir = mkdtempSync(join(tmpdir(), "harnery-wiring-oc-"));
+    return dir;
+  }
+  function teardown(): void {
+    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  }
+  /** The launcher `loadAdapterWiring` expects for a standalone tmp project. */
+  const STANDALONE = { binName: "harn", agentHook: "agent-hook" };
+
+  test("absent plugin → unwired, no drift", () => {
+    const root = setup();
+    try {
+      expect(loadAdapterWiring(root)).toHaveLength(0);
+      expect(summarizeAdapterWiring(root).unwired).toContain("opencode");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("freshly installed plugin → wired, no drift", () => {
+    const root = setup();
+    try {
+      installOpenCodePlugin(root, { ...STANDALONE, dryRun: false });
+      expect(loadAdapterWiring(root)).toHaveLength(0);
+      const summary = summarizeAdapterWiring(root);
+      expect(summary.wired).toEqual(["opencode"]);
+      expect(summary.unwired).not.toContain("opencode");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("hand-edited plugin → wired but drift with a plugin issue", () => {
+    const root = setup();
+    try {
+      installOpenCodePlugin(root, { ...STANDALONE, dryRun: false });
+      const entry = join(root, OPENCODE_PLUGIN_ENTRY);
+      writeFileSync(entry, `${readFileSync(entry, "utf8")}\n// edited\n`);
+      const drift = loadAdapterWiring(root);
+      expect(drift).toHaveLength(1);
+      expect(drift[0]!.adapter).toBe("opencode");
+      expect(drift[0]!.missing).toEqual([]);
+      expect(drift[0]!.pluginIssues).toEqual([
+        `${OPENCODE_PLUGIN_ENTRY}: plugin source is stale (re-run init)`,
+      ]);
+      expect(summarizeAdapterWiring(root).wired).toEqual(["opencode"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("foreign file at the harnery path → drift, and counts as unwired", () => {
+    const root = setup();
+    try {
+      mkdirSync(join(root, ".opencode", "plugins", "harnery"), { recursive: true });
+      writeFileSync(join(root, OPENCODE_PLUGIN_ENTRY), "export default { id: 'mine' }\n");
+      const drift = loadAdapterWiring(root);
+      expect(drift).toHaveLength(1);
+      expect(drift[0]!.pluginIssues?.[0]).toContain("without harnery's ownership header");
+      expect(summarizeAdapterWiring(root).unwired).toContain("opencode");
     } finally {
       teardown();
     }

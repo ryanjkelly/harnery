@@ -557,13 +557,22 @@ function checkAdapterHooks(installedAdapters: AdapterId[] = []): Check {
     if (d.invalidEventKeys.length > 0) {
       bits.push(`unsupported events (${d.invalidEventKeys.join(", ")})`);
     }
+    if (d.pluginIssues && d.pluginIssues.length > 0) {
+      // Plugin issues already name their file; render them as-is.
+      return d.pluginIssues.join("; ");
+    }
     return `${d.settingsFile}: ${bits.join("; ")}`;
   });
   for (const id of unwired) {
-    parts.push(`${ADAPTER_SPECS[id].settingsFile}: ${id} CLI installed, no harnery hooks wired`);
+    const what = ADAPTER_SPECS[id].installMode === "opencode-plugin" ? "plugin" : "hooks";
+    parts.push(`${ADAPTER_SPECS[id].settingsFile}: ${id} CLI installed, no harnery ${what} wired`);
   }
   const needsManualRepair = drift.some(
-    (d) => d.parseError || d.invalidTopLevelKeys.length > 0 || d.invalidEventKeys.length > 0,
+    (d) =>
+      d.parseError ||
+      d.invalidTopLevelKeys.length > 0 ||
+      d.invalidEventKeys.length > 0 ||
+      d.pluginIssues?.some((issue) => issue.includes("without harnery's ownership header")),
   );
   const wireHints = unwired.map((id) => `\`${bin} init --adapter ${id}\``);
   let hint: string;

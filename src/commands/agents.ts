@@ -612,7 +612,7 @@ export function registerAgentsCommand(
     .option(
       "--adapter <id>",
       "(--kind cache) adapter used to validate the authoritative V3 generation: " +
-        "claude-code | cursor | codex.",
+        "claude-code | cursor | codex | opencode.",
     )
     .option(
       "--pid <pid>",
@@ -5054,11 +5054,12 @@ function runHeal(opts: {
     opts.adapter &&
     opts.adapter !== "claude-code" &&
     opts.adapter !== "cursor" &&
-    opts.adapter !== "codex"
+    opts.adapter !== "codex" &&
+    opts.adapter !== "opencode"
   ) {
     emit.error({
       code: "bad_adapter",
-      message: "--adapter must be one of: claude-code, cursor, codex",
+      message: "--adapter must be one of: claude-code, cursor, codex, opencode",
     });
     process.exit(1);
   }

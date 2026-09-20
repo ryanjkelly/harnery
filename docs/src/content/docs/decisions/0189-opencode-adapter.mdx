@@ -80,8 +80,9 @@ Add first-class `"opencode"` support on both axes.
   `eventLedgerV3RuntimeIssues`).
 
 ### 3. Hook delivery via a Harnery-owned OpenCode plugin
-- Ship `opencode-plugin/` (`@harnery/opencode`) and a local
-  `.opencode/plugins/harnery.ts` template. The plugin registers
+- Ship `opencode-plugin/` (`@harnery/opencode`), a single self-contained
+  source file that `init` copies verbatim under a hash-stamped ownership header
+  to `.opencode/plugins/harnery/index.ts`. The plugin registers
   `session.hook("prompt")`, `session.hook("context")`,
   `session.hook("compaction")`, `tool.hook("execute.before")`,
   `tool.hook("execute.after")`, `permission.hook("evaluate")`,
@@ -91,12 +92,17 @@ Add first-class `"opencode"` support on both axes.
   matching mutation channel (context injection, deny, synthetic message). The
   `shell.hook` stamps `OPENCODE_SESSION_ID` into every shell tool's env so a
   coord CLI invoked as a Bash tool recovers its identity.
-- `harn init --adapter opencode` installs the plugin and adds it to
-  `opencode.json` `plugins` rather than writing a settings-file hook map, injects
-  the managed `AGENTS.md` regions, and skips the CLAUDE.md shim and the skills
-  mirror because OpenCode reads `AGENTS.md` and `.agents/skills` natively.
-- `harn doctor` probes the `opencode` binary, the background service, and plugin
-  registration.
+- `harn init --adapter opencode` installs the plugin directory
+  (`.opencode/plugins/harnery/index.ts` + `harnery.json` naming the `agent-hook`
+  launcher) rather than writing a settings-file hook map, injects the managed
+  `AGENTS.md` regions, and skips the CLAUDE.md shim and the skills mirror
+  because OpenCode reads `AGENTS.md` and `.agents/skills` natively. OpenCode
+  auto-discovers every directory under `.opencode/plugins/`, so `opencode.json`
+  is never edited; a configured local plugin path must be a directory, and a
+  configured-plus-discovered entry would load twice.
+- `harn init --check`, `harn doctor`, and the wiring summary treat the owned
+  entry file as the wiring: a hand edit or a stale launcher is drift, a foreign
+  file at that path is an error `init` refuses to overwrite.
 
 ### 4. Cross-cutting correctness (audit fixes forced by the new id)
 - Replace the ternary fall-throughs that would mislabel `opencode` as Codex
@@ -112,9 +118,16 @@ Add first-class `"opencode"` support on both axes.
   step (plugin + `AGENTS.md`), reusing native `.agents/skills`.
 - `harn run --adapter opencode` launches a headless OpenCode child.
 - OpenCode sessions (TUI, desktop app, headless) produce native V3 session,
-  prompt, tool, and turn evidence through the plugin bridge.
-- Enforced Stop re-prompting, SQLite-backed context-window telemetry, and docs
-  pages are tracked follow-ups. ADR 0074 (Antigravity, accepted but
+  prompt, tool, and turn evidence through the plugin bridge. Prompt context
+  rides the next model calls' system prompt (`session.hook("context")`) and is
+  cleared at turn end; session-start context lands once as a synthetic message.
+- The `shell.create.before` hook carries no session id, so the plugin keys the
+  pending shell by its command string (recorded in `execute.before`) and falls
+  back to the last tool-calling session; a wrong stamp is possible only when two
+  sessions run the same command concurrently.
+- Enforced Stop re-prompting and SQLite-backed context-window telemetry are
+  tracked follow-ups; `emitStopOutcome` returns success without output for
+  `opencode`, the same observe-only posture as Codex. ADR 0074 (Antigravity, accepted but
   unimplemented) is flagged for reconciliation; this ADR reuses its integration
   recipe.
 

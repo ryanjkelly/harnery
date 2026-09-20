@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The coord layer was extracted from years of running multiple Claude Code / Cursor / Codex sessions against the same checkout. It solves three failure modes that hit you the moment you run more than one agent at a time:
+The coord layer was extracted from years of running multiple Claude Code / Cursor / Codex / OpenCode sessions against the same checkout. It solves three failure modes that hit you the moment you run more than one agent at a time:
 
 1. **Commit contamination**: Agent A's unstaged changes get swept into Agent B's commit
 2. **Overlapping edits**: both agents edit the same file, and the second write clobbers the first
@@ -13,7 +13,7 @@ The coord layer was extracted from years of running multiple Claude Code / Curso
 
 ## How it works
 
-Three primitives on disk, plus hook scripts wired into Claude Code, Cursor, Codex, and git:
+Three primitives on disk, plus hook scripts wired into Claude Code, Cursor, Codex, OpenCode (through a plugin), and git:
 
 - **`.harnery/ledgers/v3/`**: canonical append-only ledger, validating catalog, and immutable control pair
 - **`.harnery/active/<id>.json`**: disposable generation-bound caches projected from the ledger

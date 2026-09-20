@@ -643,12 +643,7 @@ export function resolveSingleActiveOwner(root: string): string | null {
 
 function adapterCandidatesFromEnv(): Array<"claude-code" | "codex" | "cursor" | "opencode"> {
   const value = process.env.HARNERY_AGENT_COORD_PLATFORM?.trim();
-  if (
-    value === "claude-code" ||
-    value === "codex" ||
-    value === "cursor" ||
-    value === "opencode"
-  ) {
+  if (value === "claude-code" || value === "codex" || value === "cursor" || value === "opencode") {
     return [value];
   }
   return ["claude-code", "codex", "cursor", "opencode"];

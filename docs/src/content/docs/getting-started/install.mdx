@@ -90,7 +90,7 @@ This verifies the runtime + dependencies Harnery expects (Node version, optional
 harn init
 ```
 
-Run once per adapter to create the `.harnery/` coord root and wire that adapter's hooks. Pass `--adapter claude-code` (default), `cursor`, or `codex`; run it three times when a project uses all three. It is idempotent and preserves non-Harnery hooks. See [`harn init`](/cli/init/) for `--dry-run` and details.
+Run once per adapter to create the `.harnery/` coord root and wire that adapter's hooks. Pass `--adapter claude-code` (default), `cursor`, `codex`, or `opencode`; run it once per adapter when a project uses several. It is idempotent and preserves non-Harnery hooks. OpenCode has no hook file, so `--adapter opencode` installs a Harnery plugin under `.opencode/plugins/harnery/` instead. See [`harn init`](/cli/init/) for `--dry-run` and details.
 
 ## Uninstall
 

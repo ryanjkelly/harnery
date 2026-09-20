@@ -8,7 +8,8 @@
  *   2. Register the agent-hook entries in the adapter settings file.
  *
  * Wires whichever adapter `--adapter` names (Claude Code `.claude/settings.json`,
- * Cursor `.cursor/hooks.json`, or Codex `.codex/hooks.json`): the per-adapter
+ * Cursor `.cursor/hooks.json`, Codex `.codex/hooks.json`, or the OpenCode plugin
+ * directory `.opencode/plugins/harnery/`): the per-adapter
  * file path, event list, and hook-entry shape all come from ADAPTER_SPECS.
  *
  * `harn init` does both, non-destructively: it merges hook entries into an
@@ -34,6 +35,10 @@ import {
   sha256V3,
 } from "../core/events/v3/index.ts";
 import { ADAPTER_SPECS, type AdapterId, type AdapterSpec } from "../core/hooks/adapter/events.ts";
+import {
+  checkOpenCodePlugin,
+  installOpenCodePlugin,
+} from "../core/hooks/adapter/opencode-plugin.ts";
 import {
   agentHookPathForProject,
   commandWiresSubcommand,
@@ -74,7 +79,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         "(idempotent; safe to re-run). Use --dry-run to preview, --check to " +
         "report drift without writing (exit 0 fresh / 2 drift / 1 error).",
     )
-    .option("--adapter <id>", "claude-code | cursor | codex", "claude-code")
+    .option("--adapter <id>", "claude-code | cursor | codex | opencode", "claude-code")
     .option("--dry-run", "Show what would change without writing")
     .option("--check", "Report managed-surface drift without writing; exit 0/2/1")
     .option(
@@ -86,7 +91,9 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       const adapter = opts.adapter as AdapterId;
       const spec = ADAPTER_SPECS[adapter];
       if (!spec) {
-        emit.text(`Unknown adapter '${opts.adapter}'. Expected: claude-code | cursor | codex.`);
+        emit.text(
+          `Unknown adapter '${opts.adapter}'. Expected: claude-code | cursor | codex | opencode.`,
+        );
         emit.setExitCode(1);
         return;
       }
@@ -144,7 +151,20 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         let hookDrift = false;
         const settingsPath = resolve(projectRoot, spec.settingsFile);
         const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
-        if (!existsSync(settingsPath)) {
+        if (spec.installMode === "opencode-plugin") {
+          // No hooks map to diff: the plugin directory is the wiring.
+          const plugin = checkOpenCodePlugin(projectRoot, { binName: bin, agentHook });
+          if (plugin.status === "missing") {
+            hookDrift = true;
+            issues.push(`${spec.settingsFile}: missing (re-run init)`);
+          } else if (plugin.status === "foreign") {
+            hookCheckError = true;
+            issues.push(...plugin.issues);
+          } else if (plugin.status === "stale") {
+            hookDrift = true;
+            issues.push(...plugin.issues);
+          }
+        } else if (!existsSync(settingsPath)) {
           hookDrift = true;
           issues.push(`${spec.settingsFile}: missing (re-run init)`);
         } else {
@@ -308,42 +328,55 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       const settingsPath = resolve(projectRoot, spec.settingsFile);
       const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
 
-      let settings: SettingsFile;
-      if (existsSync(settingsPath)) {
-        try {
-          settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
-        } catch (err) {
-          emit.text(
-            `✗ ${rel(projectRoot, settingsPath)} exists but isn't valid JSON; refusing to ` +
-              `overwrite. Fix it and re-run.\n  (${(err as Error).message})`,
-          );
+      if (spec.installMode === "opencode-plugin") {
+        // OpenCode has no hooks map. Install the plugin directory instead; the
+        // instructions + skills step below still runs (AGENTS.md and
+        // .agents/skills are read natively, so no shim or mirror is needed).
+        const plugin = installOpenCodePlugin(projectRoot, { binName: bin, agentHook, dryRun });
+        if (plugin.error) {
+          emit.text(plugin.error);
           emit.setExitCode(1);
           return;
         }
+        actions.push(...plugin.actions);
       } else {
-        settings = {};
-      }
-      const { wired, already, removed, upgraded } = wireHooks(settings, spec, agentHook, adapter);
+        let settings: SettingsFile;
+        if (existsSync(settingsPath)) {
+          try {
+            settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
+          } catch (err) {
+            emit.text(
+              `✗ ${rel(projectRoot, settingsPath)} exists but isn't valid JSON; refusing to ` +
+                `overwrite. Fix it and re-run.\n  (${(err as Error).message})`,
+            );
+            emit.setExitCode(1);
+            return;
+          }
+        } else {
+          settings = {};
+        }
+        const { wired, already, removed, upgraded } = wireHooks(settings, spec, agentHook, adapter);
 
-      if (wired === 0 && removed === 0 && upgraded === 0) {
-        actions.push(
-          `· all ${spec.events.length} ${adapter} hooks already wired in ${rel(projectRoot, settingsPath)}`,
-        );
-      } else if (dryRun) {
-        actions.push(
-          `+ would wire ${wired} hook(s), upgrade ${upgraded} stale command(s), and remove ` +
-            `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
-        );
-      } else {
-        mkdirSync(dirname(settingsPath), { recursive: true });
-        writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
-        actions.push(
-          `+ wired ${wired} hook(s), upgraded ${upgraded} stale command(s), and removed ` +
-            `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
-        );
+        if (wired === 0 && removed === 0 && upgraded === 0) {
+          actions.push(
+            `· all ${spec.events.length} ${adapter} hooks already wired in ${rel(projectRoot, settingsPath)}`,
+          );
+        } else if (dryRun) {
+          actions.push(
+            `+ would wire ${wired} hook(s), upgrade ${upgraded} stale command(s), and remove ` +
+              `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
+          );
+        } else {
+          mkdirSync(dirname(settingsPath), { recursive: true });
+          writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+          actions.push(
+            `+ wired ${wired} hook(s), upgraded ${upgraded} stale command(s), and removed ` +
+              `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
+          );
+        }
+        const authorizationReview = codexHookReviewAction(adapter);
+        if (authorizationReview) actions.push(authorizationReview);
       }
-      const authorizationReview = codexHookReviewAction(adapter);
-      if (authorizationReview) actions.push(authorizationReview);
 
       // ── 3. agent-facing instructions block + skills ────────────────────────
       // A misconfigured host addendum aborts here rather than half-writing: the

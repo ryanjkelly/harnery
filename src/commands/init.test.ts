@@ -114,6 +114,107 @@ describe("init --instructions-only", () => {
   });
 });
 
+describe("init --adapter opencode", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  const fixture = () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-init-opencode-"));
+    roots.push(root);
+    return root;
+  };
+
+  async function runDeinit(
+    root: string,
+    args: string[],
+  ): Promise<{ text: string; exitCode: number }> {
+    const lines: string[] = [];
+    let exitCode = 0;
+    const emit = {
+      text: (value: string) => lines.push(value),
+      setExitCode: (value: number) => {
+        exitCode = value;
+      },
+    } as unknown as EmitContext;
+    await createHarneryProgram({ emit }).parseAsync(["deinit", "--project-root", root, ...args], {
+      from: "user",
+    });
+    return { text: lines.join("\n"), exitCode };
+  }
+
+  test("installs the plugin directory instead of a hooks map, with native AGENTS.md + skills", async () => {
+    const root = fixture();
+    const result = await runInit(root, ["--adapter", "opencode"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.text).toContain("installed the opencode plugin at .opencode/plugins/harnery/");
+
+    const entry = join(root, ".opencode", "plugins", "harnery", "index.ts");
+    const config = join(root, ".opencode", "plugins", "harnery", "harnery.json");
+    expect(readFileSync(entry, "utf8")).toMatch(
+      /^\/\/ harnery:generated opencode-plugin v=[0-9a-f]{8};/,
+    );
+    expect(JSON.parse(readFileSync(config, "utf8"))).toEqual({
+      schema: "harnery-opencode-plugin/v1",
+      agentHook: "agent-hook",
+    });
+    // No settings-file hook map, no CLAUDE.md shim, skills in the vendor-neutral root.
+    expect(existsSync(join(root, "opencode.json"))).toBe(false);
+    expect(existsSync(join(root, "CLAUDE.md"))).toBe(false);
+    expect(readFileSync(join(root, "AGENTS.md"), "utf8")).toContain("harnery:begin instructions");
+    expect(existsSync(join(root, ".agents", "skills", "harn-team", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(root, ".claude", "skills"))).toBe(false);
+
+    const check = await runInit(root, ["--adapter", "opencode", "--check"]);
+    expect(check.exitCode).toBe(0);
+    expect(check.text).toContain("are current");
+
+    const again = await runInit(root, ["--adapter", "opencode"]);
+    expect(again.exitCode).toBe(0);
+    expect(again.text).toContain("opencode plugin already installed");
+  });
+
+  test("--check reports a hand-edited plugin as drift and a foreign file as an error", async () => {
+    const root = fixture();
+    await runInit(root, ["--adapter", "opencode"]);
+    const entry = join(root, ".opencode", "plugins", "harnery", "index.ts");
+    writeFileSync(entry, `${readFileSync(entry, "utf8")}\n// edited\n`);
+    const stale = await runInit(root, ["--adapter", "opencode", "--check"]);
+    expect(stale.exitCode).toBe(2);
+    expect(stale.text).toContain("plugin source is stale");
+
+    writeFileSync(entry, "export default { id: 'mine', setup() {} }\n");
+    const foreign = await runInit(root, ["--adapter", "opencode", "--check"]);
+    expect(foreign.exitCode).toBe(1);
+    expect(foreign.text).toContain("without harnery's ownership header");
+    const refused = await runInit(root, ["--adapter", "opencode"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.text).toContain("refusing to overwrite");
+    expect(readFileSync(entry, "utf8")).toContain("id: 'mine'");
+  });
+
+  test("deinit removes the owned plugin directory", async () => {
+    const root = fixture();
+    await runInit(root, ["--adapter", "opencode"]);
+    const dry = await runDeinit(root, ["--adapter", "opencode", "--dry-run"]);
+    expect(dry.text).toContain("would remove .opencode/plugins/harnery/");
+    expect(existsSync(join(root, ".opencode", "plugins", "harnery", "index.ts"))).toBe(true);
+    const result = await runDeinit(root, ["--adapter", "opencode"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.text).toContain("removed .opencode/plugins/harnery/");
+    expect(existsSync(join(root, ".opencode", "plugins", "harnery"))).toBe(false);
+  });
+
+  test("rejects an unknown adapter and names opencode among the accepted ones", async () => {
+    const root = fixture();
+    const result = await runInit(root, ["--adapter", "antigravity"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.text).toContain("claude-code | cursor | codex | opencode");
+  });
+});
+
 describe("wireHooks: Claude Code", () => {
   test("wires every event into an empty settings object", () => {
     const settings: Record<string, unknown> = {};

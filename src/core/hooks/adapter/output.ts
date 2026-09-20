@@ -14,6 +14,9 @@
  * - **Codex**: structurally identical to Claude Code for context and tool
  *   denials. Stop blocks are deliberately suppressed because their automatic
  *   continuation can replace a completed user-facing answer.
+ * - **OpenCode**: the Harnery OpenCode plugin reads the Claude Code envelope
+ *   (`hookSpecificOutput.additionalContext` / `permissionDecision`) and feeds
+ *   it back through OpenCode's own channels. Stop blocks are suppressed.
  *
  * Every helper writes to process.stdout + newline-terminates so callers can
  * fire-and-forget. Empty text is a no-op.
@@ -65,6 +68,10 @@ export function emitDeny(adapter: Adapter, reason: string): void {
  *   answer in clients that retain only the final continuation response. Return
  *   success without output as a defense in depth behind the observe-only
  *   verdict in `agents/rules/stop-hook.ts`.
+ * - **OpenCode** has no blocking Stop channel at all: the plugin observes
+ *   `session.execution.succeeded` after the turn has already completed, so a
+ *   block could only arrive as a new message. Return success without output;
+ *   the verdict is still recorded in the ledger.
  * - **Cursor** ignores stop-hook exit codes (non-zero = fail-open, the turn
  *   proceeds) and re-prompts ONLY via a `followup_message` field in stdout
  *   JSON, which it auto-submits as the next user message: the sanctioned
@@ -88,7 +95,7 @@ export function emitStopOutcome(
   options: StopOutputOptions,
   coordRoot?: string,
 ): 0 | 2 {
-  if (adapter === "codex") return 0;
+  if (adapter === "codex" || adapter === "opencode") return 0;
 
   const verdict = options.verdict;
   if (!verdict) return 0;

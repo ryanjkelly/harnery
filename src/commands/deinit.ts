@@ -4,7 +4,7 @@
  * `init` makes two kinds of change outside the harnery package:
  *   1. Merges `agent-hook` entries into the adapter settings file
  *      (Claude Code `.claude/settings.json`, Cursor `.cursor/hooks.json`, or
- *      Codex `.codex/hooks.json`).
+ *      Codex `.codex/hooks.json`), or installs the OpenCode plugin directory.
  *   2. Creates the `.harnery/` coord root (runtime state: events, councils,
  *      identities, journal) and stamps the host bin name into
  *      `.harnery/config.jsonc`.
@@ -34,6 +34,7 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME } from "../core/config.ts";
 import { ADAPTER_SPECS, type AdapterId } from "../core/hooks/adapter/events.ts";
+import { removeOpenCodePlugin } from "../core/hooks/adapter/opencode-plugin.ts";
 import type { SettingsFile } from "../core/hooks/adapter/wiring.ts";
 import { removeIndexerExclusions } from "../lib/indexer-exclusions.ts";
 import { removeInstructions } from "../lib/instructions/apply.ts";
@@ -62,7 +63,7 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
         ".harnery/ coord root (on a terminal it asks first). Idempotent; use " +
         "--dry-run to preview.",
     )
-    .option("--adapter <id>", "claude-code | cursor | codex", "claude-code")
+    .option("--adapter <id>", "claude-code | cursor | codex | opencode", "claude-code")
     .option("--dry-run", "Show what would change without writing")
     .option("--project-root <path>", "Project root (default: git toplevel, else cwd)")
     .option("--purge-state", "Also delete the .harnery/ coord root (runtime state, destructive)")
@@ -70,7 +71,9 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
       const adapter = opts.adapter as AdapterId;
       const spec = ADAPTER_SPECS[adapter];
       if (!spec) {
-        emit.text(`Unknown adapter '${opts.adapter}'. Expected: claude-code | cursor | codex.`);
+        emit.text(
+          `Unknown adapter '${opts.adapter}'. Expected: claude-code | cursor | codex | opencode.`,
+        );
         emit.setExitCode(1);
         return;
       }
@@ -97,7 +100,9 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
 
       // ── 1. unwire adapter hooks ────────────────────────────────────────────
       const settingsPath = resolve(projectRoot, spec.settingsFile);
-      if (!existsSync(settingsPath)) {
+      if (spec.installMode === "opencode-plugin") {
+        actions.push(...removeOpenCodePlugin(projectRoot, dryRun));
+      } else if (!existsSync(settingsPath)) {
         actions.push(`· ${rel(projectRoot, settingsPath)} doesn't exist; no hooks to remove`);
       } else {
         let settings: SettingsFile;

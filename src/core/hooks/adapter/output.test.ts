@@ -1,7 +1,8 @@
 /**
  * Locks the per-adapter Stop-block enforcement channel. Claude Code blocks via
  * exit-2 + a stderr reason; Cursor continues through `followup_message`; Codex
- * is observe-only because a continuation can replace the completed answer.
+ * is observe-only because a continuation can replace the completed answer;
+ * OpenCode is observe-only because its plugin sees the turn after it ended.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -119,6 +120,17 @@ describe("emitStopBlock", () => {
   test("codex suppresses the block without writing hook output", () => {
     capture();
     const code = emitStopBlock("codex", verdict);
+    process.stdout.write = realOut;
+    process.stderr.write = realErr;
+
+    expect(code).toBe(0);
+    expect(outChunks.join("")).toBe("");
+    expect(errChunks.join("")).toBe("");
+  });
+
+  test("opencode suppresses the block without writing hook output", () => {
+    capture();
+    const code = emitStopBlock("opencode", verdict);
     process.stdout.write = realOut;
     process.stderr.write = realErr;
 

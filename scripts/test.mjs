@@ -94,6 +94,11 @@ const namedCorePartitions = [
     extraArgs: openClawPluginTestArgs,
   },
   {
+    label: "OpenCode plugin test partition",
+    matches: (file) => file.startsWith("opencode-plugin/test/"),
+    extraArgs: [],
+  },
+  {
     label: "CLI integration test partition",
     matches: (file) => file.startsWith("tests/integration/"),
     extraArgs: [],
@@ -181,6 +186,7 @@ const allFiles = [
   ...discoverTests(join(repoRoot, "src")),
   ...discoverTests(join(repoRoot, "tests")),
   ...discoverTests(join(repoRoot, "openclaw-plugin", "test")),
+  ...discoverTests(join(repoRoot, "opencode-plugin", "test")),
 ].sort();
 const nonBrowserFiles = allFiles.filter((file) => !browserFiles.has(file));
 const namedCoreFiles = namedCorePartitions
