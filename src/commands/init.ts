@@ -7,10 +7,12 @@
  *      null and every hook no-ops forever.
  *   2. Register the agent-hook entries in the adapter settings file.
  *
- * Wires whichever adapter `--adapter` names (Claude Code `.claude/settings.json`,
+ * Wires every adapter in the resolved set (Claude Code `.claude/settings.json`,
  * Cursor `.cursor/hooks.json`, Codex `.codex/hooks.json`, or the OpenCode plugin
- * directory `.opencode/plugins/harnery/`): the per-adapter
- * file path, event list, and hook-entry shape all come from ADAPTER_SPECS.
+ * directory `.opencode/plugins/harnery/`): the per-adapter file path, event list,
+ * and hook-entry shape all come from ADAPTER_SPECS. `--adapter` is repeatable (or
+ * comma-separated, or `all`); with no flag, init refreshes every adapter the
+ * project already has wired, else claude-code.
  *
  * `harn init` does both, non-destructively: it merges hook entries into an
  * existing settings file (preserving any other hooks) and skips entries that are
@@ -51,6 +53,7 @@ import {
   isAgentHookCommand,
   makeEntry,
   type SettingsFile,
+  summarizeAdapterWiring,
 } from "../core/hooks/adapter/wiring.ts";
 import { applyIndexerExclusions } from "../lib/indexer-exclusions.ts";
 import {
@@ -65,11 +68,135 @@ import { HostAddendumError } from "../lib/instructions/host-addendum.ts";
 const HARNERY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 interface InitOpts {
-  adapter: string;
+  adapter: string[];
   dryRun?: boolean;
   check?: boolean;
   instructionsOnly?: boolean;
   projectRoot?: string;
+}
+
+const ADAPTER_IDS = Object.keys(ADAPTER_SPECS) as AdapterId[];
+
+/** Parse explicit `--adapter` values; `all` expands and order is preserved, deduplicated. */
+function parseAdapterIds(requested: string[]): { adapters: AdapterId[]; error?: string } {
+  const adapters: AdapterId[] = [];
+  for (const raw of requested) {
+    const ids = raw === "all" ? ADAPTER_IDS : [raw as AdapterId];
+    for (const id of ids) {
+      if (!(id in ADAPTER_SPECS)) {
+        return {
+          adapters: [],
+          error: `Unknown adapter '${raw}'. Expected: ${ADAPTER_IDS.join(" | ")} | all.`,
+        };
+      }
+      if (!adapters.includes(id)) adapters.push(id);
+    }
+  }
+  return { adapters };
+}
+
+/**
+ * Which adapters `init` should wire. An explicit `--adapter` wins; without one the
+ * project's already-wired adapters are refreshed (a fresh project keeps the
+ * historical claude-code default), so a re-run keeps every harness in step instead
+ * of silently refreshing only one.
+ */
+export function resolveInitAdapters(
+  projectRoot: string,
+  requested: string[],
+): { adapters: AdapterId[]; error?: string } {
+  if (requested.length === 0) {
+    const wired = summarizeAdapterWiring(projectRoot).wired;
+    return { adapters: wired.length > 0 ? wired : ["claude-code"] };
+  }
+  return parseAdapterIds(requested);
+}
+
+/** Drift check for one adapter's runtime wiring (settings hooks or the OpenCode plugin). */
+function checkAdapterHooks(
+  projectRoot: string,
+  adapter: AdapterId,
+  bin: string,
+): { drift: boolean; error: boolean; issues: string[] } {
+  const spec = ADAPTER_SPECS[adapter];
+  const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
+  if (spec.installMode === "opencode-plugin") {
+    // No hooks map to diff: the plugin directory is the wiring.
+    const plugin = checkOpenCodePlugin(projectRoot, { binName: bin, agentHook });
+    if (plugin.status === "missing") {
+      return {
+        drift: true,
+        error: false,
+        issues: [`${spec.settingsFile}: missing (re-run \`init --adapter opencode\`)`],
+      };
+    }
+    if (plugin.status === "foreign") return { drift: false, error: true, issues: plugin.issues };
+    if (plugin.status === "stale") return { drift: true, error: false, issues: plugin.issues };
+    return { drift: false, error: false, issues: [] };
+  }
+  const settingsPath = resolve(projectRoot, spec.settingsFile);
+  if (!existsSync(settingsPath)) {
+    return { drift: true, error: false, issues: [`${spec.settingsFile}: missing (re-run init)`] };
+  }
+  const issues: string[] = [];
+  let drift = false;
+  try {
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
+    const hookDiff = diffWiring(settings, spec, { agentHookPath: agentHook, adapter });
+    drift =
+      hookDiff.missing.length > 0 ||
+      hookDiff.stale.length > 0 ||
+      hookDiff.duplicates.length > 0 ||
+      hookDiff.misplaced.length > 0 ||
+      hookDiff.orphans.length > 0 ||
+      hookDiff.invalidTopLevelKeys.length > 0 ||
+      hookDiff.invalidEventKeys.length > 0;
+    if (hookDiff.missing.length > 0) {
+      issues.push(
+        `${spec.settingsFile}: missing hooks (${hookDiff.missing.map((e) => e.settingsKey).join(", ")})`,
+      );
+    }
+    if (hookDiff.stale.length > 0) {
+      issues.push(
+        `${spec.settingsFile}: stale hook commands (${hookDiff.stale.map((e) => e.settingsKey).join(", ")})`,
+      );
+    }
+    if (hookDiff.duplicates.length > 0) {
+      issues.push(
+        `${spec.settingsFile}: duplicate hooks (${hookDiff.duplicates.map((e) => e.settingsKey).join(", ")})`,
+      );
+    }
+    if (hookDiff.misplaced.length > 0) {
+      issues.push(
+        `${spec.settingsFile}: hooks under the wrong event (${hookDiff.misplaced.map((e) => e.subcommand).join(", ")})`,
+      );
+    }
+    if (hookDiff.orphans.length > 0) {
+      issues.push(`${spec.settingsFile}: obsolete hooks (${hookDiff.orphans.join(", ")})`);
+    }
+    if (hookDiff.invalidTopLevelKeys.length > 0) {
+      issues.push(
+        `${spec.settingsFile}: invalid fields (${hookDiff.invalidTopLevelKeys.join(", ")})`,
+      );
+    }
+    if (hookDiff.invalidEventKeys.length > 0) {
+      issues.push(
+        `${spec.settingsFile}: unsupported events (${hookDiff.invalidEventKeys.join(", ")})`,
+      );
+    }
+  } catch (error) {
+    return {
+      drift: false,
+      error: true,
+      issues: [`${spec.settingsFile}: invalid JSON (${(error as Error).message})`],
+    };
+  }
+  return { drift, error: false, issues };
+}
+
+/** Preserve first-seen order while dropping repeats (one pass per adapter repeats lines). */
+function dedupe(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 export function registerInitCommand(program: Command, emit: EmitContext, binName?: string): void {
@@ -81,7 +208,19 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         "(idempotent; safe to re-run). Use --dry-run to preview, --check to " +
         "report drift without writing (exit 0 fresh / 2 drift / 1 error).",
     )
-    .option("--adapter <id>", "claude-code | cursor | codex | opencode", "claude-code")
+    .option(
+      "--adapter <id>",
+      "claude-code | cursor | codex | opencode | all; repeatable or comma-separated. " +
+        "Default: every adapter already wired in the project, else claude-code",
+      (value: string, previous: string[]) =>
+        previous.concat(
+          value
+            .split(",")
+            .map((id) => id.trim())
+            .filter(Boolean),
+        ),
+      [] as string[],
+    )
     .option("--dry-run", "Show what would change without writing")
     .option("--check", "Report managed-surface drift without writing; exit 0/2/1")
     .option(
@@ -90,16 +229,6 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
     )
     .option("--project-root <path>", "Project root (default: git toplevel, else cwd)")
     .action((opts: InitOpts) => {
-      const adapter = opts.adapter as AdapterId;
-      const spec = ADAPTER_SPECS[adapter];
-      if (!spec) {
-        emit.text(
-          `Unknown adapter '${opts.adapter}'. Expected: claude-code | cursor | codex | opencode.`,
-        );
-        emit.setExitCode(1);
-        return;
-      }
-
       const projectRoot = resolve(opts.projectRoot ?? gitTopLevel() ?? process.cwd());
       // A binName already pinned in this project's config.jsonc beats the
       // invoking CLI's name: the pin is a committed, deliberate declaration;
@@ -114,6 +243,15 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       // before every coord-root, config, ledger, adapter-settings, and Git-hook
       // operation so its no-runtime-writes contract is structural.
       if (opts.instructionsOnly === true) {
+        // Narrow by design: host sync tooling depends on one deterministic
+        // guidance layout, so this mode stays single-adapter and never detects.
+        const parsed = parseAdapterIds(opts.adapter);
+        if (parsed.error) {
+          emit.text(parsed.error);
+          emit.setExitCode(1);
+          return;
+        }
+        const adapter = parsed.adapters[0] ?? "claude-code";
         if (opts.check === true) {
           const { status, issues } = checkInstructions(projectRoot, { binName: bin, adapter });
           const head =
@@ -146,78 +284,31 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         return;
       }
 
+      const resolved = resolveInitAdapters(projectRoot, opts.adapter);
+      if (resolved.error) {
+        emit.text(resolved.error);
+        emit.setExitCode(1);
+        return;
+      }
+      const adapters = resolved.adapters;
+
       // ── --check: read-only drift report on every init-managed surface ─────
       if (opts.check === true) {
-        const { status, issues } = checkInstructions(projectRoot, { binName: bin, adapter });
+        const issues: string[] = [];
+        let instructionStatus: "fresh" | "drift" | "error" = "fresh";
         let hookCheckError = false;
         let hookDrift = false;
-        const settingsPath = resolve(projectRoot, spec.settingsFile);
-        const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
-        if (spec.installMode === "opencode-plugin") {
-          // No hooks map to diff: the plugin directory is the wiring.
-          const plugin = checkOpenCodePlugin(projectRoot, { binName: bin, agentHook });
-          if (plugin.status === "missing") {
-            hookDrift = true;
-            issues.push(`${spec.settingsFile}: missing (re-run init)`);
-          } else if (plugin.status === "foreign") {
-            hookCheckError = true;
-            issues.push(...plugin.issues);
-          } else if (plugin.status === "stale") {
-            hookDrift = true;
-            issues.push(...plugin.issues);
+        for (const adapter of adapters) {
+          const instructions = checkInstructions(projectRoot, { binName: bin, adapter });
+          if (instructions.status === "error") instructionStatus = "error";
+          else if (instructions.status === "drift" && instructionStatus !== "error") {
+            instructionStatus = "drift";
           }
-        } else if (!existsSync(settingsPath)) {
-          hookDrift = true;
-          issues.push(`${spec.settingsFile}: missing (re-run init)`);
-        } else {
-          try {
-            const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
-            const hookDiff = diffWiring(settings, spec, { agentHookPath: agentHook, adapter });
-            hookDrift =
-              hookDiff.missing.length > 0 ||
-              hookDiff.stale.length > 0 ||
-              hookDiff.duplicates.length > 0 ||
-              hookDiff.misplaced.length > 0 ||
-              hookDiff.orphans.length > 0 ||
-              hookDiff.invalidTopLevelKeys.length > 0 ||
-              hookDiff.invalidEventKeys.length > 0;
-            if (hookDiff.missing.length > 0) {
-              issues.push(
-                `${spec.settingsFile}: missing hooks (${hookDiff.missing.map((e) => e.settingsKey).join(", ")})`,
-              );
-            }
-            if (hookDiff.stale.length > 0) {
-              issues.push(
-                `${spec.settingsFile}: stale hook commands (${hookDiff.stale.map((e) => e.settingsKey).join(", ")})`,
-              );
-            }
-            if (hookDiff.duplicates.length > 0) {
-              issues.push(
-                `${spec.settingsFile}: duplicate hooks (${hookDiff.duplicates.map((e) => e.settingsKey).join(", ")})`,
-              );
-            }
-            if (hookDiff.misplaced.length > 0) {
-              issues.push(
-                `${spec.settingsFile}: hooks under the wrong event (${hookDiff.misplaced.map((e) => e.subcommand).join(", ")})`,
-              );
-            }
-            if (hookDiff.orphans.length > 0) {
-              issues.push(`${spec.settingsFile}: obsolete hooks (${hookDiff.orphans.join(", ")})`);
-            }
-            if (hookDiff.invalidTopLevelKeys.length > 0) {
-              issues.push(
-                `${spec.settingsFile}: invalid fields (${hookDiff.invalidTopLevelKeys.join(", ")})`,
-              );
-            }
-            if (hookDiff.invalidEventKeys.length > 0) {
-              issues.push(
-                `${spec.settingsFile}: unsupported events (${hookDiff.invalidEventKeys.join(", ")})`,
-              );
-            }
-          } catch (error) {
-            hookCheckError = true;
-            issues.push(`${spec.settingsFile}: invalid JSON (${(error as Error).message})`);
-          }
+          issues.push(...instructions.issues);
+          const hooks = checkAdapterHooks(projectRoot, adapter, bin);
+          hookCheckError = hookCheckError || hooks.error;
+          hookDrift = hookDrift || hooks.drift;
+          issues.push(...hooks.issues);
         }
         const gitHooks = checkGitHooks(projectRoot);
         if (gitHooks.status !== "fresh") issues.push(...gitHooks.issues);
@@ -228,21 +319,26 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
           issues.push(`event ledger V3 is runtime-stale (${ledgerRuntimeIssues.join(", ")})`);
         }
         const merged =
-          status === "error" || hookCheckError
+          instructionStatus === "error" || hookCheckError
             ? "error"
             : hookDrift ||
+                instructionStatus === "drift" ||
                 gitHooks.status !== "fresh" ||
                 ledger.state !== "active" ||
                 ledgerRuntimeIssues.length > 0
               ? "drift"
-              : status;
+              : "fresh";
         const head =
           merged === "fresh"
             ? "harn init --check: hooks + instructions + skills + event ledger V3 are current"
             : merged === "drift"
               ? "harn init --check: drift found (re-run `init` to refresh)"
               : "harn init --check: error";
-        const lines = issues.length ? `\n${issues.map((i) => `  ✗ ${i}`).join("\n")}` : "";
+        const lines = issues.length
+          ? `\n${dedupe(issues)
+              .map((i) => `  ✗ ${i}`)
+              .join("\n")}`
+          : "";
         emit.text(`${head}${lines}`);
         emit.setExitCode(merged === "fresh" ? 0 : merged === "drift" ? 2 : 1);
         return;
@@ -327,73 +423,88 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       }
 
       // ── 2. adapter hooks ───────────────────────────────────────────────────
-      const settingsPath = resolve(projectRoot, spec.settingsFile);
-      const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
+      for (const adapter of adapters) {
+        const spec = ADAPTER_SPECS[adapter];
+        const settingsPath = resolve(projectRoot, spec.settingsFile);
+        const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
 
-      if (spec.installMode === "opencode-plugin") {
-        // OpenCode has no hooks map. Install the plugin directory instead; the
-        // instructions + skills step below still runs (AGENTS.md and
-        // .agents/skills are read natively, so no shim or mirror is needed).
-        const plugin = installOpenCodePlugin(projectRoot, { binName: bin, agentHook, dryRun });
-        if (plugin.error) {
-          emit.text(plugin.error);
-          emit.setExitCode(1);
-          return;
-        }
-        actions.push(...plugin.actions);
-      } else {
-        let settings: SettingsFile;
-        if (existsSync(settingsPath)) {
-          try {
-            settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
-          } catch (err) {
-            emit.text(
-              `✗ ${rel(projectRoot, settingsPath)} exists but isn't valid JSON; refusing to ` +
-                `overwrite. Fix it and re-run.\n  (${(err as Error).message})`,
-            );
+        if (spec.installMode === "opencode-plugin") {
+          // OpenCode has no hooks map. Install the plugin directory instead; the
+          // instructions + skills step below still runs (AGENTS.md and
+          // .agents/skills are read natively, so no shim or mirror is needed).
+          const plugin = installOpenCodePlugin(projectRoot, { binName: bin, agentHook, dryRun });
+          if (plugin.error) {
+            emit.text(plugin.error);
             emit.setExitCode(1);
             return;
           }
+          actions.push(...plugin.actions);
         } else {
-          settings = {};
-        }
-        const { wired, already, removed, upgraded } = wireHooks(settings, spec, agentHook, adapter);
+          let settings: SettingsFile;
+          if (existsSync(settingsPath)) {
+            try {
+              settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
+            } catch (err) {
+              emit.text(
+                `✗ ${rel(projectRoot, settingsPath)} exists but isn't valid JSON; refusing to ` +
+                  `overwrite. Fix it and re-run.\n  (${(err as Error).message})`,
+              );
+              emit.setExitCode(1);
+              return;
+            }
+          } else {
+            settings = {};
+          }
+          const { wired, already, removed, upgraded } = wireHooks(
+            settings,
+            spec,
+            agentHook,
+            adapter,
+          );
 
-        if (wired === 0 && removed === 0 && upgraded === 0) {
-          actions.push(
-            `· all ${spec.events.length} ${adapter} hooks already wired in ${rel(projectRoot, settingsPath)}`,
-          );
-        } else if (dryRun) {
-          actions.push(
-            `+ would wire ${wired} hook(s), upgrade ${upgraded} stale command(s), and remove ` +
-              `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
-          );
-        } else {
-          mkdirSync(dirname(settingsPath), { recursive: true });
-          writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
-          actions.push(
-            `+ wired ${wired} hook(s), upgraded ${upgraded} stale command(s), and removed ` +
-              `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
-          );
+          if (wired === 0 && removed === 0 && upgraded === 0) {
+            actions.push(
+              `· all ${spec.events.length} ${adapter} hooks already wired in ${rel(projectRoot, settingsPath)}`,
+            );
+          } else if (dryRun) {
+            actions.push(
+              `+ would wire ${wired} hook(s), upgrade ${upgraded} stale command(s), and remove ` +
+                `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
+            );
+          } else {
+            mkdirSync(dirname(settingsPath), { recursive: true });
+            writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+            actions.push(
+              `+ wired ${wired} hook(s), upgraded ${upgraded} stale command(s), and removed ` +
+                `${removed} obsolete/duplicate command(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
+            );
+          }
+          const authorizationReview = codexHookReviewAction(adapter);
+          if (authorizationReview) actions.push(authorizationReview);
         }
-        const authorizationReview = codexHookReviewAction(adapter);
-        if (authorizationReview) actions.push(authorizationReview);
       }
 
       // ── 3. agent-facing instructions block + skills ────────────────────────
-      // A misconfigured host addendum aborts here rather than half-writing: the
-      // apply step validates the configured source before it touches a file, so
-      // a bad path leaves the repo exactly as it found it.
-      let applied: ApplyResult;
-      try {
-        applied = applyInstructions(projectRoot, { binName: bin, adapter, dryRun });
-      } catch (err) {
-        if (!(err instanceof HostAddendumError)) throw err;
-        emit.text(`${bin} init: ${err.message}`);
-        emit.setExitCode(1);
-        return;
+      // Idempotent per adapter: the AGENTS.md block is adapter-independent, the
+      // harn-* skills land in each adapter's directory, and the CLAUDE.md shim and
+      // Cursor rule exist only for their own adapter. A misconfigured host addendum
+      // aborts here rather than half-writing: the apply step validates the
+      // configured source before it touches a file, so a bad path leaves the repo
+      // exactly as it found it.
+      const warnings: string[] = [];
+      for (const adapter of adapters) {
+        let applied: ApplyResult;
+        try {
+          applied = applyInstructions(projectRoot, { binName: bin, adapter, dryRun });
+        } catch (err) {
+          if (!(err instanceof HostAddendumError)) throw err;
+          emit.text(`${bin} init: ${err.message}`);
+          emit.setExitCode(1);
+          return;
+        }
+        actions.push(...applied.actions);
+        warnings.push(...applied.warnings);
       }
-      actions.push(...applied.actions);
 
       // ── 4. git-hook managed regions ────────────────────────────────────────
       // Same lifecycle contract as the instructions block: the coordination
@@ -402,7 +513,9 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       const gitHooks = applyGitHooks(projectRoot, { dryRun });
       actions.push(...gitHooks.actions);
 
-      emit.text(render(projectRoot, dryRun, actions, [...applied.warnings, ...gitHooks.warnings]));
+      emit.text(
+        render(projectRoot, dryRun, dedupe(actions), dedupe([...warnings, ...gitHooks.warnings])),
+      );
     });
 }
 

@@ -9,6 +9,7 @@ import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
 import {
   codexHookReviewAction,
   eventLedgerV3RuntimeIssues,
+  resolveInitAdapters,
   stampBinName,
   stampWorkflowDefaults,
   wireHooks,
@@ -623,5 +624,78 @@ describe("stampWorkflowDefaults", () => {
     const action = stampWorkflowDefaults(p, true);
     expect(action).toContain("would");
     expect(existsSync(p)).toBe(false);
+  });
+});
+
+describe("init adapter set", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  const fixture = () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-init-adapters-"));
+    roots.push(root);
+    return root;
+  };
+
+  test("parses explicit flags, repeats, and all", () => {
+    expect(resolveInitAdapters("/nonexistent", ["opencode"]).adapters).toEqual(["opencode"]);
+    expect(resolveInitAdapters("/nonexistent", ["claude-code", "opencode"]).adapters).toEqual([
+      "claude-code",
+      "opencode",
+    ]);
+    expect(resolveInitAdapters("/nonexistent", ["all"]).adapters).toEqual([
+      "claude-code",
+      "cursor",
+      "codex",
+      "opencode",
+    ]);
+    const bad = resolveInitAdapters("/nonexistent", ["bogus"]);
+    expect(bad.error).toContain("Unknown adapter 'bogus'");
+    expect(bad.error).toContain("all");
+  });
+
+  test("defaults to wired adapters, and to claude-code on a fresh project", async () => {
+    const root = fixture();
+    expect(resolveInitAdapters(root, []).adapters).toEqual(["claude-code"]);
+    await runInit(root, ["--adapter", "cursor"]);
+    expect(resolveInitAdapters(root, []).adapters).toEqual(["cursor"]);
+  });
+
+  test("plain init refreshes every wired adapter, including a stale opencode plugin", async () => {
+    const root = fixture();
+    await runInit(root, ["--adapter", "claude-code"]);
+    await runInit(root, ["--adapter", "opencode"]);
+    const entry = join(root, ".opencode", "plugins", "harnery", "index.ts");
+    writeFileSync(entry, `${readFileSync(entry, "utf8")}// edited\n`);
+
+    const result = await runInit(root, []);
+    expect(result.exitCode).toBe(0);
+    expect(result.text).toContain(".claude/settings.json");
+    expect(result.text).toContain("refreshed the opencode plugin");
+    expect(readFileSync(entry, "utf8")).not.toContain("// edited");
+  });
+
+  test("--adapter all wires every adapter in one pass", async () => {
+    const root = fixture();
+    const result = await runInit(root, ["--adapter", "all"]);
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(join(root, ".claude", "settings.json"))).toBe(true);
+    expect(existsSync(join(root, ".cursor", "hooks.json"))).toBe(true);
+    expect(existsSync(join(root, ".codex", "hooks.json"))).toBe(true);
+    expect(existsSync(join(root, ".opencode", "plugins", "harnery", "index.ts"))).toBe(true);
+
+    const check = await runInit(root, ["--adapter", "all", "--check"]);
+    expect(check.exitCode).toBe(0);
+  });
+
+  test("reports an unknown adapter with the accepted set", async () => {
+    const root = fixture();
+    const result = await runInit(root, ["--adapter", "bogus"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.text).toContain("Unknown adapter 'bogus'");
+    expect(result.text).toContain("all");
   });
 });

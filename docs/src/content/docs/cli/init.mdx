@@ -6,8 +6,15 @@ sidebar:
 ---
 
 ```
-harn init [--adapter claude-code|cursor|codex|opencode] [--instructions-only] [--dry-run] [--check] [--project-root <path>]
+harn init [--adapter <id> ...] [--instructions-only] [--dry-run] [--check] [--project-root <path>]
+# <id> = claude-code | cursor | codex | opencode | all
 ```
+
+`--adapter` is repeatable and also accepts comma-separated ids or `all`. With
+no `--adapter` flag, `init` refreshes every adapter the project already has
+wired; a project with no wiring yet gets `claude-code`, the historical
+default. Re-running `init` therefore keeps every harness in step instead of
+silently refreshing only one.
 
 One command to make a project harnery-ready. It does the setup steps that are otherwise easy to miss, and that fail **silently** when missed:
 
@@ -55,8 +62,11 @@ When you run `init` through a host CLI that composes Harnery under its own bin n
 `init` also **pins `workflow.subscriptionOnly: true` into `.harnery/config.jsonc`** so [run](/cli/run/) children can only authenticate via the adapter CLI's logged-in (subscription) auth, so API-key vars are scrubbed from child envs, making accidental per-token billing structurally impossible in the repo. The pin is written only when no `workflow` key exists; a committed `workflow` key of any shape (including `subscriptionOnly: false` for key-only CI hosts) is a deliberate choice and is never touched. Per-process escape hatch: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=0`.
 
 ```bash
-harn init            # wire the current project for Claude Code
-harn init --dry-run  # preview every change without writing
+harn init                          # refresh every wired adapter (else claude-code)
+harn init --adapter codex          # wire or refresh one adapter explicitly
+harn init --adapter cursor --adapter opencode
+harn init --adapter all            # wire every supported adapter
+harn init --dry-run                # preview every change without writing
 ```
 
 ## Refresh instructions without runtime wiring
@@ -135,7 +145,9 @@ All four adapters are fully auto-wired. Pass `--adapter`:
 | `codex` | `.codex/hooks.json` | 11 native events; nested `{ hooks: [{ type, command }] }` entries; strict `description` + `hooks` top-level schema |
 | `opencode` | `.opencode/plugins/harnery/index.ts` | 12 events delivered by an in-process plugin, not a hooks map; see below |
 
-Each writes only its own file, so you can wire several adapters in one project by running `init` once per adapter. The canonical file path + event→subcommand map + entry shape for every adapter lives in [`src/core/hooks/adapter/events.ts`](https://github.com/ryanjkelly/harnery/blob/main/src/core/hooks/adapter/events.ts) (`ADAPTER_SPECS`).
+Each writes only its own file, so several adapters can share one project: pass
+`--adapter` more than once (or `all`), or re-run `init` with no flag after a
+first explicit run to refresh everything already wired. The canonical file path + event→subcommand map + entry shape for every adapter lives in [`src/core/hooks/adapter/events.ts`](https://github.com/ryanjkelly/harnery/blob/main/src/core/hooks/adapter/events.ts) (`ADAPTER_SPECS`).
 
 ### OpenCode is wired through a plugin
 
@@ -157,6 +169,12 @@ service, so a standalone project (Harnery installed from npm, launcher written
 as the bare `agent-hook`) needs `agent-hook` on the PATH that service was
 started with; restart the service after installing Harnery. A project that
 contains Harnery gets a repo-relative launcher and needs nothing on PATH.
+
+The plugin also prepends the project's own `bin/` directory and whichever Bun
+install directory exists to every tool shell's PATH. An OpenCode server can
+start from a GUI-launched environment whose PATH omits the project's tools,
+which would otherwise turn an otherwise-valid `bin/<launcher>` call inside a
+session into `command not found`.
 
 `--check` treats a hand-edited plugin as drift and a foreign file at that path as
 an error, and `init` refuses to overwrite a file it does not own. `harn deinit
