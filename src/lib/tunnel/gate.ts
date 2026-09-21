@@ -1,15 +1,17 @@
 // Reverse-proxy worker spawned by `tunnel up`. Listens on 127.0.0.1:<port>
 // and forwards HTTP + WebSocket requests to an upstream with a Host header
-// rewrite and Content-Encoding stripped (Bun's fetch auto-decompresses the
-// body but retains the encoding header, which breaks browser decoding
-// downstream). Cloudflare provider mode checks CF-Connecting-IP against an
-// allowlist; trusted local proxy mode lets the local exposer own access.
+// rewrite, the original Host copied to X-Forwarded-Host, and Content-Encoding
+// stripped (Bun's fetch auto-decompresses the body but retains the encoding
+// header, which breaks browser decoding downstream). Cloudflare provider mode
+// checks CF-Connecting-IP against an allowlist; trusted local proxy mode lets
+// the local exposer own access.
 //
 // Runs detached, outside the CLI command framework; no command context is
 // available; stdout/stderr is captured into .cache/tunnel/gate.log by the
 // spawner.
 
 import { renderTunnelErrorPage } from "./error-page";
+import { applyUpstreamHeaders } from "./forward-headers";
 
 // `--port`/`--name` are also passed on argv (not just env) so the gate's port
 // and instance name show up in its process command line. That's what lets
@@ -39,6 +41,7 @@ const UPSTREAM_WS = `ws://${TARGET}`;
 
 interface WsData {
   path: string;
+  originalHost: string;
 }
 
 function requestDetails(req: Request, url: URL) {
@@ -94,16 +97,18 @@ const server = Bun.serve<WsData, never>({
     }
 
     if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-      if (server.upgrade(req, { data: { path: url.pathname + url.search } })) {
+      if (
+        server.upgrade(req, {
+          data: { path: url.pathname + url.search, originalHost: req.headers.get("host") ?? "" },
+        })
+      ) {
         return undefined;
       }
       return new Response("WS upgrade failed\n", { status: 500 });
     }
 
     const headers = new Headers(req.headers);
-    headers.set("host", VHOST);
-    headers.set("accept-encoding", "identity");
-    headers.delete("connection");
+    applyUpstreamHeaders(headers, VHOST);
 
     const init: RequestInit = {
       method: req.method,
@@ -156,11 +161,14 @@ const server = Bun.serve<WsData, never>({
   },
   websocket: {
     open(ws) {
-      const { path } = ws.data;
+      const { path, originalHost } = ws.data;
       // Bun's WebSocket constructor accepts a `headers` option at runtime
       // even though the standard lib.dom.d.ts WebSocket type doesn't.
       const upstream = new WebSocket(UPSTREAM_WS + path, {
-        headers: { host: VHOST },
+        headers: {
+          host: VHOST,
+          ...(originalHost ? { "x-forwarded-host": originalHost } : {}),
+        },
       } as unknown as undefined);
       upstream.binaryType = "arraybuffer";
       (ws as unknown as { upstream?: WebSocket }).upstream = upstream;
