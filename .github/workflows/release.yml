@@ -78,6 +78,7 @@ jobs:
       # Skips cleanly (job stays green) until an NPM_TOKEN secret is configured.
       # Set NPM_TOKEN in repo secrets when you're ready to publish to npm.
       - name: Create release PR or publish
+        id: changesets
         if: ${{ env.NPM_TOKEN != '' }}
         uses: changesets/action@v1
         with:
@@ -93,3 +94,32 @@ jobs:
           # setup-node writes an .npmrc that reads NODE_AUTH_TOKEN; without this
           # the publish PUT goes out unauthenticated and npm returns a 404.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # `changeset publish` reports success whenever `npm publish` exits 0, and it prints nothing of
+      # npm's own output on success. A publish once reported success for a version the registry
+      # never served, so the published version is checked against the registry itself, and npm's
+      # debug logs are kept either way.
+      - name: Verify the published version is on the registry
+        if: ${{ env.NPM_TOKEN != '' && steps.changesets.outputs.published == 'true' }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          for attempt in $(seq 1 20); do
+            if npm view "harnery@$version" version --prefer-online >/dev/null 2>&1; then
+              echo "harnery@$version is on the registry."
+              exit 0
+            fi
+            echo "harnery@$version is not on the registry yet (check $attempt of 20)."
+            sleep 15
+          done
+          echo "Publish reported success, but harnery@$version is not on the registry after 5 minutes." >&2
+          exit 1
+
+      - name: Keep npm's debug logs
+        if: ${{ always() && env.NPM_TOKEN != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-logs
+          path: ~/.npm/_logs/
+          if-no-files-found: ignore
+          retention-days: 14
