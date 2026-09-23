@@ -98,21 +98,22 @@ jobs:
       # `changeset publish` reports success whenever `npm publish` exits 0, and it prints nothing of
       # npm's own output on success. A publish once reported success for a version the registry
       # never served, so the published version is checked against the registry itself, and npm's
-      # debug logs are kept either way.
+      # debug logs are kept either way. npm can take several minutes to serve a new version (about
+      # seven for 0.41.0), so the check waits up to 15.
       - name: Verify the published version is on the registry
         if: ${{ env.NPM_TOKEN != '' && steps.changesets.outputs.published == 'true' }}
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          for attempt in $(seq 1 20); do
+          for attempt in $(seq 1 60); do
             if npm view "harnery@$version" version --prefer-online >/dev/null 2>&1; then
               echo "harnery@$version is on the registry."
               exit 0
             fi
-            echo "harnery@$version is not on the registry yet (check $attempt of 20)."
+            echo "harnery@$version is not on the registry yet (check $attempt of 60)."
             sleep 15
           done
-          echo "Publish reported success, but harnery@$version is not on the registry after 5 minutes." >&2
+          echo "Publish reported success, but harnery@$version is not on the registry after 15 minutes." >&2
           exit 1
 
       - name: Keep npm's debug logs
