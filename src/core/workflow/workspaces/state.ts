@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import {
   canonicalJson,
   fsyncParentDirectory,
@@ -192,7 +193,7 @@ export function appendWorkspaceEvent(
     throw new Error("workspace provider event is invalid or too large");
   }
   const path = workspaceEventsPath(coordRoot, claim.provider_id, claim.binding_id);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const existed = existsSync(path);
   const prior = readWorkspaceEvents(coordRoot, claim.provider_id, claim.binding_id);
   const basis = {
@@ -213,14 +214,14 @@ export function appendWorkspaceEvent(
   const line = `${canonicalJson(record)}\n`;
   if (Buffer.byteLength(line) > WORKSPACE_EVENT_BYTES)
     throw new Error("workspace provider event is too large");
-  const fd = openSync(path, "a", 0o600);
+  const fd = openSync(path, "a", stateFileMode());
   try {
     writeFileSync(fd, line, "utf8");
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
-  chmodSync(path, 0o600);
+  chmodSync(path, stateFileMode());
   if (!existed) fsyncParentDirectory(path);
   return record;
 }
@@ -295,7 +296,7 @@ export function appendCleanupAttempt(
   input: Omit<WorkspaceCleanupAttempt, "seq" | "previous_sha256" | "record_sha256">,
 ): WorkspaceCleanupAttempt {
   const path = join(workflowRunDir(coordRoot, runId), "cleanup", "attempts.jsonl");
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const existed = existsSync(path);
   const prior = readCleanupAttempts(coordRoot, runId);
   const basis = {
@@ -311,14 +312,14 @@ export function appendCleanupAttempt(
   if (Buffer.byteLength(line) > WORKSPACE_EVENT_BYTES) {
     throw new Error("workspace cleanup attempt is too large");
   }
-  const fd = openSync(path, "a", 0o600);
+  const fd = openSync(path, "a", stateFileMode());
   try {
     writeFileSync(fd, line, "utf8");
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
-  chmodSync(path, 0o600);
+  chmodSync(path, stateFileMode());
   if (!existed) fsyncParentDirectory(path);
   return attempt;
 }
@@ -329,7 +330,7 @@ export function appendIntegrationAttempt(
   input: Omit<IntegrationApplyAttempt, "seq" | "previous_sha256" | "record_sha256">,
 ): IntegrationApplyAttempt {
   const path = join(workflowRunDir(coordRoot, runId), "integration", "attempts.jsonl");
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const existed = existsSync(path);
   const prior = readIntegrationAttempts(coordRoot, runId);
   const basis = {
@@ -372,14 +373,14 @@ function appendChainedRecord(
   if (Buffer.byteLength(line) > WORKSPACE_EVENT_BYTES) {
     throw new Error(`${label} is too large`);
   }
-  const fd = openSync(path, "a", 0o600);
+  const fd = openSync(path, "a", stateFileMode());
   try {
     writeFileSync(fd, line, "utf8");
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
-  chmodSync(path, 0o600);
+  chmodSync(path, stateFileMode());
 }
 
 function readChainedRecords<

@@ -14,6 +14,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { encodeLinkSafeComponent } from "../../lib/local-file-url.ts";
 import { findLiveTunnelForOrigin } from "../../lib/tunnel/state.ts";
 import { resolveWebPort } from "../config.ts";
+import { stateFileMode } from "../storage/modes.ts";
 import { ARTIFACT_MANIFEST } from "./constants.ts";
 import { resolveArtifactRef, showArtifact } from "./index.ts";
 
@@ -71,7 +72,7 @@ export function writeArtifactDeliveryManifest(
   try {
     writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`, {
       encoding: "utf8",
-      mode: 0o600,
+      mode: stateFileMode(),
       flag: "wx",
     });
     renameSync(tmp, target);

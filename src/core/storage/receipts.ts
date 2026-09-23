@@ -18,6 +18,7 @@ import {
   HarneryMaintenanceError,
   type HarneryMaintenanceReceipt,
 } from "./maintenance.ts";
+import { stateDirMode, stateFileMode } from "./modes.ts";
 
 export const HARNERY_RECEIPT_SEGMENT_MANIFEST_SCHEMA =
   "harnery.storage-maintenance-receipt-segment/v1" as const;
@@ -85,7 +86,7 @@ export function consolidateMutationReceipts(
     );
   }
   const segments = join(root, "segments");
-  mkdirSync(segments, { recursive: true, mode: 0o700 });
+  mkdirSync(segments, { recursive: true, mode: stateDirMode() });
   const payloadPath = join(segments, `${segmentId}.jsonl`);
   const manifestPath = join(segments, `${segmentId}.manifest.json`);
   writeExclusiveDurable(payloadPath, payload);
@@ -144,9 +145,9 @@ function readReceipt(path: string): {
 }
 
 function writeExclusiveDurable(path: string, bytes: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  const fd = openSync(temporary, "wx", 0o600);
+  const fd = openSync(temporary, "wx", stateFileMode());
   try {
     writeFileSync(fd, bytes, "utf8");
     fsyncSync(fd);

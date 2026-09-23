@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ParsedPayload } from "../../hooks/adapter/parse.ts";
+import { stateFileMode } from "../../storage/modes.ts";
 
 export interface LineChanges {
   added: number;
@@ -45,8 +46,8 @@ function compare(before: string, after: string): LineChanges | undefined {
   try {
     const oldPath = join(directory, "before");
     const newPath = join(directory, "after");
-    writeFileSync(oldPath, before, { mode: 0o600 });
-    writeFileSync(newPath, after, { mode: 0o600 });
+    writeFileSync(oldPath, before, { mode: stateFileMode() });
+    writeFileSync(newPath, after, { mode: stateFileMode() });
     const result = spawnSync(
       "git",
       ["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--numstat", "--", oldPath, newPath],

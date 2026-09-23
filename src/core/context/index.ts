@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
+import { stateFileMode } from "../storage/modes.ts";
 
 export const CONTEXT_SCHEMA_VERSION = 1 as const;
 export const MAX_CAPSULE_BYTES = 32 * 1024;
@@ -499,7 +500,7 @@ function writeBoundedJson(path: string, value: unknown, maxBytes: number): void 
   }
   mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.tmp.${process.pid}.${randomUUID()}`;
-  writeFileSync(temp, text, { encoding: "utf8", mode: 0o600 });
+  writeFileSync(temp, text, { encoding: "utf8", mode: stateFileMode() });
   renameSync(temp, path);
 }
 

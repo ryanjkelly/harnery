@@ -9,6 +9,7 @@ import {
   statSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { stateDirMode } from "../../storage/modes.ts";
 import type { FilesystemIdentity, ValidatedFilesystemPath } from "./types.ts";
 
 const WINDOWS_AMBIGUOUS = /[<>:"|?*]|[ .]$/;
@@ -152,7 +153,7 @@ export function openContainedDirectory(
           );
         }
       } else {
-        mkdirSync(candidate, { mode: 0o700 });
+        mkdirSync(candidate, { mode: stateDirMode() });
       }
       const childFd = openSync(
         candidate,

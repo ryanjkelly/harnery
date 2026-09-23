@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 
 const JSON_LIMIT = 512 * 1024;
 
@@ -33,18 +34,18 @@ export function writeImmutableJson(path: string, value: unknown): boolean {
   if (Buffer.byteLength(body) > JSON_LIMIT) {
     throw new Error(`immutable record exceeds ${JSON_LIMIT} bytes`);
   }
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, body, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
     try {
       linkSync(temporary, path);
-      chmodSync(path, 0o600);
+      chmodSync(path, stateFileMode());
       fsyncParentDirectory(path);
       return true;
     } catch (error) {

@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PolicyEvaluation, PolicyRequestSummary, PolicyVerdict } from "../policy/index.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { appendWorkflowTranscriptEvent } from "./transcript.ts";
 
 export const WORKFLOW_APPROVAL_SCHEMA_VERSION = 1 as const;
@@ -108,8 +109,8 @@ export function createWorkflowApproval(input: CreateWorkflowApprovalInput): {
     request_sha256: requestSha256,
   };
   const dir = approvalDir(input.coordRoot, id);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodSync(dir, 0o700);
+  mkdirSync(dir, { recursive: true, mode: stateDirMode() });
+  chmodSync(dir, stateDirMode());
   const created = writeExclusiveJson(join(dir, "request.json"), record);
   const approval = readWorkflowApproval(input.coordRoot, id);
   if (
@@ -249,17 +250,17 @@ function writeExclusiveJson(path: string, value: unknown): boolean {
   if (Buffer.byteLength(body) > RECORD_LIMIT_BYTES) {
     throw new Error(`approval record exceeds ${RECORD_LIMIT_BYTES} bytes`);
   }
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   try {
-    writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: stateFileMode() });
     try {
       linkSync(temporary, path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
       throw error;
     }
-    chmodSync(path, 0o600);
+    chmodSync(path, stateFileMode());
     return true;
   } finally {
     if (existsSync(temporary)) unlinkSync(temporary);

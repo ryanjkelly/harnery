@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
+import { stateModeTooOpen } from "../../../storage/modes.ts";
 import {
   classifyEventV3Support,
   type EventV3SupportClassificationEvidence,
@@ -101,7 +102,7 @@ export async function inventoryEventV3Support(
         authority_state: input.authority.state,
         now: input.now,
         file_regular: true,
-        file_owner_only: (fileStat.mode & 0o077) === 0,
+        file_owner_only: !stateModeTooOpen(fileStat.mode),
       });
       results.push({
         authority: input.authority,

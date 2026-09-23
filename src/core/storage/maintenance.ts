@@ -20,6 +20,7 @@ import {
   HARNERY_STRUCTURED_LOG_PROVIDER_ID,
   type HarneryRegisteredStorageFamily,
 } from "./contract.ts";
+import { stateDirMode, stateFileMode } from "./modes.ts";
 
 export const HARNERY_MAINTENANCE_TRANSACTION_SCHEMA =
   "harnery.storage-maintenance-transaction/v1" as const;
@@ -641,7 +642,7 @@ function writeReceipt(
     committed_at: now.toISOString(),
   };
   const path = receiptPath(coordRoot, transactionId, action.action_id);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   writeExclusiveDurable(path, `${JSON.stringify(receipt, null, 2)}\n`);
 }
 
@@ -678,7 +679,7 @@ function writeRunOutcome(
   now: Date,
 ): void {
   const root = join(resolve(coordRoot), ".harnery", "logs", "storage-maintenance");
-  mkdirSync(root, { recursive: true, mode: 0o700 });
+  mkdirSync(root, { recursive: true, mode: stateDirMode() });
   const active = join(root, "active.jsonl");
   if (existsSync(active) && statSync(active).size > 1_048_576) {
     renameSync(active, join(root, `sealed-${now.toISOString().replaceAll(/[:.]/g, "-")}.jsonl`));
@@ -686,7 +687,7 @@ function writeRunOutcome(
   appendFileSync(
     active,
     `${JSON.stringify({ ts: now.toISOString(), transaction_id: transaction.transaction_id, state: transaction.state, actions: transaction.actions.length, files: transaction.actions.reduce((n, action) => n + action.files, 0), bytes: transaction.actions.reduce((n, action) => n + action.bytes, 0), reason_codes: transaction.reason_codes })}\n`,
-    { encoding: "utf8", mode: 0o600 },
+    { encoding: "utf8", mode: stateFileMode() },
   );
 }
 
@@ -871,9 +872,9 @@ function readJsonFile(path: string): unknown {
 }
 
 function atomicJson(path: string, value: unknown, fsync: boolean): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  const fd = openSync(temporary, "wx", 0o600);
+  const fd = openSync(temporary, "wx", stateFileMode());
   try {
     writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     if (fsync) fsyncSync(fd);
@@ -884,7 +885,7 @@ function atomicJson(path: string, value: unknown, fsync: boolean): void {
 }
 
 function writeExclusiveDurable(path: string, value: string): void {
-  const fd = openSync(path, "wx", 0o600);
+  const fd = openSync(path, "wx", stateFileMode());
   try {
     writeFileSync(fd, value, "utf8");
     fsyncSync(fd);

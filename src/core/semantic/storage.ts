@@ -13,6 +13,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
 import type { LedgerCursorV3 } from "../events/v3/reader.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import type {
   SEMANTIC_EVIDENCE_CONTRACT_VERSION,
   SEMANTIC_PROMPT_CONTRACT_VERSION,
@@ -291,10 +292,10 @@ function writePrivateJsonAtomic(path: string, value: unknown): void {
   if (Buffer.byteLength(body) > MAX_JSON_BYTES) {
     throw new Error(`semantic file exceeds ${MAX_JSON_BYTES} bytes`);
   }
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  chmodSync(dirname(path), 0o700);
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
+  chmodSync(dirname(path), stateDirMode());
   const temporary = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
-  writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: stateFileMode() });
   renameSync(temporary, path);
-  chmodSync(path, 0o600);
+  chmodSync(path, stateFileMode());
 }

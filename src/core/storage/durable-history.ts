@@ -20,6 +20,7 @@ import {
 import type { FileHandle } from "node:fs/promises";
 import { open, rename, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { stateDirMode, stateFileMode } from "./modes.ts";
 
 export const HARNERY_DURABLE_HISTORY_SCHEMA = "harnery.durable-history/v1" as const;
 
@@ -271,7 +272,7 @@ export async function rewriteCrashSafeJsonlFile(
     const handle = await open(
       temp,
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag(),
-      0o600,
+      stateFileMode(),
     );
     try {
       await writeAll(handle, Buffer.from(body, "utf8"));
@@ -325,7 +326,7 @@ function appendAndSync(
   const fd = openSync(
     path,
     fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_CREAT | noFollowFlag(),
-    0o600,
+    stateFileMode(),
   );
   try {
     assertOpenFileIdentity(path, fd, parent);
@@ -348,7 +349,7 @@ interface DirectoryIdentity {
 }
 
 function ensurePrivateDirectory(path: string): DirectoryIdentity {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
+  mkdirSync(path, { recursive: true, mode: stateDirMode() });
   return captureDirectoryIdentity(path);
 }
 
@@ -522,7 +523,7 @@ function acquireLease(lease: string): LeaseOwner {
     };
     let claimed: DirectoryIdentity | undefined;
     try {
-      mkdirSync(lease, { mode: 0o700 });
+      mkdirSync(lease, { mode: stateDirMode() });
       assertDirectoryWithinParent(lease, parent);
       claimed = captureDirectoryIdentity(lease);
       writeOwner(join(lease, "owner.json"), owner);
@@ -549,7 +550,7 @@ function writeOwner(path: string, owner: LeaseOwner): void {
   const fd = openSync(
     path,
     fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag(),
-    0o600,
+    stateFileMode(),
   );
   try {
     assertOpenFileIdentity(path, fd, parent);

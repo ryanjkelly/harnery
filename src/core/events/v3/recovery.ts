@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
@@ -133,8 +134,8 @@ function recoveryIdFor(failure: EventV3RecoveryFailure): `rcv_${string}` {
 function publishRecoveryIntent(root: string, value: EventV3RecoveryIntent): EventV3RecoveryIntent {
   const intent = validateEventV3RecoveryIntent(value);
   const records = eventV3RecoveryRecordsRoot(root);
-  mkdirSync(records, { recursive: true, mode: 0o700 });
-  chmodSync(records, 0o700);
+  mkdirSync(records, { recursive: true, mode: stateDirMode() });
+  chmodSync(records, stateDirMode());
   const path = recoveryIntentPath(records, intent.recovery_id);
   const serialized = `${canonicalJsonV3(intent)}\n`;
   if (existsSync(path)) {
@@ -256,7 +257,7 @@ function publishExclusive(path: string, serialized: string): void {
   const temporary = `${path}.tmp.${process.pid}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, serialized, "utf8");
     fsyncSync(fd);
     closeSync(fd);

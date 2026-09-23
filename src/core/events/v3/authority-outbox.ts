@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { stateFileMode } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
@@ -540,7 +541,7 @@ function publishExclusive(path: string, serialized: string): void {
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, serialized, "utf8");
     fsyncSync(fd);
     closeSync(fd);

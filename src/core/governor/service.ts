@@ -18,6 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { type NormalizedPolicy, normalizePolicy, type PolicyIsolation } from "../policy/index.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { RotatingTextSink } from "../storage/process-log.ts";
 import type { RunWorkItemInput } from "../work/index.ts";
 import { type GovernorRunReport, type GovernorStopReason, runGovernor } from "./runner.ts";
@@ -196,8 +197,8 @@ export function configureGovernorService(
     created_at: new Date().toISOString(),
   };
   const dir = serviceDir(coordRoot);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodSync(dir, 0o700);
+  mkdirSync(dir, { recursive: true, mode: stateDirMode() });
+  chmodSync(dir, stateDirMode());
   writePrivateJsonAtomic(serviceConfigPath(coordRoot), config);
   return readGovernorServiceConfig(coordRoot);
 }
@@ -261,10 +262,10 @@ export async function spawnGovernorService(coordRootRaw: string): Promise<Govern
   if (current.running) {
     throw new Error(`governor service is already running under pid ${current.record?.pid}`);
   }
-  mkdirSync(serviceDir(coordRoot), { recursive: true, mode: 0o700 });
+  mkdirSync(serviceDir(coordRoot), { recursive: true, mode: stateDirMode() });
   const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
-  const logFd = sharedLogs ? undefined : openSync(serviceLogPath(coordRoot), "a", 0o600);
-  if (logFd !== undefined) chmodSync(serviceLogPath(coordRoot), 0o600);
+  const logFd = sharedLogs ? undefined : openSync(serviceLogPath(coordRoot), "a", stateFileMode());
+  if (logFd !== undefined) chmodSync(serviceLogPath(coordRoot), stateFileMode());
   const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
   if (!existsSync(harnBin)) {
     if (logFd !== undefined) closeSync(logFd);
@@ -712,7 +713,7 @@ function normalizeIsolation(value: unknown): PolicyIsolation | undefined {
 
 function acquireServiceLease(coordRoot: string): () => void {
   const path = serviceLeasePath(coordRoot);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const owner: ServiceLease = {
     pid: process.pid,
     host: hostname(),
@@ -721,7 +722,7 @@ function acquireServiceLease(coordRoot: string): () => void {
   };
   const acquire = (): boolean => {
     try {
-      const fd = openSync(path, "wx", 0o600);
+      const fd = openSync(path, "wx", stateFileMode());
       try {
         writeFileSync(fd, `${JSON.stringify(owner)}\n`, "utf8");
       } finally {
@@ -867,12 +868,12 @@ function writePrivateJsonAtomic(path: string, value: unknown): void {
   if (Buffer.byteLength(body) > MAX_FILE_BYTES) {
     throw new Error(`governor service file exceeds ${MAX_FILE_BYTES} bytes`);
   }
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  chmodSync(dirname(path), 0o700);
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
+  chmodSync(dirname(path), stateDirMode());
   const temporary = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
-  writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: stateFileMode() });
   renameSync(temporary, path);
-  chmodSync(path, 0o600);
+  chmodSync(path, stateFileMode());
 }
 
 function serviceDir(coordRoot: string): string {

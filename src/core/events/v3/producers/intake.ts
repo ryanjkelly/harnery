@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
+import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../adapter-id.ts";
 import type { EventV3WriteMode } from "../control.ts";
@@ -152,14 +153,14 @@ function intakeOrderKey(): string {
 }
 
 function ensureOwnerOnlyDirectory(path: string): void {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
-  chmodSync(path, 0o700);
+  mkdirSync(path, { recursive: true, mode: stateDirMode() });
+  chmodSync(path, stateDirMode());
 }
 
 function writeOwnerOnlyFileDurably(path: string, contents: string): void {
   let fd: number | undefined;
   try {
-    fd = openSync(path, "wx", 0o600);
+    fd = openSync(path, "wx", stateFileMode());
     writeFileSync(fd, contents, "utf8");
     fsyncSync(fd);
     closeSync(fd);
@@ -240,7 +241,7 @@ function readIntakeRecord(path: string): HookIntakeRecordV3 | undefined {
   try {
     const metadata = lstatSync(path);
     if (!metadata.isFile() || metadata.isSymbolicLink()) return undefined;
-    if ((metadata.mode & 0o077) !== 0) return undefined;
+    if (stateModeTooOpen(metadata.mode)) return undefined;
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return undefined;

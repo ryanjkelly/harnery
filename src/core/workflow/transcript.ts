@@ -1,5 +1,6 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { fsyncParentDirectory, stableDigest } from "./durable-record.ts";
 
 // Limit for the JSON record body. The trailing newline delimiter is outside the
@@ -47,9 +48,9 @@ export function appendWorkflowTranscriptEvent(
     data,
   );
   const line = `${JSON.stringify(record)}\n`;
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const existed = existsSync(path);
-  const fd = openSync(path, "a", 0o600);
+  const fd = openSync(path, "a", stateFileMode());
   try {
     writeFileSync(fd, line, "utf8");
     fsyncSync(fd);

@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import type {
   SemanticAcceptedReadModelV2,
   SemanticConfiguredModel,
@@ -630,12 +631,12 @@ function writePrivateJsonAtomic(path: string, value: unknown): void {
   const body = `${JSON.stringify(value, null, 2)}\n`;
   if (Buffer.byteLength(body) > MAX_JSON_BYTES)
     throw new Error("semantic review file is too large");
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  chmodSync(dirname(path), 0o700);
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
+  chmodSync(dirname(path), stateDirMode());
   const temporary = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
-  writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: stateFileMode() });
   renameSync(temporary, path);
-  chmodSync(path, 0o600);
+  chmodSync(path, stateFileMode());
 }
 
 function isSemanticReviewCandidate(value: unknown): value is SemanticReviewCandidateV1 {

@@ -19,6 +19,7 @@ import {
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { coordEnv } from "../../../../lib/env.ts";
+import { stateDirMode, stateFileMode } from "../../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../writer.ts";
@@ -189,8 +190,8 @@ function summaryPath(root: string, category: string, window: string, digest: str
 }
 
 function ensureOwnerOnlyDirectory(path: string): void {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
-  chmodSync(path, 0o700);
+  mkdirSync(path, { recursive: true, mode: stateDirMode() });
+  chmodSync(path, stateDirMode());
 }
 
 function publishOwnerOnlyJson(path: string, value: unknown, durable: boolean): void {
@@ -201,7 +202,7 @@ function publishOwnerOnlyJson(path: string, value: unknown, durable: boolean): v
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, contents, "utf8");
     if (durable) fsyncSync(fd);
     closeSync(fd);
@@ -401,7 +402,7 @@ function recordFailOpen(root: string, stage: string, nowMs: number): void {
       // Missing log starts fresh.
     }
     const line = JSON.stringify({ at: new Date(nowMs).toISOString(), stage, pid: process.pid });
-    appendFileSync(path, `${line}\n`, { mode: 0o600 });
+    appendFileSync(path, `${line}\n`, { mode: stateFileMode() });
   } catch {
     // The emergency log may undercount when storage is unavailable; it is a
     // signal, not accounting, and must never throw into the producer path.

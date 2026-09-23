@@ -12,6 +12,7 @@ import {
   readMaintenanceTransaction,
   runAutomaticMaintenanceSlice,
 } from "./maintenance.ts";
+import { stateFileMode } from "./modes.ts";
 
 const STALE_RUNNING_CLAIM_MS = 10 * 60 * 1_000;
 
@@ -191,7 +192,7 @@ function recoverInterruptedDailyClaim(coordRoot: string, now: Date): void {
 
 function atomicCursor(path: string, cursor: DailyCursor): void {
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  writeFileSync(temporary, `${JSON.stringify(cursor, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(temporary, `${JSON.stringify(cursor, null, 2)}\n`, { mode: stateFileMode() });
   renameSync(temporary, path);
 }
 

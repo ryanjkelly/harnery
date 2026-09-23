@@ -16,6 +16,7 @@ import {
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
@@ -524,7 +525,7 @@ function archiveCurrentEpoch(root: string, createdAt: string): string | undefine
   const current = join(root, ".harnery", "ledgers", "v3");
   if (!existsSync(current)) return undefined;
   const archives = join(root, ".harnery", "ledgers", "v3-archives");
-  mkdirSync(archives, { recursive: true, mode: 0o700 });
+  mkdirSync(archives, { recursive: true, mode: stateDirMode() });
   const stamp = createdAt.replace(/[^0-9]/g, "");
   let target = join(archives, `epoch-${stamp}`);
   let suffix = 0;
@@ -535,20 +536,20 @@ function archiveCurrentEpoch(root: string, createdAt: string): string | undefine
 }
 
 function publishControlFile(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const temp = `${path}.tmp.${process.pid}`;
   // A prior failed publish by this same pid would otherwise make every retry
   // fail on the exclusive create, which is exactly how one transient error
   // turns into a permanently stranded epoch.
   if (existsSync(temp)) unlinkSync(temp);
-  const fd = openSync(temp, "wx", 0o600);
+  const fd = openSync(temp, "wx", stateFileMode());
   try {
     writeFileSync(fd, `${canonicalJsonV3(value)}\n`, "utf8");
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
-  chmodSync(temp, 0o600);
+  chmodSync(temp, stateFileMode());
   renameSync(temp, path);
   fsyncParentDirectory(path);
 }

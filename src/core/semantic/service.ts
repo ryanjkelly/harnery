@@ -30,6 +30,7 @@ import {
   legacyLogFields,
   processLogger,
 } from "../storage/logger.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import type { SemanticHarness } from "./contract.ts";
 import { runSemanticOnce, type SemanticOnceReport } from "./once.ts";
 import { semanticPendingPassDue } from "./scheduler.ts";
@@ -145,10 +146,10 @@ export async function spawnSemanticService(
     throw new Error(`semantic service is already running under pid ${current.record?.pid}`);
   }
   const paths = semanticPaths(coordRoot);
-  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
   const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
-  const logFd = sharedLogs ? undefined : openSync(paths.log, "a", 0o600);
-  if (logFd !== undefined) chmodSync(paths.log, 0o600);
+  const logFd = sharedLogs ? undefined : openSync(paths.log, "a", stateFileMode());
+  if (logFd !== undefined) chmodSync(paths.log, stateFileMode());
   const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
   if (!existsSync(harnBin)) {
     if (logFd !== undefined) closeSync(logFd);
@@ -225,7 +226,7 @@ export async function ensureSemanticServiceRunning(
 export function requestSemanticServiceStop(coordRootRaw: string): SemanticServiceStatus {
   const coordRoot = resolve(coordRootRaw);
   const status = readSemanticServiceStatus(coordRoot);
-  mkdirSync(semanticPaths(coordRoot).root, { recursive: true, mode: 0o700 });
+  mkdirSync(semanticPaths(coordRoot).root, { recursive: true, mode: stateDirMode() });
   writePrivateJsonAtomic(semanticPaths(coordRoot).stop, {
     requested_at: new Date().toISOString(),
     requested_by_pid: process.pid,
@@ -452,7 +453,7 @@ export async function runSemanticServiceDaemon(
 
 export function acquireSemanticServiceLease(coordRootRaw: string): () => void {
   const path = semanticPaths(coordRootRaw).lease;
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const owner: SemanticServiceLease = {
     pid: process.pid,
     host: hostname(),
@@ -461,7 +462,7 @@ export function acquireSemanticServiceLease(coordRootRaw: string): () => void {
   };
   const acquire = (): boolean => {
     try {
-      const fd = openSync(path, "wx", 0o600);
+      const fd = openSync(path, "wx", stateFileMode());
       try {
         writeFileSync(fd, `${JSON.stringify(owner)}\n`, "utf8");
       } finally {
@@ -671,20 +672,20 @@ function prepareSemanticServiceDiagnostic(entry: Record<string, unknown>): {
 
 function appendSemanticServiceLegacyLog(coordRoot: string, entry: Record<string, unknown>): void {
   const path = semanticPaths(coordRoot).log;
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   appendFileSync(
     path,
     `${JSON.stringify({ schema_version: 1, ts: new Date().toISOString(), ...entry })}\n`,
-    { encoding: "utf8", mode: 0o600 },
+    { encoding: "utf8", mode: stateFileMode() },
   );
-  chmodSync(path, 0o600);
+  chmodSync(path, stateFileMode());
   if (statSync(path).size <= MAX_LOG_BYTES) return;
   const buffer = readFileSync(path);
   const tail = buffer.subarray(Math.max(0, buffer.length - Math.floor(MAX_LOG_BYTES / 2)));
   const newline = tail.indexOf(10);
   const body = newline >= 0 ? tail.subarray(newline + 1) : tail;
   const temporary = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
-  writeFileSync(temporary, body, { flag: "wx", mode: 0o600 });
+  writeFileSync(temporary, body, { flag: "wx", mode: stateFileMode() });
   renameSync(temporary, path);
 }
 
@@ -693,12 +694,12 @@ function writePrivateJsonAtomic(path: string, value: unknown): void {
   if (Buffer.byteLength(body) > MAX_FILE_BYTES) {
     throw new Error(`semantic service file exceeds ${MAX_FILE_BYTES} bytes`);
   }
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  chmodSync(dirname(path), 0o700);
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
+  chmodSync(dirname(path), stateDirMode());
   const temporary = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
-  writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: stateFileMode() });
   renameSync(temporary, path);
-  chmodSync(path, 0o600);
+  chmodSync(path, stateFileMode());
 }
 
 function validTimestamp(value: unknown): value is string {

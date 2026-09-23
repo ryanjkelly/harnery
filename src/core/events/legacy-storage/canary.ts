@@ -4,6 +4,7 @@ import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
+import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import { canonicalJsonV3 } from "../v3/canonical.ts";
 import { verifyLegacyV1HardFence } from "./fence.ts";
 import { type LegacyV1SegmentManifest, validateLegacyV1SegmentManifest } from "./manifest.ts";
@@ -46,8 +47,8 @@ export async function writeLegacyV1Canary(input: {
     .digest("hex")
     .slice(0, 32)}` as const;
   const outputDirectory = resolve(input.output_directory);
-  await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
-  await chmod(outputDirectory, 0o700);
+  await mkdir(outputDirectory, { recursive: true, mode: stateDirMode() });
+  await chmod(outputDirectory, stateDirMode());
   const payloadPath = join(outputDirectory, `${segmentId}.ndjson.gz`);
   const manifestPath = join(outputDirectory, `${segmentId}.manifest.json`);
   const partialPayload = `${payloadPath}.partial`;
@@ -57,7 +58,7 @@ export async function writeLegacyV1Canary(input: {
     await pipeline(
       createReadStream(source),
       createGzip({ level: 9 }),
-      createWriteStream(partialPayload, { flags: "wx", mode: 0o600 }),
+      createWriteStream(partialPayload, { flags: "wx", mode: stateFileMode() }),
     );
     await rename(partialPayload, payloadPath);
     const payloadStat = await lstat(payloadPath);
@@ -85,7 +86,7 @@ export async function writeLegacyV1Canary(input: {
     const handle = await open(
       partialManifest,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-      0o600,
+      stateFileMode(),
     );
     try {
       await handle.writeFile(`${canonicalJsonV3(manifest)}\n`, "utf8");

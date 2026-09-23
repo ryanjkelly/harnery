@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, readFile, realpath } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../../../storage/modes.ts";
 import { canonicalJsonV3 } from "../canonical.ts";
 import type { EventV3SupportInventoryEntry } from "./inventory.ts";
 import { digestEventV3LogicalAuthority } from "./logical-authority.ts";
@@ -136,7 +137,7 @@ export async function planEventV3SupportTransaction(
   };
   const directory = transactionDirectory(input.transaction_root, transactionId);
   try {
-    await mkdir(directory, { recursive: false, mode: 0o700 });
+    await mkdir(directory, { recursive: false, mode: stateDirMode() });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const existing = await readEventV3SupportTransaction(input.transaction_root, transactionId);
@@ -145,7 +146,7 @@ export async function planEventV3SupportTransaction(
     }
     return existing;
   }
-  await chmod(directory, 0o700);
+  await chmod(directory, stateDirMode());
   await publishState(directory, transaction);
   return transaction;
 }
@@ -427,7 +428,11 @@ async function publishState(
   transaction: EventV3SupportMaintenanceTransaction,
 ): Promise<void> {
   const path = join(directory, `state-${String(transaction.sequence).padStart(6, "0")}.json`);
-  const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  const handle = await open(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+    stateFileMode(),
+  );
   try {
     await handle.writeFile(`${canonicalJsonV3(transaction)}\n`, "utf8");
     await handle.sync();

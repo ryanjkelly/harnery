@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { selectCommandParentSpan } from "../../span-parent.ts";
@@ -502,9 +503,9 @@ function commandStatePath(coordRoot: string, commandSource: `hid_${string}`): st
 function acquireCommandLease(coordRoot: string, statePath: string) {
   const directory = join(statePath, "..");
   const producerRoot = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT, "private-producers");
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  chmodSync(producerRoot, 0o700);
-  chmodSync(directory, 0o700);
+  mkdirSync(directory, { recursive: true, mode: stateDirMode() });
+  chmodSync(producerRoot, stateDirMode());
+  chmodSync(directory, stateDirMode());
   return acquireNoClobberLease({
     path: `${statePath}.lease`,
     scope: "event-v3-command-producer",
@@ -522,13 +523,13 @@ function publishCommandState(path: string, state: CommandRecorderStateV3): void 
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, `${JSON.stringify(state)}\n`, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
     renameSync(temporary, path);
-    chmodSync(path, 0o600);
+    chmodSync(path, stateFileMode());
     fsyncParentDirectory(path);
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -537,7 +538,7 @@ function publishCommandState(path: string, state: CommandRecorderStateV3): void 
 }
 
 function readCommandState(path: string): CommandRecorderStateV3 {
-  if ((statSync(path).mode & 0o077) !== 0) throw new Error("V3 command state is not owner-only");
+  if (stateModeTooOpen(statSync(path).mode)) throw new Error("V3 command state is open to other users");
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));

@@ -4,6 +4,7 @@ import { lstat, mkdir, open, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createGunzip, createInflateRaw } from "node:zlib";
+import { stateDirMode, stateFileMode } from "../../../storage/modes.ts";
 import {
   type EventV3LogicalAuthorityEntry,
   type EventV3SupportPackManifest,
@@ -226,7 +227,7 @@ export async function unpackEventV3SupportPack(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  await mkdir(target, { recursive: false, mode: 0o700 });
+  await mkdir(target, { recursive: false, mode: stateDirMode() });
   let files = 0;
   let bytes = 0;
   try {
@@ -234,8 +235,8 @@ export async function unpackEventV3SupportPack(
       const path = resolve(target, ...record.path.split("/"));
       if (relative(target, path).startsWith(".."))
         throw new Error("event_v3_support_unpack_path_escape");
-      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      await writeFile(path, record.content, { flag: "wx", mode: 0o600 });
+      await mkdir(dirname(path), { recursive: true, mode: stateDirMode() });
+      await writeFile(path, record.content, { flag: "wx", mode: stateFileMode() });
       files += 1;
       bytes += record.bytes;
     }

@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, open, realpath, rename, rm } from "node:fs/promise
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
+import { stateDirMode, stateFileMode } from "../../../storage/modes.ts";
 import { canonicalJsonV3 } from "../canonical.ts";
 import {
   EVENT_V3_SUPPORT_FAMILIES,
@@ -95,8 +96,8 @@ export async function writeEventV3SupportPack(
     .slice(0, 32)}` as const;
 
   const outputDirectory = resolve(input.output_directory);
-  await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
-  await chmod(outputDirectory, 0o700);
+  await mkdir(outputDirectory, { recursive: true, mode: stateDirMode() });
+  await chmod(outputDirectory, stateDirMode());
   const payloadName = `${packId}.ndjson.gz`;
   const payloadPath = join(outputDirectory, payloadName);
   const manifestPath = join(outputDirectory, `${packId}.manifest.json`);
@@ -106,7 +107,7 @@ export async function writeEventV3SupportPack(
 
   try {
     await streamPayload(inspected, payloadPartial, authorityReal);
-    await chmod(payloadPartial, 0o600);
+    await chmod(payloadPartial, stateFileMode());
     await rename(payloadPartial, payloadPath);
     const payload = await inspectRegularFile(payloadPath);
     const manifest = validateEventV3SupportPackManifest({
@@ -143,7 +144,7 @@ export async function writeEventV3SupportPack(
     const handle = await open(
       manifestPartial,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-      0o600,
+      stateFileMode(),
     );
     try {
       await handle.writeFile(`${canonicalJsonV3(manifest)}\n`, "utf8");
@@ -168,7 +169,7 @@ async function streamPayload(
   authorityReal: string,
 ): Promise<void> {
   const gzip = createGzip({ level: 9 });
-  const output = createWriteStream(destination, { flags: "wx", mode: 0o600 });
+  const output = createWriteStream(destination, { flags: "wx", mode: stateFileMode() });
   const completed = pipeline(gzip, output);
   try {
     for (const entry of entries) {

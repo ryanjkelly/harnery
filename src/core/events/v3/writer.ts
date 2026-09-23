@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
@@ -212,7 +213,7 @@ export function drainReadyEventsUnderLeaseV3(
     checkpoint?.genesis_id ? checkpoint : undefined,
   );
   if (readyRows.length === 0) return 0;
-  const activeFd = openSync(paths.active, "a", 0o600);
+  const activeFd = openSync(paths.active, "a", stateFileMode());
   let committed = 0;
   try {
     for (const { readyName, readyPath, row } of readyRows) {
@@ -397,13 +398,13 @@ export function ensureEventV3Layout(coordRoot: string) {
     paths.segments,
     paths.authorityOutbox,
   ]) {
-    mkdirSync(path, { recursive: true, mode: 0o700 });
-    chmodSync(path, 0o700);
+    mkdirSync(path, { recursive: true, mode: stateDirMode() });
+    chmodSync(path, stateDirMode());
   }
   if (!existsSync(paths.active)) {
     let fd: number | undefined;
     try {
-      fd = openSync(paths.active, "wx", 0o600);
+      fd = openSync(paths.active, "wx", stateFileMode());
       fsyncSync(fd);
       fsyncParentDirectory(paths.active);
     } catch (error) {
@@ -413,8 +414,8 @@ export function ensureEventV3Layout(coordRoot: string) {
     }
   }
   const active = lstatSync(paths.active);
-  if (!active.isFile() || active.isSymbolicLink() || (active.mode & 0o077) !== 0) {
-    throw new Error("active V3 ledger must be an owner-only regular file");
+  if (!active.isFile() || active.isSymbolicLink() || stateModeTooOpen(active.mode)) {
+    throw new Error("active V3 ledger must be a regular file closed to other users");
   }
   return paths;
 }
@@ -429,7 +430,7 @@ function writeReadyRecord(
   const temporary = join(spool, `.tmp-${process.pid}-${randomUUID()}`);
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, row, "utf8");
     fsyncSync(fd);
     onStep?.("ready_temp_flushed", eventId);

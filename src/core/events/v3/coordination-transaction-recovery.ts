@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import {
   type AuthorityTransactionV3,
@@ -306,8 +307,8 @@ function recoveryPaths(coordRoot: string, transactionId: string) {
 
 function ensureRecoveryLayout(paths: ReturnType<typeof recoveryPaths>): void {
   for (const path of [paths.root, paths.quarantineRoot]) {
-    mkdirSync(path, { recursive: true, mode: 0o700 });
-    chmodSync(path, 0o700);
+    mkdirSync(path, { recursive: true, mode: stateDirMode() });
+    chmodSync(path, stateDirMode());
   }
 }
 
@@ -325,7 +326,7 @@ function publishSerializedExclusive(path: string, serialized: string): void {
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, serialized, "utf8");
     fsyncSync(fd);
     closeSync(fd);

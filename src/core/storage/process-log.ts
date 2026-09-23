@@ -12,6 +12,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createStorageCatalog } from "./catalog.ts";
+import { stateDirMode, stateFileMode } from "./modes.ts";
 import { familyLogDirectory } from "./segments.ts";
 
 export interface RotatingTextSinkOptions {
@@ -79,7 +80,7 @@ export class RotatingTextSink {
   append(text: string): void {
     if (this.#closed) throw new Error("text sink is closed");
     const bytes = Buffer.from(text, "utf8");
-    mkdirSync(dirname(this.#options.path), { recursive: true, mode: 0o700 });
+    mkdirSync(dirname(this.#options.path), { recursive: true, mode: stateDirMode() });
     let offset = 0;
     while (offset < bytes.byteLength) {
       let current = existsSync(this.#options.path) ? statSync(this.#options.path).size : 0;
@@ -88,7 +89,7 @@ export class RotatingTextSink {
         current = 0;
       }
       const length = Math.min(bytes.byteLength - offset, this.#options.max_bytes - current);
-      const fd = openSync(this.#options.path, "a", 0o600);
+      const fd = openSync(this.#options.path, "a", stateFileMode());
       try {
         writeSync(fd, bytes.subarray(offset, offset + length));
         if (this.#options.durable) fdatasyncSync(fd);

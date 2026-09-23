@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ApprovedSessionEndReasonV3 } from "../events/v3/producers/recorder.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../events/v3/reader.ts";
+import { stateModeTooOpen } from "../storage/modes.ts";
 
 export const SESSION_FINALIZATION_REQUEST_FORMAT_V3 =
   "harnery-v3-session-finalization-request" as const;
@@ -72,7 +73,7 @@ export function listSessionFinalizationRequestsV3(
 
 export function readSessionFinalizationRequestV3(filePath: string): SessionFinalizationRequestV3 {
   const metadata = lstatSync(filePath);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) {
+  if (!metadata.isFile() || metadata.isSymbolicLink() || stateModeTooOpen(metadata.mode)) {
     throw new Error("V3 session finalization request is unsafe");
   }
   const request = JSON.parse(readFileSync(filePath, "utf8")) as SessionFinalizationRequestV3;

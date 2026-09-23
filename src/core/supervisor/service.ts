@@ -28,6 +28,7 @@ import { readResourceServiceStatus } from "../resources/service-status.ts";
 import { resourcePaths } from "../resources/storage.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { collectSupervisorActivitySnapshot } from "./activity.ts";
 import {
   SUPERVISOR_PRESSURE_SCHEMA_VERSION,
@@ -103,7 +104,7 @@ export async function spawnSupervisor(
   const intervalMs = normalizeInterval(options.intervalMs);
   const idleExitMs = normalizeIdleExit(options.idleExitMs);
   const paths = supervisorPaths(coordRoot);
-  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
   rmSync(paths.stop, { force: true });
   const cliPath = fileURLToPath(
     new URL(import.meta.url.endsWith(".ts") ? "../../cli.ts" : "../../cli.js", import.meta.url),
@@ -170,7 +171,7 @@ export function requestSupervisorStop(coordRootRaw: string): SupervisorStatus {
   const coordRoot = resolve(coordRootRaw);
   const paths = supervisorPaths(coordRoot);
   const status = readSupervisorStatus(coordRoot);
-  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
   writePrivateJsonAtomic(paths.stop, {
     requested_at: new Date().toISOString(),
     requested_by_pid: process.pid,
@@ -352,8 +353,8 @@ export async function runSupervisor(
           });
         }
         pressureHysteresis = assessment.hysteresis;
-        mkdirSync(paths.timelines, { recursive: true, mode: 0o700 });
-        mkdirSync(paths.explanations, { recursive: true, mode: 0o700 });
+        mkdirSync(paths.timelines, { recursive: true, mode: stateDirMode() });
+        mkdirSync(paths.explanations, { recursive: true, mode: stateDirMode() });
         const projectionUpdates = [
           ...findings.active.filter((finding) => !priorActiveFindingIds.has(finding.id)),
           ...findings.transitions.filter(
@@ -495,7 +496,7 @@ function observeLedgerControlState(
 
 function acquireLease(coordRoot: string, now: Date): SupervisorLease {
   const paths = supervisorPaths(coordRoot);
-  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
   for (let attempt = 0; attempt < 2; attempt++) {
     const startToken = processStartToken(process.pid);
     const lease: SupervisorLease = {
@@ -506,7 +507,7 @@ function acquireLease(coordRoot: string, now: Date): SupervisorLease {
       created_at: now.toISOString(),
     };
     try {
-      const fd = openSync(paths.lease, "wx", 0o600);
+      const fd = openSync(paths.lease, "wx", stateFileMode());
       try {
         writeFileSync(fd, `${JSON.stringify(lease)}\n`, "utf8");
       } finally {

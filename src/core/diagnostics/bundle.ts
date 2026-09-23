@@ -25,6 +25,7 @@ import {
 } from "../artifacts/index.ts";
 import { currentHarneryRuntimeBuild } from "../events/v3/runtime-build.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
+import { stateDirMode } from "../storage/modes.ts";
 import {
   SUPERVISOR_DIAGNOSTIC_LIMITS,
   SUPERVISOR_EXPLANATION_SCHEMA_VERSION,
@@ -171,8 +172,8 @@ export function captureDiagnosticBundle(
     now,
   });
   const inputsPath = join(created.path, "inputs");
-  mkdirSync(inputsPath, { recursive: true, mode: 0o700 });
-  tryChmod(inputsPath, 0o700);
+  mkdirSync(inputsPath, { recursive: true, mode: stateDirMode() });
+  tryChmod(inputsPath, stateDirMode());
 
   const payloads: Record<(typeof PAYLOAD_FILES)[number], unknown> = {
     "inputs/observations.json": observations,

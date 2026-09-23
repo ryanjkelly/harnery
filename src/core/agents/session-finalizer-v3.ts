@@ -32,6 +32,7 @@ import {
 import { readLedgerV3 } from "../events/v3/reader.ts";
 import { assertEventV3 } from "../events/v3/validate.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT, writeEventV3 } from "../events/v3/writer.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { fsyncParentDirectory } from "../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 import { readCodexArchiveObservationsV3 } from "./codex-archive-v3.ts";
@@ -901,20 +902,20 @@ function writeRequest(
   create = false,
 ): void {
   const directory = sessionFinalizationRequestDirectoryV3(coordRoot);
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  chmodSync(directory, 0o700);
+  mkdirSync(directory, { recursive: true, mode: stateDirMode() });
+  chmodSync(directory, stateDirMode());
   const path = sessionFinalizationRequestPathV3(coordRoot, request.request_id);
   if (create && existsSync(path)) throw new Error("V3 finalization request already exists");
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, `${JSON.stringify(request)}\n`, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
     renameSync(temporary, path);
-    chmodSync(path, 0o600);
+    chmodSync(path, stateFileMode());
     fsyncParentDirectory(path);
   } finally {
     if (fd !== undefined) closeSync(fd);

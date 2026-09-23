@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import type { FingerprintContextV3 } from "./canonical.ts";
@@ -78,8 +79,8 @@ export function readFingerprintKeyStoreV3(coordRoot: string): FingerprintKeyStor
 
 function readKeyStoreValue(path: string): unknown {
   const mode = statSync(path).mode & 0o777;
-  if ((mode & 0o077) !== 0) {
-    throw new Error("fingerprint key store permissions are not owner-only");
+  if (stateModeTooOpen(mode)) {
+    throw new Error("fingerprint key store is open to other users");
   }
   let parsed: unknown;
   try {
@@ -135,8 +136,8 @@ export function fingerprintContextV3(
 
 function withKeyStoreLock<T>(coordRoot: string, operation: () => T): T {
   const privateDir = join(resolve(coordRoot), ".harnery/private");
-  mkdirSync(privateDir, { recursive: true, mode: 0o700 });
-  chmodSync(privateDir, 0o700);
+  mkdirSync(privateDir, { recursive: true, mode: stateDirMode() });
+  chmodSync(privateDir, stateDirMode());
   const leasePath = join(privateDir, "fingerprint-key-lease");
   const authority = createHash("sha256").update(resolve(coordRoot)).digest("hex");
   let lease: ReturnType<typeof acquireNoClobberLease> | undefined;
@@ -178,12 +179,12 @@ function publishKeyStore(path: string, store: FingerprintKeyStoreV3, replacing: 
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, `${JSON.stringify(store)}\n`, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    chmodSync(temporary, 0o600);
+    chmodSync(temporary, stateFileMode());
     if (!replacing && existsSync(path)) throw new Error("fingerprint key store already exists");
     renameSync(temporary, path);
     fsyncParentDirectory(path);

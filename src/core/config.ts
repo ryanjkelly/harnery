@@ -153,6 +153,16 @@ interface HarneryConfig {
     archive_auto_clean?: boolean;
   };
   /**
+   * Who can use this project's `.harnery/` state. `private` (the default) keeps every state
+   * directory 0700 and every state file 0600, owned by whoever wrote it. `group` makes them 0770 and
+   * 0660 so several Unix users who share the project directory's group can coordinate in one
+   * project. It never grants access to other users. The project directory must be setgid to that
+   * group so new state inherits it. Read via `storageSharing()`.
+   */
+  storage?: {
+    sharing?: "private" | "group";
+  };
+  /**
    * Managed working-artifact defaults. `default_retention_days` is the
    * create-time TTL when the caller does not pass `artifacts create --days`.
    */
@@ -589,6 +599,19 @@ export function workflowSubscriptionOnly(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).workflow?.subscriptionOnly === true;
+}
+
+/**
+ * How this project's `.harnery/` state is shared: `private` or `group`. `HARNERY_STORAGE_SHARING`
+ * overrides per process; an unrecognized value falls back to `private`, the safer reading.
+ */
+export function storageSharing(coordRoot?: string | null): "private" | "group" {
+  const env = coordEnv("STORAGE_SHARING");
+  if (env === "group" || env === "private") return env;
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return "private";
+  // Project file only: a user-global "group" would loosen every project that user touches.
+  return readProjectConfig(root).storage?.sharing === "group" ? "group" : "private";
 }
 
 /**

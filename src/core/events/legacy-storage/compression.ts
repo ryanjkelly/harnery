@@ -5,6 +5,7 @@ import { chmod, lstat, rename, rm } from "node:fs/promises";
 import { basename } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
+import { stateFileMode } from "../../storage/modes.ts";
 import { verifyLegacyV1HardFence } from "./fence.ts";
 import { inventoryLegacyV1Segments } from "./inventory.ts";
 import { streamLegacyV1Rows } from "./reader.ts";
@@ -84,7 +85,7 @@ export async function compressSealedLegacyV1Segments(
       await pipeline(
         createReadStream(row.path),
         createGzip({ level: 9 }),
-        createWriteStream(temporary, { flags: "wx", mode: 0o600 }),
+        createWriteStream(temporary, { flags: "wx", mode: stateFileMode() }),
       );
       await proveRowParity(row.path, temporary);
       const unchanged = (await inventoryLegacyV1Segments(coordRoot)).find(

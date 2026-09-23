@@ -12,6 +12,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 
 const DEFAULT_TTL_MS = 15 * 60 * 1_000;
 const HARD_MAX_TTL_MS = 60 * 60 * 1_000;
@@ -92,16 +93,16 @@ export function writeLiveDisplayV3(
     throw new Error("V3 live-display row exceeds its bounded size");
   }
   const root = liveRoot(coordRoot);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  chmodSync(root, 0o700);
+  mkdirSync(root, { recursive: true, mode: stateDirMode() });
+  chmodSync(root, stateDirMode());
   const path = join(root, `${input.generation_id}.ndjson`);
-  const fd = openSync(path, "a", 0o600);
+  const fd = openSync(path, "a", stateFileMode());
   try {
     writeSync(fd, serialized, undefined, "utf8");
   } finally {
     closeSync(fd);
   }
-  chmodSync(path, 0o600);
+  chmodSync(path, stateFileMode());
   return row;
 }
 

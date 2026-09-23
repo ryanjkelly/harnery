@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { appendSegmentedJsonlFile } from "../storage/durable-history.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { createWorkItem, readWorkItem } from "../work/index.ts";
 import {
   digestResult,
@@ -709,8 +710,8 @@ function createPlanRequest(
   };
   const script = plannerScript(coordRoot, record, planId, trigger);
   const dir = planDir(coordRoot, record.intent.id, planId);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodSync(dir, 0o700);
+  mkdirSync(dir, { recursive: true, mode: stateDirMode() });
+  chmodSync(dir, stateDirMode());
   writeExclusiveJson(join(dir, "request.json"), request, "governor plan request");
   writeExclusive(join(dir, "planner.mjs"), script, "governor planner script");
   return request;
@@ -1610,10 +1611,10 @@ function writeExclusive(path: string, body: string, label: string): void {
   if (Buffer.byteLength(body) > MAX_RECORD_BYTES) {
     throw new Error(`${label} exceeds ${MAX_RECORD_BYTES} bytes`);
   }
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   try {
-    writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: stateFileMode() });
     try {
       linkSync(temporary, path);
     } catch (error) {
@@ -1621,7 +1622,7 @@ function writeExclusive(path: string, body: string, label: string): void {
       const existing = readFileSync(path, "utf8");
       if (existing !== body) throw new Error(`${label} already exists with different content`);
     }
-    chmodSync(path, 0o600);
+    chmodSync(path, stateFileMode());
   } finally {
     try {
       unlinkSync(temporary);

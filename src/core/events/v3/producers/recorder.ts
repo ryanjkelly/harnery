@@ -24,6 +24,7 @@ import {
   readRuntimeContextTelemetry,
   readRuntimeTuning,
 } from "../../../hooks/adapter/runtime-telemetry.ts";
+import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../adapter-id.ts";
@@ -4223,9 +4224,9 @@ function producerStatePath(
 function acquireStateLease(coordRoot: string, statePath: string) {
   const directory = join(statePath, "..");
   const producerRoot = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT, "private-producers");
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  chmodSync(producerRoot, 0o700);
-  chmodSync(directory, 0o700);
+  mkdirSync(directory, { recursive: true, mode: stateDirMode() });
+  chmodSync(producerRoot, stateDirMode());
+  chmodSync(directory, stateDirMode());
   const acquiredControl = readEventV3ControlState(coordRoot);
   const acquiredGenesis =
     acquiredControl.state === "candidate" || acquiredControl.state === "active"
@@ -4271,13 +4272,13 @@ function publishProducerState(coordRoot: string, path: string, state: HookProduc
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, `${JSON.stringify(state)}\n`, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
     renameSync(temporary, path);
-    chmodSync(path, 0o600);
+    chmodSync(path, stateFileMode());
     fsyncParentDirectory(path);
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -4290,7 +4291,7 @@ function readProducerState(path: string): HookProducerStateV3 {
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
     throw new Error("V3 producer state path is unsafe");
   }
-  if ((metadata.mode & 0o077) !== 0) throw new Error("V3 producer state is not owner-only");
+  if (stateModeTooOpen(metadata.mode)) throw new Error("V3 producer state is open to other users");
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));

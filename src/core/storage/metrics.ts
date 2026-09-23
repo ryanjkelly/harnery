@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { stateFileMode } from "./modes.ts";
 
 export interface HarneryLogMetricsDelta {
   accepted?: number;
@@ -109,7 +110,10 @@ export function mergeMetricsSidecar(
   const merged = mergeMetrics(current, delta, now);
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   try {
-    writeFileSync(temporary, `${JSON.stringify(merged)}\n`, { encoding: "utf8", mode: 0o600 });
+    writeFileSync(temporary, `${JSON.stringify(merged)}\n`, {
+      encoding: "utf8",
+      mode: stateFileMode(),
+    });
     renameSync(temporary, path);
     return { merged: true, generation_reset: generationReset };
   } catch {

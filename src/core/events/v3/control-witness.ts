@@ -10,6 +10,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { stateFileMode } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { canonicalJsonV3, type FingerprintV3, fingerprintV3, sha256V3 } from "./canonical.ts";
 import type { ActivationManifestV3, CandidateGenesisManifestV3 } from "./control.ts";
@@ -332,12 +333,12 @@ function publishCanonicalFileV3(path: string, value: unknown): boolean {
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
-    fd = openSync(temporary, "wx", 0o600);
+    fd = openSync(temporary, "wx", stateFileMode());
     writeFileSync(fd, `${canonicalJsonV3(value)}\n`, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    chmodSync(temporary, 0o600);
+    chmodSync(temporary, stateFileMode());
     renameSync(temporary, path);
     fsyncParentDirectory(path);
     return true;

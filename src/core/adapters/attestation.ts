@@ -22,6 +22,7 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { monorepoRoot } from "../agents/coord-client.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { stableDigest } from "../workflow/durable-record.ts";
 import type { AdapterId, AdapterProfile, CapabilitySupport } from "./types.ts";
 
@@ -107,12 +108,12 @@ export function writeAttestation(
   opts: AttestationStoreOptions = {},
 ): string {
   const path = attestationPath(record.adapter, opts);
-  mkdirSync(attestationsDir(opts), { recursive: true, mode: 0o700 });
+  mkdirSync(attestationsDir(opts), { recursive: true, mode: stateDirMode() });
   const temporary = `${path}.tmp-${process.pid}`;
   try {
     writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, {
       encoding: "utf8",
-      mode: 0o600,
+      mode: stateFileMode(),
     });
     renameSync(temporary, path);
   } catch (error) {

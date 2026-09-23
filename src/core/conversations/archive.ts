@@ -5,6 +5,7 @@ import {
   type DurableHistoryFaultBoundary,
   readDurableHistorySync,
 } from "../storage/durable-history.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import type {
   HarneryConversationAccessMode,
   HarneryConversationArchiveAuthorityMode,
@@ -69,10 +70,10 @@ export async function captureProviderConversation(
     provider.capabilities.provider_id,
     options.conversation_id,
   );
-  mkdirSync(objectDir, { recursive: true, mode: 0o700 });
+  mkdirSync(objectDir, { recursive: true, mode: stateDirMode() });
   const lease = join(objectDir, ".capture.lease");
   try {
-    mkdirSync(lease, { mode: 0o700 });
+    mkdirSync(lease, { mode: stateDirMode() });
   } catch {
     throw new Error(`conversation capture lease busy: ${options.conversation_id}`);
   }
@@ -223,7 +224,7 @@ function manifestFor(
 function publishManifest(objectDir: string, manifest: HarneryConversationArchiveManifest): void {
   const path = join(objectDir, "manifest.json");
   const temp = `${path}.tmp-${process.pid}`;
-  writeFileSync(temp, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(temp, `${JSON.stringify(manifest, null, 2)}\n`, { mode: stateFileMode() });
   renameSync(temp, path);
 }
 

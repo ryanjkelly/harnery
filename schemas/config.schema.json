@@ -216,6 +216,19 @@
         }
       }
     },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Who can use this project's .harnery/ state. Read from the project file only.",
+      "properties": {
+        "sharing": {
+          "type": "string",
+          "enum": ["private", "group"],
+          "default": "private",
+          "description": "private: state is 0700/0600, owner-only. group: 0770/0660 for several Unix users sharing the project directory's group (the directory must be setgid). Never opens state to other users. Env override: HARNERY_STORAGE_SHARING."
+        }
+      }
+    },
     "artifacts": {
       "type": "object",
       "additionalProperties": false,

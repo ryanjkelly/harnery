@@ -22,6 +22,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { buildEventV3 } from "../../events/v3/builder.ts";
 import type { EventV3 } from "../../events/v3/contract.ts";
 import { writeEventV3 } from "../../events/v3/writer.ts";
+import { stateFileMode } from "../../storage/modes.ts";
 import type { ParsedPayload } from "../adapter/parse.ts";
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
@@ -258,7 +259,7 @@ function captureOne(
     if (!existsSync(destination)) {
       mkdirSync(imagesDir, { recursive: true });
       const temporary = `${destination}.tmp.${process.pid}.${randomUUID().slice(0, 8)}`;
-      writeFileSync(temporary, bytes, { mode: 0o600 });
+      writeFileSync(temporary, bytes, { mode: stateFileMode() });
       renameSync(temporary, destination);
     }
     return { hash, ext, bytes: stat.size };

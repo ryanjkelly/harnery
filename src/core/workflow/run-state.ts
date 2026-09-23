@@ -20,6 +20,7 @@ import {
   type PolicyNetworkAccess,
   policyDigest,
 } from "../policy/index.ts";
+import { stateFileMode } from "../storage/modes.ts";
 import { assertWorkflowRunId, readWorkflowApproval } from "./approvals.ts";
 import { isCanonicalWorkflowAttemptContext } from "./attempt-context.ts";
 import { readJsonRecord, writeImmutableJson } from "./durable-record.ts";
@@ -205,13 +206,13 @@ export function acquireWorkflowResumeLease(coordRoot: string, runId: string): ()
 
   const acquire = (): boolean => {
     try {
-      const fd = openSync(path, "wx", 0o600);
+      const fd = openSync(path, "wx", stateFileMode());
       try {
         writeFileSync(fd, `${JSON.stringify(owner)}\n`, "utf8");
       } finally {
         closeSync(fd);
       }
-      chmodSync(path, 0o600);
+      chmodSync(path, stateFileMode());
       return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;

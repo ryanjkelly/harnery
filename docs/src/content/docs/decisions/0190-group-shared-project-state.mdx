@@ -1,0 +1,55 @@
+---
+title: "0190: Group-shared project state"
+description: "ADR: let several Unix users coordinate in one project by sharing its .harnery/ state through the project directory's group, without ever opening it to other users."
+---
+
+**Status:** accepted (2026-09-23) · **Scope:** product tier (`core/storage`, `core/config`, every core module that writes project state)
+
+## Context
+
+Harnery writes every piece of project state owner-only: `0700` directories, `0600` files, and
+explicit `chmod` calls after writes, with integrity checks that reject any state carrying group or
+other permission bits. That is right when one person's agents run in a checkout.
+
+It breaks when agents running as different Unix users share one checkout, for example on a server
+where each person's agents run under their own account in a shared project directory. The first
+user to start a session creates `.harnery/ledgers` and `.harnery/private` owner-only, and every
+other user's hooks and commands then fail to record events, claims, or journal entries. The users
+can still share the files and commit; only coordination fails.
+
+## Alternatives considered
+
+1. **Per-user state directories.** Rejected. Each user's agents would coordinate only with
+   themselves, which defeats the point of a shared checkout.
+2. **A resident service that owns all writes.** Rejected for now. It changes Harnery's
+   deployment model and adds a process every host must run.
+3. **Detect sharing from the directory (setgid, group-writable).** Rejected as the switch. A
+   permission change made for another reason would silently loosen Harnery's state.
+4. **An explicit project setting, `storage.sharing: "group"`** (chosen).
+
+## Decision
+
+`src/core/storage/modes.ts` is the only source of state modes. `stateDirMode()` and
+`stateFileMode()` return `0700`/`0600` in private mode and `0770`/`0660` in group mode, and
+`stateModeTooOpen()` rejects group or other access in private mode and other access in group mode.
+Every core write and integrity check uses them, and `tests/unit/state-modes.test.ts` fails on any
+hard-coded owner-only mode added to core code.
+
+The setting is read from the project's `.harnery/config.jsonc` only, never the user-global file,
+because one person's setting must not loosen every project they use. `HARNERY_STORAGE_SHARING`
+overrides it per process, and any unrecognized value reads as private. In group mode Harnery
+clears the group bits from its own umask, so a strict umask cannot quietly turn shared state back
+into owner-only state.
+
+Group mode relies on the project directory being setgid to the shared group, so new state
+inherits that group; Harnery does not change ownership itself.
+
+Personal state outside the project, such as browser cookies, sessions, and pacing ledgers in the
+user's home, is not project state and stays owner-only in both modes.
+
+## Result
+
+Private mode is unchanged: the replacement was mechanical, and the existing storage and event
+tests pass against it. New tests cover the default, the project and environment settings, a
+user-global setting being ignored, a group-mode write landing at `0660` in a `0770` directory under
+a strict umask, and a private-mode write staying `0600`.

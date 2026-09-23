@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { assertWorkId, readWorkItem, type WorkRecord } from "../work/read.ts";
 import { workflowScriptDigest } from "../workflow/run-state.ts";
 import { normalizeWorkflowSpecialists } from "../workflow/specialists.ts";
@@ -233,8 +234,8 @@ export function createGovernor(input: CreateGovernorInput): GovernorRecord {
     created_at: new Date().toISOString(),
   };
   const path = governorIntentPath(coordRoot, id);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  chmodSync(dirname(path), 0o700);
+  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
+  chmodSync(dirname(path), stateDirMode());
   writePrivateJson(path, intent);
   return readGovernor(coordRoot, id);
 }
@@ -309,13 +310,13 @@ export function acquireGovernorLease(coordRoot: string, goalId: string): () => v
   };
   const acquire = (): boolean => {
     try {
-      const fd = openSync(path, "wx", 0o600);
+      const fd = openSync(path, "wx", stateFileMode());
       try {
         writeFileSync(fd, `${JSON.stringify(owner)}\n`, "utf8");
       } finally {
         closeSync(fd);
       }
-      chmodSync(path, 0o600);
+      chmodSync(path, stateFileMode());
       return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -1250,8 +1251,8 @@ function writePrivateJson(path: string, value: unknown): void {
   if (Buffer.byteLength(body) > MAX_INTENT_BYTES) {
     throw new Error(`governor intent exceeds ${MAX_INTENT_BYTES} bytes`);
   }
-  writeFileSync(path, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
-  chmodSync(path, 0o600);
+  writeFileSync(path, body, { encoding: "utf8", flag: "wx", mode: stateFileMode() });
+  chmodSync(path, stateFileMode());
 }
 
 function bounded(value: unknown, field: string, max: number): string {

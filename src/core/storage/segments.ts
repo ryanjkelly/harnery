@@ -23,6 +23,7 @@ import type { HarneryRegisteredStorageFamily } from "./contract.ts";
 import { parseLogRecord } from "./jsonl.ts";
 import type { HarneryLogMetricsDelta } from "./metrics.ts";
 import { mergeMetricsSidecar } from "./metrics.ts";
+import { stateDirMode, stateFileMode } from "./modes.ts";
 
 export interface HarneryLogSegmentV1 {
   sequence: number;
@@ -165,7 +166,7 @@ export class FileSegmentSink {
       const fd = openSync(
         active,
         fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_CREAT | noFollowFlag(),
-        0o600,
+        stateFileMode(),
       );
       let bytes = 0;
       try {
@@ -337,7 +338,7 @@ export async function withFamilyLease<T>(
   let owner: LeaseOwner | undefined;
   while (true) {
     try {
-      mkdirSync(lease, { mode: 0o700 });
+      mkdirSync(lease, { mode: stateDirMode() });
       const leaseIdentity = captureDirectoryIdentity(lease);
       owner = {
         owner_id: randomUUID(),
@@ -397,7 +398,7 @@ function sealActive(active: string, options: ResolvedSegmentOptions, now: Date):
   const sequence = manifest.next_sequence;
   const name = `${now.toISOString().slice(0, 10).replaceAll("-", "")}-${String(sequence).padStart(8, "0")}.jsonl.gz`;
   const target = join(directory, "segments", name);
-  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(target), { recursive: true, mode: stateDirMode() });
   const temporary = `${target}.tmp-${process.pid}-${randomUUID()}`;
   const compressed = gzipSync(content);
   writeNewFile(temporary, compressed);
@@ -425,7 +426,7 @@ function sealActive(active: string, options: ResolvedSegmentOptions, now: Date):
     ],
   };
   const sealedManifest = join(directory, "manifests", `${String(sequence).padStart(8, "0")}.json`);
-  mkdirSync(dirname(sealedManifest), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(sealedManifest), { recursive: true, mode: stateDirMode() });
   writeNewFile(sealedManifest, Buffer.from(`${JSON.stringify(next)}\n`));
   atomicJson(join(directory, "manifest.json"), next);
   truncateRegularFile(active);
@@ -539,7 +540,7 @@ interface DirectoryIdentity {
 }
 
 function ensurePrivateDirectory(path: string): DirectoryIdentity {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
+  mkdirSync(path, { recursive: true, mode: stateDirMode() });
   return captureDirectoryIdentity(path);
 }
 
@@ -632,7 +633,7 @@ function writeNewFile(path: string, content: Buffer): void {
   const fd = openSync(
     path,
     fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag(),
-    0o600,
+    stateFileMode(),
   );
   try {
     assertOpenFileIdentity(path, fd, parent);

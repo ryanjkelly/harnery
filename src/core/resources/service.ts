@@ -14,6 +14,7 @@ import { hostname, platform } from "node:os";
 import { resolve } from "node:path";
 import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import {
   RESOURCE_SERVICE_STATUS_SCHEMA_VERSION,
   type ResourceSamplerState,
@@ -60,7 +61,7 @@ export async function spawnResourceService(
   }
   const intervalMs = normalizeInterval(options.intervalMs);
   const paths = resourcePaths(coordRoot);
-  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
   rmSync(paths.stop, { force: true });
   const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
   if (!existsSync(harnBin)) throw new Error(`cannot find harn executable at ${harnBin}`);
@@ -122,7 +123,7 @@ export function requestResourceServiceStop(coordRootRaw: string): ResourceServic
   const coordRoot = resolve(coordRootRaw);
   const paths = resourcePaths(coordRoot);
   const status = readResourceServiceStatus(coordRoot);
-  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
   writePrivateJsonAtomic(paths.stop, {
     requested_at: new Date().toISOString(),
     requested_by_pid: process.pid,
@@ -231,7 +232,7 @@ export async function runResourceService(
 
 function acquireLease(coordRoot: string, now: Date): ResourceServiceLease {
   const paths = resourcePaths(coordRoot);
-  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
   for (let attempt = 0; attempt < 2; attempt++) {
     const daemonStartToken = processStartToken(process.pid);
     const lease: ResourceServiceLease = {
@@ -242,7 +243,7 @@ function acquireLease(coordRoot: string, now: Date): ResourceServiceLease {
       created_at: now.toISOString(),
     };
     try {
-      const fd = openSync(paths.lease, "wx", 0o600);
+      const fd = openSync(paths.lease, "wx", stateFileMode());
       try {
         writeFileSync(fd, `${JSON.stringify(lease)}\n`, "utf8");
       } finally {

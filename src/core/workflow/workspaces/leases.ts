@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 
 const MAX_LEASE_BYTES = 8 * 1024;
 const MAX_CONTENTION_OBSERVATION_ATTEMPTS = 8;
@@ -202,11 +203,11 @@ function validateInput(input: AcquireNoClobberLeaseInput): void {
 }
 
 function ensureLeaseDirectory(leaseDir: string, onCreate?: () => void): void {
-  mkdirSync(dirname(leaseDir), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(leaseDir), { recursive: true, mode: stateDirMode() });
   let created = false;
   onCreate?.();
   try {
-    mkdirSync(leaseDir, { mode: 0o700 });
+    mkdirSync(leaseDir, { mode: stateDirMode() });
     created = true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -226,7 +227,7 @@ function createRecoveryClaim(
   observed: { owner: NoClobberLeaseOwner; bytes: string },
 ): void {
   const temporary = join(leaseDir, `recovery-claim-${claimant.owner_id}`);
-  mkdirSync(temporary, { mode: 0o700 });
+  mkdirSync(temporary, { mode: stateDirMode() });
   const claim: RecoveryClaim = {
     schema_version: 1,
     claimant,
@@ -385,7 +386,7 @@ function leaseHandle(
 }
 
 function writeExclusive(path: string, bytes: string): void {
-  const fd = openSync(path, "wx", 0o600);
+  const fd = openSync(path, "wx", stateFileMode());
   try {
     writeFileSync(fd, bytes, "utf8");
     fsyncSync(fd);

@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import { WorkspaceAttestationError } from "./attestation-error.ts";
 import {
   git,
@@ -323,7 +324,7 @@ function claimedParentSegment(claim: WorkspaceClaim): string {
 function hideWorkspaceParentFromGit(parent: string): void {
   const ignoreFile = join(parent, ".gitignore");
   if (existsSync(ignoreFile)) return;
-  writeFileSync(ignoreFile, "*\n", { mode: 0o600 });
+  writeFileSync(ignoreFile, "*\n", { mode: stateFileMode() });
 }
 
 function reconcileAllocation(
@@ -1908,7 +1909,7 @@ function capabilityDigestForClaim(claim: WorkspaceClaim): string {
 
 function acquireRepositoryLease(coordRoot: string, claim: WorkspaceClaim): () => void {
   const leaseDir = join(resolve(coordRoot), ".harnery", "workspaces", PROVIDER_ID, ".leases");
-  mkdirSync(leaseDir, { recursive: true, mode: 0o700 });
+  mkdirSync(leaseDir, { recursive: true, mode: stateDirMode() });
   // Mutual exclusion keys on the Git common directory alone. `git worktree add`,
   // `prune`, and the shared-`config` migration all write to the common directory's
   // administrative area, and once worktrees and submodules are allowed, several

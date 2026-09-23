@@ -33,6 +33,7 @@ import {
   coordFreshnessSeconds,
   resolveBinName,
 } from "../config.ts";
+import { stateFileMode } from "../storage/modes.ts";
 import {
   type ArtifactActivity,
   artifactRootEntries,
@@ -1068,7 +1069,7 @@ function atomicWriteManifest(path: string, manifest: ArtifactManifestV2, now = n
   try {
     writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`, {
       encoding: "utf8",
-      mode: 0o600,
+      mode: stateFileMode(),
       flag: "wx",
     });
     renameSync(tmp, target);
@@ -1143,7 +1144,7 @@ export function migrateArtifacts(
             };
           mkdirSync(dirname(preimagePath), { recursive: true });
           try {
-            writeFileSync(preimagePath, preimage, { flag: "wx", mode: 0o600 });
+            writeFileSync(preimagePath, preimage, { flag: "wx", mode: stateFileMode() });
           } catch (error) {
             if (
               (error as NodeJS.ErrnoException).code !== "EEXIST" ||
@@ -1287,7 +1288,7 @@ export function repairArtifactActivity(
               null,
               2,
             )}\n`,
-            { flag: "wx", mode: 0o600 },
+            { flag: "wx", mode: stateFileMode() },
           );
           const current = lstatSync(path);
           if (

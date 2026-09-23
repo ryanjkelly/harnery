@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { stateFileMode } from "../storage/modes.ts";
 import type { RunQualitySnapshot } from "./types.ts";
 
 export interface GuardCursor {
@@ -143,7 +144,7 @@ export function writeAtomicJson(
   try {
     writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
       encoding: "utf8",
-      mode: 0o600,
+      mode: stateFileMode(),
     });
     if (beforeRename && !beforeRename()) throw new Error("run_quality_lock_stolen");
     renameSync(temporary, path);
@@ -155,7 +156,7 @@ export function writeAtomicJson(
 function createExclusive(path: string, value: EvaluationLock): boolean {
   let fd: number | undefined;
   try {
-    fd = openSync(path, "wx", 0o600);
+    fd = openSync(path, "wx", stateFileMode());
     writeFileSync(fd, `${JSON.stringify(value)}\n`, "utf8");
     return true;
   } catch (error) {
