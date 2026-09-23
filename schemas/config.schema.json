@@ -225,7 +225,7 @@
           "type": "string",
           "enum": ["private", "group"],
           "default": "private",
-          "description": "private: state is 0700/0600, owner-only. group: 0770/0660 for several Unix users sharing the project directory's group (the directory must be setgid). Never opens state to other users. Env override: HARNERY_STORAGE_SHARING."
+          "description": "private: state is 0700/0600, owner-only. group: 2770/0660 for several Unix users sharing the project directory's group (the directory must be setgid). Never opens state to other users. Env override: HARNERY_STORAGE_SHARING."
         }
       }
     },

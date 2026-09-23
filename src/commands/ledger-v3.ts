@@ -33,6 +33,7 @@ import {
   verifyEventV3SupportTransactionShadow,
   writeEventV3SupportTransactionShadow,
 } from "../core/events/v3/support-storage/index.ts";
+import { stateDirMode } from "../core/storage/modes.ts";
 
 type SupportEvidence = Record<
   string,
@@ -272,7 +273,7 @@ export function registerLedgerV3Command(
           }
           const root = resolve(options.root ?? coordRoot(context));
           const transactions = transactionRoot(root);
-          mkdirSync(transactions, { recursive: true, mode: 0o700 });
+          mkdirSync(transactions, { recursive: true, mode: stateDirMode() });
           emit.data(
             await planEventV3SupportTransaction({
               transaction_root: transactions,

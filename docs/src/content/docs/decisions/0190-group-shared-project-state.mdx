@@ -30,7 +30,7 @@ can still share the files and commit; only coordination fails.
 ## Decision
 
 `src/core/storage/modes.ts` is the only source of state modes. `stateDirMode()` and
-`stateFileMode()` return `0700`/`0600` in private mode and `0770`/`0660` in group mode, and
+`stateFileMode()` return `0700`/`0600` in private mode and `2770`/`0660` in group mode (the directory keeps setgid because Harnery chmods directories after creating them, and a plain `0770` would clear the bit and let new files take their writer's group), and
 `stateModeTooOpen()` rejects group or other access in private mode and other access in group mode.
 Every core write and integrity check uses them, and `tests/unit/state-modes.test.ts` fails on any
 hard-coded owner-only mode added to core code.
@@ -51,5 +51,5 @@ user's home, is not project state and stays owner-only in both modes.
 
 Private mode is unchanged: the replacement was mechanical, and the existing storage and event
 tests pass against it. New tests cover the default, the project and environment settings, a
-user-global setting being ignored, a group-mode write landing at `0660` in a `0770` directory under
+user-global setting being ignored, a group-mode write landing at `0660` in a `2770` directory under
 a strict umask, and a private-mode write staying `0600`.

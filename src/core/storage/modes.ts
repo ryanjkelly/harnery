@@ -3,7 +3,7 @@
  *
  * `private` (the default) is owner-only: 0700 directories and 0600 files, exactly as before this
  * module existed. `group` is for a project several Unix users share through one group, such as a
- * workspace that several people's agents work in at once: 0770 and 0660, with nothing ever granted
+ * workspace that several people's agents work in at once: 2770 (setgid) and 0660, with nothing ever granted
  * to other users. Every state write takes its mode from here, and every integrity check that
  * rejects a loosely permissioned file asks `stateModeTooOpen`, so the two cannot disagree.
  *
@@ -30,9 +30,13 @@ export function resetStorageSharing(): void {
   resolved = undefined;
 }
 
-/** Mode for a directory of project state. */
+/**
+ * Mode for a directory of project state. Group mode includes setgid: Harnery chmods directories
+ * after creating them, and a plain 0770 would clear the bit, so files made inside would take the
+ * writer's own group instead of the project's, and other users could not read them.
+ */
 export function stateDirMode(): number {
-  return stateSharing() === "group" ? 0o770 : 0o700;
+  return stateSharing() === "group" ? 0o2770 : 0o700;
 }
 
 /** Mode for a file of project state. */

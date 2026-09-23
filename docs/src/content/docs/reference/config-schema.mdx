@@ -151,7 +151,7 @@ wait, freshness, and rollout contract.
 
 | Field     | Type   | Default   | Description |
 | --------- | ------ | --------- | ----------- |
-| `sharing` | string | `private` | `private` keeps every state directory `0700` and every state file `0600`, owned by whoever wrote it. `group` makes them `0770` and `0660`, so several Unix users who share the project directory's group can coordinate in one project. It never opens state to other users |
+| `sharing` | string | `private` | `private` keeps every state directory `0700` and every state file `0600`, owned by whoever wrote it. `group` makes them `2770` (setgid) and `0660`, so several Unix users who share the project directory's group can coordinate in one project. It never opens state to other users |
 
 Use `group` when agents running as different Unix users work in one checkout at the same time.
 The project directory must belong to the shared group and be setgid, so new state inherits the

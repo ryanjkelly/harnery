@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writePrivateJsonAtomic } from "./atomic-json.ts";
-import { resetStorageSharing, stateDirMode, stateFileMode, stateModeTooOpen, stateSharing } from "./modes.ts";
+import {
+  resetStorageSharing,
+  stateDirMode,
+  stateFileMode,
+  stateModeTooOpen,
+  stateSharing,
+} from "./modes.ts";
 
 let dir: string;
 let cwd: string;
@@ -28,7 +34,10 @@ afterEach(() => {
 });
 
 const project = (sharing: string) =>
-  writeFileSync(join(dir, ".harnery", "config.jsonc"), `{ // project\n "storage": { "sharing": "${sharing}" } }\n`);
+  writeFileSync(
+    join(dir, ".harnery", "config.jsonc"),
+    `{ // project\n "storage": { "sharing": "${sharing}" } }\n`,
+  );
 
 test("state is owner-only unless the project asks for group sharing", () => {
   expect(stateSharing()).toBe("private");
@@ -40,7 +49,7 @@ test("state is owner-only unless the project asks for group sharing", () => {
 test("group sharing opens state to the group and never to other users", () => {
   project("group");
   expect(stateSharing()).toBe("group");
-  expect([stateDirMode(), stateFileMode()]).toEqual([0o770, 0o660]);
+  expect([stateDirMode(), stateFileMode()]).toEqual([0o2770, 0o660]);
   expect(stateModeTooOpen(0o660)).toBe(false);
   expect(stateModeTooOpen(0o664)).toBe(true);
   expect(stateModeTooOpen(0o606)).toBe(true);
@@ -63,7 +72,10 @@ test("a user-global setting cannot loosen a project", () => {
   const home = mkdtempSync(join(tmpdir(), "harnery-modes-home-"));
   try {
     mkdirSync(join(home, ".config", "harnery"), { recursive: true });
-    writeFileSync(join(home, ".config", "harnery", "config.jsonc"), '{ "storage": { "sharing": "group" } }');
+    writeFileSync(
+      join(home, ".config", "harnery", "config.jsonc"),
+      '{ "storage": { "sharing": "group" } }',
+    );
     process.env.HOME = home;
     process.env.XDG_CONFIG_HOME = join(home, ".config");
     expect(stateSharing()).toBe("private");
@@ -81,6 +93,15 @@ test("in group mode a state write is group-readable and writable even under a st
   writePrivateJsonAtomic(path, { a: 1 });
   expect(statSync(path).mode & 0o777).toBe(0o660);
   expect(statSync(join(dir, ".harnery", "private", "x")).mode & 0o777).toBe(0o770);
+});
+
+test("in group mode a state directory keeps setgid after it is chmodded", () => {
+  project("group");
+  const sub = join(dir, ".harnery", "private", "z");
+  mkdirSync(sub, { recursive: true, mode: stateDirMode() });
+  chmodSync(sub, stateDirMode());
+  // Without setgid a file made here would take its writer's group, which other users cannot read.
+  expect(statSync(sub).mode & 0o2000).toBe(0o2000);
 });
 
 test("in private mode the same write stays owner-only", () => {

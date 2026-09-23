@@ -6,6 +6,9 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const CORE = join(import.meta.dir, "..", "..", "src", "core");
+const COMMANDS = join(import.meta.dir, "..", "..", "src", "commands");
+/** Commands whose private files live in the user's home or hold a credential, not project state. */
+const PERSONAL_COMMANDS = new Set(["browse.ts", "devtools.ts", "backup.ts"]);
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -22,5 +25,14 @@ test("core code never hard-codes an owner-only mode or check", () => {
         .filter(({ line }) => /\b0o(600|700)\b|&\s*0o077\b/.test(line))
         .map(({ f, i, line }) => `${f.slice(CORE.length + 1)}:${i + 1}: ${line.trim()}`),
     );
+  expect(offenders).toEqual([]);
+});
+
+test("commands take project-state modes from the same place", () => {
+  const offenders = readdirSync(COMMANDS)
+    .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !PERSONAL_COMMANDS.has(f))
+    .flatMap((f) => readFileSync(join(COMMANDS, f), "utf8").split("\n").map((line, i) => ({ f, i, line })))
+    .filter(({ line }) => /\b0o(600|700)\b|&\s*0o077\b/.test(line))
+    .map(({ f, i, line }) => `${f}:${i + 1}: ${line.trim()}`);
   expect(offenders).toEqual([]);
 });
