@@ -538,7 +538,8 @@ function publishCommandState(path: string, state: CommandRecorderStateV3): void 
 }
 
 function readCommandState(path: string): CommandRecorderStateV3 {
-  if (stateModeTooOpen(statSync(path).mode)) throw new Error("V3 command state is open to other users");
+  if (stateModeTooOpen(statSync(path).mode))
+    throw new Error("V3 command state is open to other users");
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
