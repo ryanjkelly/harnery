@@ -1,5 +1,102 @@
 # Changelog
 
+## 0.41.0
+
+### Minor Changes
+
+- 1040f84: Add `storage.sharing` to `.harnery/config.jsonc`. The default, `private`, keeps
+  project state owner-only as before. `group` writes state directories `2770` (setgid) and
+  files `0660`, so several Unix users who share the project directory's group can
+  coordinate in one project, and integrity checks accept group access while still
+  rejecting any access by other users. The setting is read from the project file
+  only; `HARNERY_STORAGE_SHARING` overrides it per process.
+- fa18ba6: Headed `browse` sessions (`--login`, `--headed`) now launch the operator's installed Google Chrome when one exists, drop Playwright's `--enable-automation` default, and disable Blink's AutomationControlled feature, so pages no longer see "Chrome for Testing" or `navigator.webdriver`. Sign-in flows that screened for automation and refused clicks in the headed window (X was the reported case) now behave as in a normal browser. New `--browser-channel <chrome|chrome-beta|msedge|chromium>` and `HARNERY_BROWSER_CHANNEL` choose the browser explicitly; headless runs keep the bundled Chromium. The `BrowserClient` gains `channel` and `hideAutomation` options. Headed sessions also run with the Chromium sandbox on (no `--no-sandbox` banner) and no longer add `--disable-gpu` under WSL, because software WebGL (SwiftShader) is itself a bot signal; `HARNERY_BROWSER_WSL_DISABLE_GPU=1` restores the flag for machines whose headed window paints blank without it. `HARNERY_BROWSER_NO_WSL_DEFAULTS` is removed. `browse --login --plain` spawns the installed Chrome with nothing attached, for sign-in verification steps that detect the DevTools protocol itself; the cookies land in the shared profile that later automated runs reuse. Every `browse`, `browse-session`, plain login, and `fetch` load now presents a normal Windows (macOS on a Mac) Chrome user agent at the launched Chrome's major version, never desktop Linux and never HeadlessChrome, because WAF rules deny those outright; the value is stored at `~/.cache/harnery/user-agent.json` and reused, `--user-agent <ua|auto|native>` manages it, and `HARNERY_BROWSER_UA` overrides per environment.
+- 200b420: Read pages at human pace by default. `browse`, `browse-ai`, `fetch`, and the headed browse-session verbs now wait a random 3 to 9 seconds between consecutive loads of the same registrable site, tracked in a shared machine-local ledger (`~/.cache/harnery/pace.json`) so separate processes queue behind each other instead of firing together. Different sites never wait on each other, and loopback, private-network, single-label, and reserved-suffix hosts (`.localhost`, `.local`, `.test`, `.internal`) are exempt so local development and page QA keep machine speed. Each command takes `--no-pace` for one run; `HARNERY_PACE=off` disables the gate machine-wide, and `HARNERY_PACE_MIN_MS`, `HARNERY_PACE_MAX_MS`, and `HARNERY_PACE_EXEMPT` tune it. The gate ships as the `harnery/lib/pace` toolkit export for hosts that load pages through their own clients.
+- 13b0d3c: `harn init` wires a set of adapters instead of exactly one. `--adapter` is
+  repeatable, accepts comma-separated ids, and accepts `all`. With no flag, init
+  wires every adapter whose CLI is installed on the machine, plus every adapter
+  the project already has wired; a machine with neither falls back to
+  claude-code. `--instructions-only` keeps its single-adapter scope.
+- af7ff21: Add first-class OpenCode (V2) support. OpenCode joins the workflow adapter
+  registry (`opencode run --format json` spawner, offline bench fixture, effort
+  validation) and the Event Ledger V3 adapter census with its own capability
+  profile. Because OpenCode V2 intercepts lifecycle events through an in-process
+  plugin rather than a settings-file hook map, the adapter spec carries an
+  install mode: `harn init --adapter opencode` installs the Harnery OpenCode
+  plugin (`opencode-plugin/`, copied to `.opencode/plugins/harnery/` under an
+  ownership header, auto-discovered so `opencode.json` is never edited) instead of
+  writing a hooks map, and skips the CLAUDE.md shim and skills mirror because
+  OpenCode reads `AGENTS.md` and `.agents/skills` natively. The plugin bridges
+  prompt, tool, permission, compaction, and session-bus events to `agent-hook
+--adapter opencode`, injects returned context through OpenCode's own channels,
+  rejects a denied tool call, and stamps `OPENCODE_SESSION_ID` into tool shells.
+  `init --check`, `deinit`, `doctor`, and the wiring summary understand the plugin
+  install mode, and every `--adapter` option accepts `opencode`. Stop verdicts
+  are observe-only for OpenCode, like Codex. This change adds an adapter
+  capability digest, so `harn init` archives the prior Event Ledger V3 epoch and
+  mints a new one; the three published digests stay byte-identical. Enforced Stop
+  re-prompting and SQLite-backed context telemetry are follow-ups.
+- 1752248: Add `webview`, a lightweight headless page probe through `Bun.WebView` (experimental, Bun 1.4+), as a Harnery command. It starts a fresh browser per call with ephemeral storage unless `--profile` is given, never attaches to a running user browser, scrolls before clicking, waits for same-URL replacement documents after actions, and takes the human-pace gate with `--no-pace`. On Node it fails with a clear `webview_unavailable` message, like `tunnel`. Embedding hosts that carried their own copy can delete it and take the command from `createHarneryProgram`. ADR 0185.
+- 8301d24: Show recorded lines added and removed in the agent status box for the turn being reported. Preserve counts after commits and label incomplete measurements. Run init after upgrading to refresh the event schema.
+
+### Patch Changes
+
+- 11cda98: Move per-adapter hook behavior out of the hook CLI and the V3 producer into
+  one module per adapter under `src/core/hooks/adapter/behaviors/`. Session-start
+  labels, sound and journal effects, prompt-context nudges, transcript discovery,
+  the Codex WSL bridge, and runtime-context retries are now looked up by adapter
+  id instead of decided by scattered equality checks. Event payloads, the ledger
+  schema, and capability digests are unchanged.
+- a59e90d: Accumulate command output counts and fingerprints in bounded memory, then record
+  one summary per stream at completion or process exit. Streaming output no longer
+  pays a durable ledger write for every emission. Forced termination can lose
+  unflushed output summaries; command start and completion retain their existing
+  durability.
+- 202eda9: Align driven Chromium client hints and navigator platform with the selected
+  desktop user agent, including initial popup documents. Headed browsing uses
+  the real window viewport unless a viewport is explicitly requested. Chrome
+  WebView probes now reuse the shared user-agent resolver.
+- f217dca: Detect a stored cursor-agent login for billing checks. The probe reads the
+  CLI's `auth.json` at the same location the CLI resolves (`CURSOR_CONFIG_DIR`,
+  then the platform config directory), so `harn doctor` and workflow billing no
+  longer report the Cursor login as unverifiable, and a `CURSOR_API_KEY` that
+  would override a subscription login is refused like the other adapters.
+- 87937e2: Recover Cursor Stop followup replies onto a derived remediation turn so afterAgentResponse can record the status box after the original turn has already closed. Pin Cursor Stop `loop_limit` to 2 on `harn init` so a missed box cannot retry five times.
+- a33f46a: Stamp Cursor's verified contract from a live cursor-agent 2026.09.18-9a7762b
+  attestation. Invocation, final result, and session id stayed supported; cost
+  stayed unsupported. The previous verified version was 2026.08.11-e8db854.
+- 6a4d306: Load the selected lazy command when a root option carries its value inline,
+  such as `--format=json`. The scanner now leaves the following command token in
+  place instead of mistaking it for a separate option value.
+- 3537939: Name `agents lifecycle active` in every refusal a continuing session hits after its generation ended: `whoami`, `status`, `set-task`, `identity assume`, and `heal` now point at the one command that opens a fresh generation instead of leaving the caller to guess.
+- 1a66671: Pace top-level document requests triggered by links, forms, scripts, popups and
+  session actions. Redirects share the original reservation; assets are not paced.
+  Block service workers while pacing is enabled so they cannot bypass the gate.
+- 12149f5: The OpenCode plugin prepends the project's `bin/` directory and an existing
+  Bun install directory to each tool shell's PATH, so bare project launchers
+  resolve in sessions whose server started from a minimal environment.
+- 289e298: Count the non-empty lines inside one `command.output_observed` chunk instead of
+  reporting one line per event, so a host can record a whole output body as a
+  single event without losing the line total.
+- 0fef7f6: Keep delayed Codex context observations on their original hook producer sequence
+  during approved session shutdown. This prevents finalization from introducing a
+  producer sequence gap that makes the shared event ledger unavailable.
+- 238d0a3: Re-attach the session-name display instruction as PostToolUse context on up to two ordinary tool results while the requested title stays pending. The fail-open gate from ADR 0182 stays; the reminder gives a model that skipped the block a second chance without a denial the transcript cannot support.
+- f8c1869: Fix session-name display checks for Claude Code transcripts that stream thinking before visible text. Keep tool access available with an explicit diagnostic when transcript evidence is missing or malformed, and preserve that unavailable state through Stop enforcement and V3 observations.
+- 26de7ea: Replace the seven copied platform-to-adapter normalizers with one shared
+  implementation next to the `Adapter` union. Three of the copies did not know
+  `opencode` and silently judged an OpenCode session as Claude Code in claim and
+  commit conflicts and in `agent-coord` repairs. Both adapter censuses are now
+  checked for completeness at compile time, an unrecognized platform value is
+  reported on stderr instead of being swallowed, and `harn checkpoint` accepts
+  every workflow adapter.
+- d315470: Reject recognizable inline shell polling waiters and delayed log-only checks in PreToolUse. Denials direct agents to existing task handles, immediate output reads, or reviewed scripts with deadlines and producer failure detection.
+
+  Allow delayed sed edits: sed's executable name alone does not establish that a command is only reading a log.
+
+- 4aaf523: Copy the browser Host to X-Forwarded-Host in the tunnel gate so upstream
+  origin checks can see the public tunnel hostname after the vhost rewrite.
+
 ## 0.40.0
 
 ### Minor Changes
