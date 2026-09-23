@@ -9,7 +9,7 @@ permissions:
   actions: read
   contents: write
   pull-requests: write
-  id-token: write   # for npm provenance attestation
+  id-token: write   # npm trusted publishing: the OIDC token is the only publish credential
 
 concurrency:
   group: release-${{ github.ref }}
@@ -19,9 +19,6 @@ jobs:
     name: Publish via changesets
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Map the secret to a job-level env so the publish step can be gated on it.
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -32,11 +29,14 @@ jobs:
         with:
           bun-version: 1.4.0
 
+      # Trusted publishing needs npm 11.5.1 or later, which Node 24 ships. npm exchanges this job's
+      # OIDC token for a short-lived publish token on its own; no npm token exists anywhere.
       - name: Setup Node (for npm publish)
         uses: actions/setup-node@v6
         with:
-          node-version: "20.19"
+          node-version: "24.21"
           registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -75,25 +75,35 @@ jobs:
             sleep 15
           done
 
-      # Skips cleanly (job stays green) until an NPM_TOKEN secret is configured.
-      # Set NPM_TOKEN in repo secrets when you're ready to publish to npm.
-      - name: Create release PR or publish
+      # Opens or updates the release PR while changesets are pending. Publishing is its own step
+      # below, so npm itself handles the trusted-publishing exchange rather than the action.
+      - name: Create or update the release PR
         id: changesets
-        if: ${{ env.NPM_TOKEN != '' }}
         uses: changesets/action@v1
         with:
-          # The publish command runs only after merging the release PR that
-          # changesets opens. Until then, this step only opens/updates the PR.
-          publish: bun x changeset publish
           version: bun x changeset version
           commit: "chore(release): version bump + changelog"
           title: "chore(release): version bump + changelog"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # setup-node writes an .npmrc that reads NODE_AUTH_TOKEN; without this
-          # the publish PUT goes out unauthenticated and npm returns a 404.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # With no changesets pending, main holds a released version. Publish it if npm does not have it
+      # yet; a push that changed nothing publishable does nothing.
+      - name: Publish an unpublished version
+        id: publish
+        if: ${{ steps.changesets.outputs.hasChangesets == 'false' }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          if npm view "harnery@$version" version --prefer-online >/dev/null 2>&1; then
+            echo "harnery@$version is already on npm; nothing to publish."
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          npm --version
+          bun x changeset publish
+          git push origin --tags
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
       # `changeset publish` reports success whenever `npm publish` exits 0, and it prints nothing of
       # npm's own output on success. A publish once reported success for a version the registry
@@ -101,7 +111,7 @@ jobs:
       # debug logs are kept either way. npm can take several minutes to serve a new version (about
       # seven for 0.41.0), so the check waits up to 15.
       - name: Verify the published version is on the registry
-        if: ${{ env.NPM_TOKEN != '' && steps.changesets.outputs.published == 'true' }}
+        if: ${{ steps.publish.outputs.published == 'true' }}
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
@@ -117,7 +127,7 @@ jobs:
           exit 1
 
       - name: Keep npm's debug logs
-        if: ${{ always() && env.NPM_TOKEN != '' }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: npm-logs
