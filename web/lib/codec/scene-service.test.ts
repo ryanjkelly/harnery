@@ -142,6 +142,29 @@ describe("Codec scene service", () => {
     connection.close();
   });
 
+  test("reprojects time-based card state with connected subscribers and unchanged files", async () => {
+    let builds = 0;
+    const service = createCodecSceneService({
+      eventPaths: () => [],
+      fingerprint: () => "unchanged",
+      refreshMs: 10,
+      maxAgeMs: 25,
+      build: async () => scene(`scene-${++builds}`),
+    });
+    services.push(service);
+    const updates: CodecScene[] = [];
+    const connection = await service.connect(
+      (next) => updates.push(next),
+      () => {},
+    );
+
+    await Bun.sleep(70);
+
+    expect(builds).toBeGreaterThan(1);
+    expect(updates.length).toBeGreaterThan(0);
+    connection.close();
+  });
+
   test("polls source metadata and rebuilds after a missed watcher event", async () => {
     let builds = 0;
     let sourceSignature = "one";

@@ -13,6 +13,9 @@ import type { CodecScene } from "./contracts";
 import { buildScene, eventsFilePaths } from "./scene-source";
 
 const SCENE_REFRESH_MS = 5_000;
+// Source files can stay unchanged while a panel crosses a freshness or
+// retention boundary. Reproject periodically even with connected subscribers.
+const SCENE_MAX_AGE_MS = 30_000;
 const GLOBAL_SERVICE_KEY = "__harneryCodecSceneServiceV1" as const;
 
 interface CodecSceneSubscriber {
@@ -38,6 +41,7 @@ interface CodecSceneServiceState {
   fingerprint: (paths: string[]) => string;
   watch: typeof fs.watch;
   refreshMs: number;
+  maxAgeMs: number;
 }
 
 export interface CodecSceneConnection {
@@ -61,6 +65,7 @@ export interface CodecSceneServiceOptions {
   fingerprint?: (paths: string[]) => string;
   watch?: typeof fs.watch;
   refreshMs?: number;
+  maxAgeMs?: number;
 }
 
 function freshState(options: CodecSceneServiceOptions): CodecSceneServiceState {
@@ -78,6 +83,7 @@ function freshState(options: CodecSceneServiceOptions): CodecSceneServiceState {
     fingerprint: options.fingerprint ?? codecSourceFingerprint,
     watch: options.watch ?? fs.watch,
     refreshMs: options.refreshMs ?? SCENE_REFRESH_MS,
+    maxAgeMs: options.maxAgeMs ?? SCENE_MAX_AGE_MS,
   };
 }
 
@@ -186,6 +192,7 @@ async function currentScene(state: CodecSceneServiceState): Promise<CodecScene> 
   if (
     state.scene &&
     !state.dirty &&
+    Date.now() - state.builtAtMs < state.maxAgeMs &&
     (state.subscribers.size > 0 || Date.now() - state.builtAtMs <= state.refreshMs)
   ) {
     return state.scene;
@@ -213,7 +220,12 @@ function startService(state: CodecSceneServiceState): void {
 
   state.pollTimer = setInterval(() => {
     const sourceSignature = state.fingerprint(state.eventPaths());
-    if (sourceSignature !== state.sourceSignature) markDirtyAndSchedule(state);
+    if (
+      sourceSignature !== state.sourceSignature ||
+      Date.now() - state.builtAtMs >= state.maxAgeMs
+    ) {
+      markDirtyAndSchedule(state);
+    }
   }, state.refreshMs);
 }
 

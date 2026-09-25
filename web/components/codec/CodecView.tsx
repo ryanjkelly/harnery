@@ -84,6 +84,7 @@ import {
 } from "@/lib/codec/semantic-usage";
 import { summarizeCodecTeam } from "@/lib/codec/team-summary";
 import { useLiveSignal } from "@/lib/useLiveSignal";
+import { CodecCardAudit } from "./CodecCardAudit";
 import { CodecDurationStrip } from "./CodecDurationStrip";
 import { CodecEffectsLayer } from "./CodecEffectsLayer";
 import { CodecRuntimeStrip } from "./CodecRuntimeStrip";
@@ -559,6 +560,7 @@ export function CodecView({
             onToggleFullscreen={toggleFullscreen}
           />
         </div>
+        {mode === "live" && <CodecCardAudit scene={scene} />}
       </div>
 
       {panels.length === 0 ? (

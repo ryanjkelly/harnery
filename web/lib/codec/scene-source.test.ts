@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +7,7 @@ import { buildEventV3 } from "../../../src/core/events/v3/builder";
 import { attestationIdV3, eventIdV3, generationIdV3 } from "../../../src/core/events/v3/ids";
 import { type LiveDisplayRowV3, writeLiveDisplayV3 } from "../../../src/core/events/v3/live-feed";
 import { eventV3Fixture } from "../../../tests/helpers/event-v3";
+import { __resetCoordRootCache } from "../coord-reader";
 import {
   CODEC_SCHEMA_VERSION,
   type CodecScene,
@@ -15,6 +16,7 @@ import {
 } from "./contracts";
 import {
   applyLiveFeedOverlay,
+  eventsFilePaths,
   listCachedLiveDisplayForCodec,
   mergeRemotePanels,
   readIncrementalSanitizedTail,
@@ -34,7 +36,25 @@ function fixtureLine(eventType: string, sequence: number): { eventId: string; li
 }
 
 afterEach(() => {
+  __resetCoordRootCache();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+test("Codec watches generation-bound heartbeat cache changes", () => {
+  const root = mkdtempSync(join(tmpdir(), "codec-source-paths-"));
+  roots.push(root);
+  const active = join(root, ".harnery", "active");
+  mkdirSync(active, { recursive: true });
+  const priorRoot = process.env.HARNERY_COORD_ROOT;
+  try {
+    process.env.HARNERY_COORD_ROOT = root;
+    __resetCoordRootCache();
+    expect(eventsFilePaths()).toContain(active);
+  } finally {
+    if (priorRoot === undefined) delete process.env.HARNERY_COORD_ROOT;
+    else process.env.HARNERY_COORD_ROOT = priorRoot;
+    __resetCoordRootCache();
+  }
 });
 
 describe("Codec V3 ledger tail", () => {

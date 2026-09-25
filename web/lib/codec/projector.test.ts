@@ -221,7 +221,7 @@ describe("projectScene", () => {
     expect(a).toBe(b);
   });
 
-  test("stale leftover heartbeats are omitted; session.ended still yields offline", () => {
+  test("stale leftover heartbeats and ended sessions leave Codec", () => {
     const staleHb = hb({ age_seconds: 900 });
     const noEnd = projectScene({ snapshot: snapshot([], [staleHb]), events: [], now: NOW });
     expect(noEnd.panels).toHaveLength(0);
@@ -235,8 +235,7 @@ describe("projectScene", () => {
       ],
       now: NOW,
     });
-    expect(ended.panels[0]?.presence).toMatchObject({ value: "offline", provenance: "event" });
-    expect(ended.team_ambience.value).toBe("calm");
+    expect(ended.panels).toHaveLength(0);
 
     // A restart after the recorded end must not read as offline.
     const restarted = projectScene({
@@ -708,15 +707,13 @@ describe("projectScene", () => {
     expect(q.activity).toMatchObject({ value: "working", provenance: "event" });
     expect(q.identity.task?.value).toBe("Review fixes");
 
-    // With a session.ended as the newest lifecycle signal, the panel reads
-    // offline instead of online.
+    // A completed generation no longer occupies an evidence-only tile.
     const endedScene = projectScene({
       snapshot: snapshot([]),
       events: [...events, ev({ event_type: "session.ended", ts: "2026-08-16T10:04:00.000Z" })],
       now: NOW,
     });
-    expect(endedScene.panels[0]?.presence.value).toBe("offline");
-    expect(endedScene.panels[0]?.activity.value).toBe("idle");
+    expect(endedScene.panels).toHaveLength(0);
   });
 
   test("stale-sweep observations never resurrect a dormant instance as online", () => {
@@ -989,7 +986,7 @@ describe("projectScene", () => {
     expect(child?.parent_instance_id?.value).toBe("inst-parent");
   });
 
-  test("terminal ledger snapshots render offline within the evidence window", () => {
+  test("terminal ledger snapshots leave Codec immediately", () => {
     const scene = projectScene({
       snapshot: snapshot(
         [],
@@ -1014,19 +1011,20 @@ describe("projectScene", () => {
       ],
       now: NOW,
     });
-    expect(scene.panels).toHaveLength(1);
-    expect(scene.panels[0]?.presence.value).toBe("offline");
-    expect(scene.panels[0]?.ledger_state?.value).toBe("terminal");
-    expect(scene.panels[0]?.timing).toMatchObject({
-      value: {
-        session_duration_ms: 240_000,
-        boundary_source: "heartbeat",
-        session_active: false,
-        current_bucket: "stopped",
-      },
-      provenance: "projection",
-      confidence: "medium",
-    });
+    expect(scene.panels).toHaveLength(0);
+  });
+
+  test("session end removes a fresh leftover cache but a later heartbeat can restore it", () => {
+    const ended = ev({ event_type: "session.ended", ts: "2026-08-16T10:04:00.000Z" });
+    const oldCache = hb({ last_heartbeat: "2026-08-16T10:03:59.000Z", age_seconds: 61 });
+    expect(
+      projectScene({ snapshot: snapshot([oldCache]), events: [ended], now: NOW }).panels,
+    ).toHaveLength(0);
+
+    const resumedCache = hb({ last_heartbeat: "2026-08-16T10:04:30.000Z", age_seconds: 30 });
+    expect(
+      projectScene({ snapshot: snapshot([resumedCache]), events: [ended], now: NOW }).panels,
+    ).toHaveLength(1);
   });
 
   test("recovery-required ledger state presents as recovering", () => {

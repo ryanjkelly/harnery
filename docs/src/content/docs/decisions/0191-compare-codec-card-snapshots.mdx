@@ -1,0 +1,50 @@
+---
+title: "0191: Compare Codec card snapshots with current agent state"
+description: "Keep card diagnostics in the browser, compare with a fresh coordination read, and remove ended generations from Codec."
+---
+
+**Status:** accepted (2026-09-25) · **Scope:** dashboard Codec
+
+## Context
+
+Codec projects cards from disposable generation-bound heartbeat caches and a bounded event tail.
+The authoritative agent read uses the validated coordination view. Those paths can disagree while
+a cache is catching up, and an operator needs the exact card values to diagnose a discrepancy.
+
+The projector also retained ended sessions for 30 minutes. The shared scene service rebuilt only
+when a watched file changed, so a connected tab could keep a time-dependent projection even after
+its retention window elapsed.
+
+## Alternatives considered
+
+- Make every Codec refresh use the full authoritative agent reader. Rejected because Codec's
+  frequent scene builds deliberately use bounded, cheap inputs; the full reader is appropriate
+  for an operator-requested comparison.
+- Save snapshots in the coordination ledger. Rejected because card diagnostics are presentation
+  evidence, not agent events or authority. A browser-local history and downloadable JSON report
+  preserve the evidence without adding a ledger writer to Codec.
+- Keep ended cards for a shorter fixed period. Rejected because an ended or terminal generation
+  should leave the live director when that fact is known.
+
+## Decision
+
+The live Codec page captures the card fields currently rendered and posts them to
+`/api/codec-audit`. The route reads the current coordination view once and compares presence,
+activity, declared task, lifecycle, and terminal ledger state. It reports unknown or event-only
+cards as unverified instead of asserting a false mismatch. Remote cards are included in the
+download but must be checked on their source machine. The browser keeps the latest 10 reports in
+local storage and can download any report as JSON. Neither the comparison nor the capture changes
+agent state.
+
+`projectScene` omits terminal generations and sessions whose end event is newer than their last
+start and heartbeat. A newer heartbeat may restore a restarted session. The shared scene service
+watches the generation-bound heartbeat cache as well as the event ledger and reprojects at least
+every 30 seconds even if its source fingerprint is unchanged. Cache edits and age-based decisions
+then reach connected tabs without a page reload.
+
+## Result
+
+Focused tests cover capture, authority aliases, individual field differences, unavailable
+authority, terminal and ended-card removal, restart after an end event, and refresh with unchanged
+files. The comparison describes only the fields Harnery currently knows; semantic interpretation,
+portrait expression, and remote relay state remain outside the authority comparison.

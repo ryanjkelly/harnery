@@ -638,12 +638,16 @@ export interface ProjectSceneInputs {
   now?: string;
 }
 
-function staleHeartbeatIsRecentlyEnded(ev: InstanceEvidence | undefined, nowMs: number): boolean {
+function heartbeatGenerationEnded(hb: Heartbeat, ev: InstanceEvidence | undefined): boolean {
+  if (hb.ledger_state === "terminal") return true;
   const endTs = ms(ev?.lastSessionEnded?.ts);
   const startTs = ms(ev?.lastSessionStarted?.ts);
-  if (!ev?.lastSessionEnded || !Number.isFinite(endTs)) return false;
-  if (Number.isFinite(startTs) && endTs <= startTs) return false;
-  return nowMs - endTs <= EVIDENCE_PANEL_WINDOW_MS;
+  const heartbeatTs = ms(hb.last_heartbeat);
+  return (
+    Number.isFinite(endTs) &&
+    (!Number.isFinite(startTs) || endTs > startTs) &&
+    (!Number.isFinite(heartbeatTs) || endTs >= heartbeatTs)
+  );
 }
 
 /**
@@ -756,28 +760,22 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   }
 
   const panels: CodecPanelScene[] = [];
-  // Live heartbeats always render. A V3 authority-live generation remains an
-  // authoritative session when its observation grows stale. Keep it as presence
-  // unknown instead of making the panel disappear. Unbound stale cache files
-  // are leftovers unless a recent session.ended puts them in Recently ended.
-  // Recent work without a fresh heartbeat still surfaces through the
-  // evidence-backed path below.
+  // A terminal generation leaves Codec on the next projection. A stale live
+  // authority row remains visible as unknown; a disposable stale cache row
+  // alone is not enough to keep a card. Recent work without a heartbeat still
+  // surfaces through the evidence-backed path below.
   const rows: Array<{ hb: Heartbeat; isActive: boolean }> = [
-    ...inputs.snapshot.active.map((hb) => ({ hb, isActive: true })),
+    ...inputs.snapshot.active
+      .filter((hb) => !heartbeatGenerationEnded(hb, evidence.get(hb.instance_id)))
+      .map((hb) => ({ hb, isActive: true })),
     ...inputs.snapshot.stale
       .filter(
         (hb) =>
-          hb.ledger_state === "live" ||
-          hb.ledger_state === "ending" ||
-          hb.ledger_state === "recovery-required" ||
-          staleHeartbeatIsRecentlyEnded(evidence.get(hb.instance_id), nowMs),
+          !heartbeatGenerationEnded(hb, evidence.get(hb.instance_id)) &&
+          (hb.ledger_state === "live" ||
+            hb.ledger_state === "ending" ||
+            hb.ledger_state === "recovery-required"),
       )
-      .map((hb) => ({ hb, isActive: false })),
-    ...inputs.snapshot.terminal
-      .filter((hb) => {
-        const lastTs = ms(hb.last_heartbeat);
-        return Number.isFinite(lastTs) && nowMs - lastTs <= EVIDENCE_PANEL_WINDOW_MS;
-      })
       .map((hb) => ({ hb, isActive: false })),
   ];
 
@@ -863,22 +861,27 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   // never registered) but whose canonical events are still live must not
   // vanish mid-work. Leftover named sessions without recent work are noise.
   const paneled = new Set(panels.map((p) => p.instance_id));
+  const terminalIds = new Set(
+    inputs.snapshot.terminal.flatMap((hb) => [hb.instance_id, hb.v3_instance_id ?? hb.instance_id]),
+  );
   for (const [instanceId, ev] of evidence) {
     if (paneled.has(instanceId)) continue;
+    if (terminalIds.has(instanceId)) continue;
     const lastTs = ms(ev.lastEventTs);
     if (!Number.isFinite(lastTs) || nowMs - lastTs > EVIDENCE_PANEL_WINDOW_MS) continue;
     const hasWork = Boolean(ev.lastTaskChanged || ev.lastTurnStarted || ev.actionsFull.length > 0);
     const endTs = ms(ev.lastSessionEnded?.ts);
-    const ended = ev.lastSessionEnded !== undefined && Number.isFinite(endTs) && endTs >= lastTs;
-    if (!hasWork && !ended) continue;
+    const startTs = ms(ev.lastSessionStarted?.ts);
+    const ended =
+      ev.lastSessionEnded !== undefined &&
+      Number.isFinite(endTs) &&
+      (!Number.isFinite(startTs) || endTs > startTs);
+    if (!hasWork || ended) continue;
     // Quiet leftovers are not live Codec tiles. Non-ended evidence older than
     // the online window used to render as presence=unknown and refill the grid.
     if (!ended && nowMs - lastTs > EVIDENCE_ONLINE_WINDOW_MS) continue;
-    const evPresence: Presented<CodecPresence> = ended
-      ? present("offline", "event", "high", ev.lastSessionEnded?.ts ?? now, [
-          ev.lastSessionEnded?.event_id ?? "",
-        ])
-      : nowMs - lastTs <= EVIDENCE_ONLINE_WINDOW_MS
+    const evPresence: Presented<CodecPresence> =
+      nowMs - lastTs <= EVIDENCE_ONLINE_WINDOW_MS
         ? present("online", "event", "medium", ev.lastEventTs ?? now)
         : present("unknown", "unknown", "low", ev.lastEventTs ?? now);
     const evActivity: Presented<CodecActivity> = ev.activityEvidence

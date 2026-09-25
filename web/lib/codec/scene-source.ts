@@ -494,6 +494,10 @@ export function eventsFilePaths(): string[] {
   const root = coordRoot();
   const paths = eventV3Paths(root);
   const watched = [paths.active, paths.catalog];
+  // Task, activity, and native identity can change in the disposable
+  // generation-bound cache without appending a new ledger row.
+  const heartbeatRoot = path.join(root, ".harnery", "active");
+  if (fs.existsSync(heartbeatRoot)) watched.push(heartbeatRoot);
   const liveRoot = path.join(root, EVENT_V3_LIVE_RELATIVE_ROOT);
   if (fs.existsSync(liveRoot)) watched.push(liveRoot);
   return watched;
