@@ -1014,6 +1014,15 @@ describe("projectScene", () => {
     expect(scene.panels).toHaveLength(0);
   });
 
+  test("event evidence cannot recreate a terminal row from the active snapshot", () => {
+    const scene = projectScene({
+      snapshot: snapshot([hb({ ledger_state: "terminal" })]),
+      events: [ev({ event_type: "turn.started", ts: "2026-08-16T10:04:00.000Z" })],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(0);
+  });
+
   test("session end removes a fresh leftover cache but a later heartbeat can restore it", () => {
     const ended = ev({ event_type: "session.ended", ts: "2026-08-16T10:04:00.000Z" });
     const oldCache = hb({ last_heartbeat: "2026-08-16T10:03:59.000Z", age_seconds: 61 });

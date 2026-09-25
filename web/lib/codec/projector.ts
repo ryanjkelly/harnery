@@ -862,7 +862,9 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   // vanish mid-work. Leftover named sessions without recent work are noise.
   const paneled = new Set(panels.map((p) => p.instance_id));
   const terminalIds = new Set(
-    inputs.snapshot.terminal.flatMap((hb) => [hb.instance_id, hb.v3_instance_id ?? hb.instance_id]),
+    [...inputs.snapshot.active, ...inputs.snapshot.stale, ...inputs.snapshot.terminal]
+      .filter((hb) => hb.ledger_state === "terminal")
+      .flatMap((hb) => [hb.instance_id, hb.v3_instance_id ?? hb.instance_id]),
   );
   for (const [instanceId, ev] of evidence) {
     if (paneled.has(instanceId)) continue;
