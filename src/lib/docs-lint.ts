@@ -166,9 +166,14 @@ function findMarkdownFiles(view: DocsRepositoryView): string[] {
     );
 }
 
-/** Detect whether a file declares itself an intentional monolith */
-function isDeclaredMonolith(content: string): boolean {
-  const head = content.split("\n").slice(0, 10).join("\n");
+/**
+ * Detect whether a file declares itself an intentional monolith. The banner
+ * must sit in the first 10 lines of the body; leading YAML frontmatter does
+ * not count toward those lines, since a v2 header alone can fill them.
+ */
+export function isDeclaredMonolith(content: string): boolean {
+  const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
+  const head = body.split("\n").slice(0, 10).join("\n");
   return /INTENTIONAL-MONOLITH/i.test(head);
 }
 
