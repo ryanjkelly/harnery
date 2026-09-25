@@ -164,8 +164,6 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     switch (ev.event_type) {
       case "session.started":
       case "session.resumed":
-      case "agent.delegated":
-      case "agent.started":
         setActivity("idle");
         break;
       case "turn.started":
@@ -215,7 +213,7 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
       case "agent.started":
         // A child-agent event lands on the parent instance: it seeds rhythm
         // and opens coordination
-        // evidence, but it is NOT the parent's session lifecycle.
+        // evidence, but it is not the parent's activity or session lifecycle.
         slot.lastTurnOrSessionStarted = ev;
         slot.openSubagents += 1;
         break;

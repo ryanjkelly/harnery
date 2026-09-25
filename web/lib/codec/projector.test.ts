@@ -63,6 +63,19 @@ beforeEach(() => {
 });
 
 describe("projectScene", () => {
+  test("delegating a child does not turn a working parent idle", () => {
+    const scene = projectScene({
+      snapshot: snapshot([hb({ activity_updated_at: "2026-08-16T10:04:00.000Z" })]),
+      events: [
+        ev({ event_type: "tool.requested", ts: "2026-08-16T10:04:01.000Z" }),
+        ev({ event_type: "agent.delegated", ts: "2026-08-16T10:04:02.000Z" }),
+        ev({ event_type: "agent.started", ts: "2026-08-16T10:04:03.000Z" }),
+      ],
+      now: NOW,
+    });
+    expect(scene.panels[0]?.activity).toMatchObject({ value: "working", provenance: "event" });
+  });
+
   test("cold bootstrap from the snapshot alone renders evidence-safe panels", () => {
     const scene = projectScene({
       snapshot: snapshot([
