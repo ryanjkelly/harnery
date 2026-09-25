@@ -145,6 +145,15 @@ export interface QaRunCritiqueLatency {
   p95: number;
 }
 
+/** Wall time for one tile's complete vision call, including provider retries
+ * and failover. Reused and unjudged tiles have no call and no timing entry. */
+export interface QaRunCritiqueTileTiming {
+  context_id: string;
+  tile_id: string;
+  duration_ms: number;
+  outcome: "passed" | "failed";
+}
+
 /** What share of the page the critique tiles covered, lifted from the browse
  * envelope. `capped` means the tiler dropped bands past its per-context
  * maximum; in signoff mode that is a blocker, in review mode a flag. Across
@@ -188,6 +197,8 @@ export interface QaRunCritiquePool {
   wall_time_ms: number;
   provider: string;
   latency_ms?: Record<string, QaRunCritiqueLatency>;
+  /** One entry per attempted tile, in context and tile order. */
+  tile_timings?: QaRunCritiqueTileTiming[];
 }
 
 /** Where the run's page review pack lives: the on-disk evidence an agent can

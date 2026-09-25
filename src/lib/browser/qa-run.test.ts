@@ -812,13 +812,15 @@ describe("runQaMatrix", () => {
         },
       },
     });
+    const parent = outDir();
     const result = await runQaMatrix({
       job: job(),
-      outParent: outDir(),
+      outParent: parent,
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
       critiqueProvider: fake.provider,
       snapshotStore: { root: fake.snapshotRoot },
+      runId: "tile-timing",
     });
     expect(result.critique).toHaveLength(1);
     expect(result.critique_pool?.latency_ms).toEqual({
@@ -826,6 +828,23 @@ describe("runQaMatrix", () => {
     });
     expect(result.critique_pool?.tiles_total).toBe(3);
     expect(result.critique_pool?.tiles_reviewed).toBe(3);
+    expect(result.critique_pool?.tile_timings).toHaveLength(3);
+    expect(
+      result.critique_pool?.tile_timings?.map(
+        ({ context_id, tile_id }) => `${context_id}/${tile_id}`,
+      ),
+    ).toEqual([
+      "desktop-light-default/T001",
+      "desktop-light-default/T002",
+      "desktop-light-default/T003",
+    ]);
+    expect(result.critique_pool?.tile_timings?.every((timing) => timing.duration_ms >= 0)).toBe(
+      true,
+    );
+    const persisted = JSON.parse(
+      readFileSync(join(parent, "run-tile-timing", QA_RUN_RESULT_FILENAME), "utf8"),
+    );
+    expect(persisted.critique_pool.tile_timings).toEqual(result.critique_pool?.tile_timings);
   });
 
   test("the critique pool omits latency_ms when the provider reported none", async () => {

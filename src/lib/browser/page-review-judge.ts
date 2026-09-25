@@ -25,6 +25,7 @@ import {
 } from "./page-review-pack.js";
 import type { QaContext } from "./qa-plan.js";
 import type { CritiqueReusePlan } from "./qa-reuse.js";
+import type { QaRunCritiqueTileTiming } from "./qa-run-contracts.js";
 import { loadQaSnapshot, type QaSnapshotStoreOptions } from "./qa-snapshot.js";
 
 export interface JudgePageReviewPackOptions {
@@ -62,6 +63,7 @@ export interface JudgedContext extends PageReviewCritiqueRecord {
 export interface JudgePageReviewPackResult {
   contexts: JudgedContext[];
   pool: { concurrency: number; wall_time_ms: number; provider: string };
+  tile_timings: QaRunCritiqueTileTiming[];
   tiles_total: number;
   tiles_reviewed: number;
   tiles_reused: number;
@@ -261,6 +263,7 @@ export async function judgePageReviewPack(
 
   let meta: Record<string, unknown> | undefined;
   let concurrency = 0;
+  const tileTimings: Array<QaRunCritiqueTileTiming | undefined> = new Array(work.length);
   if (provider && work.length > 0) {
     concurrency = Math.max(
       1,
@@ -277,12 +280,15 @@ export async function judgePageReviewPack(
         const entry = perContext[item.contextIndex];
         if (!entry) continue;
         entry.judged.add(item.tile.id);
+        const tileStarted = performance.now();
+        let tileOutcome: QaRunCritiqueTileTiming["outcome"] = "passed";
         try {
           const found = await provider({ url: item.url, rubric: item.rubric, tile: item.tile });
           for (const finding of found) {
             entry.findings.push({ ...finding, tile: item.tile.index, tile_id: item.tile.id });
           }
         } catch (err: unknown) {
+          tileOutcome = "failed";
           entry.findings.push({
             tile: item.tile.index,
             tile_id: item.tile.id,
@@ -290,6 +296,13 @@ export async function judgePageReviewPack(
             category: "provider-error",
             description: `critique provider failed on ${item.tile.label}: ${err instanceof Error ? err.message : String(err)}`,
           });
+        } finally {
+          tileTimings[i] = {
+            context_id: entry.record.id,
+            tile_id: item.tile.id,
+            duration_ms: Math.max(0, Math.round(performance.now() - tileStarted)),
+            outcome: tileOutcome,
+          };
         }
       }
     };
@@ -360,6 +373,9 @@ export async function judgePageReviewPack(
   return {
     contexts,
     pool: { concurrency, wall_time_ms: Date.now() - started, provider: label },
+    tile_timings: tileTimings.filter(
+      (timing): timing is QaRunCritiqueTileTiming => timing !== undefined,
+    ),
     tiles_total: tilesTotal,
     tiles_reviewed: tilesReviewed,
     tiles_reused: tilesReused,

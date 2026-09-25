@@ -185,6 +185,7 @@ export {
   type QaRunContext,
   type QaRunCritiqueOutcome,
   type QaRunCritiquePool,
+  type QaRunCritiqueTileTiming,
   type QaRunInteraction,
   type QaRunJob,
   type QaRunJobValidation,

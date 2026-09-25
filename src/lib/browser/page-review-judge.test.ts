@@ -120,6 +120,20 @@ describe("judgePageReviewPack", () => {
     ]);
     expect(result.contexts[0]?.tiles_reviewed).toBe(3);
     expect(result.contexts[1]?.tiles_reviewed).toBe(2);
+    expect(
+      result.tile_timings.map(({ context_id, tile_id, outcome }) => ({
+        context_id,
+        tile_id,
+        outcome,
+      })),
+    ).toEqual([
+      { context_id: "desktop-light-default", tile_id: "T001", outcome: "passed" },
+      { context_id: "desktop-light-default", tile_id: "T002", outcome: "passed" },
+      { context_id: "desktop-light-default", tile_id: "T003", outcome: "passed" },
+      { context_id: "mobile-light-default", tile_id: "T001", outcome: "passed" },
+      { context_id: "mobile-light-default", tile_id: "T002", outcome: "passed" },
+    ]);
+    expect(result.tile_timings.every((timing) => timing.duration_ms >= 1)).toBe(true);
     const records = toCritiqueRecords(result);
     expect("record" in (records[0] ?? {})).toBe(false);
     expect("tiles_unjudged" in (records[0] ?? {})).toBe(false);
@@ -134,6 +148,7 @@ describe("judgePageReviewPack", () => {
     expect(result.contexts[0]?.error).toContain("critiqueProvider");
     expect(result.contexts[0]?.provider).toBe("none");
     expect(result.pool.concurrency).toBe(0);
+    expect(result.tile_timings).toEqual([]);
   });
 
   test("a provider throw on one tile becomes a high provider-error finding for that tile only", async () => {
@@ -154,6 +169,12 @@ describe("judgePageReviewPack", () => {
         description: "critique provider failed on band 3: harness exited 1",
       },
     ]);
+    expect(result.tile_timings).toHaveLength(3);
+    expect(result.tile_timings[2]).toMatchObject({
+      context_id: "desktop-light-default",
+      tile_id: "T003",
+      outcome: "failed",
+    });
   });
 
   test("a passed deadline leaves tiles unjudged and the context incomplete, never pass", async () => {
@@ -176,6 +197,8 @@ describe("judgePageReviewPack", () => {
     expect(
       (result.contexts[0]?.tiles_reviewed ?? 0) + (result.contexts[0]?.tiles_unjudged ?? 0),
     ).toBe(4);
+    expect(result.tile_timings).toHaveLength(result.contexts[0]?.tiles_reviewed ?? 0);
+    expect(result.tile_timings.every((timing) => timing.outcome === "passed")).toBe(true);
   });
 
   test("band-diff reuse skips unchanged clean tiles from the persisted snapshot", async () => {
@@ -225,6 +248,7 @@ describe("judgePageReviewPack", () => {
     expect(result.contexts[0]?.tiles_reviewed).toBe(1);
     expect(result.contexts[0]?.reuse?.tiles_reused).toBe(2);
     expect(result.tiles_reused).toBe(2);
+    expect(result.tile_timings.map((timing) => timing.tile_id)).toEqual(["T003"]);
   });
 
   test("reuse is skipped for a scoped capture so scope tiles never inherit band verdicts", async () => {
