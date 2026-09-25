@@ -79,6 +79,16 @@ Next 16 App Router + React 19 + Tailwind v4 (geist font, lucide icons). `next de
 - **RSC-first.** Pages are server components reading `.harnery/` via `fs` per request; `"use client"` only at interactive leaves.
 - **Writes prefer the CLI.** Council mutations shell `bin/agent-coord` / `bin/harn` (`web/lib/council-writer.ts`). Direct fs writes are reserved for operator escape hatches (`web/lib/coord-writer.ts`: release claim, ping, end session; deliberately no flock since they're operator-initiated and low-frequency). New write paths default to shelling the CLI.
 - **Liveness:** ride the shared `useLiveSignal` hook (SSE with poll fallback; Cloudflare quick tunnels buffer SSE, so never EventSource-only) and the globally-mounted `LiveRefresher` (`router.refresh()` on coord-layer change). Don't roll new polling.
+- **Codec card discrepancies:** When a live `/codec` card looks stale, wrong, or missing, use
+  **Snapshot and compare cards** before reloading the page. It preserves the values driving the
+  visible cards and compares local cards with a fresh V3 coordination read; later scene refreshes
+  lose the disputed state. The server cannot run this check on its own because it does not know
+  which scene the browser is showing. Inspect the field-level findings and download the JSON
+  report when the evidence must outlast the browser's 10-report history. `unverified` is not a
+  match, remote cards need a check on their source machine, and a zero-difference report covers
+  only the compared fields. Use `/codec/debug` for synthetic reproduction, not to validate a live
+  agent. See [ADR 0191](docs/src/content/docs/decisions/0191-compare-codec-card-snapshots.mdx) and
+  [the comparison code](web/lib/codec/card-audit.ts).
 - **Colour grammar** for state UI: sky = act now, neutral = wait, emerald = done, `live-dot` pulse = agent working live. Reuse it; don't invent new state colours.
 - **Agent names:** every rendered agent name goes through `AgentChip` (hover card with plain-text fallback), never a bare `agent-Foo` string.
 - **Hover hints:** use `ui/tooltip`'s `<Tooltip content={…}>`, or the `title`/`tooltip` props on `Badge`/`Button`, which wrap it. Never the native `title` attribute (inconsistent chrome, invisible on touch). Note: React delegates `onMouseEnter` via `mouseover`, so synthetic-event tests must dispatch `mouseover`, not `mouseenter`.
