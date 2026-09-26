@@ -15,6 +15,7 @@ function state(overrides: Partial<TunnelState> = {}): TunnelState {
     target: "127.0.0.1:4276",
     vhost: "localhost:4276",
     gate_port: 9001,
+    allow_paths: ["/"],
     ...overrides,
   };
 }

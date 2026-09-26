@@ -21,6 +21,15 @@ describe("renderTunnelErrorPage", () => {
     expect(html).toContain("Problem: access-denied");
   });
 
+  test("tells the visitor the address is outside what the tunnel shares", () => {
+    const html = renderTunnelErrorPage({ ...base, kind: "path-denied", path: "/files?path=x" });
+
+    expect(html).toContain("This page is not shared");
+    expect(html).toContain("Problem: path-denied");
+    expect(html).toContain("Request: GET /files?path=x");
+    expect(html).not.toContain("public IP is not on its access list");
+  });
+
   test("shows upstream failure details and escapes untrusted values", () => {
     const html = renderTunnelErrorPage({
       ...base,

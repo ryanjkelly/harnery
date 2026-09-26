@@ -198,6 +198,7 @@ describe("artifact delivery cards", () => {
           target: "127.0.0.1:4276",
           vhost: "localhost:4276",
           gate_port: 9001,
+          allow_paths: ["/browse", "/files"],
         }),
       );
 
@@ -211,6 +212,49 @@ describe("artifact delivery cards", () => {
       expect(card.markdown).not.toContain("http://localhost:4276");
       expect(card.markdown).toContain("ARTIFACT FOLDER\n");
       expect(card.markdown).toContain("VIDEO.MP4\n");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores a dashboard tunnel whose path scope leaves out the card's routes", () => {
+    // The gate refuses paths outside a tunnel's scope, so a dashboard tunnel
+    // that shares only /decisions cannot answer /browse or /files links.
+    const repoRoot = mkdtempSync(join(tmpdir(), "harnery-delivery-card-scope-"));
+    Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });
+    try {
+      const created = createArtifact(repoRoot, {
+        slug: "scope-card",
+        purpose: "Exercise tunnel path scope",
+        retentionDays: 3,
+        id: "scope-card-id",
+      });
+      writeFileSync(join(created.path, "video.mp4"), "video");
+      const tunnelDir = join(repoRoot, ".cache", "tunnel");
+      mkdirSync(tunnelDir, { recursive: true });
+      writeFileSync(
+        join(tunnelDir, "state-harnery-web.json"),
+        JSON.stringify({
+          name: "harnery-web",
+          provider: "cloudflare",
+          url: "https://scoped.example/",
+          gate_pid: process.pid,
+          cloudflared_pid: process.pid,
+          started_at: "2026-09-06T13:00:00.000Z",
+          target: "127.0.0.1:4276",
+          vhost: "localhost:4276",
+          gate_port: 9001,
+          allow_paths: ["/decisions"],
+        }),
+      );
+
+      const card = renderArtifactDeliveryCard(repoRoot, created.manifest.artifact_id, undefined, {
+        platform: "linux",
+        webPort: 4276,
+      });
+
+      expect(card.markdown).not.toContain("scoped.example");
+      expect(card.markdown).toContain("[video.mp4](http://localhost:4276/files?path=");
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }

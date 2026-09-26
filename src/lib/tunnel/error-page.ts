@@ -1,5 +1,5 @@
 export interface TunnelErrorPageOptions {
-  kind: "access-denied" | "upstream-unavailable";
+  kind: "access-denied" | "path-denied" | "upstream-unavailable";
   incidentId: string;
   timestamp: string;
   tunnelName: string;
@@ -40,14 +40,30 @@ function diagnosticText(options: TunnelErrorPageOptions): string {
 }
 
 export function renderTunnelErrorPage(options: TunnelErrorPageOptions): string {
-  const denied = options.kind === "access-denied";
-  const title = denied ? "This device is not allowed yet" : "The preview is temporarily offline";
-  const summary = denied
-    ? "The tunnel is running, but this device's public IP is not on its access list."
-    : "The public tunnel and access check are working, but the local preview server is not responding.";
-  const nextStep = denied
-    ? "Copy the diagnostic below and send it to the person running the tunnel. It includes the public IP that needs to be allowed."
-    : "Copy the diagnostic below and send it to the person running the tunnel. The incident ID can be matched to the server log.";
+  const copy = {
+    "access-denied": {
+      title: "This device is not allowed yet",
+      summary: "The tunnel is running, but this device's public IP is not on its access list.",
+      nextStep:
+        "Copy the diagnostic below and send it to the person running the tunnel. It includes the public IP that needs to be allowed.",
+    },
+    "path-denied": {
+      title: "This page is not shared",
+      summary:
+        "The tunnel is running, but it shares only part of the site, and this address is outside it.",
+      nextStep:
+        "If you expected to see this page, copy the diagnostic below and send it to the person running the tunnel.",
+    },
+    "upstream-unavailable": {
+      title: "The preview is temporarily offline",
+      summary:
+        "The public tunnel and access check are working, but the local preview server is not responding.",
+      nextStep:
+        "Copy the diagnostic below and send it to the person running the tunnel. The incident ID can be matched to the server log.",
+    },
+  }[options.kind];
+  const { title, summary, nextStep } = copy;
+  const denied = options.kind !== "upstream-unavailable";
   const diagnostic = diagnosticText(options);
   const safeDiagnosticForScript = JSON.stringify(diagnostic).replaceAll("<", "\\u003c");
 

@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
+import { isPathAllowed } from "./path-scope";
 
 // Tunnel state lives under <root>/.cache/tunnel/. Root defaults to cwd for the
 // command surface and can be supplied by callers that already resolved a repo.
@@ -81,14 +82,25 @@ export interface TunnelState {
   target: string;
   vhost: string;
   gate_port: number;
+  /** URL path prefixes the gate forwards; every other path is refused. */
+  allow_paths: string[];
   tailscale_mode?: TailscaleMode;
   tailscale_path?: string;
   tailscale_https_port?: number;
 }
 
-/** Normalize a parsed state blob; supply `name` for pre-multi-instance files. */
+/**
+ * Normalize a parsed state blob; supply `name` for pre-multi-instance files.
+ * A state written before path scopes existed reads as an empty scope, which
+ * the gate treats as "refuse every path".
+ */
 function normalizeState(raw: TunnelState, fallbackName: string): TunnelState {
-  return { ...raw, name: raw.name ?? fallbackName, provider: raw.provider ?? "cloudflare" };
+  return {
+    ...raw,
+    name: raw.name ?? fallbackName,
+    provider: raw.provider ?? "cloudflare",
+    allow_paths: Array.isArray(raw.allow_paths) ? raw.allow_paths : [],
+  };
 }
 
 export function readConfig(): TunnelConfig {
@@ -207,6 +219,11 @@ export function findLiveTunnelForOrigin(
         isTunnelStateLive(state, processAlive),
     ) ?? null
   );
+}
+
+/** True when the tunnel's path scope forwards every one of `paths`. */
+export function tunnelServesPaths(state: TunnelState, paths: readonly string[]): boolean {
+  return paths.every((path) => isPathAllowed(path, state.allow_paths));
 }
 
 /**

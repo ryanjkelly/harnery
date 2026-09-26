@@ -143,10 +143,11 @@ Localhost-only by default. For cross-device access (phone, second laptop), pair 
 
 ```bash
 harn web up &
-harn tunnel up --target 127.0.0.1:4276
+harn tunnel up --target 127.0.0.1:4276 --vhost localhost:4276 \
+  --allow-path /decisions --allow-path /_next --allow-path /api/decisions
 ```
 
-`harn tunnel` runs an IP-gated reverse-proxy in front of a Cloudflare quick tunnel; see [`harn tunnel`](/cli/tunnel/) for the allowlist + setup story.
+`harn tunnel` runs an IP-gated reverse-proxy in front of a Cloudflare quick tunnel and forwards only the paths you pass with `--allow-path`. The dashboard has no authentication and includes the repository file viewer (`/files`, `/browse`, `/api/file`), so share the narrowest set of routes the page needs; `--allow-path /` publishes all of it. See [`harn tunnel`](/cli/tunnel/) for the allowlist, path scope, and setup story.
 
 ## Coord root resolution
 

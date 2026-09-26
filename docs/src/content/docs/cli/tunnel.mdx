@@ -9,7 +9,7 @@ sidebar:
 harn tunnel up | down | reload | status | logs | allow [...]
 ```
 
-`harn tunnel` puts a local reverse-proxy gate in front of a provider tunnel, so you can reach a local service (the [web UI](/concepts/web-ui/), a dev server, etc.) from your phone or another machine without opening a firewall port or deploying. The gate rewrites the upstream `Host` header so vhost-routed servers see the review host, and it copies the browser `Host` to `X-Forwarded-Host` so the upstream can still see the public hostname. Cloudflare mode uses a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) plus an IP allowlist checked against `CF-Connecting-IP`; Tailscale mode uses [Tailscale Serve/Funnel](https://tailscale.com/docs/reference/tailscale-cli/serve) and lets Tailscale own the access boundary.
+`harn tunnel` puts a local reverse-proxy gate in front of a provider tunnel, so you can reach a local service (the [web UI](/concepts/web-ui/), a dev server, etc.) from your phone or another machine without opening a firewall port or deploying. The gate rewrites the upstream `Host` header so vhost-routed servers see the review host, and it copies the browser `Host` to `X-Forwarded-Host` so the upstream can still see the public hostname. The gate also enforces a path scope: it forwards only the URL paths you name with `--allow-path` and refuses every other request, so sharing one page does not publish the rest of the app. Cloudflare mode uses a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) plus an IP allowlist checked against `CF-Connecting-IP`; Tailscale mode uses [Tailscale Serve/Funnel](https://tailscale.com/docs/reference/tailscale-cli/serve) and lets Tailscale own the access boundary.
 
 :::caution[Requires Bun]
 This is the one Harnery command that needs [Bun](https://bun.sh) installed: the gate worker is a `Bun.serve` process. Every other command runs on plain Node. Without Bun, `harn tunnel up` fails fast with a clear message.
@@ -18,13 +18,14 @@ This is the one Harnery command that needs [Bun](https://bun.sh) installed: the 
 ## Commands
 
 ```bash
-harn tunnel up                       # start the default instance
-harn tunnel up --target 127.0.0.1:4276 --vhost localhost:4276   # Harnery web upstream + Host
-harn tunnel up --name web            # a second, independently-managed instance
-harn tunnel up --provider cloudflare # default: random *.trycloudflare.com URL + IP allowlist
-harn tunnel up --provider tailscale  # tailnet-only Tailscale Serve URL
-harn tunnel up --provider tailscale --visibility public # public Tailscale Funnel URL
-harn tunnel up --provider tailscale --name web --path /web # named instance at a path
+harn tunnel up --allow-path /        # start the default instance, publishing the whole upstream
+harn tunnel up --target 127.0.0.1:4276 --vhost localhost:4276 \
+  --allow-path /decisions --allow-path /_next   # share one Harnery web page and its assets
+harn tunnel up --name web --allow-path /             # a second, independently-managed instance
+harn tunnel up --provider cloudflare --allow-path /  # default: random *.trycloudflare.com URL + IP allowlist
+harn tunnel up --provider tailscale --allow-path /   # tailnet-only Tailscale Serve URL
+harn tunnel up --provider tailscale --visibility public --allow-path / # public Tailscale Funnel URL
+harn tunnel up --provider tailscale --name web --path /web --allow-path / # named instance at a path
 harn tunnel status                   # table of running instances + their URLs
 harn tunnel down [--name <id>|--all] # stop one / all
 harn tunnel reload [--name <id>|--all]  # pick up allowlist edits, keeping the URL
@@ -40,6 +41,18 @@ harn tunnel logs [-f]                # tail the gate log (--provider for the pro
 | Tailscale Funnel | `harn tunnel up --provider tailscale --visibility public` | `https://<machine>.<tailnet>.ts.net/` | public internet, if Funnel is enabled in the tailnet policy |
 
 Cloudflare gives each instance a separate random hostname. Tailscale gives the machine one MagicDNS hostname, so named instances default to path mounts: the default instance uses `/`, and `--name web` uses `/web` unless you pass `--path`.
+
+## Path Scope
+
+`harn tunnel up` refuses to start without at least one `--allow-path <prefix>`. The gate forwards a request only when its path equals a prefix or sits below it on a segment boundary: `--allow-path /decisions` serves `/decisions` and `/decisions/42`, never `/decisionsX` or `/files`. Every other request gets a 403 page that says the address is outside what the tunnel shares, and the gate logs a `path-deny:` line. The check runs after the IP allowlist and applies to WebSocket upgrades as well as ordinary requests, for every provider.
+
+`--allow-path /` is the explicit way to publish the whole upstream. There is no default scope, because a tunnel forwards to an entire local app, and an app such as the Harnery web UI includes a repository file viewer that should reach the internet only when you say so.
+
+Prefixes are plain paths. A prefix with `?`, `#`, `%`, a backslash, or an empty, `.`, or `..` segment is rejected at `up`. The gate also refuses any request path that carries an encoded slash, backslash, dot, or percent sign (`%2F`, `%5C`, `%2E`, `%25`), because the gate and the upstream router could decode it differently.
+
+A page usually needs more than its own route. A Next.js page, for example, also loads `/_next/` assets and calls its own API routes, so list each prefix the page fetches. Anything under a listed prefix is reachable, so keep prefixes as narrow as the page allows.
+
+The scope is saved with the instance, so `harn tunnel reload` keeps it and `harn tunnel status` shows it. To change the scope, stop the instance and start it again. An instance saved without a scope cannot be reloaded, because its gate would refuse every request; start it again with `up`.
 
 ## Cloudflare Allowlist
 

@@ -26,6 +26,7 @@ function state(overrides: Partial<TunnelState> = {}): TunnelState {
     target: "127.0.0.1:9999",
     vhost: "localhost:9999",
     gate_port: 9099,
+    allow_paths: ["/"],
     ...overrides,
   };
 }
@@ -47,6 +48,13 @@ describe("tunnel command registration", () => {
   test("exposes reload alongside the rest of the lifecycle", async () => {
     const names = (await tunnelCommand())?.commands.map((c) => c.name());
     expect(names).toContain("reload");
+  });
+
+  test("up takes a repeatable --allow-path with no default scope", async () => {
+    const up = (await tunnelCommand())?.commands.find((c) => c.name() === "up");
+    const option = up?.options.find((o) => o.long === "--allow-path");
+    expect(option).toBeDefined();
+    expect(option?.defaultValue).toEqual([]);
   });
 
   test("reload takes --name and --all", async () => {
@@ -106,6 +114,25 @@ describe("reloadOne", () => {
       expect(() => process.kill(gate.pid, 0)).not.toThrow();
     } finally {
       gate.kill();
+    }
+  });
+
+  test("refuses a state with no path scope without touching the gate", async () => {
+    // A state written before path scopes existed has none. Respawning its gate
+    // would refuse every request, so reload must send the operator to `up`.
+    const gate = livePid();
+    const provider = livePid();
+    try {
+      const result = await reloadOne(
+        state({ gate_pid: gate.pid, cloudflared_pid: provider.pid, allow_paths: [] }),
+      );
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain("no recorded path scope");
+      expect(result.message).toContain("--allow-path");
+      expect(() => process.kill(gate.pid, 0)).not.toThrow();
+    } finally {
+      gate.kill();
+      provider.kill();
     }
   });
 

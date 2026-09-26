@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { encodeLinkSafeComponent } from "../../lib/local-file-url.ts";
-import { findLiveTunnelForOrigin } from "../../lib/tunnel/state.ts";
+import { findLiveTunnelForOrigin, tunnelServesPaths } from "../../lib/tunnel/state.ts";
 import { resolveWebPort } from "../config.ts";
 import { stateFileMode } from "../storage/modes.ts";
 import { ARTIFACT_MANIFEST } from "./constants.ts";
@@ -326,9 +326,17 @@ function deliveryLinkBase(repoRoot: string, environment: DisplayEnvironment): st
   // dashboard's own origin will answer them. A tunnel sharing this upstream
   // port under another Host serves a different site and would 400 on /browse
   // and /files, so fall back to the local URL rather than publish that host.
+  // The same holds for a dashboard tunnel whose path scope leaves out either
+  // route: its gate would refuse every link on the card.
+  const tunnel =
+    environment.tunnelUrl === undefined
+      ? findLiveTunnelForOrigin(webPort, `localhost:${webPort}`, repoRoot)
+      : null;
   const tunnelUrl =
     environment.tunnelUrl === undefined
-      ? findLiveTunnelForOrigin(webPort, `localhost:${webPort}`, repoRoot)?.url
+      ? tunnel && tunnelServesPaths(tunnel, ["/browse", "/files"])
+        ? tunnel.url
+        : undefined
       : environment.tunnelUrl;
   return (tunnelUrl ?? `http://localhost:${webPort}`).replace(/\/+$/, "");
 }

@@ -10,6 +10,7 @@ import {
   runRotatingProcessSync,
   spawnRotatingProcess,
 } from "../core/storage/process-log.ts";
+import { ALLOW_PATHS_ENV, normalizeAllowPaths } from "../lib/tunnel/path-scope.ts";
 import {
   clearState,
   DEFAULT_INSTANCE,
@@ -35,6 +36,8 @@ import {
  * upstream. Cloudflare quick tunnels add an IP allowlist at the gate via the
  * Cloudflare-set `CF-Connecting-IP` header; Tailscale Serve/Funnel exposes the
  * same gate through tailscaled, with Tailscale owning the access boundary.
+ * Every provider also passes through a path scope: `up` requires at least one
+ * `--allow-path <prefix>`, and the gate refuses any request outside it.
  *
  * State + config persisted under `.cache/tunnel/`. cloudflared auto-installs
  * to ~/.local/bin/ on first run (Linux only; macOS users `brew install`);
@@ -55,6 +58,7 @@ interface UpOpts {
   visibility?: string;
   path?: string;
   httpsPort?: string;
+  allowPath?: string[];
 }
 
 interface DownOpts {
@@ -163,6 +167,46 @@ function resolveHttpsPort(raw: string | undefined): number {
     process.exit(1);
   }
   return port;
+}
+
+/**
+ * The path scope for `up`. At least one prefix is required: a tunnel forwards
+ * to a whole local app, and publishing all of it has to be a stated choice
+ * (`--allow-path /`), never the result of leaving a flag off.
+ */
+function resolveAllowPaths(raw: string[] | undefined): string[] {
+  let paths: string[];
+  try {
+    paths = normalizeAllowPaths(raw ?? []);
+  } catch (error) {
+    emit.error({
+      code: "tunnel_path_scope_invalid",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  }
+  if (paths.length === 0) {
+    emit.error({
+      code: "tunnel_path_scope_empty",
+      message:
+        "No path scope; refusing to start. Name what the tunnel shares with --allow-path <prefix> " +
+        "(repeatable), or pass --allow-path / to publish the whole upstream.",
+    });
+    process.exit(1);
+  }
+  return paths;
+}
+
+function samePaths(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
+}
+
+function formatPaths(paths: readonly string[]): string {
+  return paths.length === 0 ? "(none: every path refused)" : paths.join(", ");
+}
+
+function collectPath(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 function gateScriptPath(): string {
@@ -444,6 +488,7 @@ interface GateSpawnOpts {
   vhost: string;
   provider: TunnelProvider;
   allowedIps: string[];
+  allowPaths: string[];
   gateLogPath: string;
 }
 
@@ -470,6 +515,7 @@ function spawnGate(o: GateSpawnOpts): ChildProcess {
       HARNERY_TUNNEL_TARGET: o.target,
       HARNERY_TUNNEL_VHOST: o.vhost,
       HARNERY_TUNNEL_PORT: String(o.gatePort),
+      [ALLOW_PATHS_ENV]: o.allowPaths.join(","),
     },
   });
   gateProc.unref();
@@ -498,6 +544,7 @@ async function up(opts: UpOpts): Promise<void> {
     provider === "tailscale" ? resolveTailscalePath(opts.path, name) : undefined;
   const tailscaleHttpsPort =
     provider === "tailscale" ? resolveHttpsPort(opts.httpsPort) : undefined;
+  const allowPaths = resolveAllowPaths(opts.allowPath);
 
   const existing = readState(name);
   if (existing && tunnelIsAlive(existing)) {
@@ -508,9 +555,19 @@ async function up(opts: UpOpts): Promise<void> {
       });
       process.exit(1);
     }
+    if (!samePaths(existing.allow_paths, allowPaths)) {
+      emit.error({
+        code: "tunnel_instance_in_use",
+        message:
+          `Tunnel [${name}] is already up sharing ${formatPaths(existing.allow_paths)}. ` +
+          `Stop it before starting it with ${formatPaths(allowPaths)}.`,
+      });
+      process.exit(1);
+    }
     emit.text(`Already up [${name}]: ${existing.url}\n`);
     emit.text(`  Provider:   ${existing.provider}\n`);
     emit.text(`  Forwarding: ${existing.target} (Host: ${existing.vhost})\n`);
+    emit.text(`  Paths:      ${formatPaths(existing.allow_paths)}\n`);
     return;
   }
   if (existing) downOne(name, new Set());
@@ -552,6 +609,7 @@ async function up(opts: UpOpts): Promise<void> {
     vhost,
     provider,
     allowedIps: cfg.allowed_ips,
+    allowPaths,
     gateLogPath,
   });
 
@@ -630,6 +688,7 @@ async function up(opts: UpOpts): Promise<void> {
     target,
     vhost,
     gate_port: gatePort,
+    allow_paths: allowPaths,
     tailscale_mode: tailscaleMode,
     tailscale_path: tailscalePath,
     tailscale_https_port: tailscaleHttpsPort,
@@ -642,6 +701,7 @@ async function up(opts: UpOpts): Promise<void> {
   emit.text(`  Provider: ${provider}${tailscaleMode ? ` (${tailscaleMode})` : ""}\n`);
   emit.text(`  URL: ${url}\n\n`);
   emit.text(`  Forwarding: ${target} (Host: ${vhost})\n`);
+  emit.text(`  Paths: ${formatPaths(allowPaths)}\n`);
   emit.text(`  Gate port: ${gatePort}\n`);
   if (provider === "cloudflare") {
     emit.text(`  Allowed IPs: ${cfg.allowed_ips.join(", ")}\n\n`);
@@ -771,6 +831,15 @@ export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; mess
   if (!bunAvailable()) {
     return { ok: false, message: `[${name}] bun is not on PATH, so the gate can't be respawned.` };
   }
+  if (state.allow_paths.length === 0) {
+    return {
+      ok: false,
+      message:
+        `[${name}] has no recorded path scope, so a reloaded gate would refuse every request. ` +
+        `Restart it with \`${bin} tunnel down --name ${name}\` and ` +
+        `\`${bin} tunnel up --name ${name} --allow-path <prefix>\`.`,
+    };
+  }
 
   // Kill ONLY the gate. sweepStrays() is deliberately avoided here: it also
   // matches `--url http://localhost:<port>`, which is the provider process we
@@ -803,6 +872,7 @@ export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; mess
     vhost: state.vhost,
     provider: state.provider,
     allowedIps: cfg.allowed_ips,
+    allowPaths: state.allow_paths,
     gateLogPath: tunnelLogDestinations(name, state.provider).gate,
   });
 
@@ -898,6 +968,7 @@ function statusDetail(state: TunnelState): void {
   );
   emit.text(`  URL:         ${state.url}\n`);
   emit.text(`  Forwarding:  ${state.target} (Host: ${state.vhost})\n`);
+  emit.text(`  Paths:       ${formatPaths(state.allow_paths)}\n`);
   emit.text(`  Gate port:   ${state.gate_port}\n`);
   if (state.provider === "cloudflare") {
     emit.text(`  Allowed IPs: ${cfg.allowed_ips.join(", ")}\n`);
@@ -941,6 +1012,7 @@ function status(opts: StatusOpts): void {
     state: instanceState(s),
     url: s.url,
     fwd: `${s.target} (${s.vhost})`,
+    paths: formatPaths(s.allow_paths),
     port: String(s.gate_port),
     up: fmtUptime(s.started_at),
   }));
@@ -950,15 +1022,16 @@ function status(opts: StatusOpts): void {
     state: 5,
     url: Math.max(3, ...rows.map((r) => r.url.length)),
     fwd: Math.max(10, ...rows.map((r) => r.fwd.length)),
+    paths: Math.max(5, ...rows.map((r) => r.paths.length)),
     port: 4,
   };
   const pad = (s: string, n: number) => s.padEnd(n);
   emit.text(
-    `${pad("NAME", w.name)}  ${pad("PROVIDER", w.provider)}  ${pad("STATE", w.state)}  ${pad("URL", w.url)}  ${pad("FORWARDING", w.fwd)}  ${pad("PORT", w.port)}  UPTIME\n`,
+    `${pad("NAME", w.name)}  ${pad("PROVIDER", w.provider)}  ${pad("STATE", w.state)}  ${pad("URL", w.url)}  ${pad("FORWARDING", w.fwd)}  ${pad("PATHS", w.paths)}  ${pad("PORT", w.port)}  UPTIME\n`,
   );
   for (const r of rows) {
     emit.text(
-      `${pad(r.name, w.name)}  ${pad(r.provider, w.provider)}  ${pad(r.state, w.state)}  ${pad(r.url, w.url)}  ${pad(r.fwd, w.fwd)}  ${pad(r.port, w.port)}  ${r.up}\n`,
+      `${pad(r.name, w.name)}  ${pad(r.provider, w.provider)}  ${pad(r.state, w.state)}  ${pad(r.url, w.url)}  ${pad(r.fwd, w.fwd)}  ${pad(r.paths, w.paths)}  ${pad(r.port, w.port)}  ${r.up}\n`,
     );
   }
 }
@@ -1071,6 +1144,13 @@ export function registerTunnelCommand(
       "Tailscale only: URL path mount (default: / for default, /<name> for named instances)",
     )
     .option("--https-port <port>", "Tailscale only: HTTPS listen port (default: 443)", "443")
+    .option(
+      "--allow-path <prefix>",
+      "URL path prefix the tunnel shares (repeatable, required). Every other path is refused; " +
+        "pass / to publish the whole upstream.",
+      collectPath,
+      [],
+    )
     .action(up);
 
   cmd

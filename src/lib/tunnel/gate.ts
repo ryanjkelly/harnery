@@ -4,7 +4,9 @@
 // stripped (Bun's fetch auto-decompresses the body but retains the encoding
 // header, which breaks browser decoding downstream). Cloudflare provider mode
 // checks CF-Connecting-IP against an allowlist; trusted local proxy mode lets
-// the local exposer own access.
+// the local exposer own access. In every mode the gate then refuses any path
+// outside the tunnel's path scope (see path-scope.ts); an empty scope refuses
+// everything.
 //
 // Runs detached, outside the CLI command framework; no command context is
 // available; stdout/stderr is captured into .cache/tunnel/gate.log by the
@@ -12,6 +14,7 @@
 
 import { renderTunnelErrorPage } from "./error-page";
 import { applyUpstreamHeaders } from "./forward-headers";
+import { ALLOW_PATHS_ENV, isPathAllowed, parseAllowPathsEnv } from "./path-scope";
 
 // `--port`/`--name` are also passed on argv (not just env) so the gate's port
 // and instance name show up in its process command line. That's what lets
@@ -34,6 +37,7 @@ const TARGET = process.env.HARNERY_TUNNEL_TARGET ?? "127.0.0.1:8001";
 const VHOST = process.env.HARNERY_TUNNEL_VHOST ?? "localhost";
 const PORT = Number(process.env.HARNERY_TUNNEL_PORT ?? argvFlag("--port") ?? "9001");
 const ACCESS = process.env.HARNERY_TUNNEL_ACCESS ?? "cloudflare-allowlist";
+const ALLOW_PATHS = parseAllowPathsEnv(process.env[ALLOW_PATHS_ENV]);
 const NAME = argvFlag("--name") ?? "default";
 
 const UPSTREAM_HTTP = `http://${TARGET}`;
@@ -94,6 +98,22 @@ const server = Bun.serve<WsData, never>({
           },
         });
       }
+    }
+
+    if (!isPathAllowed(url.pathname, ALLOW_PATHS)) {
+      const details = requestDetails(req, url);
+      console.log(
+        // lint-ok-emission: detached worker, see file note above
+        `path-deny: incident=${details.incidentId} ip=${details.clientIp || "(missing-cf-connecting-ip)"} ray=${details.cloudflareRay || "(missing)"} ${req.method} ${details.path}`,
+      );
+      return new Response(renderTunnelErrorPage({ ...details, kind: "path-denied" }), {
+        status: 403,
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "text/html; charset=utf-8",
+          "x-harnery-tunnel-incident": details.incidentId,
+        },
+      });
     }
 
     if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
@@ -192,4 +212,5 @@ const server = Bun.serve<WsData, never>({
 // captured into .cache/tunnel/gate.log by the spawning command.
 console.log(`harn-tunnel-gate :${server.port} -> ${UPSTREAM_HTTP} (Host: ${VHOST})`); // lint-ok-emission: detached worker, see file note above
 console.log(`access: ${ACCESS}`); // lint-ok-emission: detached worker, see file note above
+console.log(`paths: ${ALLOW_PATHS.join(", ") || "(empty, every path refused)"}`); // lint-ok-emission: detached worker, see file note above
 console.log(`allow: ${[...ALLOW].join(", ") || "(empty, not used outside allowlist mode)"}`); // lint-ok-emission: detached worker, see file note above
