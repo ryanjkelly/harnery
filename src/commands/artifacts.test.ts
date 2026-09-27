@@ -88,6 +88,7 @@ describe("artifacts command", () => {
       "show",
       "delivery-card",
       "renew",
+      "allow-big",
       "release",
       "discard",
       "capabilities",

@@ -191,8 +191,10 @@ Managed artifacts have two byte limits by default:
   until the remainder fits. Held workspaces do not count toward the budget,
   because cleanup can never remove them.
 - One workspace has a 1 GiB ceiling. Pass `create --big` when a job is expected
-  to exceed it. An idle oversized workspace without that acknowledgement
-  becomes a cleanup candidate even before its time window expires.
+  to exceed it, or run `artifacts allow-big <ref>` when an existing workspace
+  turns out larger than planned. An idle oversized workspace without that
+  acknowledgement becomes a cleanup candidate even before its time window
+  expires. Unlike a hold, the acknowledgement leaves expiry in force.
 
 Both limits measure disk use: allocated blocks, with each hard-linked file
 counted once. A sparse disk image counts only the blocks it has written. `list`

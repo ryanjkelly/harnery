@@ -6,6 +6,7 @@ import {
   type ArtifactActor,
   type ArtifactDeliveryManifest,
   adoptUnmanagedArtifactFiles,
+  allowBigArtifact,
   artifactCapabilities,
   artifactReviewGuidance,
   artifactsRoot,
@@ -32,6 +33,7 @@ import {
   artifactIdleGraceHours,
   artifactMaxUnitBytes,
   coordFreshnessSeconds,
+  resolveBinName,
   reviewPackAutoCleanEnabled,
 } from "../core/config.ts";
 import { deleteExpiredPacks } from "../lib/browser/page-review-pack.ts";
@@ -108,7 +110,7 @@ export function registerArtifactsCommand(
               ? {}
               : {
                   size_ceiling_bytes: artifactMaxUnitBytes(repoRoot),
-                  size_note: `Cleanup deletes this workspace before it expires if it grows past ${artifactMaxUnitBytes(repoRoot)} bytes on disk and then sits idle for ${artifactIdleGraceHours(repoRoot)}h. Create it with --big, or add a hold, if it will grow that large.`,
+                  size_note: `Cleanup deletes this workspace before it expires if it grows past ${artifactMaxUnitBytes(repoRoot)} bytes on disk and then sits idle for ${artifactIdleGraceHours(repoRoot)}h. Create it with --big, or run ${resolveBinName(repoRoot)} artifacts allow-big later, if it will grow that large.`,
                 }),
             after_review: artifactReviewGuidance(repoRoot, created.manifest.artifact_id),
           });
@@ -240,6 +242,18 @@ export function registerArtifactsCommand(
           actor: currentActor(repoRoot),
         });
         emit.data(manifest);
+      });
+    });
+
+  root
+    .command("allow-big <ref>")
+    .description(
+      "Exempt an existing workspace from the per-bundle size ceiling, as create --big would; expiry still applies.",
+    )
+    .action((ref: string) => {
+      run(emit, () => {
+        const repoRoot = requireRepoRoot(context);
+        emit.data(allowBigArtifact(repoRoot, ref, { actor: currentActor(repoRoot) }));
       });
     });
 

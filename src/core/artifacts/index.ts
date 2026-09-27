@@ -110,6 +110,7 @@ export function artifactCapabilities() {
     explicit_v1_migration: true,
     minute_retention: true,
     discard_after_review: true,
+    allow_big_after_create: true,
   } as const;
 }
 
@@ -336,6 +337,27 @@ function renewArtifactUnlocked(
   };
   atomicWriteManifest(path, manifest, now);
   return manifest;
+}
+
+/**
+ * Record the `--big` acknowledgement on an existing workspace, for work that
+ * turns out larger than expected. Unlike a hold, it leaves expiry in force and
+ * exempts the unit only from the per-bundle ceiling. Idempotent.
+ */
+export function allowBigArtifact(
+  repoRoot: string,
+  ref: string,
+  input: ArtifactMutationInput = {},
+): ArtifactManifestV2 {
+  return withArtifactLock(repoRoot, () => {
+    const path = resolveArtifactRef(repoRoot, ref);
+    const parsed = readManifest(path);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    if (parsed.manifest.oversize_acknowledged) return parsed.manifest;
+    const manifest: ArtifactManifestV2 = { ...parsed.manifest, oversize_acknowledged: true };
+    atomicWriteManifest(path, manifest, input.now);
+    return manifest;
+  });
 }
 
 export function releaseArtifact(
@@ -1064,7 +1086,7 @@ function applyArtifactUnitBudget(
       : `after ${new Date(evictableAt).toISOString()} unless it changes first`;
   return {
     ...row,
-    warning: `uses ${row.bytes} bytes on disk, above the ${maxUnitBytes}-byte per-workspace ceiling; cleanup will delete it ${when}. Keep it with ${resolveBinName(repoRoot)} artifacts hold ${row.name} --id keep --reason "<why>", or move rebuildable content out of the artifact store`,
+    warning: `uses ${row.bytes} bytes on disk, above the ${maxUnitBytes}-byte per-workspace ceiling; cleanup will delete it ${when}. If it is meant to be this large, run ${resolveBinName(repoRoot)} artifacts allow-big ${row.name}; otherwise move rebuildable content out of the artifact store`,
   };
 }
 

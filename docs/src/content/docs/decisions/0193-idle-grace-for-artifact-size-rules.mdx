@@ -45,8 +45,10 @@ counted held bytes anyway.
    and the owner's last heartbeat. Expiry is unchanged and does not wait.
 4. **Warn before deleting.** A workspace over the ceiling that is not yet
    eligible keeps its classification and gains a `warning` naming when cleanup
-   will remove it and how to hold it. `create` without `--big` reports the
-   ceiling.
+   will remove it and how to keep it. `create` without `--big` reports the
+   ceiling. `artifacts allow-big <ref>` records the `--big` acknowledgement on
+   an existing workspace, so work that grows past the ceiling does not need a
+   hold, which would also suspend expiry.
 5. **Record every deletion.** Cleanup appends each removal to
    `.harnery/artifact-deletions.jsonl` (30 days). `list` returns recent
    deletions, and `show` on a deleted workspace names the rule.

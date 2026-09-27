@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../tests/helpers/event-v3-runtime.ts";
 import {
+  allowBigArtifact,
   autoCleanArtifacts,
   cleanArtifacts,
   createArtifact,
@@ -200,5 +201,26 @@ describe("artifact size rules", () => {
     });
     expect(cleanArtifacts(root, { yes: true, now: later(48) })[0]?.action).toBe("keep");
     expect(existsSync(unit.path)).toBe(true);
+  });
+});
+
+describe("allow-big after creation", () => {
+  test("exempts a workspace from the ceiling while expiry still applies", () => {
+    const root = repo();
+    setEnv("HARNERY_ARTIFACT_MAX_UNIT_BYTES", String(16 * MiB));
+    const unit = createArtifact(root, { slug: "grew", purpose: "Grew large", retentionDays: 2 });
+    writeFileSync(join(unit.path, "big.bin"), randomBytes(20 * MiB));
+    expect(inventoryArtifacts(root, { now: later(25) })[0]?.classification).toBe(
+      "managed-oversize",
+    );
+
+    expect(allowBigArtifact(root, unit.manifest.artifact_id).oversize_acknowledged).toBe(true);
+    expect(allowBigArtifact(root, unit.manifest.artifact_id).oversize_acknowledged).toBe(true);
+    const kept = inventoryArtifacts(root, { now: later(25) })[0];
+    expect(kept).toMatchObject({ classification: "managed-current", action: "keep" });
+    expect(kept?.warning).toBeNull();
+    expect(inventoryArtifacts(root, { now: later(24 * 3) })[0]?.classification).toBe(
+      "managed-expired",
+    );
   });
 });
