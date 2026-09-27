@@ -5,7 +5,8 @@
  * become project records: screenshots, exports, audit dumps, rollback inputs,
  * and similar material. Each direct child of `.harnery/artifacts/` is one
  * managed unit with a small manifest. Cleanup fails closed: only a valid,
- * expired, inactive, untracked managed unit is deletable.
+ * unheld, inactive, untracked managed unit is deletable, and only when its
+ * retention expired or a size rule applies after its idle grace.
  */
 
 import { spawnSync } from "node:child_process";
@@ -28,6 +29,7 @@ import {
   artifactAutoCleanEnabled,
   artifactAutoCleanIntervalHours,
   artifactDefaultRetentionDays,
+  artifactIdleGraceHours,
   artifactMaxBytes,
   artifactMaxUnitBytes,
   coordFreshnessSeconds,
@@ -131,7 +133,11 @@ export interface ArtifactInventoryEntry {
   classification: ArtifactClassification;
   reason: string;
   action: "keep" | "would-delete" | "deleted";
+  /** Disk use: allocated blocks, each hard-linked file counted once. Every
+   * size rule reads this figure. */
   bytes: number | null;
+  /** Sum of file lengths. A sparse file makes this larger than `bytes`. */
+  apparent_bytes: number | null;
   artifact_id: string | null;
   slug: string | null;
   created_at: string | null;
@@ -139,6 +145,11 @@ export interface ArtifactInventoryEntry {
   expires_at: string | null;
   owner_instance_id: string | null;
   oversize_acknowledged: boolean;
+  /** Latest file change, owner heartbeat, renewal, or release. Size rules wait
+   * `artifacts.idle_grace_hours` past this before they may delete. */
+  idle_since: string | null;
+  /** Advice for a unit that a size rule will delete once its grace ends. */
+  warning: string | null;
 }
 
 export interface ArtifactCreateInput {
@@ -269,7 +280,7 @@ export function inventoryArtifacts(
   for (const name of names) {
     rows.push(classifyArtifactPath(repoRoot, join(root, name), now, freshnessSeconds));
   }
-  return applyArtifactBudgets(repoRoot, rows);
+  return applyArtifactBudgets(repoRoot, rows, now);
 }
 
 export function showArtifact(
@@ -641,6 +652,7 @@ function cleanArtifactsUnlocked(
         : applyArtifactUnitBudget(
             repoRoot,
             classifyArtifactPath(repoRoot, entry.path, now, freshnessSeconds),
+            now,
           );
     if (!current) {
       return { ...entry, classification: "unknown", reason: "entry disappeared", action: "keep" };
@@ -665,6 +677,7 @@ function cleanArtifactsUnlocked(
         };
       }
       rmSync(current.path, { recursive: true, force: false });
+      recordArtifactDeletion(repoRoot, current, now);
       return { ...current, action: "deleted" };
     } catch (error) {
       return {
@@ -675,6 +688,86 @@ function cleanArtifactsUnlocked(
       };
     }
   });
+}
+
+/** Sibling of the artifacts root, like the stamp, so it never enters the inventory. */
+const DELETION_LOG = ".harnery/artifact-deletions.jsonl";
+const DELETION_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+export interface ArtifactDeletionRecord {
+  deleted_at: string;
+  name: string;
+  relative_path: string;
+  artifact_id: string | null;
+  slug: string | null;
+  owner_instance_id: string | null;
+  classification: ArtifactClassification;
+  reason: string;
+  bytes: number | null;
+  apparent_bytes: number | null;
+  expires_at: string | null;
+  idle_since: string | null;
+}
+
+/**
+ * Append one deletion to the log, keeping 30 days. Callers hold the artifact
+ * lock. Best-effort: the directory is already gone, so a failed write must not
+ * turn a completed deletion into a reported failure.
+ */
+function recordArtifactDeletion(repoRoot: string, row: ArtifactInventoryEntry, now: Date): void {
+  const record: ArtifactDeletionRecord = {
+    deleted_at: now.toISOString(),
+    name: row.name,
+    relative_path: row.relative_path,
+    artifact_id: row.artifact_id,
+    slug: row.slug,
+    owner_instance_id: row.owner_instance_id,
+    classification: row.classification,
+    reason: row.reason,
+    bytes: row.bytes,
+    apparent_bytes: row.apparent_bytes,
+    expires_at: row.expires_at,
+    idle_since: row.idle_since,
+  };
+  try {
+    const path = join(resolve(repoRoot), DELETION_LOG);
+    const kept = readArtifactDeletions(repoRoot, {
+      since: new Date(now.getTime() - DELETION_LOG_RETENTION_MS),
+    });
+    const temp = `${path}.${randomUUID()}.tmp`;
+    writeFileSync(temp, [...kept, record].map((item) => `${JSON.stringify(item)}\n`).join(""), {
+      mode: stateFileMode(),
+    });
+    renameSync(temp, path);
+  } catch {
+    // See the doc comment: the deletion stands even if its record cannot.
+  }
+}
+
+/** Deletions the cleanup recorded, oldest first. Unreadable lines are skipped. */
+export function readArtifactDeletions(
+  repoRoot: string,
+  opts: { since?: Date } = {},
+): ArtifactDeletionRecord[] {
+  let text: string;
+  try {
+    text = readFileSync(join(resolve(repoRoot), DELETION_LOG), "utf8");
+  } catch {
+    return [];
+  }
+  const since = opts.since?.getTime() ?? -Infinity;
+  const records: ArtifactDeletionRecord[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const record = JSON.parse(line) as ArtifactDeletionRecord;
+      if (typeof record?.name === "string" && Date.parse(record.deleted_at) >= since)
+        records.push(record);
+    } catch {
+      // A torn or foreign line does not hide the others.
+    }
+  }
+  return records;
 }
 
 /** Sibling of the artifacts root so the stamp never appears in the inventory scan. */
@@ -692,9 +785,11 @@ export interface ArtifactAutoCleanResult {
  *
  * Retention was previously enforced only when someone remembered to run
  * `artifacts clean --yes`, so expired workspaces accumulated indefinitely on
- * busy hosts. This runs the exact same guarded deletion (expired or over-budget
- * managed entries, each re-classified immediately before removal;
- * unmanaged and legacy directories are never touched) at most once per
+ * busy hosts. This runs the exact same guarded deletion as `artifacts clean
+ * --yes` (expired entries, plus oversize or over-budget entries idle past
+ * `artifacts.idle_grace_hours`, each re-classified immediately before removal
+ * and recorded in the deletion log; unmanaged and legacy directories are never
+ * touched) at most once per
  * interval (default 1h after completion, 1m between partial/failed slices).
  * The owner-aware lock serializes callers; interrupted attempts can retry.
  * Disable with `artifacts.auto_clean: false` or
@@ -847,13 +942,14 @@ function classifyArtifactPath(
     return rowFor(path, name, repoRoot, classification, parsed.reason);
   }
   const manifest = parsed.manifest;
-  const bytes = safeTreeSize(path);
+  const usage = safeTreeUsage(path);
   const lastModifiedMs = safeTreeLastModified(path, now, manifest.activity);
   const retentionAnchorMs = Date.parse(manifest.retention.renewed_at ?? manifest.created_at);
   const retentionWindowMs = Date.parse(manifest.retention.expires_at) - retentionAnchorMs;
   const effectiveLastModifiedMs = Math.max(retentionAnchorMs, lastModifiedMs ?? 0);
   const effectiveExpiresAt = new Date(effectiveLastModifiedMs + retentionWindowMs).toISOString();
-  const base = rowFor(path, name, repoRoot, "managed-current", "retention has not expired", bytes);
+  const base = rowFor(path, name, repoRoot, "managed-current", "retention has not expired", usage);
+  const releasedMs = manifest.released_at ? Date.parse(manifest.released_at) : 0;
   Object.assign(base, {
     artifact_id: manifest.artifact_id,
     slug: manifest.slug,
@@ -862,6 +958,7 @@ function classifyArtifactPath(
     expires_at: effectiveExpiresAt,
     owner_instance_id: manifest.created_by?.instance_id ?? null,
     oversize_acknowledged: manifest.oversize_acknowledged === true,
+    idle_since: new Date(Math.max(effectiveLastModifiedMs, releasedMs)).toISOString(),
   });
 
   if (manifest.holds.length > 0) {
@@ -889,7 +986,17 @@ function classifyArtifactPath(
     };
   }
   if (!manifest.released_at && manifest.created_by?.instance_id) {
-    const live = ownerLiveness(repoRoot, manifest.created_by.instance_id, now, freshnessSeconds);
+    const { state: live, heartbeatMs } = ownerLiveness(
+      repoRoot,
+      manifest.created_by.instance_id,
+      now,
+      freshnessSeconds,
+    );
+    // A stale heartbeat only starts the idle clock. The owner may be waiting
+    // for a human reply, so size rules still wait out the grace from here.
+    if (heartbeatMs !== null && heartbeatMs > Date.parse(base.idle_since!)) {
+      base.idle_since = new Date(Math.min(heartbeatMs, now.getTime())).toISOString();
+    }
     if (live === "live") {
       return {
         ...base,
@@ -916,36 +1023,67 @@ function classifyArtifactPath(
   };
 }
 
+/** When a size rule may first delete this unit, or null when it never may. */
+function sizeEvictableAt(repoRoot: string, row: ArtifactInventoryEntry): number | null {
+  if (!row.idle_since) return null;
+  const idleSince = Date.parse(row.idle_since);
+  if (!Number.isFinite(idleSince)) return null;
+  return idleSince + artifactIdleGraceHours(repoRoot) * 60 * 60 * 1000;
+}
+
 function applyArtifactUnitBudget(
   repoRoot: string,
   row: ArtifactInventoryEntry,
+  now: Date,
 ): ArtifactInventoryEntry {
   const maxUnitBytes = artifactMaxUnitBytes(repoRoot);
   if (
+    !["managed-current", "managed-active"].includes(row.classification) ||
+    row.bytes === null ||
+    row.bytes <= maxUnitBytes ||
+    row.oversize_acknowledged
+  ) {
+    return row;
+  }
+  const evictableAt = sizeEvictableAt(repoRoot, row);
+  if (
     row.classification === "managed-current" &&
-    row.bytes !== null &&
-    row.bytes > maxUnitBytes &&
-    !row.oversize_acknowledged
+    evictableAt !== null &&
+    now.getTime() >= evictableAt
   ) {
     return {
       ...row,
       classification: "managed-oversize",
       action: "would-delete",
-      reason: `bundle uses ${row.bytes} bytes, above the ${maxUnitBytes}-byte ceiling without --big`,
+      reason: `bundle uses ${row.bytes} bytes on disk, above the ${maxUnitBytes}-byte ceiling without --big, and has been idle for ${artifactIdleGraceHours(repoRoot)}h`,
     };
   }
-  return row;
+  const when =
+    row.classification === "managed-active" || evictableAt === null
+      ? `${artifactIdleGraceHours(repoRoot)}h after its owner goes idle`
+      : `after ${new Date(evictableAt).toISOString()} unless it changes first`;
+  return {
+    ...row,
+    warning: `uses ${row.bytes} bytes on disk, above the ${maxUnitBytes}-byte per-workspace ceiling; cleanup will delete it ${when}. Keep it with ${resolveBinName(repoRoot)} artifacts hold ${row.name} --id keep --reason "<why>", or move rebuildable content out of the artifact store`,
+  };
 }
 
 function applyArtifactBudgets(
   repoRoot: string,
   inputRows: ArtifactInventoryEntry[],
+  now: Date,
 ): ArtifactInventoryEntry[] {
   const maxBytes = artifactMaxBytes(repoRoot);
-  const rows = inputRows.map((row) => applyArtifactUnitBudget(repoRoot, { ...row }));
+  const rows = inputRows.map((row) => applyArtifactUnitBudget(repoRoot, { ...row }, now));
 
+  // Held units can never be evicted, so counting them would push every other
+  // unit out without bringing the store under budget.
   const managedBytes = rows.reduce(
-    (sum, row) => sum + (row.artifact_id && row.bytes !== null ? row.bytes : 0),
+    (sum, row) =>
+      sum +
+      (row.artifact_id && row.classification !== "managed-held" && row.bytes !== null
+        ? row.bytes
+        : 0),
     0,
   );
   let retainedBytes =
@@ -957,10 +1095,12 @@ function applyArtifactBudgets(
   if (retainedBytes <= maxBytes) return rows;
 
   const candidates = rows
-    .filter(
-      (row) =>
-        row.classification === "managed-current" && row.action === "keep" && row.bytes !== null,
-    )
+    .filter((row) => {
+      if (row.classification !== "managed-current" || row.action !== "keep" || row.bytes === null)
+        return false;
+      const evictableAt = sizeEvictableAt(repoRoot, row);
+      return evictableAt !== null && now.getTime() >= evictableAt;
+    })
     .sort((left, right) =>
       `${left.expires_at ?? ""}\0${left.created_at ?? ""}\0${left.name}`.localeCompare(
         `${right.expires_at ?? ""}\0${right.created_at ?? ""}\0${right.name}`,
@@ -969,7 +1109,7 @@ function applyArtifactBudgets(
   for (const row of candidates) {
     if (retainedBytes <= maxBytes) break;
     row.classification = "managed-over-budget";
-    row.reason = `repository artifact budget is ${maxBytes} bytes; earliest-expiring inactive bundles are removed first`;
+    row.reason = `repository artifact budget is ${maxBytes} bytes of disk use; earliest-expiring bundles idle for ${artifactIdleGraceHours(repoRoot)}h are removed first`;
     row.action = "would-delete";
     retainedBytes -= row.bytes ?? 0;
   }
@@ -1346,15 +1486,18 @@ function ownerLiveness(
   instanceId: string,
   now: Date,
   freshnessSeconds: number,
-): "live" | "stale" | "unknown" {
+): { state: "live" | "stale" | "unknown"; heartbeatMs: number | null } {
   try {
     const row = readLiveCoordinationRow(repoRoot, instanceId);
-    if (!row) return "stale";
+    if (!row) return { state: "stale", heartbeatMs: null };
     const ts = Date.parse(row.last_heartbeat);
-    if (!Number.isFinite(ts)) return "unknown";
-    return now.getTime() - ts <= freshnessSeconds * 1000 ? "live" : "stale";
+    if (!Number.isFinite(ts)) return { state: "unknown", heartbeatMs: null };
+    return {
+      state: now.getTime() - ts <= freshnessSeconds * 1000 ? "live" : "stale",
+      heartbeatMs: ts,
+    };
   } catch {
-    return "unknown";
+    return { state: "unknown", heartbeatMs: null };
   }
 }
 
@@ -1369,22 +1512,48 @@ function containsTrackedPath(repoRoot: string, path: string): boolean {
   return result.status !== 0 || result.stdout.length > 0;
 }
 
-function safeTreeSize(path: string): number | null {
+interface TreeUsage {
+  /** Allocated disk bytes, counting each hard-linked inode once. */
+  disk: number;
+  /** Sum of file lengths, as `ls -l` reports them. */
+  apparent: number;
+}
+
+/** Disk bytes for one entry. Windows reports no block count, so length stands in. */
+function allocatedBytes(st: Stats): number {
+  return process.platform !== "win32" && Number.isFinite(st.blocks) ? st.blocks * 512 : st.size;
+}
+
+/**
+ * Measure a tree without following symlinks. Size rules read `disk`: a sparse
+ * image or a hard-linked environment would otherwise count many times its real
+ * footprint and push healthy workspaces over a budget they do not exceed.
+ */
+function safeTreeUsage(path: string, seen = new Set<string>()): TreeUsage | null {
   try {
     const st = lstatSync(path);
-    if (st.isSymbolicLink()) return st.size;
-    if (st.isFile()) return st.size;
-    if (!st.isDirectory()) return 0;
-    let total = st.size;
+    if (!st.isDirectory()) {
+      if (!st.isFile() && !st.isSymbolicLink()) return { disk: 0, apparent: 0 };
+      const key = `${st.dev}:${st.ino}`;
+      if (st.nlink > 1 && seen.has(key)) return { disk: 0, apparent: st.size };
+      if (st.nlink > 1) seen.add(key);
+      return { disk: allocatedBytes(st), apparent: st.size };
+    }
+    const total: TreeUsage = { disk: allocatedBytes(st), apparent: st.size };
     for (const child of readdirSync(path)) {
-      const size = safeTreeSize(join(path, child));
-      if (size === null) return null;
-      total += size;
+      const usage = safeTreeUsage(join(path, child), seen);
+      if (usage === null) return null;
+      total.disk += usage.disk;
+      total.apparent += usage.apparent;
     }
     return total;
   } catch {
     return null;
   }
+}
+
+function safeTreeSize(path: string): number | null {
+  return safeTreeUsage(path)?.disk ?? null;
 }
 
 /**
@@ -1406,7 +1575,7 @@ function rowFor(
   repoRoot: string,
   classification: ArtifactClassification,
   reason: string,
-  bytes: number | null = safeTreeSize(path),
+  usage: TreeUsage | null = safeTreeUsage(path),
 ): ArtifactInventoryEntry {
   return {
     name,
@@ -1415,7 +1584,8 @@ function rowFor(
     classification,
     reason,
     action: classification === "managed-expired" ? "would-delete" : "keep",
-    bytes,
+    bytes: usage?.disk ?? null,
+    apparent_bytes: usage?.apparent ?? null,
     artifact_id: null,
     slug: null,
     created_at: null,
@@ -1423,6 +1593,8 @@ function rowFor(
     expires_at: null,
     owner_instance_id: null,
     oversize_acknowledged: false,
+    idle_since: null,
+    warning: null,
   };
 }
 

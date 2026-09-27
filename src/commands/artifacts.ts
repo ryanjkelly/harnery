@@ -17,6 +17,7 @@ import {
   inventoryArtifacts,
   migrateArtifacts,
   parseArtifactDeliverySpec,
+  readArtifactDeletions,
   releaseArtifact,
   renderArtifactDeliveryCard,
   renewArtifact,
@@ -28,6 +29,8 @@ import {
 } from "../core/artifacts/index.ts";
 import {
   artifactDefaultRetentionDays,
+  artifactIdleGraceHours,
+  artifactMaxUnitBytes,
   coordFreshnessSeconds,
   reviewPackAutoCleanEnabled,
 } from "../core/config.ts";
@@ -101,6 +104,12 @@ export function registerArtifactsCommand(
             expires_at: created.manifest.retention.expires_at,
             owner_instance_id: actor?.instance_id ?? null,
             holds: created.manifest.holds,
+            ...(opts.big
+              ? {}
+              : {
+                  size_ceiling_bytes: artifactMaxUnitBytes(repoRoot),
+                  size_note: `Cleanup deletes this workspace before it expires if it grows past ${artifactMaxUnitBytes(repoRoot)} bytes on disk and then sits idle for ${artifactIdleGraceHours(repoRoot)}h. Create it with --big, or add a hold, if it will grow that large.`,
+                }),
             after_review: artifactReviewGuidance(repoRoot, created.manifest.artifact_id),
           });
         });
@@ -144,7 +153,10 @@ export function registerArtifactsCommand(
         const rows = inventoryArtifacts(repoRoot, {
           freshnessSeconds: coordFreshnessSeconds(repoRoot),
         });
-        emit.data({ rows, meta: summarize(rows) });
+        const recentDeletions = readArtifactDeletions(repoRoot, {
+          since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+        });
+        emit.data({ rows, meta: summarize(rows), recent_deletions: recentDeletions });
       });
     });
 
@@ -154,11 +166,21 @@ export function registerArtifactsCommand(
     .action((ref: string) => {
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
-        emit.data(
-          showArtifact(repoRoot, ref, {
-            freshnessSeconds: coordFreshnessSeconds(repoRoot),
-          }),
-        );
+        try {
+          emit.data(
+            showArtifact(repoRoot, ref, {
+              freshnessSeconds: coordFreshnessSeconds(repoRoot),
+            }),
+          );
+        } catch (error) {
+          const deleted = readArtifactDeletions(repoRoot)
+            .reverse()
+            .find((record) => [record.artifact_id, record.name].includes(ref));
+          if (!deleted) throw error;
+          throw new Error(
+            `artifact "${ref}" was deleted by cleanup at ${deleted.deleted_at} as ${deleted.classification}: ${deleted.reason}`,
+          );
+        }
       });
     });
 
@@ -375,15 +397,32 @@ function collect(value: string, previous: string[]): string[] {
 }
 
 function summarize(
-  rows: { classification: string; action: string; bytes?: number | null }[],
+  rows: {
+    classification: string;
+    action: string;
+    bytes?: number | null;
+    apparent_bytes?: number | null;
+    warning?: string | null;
+  }[],
 ): Record<string, unknown> {
   const classifications: Record<string, number> = {};
   for (const row of rows) {
     classifications[row.classification] = (classifications[row.classification] ?? 0) + 1;
   }
+  const bytes = rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
+  const heldBytes = rows.reduce(
+    (sum, row) => sum + (row.classification === "managed-held" ? (row.bytes ?? 0) : 0),
+    0,
+  );
   return {
     total: rows.length,
-    bytes: rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0),
+    // Disk use. `apparent_bytes` is the sum of file lengths; a large gap
+    // between the two means sparse or hard-linked files.
+    bytes,
+    apparent_bytes: rows.reduce((sum, row) => sum + (row.apparent_bytes ?? 0), 0),
+    // Holds keep their bytes out of the repository budget.
+    held_bytes: heldBytes,
+    warnings: rows.filter((row) => row.warning).length,
     classifications,
     would_delete: rows.filter((row) => row.action === "would-delete").length,
     deleted: rows.filter((row) => row.action === "deleted").length,

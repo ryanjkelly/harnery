@@ -171,6 +171,7 @@ interface HarneryConfig {
     auto_clean?: boolean;
     max_bytes?: number;
     max_unit_bytes?: number;
+    idle_grace_hours?: number;
   };
   /**
    * Page review packs. `auto_clean` lets `qa-run` and `review-pack create`
@@ -865,11 +866,30 @@ export function artifactMaxUnitBytes(coordRoot?: string | null): number {
 }
 
 /**
+ * How long an unexpired workspace must sit idle before a size rule (the
+ * per-bundle ceiling or the repository budget) may delete it. Idle means no
+ * change inside the workspace and no heartbeat from its owner. An agent waiting
+ * on a human reply looks idle, so a short window deletes work someone is still
+ * reviewing. Precedence: `HARNERY_ARTIFACT_IDLE_GRACE_HOURS` ->
+ * `artifacts.idle_grace_hours` -> 24. Expiry never waits for this grace.
+ */
+export function artifactIdleGraceHours(coordRoot?: string | null): number {
+  const root = coordRoot ?? findCoordRoot();
+  return integerSetting(
+    coordEnv("ARTIFACT_IDLE_GRACE_HOURS"),
+    root ? readConfig(root).artifacts?.idle_grace_hours : undefined,
+    1,
+    24 * 365,
+    24,
+  );
+}
+
+/**
  * Whether opportunistic cleanup of expired artifact workspaces runs.
  * Precedence: `HARNERY_ARTIFACT_AUTO_CLEAN` (0/false disables) ->
- * `artifacts.auto_clean` -> enabled. The sweep only ever deletes
- * `managed-expired` entries via the same guarded classifier as
- * `artifacts clean --yes`.
+ * `artifacts.auto_clean` -> enabled. The sweep deletes the same
+ * `managed-expired`, `managed-oversize`, and `managed-over-budget` entries as
+ * `artifacts clean --yes`, through the same guarded classifier.
  */
 export function artifactAutoCleanEnabled(coordRoot?: string | null): boolean {
   const env = coordEnv("ARTIFACT_AUTO_CLEAN");

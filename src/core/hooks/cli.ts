@@ -1189,9 +1189,12 @@ async function handleSessionStarted(run: HookRun): Promise<void> {
   const { createAutomaticMaintenanceComposition, runAutomaticMaintenancePass } = await import(
     "../storage/maintenance-providers.ts"
   );
-  // Effect: throttled daily sweep of expired artifact workspaces (guarded,
-  // managed-expired only; see autoCleanArtifacts). Best-effort like every
-  // janitor here: a failure logs and never blocks session start.
+  // Effect: throttled hourly artifact sweep (see autoCleanArtifacts). It
+  // deletes expired workspaces, plus unheld workspaces over the per-bundle
+  // ceiling or repository budget once they have been idle past
+  // artifacts.idle_grace_hours. Each deletion is rechecked first and recorded
+  // in .harnery/artifact-deletions.jsonl. Best-effort like every janitor
+  // here: a failure logs and never blocks session start.
   try {
     autoCleanArtifacts(coordRoot);
   } catch (err) {

@@ -1,0 +1,71 @@
+---
+title: "0193: Wait out an idle grace before a size rule deletes an artifact"
+description: "ADR: measure artifact disk use by allocated blocks, keep held workspaces out of the repository budget, and delete for size only after 24 idle hours."
+---
+
+**Status:** accepted (2026-09-27) · **Scope:** product tier (`core/artifacts`, `core/config`, `artifacts` command)
+
+## Context
+
+[ADR 0150](/decisions/0150-bound-local-coordination-storage/) gave managed
+artifacts a 1 GiB per-workspace ceiling and a 20 GiB repository budget. A
+workspace became a size candidate as soon as its owner's heartbeat went stale,
+whatever its expiry date.
+
+That rule deleted a 17 GB workspace about 13 minutes after its owner finished
+a turn. The owner had sent a human a page inside it and was waiting for the
+reply. The retention window still had three days to run. The next session start
+in the repository ran the hourly sweep, and the per-workspace ceiling removed
+the whole directory. Nothing warned the owner, and nothing recorded the
+deletion, so finding the cause meant searching every session transcript.
+
+Two measurement faults made the repository budget worse:
+
+- Size was the sum of file lengths. One sparse 40 GB image that used 8 GB on
+  disk counted at 40 GB.
+- Held workspaces counted toward the budget although cleanup can never remove
+  them. That one held workspace kept the store over budget alone, so every
+  unheld workspace became a candidate the moment its owner went idle.
+
+ADR 0150 already said the budget covers "eligible managed bytes". The code
+counted held bytes anyway.
+
+## Decision
+
+1. **Measure disk use.** Every size rule reads allocated blocks, counting each
+   hard-linked inode once per workspace. Windows reports no block count, so
+   file length stands in there. Inventory rows carry `bytes` (disk use) and
+   `apparent_bytes` (sum of lengths) so a miscount is visible before anything
+   is deleted.
+2. **Keep held workspaces out of the budget total.** A hold still protects its
+   workspace from every rule.
+3. **Wait out an idle grace.** A size rule may delete a workspace only after it
+   has been idle for `artifacts.idle_grace_hours` (default 24). Idle starts at
+   the latest of: the last change inside the workspace, a renewal, a release,
+   and the owner's last heartbeat. Expiry is unchanged and does not wait.
+4. **Warn before deleting.** A workspace over the ceiling that is not yet
+   eligible keeps its classification and gains a `warning` naming when cleanup
+   will remove it and how to hold it. `create` without `--big` reports the
+   ceiling.
+5. **Record every deletion.** Cleanup appends each removal to
+   `.harnery/artifact-deletions.jsonl` (30 days). `list` returns recent
+   deletions, and `show` on a deleted workspace names the rule.
+
+## Alternatives considered
+
+- **Delete for size only after the owner's session ends.** Rejected. A human
+  may still be reviewing a deliverable after its author's session closes, and a
+  crashed session never records an end. A fixed grace protects both cases.
+- **Never delete an unexpired workspace for size.** Rejected. Retention can run
+  for years, and the ceiling exists to reclaim large abandoned output without
+  waiting for it.
+- **Keep counting held bytes but report the overage.** Rejected. Counting bytes
+  the sweep cannot reclaim only moves the pressure onto workspaces that do not
+  cause it.
+
+## Consequences
+
+A large abandoned workspace now survives up to one extra day before a size rule
+removes it, so the store can sit above its soft budget for that long. The
+budget was already soft: live owners and holds could exceed it before. An
+operator who wants faster reclamation can lower `idle_grace_hours` to one hour.

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -6,7 +7,6 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
-  truncateSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -26,6 +26,11 @@ import {
 
 const roots: string[] = [];
 const now = new Date("2026-07-26T12:00:00.000Z");
+
+/** Size rules wait out a 24-hour idle grace measured from real file times. */
+function pastIdleGrace(): Date {
+  return new Date(Date.now() + 25 * 60 * 60 * 1000);
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -197,8 +202,7 @@ describe("managed artifacts", () => {
         now,
         id: "artifact_largeordinary",
       });
-      writeFileSync(join(ordinary.path, "payload.bin"), "");
-      truncateSync(join(ordinary.path, "payload.bin"), 17 * 1024 * 1024);
+      writeFileSync(join(ordinary.path, "payload.bin"), randomBytes(17 * 1024 * 1024));
       const acknowledged = createArtifact(repo, {
         slug: "expected-large",
         purpose: "Expected large output",
@@ -207,10 +211,9 @@ describe("managed artifacts", () => {
         id: "artifact_largeexpected",
         big: true,
       });
-      writeFileSync(join(acknowledged.path, "payload.bin"), "");
-      truncateSync(join(acknowledged.path, "payload.bin"), 17 * 1024 * 1024);
+      writeFileSync(join(acknowledged.path, "payload.bin"), randomBytes(17 * 1024 * 1024));
 
-      const rows = inventoryArtifacts(repo, { now: new Date() });
+      const rows = inventoryArtifacts(repo, { now: pastIdleGrace() });
       expect(rows.find((row) => row.artifact_id === ordinary.manifest.artifact_id)).toMatchObject({
         classification: "managed-oversize",
         action: "would-delete",
@@ -250,12 +253,10 @@ describe("managed artifacts", () => {
         id: "artifact_budgetlate",
         big: true,
       });
-      writeFileSync(join(early.path, "payload.bin"), "");
-      truncateSync(join(early.path, "payload.bin"), 40 * 1024 * 1024);
-      writeFileSync(join(late.path, "payload.bin"), "");
-      truncateSync(join(late.path, "payload.bin"), 40 * 1024 * 1024);
+      writeFileSync(join(early.path, "payload.bin"), randomBytes(40 * 1024 * 1024));
+      writeFileSync(join(late.path, "payload.bin"), randomBytes(40 * 1024 * 1024));
 
-      const rows = inventoryArtifacts(repo, { now: new Date() });
+      const rows = inventoryArtifacts(repo, { now: pastIdleGrace() });
       expect(rows.find((row) => row.artifact_id === early.manifest.artifact_id)).toMatchObject({
         classification: "managed-over-budget",
         action: "would-delete",

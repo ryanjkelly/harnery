@@ -1,0 +1,5 @@
+---
+"harnery": minor
+---
+
+Artifact size cleanup no longer deletes a workspace that someone may still be using. The per-workspace ceiling and the repository budget now delete an unexpired workspace only after it has been idle for 24 hours (no file change, renewal, release, or owner heartbeat); set `artifacts.idle_grace_hours` or `HARNERY_ARTIFACT_IDLE_GRACE_HOURS` to change it. Previously a stale heartbeat, which is also what an agent waiting on a human looks like, made a large workspace deletable at the next session start. Both limits now measure disk use (allocated blocks, hard links counted once) instead of file length, so sparse images no longer inflate the total, and held workspaces no longer count toward the repository budget. Inventory rows add `apparent_bytes`, `idle_since`, and `warning`; `create` without `--big` reports `size_ceiling_bytes`. Every deletion is appended to `.harnery/artifact-deletions.jsonl` (kept 30 days), `list` returns `recent_deletions`, and `show` on a deleted workspace names the rule that removed it. The config schema now documents `auto_clean`, `max_bytes`, `max_unit_bytes`, and `idle_grace_hours`.
