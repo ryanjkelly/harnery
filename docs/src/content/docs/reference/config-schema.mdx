@@ -257,6 +257,42 @@ segments are gone. See [`harn logs`](/cli/logs/) for the evidence fields and
 
 `harn init` stamps `{ "subscriptionOnly": true }` into any project without a committed `workflow` key; an existing `workflow` key of any shape is never touched (set `false` for key-only CI hosts). Env override per process: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0`. See [run → billing safeguards](/cli/run/#billing-safeguards).
 
+### `workflow.workerFullAccess`
+
+| Field     | Type | Default | Description |
+| --------- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Allow qualifying workers to launch without their vendor sandbox |
+| `floors`  | object | `{}` | Adapter id to a list of `{ "model", "minEffort" }` entries a worker must match |
+
+A worker launches with full access only when all three conditions hold: this
+setting is enabled, the session that started the run can be shown to have full
+access itself, and the worker names an exact model and effort that meet a floor.
+Every other launch keeps the ordinary sandboxed projection. The rules for
+detecting the parent's access are in
+[run → worker full access](/cli/run/#worker-full-access).
+
+`minEffort` uses the adapter's own effort scale (`harn adapter show <id>`) and is
+required when the adapter has one. An adapter that encodes effort in the model
+id, such as Cursor, takes exact model ids with no `minEffort`. An unknown key,
+adapter, or effort disables the whole setting rather than part of it.
+
+This setting is read from the project file only, like
+`agents.finalizationRoots`, so a user-global config cannot remove the sandbox
+from one project's workers. `HARNERY_WORKFLOW_WORKER_FULL_ACCESS=0` turns it off
+for one process; no environment value turns it on.
+
+```jsonc
+"workflow": {
+  "workerFullAccess": {
+    "enabled": true,
+    "floors": {
+      "codex": [{ "model": "<model-id>", "minEffort": "high" }],
+      "cursor": [{ "model": "<model-id-with-effort>" }]
+    }
+  }
+}
+```
+
 ## `tools`
 
 | Field                  | Type | Default | Description |

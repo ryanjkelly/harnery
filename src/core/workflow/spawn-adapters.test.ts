@@ -87,6 +87,77 @@ describe("registered workflow adapter contracts", () => {
   });
 });
 
+describe("worker full access rendering (ADR 0192)", () => {
+  test("a sandboxed request renders exactly today's argv", () => {
+    const codex = buildCodexInvocation({ ...request, effort: "high" }, "/tmp/final.txt");
+    expect(codex.argv).toContain("workspace-write");
+    expect(codex.argv).not.toContain("danger-full-access");
+    expect(buildClaudeInvocation(request).argv).not.toContain("--permission-mode");
+    expect(buildCursorInvocation(request).argv).not.toContain("--sandbox");
+    const explicit = buildCodexInvocation({ ...request, access: "sandboxed" }, "/tmp/final.txt");
+    expect(explicit.argv).toEqual(buildCodexInvocation(request, "/tmp/final.txt").argv);
+  });
+
+  test("Codex renders danger-full-access and drops writable roots", () => {
+    const plan = buildCodexInvocation(
+      { ...request, effort: "medium", access: "full-access" },
+      "/tmp/final.txt",
+    );
+    expect(plan.argv).toEqual([
+      "codex",
+      "exec",
+      "do the thing",
+      "--output-last-message",
+      "/tmp/final.txt",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "danger-full-access",
+      "--model",
+      "model-x",
+      "-c",
+      'model_reasoning_effort="medium"',
+    ]);
+    expect(plan.argv.join(" ")).not.toContain("writable_roots");
+  });
+
+  test("Claude renders bypass permissions with the Bash sandbox off", () => {
+    const plan = buildClaudeInvocation({ ...request, effort: "high", access: "full-access" });
+    expect(plan.argv).toEqual([
+      "claude",
+      "-p",
+      "do the thing",
+      "--output-format",
+      "json",
+      "--max-turns",
+      "7",
+      "--permission-mode",
+      "bypassPermissions",
+      "--settings",
+      '{"sandbox":{"enabled":false}}',
+      "--model",
+      "model-x",
+      "--effort",
+      "high",
+    ]);
+  });
+
+  test("Cursor renders a disabled sandbox", () => {
+    const plan = buildCursorInvocation({ ...request, access: "full-access" });
+    const at = plan.argv.indexOf("--sandbox");
+    expect(at).toBeGreaterThan(0);
+    expect(plan.argv[at + 1]).toBe("disabled");
+  });
+
+  test("full access alongside a filesystem policy is refused, not resolved", () => {
+    expect(() =>
+      buildCodexInvocation(
+        { ...request, access: "full-access", filesystemPolicy: { mode: "workspace-write" } },
+        "/tmp/final.txt",
+      ),
+    ).toThrow(/full access and a "workspace-write" filesystem policy/);
+  });
+});
+
 describe("spawn failure classification (ADR 0046)", () => {
   const normalizers = [
     ["claude", normalizeClaudeResult],

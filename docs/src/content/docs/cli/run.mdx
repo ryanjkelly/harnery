@@ -430,6 +430,62 @@ policy-aware: `harn adapter show cursor` still reports policy mapping as
 unsupported. Use a provider with a stronger filesystem boundary when prompt
 instructions alone are not sufficient isolation.
 
+## Worker full access
+
+By default every workflow worker runs inside its vendor's own sandbox, with the
+projection described above. A host can let a worker run without that sandbox,
+so it can, for example, write a repository's shared Git directory and commit
+from a shared checkout. The host enables it in
+[`workflow.workerFullAccess`](/reference/config-schema/#workflowworkerfullaccess),
+and each launch then qualifies only when all three conditions hold:
+
+1. The host enabled it. Harnery ships it off.
+2. The session that started the run has full access itself. A sandboxed
+   session never passes more access to a worker than it holds, and a session
+   whose access cannot be established counts as sandboxed.
+3. The worker names an exact model and effort that meet one of the host's
+   floors for that adapter. An unset model, an alias, or an unset effort does
+   not qualify, because Harnery cannot see what the adapter default resolves to.
+
+A qualifying launch renders the adapter's full-access arguments:
+
+| Adapter | Full-access arguments |
+| --- | --- |
+| `codex` | `--sandbox danger-full-access` |
+| `claude-code` | `--permission-mode bypassPermissions --settings '{"sandbox":{"enabled":false}}'` |
+| `cursor` | `--sandbox disabled` |
+| `opencode` | none; OpenCode has no vendor sandbox to remove, so it never qualifies |
+
+A run that requested a `read-only` filesystem policy stays read-only. Every
+launch records its mode and the reason for it in the `agent.start` transcript
+event and in the agent's `access` field in proof. The first launch that reaches
+the parent check also records a `worker_access.parent` event with the evidence.
+
+### Detecting the parent's access
+
+Only positive evidence counts. Harnery looks for each adapter's session marker
+in the environment, and every marker it finds has to prove full access on its
+own, because an outer session's sandbox still binds an inner one.
+
+- **Process confinement.** On Linux, the Codex and Claude Code sandboxes both
+  set `no_new_privs`, so a process with it set is sandboxed. Any `CODEX_SANDBOX*`
+  variable also means sandboxed.
+- **Codex** (`CODEX_THREAD_ID`). The thread's rollout file must show that its
+  latest turn ran with the `danger-full-access` sandbox policy. Harnery looks in
+  `$CODEX_HOME`, `~/.codex`, and, inside WSL, each Windows profile's `.codex`
+  directory, so a Windows Codex session driving a WSL checkout is found.
+- **Claude Code** (`CLAUDE_CODE_SESSION_ID`). The session transcript's latest
+  permission mode must be `bypassPermissions`. Claude Code's Bash sandbox is
+  ruled out by the Linux confinement check, so on other platforms a Claude Code
+  parent is treated as sandboxed.
+- **Cursor and OpenCode** record no readable access state, so a run they start
+  keeps its workers sandboxed.
+
+The evidence is read when the run starts its first qualifying worker. A mode
+change in the parent session takes effect in these records at the parent's next
+turn, and a long-lived daemon that inherited a session marker reads that
+session's latest recorded state.
+
 ## Isolated worktrees
 
 The local provider needs an explicit writable parent:

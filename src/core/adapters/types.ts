@@ -67,6 +67,16 @@ export interface AdapterProfile {
   /** How this adapter projects host filesystem policy into the vendor's own
    * sandbox (ADR 0039). Absent means it cannot project any of it. */
   sandboxProjection?: AdapterSandboxProjection;
+  /** Vendor-native arguments that launch a worker with no vendor sandbox
+   * (ADR 0192). Absent means the adapter has no distinguishable full-access
+   * mode, so a worker on it never qualifies for one. */
+  fullAccess?: AdapterFullAccessRendering;
+}
+
+/** How an adapter renders an unsandboxed launch (ADR 0192). The spawner emits
+ * exactly these arguments, so the declaration and the argv cannot drift. */
+export interface AdapterFullAccessRendering {
+  argv: readonly string[];
 }
 
 /** Fully planned child invocation. `resultFile` is used by adapters such as

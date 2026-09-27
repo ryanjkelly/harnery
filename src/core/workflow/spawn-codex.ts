@@ -10,6 +10,8 @@
  *   experimental `--json` JSONL event stream.
  * - `--skip-git-repo-check` keeps non-repo cwds working; `--sandbox
  *   workspace-write` matches workflow-stage expectations (children may edit).
+ *   A launch the engine qualified for full access renders `--sandbox
+ *   danger-full-access` instead (ADR 0192).
  * - No per-run cost or session-id surface in this mode → both left undefined.
  * - No max-turns equivalent → `maxTurns` is accepted and ignored (documented
  *   in the CLI docs page).
@@ -24,13 +26,28 @@ import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profil
 import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
 import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
-import { resolveSandboxProjection } from "./sandbox-projection.ts";
+import { resolveFullAccessArgv, resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
 export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): AdapterInvocation {
   validateAdapterEffort("codex", req.effort);
   if (!resultFile) throw new Error("codex adapter requires a final-message result file");
+  const fullAccess = resolveFullAccessArgv("codex", req);
+  if (fullAccess) {
+    const argv = [
+      "codex",
+      "exec",
+      req.prompt,
+      "--output-last-message",
+      resultFile,
+      "--skip-git-repo-check",
+      ...fullAccess,
+    ];
+    if (req.model) argv.push("--model", req.model);
+    if (req.effort) argv.push("-c", `model_reasoning_effort=${JSON.stringify(req.effort)}`);
+    return { argv, resultFile };
+  }
   // Default stays workspace-write so an unprojected request is unchanged.
   const projection = req.filesystemPolicy
     ? resolveSandboxProjection(

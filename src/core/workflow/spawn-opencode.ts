@@ -22,7 +22,7 @@ import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profil
 import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
 import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
-import { resolveSandboxProjection } from "./sandbox-projection.ts";
+import { resolveFullAccessArgv, resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
@@ -75,6 +75,9 @@ export function buildOpenCodeInvocation(req: SpawnRequest): AdapterInvocation {
       req.filesystemPolicy,
     );
   }
+  // OpenCode declares no full-access rendering, so this refuses a full-access
+  // request instead of launching it as an ordinary one (ADR 0192).
+  resolveFullAccessArgv("opencode", req);
   // `--auto` auto-approves permissions that are not explicitly denied, which a
   // headless workflow child needs because it has no interactive approval
   // channel; it does not map host policy into child tools (unsupported).

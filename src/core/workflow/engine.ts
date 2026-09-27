@@ -21,6 +21,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { workflowWorkerFullAccessConfig } from "../config.ts";
 import { snapshotRepo } from "../context/index.ts";
 import type {
   ExternalMutationRequest,
@@ -69,6 +70,7 @@ import type {
   BlockedInput,
   EngineOpts,
   GitAdministrativeGrant,
+  ParentAccessEvidence,
   RunReport,
   SpawnFilesystemPolicy,
   SpawnResult,
@@ -88,6 +90,11 @@ import type {
 import { WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 import { freezeWorkflowWorkContext } from "./work-context.ts";
+import {
+  decideWorkerAccess,
+  detectParentAccess,
+  parseWorkerFullAccessPolicy,
+} from "./worker-access.ts";
 import {
   attestTerminal,
   attestWorkspaceFailure,
@@ -464,6 +471,13 @@ async function executeWorkflow(
         writableRoots: [...(requestedPolicy.writableRoots ?? []), ...gitGrantRoots],
       }
     : undefined;
+  // Worker full access (ADR 0192) is decided per launch. The host policy is
+  // read once per run; the parent probe runs at most once, and only when a
+  // launch has already cleared every cheaper condition.
+  const workerFullAccess = parseWorkerFullAccessPolicy(
+    workflowWorkerFullAccessConfig(opts.coordRoot),
+  );
+  let parentAccess: ParentAccessEvidence | undefined;
   const executionRepoBefore = resumeState?.manifest.repository_before ?? snapshotRepo(executionCwd);
   if (!resumeState) {
     writeWorkflowRunManifest({
@@ -992,6 +1006,22 @@ async function executeWorkflow(
 
     if (!spawnCountClaimed) agentsSpawned++;
 
+    const access = decideWorkerAccess({
+      adapter,
+      model: agentOpts.model,
+      effort: agentOpts.effort,
+      policy: workerFullAccess,
+      filesystemPolicy,
+      parent: () => {
+        if (!parentAccess) {
+          parentAccess = (opts.detectParentAccess ?? detectParentAccess)();
+          transcript("worker_access.parent", { ...parentAccess });
+        }
+        return parentAccess;
+      },
+    });
+    agentProof.access = access;
+
     await acquire();
     try {
       await ensureDiagnosticAdmissionObserved();
@@ -1003,7 +1033,11 @@ async function executeWorkflow(
         specialist: agentOpts.specialist ?? null,
         model: agentOpts.model ?? null,
         effort: agentOpts.effort ?? null,
+        access,
       });
+      if (access.mode === "full-access") {
+        log(`[access] ${id} ${adapter}: full access (${access.detail})`);
+      }
       log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${adapter}] ${label}`);
 
       // Headless children do not reliably fire adapter hooks. The engine owns
@@ -1033,7 +1067,10 @@ async function executeWorkflow(
           runId,
           agentId: id,
           subscriptionOnly,
-          filesystemPolicy,
+          // A full-access launch has no sandbox to project a policy into.
+          ...(access.mode === "full-access"
+            ? { access: "full-access" as const }
+            : { filesystemPolicy }),
         });
         agentProof.attempts = attempt;
         agentProof.duration_ms += last.durationMs;

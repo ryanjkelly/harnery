@@ -89,6 +89,12 @@ declaring it rather than assuming it.
 `full-access` is deliberately absent from the mode set. Harnery does not project
 a no-sandbox mode into a vendor CLI, even where the vendor offers one.
 
+**Superseded in part.** [ADR 0192](/decisions/0192-model-gated-worker-full-access/)
+replaces this rule. `full-access` is still not a filesystem policy mode, but a
+single launch may now run without its vendor sandbox when the host enables it,
+the launching session has full access itself, and the worker's model and effort
+meet a host floor.
+
 ### Failing closed
 
 A projection an adapter cannot represent is an error **before launch**, never a

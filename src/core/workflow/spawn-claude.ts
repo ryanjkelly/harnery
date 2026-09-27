@@ -23,7 +23,7 @@ import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profil
 import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
 import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
-import { resolveSandboxProjection } from "./sandbox-projection.ts";
+import { resolveFullAccessArgv, resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
@@ -56,6 +56,10 @@ export function buildClaudeInvocation(req: SpawnRequest): AdapterInvocation {
     "--max-turns",
     String(req.maxTurns),
   ];
+  // A qualified launch removes the permission prompt and the Bash sandbox
+  // (ADR 0192); an ordinary one leaves Claude Code's own settings in charge.
+  const fullAccess = resolveFullAccessArgv("claude-code", req);
+  if (fullAccess) argv.push(...fullAccess);
   if (req.model) argv.push("--model", req.model);
   if (req.effort) argv.push("--effort", req.effort);
   return { argv };

@@ -107,7 +107,7 @@ interface HarneryConfig {
    * `workflow run` in this repo to subscription billing (API-key vars are
    * scrubbed from child envs) without anyone having to remember the flag.
    */
-  workflow?: { subscriptionOnly?: boolean };
+  workflow?: { subscriptionOnly?: boolean; workerFullAccess?: unknown };
   /**
    * Cross-machine presence (ADR 0016). `{ enabled: false }` opts a repo out of
    * the git-refs transport (publishing `refs/harnery/presence/<machine>` to
@@ -599,6 +599,27 @@ export function workflowSubscriptionOnly(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).workflow?.subscriptionOnly === true;
+}
+
+/**
+ * The host's raw worker full-access policy (ADR 0192), validated by
+ * `parseWorkerFullAccessPolicy` in the workflow layer, which knows each
+ * adapter's effort scale.
+ *
+ * `.harnery/config.jsonc`:
+ * `{ "workflow": { "workerFullAccess": { "enabled": true, "floors": { ... } } } }`
+ *
+ * This is a trust boundary, so it comes only from the project config, like
+ * `agents.finalizationRoots`: a user-global file cannot remove the sandbox from
+ * one project's workers. `HARNERY_WORKFLOW_WORKER_FULL_ACCESS=0` turns it off
+ * for one process. There is deliberately no `=1`: an environment variable can
+ * withdraw the grant but never supply it.
+ */
+export function workflowWorkerFullAccessConfig(coordRoot?: string | null): unknown {
+  if (coordEnv("WORKFLOW_WORKER_FULL_ACCESS") === "0") return { enabled: false };
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return undefined;
+  return readProjectConfig(root).workflow?.workerFullAccess;
 }
 
 /**

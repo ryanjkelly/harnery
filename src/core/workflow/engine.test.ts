@@ -1208,3 +1208,153 @@ describe("billing safeguards", () => {
     expect(billingEvents[0]).toContain('"mode":"subscription"');
   });
 });
+
+describe("worker full access (ADR 0192)", () => {
+  const fullParent = {
+    state: "full-access" as const,
+    adapters: ["codex"],
+    detail: "the parent runs unsandboxed",
+  };
+
+  function enableFullAccess(): void {
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({
+        workflow: {
+          workerFullAccess: {
+            enabled: true,
+            floors: { codex: [{ model: "gpt-strong", minEffort: "medium" }] },
+          },
+        },
+      }),
+    );
+  }
+
+  const twoAgents = `
+    export default async ({ agent }) => [
+      await agent("strong", { adapter: "codex", model: "gpt-strong", effort: "high", label: "strong" }),
+      await agent("weak", { adapter: "codex", model: "gpt-strong", effort: "low", label: "weak" }),
+    ];
+  `;
+
+  test("qualifying launches get full access; the rest stay sandboxed; both are recorded", async () => {
+    enableFullAccess();
+    const requests: SpawnRequest[] = [];
+    let probes = 0;
+    const spawner: Spawner = async (req) => {
+      requests.push(req);
+      return okSpawn("ok");
+    };
+    const report = await runWorkflow(writeScript(twoAgents), {
+      coordRoot: root,
+      spawners: { codex: spawner },
+      detectParentAccess: () => {
+        probes++;
+        return fullParent;
+      },
+      ...quiet,
+    });
+    expect(requests[0]?.access).toBe("full-access");
+    expect(requests[0]?.filesystemPolicy).toBeUndefined();
+    expect(requests[1]?.access).toBeUndefined();
+    expect(probes).toBe(1);
+
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(proof.agents[0]?.access).toMatchObject({ mode: "full-access", reason: "qualified" });
+    expect(proof.agents[1]?.access).toMatchObject({
+      mode: "sandboxed",
+      reason: "effort_below_floor",
+    });
+    const events = readFileSync(report.transcriptPath, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const starts = events.filter((event) => event.event === "agent.start");
+    expect(starts.map((event) => (event.access as { mode: string }).mode)).toEqual([
+      "full-access",
+      "sandboxed",
+    ]);
+    const parent = events.filter((event) => event.event === "worker_access.parent");
+    expect(parent).toHaveLength(1);
+    expect(parent[0]?.state).toBe("full-access");
+  });
+
+  test("a sandboxed parent keeps every worker sandboxed", async () => {
+    enableFullAccess();
+    const requests: SpawnRequest[] = [];
+    const report = await runWorkflow(writeScript(twoAgents), {
+      coordRoot: root,
+      spawners: {
+        codex: async (req) => {
+          requests.push(req);
+          return okSpawn("ok");
+        },
+      },
+      detectParentAccess: () => ({
+        state: "sandboxed",
+        adapters: ["codex"],
+        detail: "workspace-write",
+      }),
+      ...quiet,
+    });
+    expect(requests.every((req) => req.access === undefined)).toBe(true);
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(proof.agents[0]?.access?.reason).toBe("parent_sandboxed");
+  });
+
+  test("without host config nothing changes and the parent is never probed", async () => {
+    const requests: SpawnRequest[] = [];
+    const report = await runWorkflow(writeScript(twoAgents), {
+      coordRoot: root,
+      spawners: {
+        codex: async (req) => {
+          requests.push(req);
+          return okSpawn("ok");
+        },
+      },
+      detectParentAccess: () => {
+        throw new Error("the parent must not be probed when the host has not enabled full access");
+      },
+      ...quiet,
+    });
+    expect(requests.every((req) => req.access === undefined)).toBe(true);
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(proof.agents.map((agent) => agent.access?.reason)).toEqual(["disabled", "disabled"]);
+  });
+
+  test("a user-global config cannot enable full access", async () => {
+    const xdg = join(root, "xdg");
+    mkdirSync(join(xdg, "harnery"), { recursive: true });
+    writeFileSync(
+      join(xdg, "harnery", "config.jsonc"),
+      JSON.stringify({
+        workflow: {
+          workerFullAccess: {
+            enabled: true,
+            floors: { codex: [{ model: "gpt-strong", minEffort: "medium" }] },
+          },
+        },
+      }),
+    );
+    const previous = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = xdg;
+    try {
+      const requests: SpawnRequest[] = [];
+      await runWorkflow(writeScript(twoAgents), {
+        coordRoot: root,
+        spawners: {
+          codex: async (req) => {
+            requests.push(req);
+            return okSpawn("ok");
+          },
+        },
+        detectParentAccess: () => fullParent,
+        ...quiet,
+      });
+      expect(requests.every((req) => req.access === undefined)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previous;
+    }
+  });
+});

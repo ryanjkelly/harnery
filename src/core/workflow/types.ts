@@ -142,6 +142,9 @@ export interface WorkflowAgentProof {
    * Absent ⇒ a work failure. Recorded even when a script's parallel() swallows
    * the rejection, so the run-level class can still be derived from proof. */
   class?: SpawnFailureClass;
+  /** Which vendor sandbox mode this agent launched with and why (ADR 0192).
+   * Absent on a cached agent, which launched nothing. */
+  access?: WorkerAccessDecision;
 }
 
 export interface WorkflowRepoSnapshot {
@@ -423,6 +426,57 @@ export interface SpawnRequest {
    * is what shared-checkout runs use. An adapter that cannot represent the
    * requested projection refuses before launch rather than downgrading. */
   filesystemPolicy?: SpawnFilesystemPolicy;
+  /** Launch without the vendor sandbox (ADR 0192). Absent means sandboxed,
+   * which is the adapter's ordinary invocation. The engine sets this only after
+   * the host policy, the parent's own access, and the model floor all agree; a
+   * spawner refuses it when its adapter declares no full-access rendering, and
+   * refuses it alongside a filesystem policy, which it would contradict. */
+  access?: WorkerAccessMode;
+}
+
+/**
+ * Whether a workflow worker runs inside its vendor sandbox (ADR 0192).
+ *
+ * `sandboxed` is today's projection: read-only or workspace-write, with any
+ * declared writable roots and Git grant. `full-access` removes the vendor
+ * sandbox entirely and is only ever granted per launch, never as a run default.
+ */
+export type WorkerAccessMode = "sandboxed" | "full-access";
+
+/** Why a worker got the access mode it did. `qualified` is the only reason that
+ * accompanies `full-access`; every other reason is a sandboxed launch. */
+export type WorkerAccessReason =
+  | "qualified"
+  | "disabled"
+  | "config_invalid"
+  | "adapter_unrepresentable"
+  | "policy_read_only"
+  | "parent_sandboxed"
+  | "parent_unknown"
+  | "model_unset"
+  | "model_not_listed"
+  | "effort_unset"
+  | "effort_below_floor";
+
+/**
+ * What Harnery could prove about the access of the session that launched this
+ * run (ADR 0192). Only positive evidence yields `full-access`; a missing,
+ * unreadable, or contradictory signal is `unknown`, which is treated exactly
+ * like `sandboxed`.
+ */
+export interface ParentAccessEvidence {
+  state: "full-access" | "sandboxed" | "unknown";
+  /** Adapter session markers found in the environment, in the order checked. */
+  adapters: string[];
+  detail: string;
+}
+
+/** One launch's recorded access decision (ADR 0192). */
+export interface WorkerAccessDecision {
+  mode: WorkerAccessMode;
+  reason: WorkerAccessReason;
+  /** Plain-language explanation naming the evidence the decision rests on. */
+  detail: string;
 }
 
 /**
@@ -437,8 +491,10 @@ export interface SpawnRequest {
  */
 export type GitAdministrativeGrant = "none" | "shared-repository";
 
-/** What the host has decided the child may write. `full-access` is deliberately
- * not a mode: Harnery does not project a no-sandbox state into a vendor CLI. */
+/** What the host has decided a sandboxed child may write. There is no
+ * `full-access` mode here: removing the sandbox is a separate, per-launch
+ * decision carried by `SpawnRequest.access` (ADR 0192), because it depends on
+ * the parent's own access and the worker's model rather than on the run. */
 export interface SpawnFilesystemPolicy {
   mode: "read-only" | "workspace-write";
   /** Explicit absolute paths the child may write, declared rather than derived
@@ -608,6 +664,10 @@ export interface EngineOpts {
   allowApiBilling?: boolean;
   /** Billing-probe override for tests (default: the real probeBilling). */
   probeBilling?: BillingProber;
+  /** Parent-access probe override for tests (default: the real
+   * detectParentAccess). Consulted only when the host enables worker full
+   * access, and at most once per run (ADR 0192). */
+  detectParentAccess?: () => ParentAccessEvidence;
   /** Capability claims used to state whether adapter-native tool evidence was
    * available. Missing claims remain unknown. */
   adapterEvidence?: Readonly<Record<AdapterName, AdapterEvidenceCapability | undefined>>;

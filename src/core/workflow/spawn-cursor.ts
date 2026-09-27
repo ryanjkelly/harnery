@@ -24,7 +24,7 @@ import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profil
 import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
 import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
-import { resolveSandboxProjection } from "./sandbox-projection.ts";
+import { resolveFullAccessArgv, resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
@@ -69,6 +69,10 @@ export function buildCursorInvocation(req: SpawnRequest): AdapterInvocation {
   // commands. Neither flag maps host policy into child tools; that capability
   // remains explicitly unsupported.
   const argv = ["cursor-agent", "-p", req.prompt, "--output-format", "json", "--trust", "--force"];
+  // A qualified launch also turns the Cursor sandbox off (ADR 0192); an
+  // ordinary one leaves the configured sandbox setting untouched.
+  const fullAccess = resolveFullAccessArgv("cursor", req);
+  if (fullAccess) argv.push(...fullAccess);
   if (req.model) argv.push("--model", req.model);
   return { argv };
 }

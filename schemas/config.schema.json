@@ -306,6 +306,37 @@
           "type": "boolean",
           "default": false,
           "description": "Pin `workflow run` to subscription billing: API-key vars are scrubbed from every child env. Stamped true by `harn init` when the key is absent. Env override: HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0."
+        },
+        "workerFullAccess": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Let qualifying workflow workers launch without their vendor sandbox (ADR 0192). A launch qualifies only when this is enabled, the launching session itself can be shown to run with full access, and the worker's exact model and effort meet a floor listed here. Anything else keeps the ordinary sandboxed projection. Project config only; a user-global file cannot grant it. HARNERY_WORKFLOW_WORKER_FULL_ACCESS=0 turns it off for one process. An invalid value disables it entirely.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "floors": {
+              "type": "object",
+              "description": "Per-adapter list of models a worker may run unsandboxed on. Keys are adapter ids.",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["model"],
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Exact model id the worker must name. Aliases and the adapter's default model never match."
+                    },
+                    "minEffort": {
+                      "type": "string",
+                      "description": "Lowest qualifying effort on the adapter's declared effort scale. Required for an adapter with an effort scale; not allowed for one that encodes effort in the model id."
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

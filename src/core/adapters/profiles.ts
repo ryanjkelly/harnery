@@ -45,6 +45,18 @@ export const BUILTIN_ADAPTER_PROFILES = {
     modelFamily: "claude",
     effortValues: ["low", "medium", "high", "xhigh", "max"],
     verified: { date: "2026-08-18", version: "2.1.233 (Claude Code)" },
+    // Checked against 2.1.283 (ADR 0192). Claude Code has no sandbox mode flag;
+    // its permission mode and its optional Bash sandbox are separate, so full
+    // access needs both: bypass permissions, and a settings layer that turns
+    // the Bash sandbox off in case a user or project settings file enabled it.
+    fullAccess: {
+      argv: [
+        "--permission-mode",
+        "bypassPermissions",
+        "--settings",
+        '{"sandbox":{"enabled":false}}',
+      ],
+    },
     capabilities: capabilities({
       effortSelection: supported("Mapped to `--effort <level>`."),
       maxTurns: supported("Mapped to `--max-turns <n>`."),
@@ -78,6 +90,9 @@ export const BUILTIN_ADAPTER_PROFILES = {
       modes: { "read-only": "read-only", "workspace-write": "workspace-write" },
       writableRoots: true,
     },
+    // Checked against codex-cli 0.155.1 (ADR 0192): `--sandbox` accepts
+    // danger-full-access, and `codex exec` never prompts for approval.
+    fullAccess: { argv: ["--sandbox", "danger-full-access"] },
     capabilities: capabilities({
       effortSelection: supported('Mapped to `-c model_reasoning_effort="<level>"`.'),
       filesystemPolicyProjection: supported(
@@ -107,6 +122,10 @@ export const BUILTIN_ADAPTER_PROFILES = {
     modelFamily: "multi",
     effortValues: [],
     verified: { date: "2026-09-20", version: "2026.09.18-9a7762b" },
+    // Checked against 2026.09.26-dd393fe (ADR 0192): `--sandbox disabled`
+    // overrides the configured sandbox. Cursor carries effort inside the model
+    // id, so a full-access floor for it names exact model ids.
+    fullAccess: { argv: ["--sandbox", "disabled"] },
     capabilities: capabilities({
       effortSelection: unsupported(
         "Cursor embeds effort in some parameterized model ids; Harnery does not rewrite model ids.",
@@ -136,7 +155,9 @@ export const BUILTIN_ADAPTER_PROFILES = {
     authModel: "own-auth",
     modelFamily: "multi",
     // Model reasoning is selected through the `provider/model#variant` id;
-    // OpenCode exposes no separate effort dial for Harnery to map.
+    // OpenCode exposes no separate effort dial for Harnery to map. It also has
+    // no vendor sandbox to remove, so it declares no full-access rendering and
+    // a worker on it is never granted one (ADR 0192).
     effortValues: [],
     verified: { date: "2026-09-20", version: "opencode v2.0.11" },
     capabilities: capabilities({

@@ -14,8 +14,9 @@
  * not, which is worse than refusing and worse than never offering the feature.
  */
 
+import { builtinAdapterProfile } from "../adapters/profiles.ts";
 import type { AdapterSandboxProjection } from "../adapters/types.ts";
-import type { GitAdministrativeGrant, SpawnFilesystemPolicy } from "./types.ts";
+import type { GitAdministrativeGrant, SpawnFilesystemPolicy, SpawnRequest } from "./types.ts";
 import type { WorkspaceBinding } from "./workspaces/types.ts";
 
 export class SandboxProjectionError extends Error {
@@ -25,7 +26,9 @@ export class SandboxProjectionError extends Error {
     | "writable_roots_unrepresentable"
     | "no_projection"
     | "writable_root_escapes_workspace"
-    | "git_grant_unavailable";
+    | "git_grant_unavailable"
+    | "full_access_unrepresentable"
+    | "full_access_conflicts_with_policy";
 
   constructor(adapter: string, reason: SandboxProjectionError["reason"], message: string) {
     super(message);
@@ -147,4 +150,37 @@ export function resolveGitGrantRoots(
   // Deduplicated: a full-clone topology reports the same path for both, and a
   // repeated writable root is noise in the rendered argv and in proof.
   return [...new Set([repository.gitdir.realpath, repository.common_dir.realpath])];
+}
+
+/**
+ * The vendor arguments for an unsandboxed launch, or undefined for an ordinary
+ * sandboxed one (ADR 0192).
+ *
+ * The engine decides whether a worker qualifies; this only renders the result,
+ * and refuses rather than degrades. An adapter with no declared full-access
+ * rendering cannot honor the request, and a request that also carries a
+ * filesystem policy asks for two contradictory things, so both fail before
+ * launch instead of silently picking one.
+ */
+export function resolveFullAccessArgv(
+  adapter: string,
+  req: Pick<SpawnRequest, "access" | "filesystemPolicy">,
+): readonly string[] | undefined {
+  if (req.access !== "full-access") return undefined;
+  if (req.filesystemPolicy) {
+    throw new SandboxProjectionError(
+      adapter,
+      "full_access_conflicts_with_policy",
+      `${adapter} was asked for full access and a "${req.filesystemPolicy.mode}" filesystem policy at once; a launch gets one or the other`,
+    );
+  }
+  const rendering = builtinAdapterProfile(adapter)?.fullAccess;
+  if (!rendering) {
+    throw new SandboxProjectionError(
+      adapter,
+      "full_access_unrepresentable",
+      `${adapter} declares no full-access mode, so a worker on it cannot run without its sandbox`,
+    );
+  }
+  return rendering.argv;
 }

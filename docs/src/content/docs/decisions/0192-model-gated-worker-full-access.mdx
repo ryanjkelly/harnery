@@ -1,0 +1,147 @@
+---
+title: "0192: Let a qualified worker run without its vendor sandbox"
+description: "ADR: replace the rule that Harnery never removes a worker's vendor sandbox with a per-launch grant that needs host consent, a full-access parent, and a model floor."
+---
+
+**Status:** accepted (2026-09-26) · **Scope:** product tier (`core/workflow` spawn adapters and engine, `core/adapters` profiles, `core/config`, workflow proof)
+
+## Context
+
+[ADR 0039](/decisions/0039-workspace-sandbox-policy-projection/) made the
+filesystem projection a closed set of two modes, `read-only` and
+`workspace-write`, and stated a rule: Harnery does not project a no-sandbox
+mode into a vendor CLI, even where the vendor offers one. That rule is the
+control this ADR replaces.
+
+The rule has a cost that shows up in ordinary use. A session that itself runs
+with no sandbox starts a workflow in a shared checkout. Its Codex workers are
+launched with `--sandbox workspace-write`, and no workspace binding exists to
+carry a Git grant ([ADR 0040](/decisions/0040-git-administrative-grant/)), so
+the workers cannot create a lock file in the repository's shared Git directory:
+
+```
+fatal: Unable to create '.git/modules/<name>/index.lock': Read-only file system
+```
+
+The workers edit files and cannot commit them. The parent then has to commit
+their work by hand, which moves commit authority away from the agent that made
+the change. Nothing about the work needed the sandbox: the parent already holds
+full access, and the operator chose the worker's model.
+
+## Decision
+
+A workflow worker may launch with no vendor sandbox, decided per launch, only
+when three independent conditions all hold. Every other launch keeps the
+ADR 0039 projection exactly as before.
+
+### 1. Host consent
+
+A new project setting, `workflow.workerFullAccess`, holds an `enabled` switch
+and a per-adapter list of model floors. Harnery ships it off. It is read from
+the project config only, the same trust boundary as `agents.finalizationRoots`,
+so a user-global file cannot remove the sandbox from one project's workers. An
+environment variable can turn it off for one process and cannot turn it on. A
+malformed value disables the whole setting rather than honoring its valid part.
+
+### 2. A full-access parent
+
+A sandboxed session never hands more access to a worker than it holds. The
+engine establishes the launching session's access from positive evidence only,
+and treats a session it cannot establish as sandboxed:
+
+- On Linux, the vendor sandboxes set `no_new_privs`, so a process with it set
+  is sandboxed. A `CODEX_SANDBOX*` variable also means sandboxed.
+- A Codex parent must have a rollout whose latest turn context records the
+  `danger-full-access` sandbox policy.
+- A Claude Code parent must have a transcript whose latest permission mode is
+  `bypassPermissions`. Its Bash sandbox is ruled out only by the Linux
+  confinement check, so off Linux it stays unknown.
+- Cursor and OpenCode record no readable access state, so they stay unknown.
+
+Every adapter session marker in the environment has to pass on its own, because
+a nested session inherits its outer session's marker and remains bound by the
+outer sandbox.
+
+### 3. A model floor
+
+The worker must name an exact model on the host's list for its adapter and,
+where the adapter declares an effort scale, an effort at or above that entry's
+`minEffort`. The ordering comes from the adapter's declared `effortValues`. An
+adapter that encodes effort in the model id lists exact ids with no
+`minEffort`. An unset model or effort does not qualify, because the engine
+cannot see what an adapter default resolves to.
+
+### Rendering and refusal
+
+Each adapter profile may declare a `fullAccess` rendering, and the spawner emits
+exactly those arguments:
+
+| Adapter | Rendering |
+| --- | --- |
+| `codex` | `--sandbox danger-full-access` |
+| `claude-code` | `--permission-mode bypassPermissions --settings '{"sandbox":{"enabled":false}}'` |
+| `cursor` | `--sandbox disabled` |
+| `opencode` | none |
+
+The ADR 0039 refusal rule carries over. An adapter with no declared rendering
+refuses a full-access request before launch instead of launching it sandboxed,
+and a request that carries both full access and a filesystem policy is refused
+as contradictory. A run that asked for a `read-only` policy keeps it, because
+that policy is a deliberate constraint rather than a sandbox limit.
+
+### Recording
+
+Every launch records its mode, a reason code, and a plain explanation in the
+`agent.start` transcript event and in the agent's `access` field in proof. The
+first launch that reaches the parent check also records the parent evidence as
+a `worker_access.parent` event. The parent probe runs at most once per run and
+only after a launch has passed every cheaper condition.
+
+## Alternatives
+
+- **Keep the ADR 0039 rule and have the host commit on the worker's behalf.**
+  Rejected as the default for the reason ADR 0039 gave: it moves commit
+  authority away from the agent that made the change. It remains available.
+- **Give shared-checkout runs a Git grant instead.** Rejected. The grant is
+  resolved from a verified workspace binding, and a shared-checkout run has
+  none. Inventing one for the shared checkout would grant write access to the
+  operator's own repository with less evidence than this design requires.
+- **Inherit the parent's mode without a model floor.** Rejected. The parent's
+  access says what the session may do, not which models the operator trusts
+  with it. The floor keeps that choice with the host.
+- **Treat the absence of sandbox variables as proof of full access.** Rejected
+  on evidence. A Codex sandbox on Linux with network access exports no
+  variable, and a Windows Codex session driving a WSL checkout exports none in
+  either mode. Only a recorded session state is positive evidence.
+- **Read vendor configuration files for the parent's mode.** Rejected. A config
+  file states a default that a session can override; the session's own records
+  state what it is actually running.
+
+## Limits
+
+- The records are written per turn, so a mode change in the parent takes effect
+  at the parent's next turn.
+- A long-lived process that inherited a session marker reads that session's
+  latest recorded state, even after the session has ended.
+- Off Linux, only a Codex parent can be established, through its rollout and
+  the `CODEX_SANDBOX*` variables.
+
+## Verification
+
+- Unit tests cover the setting parser, including whole-policy refusal of any
+  malformed part; each reason code; the parent probe running only after the
+  cheaper checks pass; the rendered argv for each adapter; refusal for an
+  adapter with no rendering; and refusal of full access alongside a policy.
+- Parent detection tests use fixture rollouts and transcripts for a
+  full-access and a sandboxed Codex parent, a Windows Codex home seen from WSL,
+  a Claude Code parent in and out of `bypassPermissions`, a Claude Code parent
+  off Linux, `no_new_privs`, sandbox variables, nested markers, and missing
+  records.
+- Engine tests cover a qualifying and a non-qualifying launch in one run, a
+  sandboxed parent, an absent setting that never probes the parent, and a
+  user-global setting that cannot enable the grant, each checked against the
+  spawn request, the transcript, and proof.
+- The detection was checked against live sessions: a Claude Code session in
+  `bypassPermissions` and a Windows Codex session in `danger-full-access` both
+  read as full access, and the same process run under a Codex `workspace-write`
+  sandbox read as sandboxed.
