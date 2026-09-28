@@ -708,4 +708,8 @@ Children run with the host's hooks **on** (that's what makes them
 coordination-visible) but with `HARNERY_WORKFLOW_CHILD=1`, which the stop-hook
 rule honors as an exemption (`stop-hook.workflow_child`): the human-facing
 end-of-turn ritual doesn't apply to a headless child reporting to a transcript.
-Everything else (heartbeats, canonical events, claims) behaves normally.
+Heartbeats, canonical events, and claims behave normally. A child is not given
+a pool name and receives no prompt-time coordination context: no peer list,
+no naming or ritual reminders, and no mailbox delivery. Mail held for a dormant
+name therefore waits for the next real session of that name instead of being
+consumed by a child.

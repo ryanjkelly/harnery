@@ -351,7 +351,12 @@ function buildEventData(
       const forkedFrom: string | undefined = undefined;
       // Assign (or recover) name + kind in-process. Idempotent: resume
       // returns the original name; new owner consumes a counter slot.
-      const assigned = assignNameInProcess(ctx.coordRoot, ctx.instanceId, "session", forkedFrom);
+      // Workflow children stay unnamed, as on the tool path: a pool name
+      // would make them the addressee of mail held for that name.
+      const assigned =
+        coordEnv("WORKFLOW_CHILD") === "1"
+          ? undefined
+          : assignNameInProcess(ctx.coordRoot, ctx.instanceId, "session", forkedFrom);
       // Write the adapter pid-map row so `harn agents whoami` ppid-walks find
       // this owner. Prefer the payload pid (the actual claude binary), then the
       // anchor walk (the `node` ancestor for Cursor, which has no payload pid),
@@ -416,7 +421,10 @@ function buildEventData(
       // SessionStart. Mint durable display identity here so a later
       // SessionStart remains idempotent and Codec is not stuck on the
       // 8-character native id.
-      if (!readLiveCoordinationRow(ctx.coordRoot, ctx.instanceId)?.name) {
+      if (
+        coordEnv("WORKFLOW_CHILD") !== "1" &&
+        !readLiveCoordinationRow(ctx.coordRoot, ctx.instanceId)?.name
+      ) {
         assignNameInProcess(ctx.coordRoot, ctx.instanceId, "session");
       }
       const prompt = p?.prompt ?? "";
@@ -1567,7 +1575,8 @@ async function handlePostToolUse(run: HookRun): Promise<void> {
   // status is the wrong place to ask.
   try {
     const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
-    const name = sessionNameDisplayPending(row);
+    // A workflow child has no user-visible title to set.
+    const name = coordEnv("WORKFLOW_CHILD") === "1" ? undefined : sessionNameDisplayPending(row);
     if (name && toolResponseMintedSessionName(payload?.tool_response, name)) {
       // Record the title before asking for it. The suggestion can still
       // change afterwards (an assigned-name rewrite, a lifecycle re-mint, a
@@ -1768,6 +1777,7 @@ async function enforcePendingSessionNameDisplay(
   payload: ParsedPayload | null,
   coordination: Heartbeat | null,
 ): Promise<boolean> {
+  if (coordEnv("WORKFLOW_CHILD") === "1") return true;
   const name = sessionNameDisplayPending(coordination);
   if (!name) return true;
 
@@ -2171,6 +2181,10 @@ async function emitUserPromptSubmitSystemMessage(
   recoveryBriefing = "",
   hostPromptContext = "",
 ): Promise<boolean> {
+  // Workflow children get no prompt-time coordination context, matching
+  // SessionStart. The turn ritual is not enforced for them, the naming nudge
+  // would register them as named peers, and rendering drains peer mail.
+  if (coordEnv("WORKFLOW_CHILD") === "1") return false;
   const behavior = adapterBehavior(adapter);
   const { renderPromptContext } = await import("../agents/render/prompt-context.ts");
   let additionalContext = renderPromptContext({

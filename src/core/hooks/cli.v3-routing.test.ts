@@ -274,6 +274,59 @@ describe("agent-hook V3 hard cut", () => {
     }
   });
 
+  test("workflow children stay unnamed and get no prompt-time coordination context", () => {
+    const env = { HARNERY_AGENT_COORD_BYPASS_STOP: "1" };
+    const session = (owner: string, extra: Record<string, string>) => {
+      const root = candidateRoot();
+      const start = run(
+        AGENT_HOOK,
+        ["session-start", "--adapter", "claude-code"],
+        { session_id: owner, cwd: root, source: "startup", hook_event_name: "SessionStart" },
+        root,
+        { ...env, ...extra },
+      );
+      expect(start.status).toBe(0);
+      const prompt = run(
+        AGENT_HOOK,
+        ["user-prompt-submit", "--adapter", "claude-code"],
+        { session_id: owner, cwd: root, prompt: "do the task", hook_event_name: "UserPromptSubmit" },
+        root,
+        { ...env, ...extra },
+      );
+      expect(prompt.status).toBe(0);
+      const tool = run(
+        AGENT_HOOK,
+        ["pre-tool-use", "--adapter", "claude-code"],
+        {
+          session_id: owner,
+          cwd: root,
+          tool_name: "Bash",
+          tool_use_id: `${owner}-tool`,
+          tool_input: { command: "echo work" },
+          hook_event_name: "PreToolUse",
+        },
+        root,
+        { ...env, ...extra },
+      );
+      expect(tool.status).toBe(0);
+      const rows = readLiveCoordinationRows(root);
+      expect(rows).toHaveLength(1);
+      return { prompt: prompt.stdout, tool: tool.stdout, name: rows[0]?.name };
+    };
+
+    // Control: an ordinary session is named and told the turn ritual.
+    const ordinary = session("ordinary-owner", {});
+    expect(ordinary.name).toBeTruthy();
+    expect(ordinary.prompt).toContain("Turn ritual");
+
+    const child = session("workflow-child-owner", { HARNERY_WORKFLOW_CHILD: "1" });
+    expect(child.name).toBeFalsy();
+    expect(child.prompt).not.toContain("Turn ritual");
+    expect(child.prompt).not.toContain("no name yet");
+    expect(child.prompt).not.toContain("additionalContext");
+    expect(child.tool).not.toContain('"deny"');
+  });
+
   test("injects an unread Cursor mailbox ping once at the next prompt", () => {
     const root = candidateRoot("cursor");
     const owner = "cursor-mailbox-owner";
