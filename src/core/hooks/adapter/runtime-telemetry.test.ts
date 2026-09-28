@@ -467,8 +467,10 @@ describe("runtime context telemetry", () => {
 
   test("joins Claude used tokens to a published canonical-model context limit", () => {
     for (const [index, model] of [
+      "claude-opus-5-5",
       "claude-opus-5",
       "claude-opus-4-8",
+      "claude-sonnet-5-5",
       "claude-sonnet-4-6",
     ].entries()) {
       const transcript = join(root, `claude-known-model-${index}.jsonl`);
