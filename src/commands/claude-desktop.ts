@@ -8,6 +8,13 @@ import {
   planMirror,
   readCliAccount,
 } from "../lib/claude-desktop.ts";
+import {
+  applyShare,
+  defaultShareDir,
+  planShare,
+  shareSummary,
+} from "../lib/claude-desktop-share.ts";
+import { resolveMachineLabel } from "../lib/machine.ts";
 
 /**
  * `claude-desktop`: make Claude desktop-app sessions survive account
@@ -186,6 +193,60 @@ export function registerClaudeDesktopCommand(
         }
       },
     );
+
+  cmd
+    .command("share")
+    .description(
+      "Share sessions with your other computers through a synced folder (iCloud Drive by default): " +
+        "publish this machine's recent sessions and list + resume every other machine's here. " +
+        "Dry-run by default; --yes applies. Restart the desktop app afterward to see new entries.",
+    )
+    .option("--dir <path>", "Shared folder (default: iCloud Drive/Harnery/claude-sessions)")
+    .option("--days <n>", "Only sessions active in the last N days", "14")
+    .option("--data-dir <path>", "Explicit desktop-app data directory")
+    .option("--yes", "Apply the plan (default is dry-run)")
+    .action((opts: { dir?: string; days: string; dataDir?: string; yes?: boolean }) => {
+      const shareDir = opts.dir ?? process.env.HARNERY_SESSION_SHARE_DIR ?? defaultShareDir();
+      if (!shareDir) {
+        emit.error({
+          code: "no_share_dir",
+          message: "no shared folder: pass --dir <path> or set HARNERY_SESSION_SHARE_DIR",
+        });
+        process.exit(2);
+      }
+      const cli = readCliAccount();
+      if (!cli) {
+        emit.error({
+          code: "no_account",
+          message: "cannot read the signed-in account from ~/.claude.json",
+        });
+        process.exit(2);
+      }
+      const [dataDir] = requireDataDirs(emit, opts.dataDir);
+      const shareOpts = {
+        shareDir,
+        machine: resolveMachineLabel(),
+        days: Number(opts.days) || 14,
+        dataDir: dataDir as string,
+        targetAccountUuid: cli.accountUuid,
+      };
+      const plan = planShare(shareOpts);
+      const summary = { share_dir: shareDir, machine: shareOpts.machine, ...shareSummary(plan) };
+      if (!opts.yes) {
+        emit.data({ dry_run: true, ...summary, hint: "re-run with --yes to apply" });
+        return;
+      }
+      const result = applyShare(plan, shareOpts);
+      emit.data({
+        dry_run: false,
+        ...summary,
+        ...result,
+        hint:
+          result.imported > 0
+            ? "quit the Claude desktop app fully (Cmd+Q) and reopen it to see the new sessions"
+            : "sidebar already current",
+      });
+    });
 }
 
 function collect(value: string, previous: string[]): string[] {

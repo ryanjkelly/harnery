@@ -98,6 +98,42 @@ After an applied batch, fully quit and relaunch the desktop app. Closing its
 window usually leaves it running, so the sidebar may not refresh until the app
 process restarts.
 
+## Sharing sessions across machines
+
+The sidebar and the transcripts it resumes are both local to one computer, so
+a person with two machines sees only the sessions started on the one in front
+of them. `share` connects them through any folder both machines sync. On macOS
+the default is `iCloud Drive/Harnery/claude-sessions`; elsewhere pass `--dir`
+or set `HARNERY_SESSION_SHARE_DIR`.
+
+```bash
+harn claude-desktop share                 # dry-run: what would be published and imported
+harn claude-desktop share --yes           # apply
+harn claude-desktop share --days 30 --yes # widen the window (default 14 days)
+```
+
+Each run does two things. It publishes this machine's recent, unarchived
+sessions (entry file, transcript, and the per-session sidecar folder) under
+`<dir>/<machine>/`, where `<machine>` is the presence label (`HARNERY_MACHINE`, then
+`~/.config/harnery/machine`, then the hostname). Then it
+reads every other machine's folder and makes those sessions listed and
+resumable here, copying the transcript into `~/.claude/projects/` and adding a
+sidebar entry for the signed-in account. Each machine writes only its own
+folder, so the synced folder never has two writers for one file.
+
+Transcripts only grow, which gives the merge rule. A remote transcript replaces
+the local one only when the local file is missing or is an exact byte prefix of
+the remote, which means the other machine continued the conversation. A local
+transcript that is longer, has diverged, or was written in the last three
+minutes is left alone and reported. Paths are rewritten from the other
+machine's home directory to this one's, and a session whose project folder does
+not exist here is skipped.
+
+Run it on each machine, on a timer if you want it automatic. As with `mirror`,
+fully quit and relaunch the desktop app to see newly imported entries. Work the
+other machine has not committed and pushed is not part of the transcript, so
+sync the repository as well before continuing a session.
+
 ## Caveats
 
 - The entry-file format is the desktop app's **private state**, not a public
