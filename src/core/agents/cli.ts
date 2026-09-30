@@ -309,12 +309,20 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
           }
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          // A missing heartbeat here means the session's generation ended
-          // while its process lived on. Name the reopen command (ADR 0088);
-          // set-task is usually the first thing such a session runs.
-          const hint = detail.includes("heartbeat_missing:")
-            ? `; run \`${resolveBinName(root)} agents lifecycle active\` to open a fresh generation for this continuing session`
-            : "";
+          // A missing heartbeat usually means the session's generation ended
+          // while its process lived on, so name the reopen command (ADR 0088).
+          // A still-live generation whose authority the ledger withholds looks
+          // the same here; name its diagnostics instead, since reopen cannot apply.
+          const { describeLiveAuthorityBlockV3, liveAuthorityBlockHintV3, liveAuthorityBlockV3 } =
+            await import("./state/live-coordination-view.ts");
+          const block = detail.includes("heartbeat_missing:")
+            ? liveAuthorityBlockV3(root, owner)
+            : null;
+          const hint = block
+            ? `; ${describeLiveAuthorityBlockV3(block)}; ${liveAuthorityBlockHintV3(resolveBinName(root))}`
+            : detail.includes("heartbeat_missing:")
+              ? `; run \`${resolveBinName(root)} agents lifecycle active\` to open a fresh generation for this continuing session`
+              : "";
           process.stderr.write(`agent-coord set-task: V3 authority refused (${detail})${hint}\n`);
           return 1;
         }

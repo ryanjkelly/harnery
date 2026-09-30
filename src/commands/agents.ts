@@ -78,6 +78,9 @@ import {
   readHeartbeat as readHeartbeatCache,
 } from "../core/agents/state/heartbeat-writer.ts";
 import {
+  describeLiveAuthorityBlockV3,
+  liveAuthorityBlockHintV3,
+  liveAuthorityBlockV3,
   readLiveCoordinationRow,
   readLiveCoordinationRows,
 } from "../core/agents/state/live-coordination-view.ts";
@@ -1486,6 +1489,10 @@ function normalizeKind(kind: string | undefined | null): string {
  * command refuses in turn and the caller has no way to guess the path back.
  */
 function noLiveGenerationMessage(root: string, owner: string): string {
+  const block = liveAuthorityBlockV3(root, owner);
+  if (block) {
+    return `resolved owner=${owner}; ${describeLiveAuthorityBlockV3(block)}; ${liveAuthorityBlockHintV3(resolveBinName(root))}`;
+  }
   return `resolved owner=${owner} but no authority-safe live V3 generation exists for it; ${lifecycleReopenHint(root)}`;
 }
 
@@ -5230,6 +5237,13 @@ function runHeal(opts: {
   }
 
   if (proc.status !== 0) {
+    const block = liveAuthorityBlockV3(root, owner);
+    if (block) {
+      emitHealFailure(
+        "authority_blocked",
+        `${describeLiveAuthorityBlockV3(block)}; a cache rebuild cannot restore authority the ledger withholds; ${liveAuthorityBlockHintV3(resolveBinName(root))}`,
+      );
+    }
     emitHealFailure(
       healFailureReason(root, owner, sessionId, healAdapter),
       spawnFailureMessage(proc, `agent-coord ${action}`),

@@ -226,3 +226,76 @@ function observedModel(generation: CoordinationGenerationViewV3): string | undef
 function isLifecycleState(value: string | undefined): value is "active" | "blocked" | "done" {
   return value === "active" || value === "blocked" || value === "done";
 }
+
+/** Why a still-live V3 generation has lost coordination authority. */
+export interface LiveAuthorityBlockV3 {
+  generation_id: string;
+  scope: "generation" | "ledger";
+  diagnostics: { code: string; event_id?: string }[];
+}
+
+/**
+ * Explain an authority refusal for a generation that is still live. Callers
+ * reach this after a lookup came back empty; without it the caller sees only
+ * "missing", which reads like an ended session and points at a reopen that
+ * cannot apply. Returns null when no live generation exists or nothing blocks.
+ */
+export function liveAuthorityBlockV3(
+  coordRoot: string,
+  nativeInstanceId: string,
+): LiveAuthorityBlockV3 | null {
+  let view: CoordinationViewV3;
+  try {
+    if (observeLiveEventLedgerRouteV3(coordRoot).state === "blocked") return null;
+    view = readCoordinationViewV3(coordRoot);
+  } catch {
+    return null;
+  }
+  const generation = view.instances[liveInstanceIdV3(nativeInstanceId)];
+  if (generation?.phase !== "live" || generation.authority_eligible) return null;
+  const own = (view.diagnostics_by_generation[generation.generation_id] ?? []).filter(
+    (diagnostic) => diagnostic.authority_blocking,
+  );
+  const blocking = own.length
+    ? own
+    : view.global_diagnostics.filter((diagnostic) => diagnostic.authority_blocking);
+  if (!blocking.length) return null;
+  return {
+    generation_id: generation.generation_id,
+    scope: own.length ? "generation" : "ledger",
+    diagnostics: blocking.map((diagnostic) => ({
+      code: diagnostic.source_code
+        ? `${diagnostic.code}:${diagnostic.source_code}`
+        : diagnostic.code,
+      ...(diagnostic.event_id ? { event_id: diagnostic.event_id } : {}),
+    })),
+  };
+}
+
+/** One-line description of a live authority block, naming codes and events. */
+export function describeLiveAuthorityBlockV3(block: LiveAuthorityBlockV3): string {
+  const byCode = new Map<string, string[]>();
+  for (const { code, event_id } of block.diagnostics) {
+    const events = byCode.get(code) ?? [];
+    if (event_id) events.push(event_id);
+    byCode.set(code, events);
+  }
+  const parts = [...byCode].map(([code, events]) => {
+    const shown = events.slice(0, 2).join(", ");
+    const more = events.length > 2 ? `, +${events.length - 2} more` : "";
+    return events.length ? `${code} ×${events.length} (${shown}${more})` : code;
+  });
+  const where =
+    block.scope === "generation"
+      ? `the event ledger holds ${block.diagnostics.length} authority-blocking diagnostic(s) for it`
+      : "the event ledger holds authority-blocking diagnostics that block every generation";
+  return `generation ${block.generation_id} is still live, but ${where}: ${parts.join("; ")}`;
+}
+
+/** Recovery pointer for a live authority block, in place of the reopen hint. */
+export function liveAuthorityBlockHintV3(binName: string): string {
+  return (
+    `\`${binName} agents lifecycle active\` cannot help because it only reopens an ended ` +
+    `generation; \`${binName} agents health\` lists the diagnostics`
+  );
+}

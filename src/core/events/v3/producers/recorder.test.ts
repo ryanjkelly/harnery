@@ -21,6 +21,11 @@ import {
   reconcileSessionFinalizationV3,
   requestSessionEndExplicitV3,
 } from "../../../agents/session-finalizer-v3.ts";
+import {
+  describeLiveAuthorityBlockV3,
+  liveAuthorityBlockHintV3,
+  liveAuthorityBlockV3,
+} from "../../../agents/state/live-coordination-view.ts";
 import { codexMidFlightDiagnosticContext } from "../../../hooks/adapter/behaviors/codex.ts";
 import { type ParsedPayload, parsePayload } from "../../../hooks/adapter/parse.ts";
 import { clearRuntimeTelemetryCachesForTest } from "../../../hooks/adapter/runtime-telemetry.ts";
@@ -28,6 +33,7 @@ import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../capabilities.ts";
+import type { EventV3 } from "../contract.ts";
 import {
   type CandidateGenesisManifestV3,
   type CandidateProfileV3,
@@ -37,10 +43,11 @@ import {
 import { repairEventV3ControlPair } from "../control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
+import { eventIdV3, generationIdV3 } from "../ids.ts";
 import { projectLatencyV3 } from "../latency.ts";
 import { reduceSafetyProjectionV3 } from "../projection.ts";
 import { readLedgerV3 } from "../reader.ts";
-import { eventV3Paths } from "../writer.ts";
+import { eventV3Paths, writeEventV3 } from "../writer.ts";
 import {
   drainHookIntakeSpoolV3,
   readHookProducerStateV3,
@@ -1203,6 +1210,41 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(conflicting.diagnostics.map((item) => item.code)).toContain(
       "delegation_duplicate_start",
     );
+  });
+
+  test("names the ledger diagnostics that block a still-live generation", () => {
+    const root = candidateRoot();
+    const nativeSession = "parent-session";
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "sub-agent-start",
+        parsed({ session_id: nativeSession, subagent_id: "child", raw: { agent_type: "x" } }),
+      ),
+    );
+    expect(liveAuthorityBlockV3(root, "inst_fixture")).toBeNull();
+
+    const read = readLedgerV3(root);
+    const started = read.events.find(({ event }) => event.event_type === "agent.started")!.event;
+    const lastSequence = Math.max(...read.events.map(({ event }) => event.producer.sequence));
+    const conflictingId = eventIdV3();
+    writeEventV3(root, {
+      ...started,
+      event_id: conflictingId,
+      producer: { ...started.producer, sequence: lastSequence + 1 },
+      payload: { ...started.payload, child_generation_id: generationIdV3() },
+    } as EventV3);
+
+    const block = liveAuthorityBlockV3(root, "inst_fixture");
+    expect(block?.scope).toBe("generation");
+    expect(block?.diagnostics).toEqual([
+      { code: "delegation_duplicate_start", event_id: conflictingId },
+    ]);
+    const described = describeLiveAuthorityBlockV3(block!);
+    expect(described).toContain("is still live");
+    expect(described).toContain(`delegation_duplicate_start ×1 (${conflictingId})`);
+    expect(liveAuthorityBlockHintV3("harn")).toContain("only reopens an ended generation");
   });
 
   test("derives operator-input waits and high-confidence semantic progress", () => {
