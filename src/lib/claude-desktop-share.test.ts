@@ -226,4 +226,44 @@ describe("share between two machines", () => {
     );
     expect(planShare(opts(studio)).exports).toHaveLength(0);
   });
+
+  test("sessions not downloaded yet are skipped, fetched, and imported next pass", () => {
+    const studio = machine("studio");
+    const air = machine("air");
+    startSession(studio, "s1", "Ready", ["a"]);
+    startSession(studio, "s2", "Still in the cloud", ["b"]);
+    sync(studio);
+    const cloudOnly = join(root, "share", "studio", "sessions", "s2", "transcript.jsonl");
+    const requested: string[] = [];
+    const first = planShare({
+      ...opts(air),
+      findPlaceholders: (paths) => new Set(paths.filter((p) => p === cloudOnly)),
+      requestDownload: (paths) => requested.push(...paths),
+    });
+    expect(first.imports.map((x) => x.cliSessionId)).toEqual(["s1"]);
+    expect(first.skips).toEqual([
+      { machine: "studio", cliSessionId: "s2", title: null, reason: "not-downloaded" },
+    ]);
+    expect(requested).toEqual([join(root, "share", "studio", "sessions", "s2")]);
+
+    const second = planShare({ ...opts(air), findPlaceholders: () => new Set() });
+    expect(second.imports.map((x) => x.cliSessionId).sort()).toEqual(["s1", "s2"]);
+  });
+
+  test("a session that fails to copy is reported and the rest still import", () => {
+    const studio = machine("studio");
+    const air = machine("air");
+    startSession(studio, "s1", "Broken", ["a"]);
+    startSession(studio, "s2", "Fine", ["b"]);
+    sync(studio);
+    const plan = planShare({ ...opts(air), findPlaceholders: () => new Set() });
+    const broken = plan.imports.find((x) => x.cliSessionId === "s1");
+    if (!broken) throw new Error("s1 not planned");
+    broken.transcriptFrom = join(root, "share", "studio", "sessions", "s1", "gone.jsonl");
+    const result = applyShare(plan, { ...opts(air), findPlaceholders: () => new Set() });
+    expect(result.imported).toBe(1);
+    expect(result.failed.map((f) => f.cliSessionId)).toEqual(["s1"]);
+    expect(existsSync(transcriptFile(air, "s2"))).toBe(true);
+    expect(existsSync(`${transcriptFile(air, "s1")}.harnery-tmp`)).toBe(false);
+  });
 });

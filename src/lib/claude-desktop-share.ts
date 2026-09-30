@@ -1,3 +1,4 @@
+import { spawn, spawnSync } from "node:child_process";
 import {
   closeSync,
   copyFileSync,
@@ -9,6 +10,7 @@ import {
   readFileSync,
   readSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -40,6 +42,12 @@ import { type DesktopAccount, type DesktopSessionEntry, listAccounts } from "./c
  * byte prefix of the remote (the other machine continued the conversation).
  * A local transcript that is longer, diverged, or written in the last few
  * minutes (a live session here) is never overwritten.
+ *
+ * A synced folder can list a file before its bytes arrive (an iCloud
+ * "dataless" placeholder). Reading one blocks until the download finishes, or
+ * fails outright, so such sessions are skipped as "not-downloaded", a download
+ * is requested, and the next pass picks them up. One session that still fails
+ * to copy is reported under `failed` and never stops the rest of the pass.
  */
 
 export interface ShareOptions {
@@ -57,6 +65,10 @@ export interface ShareOptions {
   now?: number;
   /** Local transcripts modified this recently count as live (ms). */
   liveWindowMs?: number;
+  /** Override for tests: which of these paths are not downloaded yet. */
+  findPlaceholders?: (paths: string[]) => Set<string>;
+  /** Override for tests: ask the sync client to download these paths. */
+  requestDownload?: (paths: string[]) => void;
 }
 
 export interface ExportAction {
@@ -89,7 +101,14 @@ export interface ImportSkip {
   machine: string;
   cliSessionId: string;
   title: string | null;
-  reason: "up-to-date" | "local-newer" | "diverged" | "live-here" | "missing-cwd" | "unreadable";
+  reason:
+    | "up-to-date"
+    | "local-newer"
+    | "diverged"
+    | "live-here"
+    | "missing-cwd"
+    | "unreadable"
+    | "not-downloaded";
 }
 
 export interface SharePlan {
@@ -97,6 +116,51 @@ export interface SharePlan {
   imports: ImportAction[];
   skips: ImportSkip[];
   machines: string[];
+}
+
+export interface ImportFailure {
+  machine: string;
+  cliSessionId: string;
+  title: string | null;
+  error: string;
+}
+
+/** macOS st_flags bit for a file whose contents live only in the cloud. */
+const SF_DATALESS = 0x40000000;
+
+/**
+ * Paths whose bytes are not on this disk yet. On macOS this reads st_flags
+ * (Node's stat does not expose them) in one `stat` call; everywhere else only
+ * the `.<name>.icloud` stub convention applies.
+ */
+export function findPlaceholders(paths: string[]): Set<string> {
+  const out = new Set<string>();
+  const present: string[] = [];
+  for (const p of paths) {
+    if (existsSync(p)) present.push(p);
+    else if (existsSync(join(dirname(p), `.${p.slice(dirname(p).length + 1)}.icloud`))) out.add(p);
+  }
+  if (process.platform !== "darwin" || present.length === 0) return out;
+  const r = spawnSync("/usr/bin/stat", ["-f", "%Xf %N", ...present], { encoding: "utf8" });
+  for (const line of (r.stdout ?? "").split("\n")) {
+    const sp = line.indexOf(" ");
+    if (sp < 0) continue;
+    const flags = Number.parseInt(line.slice(0, sp), 16);
+    if (Number.isFinite(flags) && (flags & SF_DATALESS) !== 0) out.add(line.slice(sp + 1));
+  }
+  return out;
+}
+
+/** Best-effort, fire-and-forget: ask iCloud Drive to fetch these paths. */
+export function requestDownload(paths: string[]): void {
+  if (process.platform !== "darwin") return;
+  for (const p of paths) {
+    try {
+      spawn("/usr/bin/brctl", ["download", p], { stdio: "ignore", detached: true }).unref();
+    } catch {
+      // Not an iCloud folder or brctl missing; the next pass retries.
+    }
+  }
 }
 
 export function defaultShareDir(home = homedir()): string | null {
@@ -238,9 +302,21 @@ export function planShare(opts: ShareOptions): SharePlan {
     if (!manifest) continue;
     machines.push(machine);
     const remoteHome = typeof manifest.home === "string" ? manifest.home : null;
-    for (const id of safeReaddir(join(mdir, "sessions"))) {
+    const ids = safeReaddir(join(mdir, "sessions")).filter((id) => !id.startsWith("."));
+    const files = ids.flatMap((id) => [
+      join(mdir, "sessions", id, "entry.json"),
+      join(mdir, "sessions", id, "transcript.jsonl"),
+    ]);
+    const placeholders = (opts.findPlaceholders ?? findPlaceholders)(files);
+    const toDownload: string[] = [];
+    for (const id of ids) {
       const sdir = join(mdir, "sessions", id);
       const entryFrom = join(sdir, "entry.json");
+      if (placeholders.has(entryFrom) || placeholders.has(join(sdir, "transcript.jsonl"))) {
+        toDownload.push(sdir);
+        skips.push({ machine, cliSessionId: id, title: null, reason: "not-downloaded" });
+        continue;
+      }
       const remote = readJson(entryFrom);
       const remoteTranscript = join(sdir, "transcript.jsonl");
       const title = typeof remote?.title === "string" ? remote.title : null;
@@ -306,6 +382,7 @@ export function planShare(opts: ShareOptions): SharePlan {
         remoteLastActivityAt: remoteLast,
       });
     }
+    if (toDownload.length > 0) (opts.requestDownload ?? requestDownload)(toDownload);
   }
   return { exports, imports, skips, machines };
 }
@@ -314,8 +391,13 @@ export function planShare(opts: ShareOptions): SharePlan {
 function atomicCopy(from: string, to: string): void {
   mkdirSync(dirname(to), { recursive: true });
   const tmp = `${to}.harnery-tmp`;
-  copyFileSync(from, tmp);
-  renameSync(tmp, to);
+  try {
+    copyFileSync(from, tmp);
+    renameSync(tmp, to);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
 }
 
 function atomicWrite(to: string, content: string): void {
@@ -328,7 +410,7 @@ function atomicWrite(to: string, content: string): void {
 export function applyShare(
   plan: SharePlan,
   opts: ShareOptions,
-): { exported: number; imported: number } {
+): { exported: number; imported: number; failed: ImportFailure[] } {
   const home = opts.home ?? homedir();
   const mdir = join(opts.shareDir, opts.machine);
   const accounts = listAccounts(opts.dataDir);
@@ -350,45 +432,55 @@ export function applyShare(
   );
 
   let imported = 0;
+  const failed: ImportFailure[] = [];
   for (const x of plan.imports) {
-    const remote = readJson(x.entryFrom);
-    if (!remote) continue;
-    const remoteManifest = readJson(join(opts.shareDir, x.machine, "manifest.json"));
-    const remoteHome = typeof remoteManifest?.home === "string" ? remoteManifest.home : null;
-    if (x.transcriptFrom) atomicCopy(x.transcriptFrom, x.transcriptTo);
-    if (x.sidecarFrom) {
-      cpSync(x.sidecarFrom, join(dirname(x.transcriptTo), x.cliSessionId), {
-        recursive: true,
-        force: true,
+    try {
+      if (importOne(x, opts, home)) imported++;
+    } catch (err) {
+      failed.push({
+        machine: x.machine,
+        cliSessionId: x.cliSessionId,
+        title: x.title,
+        error: err instanceof Error ? err.message : String(err),
       });
     }
-    let entry: Record<string, unknown>;
-    if (x.entryExists) {
-      entry = readJson(x.entryTo) ?? {};
-      if (typeof remote.title === "string") entry.title = remote.title;
-      if (typeof remote.lastActivityAt === "number") entry.lastActivityAt = remote.lastActivityAt;
-    } else {
-      entry = { ...remote, isArchived: false };
-      for (const k of ["cwd", "originCwd"]) {
-        if (typeof entry[k] === "string")
-          entry[k] = remapHome(entry[k] as string, remoteHome, home);
-      }
-      if (Array.isArray(entry.gitAnchors)) {
-        entry.gitAnchors = (entry.gitAnchors as Record<string, unknown>[]).map((g) => ({
-          ...g,
-          gitRoot:
-            typeof g.gitRoot === "string" ? remapHome(g.gitRoot, remoteHome, home) : g.gitRoot,
-          commonDir:
-            typeof g.commonDir === "string"
-              ? remapHome(g.commonDir, remoteHome, home)
-              : g.commonDir,
-        }));
-      }
-    }
-    atomicWrite(x.entryTo, `${JSON.stringify(entry)}\n`);
-    imported++;
   }
-  return { exported: plan.exports.length, imported };
+  return { exported: plan.exports.length, imported, failed };
+}
+
+function importOne(x: ImportAction, opts: ShareOptions, home: string): boolean {
+  const remote = readJson(x.entryFrom);
+  if (!remote) return false;
+  const remoteManifest = readJson(join(opts.shareDir, x.machine, "manifest.json"));
+  const remoteHome = typeof remoteManifest?.home === "string" ? remoteManifest.home : null;
+  if (x.transcriptFrom) atomicCopy(x.transcriptFrom, x.transcriptTo);
+  if (x.sidecarFrom) {
+    cpSync(x.sidecarFrom, join(dirname(x.transcriptTo), x.cliSessionId), {
+      recursive: true,
+      force: true,
+    });
+  }
+  let entry: Record<string, unknown>;
+  if (x.entryExists) {
+    entry = readJson(x.entryTo) ?? {};
+    if (typeof remote.title === "string") entry.title = remote.title;
+    if (typeof remote.lastActivityAt === "number") entry.lastActivityAt = remote.lastActivityAt;
+  } else {
+    entry = { ...remote, isArchived: false };
+    for (const k of ["cwd", "originCwd"]) {
+      if (typeof entry[k] === "string") entry[k] = remapHome(entry[k] as string, remoteHome, home);
+    }
+    if (Array.isArray(entry.gitAnchors)) {
+      entry.gitAnchors = (entry.gitAnchors as Record<string, unknown>[]).map((g) => ({
+        ...g,
+        gitRoot: typeof g.gitRoot === "string" ? remapHome(g.gitRoot, remoteHome, home) : g.gitRoot,
+        commonDir:
+          typeof g.commonDir === "string" ? remapHome(g.commonDir, remoteHome, home) : g.commonDir,
+      }));
+    }
+  }
+  atomicWrite(x.entryTo, `${JSON.stringify(entry)}\n`);
+  return true;
 }
 
 export function shareSummary(plan: SharePlan) {
@@ -406,13 +498,14 @@ export function shareSummary(plan: SharePlan) {
       cli_session_id: x.cliSessionId,
     })),
     skipped: plan.skips
-      .filter((s) => s.reason !== "up-to-date")
+      .filter((s) => s.reason !== "up-to-date" && s.reason !== "not-downloaded")
       .map((s) => ({
         from_machine: s.machine,
         title: s.title,
         cli_session_id: s.cliSessionId,
         reason: s.reason,
       })),
+    not_downloaded: plan.skips.filter((s) => s.reason === "not-downloaded").length,
     up_to_date: plan.skips.filter((s) => s.reason === "up-to-date").length,
   };
 }
