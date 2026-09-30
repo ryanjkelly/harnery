@@ -38,6 +38,7 @@ import { repairEventV3ControlPair } from "../control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
 import { projectLatencyV3 } from "../latency.ts";
+import { reduceSafetyProjectionV3 } from "../projection.ts";
 import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths } from "../writer.ts";
 import {
@@ -1134,6 +1135,74 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(started?.payload.child_generation_id).toBe(completed?.payload.child_generation_id);
     expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.delegations).toEqual([]);
     expect(readFileSync(eventV3Paths(root).active, "utf8")).not.toContain(nativeChild);
+  });
+
+  test("suppresses a repeated child-agent start from a SendMessage resume", () => {
+    const root = candidateRoot();
+    const nativeSession = "parent-session";
+    const child = parsed({
+      session_id: nativeSession,
+      subagent_id: "background-child",
+      raw: { agent_type: "general-purpose" },
+    });
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    expect(recordHookSignalV3(baseInput(root, "sub-agent-start", child)).state).toBe("recorded");
+    expect(recordHookSignalV3(baseInput(root, "sub-agent-start", child)).state).toBe("ignored");
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    expect(events.filter((event) => event.event_type === "agent.started")).toHaveLength(1);
+    const diagnosticsDir = join(root, ".harnery/ledgers/v3/diagnostics");
+    expect(
+      readdirSync(diagnosticsDir).filter((name) =>
+        name.startsWith("duplicate_subagent_start_suppressed-"),
+      ),
+    ).toHaveLength(1);
+    const projection = reduceSafetyProjectionV3(readLedgerV3(root));
+    expect(projection.authority_safe).toBe(true);
+  });
+
+  test("reduces an exact repeated agent.started as a resume, not a conflict", () => {
+    const root = candidateRoot();
+    const nativeSession = "parent-session";
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "sub-agent-start",
+        parsed({ session_id: nativeSession, subagent_id: "child", raw: { agent_type: "x" } }),
+      ),
+    );
+    const read = readLedgerV3(root);
+    const started = read.events.find(({ event }) => event.event_type === "agent.started")!;
+    const last = read.events.at(-1)!.position;
+    const replay = (childGenerationId: string, offset: number) => ({
+      event: {
+        ...started.event,
+        event_id: `evt_${crypto.randomUUID()}`,
+        payload: { ...started.event.payload, child_generation_id: childGenerationId },
+      } as typeof started.event,
+      position: { segment_ordinal: last.segment_ordinal, byte_offset: last.byte_offset + offset },
+    });
+    const childGenerationId = (started.event.payload as { child_generation_id: string })
+      .child_generation_id;
+
+    const resumed = reduceSafetyProjectionV3({
+      ...read,
+      events: [...read.events, replay(childGenerationId, 1)],
+    });
+    expect(resumed.authority_safe).toBe(true);
+    expect(resumed.diagnostics.map((item) => item.code)).not.toContain(
+      "delegation_duplicate_start",
+    );
+
+    const conflicting = reduceSafetyProjectionV3({
+      ...read,
+      events: [...read.events, replay(`gen_${crypto.randomUUID()}`, 1)],
+    });
+    expect(conflicting.authority_safe).toBe(false);
+    expect(conflicting.diagnostics.map((item) => item.code)).toContain(
+      "delegation_duplicate_start",
+    );
   });
 
   test("derives operator-input waits and high-confidence semantic progress", () => {

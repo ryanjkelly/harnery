@@ -539,7 +539,17 @@ function applyAgentStarted(
   projection: SafetyProjectionV3,
   event: Extract<EventV3, { event_type: "agent.started" }>,
 ): void {
-  if (projection.delegations[event.payload.delegation_id]) {
+  const existing = projection.delegations[event.payload.delegation_id];
+  if (existing) {
+    // Claude Code re-fires SubagentStart when SendMessage resumes a background
+    // agent. A restart naming the same parent and child is that resume, not a
+    // conflicting delegation, and must not strip the parent's authority.
+    if (
+      existing.parent_generation_id === generationIdOf(event) &&
+      existing.child_generation_id === event.payload.child_generation_id
+    ) {
+      return;
+    }
     addDiagnostic(projection, {
       code: "delegation_duplicate_start",
       event_id: event.event_id,

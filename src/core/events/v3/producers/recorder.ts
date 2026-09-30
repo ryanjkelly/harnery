@@ -1130,6 +1130,22 @@ function processHookSignalLocked(
     if (input.signal === "sub-agent-start") {
       if (!sourceId) return { state: "ignored" };
       delegation = state.delegations.find((candidate) => candidate.source_id === sourceId);
+      if (delegation?.open_event_id) {
+        // SendMessage to a running background agent re-fires SubagentStart.
+        // The delegation is already open; a second agent.started is noise.
+        writeProducerDiagnosticV3(input.coordRoot, "duplicate_subagent_start_suppressed", {
+          adapter: input.adapter,
+          signal: input.signal,
+          reason: "delegation_already_open",
+          instance_id: input.instance_id,
+          session_hash: sessionHash,
+          generation_id: state.generation_id,
+          delegation_id: delegation.delegation_id,
+          payload: input.payload,
+        });
+        publishProducerState(input.coordRoot, path, state);
+        return { state: "ignored" };
+      }
       if (!delegation) {
         const opened = openSpanStateV3({
           span_id: spanIdV3(),
