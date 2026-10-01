@@ -34,6 +34,7 @@ const browserFiles = new Set([
   "src/lib/browser/session-browser.test.ts",
   "src/lib/browser/session-control.test.ts",
   "tests/e2e/browse-asserts.test.ts",
+  "tests/e2e/browse-collect.test.ts",
   "tests/e2e/browse-content-checks.test.ts",
   "tests/e2e/browse-critique.test.ts",
   "tests/e2e/browse-layout-lint.test.ts",
@@ -51,6 +52,7 @@ const browserProcessFiles = new Set([
   "src/lib/browser/navigation-pace.test.ts",
   "src/lib/browser/client-capture.test.ts",
   "src/lib/browser/session-browser.test.ts",
+  "tests/e2e/browse-collect.test.ts",
   "tests/e2e/browse-layout-lint.test.ts",
   "tests/e2e/browse-session.test.ts",
 ]);

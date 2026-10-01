@@ -7,6 +7,7 @@ import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
+import { splitBatchSteps } from "../lib/browser/batch-steps.ts";
 import {
   CAPTURE_FIDELITY_MISMATCH_THRESHOLD,
   compareBand,
@@ -15,6 +16,22 @@ import {
   type FidelityProbe,
   pngDimensions,
 } from "../lib/browser/capture-fidelity.ts";
+import {
+  type CollectLimits,
+  createPageDriver,
+  createRng,
+  DEFAULT_COLLECT_LIMITS,
+  PACING_LIMITS,
+  parseProbability,
+  parseRange,
+  presetNames,
+  type ResolvedCollectSpec,
+  randomSeed,
+  resolveCollectSpec,
+  runCollect,
+  type ScrollPacing,
+  scrollPacingFromEnv,
+} from "../lib/browser/collect/index.ts";
 import {
   type AssertResult,
   Browser,
@@ -177,6 +194,25 @@ interface BrowseOpts {
   evaluate?: string;
   captureEvaluate?: string;
   batch?: string;
+  // Scroll-and-collect mode (--collect [preset])
+  collect?: string | boolean;
+  collectItem?: string;
+  collectKey?: string;
+  collectKeyPattern?: string;
+  collectField?: string[];
+  collectExpand?: string | boolean;
+  collectMaxItems?: string;
+  collectMaxScrolls?: string;
+  collectMaxSeconds?: string;
+  collectIdle?: string;
+  collectStep?: string;
+  collectPause?: string;
+  collectReadChance?: string;
+  collectReadPause?: string;
+  collectBackChance?: string;
+  collectSeed?: string;
+  collectFormat?: string;
+  collectOut?: string;
   networkHar?: string;
   login?: boolean;
   plain?: boolean;
@@ -355,8 +391,69 @@ export function registerBrowseCommand(
       "--batch <steps>",
       "Run multiple steps in one session, semicolon-separated. Each step is one of: " +
         "`click <selector>`, `fill <selector=>value>`, `press <key>`, `wait <selector|ms>`, `eval <js>`, `reload`. " +
-        'Example: `--batch "click button; wait 1500; reload; wait 3000"`. `reload` preserves sessionStorage + cookies, which is how to repro sessionStorage-restored UI state.',
+        'Example: `--batch "click button; wait 1500; reload; wait 3000"`. `reload` preserves sessionStorage + cookies, which is how to repro sessionStorage-restored UI state. ' +
+        "An `eval` step keeps semicolons inside JS quotes and (), [], {}; `\\;` is always a literal semicolon.",
     )
+    .option(
+      "--collect [preset]",
+      "Scroll an infinite feed like a reader and collect every item that passes through the DOM, " +
+        `de-duplicated, as JSON. Presets: ${presetNames().join(", ")} (default generic). ` +
+        "Skips the trio, checks and --evaluate; runs after --wait-for and --batch.",
+    )
+    .option("--collect-item <css>", "Item selector (overrides the preset's).")
+    .option(
+      "--collect-key <extractor>",
+      "Dedupe key extractor, <selector>[@attr] inside the item. Default: the preset key, else the " +
+        "first permalink-like link, else a hash of the item text.",
+    )
+    .option("--collect-key-pattern <regex>", "Regex a link must match to count as a permalink key.")
+    .option(
+      "--collect-field <name=extractor>",
+      "Add or override a field: name=<selector>[@attr]. name[]= collects every match. Empty selector " +
+        "or :scope is the item itself; no @attr reads visible text (repeatable).",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
+      "--collect-expand [selector]",
+      "Click 'show more' buttons inside visible items before harvesting (preset selector by default). " +
+        "At most 3 per step and 50 per run; links and action buttons are never clicked.",
+    )
+    .option("--collect-max-items <n>", "Stop after this many unique items.")
+    .option("--collect-max-scrolls <n>", "Stop after this many scroll steps (default 60).", "60")
+    .option("--collect-max-seconds <n>", "Stop after this much wall time (default 300).", "300")
+    .option(
+      "--collect-idle <n>",
+      "Stop after this many steps with no new items and no page growth (default 5).",
+      "5",
+    )
+    .option(
+      "--collect-step <min-max>",
+      "Scroll distance per step as a viewport fraction (default 0.6-1.1; env HARNERY_COLLECT_STEP).",
+    )
+    .option(
+      "--collect-pause <min-max>",
+      "Pause after each step in ms (default 1200-3500; env HARNERY_COLLECT_PAUSE_MS).",
+    )
+    .option(
+      "--collect-read-chance <p>",
+      "Chance of a longer reading pause per step (default 0.12).",
+    )
+    .option("--collect-read-pause <min-max>", "Reading pause in ms (default 4000-9000).")
+    .option(
+      "--collect-back-chance <p>",
+      "Chance a step starts with a small scroll back up (default 0.08).",
+    )
+    .option(
+      "--collect-seed <n>",
+      "Seed for the scroll schedule; the envelope reports the seed used.",
+    )
+    .option(
+      "--collect-format <format>",
+      "json (envelope, default) or jsonl (one item per line).",
+      "json",
+    )
+    .option("--collect-out <path>", "Write the collection to this file instead of stdout.")
     .option("--network-har <path>", "Record network traffic to a HAR file (finalized on close)")
     .option(
       "--viewport <preset|WxH>",
@@ -948,6 +1045,8 @@ async function runBrowse(
     );
   }
 
+  const collectPlan = opts.collect ? buildCollectPlan(opts) : null;
+
   const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
   if (opts.plain) {
     if (!opts.login) throw new Error("--plain requires --login.");
@@ -1042,6 +1141,11 @@ async function runBrowse(
     let batchResult: BatchResult | undefined;
     if (opts.batch) {
       batchResult = await runBatch(browser, opts.batch, Number.parseInt(opts.timeout, 10));
+    }
+
+    if (collectPlan) {
+      await runCollectMode(browser, collectPlan);
+      return;
     }
 
     let evalResult: unknown;
@@ -1701,9 +1805,161 @@ async function runBrowse(
 }
 
 // ---------------------------------------------------------------------------
-// Batch mode parser. Each step is `<verb> <args>`; verbs are click, fill,
-// press, wait, eval. Steps are separated by `;` (escape with `\;` if a value
-// genuinely contains a semicolon, rare for the supported verbs).
+// Scroll-and-collect mode (--collect). Extends browse rather than adding a
+// sibling command so it reuses the exact session path: persistent profile,
+// cookie jar, browser channel, user agent, proxy, page-load pace gate,
+// --wait-for and --batch setup steps.
+// ---------------------------------------------------------------------------
+
+interface CollectPlan {
+  spec: ResolvedCollectSpec;
+  limits: CollectLimits;
+  pacing: ScrollPacing;
+  seed: number;
+  format: "json" | "jsonl";
+  out: string | null;
+}
+
+function parsePositiveInt(raw: string, flag: string): number {
+  if (!/^\d+$/.test(raw.trim()) || Number.parseInt(raw, 10) < 1) {
+    throw new Error(`${flag} must be a positive integer (got "${raw}").`);
+  }
+  return Number.parseInt(raw, 10);
+}
+
+function buildCollectPlan(opts: BrowseOpts): CollectPlan {
+  if (opts.login || opts.plain) throw new Error("--collect cannot run with --login or --plain.");
+  if (opts.snapshot || opts.html || opts.json) {
+    throw new Error("--collect prints its own JSON; drop --snapshot, --html and --json.");
+  }
+  const presetName = typeof opts.collect === "string" ? opts.collect : "generic";
+  const spec = resolveCollectSpec(presetName, {
+    item: opts.collectItem,
+    key: opts.collectKey,
+    keyPattern: opts.collectKeyPattern,
+    fields: opts.collectField,
+    expand: opts.collectExpand,
+  });
+  const limits: CollectLimits = {
+    ...DEFAULT_COLLECT_LIMITS,
+    maxItems:
+      opts.collectMaxItems === undefined
+        ? null
+        : parsePositiveInt(opts.collectMaxItems, "--collect-max-items"),
+    maxScrolls: parsePositiveInt(opts.collectMaxScrolls ?? "60", "--collect-max-scrolls"),
+    maxMs: parsePositiveInt(opts.collectMaxSeconds ?? "300", "--collect-max-seconds") * 1_000,
+    idleSteps: parsePositiveInt(opts.collectIdle ?? "5", "--collect-idle"),
+    expandPerStep: spec.expand ? 3 : 0,
+  };
+  const pacing = scrollPacingFromEnv();
+  const msBounds = { min: 0, max: PACING_LIMITS.maxPauseMs };
+  if (opts.collectStep) {
+    pacing.step = parseRange(opts.collectStep, "--collect-step", {
+      min: 0.05,
+      max: PACING_LIMITS.maxStepFraction,
+    });
+  }
+  if (opts.collectPause)
+    pacing.pauseMs = parseRange(opts.collectPause, "--collect-pause", msBounds);
+  if (opts.collectReadPause) {
+    pacing.readPauseMs = parseRange(opts.collectReadPause, "--collect-read-pause", msBounds);
+  }
+  if (opts.collectReadChance !== undefined) {
+    pacing.readChance = parseProbability(opts.collectReadChance, "--collect-read-chance");
+  }
+  if (opts.collectBackChance !== undefined) {
+    pacing.backChance = parseProbability(opts.collectBackChance, "--collect-back-chance");
+  }
+  let seed = randomSeed();
+  if (opts.collectSeed !== undefined) {
+    if (!/^\d+$/.test(opts.collectSeed.trim())) {
+      throw new Error(`--collect-seed must be a non-negative integer (got "${opts.collectSeed}").`);
+    }
+    seed = Number(BigInt(opts.collectSeed.trim()) % 4294967296n);
+  }
+  const format = opts.collectFormat ?? "json";
+  if (format !== "json" && format !== "jsonl") {
+    throw new Error(`--collect-format must be json or jsonl (got "${format}").`);
+  }
+  return {
+    spec,
+    limits,
+    pacing,
+    seed,
+    format,
+    out: opts.collectOut ? resolve(opts.collectOut) : null,
+  };
+}
+
+async function runCollectMode(browser: Browser, plan: CollectPlan): Promise<void> {
+  const page = browser.currentPage;
+  const rng = createRng(plan.seed);
+  let interrupted = false;
+  const onSignal = () => {
+    interrupted = true;
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  let result: Awaited<ReturnType<typeof runCollect>>;
+  try {
+    emit.log(
+      `collect: preset ${plan.spec.preset}, item ${plan.spec.item}, seed ${plan.seed}`,
+      "info",
+    );
+    const driver = createPageDriver(page, plan.spec, {
+      rng,
+      log: (message) => emit.log(message, "warn"),
+    });
+    result = await runCollect(driver, {
+      limits: plan.limits,
+      pacing: plan.pacing,
+      rng,
+      shouldStop: () => interrupted,
+      onStep: ({ step, items, added }) =>
+        emit.log(`collect: step ${step}, ${items} items (+${added})`, "debug"),
+    });
+  } finally {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  }
+  const { items, stats } = result;
+  emit.log(
+    `collect: ${items.length} items in ${stats.steps} steps, stopped on ${stats.stopReason}` +
+      (stats.stopDetail ? ` (${stats.stopDetail})` : ""),
+    "info",
+  );
+  const envelope = {
+    url: page.url(),
+    preset: plan.spec.preset,
+    itemSelector: plan.spec.item,
+    seed: plan.seed,
+    stopReason: stats.stopReason,
+    stats,
+    items,
+  };
+  if (plan.format === "jsonl") {
+    const body = items.map((item) => JSON.stringify(item)).join("\n");
+    if (plan.out) {
+      mkdirSync(dirname(plan.out), { recursive: true });
+      writeFileSync(plan.out, body ? `${body}\n` : "");
+      emit.file(plan.out, { items: items.length, stopReason: stats.stopReason, stats });
+    } else if (body) {
+      process.stdout.write(`${body}\n`);
+    }
+  } else if (plan.out) {
+    mkdirSync(dirname(plan.out), { recursive: true });
+    writeFileSync(plan.out, `${JSON.stringify(envelope, null, 2)}\n`);
+    emit.file(plan.out, { items: items.length, stopReason: stats.stopReason, stats });
+  } else {
+    emit.data(envelope);
+  }
+  if (interrupted) process.exitCode = 130;
+}
+
+// ---------------------------------------------------------------------------
+// Batch mode runner. Each step is `<verb> <args>`; see splitBatchSteps for
+// the separator rule (eval steps keep semicolons inside JS quotes and
+// brackets; `\;` is always a literal semicolon).
 // ---------------------------------------------------------------------------
 
 interface BatchResult {
@@ -1781,27 +2037,6 @@ async function runBatch(
     }
   }
   return result;
-}
-
-function splitBatchSteps(input: string): string[] {
-  const steps: string[] = [];
-  let buf = "";
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
-    if (ch === "\\" && input[i + 1] === ";") {
-      buf += ";";
-      i++;
-      continue;
-    }
-    if (ch === ";") {
-      steps.push(buf);
-      buf = "";
-      continue;
-    }
-    buf += ch;
-  }
-  if (buf.trim()) steps.push(buf);
-  return steps;
 }
 
 // ---------------------------------------------------------------------------

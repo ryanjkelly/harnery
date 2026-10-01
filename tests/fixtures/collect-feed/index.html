@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtualized feed fixture</title>
+<style>
+  body { margin: 0; font: 16px/1.4 sans-serif; }
+  #feed { position: relative; max-width: 600px; margin: 0 auto; }
+  article { position: absolute; left: 0; right: 0; height: 110px; box-sizing: border-box;
+    border-bottom: 1px solid #ccc; padding: 8px; overflow: hidden; }
+  #end { position: absolute; left: 0; right: 0; text-align: center; padding: 20px; }
+</style>
+</head>
+<body>
+<div id="feed"></div>
+<script>
+  // A feed that keeps only the items near the viewport in the DOM and loads
+  // more in batches when the reader nears the bottom, like a social timeline.
+  const params = new URLSearchParams(location.search);
+  const total = Number(params.get("total") || 60);
+  const batch = 15;
+  const itemPx = 120;
+  const feed = document.getElementById("feed");
+  let loaded = batch;
+  let loading = false;
+  window.__maxInDom = 0;
+  window.__expandClicks = 0;
+  const expanded = new Set();
+
+  function render() {
+    const first = Math.max(0, Math.floor(window.scrollY / itemPx) - 2);
+    const last = Math.min(loaded, first + 10);
+    feed.style.height = `${loaded * itemPx + 80}px`;
+    feed.replaceChildren();
+    for (let i = first; i < last; i++) {
+      const a = document.createElement("article");
+      a.style.top = `${i * itemPx}px`;
+      const long = i % 7 === 3;
+      const body = long && !expanded.has(i) ? `Post number ${i} preview` : `Post number ${i} full text${long ? " with the hidden remainder" : ""}`;
+      a.innerHTML =
+        `<a class="perma" href="https://feed.test/post/${i}">#${i}</a> ` +
+        `<time datetime="2026-01-01T00:${String(i % 60).padStart(2, "0")}:00Z">t</time>` +
+        `<p class="body">${body}</p>` +
+        (long && !expanded.has(i) ? `<button type="button" class="more" data-i="${i}">Show more</button>` : "");
+      feed.appendChild(a);
+    }
+    if (loaded >= total) {
+      const end = document.createElement("div");
+      end.id = "end";
+      end.style.top = `${loaded * itemPx}px`;
+      end.textContent = "You are all caught up";
+      feed.appendChild(end);
+    }
+    window.__maxInDom = Math.max(window.__maxInDom, feed.querySelectorAll("article").length);
+  }
+
+  feed.addEventListener("click", (e) => {
+    const btn = e.target.closest("button.more");
+    if (!btn) return;
+    window.__expandClicks++;
+    expanded.add(Number(btn.dataset.i));
+    render();
+  });
+
+  window.addEventListener("scroll", () => {
+    render();
+    const nearBottom = window.scrollY + window.innerHeight > loaded * itemPx - 200;
+    if (nearBottom && !loading && loaded < total) {
+      loading = true;
+      setTimeout(() => {
+        loaded = Math.min(total, loaded + batch);
+        loading = false;
+        render();
+      }, 60);
+    }
+  }, { passive: true });
+  render();
+</script>
+</body>
+</html>

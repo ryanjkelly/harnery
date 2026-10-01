@@ -52,6 +52,7 @@ signals are outside the identity override. See [ADR 0186](/decisions/0186-consis
 | `--wait-for <selector>` | Wait for this selector before capturing output. |
 | `--evaluate <js>` | Run JS in the page context after navigation; the result is printed to stdout and recorded in the envelope under `eval`. |
 | `--batch <steps>` | Run multiple steps in one session, semicolon-separated (see [Batch flows](#batch-flows)). |
+| `--collect [preset]` | Scroll an infinite feed and collect its items as JSON (see [Scroll and collect](#scroll-and-collect)). |
 | `--wait-until <strategy>` | Navigation wait strategy: `load` \| `domcontentloaded` \| `networkidle` \| `commit`. Default `load`. |
 | `--timeout <ms>` | Navigation timeout in milliseconds. Default `30000`. |
 
@@ -445,6 +446,97 @@ judge's findings, without any browser opening after capture.
 ```bash
 harn browse https://example.com --batch "click button.load-more; wait 1500; reload; wait 3000"
 ```
+
+How steps split:
+
+- An `eval` step ends only at a `;` outside JavaScript quotes (`'`, `"`, and backticks) and outside `()`, `[]` and `{}`. So `eval (() => { const n = 1; return n })(); wait 500` is two steps, and an arrow function with a block body needs no escaping.
+- Every other step ends at the next `;`. Selectors and fill values get no quote tracking, so an apostrophe in `fill input=>it's here` cannot swallow the steps after it.
+- `\;` is always a literal semicolon and never ends a step, in any verb.
+- Two bare top-level statements in one `eval` (`eval a(); b()`) are two steps. Wrap them in a block or an arrow function.
+
+## Scroll and collect
+
+`--collect [preset]` turns `browse` into a feed reader. Social timelines and other infinite lists are virtualized: they keep only the items near the viewport in the DOM and drop the rest as you scroll. A single capture sees ten or so items. Collect mode scrolls in steps, harvests every item in the DOM after each scroll and again during the pause, de-duplicates by key, and stops on a target or when the feed stops growing. It prints the items as JSON.
+
+It runs inside the normal `browse` session, so it uses the same persistent profile, cookie jar, browser channel, user agent, proxy, and page-load pace gate. A site you signed into with `--login` stays signed in. `--wait-for` and `--batch` run first (to dismiss a banner or switch a tab); the trio, the checks, and `--evaluate` are skipped. Collect mode only scrolls, reads, and (with `--collect-expand`) clicks "show more" buttons. It never likes, follows, replies, or posts.
+
+```bash
+# 100 posts from an X search, signed in through the shared profile
+harn browse "https://x.com/search?q=release%20notes&f=live" \
+  --wait-for 'article[data-testid="tweet"]' --collect x --collect-max-items 100 --collect-out posts.json
+
+# Any feed, with explicit item and field extractors, one JSON object per line
+harn browse https://example.com/feed --collect --collect-item "li.entry" \
+  --collect-field "title=h2" --collect-field "url=a.permalink@href" \
+  --collect-field "images[]=img@src" --collect-format jsonl
+```
+
+### Presets
+
+A preset is one entry in a data table: an item selector, a key extractor, field extractors, an optional "show more" selector, and text that means the site stopped serving the feed. Every part can be overridden with the flags below.
+
+| Preset | Site | Fields | Tested |
+| --- | --- | --- | --- |
+| `generic` (default) | Any feed of `<article>` or `role="article"` items | `text`, `time` | Yes, against a synthetic virtualized feed |
+| `x` | X timelines, searches, profiles, threads | `url`, `time`, `author`, `text`, `media[]` | Yes, signed in |
+| `threads` | Threads | `url`, `time`, `author`, `text`, `media[]` | No |
+| `bluesky` | Bluesky | `url`, `author`, `text`, `media[]` | No |
+| `reddit` | Reddit (current web UI) | `url`, `title`, `author`, `time`, `score`, `comments`, `text` | No |
+| `linkedin` | LinkedIn feeds | `author`, `time`, `text` | No |
+| `instagram` | Instagram home feed | `url`, `time`, `author`, `text`, `media[]` | No |
+| `tiktok` | TikTok web feeds and grids | `url`, `author`, `text` | No |
+| `mastodon` | Mastodon web UI, any instance | `url`, `time`, `author`, `text`, `media[]` | No |
+| `youtube-comments` | YouTube watch-page comments | `url`, `author`, `time`, `text`, `likes` | No |
+
+Untested presets were written from each site's public markup and have not been run against the live site. Feed markup changes often. When one returns nothing, check the item selector first with `harn browse <url> --html` and pass `--collect-item`.
+
+### Item, key, and fields
+
+| Flag | Description |
+| --- | --- |
+| `--collect [preset]` | Turn on collect mode. Default preset `generic`. |
+| `--collect-item <css>` | Selector for one feed item. Overrides the preset. |
+| `--collect-key <extractor>` | Dedupe key. Default: the preset key, else the first permalink-like link in the item, else a hash of the item's text. |
+| `--collect-key-pattern <regex>` | A link must match this to count as a permalink for the default key. |
+| `--collect-field <name=extractor>` | Add or override a field (repeatable). `name[]=` collects every match as an array. |
+| `--collect-expand [selector]` | Click "show more" buttons in visible items before harvesting. Uses the preset selector when none is given. |
+
+An extractor is `<selector>[@attr]`, evaluated inside each item. An empty selector or `:scope` means the item itself. Without `@attr` the value is the element's visible text; with it, the attribute's value, and `href`, `src`, and URL-like attributes resolve to absolute URLs. `time=time@datetime` reads the timestamp, `text=` reads the whole item, and `media[]=img@src` collects every image. `key` and `firstSeenStep` are reserved names.
+
+Expansion is rate-limited to 3 clicks per step and 50 per run, with a short random pause before each click. It never clicks a link, an element inside a link, or a button whose label mentions an action such as like, follow, reply, repost, share, or subscribe. If a click changes the page URL, collect mode goes back and turns expansion off.
+
+### Pacing
+
+Each step scrolls a random 0.6 to 1.1 viewport heights with mouse-wheel notches over the feed, then pauses a random 1.2 to 3.5 seconds. About one step in eight takes a longer reading pause, and about one in twelve starts with a small scroll back up. If the wheel does not move the page, collect mode presses Page Down, then scrolls the feed's container directly, and counts the step under `scrollFallbacks`. Every value is bounded and configurable, and `--collect-seed` makes the schedule reproducible.
+
+| Flag | Description |
+| --- | --- |
+| `--collect-step <min-max>` | Scroll distance as a viewport fraction. Default `0.6-1.1`. |
+| `--collect-pause <min-max>` | Pause after each step, in ms. Default `1200-3500`. |
+| `--collect-read-chance <p>` | Chance of a reading pause per step. Default `0.12`. |
+| `--collect-read-pause <min-max>` | Reading pause, in ms. Default `4000-9000`. |
+| `--collect-back-chance <p>` | Chance a step starts with a small scroll back up. Default `0.08`. |
+| `--collect-seed <n>` | Seed for the schedule. The output reports the seed used, so any run can be repeated. |
+| `HARNERY_COLLECT_PAUSE_MS`, `HARNERY_COLLECT_STEP` | Machine-wide defaults for the pause and step ranges. Flags override them. |
+
+The [human pace](#human-pace) gate still spaces page loads. It does not shorten or lengthen scroll pauses, and `--no-pace` does not affect them.
+
+### Stopping
+
+| Flag | Stop reason | Description |
+| --- | --- | --- |
+| `--collect-max-items <n>` | `max-items` | Stop after `n` unique items. |
+| `--collect-max-scrolls <n>` | `max-scrolls` | Stop after `n` scroll steps. Default `60`. |
+| `--collect-max-seconds <n>` | `time-budget` | Stop after `n` seconds of collecting. Default `300`. Pauses never run past the budget. |
+| `--collect-idle <n>` | `end-of-feed` or `idle` | Stop after `n` steps with no new items and no page growth. Default `5`. `end-of-feed` means the page was at the bottom; `idle` means it was not, or it stopped scrolling. |
+
+Collect mode also stops with `blocked` when a step adds nothing and the page shows a rate-limit or login-wall message (`Rate limit exceeded`, `Too many requests`, `Log in to continue`, and site-specific text from the preset). Ctrl+C stops with `interrupted`, prints what was collected, and exits 130.
+
+### Collect output
+
+`--collect-format json` (the default) prints one envelope: `url`, `preset`, `itemSelector`, `seed`, `stopReason`, `stats`, and `items`. `stats` carries `steps`, `harvests`, `items`, `duplicates` (sightings of an already-collected key), `expanded`, `readingPauses`, `scrollBacks`, `scrollFallbacks`, `elapsedMs`, `stopReason`, and `stopDetail`. `--collect-format jsonl` prints one item per line and logs the summary to stderr. `--collect-out <path>` writes either format to a file and prints a short summary instead.
+
+Each item is `{ key, firstSeenStep, ...fields }`, in first-seen order. Step 0 is the harvest before the first scroll. When an item is seen again, missing fields are filled in, longer text replaces shorter text (an expanded post), and new array members are appended. Cookie values never appear in the output.
 
 ## Dev-overlay capture
 
