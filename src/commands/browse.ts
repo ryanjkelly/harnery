@@ -50,6 +50,7 @@ import {
   writeNetscapeCookieFile,
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
+import { isWSL } from "../lib/browser/launch-args.ts";
 import {
   allocateTileBudget,
   validatePageReviewAllocation,
@@ -113,7 +114,16 @@ import {
   type SaveBaselineResult,
   saveBaseline,
 } from "../lib/browser/visual-diff.ts";
-import { applyExtraCookies, CookieJar } from "../lib/cookies/index.ts";
+import {
+  harvestDomain,
+  harvestWindowsChromeCookies,
+  stopWindowsChromeProfile,
+  windowsChromePath,
+  windowsLocalAppData,
+  windowsPlainProfile,
+  wslPathToWindows,
+} from "../lib/browser/windows-chrome.ts";
+import { applyExtraCookies, CookieJar, mergeCookies } from "../lib/cookies/index.ts";
 import { commandPaceGate } from "../lib/pace/index.ts";
 
 /**
@@ -953,6 +963,10 @@ async function runBrowse(
       chromeMajor: plainExecutable ? chromeMajorFromExecutable(plainExecutable) : undefined,
     });
     await pace?.before(url);
+    if (useWindowsPlainLogin()) {
+      await runWindowsPlainLogin(url, opts.store ?? DEFAULT_STORE, loginCloseFile, emit);
+      return;
+    }
     await runPlainLogin(url, opts.profile ?? DEFAULT_PROFILE, loginCloseFile, plainUa, emit);
     return;
   }
@@ -3182,6 +3196,82 @@ async function runPlainLogin(
     await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
   }
   emit.log(`[--login --plain] Chrome closed; cookies persisted in ${profileDir}.`, "info");
+}
+
+/**
+ * Under WSL, `--login --plain` opens the Windows host's Google Chrome when one
+ * is installed. Some sign-in flows reject every browser running inside WSL,
+ * even a plain Linux Chrome, while the Windows desktop Chrome signs in
+ * normally. `HARNERY_BROWSER_WSL_PLAIN=linux` keeps the Linux Chrome.
+ */
+function useWindowsPlainLogin(): boolean {
+  if (!isWSL()) return false;
+  if ((process.env.HARNERY_BROWSER_WSL_PLAIN ?? "").toLowerCase() === "linux") return false;
+  return windowsChromePath() !== undefined;
+}
+
+/**
+ * The WSL form of `--login --plain`: the person signs in through the Windows
+ * Chrome on a dedicated Windows profile with nothing attached. When the window
+ * closes, the profile's cookies for the sign-in site are read and merged into
+ * the shared cookie store, which later `browse` runs attach.
+ */
+async function runWindowsPlainLogin(
+  url: string,
+  storePath: string,
+  loginCloseFile: string | null,
+  emit: { log: (message: string, level: "info" | "warn" | "error" | "debug") => void },
+): Promise<void> {
+  const chromeLinux = windowsChromePath();
+  const localAppData = windowsLocalAppData();
+  if (!chromeLinux || !localAppData) {
+    throw new Error(
+      "--plain under WSL needs the Windows Google Chrome and %LOCALAPPDATA%; neither was readable.",
+    );
+  }
+  const chromeWindows = wslPathToWindows(chromeLinux);
+  const profileWindows = windowsPlainProfile(localAppData);
+  const child = spawn(
+    chromeLinux,
+    [`--user-data-dir=${profileWindows}`, "--no-first-run", "--no-default-browser-check", url],
+    { stdio: "ignore" },
+  );
+  const exited = new Promise<void>((resolveExit) => {
+    child.once("exit", () => resolveExit());
+    child.once("error", () => resolveExit());
+  });
+  const lifecycleAbort = new AbortController();
+  const waits: Promise<void>[] = [exited];
+  const how = loginCloseFile ? `create ${loginCloseFile}` : "press Enter here";
+  emit.log(
+    `[--login --plain] Windows Google Chrome is open with nothing attached (profile ${profileWindows}). Sign in, then close the window or ${how}.`,
+    "info",
+  );
+  waits.push(
+    loginCloseFile
+      ? waitForLoginCloseFile(loginCloseFile, lifecycleAbort.signal)
+      : waitForTerminalEnter(lifecycleAbort.signal),
+  );
+  await Promise.race(waits);
+  lifecycleAbort.abort();
+  stopWindowsChromeProfile(profileWindows);
+  await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
+  const domain = harvestDomain(url);
+  const cookies = harvestWindowsChromeCookies({ chromeWindows, profileWindows, domain });
+  if (cookies.length === 0) {
+    emit.log(
+      `[--login --plain] No ${domain} cookies were found in the Windows profile; the sign-in may not have completed.`,
+      "warn",
+    );
+    return;
+  }
+  const jar = new CookieJar({ path: storePath, source: "harn-browse" });
+  jar.save(mergeCookies(jar.load(), cookies));
+  const names = [...new Set(cookies.map((cookie) => cookie.name))].sort().join(", ");
+  emit.log(
+    `[--login --plain] Copied ${cookies.length} ${domain} cookies into ${storePath}: ${names}.`,
+    "info",
+  );
 }
 
 async function waitForLoginCloseFile(path: string, signal?: AbortSignal): Promise<void> {
