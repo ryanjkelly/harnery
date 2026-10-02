@@ -181,7 +181,7 @@ export function isTunnelStateLive(
   return typeof providerPid === "number" && processAlive(providerPid);
 }
 
-function tunnelTargetPort(state: TunnelState): number | null {
+export function tunnelTargetPort(state: TunnelState): number | null {
   const value = /^[a-z][a-z\d+.-]*:\/\//i.test(state.target)
     ? state.target
     : `http://${state.target}`;

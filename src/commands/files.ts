@@ -5,7 +5,21 @@ import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
 import { coordRootId, localCoordRootIdUrl } from "../lib/coord-root-id.ts";
-import { localFilesOriginUrl, localFileViewerUrl } from "../lib/local-file-url.ts";
+import {
+  encodedRepoPath,
+  encodeLinkSafeComponent,
+  FILES_ORIGIN_HOST,
+  localFilesOriginUrl,
+  localFileViewerUrl,
+} from "../lib/local-file-url.ts";
+import { isPathAllowed } from "../lib/tunnel/path-scope.ts";
+import {
+  isTunnelStateLive,
+  listStates,
+  type ProcessAliveCheck,
+  type TunnelState,
+  tunnelTargetPort,
+} from "../lib/tunnel/state.ts";
 
 export { FILES_ORIGIN_HOST } from "../lib/local-file-url.ts";
 
@@ -162,6 +176,72 @@ export function mintLocalFileUrl(input: string, options: LocalFileUrlOptions): L
   return { url, relPath, mode };
 }
 
+export class TunnelLinkError extends Error {
+  constructor(
+    message: string,
+    readonly hint: string,
+  ) {
+    super(message);
+    this.name = "TunnelLinkError";
+  }
+}
+
+function vhostName(vhost: string): string {
+  return vhost.replace(/:\d+$/, "").toLowerCase();
+}
+
+function newestFirst(states: TunnelState[]): TunnelState[] {
+  return [...states].sort((a, b) => b.started_at.localeCompare(a.started_at));
+}
+
+/**
+ * Turn a minted local URL into the same file's URL on a live tunnel.
+ *
+ * HTML needs a tunnel in front of the isolated files origin (its vhost is
+ * FILES_ORIGIN_HOST), because only that origin renders the page and serves its
+ * relative assets; a dashboard tunnel can only show the viewer, which displays
+ * HTML as source. Other files need a dashboard tunnel that serves the viewer.
+ * In both cases the tunnel's path scope must forward the request, or its gate
+ * would refuse the link, so a tunnel that does not cover the file is skipped.
+ */
+export function tunnelFileUrl(
+  local: LocalFileUrl,
+  port: number,
+  states: TunnelState[],
+  processAlive?: ProcessAliveCheck,
+): string {
+  const live = states.filter(
+    (state) => tunnelTargetPort(state) === port && isTunnelStateLive(state, processAlive),
+  );
+  if (local.mode === "raw") {
+    const path = `/${encodedRepoPath(local.relPath)}`;
+    const tunnel = newestFirst(live).find(
+      (state) =>
+        vhostName(state.vhost) === FILES_ORIGIN_HOST && isPathAllowed(path, state.allow_paths),
+    );
+    if (tunnel) return `${tunnel.url.replace(/\/+$/, "")}${path}`;
+    const folder = local.relPath.includes("/")
+      ? `/${local.relPath.slice(0, local.relPath.lastIndexOf("/"))}`
+      : "/";
+    throw new TunnelLinkError(
+      `no live tunnel serves the files origin for /${local.relPath}`,
+      `Start one scoped to the page's folder, for example: tunnel up --name pages --target 127.0.0.1:${port} --vhost ${FILES_ORIGIN_HOST} --allow-path ${folder}`,
+    );
+  }
+  const tunnel = newestFirst(live).find(
+    (state) =>
+      vhostName(state.vhost) !== FILES_ORIGIN_HOST &&
+      ["/files", "/api/file", "/_next"].every((path) => isPathAllowed(path, state.allow_paths)),
+  );
+  if (tunnel) {
+    return `${tunnel.url.replace(/\/+$/, "")}/files?path=${encodeLinkSafeComponent(local.relPath)}`;
+  }
+  throw new TunnelLinkError(
+    `no live tunnel serves the dashboard file viewer on port ${port}`,
+    `Start one, for example: tunnel up --name files --target 127.0.0.1:${port} --allow-path /files --allow-path /api/file --allow-path /_next`,
+  );
+}
+
 export function registerFilesCommand(
   program: Command,
   emit: EmitContext,
@@ -180,6 +260,10 @@ export function registerFilesCommand(
     .option("--raw", "Use the isolated files origin, regardless of extension")
     .option("--viewer", "Use the dashboard file viewer, regardless of extension")
     .option("--no-verify", "Mint without checking the running dashboard's repository identity")
+    .option(
+      "--tunnel",
+      "Print the file's URL on a live tunnel instead of localhost (HTML uses a files-origin tunnel)",
+    )
     .action(
       async (
         filePath: string,
@@ -189,6 +273,7 @@ export function registerFilesCommand(
           raw?: boolean;
           viewer?: boolean;
           verify?: boolean;
+          tunnel?: boolean;
         },
       ) => {
         if (opts.raw && opts.viewer) {
@@ -224,8 +309,14 @@ export function registerFilesCommand(
             mode: opts.raw ? "raw" : opts.viewer ? "viewer" : "auto",
           });
           if (opts.verify !== false) await verifyDashboardRoot(coordRoot, port);
-          emit.text(`${result.url}\n`);
+          const url = opts.tunnel ? tunnelFileUrl(result, port, listStates(coordRoot)) : result.url;
+          emit.text(`${url}\n`);
         } catch (error) {
+          if (error instanceof TunnelLinkError) {
+            emit.error({ code: "no_tunnel_for_file", message: error.message, hint: error.hint });
+            emit.setExitCode(1);
+            return;
+          }
           if (error instanceof DashboardRootError) {
             emit.error({ code: error.code, message: error.message, hint: error.hint });
             emit.setExitCode(1);

@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```
-harn files url <path> [--port 4276] [--coord-root <dir>] [--raw | --viewer] [--no-verify]
+harn files url <path> [--port 4276] [--coord-root <dir>] [--raw | --viewer] [--tunnel] [--no-verify]
 ```
 
 Mint the browser URL for an existing file under the dashboard's coord root:
@@ -41,5 +41,26 @@ Port resolution matches `harn web up`: `--port`, then `HARNERY_WEB_PORT`, then
 `.harnery/config.jsonc` `web.port`, then `4276`. Pass `--coord-root` when the
 file belongs to a different project.
 
-Use localhost links only when the operator can reach the same machine. A host
-project may have a publish or sharing workflow for remote operators.
+Use localhost links only when the operator can reach the same machine. For a
+reader on another device, `--tunnel` prints the same file's URL on a live
+[tunnel](/cli/tunnel/) instead:
+
+```bash
+harn files url docs/plans/sprint.html --tunnel
+# https://<tunnel-host>/docs/plans/sprint.html
+```
+
+An HTML file needs a tunnel in front of the isolated files origin, because only
+that origin renders the page; a dashboard tunnel can show only the viewer, which
+displays HTML as source. Start one with the files origin as its Host header and
+a path scope that covers the page's folder:
+
+```bash
+harn tunnel up --name pages --target 127.0.0.1:4276 \
+  --vhost harnery-files.localhost --allow-path /docs/plans
+```
+
+Other files need a dashboard tunnel whose scope covers `/files`, `/api/file`,
+and `/_next`. The command picks the newest live tunnel on the dashboard port
+whose Host and path scope serve the file. When none does, it prints nothing to
+stdout and names the `tunnel up` command that would.

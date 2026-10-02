@@ -5,10 +5,13 @@ import { join } from "node:path";
 import { Command } from "commander";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { coordRootId } from "../lib/coord-root-id.ts";
+import type { TunnelState } from "../lib/tunnel/state.ts";
 import {
   FILES_ORIGIN_HOST,
   mintLocalFileUrl,
   registerFilesCommand,
+  TunnelLinkError,
+  tunnelFileUrl,
   verifyDashboardRoot,
 } from "./files.ts";
 
@@ -226,3 +229,116 @@ function captureEmit(): {
     exitCodes,
   };
 }
+
+function tunnelState(overrides: Partial<TunnelState>): TunnelState {
+  return {
+    name: "t",
+    provider: "cloudflare",
+    url: "https://example.trycloudflare.com",
+    gate_pid: 11,
+    cloudflared_pid: 12,
+    started_at: "2026-10-01T00:00:00Z",
+    target: "127.0.0.1:4276",
+    vhost: "localhost",
+    gate_port: 9001,
+    allow_paths: ["/"],
+    ...overrides,
+  };
+}
+
+const alive = () => true;
+
+describe("tunnelFileUrl", () => {
+  test("routes HTML to a files-origin tunnel whose scope covers the page", () => {
+    const root = fixture();
+    const local = mintLocalFileUrl("docs/page name.html", { coordRoot: root, port: 4276 });
+    const states = [
+      tunnelState({ name: "dash", url: "https://dash.example", vhost: "localhost:4276" }),
+      tunnelState({
+        name: "pages",
+        url: "https://pages.example/",
+        vhost: FILES_ORIGIN_HOST,
+        allow_paths: ["/docs"],
+      }),
+    ];
+    expect(tunnelFileUrl(local, 4276, states, alive)).toBe(
+      "https://pages.example/docs/page%20name.html",
+    );
+  });
+
+  test("skips a files-origin tunnel whose scope leaves out the page, and names the fix", () => {
+    const root = fixture();
+    const local = mintLocalFileUrl("docs/page name.html", { coordRoot: root, port: 4276 });
+    const states = [
+      tunnelState({ vhost: FILES_ORIGIN_HOST, allow_paths: ["/wiki/explainers"] }),
+    ];
+    expect(() => tunnelFileUrl(local, 4276, states, alive)).toThrow(TunnelLinkError);
+    try {
+      tunnelFileUrl(local, 4276, states, alive);
+    } catch (error) {
+      expect((error as TunnelLinkError).hint).toContain(
+        `--vhost ${FILES_ORIGIN_HOST} --allow-path /docs`,
+      );
+    }
+  });
+
+  test("never sends HTML to a dashboard tunnel, which would show the source", () => {
+    const root = fixture();
+    const local = mintLocalFileUrl("docs/page name.html", { coordRoot: root, port: 4276 });
+    expect(() =>
+      tunnelFileUrl(local, 4276, [tunnelState({ vhost: "dev.example.com" })], alive),
+    ).toThrow(TunnelLinkError);
+  });
+
+  test("routes other files to a dashboard tunnel that serves the viewer", () => {
+    const root = fixture();
+    const local = mintLocalFileUrl("docs/notes.md", { coordRoot: root, port: 4276 });
+    const states = [
+      tunnelState({
+        name: "narrow",
+        url: "https://narrow.example",
+        vhost: "dev.example.com",
+        allow_paths: ["/files"],
+      }),
+      tunnelState({
+        name: "viewer",
+        url: "https://viewer.example",
+        vhost: "dev.example.com",
+        allow_paths: ["/files", "/api/file", "/_next"],
+      }),
+    ];
+    expect(tunnelFileUrl(local, 4276, states, alive)).toBe(
+      "https://viewer.example/files?path=docs%2Fnotes.md",
+    );
+  });
+
+  test("ignores dead tunnels and tunnels on another port", () => {
+    const root = fixture();
+    const local = mintLocalFileUrl("docs/page name.html", { coordRoot: root, port: 4276 });
+    const states = [
+      tunnelState({ vhost: FILES_ORIGIN_HOST, gate_pid: 99 }),
+      tunnelState({ vhost: FILES_ORIGIN_HOST, target: "127.0.0.1:3000" }),
+    ];
+    expect(() => tunnelFileUrl(local, 4276, states, (pid) => pid !== 99)).toThrow(TunnelLinkError);
+  });
+
+  test("prefers the newest matching tunnel", () => {
+    const root = fixture();
+    const local = mintLocalFileUrl("docs/page name.html", { coordRoot: root, port: 4276 });
+    const states = [
+      tunnelState({
+        url: "https://old.example",
+        vhost: FILES_ORIGIN_HOST,
+        started_at: "2026-09-01T00:00:00Z",
+      }),
+      tunnelState({
+        url: "https://new.example",
+        vhost: FILES_ORIGIN_HOST,
+        started_at: "2026-10-01T00:00:00Z",
+      }),
+    ];
+    expect(tunnelFileUrl(local, 4276, states, alive)).toBe(
+      "https://new.example/docs/page%20name.html",
+    );
+  });
+});
