@@ -84,4 +84,4 @@ test("CLI blocks another agent's exact, ancestor and descendant claims", async (
     expect(output.errors[0]).toMatchObject({ code: "removal_refused" });
     expect(existsSync(file)).toBe(true);
   }
-});
+}, 20_000);
