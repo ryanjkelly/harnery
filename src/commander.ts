@@ -321,6 +321,12 @@ function harneryCommandBundles({
 }: CommandBundleContext): LazyCommandBundle[] {
   return [
     lazy(
+      "disk [path]",
+      "Measure checkout disk usage, including nested repositories and ignored files",
+      async (program) => (await import("./commands/disk.ts")).registerDiskCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
       "tokens <files...>",
       "Count tokens in text/markdown files (offline, uses o200k_base as Claude proxy)",
       async (program) =>

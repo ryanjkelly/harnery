@@ -1,0 +1,83 @@
+---
+title: harn disk
+description: Measure working files across a checkout and filter by Git state or file type.
+sidebar:
+  order: 46
+---
+
+```bash
+harn disk [path] [options]
+```
+
+`disk` measures regular files under a directory, including hidden folders,
+ignored files, nested repositories, and initialized submodules. The default
+path is the current directory. It also accepts one regular file.
+
+The report shows selected totals, a Git-state breakdown, the largest groups,
+and the largest files. It reads filesystem and Git index metadata. It does not
+read file contents, hash files, or delete anything.
+
+## Git filters
+
+```bash
+harn disk --git tracked
+harn disk --git ignored --group directory --depth 2
+harn disk --git untracked,ignored --group repository
+harn disk --git git-metadata
+```
+
+`tracked` means present in the repository's current index. `untracked` means
+untracked and not ignored; `ignored` covers files excluded by Git's ignore
+rules. `git-metadata` covers `.git` directories and pointer files. Files outside
+a working repository are `non-repository`. Failed Git classification is
+`unknown`, makes the report incomplete, and sets a nonzero exit status.
+
+Each nested working repository uses its own index and ignore rules. A
+submodule's Git link does not classify the files inside it. Starting from a
+subdirectory still uses its enclosing repository's rules. Missing tracked
+files and uninitialized submodules consume no measured bytes.
+
+The sizes describe files currently on disk. `--git tracked` does not estimate
+compressed Git history or clone download size. Git metadata outside the scan
+directory is not visited.
+
+## Other filters and grouping
+
+```bash
+harn disk --exclude node_modules,.next,.git
+harn disk projects --type video --min-size 100MB --group files --top 10
+harn disk --type .png,.jpg --group extension
+harn disk --group repository --json
+```
+
+| Option | Behavior |
+| --- | --- |
+| `--git <states>` | Select comma-separated Git states. Omit to include all. |
+| `--type <types>` | Select extensions or `video`, `audio`, `image`, `media`, `archive`. |
+| `--exclude <paths>` | Skip names at any depth or paths relative to the scan root. Repeatable and comma-separated. No glob syntax. |
+| `--group <by>` | `directory` (default), `repository`, `extension`, `git`, or `files`. |
+| `--depth <n>` | Directory grouping depth, default 1. The scan still visits deeper files. |
+| `--top <n>` | Maximum displayed groups and largest files, default 20. Totals cover all selected files. |
+| `--min-size <size>` | Minimum individual file size using the selected measurement. Accepts bytes, decimal units such as `MB`, and binary units such as `MiB`. |
+| `--apparent` | Rank and filter by file lengths instead of allocated disk blocks. |
+| `--json` | Emit `harnery.disk-usage/v1` with byte counts, filters, Git states, groups, scan issues, and largest files. |
+
+## Measurement limits
+
+Allocated bytes count each hard-linked inode once across selected files. When
+links span groups, allocation belongs to the first visited path; file lengths
+still count every path. Largest-file rows show each file's own allocation, so
+adding those rows can count a hard link more than once.
+
+Sparse files can have large file lengths while allocating little disk space.
+The report always includes apparent bytes for comparison. Windows lacks a
+portable allocated-block count, so the default falls back to file lengths and
+labels the measurement `apparent-fallback`; JSON allocated bytes are null.
+
+The scanner skips symlinks, special files, and directory metadata. It never
+follows symlinks. Files can change during a scan; read failures appear in the
+report and cause a nonzero exit. A live scan is not an atomic snapshot.
+
+Use [`storage inventory`](/cli/storage/) for registered agent storage and its
+retention policies. `disk` inventories the selected filesystem tree without
+applying storage policies.

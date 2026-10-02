@@ -1,0 +1,48 @@
+---
+title: "0194: Inspect checkout disk usage with Git filters"
+description: "ADR: keep checkout disk inspection separate from registered storage maintenance."
+---
+
+**Status:** accepted (2026-10-02) · **Scope:** CLI utility (`disk`)
+
+## Context
+
+A shared checkout can contain tracked source, ignored project media, build
+outputs, dependencies, and agent artifacts. A filesystem total alone does not
+show which bytes Git preserves. Looking only at Git-tracked files hides the
+local outputs that often explain disk growth.
+
+## Alternatives considered
+
+- Extend registered storage inventory. Rejected because arbitrary checkout
+  files have no registered owner or retention policy. Mixing them with managed
+  storage could imply maintenance authority that an inspection does not grant.
+- Shell out to `du` and filter paths afterward. Rejected because allocated-byte
+  behavior and argument syntax differ by platform, and nested Git classification
+  still needs a separate pass.
+- Sum file lengths. Rejected as the default because sparse files and hard links
+  can overstate physical disk allocation. Apparent size remains available.
+
+## Decision
+
+Add read-only `disk [path]` to the portable lazy command tree. Use Node filesystem
+metadata to inspect regular files and Git's current index plus nonignored
+untracked listing to classify each working repository independently. Nested
+repositories and initialized submodules use their own rules.
+
+Filter by Git state, extensions or file families, excluded paths, and minimum size.
+Group by directory, repository, extension, Git state, or individual files.
+Default to allocated bytes with global hard-link deduplication. Report apparent
+bytes separately and disclose the fallback when allocation is unavailable.
+
+Do not follow symlinks, read file bodies, perform content deduplication, or
+delete files. Scan and classification failures produce an incomplete report
+and nonzero status. Registered storage maintenance keeps its separate boundary.
+
+## Result and limits
+
+The versioned JSON report is `harnery.disk-usage/v1`. Directory metadata is
+excluded. Git state describes current files, not historical blobs or network
+clone size. Largest-file rows describe individual allocations; only totals
+and aggregate groups deduplicate hard links. A live scan can observe changes
+between filesystem reads.
