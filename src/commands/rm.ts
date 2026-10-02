@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Command } from "commander";
@@ -24,6 +25,11 @@ export function registerRmCommand(
       "Allowed directory; each target must be strictly inside it",
     )
     .option("-r, --recursive", "Permit directory removal after inspecting its complete contents")
+    .option(
+      "--allow-protected <path>",
+      "Remove this one protected path (Git metadata, credentials, Harnery state, keys) inside a target; repeat per path",
+      (value: string, previous: string[] = []) => [...previous, value],
+    )
     .option("--yes", "Permanently remove validated targets")
     .option("--dry-run", "Preview only, even with --yes")
     .option("--json", "Emit the versioned removal report")
@@ -54,14 +60,33 @@ export function registerRmCommand(
             }
           }
         };
-        const report = guardedRemove(paths, options, checkClaims);
+        // The workspace this command coordinates, and the checkout it runs in:
+        // their own .git and .harnery can never be allowed.
+        const liveRoots = [coordRoot, gitTopLevel(process.cwd())].filter((dir): dir is string =>
+          Boolean(dir),
+        );
+        const report = guardedRemove(paths, { ...options, liveRoots }, checkClaims);
         if (options.json) {
           emit.config({ format: "json" });
           emit.data(report);
         } else {
-          emit.text(
-            `${report.applied ? "Removed" : "Would remove"} ${report.targets.length} target(s), ${report.entries} entries, ${report.bytes} bytes:\n${report.targets.join("\n")}${report.applied ? "" : "\nPreview only. Add --yes to permanently delete these targets."}`,
-          );
+          const lines = [
+            `${report.applied ? "Removed" : "Would remove"} ${report.targets.length} target(s), ${report.entries} entries, ${report.bytes} bytes:`,
+            ...report.targets,
+          ];
+          if (report.protected.length)
+            lines.push(
+              "Protected paths named with --allow-protected:",
+              ...report.protected.map((path) => `  ${path}`),
+            );
+          if (report.links.length)
+            lines.push(
+              "Links removed as links (their targets are untouched):",
+              ...report.links.map((link) => `  ${link.path} -> ${link.target}`),
+            );
+          if (!report.applied)
+            lines.push("Preview only. Add --yes to permanently delete these targets.");
+          emit.text(lines.join("\n"));
         }
       } catch (error) {
         emit.error({
@@ -71,6 +96,14 @@ export function registerRmCommand(
         emit.setExitCode(1);
       }
     });
+}
+
+function gitTopLevel(dir: string): string | undefined {
+  const result = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  return result.status === 0 ? result.stdout.trim() || undefined : undefined;
 }
 
 function overlaps(a: string, b: string): boolean {

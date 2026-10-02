@@ -1,0 +1,58 @@
+---
+title: "0196: Name protected paths for removal"
+description: "ADR: let rm remove nested links and explicitly named protected paths."
+---
+
+**Status:** accepted (2026-10-02) · **Scope:** CLI utility (`rm`) · **Amends:** [0195](/decisions/0195-guard-local-file-removal/)
+
+## Context
+
+ADR 0195 refused every symbolic link inside a recursive target and every
+protected path, with no bypass. The first real cleanup hit both. A throwaway
+copy of an application linked back to the source checkout's `node_modules`
+and scripts folder, and the copy had duplicated a `.credentials` folder. The
+command could not remove the copy, so the only route left was shell `rm` or
+`unlink`, which skip every check the command exists to run. A guard whose
+refusals leave only the unguarded tool teaches agents to reach for that tool.
+
+## Alternatives considered
+
+- Keep the absolute refusal. Agents then fall back to shell `rm` on exactly
+  the paths that most need checking.
+- A general `--force` flag. It would switch off every protection at once,
+  including protections the caller never meant to cross.
+- An override only for credentials. Throwaway clones carry `.git` too, and
+  the same failure would recur there.
+
+## Decision
+
+Links inside a recursive target are removed as links. Node's recursive
+removal unlinks a link and never follows it, so the link's target is never
+read or changed. The report lists each link with what it points to. A link at
+the target or in any ancestor is still refused, because it would redirect
+which files are removed.
+
+Protected paths (`.git`, `.harnery`, `.credentials`, `.ssh`, `.gnupg`, and
+bare repository directories) may be removed when the caller names each one
+with `--allow-protected <path>`. Every other check still applies. Each named
+path must:
+
+- be the protected path itself, strictly inside `--root`, reached without
+  symlinks;
+- actually be removed by one of the targets, so a typo cannot pass silently;
+- not be, or sit inside, the `.git` or `.harnery` of the live workspace (the
+  coordination root and the checkout the command runs in).
+
+A protected path inside an allowed one still needs its own name. Every
+repository directory under an allowed path must have no branch or tag commit
+missing from its remotes; a repository that cannot be checked is refused.
+The report's `protected` field lists the named paths, and refusal messages
+show the flag to use.
+
+## Result and limits
+
+The `harnery.removal/v1` report gains `protected` and `links`. The
+unpushed-history check reads local remote-tracking refs, so a commit pushed
+from another clone and never fetched here counts as unpushed, which errs
+toward refusing. Stashes and reflog-only commits are not checked. Removing a
+`.git` keeps the working files and loses the index and any stash.

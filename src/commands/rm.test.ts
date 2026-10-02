@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3-runtime.ts";
@@ -85,3 +85,33 @@ test("CLI blocks another agent's exact, ancestor and descendant claims", async (
     expect(existsSync(file)).toBe(true);
   }
 }, 20_000);
+
+test("CLI removes a protected path only when --allow-protected names it", async () => {
+  const { root } = fixture();
+  const copy = join(root, "copy");
+  const creds = join(copy, ".credentials");
+  mkdirSync(creds, { recursive: true });
+  writeFileSync(join(creds, "key.json"), "{}");
+  for (const allow of [false, true]) {
+    const output = capture();
+    const program = createHarneryProgram({ emit: output.emit, context: { repoRoot: root } });
+    await program.parseAsync(
+      [
+        "rm",
+        "--root",
+        root,
+        "--recursive",
+        "--json",
+        "--yes",
+        ...(allow ? ["--allow-protected", creds] : []),
+        "--",
+        copy,
+      ],
+      { from: "user" },
+    );
+    expect(output.code()).toBe(allow ? 0 : 1);
+    if (allow) expect(output.data[0]).toMatchObject({ applied: true, protected: [creds] });
+    else expect(output.errors[0]).toMatchObject({ code: "removal_refused" });
+    expect(existsSync(copy)).toBe(!allow);
+  }
+});
