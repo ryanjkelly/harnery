@@ -1,0 +1,49 @@
+---
+title: "0195: Guard removal of local outputs"
+description: "ADR: validate explicit filesystem targets before permanent removal."
+---
+
+**Status:** accepted (2026-10-02) · **Scope:** CLI utility (`rm`)
+
+## Context
+
+Agents remove generated files using shell commands with expanded variables.
+Command-text checks cannot establish which files those arguments name after
+expansion, whether a path crosses a symlink, or who owns the contents.
+
+## Alternatives considered
+
+- Rely on shell permission prompts. They lack filesystem and peer-claim context.
+- Replace the system `rm` executable. That changes scripts and tools outside
+  the agent workflow and makes ordinary Unix behavior surprising.
+- Add a trash store. Recovery would require its own storage ownership,
+  retention, and restore contract. That is separate work.
+
+## Decision
+
+Add `rm <paths...> --root <directory>` to the portable lazy command tree.
+Preview is the default. `--yes` authorizes permanent deletion; `--dry-run`
+wins when both flags are supplied. Directories require `--recursive`.
+
+Resolve every argument, require strict containment in the allowed directory,
+and reject empty paths, unresolved variables, and wildcard characters.
+Protect filesystem roots, the home directory, the current working directory
+and its ancestors, Git metadata, credentials, and Harnery state. Inspect the
+complete tree without traversing symlinks or mount boundaries. Refuse tracked
+files and nested repositories. Refuse overlaps with other agents' live claims;
+an unsafe coordination projection cannot authorize deletion.
+
+Validate all targets before the first mutation, then recheck file identity,
+metadata, Git ownership, and claims. Limit a batch to 100 nonoverlapping targets
+and 10,000 entries. There is no force flag or protection bypass. Agent
+instructions route local output cleanup through this command, source removal
+through `git rm`, and managed evidence through artifact lifecycle commands.
+
+## Result and limits
+
+The JSON report is `harnery.removal/v1`. Deletion is permanent. This command
+reduces mistakes in a cooperating local workspace; it is not an operating-system
+sandbox or an atomic transaction. Concurrent filesystem mutation after the last
+check remains possible, and a filesystem error can leave a partially completed
+batch. Shell wildcard expansion happens before the command receives arguments;
+quote explicit paths. Managed state and tracked source remain outside its scope.

@@ -602,6 +602,13 @@ function harneryCommandBundles({
       async (program) =>
         (await import("./commands/storage.ts")).registerStorageCommand(program, emit, context),
     ),
+    lazy(
+      "rm <paths...>",
+      "Preview guarded removal of untracked files; --yes applies permanent deletion",
+      async (program) =>
+        (await import("./commands/rm.ts")).registerRmCommand(program, emit, context),
+      { hasOptions: true },
+    ),
     lazy("logs", "List and query bounded Harnery log families", async (program) =>
       (await import("./commands/logs.ts")).registerLogsCommand(program, emit, context),
     ),

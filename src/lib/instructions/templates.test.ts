@@ -12,6 +12,7 @@ describe("renderInstructionsBlock", () => {
     expect(block).toContain("acme decision file");
     expect(block).toContain("acme council create");
     expect(block).toContain("acme files url <repo-relative-path>");
+    expect(block).toContain("acme rm --root <directory> <paths...>");
     // no un-substituted `harn <verb>` command leaked through
     expect(block).not.toMatch(/\bharn (agents|decision|council|journal|web) /);
   });

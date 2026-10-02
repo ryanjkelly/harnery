@@ -119,12 +119,11 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=e954c482 -->
+<!-- harnery:begin instructions v=244129c7 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
-You share this checkout with other agents; the surfaces below keep you oriented
-and out of each other's way, and let you dispatch a team of your own when a job
+You share this checkout with other agents; the surfaces below keep you oriented and out of each other's way, and let you dispatch a team of your own when a job
 is bigger than one session. Run `harn <command> --help` for any command's full
 surface. Procedures for the deeper flows live in the `harn-decide` and `harn-council` and `harn-end` and `harn-team` skills.
 
@@ -137,8 +136,7 @@ widely-shared files.
 **Task lifecycle.** Beside the activity peers already see, declare whether your
 objective is still open: `harn agents lifecycle blocked --reason "<why>"` when
 it cannot proceed, `harn agents lifecycle done` when it is complete, and
-`harn agents lifecycle active` to reopen. `done` requires a current task and
-a passing Git finalization check (dirty or unpushed work refuses, and nothing is
+`harn agents lifecycle active` to reopen. `done` requires a current task and a passing Git finalization check (dirty or unpushed work refuses, and nothing is
 written). Ordinary `set-task` calls never change lifecycle, and a transition
 that re-mints the session title tells you the new name to copy. When the whole session is genuinely finished, use the `harn-end` skill as the final workflow.
 
@@ -163,8 +161,7 @@ It reclaims an abandoned namesake (no live process) and refuses only when anothe
 live process still holds the name; never hand-edit Harnery's history, heartbeat,
 or derived identity cache.
 
-**Declare intent on shell commands.** Every command you run is captured to the
-coordination ledger (`.harnery/ledgers/v3/`). Lead a shell command with a
+**Declare intent on shell commands.** Every command you run is captured to the coordination ledger (`.harnery/ledgers/v3/`). Lead a shell command with a
 `# intent: <why>` comment (or set the tool's description) so the recorded event
 carries a reason instead of `(no intent)`; the [tool-intent
 guide](https://harnery.com/guides/tool-intent/) owns the details.
@@ -188,6 +185,10 @@ After review, use `harn artifacts discard <id> --reason "<why no longer needed>"
 Do not create a repo-root temp directory; `harn artifacts clean` previews
 expired cleanup and requires `--yes` to delete anything.
 
+**Removing local outputs.** Use `harn rm --root <directory> <paths...>` instead of shell `rm`, which skips resolved-path, Git ownership, and peer-claim checks. Preview
+is the default; `--yes` deletes permanently and `--recursive` permits directories.
+Use `git rm` for tracked source and the artifact commands for managed evidence.
+
 **Local file links.** When the operator should open a local repo file, mint the
 URL with `harn files url <repo-relative-path>` instead of guessing it. HTML opens
 as a real page with working scripts and relative assets; other files open in the
@@ -198,6 +199,5 @@ can't resolve from the repo, file it instead. `harn decision file "<question>"`
 records it and lets you proceed on a stated default; `harn decision search "<terms>"`
 surfaces prior decisions, so check for precedent before re-deciding. The `harn-decide` skill has the file / claim / resolve-with-evidence procedure.
 
-**Councils.** For a hard or contested decision, convene a council of agents.
-`harn council create "<objective>"` runs structured rounds toward a decision. The `harn-council` skill has the steward and member flow.
+**Councils.** For a hard or contested decision, convene a council of agents. `harn council create "<objective>"` runs structured rounds toward a decision. The `harn-council` skill has the steward and member flow.
 <!-- harnery:end instructions -->
