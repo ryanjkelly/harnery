@@ -10,6 +10,7 @@ describe("claude-desktop command", () => {
       "accounts",
       "sessions",
       "mirror",
+      "share",
     ]);
   });
 });
