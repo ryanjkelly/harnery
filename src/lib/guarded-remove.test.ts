@@ -364,3 +364,52 @@ test("a live workspace's own Git metadata and Harnery state can never be allowed
   expect(existsSync(gitDir)).toBe(true);
   expect(existsSync(harnery)).toBe(true);
 });
+
+test("files inside an artifact workspace can be removed; the workspace record and other state cannot", () => {
+  const { root } = fixture();
+  const workspace = join(root, ".harnery", "artifacts", "2026-10-03_check_abc123");
+  mkdirSync(join(workspace, "profile"), { recursive: true });
+  writeFileSync(join(workspace, "profile", "cookies"), "jar");
+  writeFileSync(join(workspace, "pw.txt"), "secret");
+  writeFileSync(join(workspace, "shot.png"), "png");
+  writeFileSync(join(workspace, ".harnery-artifact.json"), "{}");
+  writeFileSync(join(root, ".harnery", "state.json"), "{}");
+  const report = guardedRemove([join(workspace, "profile"), join(workspace, "pw.txt")], {
+    root: workspace,
+    recursive: true,
+    yes: true,
+  });
+  expect(report.applied).toBe(true);
+  expect(existsSync(join(workspace, "profile"))).toBe(false);
+  expect(existsSync(join(workspace, "pw.txt"))).toBe(false);
+  expect(existsSync(join(workspace, "shot.png"))).toBe(true);
+  expect(() =>
+    guardedRemove([join(workspace, ".harnery-artifact.json")], { root: workspace, yes: true }),
+  ).toThrow("record");
+  expect(() =>
+    guardedRemove([workspace], {
+      root: join(root, ".harnery", "artifacts"),
+      recursive: true,
+      yes: true,
+    }),
+  ).toThrow("Protected state contains this path");
+  expect(() => guardedRemove([join(root, ".harnery", "state.json")], { root, yes: true })).toThrow(
+    "Protected state",
+  );
+  expect(existsSync(join(root, ".harnery", "state.json"))).toBe(true);
+});
+
+test("an ancestor's protected state is named as the container, without a misleading override hint", () => {
+  const { root } = fixture();
+  const dir = join(root, ".credentials", "sub");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "key"), "k");
+  let message = "";
+  try {
+    guardedRemove([join(dir, "key")], { root, yes: true });
+  } catch (e) {
+    message = (e as Error).message;
+  }
+  expect(message).toContain(`Protected state contains this path: ${join(root, ".credentials")}`);
+  expect(message).not.toContain("--allow-protected");
+});

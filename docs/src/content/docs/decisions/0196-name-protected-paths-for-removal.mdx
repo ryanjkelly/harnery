@@ -56,3 +56,14 @@ unpushed-history check reads local remote-tracking refs, so a commit pushed
 from another clone and never fetched here counts as unpushed, which errs
 toward refusing. Stashes and reflog-only commits are not checked. Removing a
 `.git` keeps the working files and loses the index and any stash.
+
+## Amendment (2026-10-03): artifact workspaces
+
+Files strictly inside one artifact workspace (`.harnery/artifacts/<id>/...`)
+can be removed, and `--root` may be the workspace itself. Workspaces hold
+local outputs such as browser profiles and test credentials, which an agent
+should be able to clear while keeping the screenshots it needs. The workspace
+directory, its `.harnery-artifact.json` record, and all other Harnery state
+stay protected; the workspace's lifecycle belongs to the artifact commands.
+A path under protected state now names the containing protected directory
+instead of suggesting an `--allow-protected` override that could not apply.

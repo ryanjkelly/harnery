@@ -47,7 +47,7 @@ export function guardedRemove(
   checkClaims: (targets: string[]) => void = () => {},
 ): RemovalReport {
   const cwd = realpathSync(process.cwd());
-  const root = checkedPath(options.root);
+  const root = checkedPath(options.root, new Set(), true);
   const allowed = allowedProtected(options.allowProtected ?? [], root, options.liveRoots ?? []);
   const rootStat = lstatSync(root);
   const rootFingerprint = fingerprint(rootStat);
@@ -115,6 +115,8 @@ export function guardedRemove(
     while (pending.length) {
       const path = pending.pop()!;
       const info = lstatSync(path);
+      if (basename(path) === ARTIFACT_RECORD && insideArtifactWorkspace(path, null))
+        throw new Error(`An artifact's record is managed by the artifact commands: ${path}`);
       if (protectedNames.has(basename(path).toLowerCase())) {
         if (!allowed.has(path)) throw new Error(protectedMessage(path));
         removedProtected.add(path);
@@ -178,7 +180,10 @@ export function guardedRemove(
 
   // Recheck the entire batch before its first mutation. Filesystem changes after
   // these checks remain possible; this is a guard, not a transactional filesystem.
-  if (checkedPath(options.root) !== root || fingerprint(lstatSync(root)) !== rootFingerprint)
+  if (
+    checkedPath(options.root, new Set(), true) !== root ||
+    fingerprint(lstatSync(root)) !== rootFingerprint
+  )
     throw new Error("Allowed root changed during inspection");
   for (const target of targets) {
     checkedPath(target, allowed);
@@ -193,6 +198,30 @@ export function guardedRemove(
   for (const target of targets)
     rmSync(target, { recursive: Boolean(options.recursive), force: false });
   return { ...report, applied: true };
+}
+
+/** The metadata file the artifact commands keep in each artifact workspace. */
+const ARTIFACT_RECORD = ".harnery-artifact.json";
+
+/**
+ * True when `path` lies strictly inside one artifact workspace,
+ * <dir>/.harnery/artifacts/<id>/..., under the `.harnery` component `state`
+ * (any `.harnery` when null). Artifact workspaces hold local outputs, so their
+ * contents may be removed; the workspace itself, its record file, and the rest
+ * of Harnery state stay protected and follow the artifact commands. `orSelf`
+ * accepts the workspace directory itself (used for --root, which is never removed).
+ */
+function insideArtifactWorkspace(path: string, state: string | null, orSelf = false): boolean {
+  const parts = path.split(sep);
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i]!.toLowerCase() !== ".harnery") continue;
+    if (state !== null && parts.slice(0, i + 1).join(sep) !== state) continue;
+    // .harnery / artifacts / <id> / <something>
+    return (
+      parts[i + 1] === "artifacts" && Boolean(parts[i + 2]) && parts.length >= i + (orSelf ? 3 : 4)
+    );
+  }
+  return false;
 }
 
 function protectedMessage(path: string): string {
@@ -284,14 +313,24 @@ function strictlyInside(parent: string, child: string): boolean {
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-function checkedPath(input: string, allowed: ReadonlySet<string> = new Set()): string {
+function checkedPath(
+  input: string,
+  allowed: ReadonlySet<string> = new Set(),
+  isRoot = false,
+): string {
   if (!input?.trim() || /[\0\r\n*?[\]$]/.test(input))
     throw new Error("Use a nonempty explicit path without wildcards or unresolved variables");
   const path = resolve(input);
   let cursor = path;
   while (true) {
-    if (protectedNames.has(basename(cursor).toLowerCase()) && !allowed.has(cursor))
-      throw new Error(protectedMessage(path));
+    if (
+      protectedNames.has(basename(cursor).toLowerCase()) &&
+      !allowed.has(cursor) &&
+      !insideArtifactWorkspace(path, cursor, isRoot)
+    )
+      throw new Error(
+        cursor === path ? protectedMessage(path) : `Protected state contains this path: ${cursor}`,
+      );
     const info = lstatSync(cursor);
     if (info.isSymbolicLink()) throw new Error(`Path contains a symlink: ${cursor}`);
     const parent = dirname(cursor);
