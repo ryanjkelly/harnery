@@ -14,6 +14,7 @@ import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { stripJsonComments } from "../core/config.ts";
 import { initializeEventLedgerV3, sha256V3 } from "../core/events/v3/index.ts";
 import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
+import { type ClaudeHookGroup, diffWiring } from "../core/hooks/adapter/wiring.ts";
 import {
   codexHookReviewAction,
   eventLedgerV3RuntimeIssues,
@@ -311,6 +312,27 @@ describe("wireHooks: Claude Code", () => {
   });
 });
 
+describe("wireHooks: adapters without declared timeouts", () => {
+  test("Claude Code keeps a hand-set timeout and adds none", () => {
+    const settings = {
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              { type: "command", command: `bash ${HOOK} stop --adapter claude-code`, timeout: 45 },
+            ],
+          },
+        ],
+      },
+    };
+    wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    expect(settings.hooks.Stop[0]!.hooks[0]!.timeout).toBe(45);
+    const fresh = (settings.hooks as Record<string, { hooks: { timeout?: number }[] }[]>)
+      .SessionStart;
+    expect(fresh![0]!.hooks[0]!.timeout).toBeUndefined();
+  });
+});
+
 describe("wireHooks: Cursor", () => {
   test("uses the flat entry shape, sets version, and installs shell fallbacks without StopFailure", () => {
     const settings: Record<string, unknown> = {};
@@ -382,11 +404,60 @@ describe("wireHooks: Codex", () => {
     expect((settings as { version?: number }).version).toBeUndefined();
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     expect(hooks.SessionStart[0]).toEqual({
-      hooks: [{ type: "command", command: `bash ${HOOK} session-start --adapter codex` }],
+      hooks: [
+        { type: "command", command: `bash ${HOOK} session-start --adapter codex`, timeout: 20 },
+      ],
     });
     expect(hooks.PermissionRequest[0]).toEqual({
-      hooks: [{ type: "command", command: `bash ${HOOK} permission-request --adapter codex` }],
+      hooks: [
+        {
+          type: "command",
+          command: `bash ${HOOK} permission-request --adapter codex`,
+          timeout: 20,
+        },
+      ],
     });
+  });
+
+  test("bounds every hook with a timeout, shorter for SessionEnd", () => {
+    const settings: Record<string, unknown> = {};
+    wireHooks(settings as never, CODEX, HOOK, "codex");
+    const hooks = (settings as { hooks: Record<string, { hooks: { timeout?: number }[] }[]> })
+      .hooks;
+    for (const { settingsKey, subcommand } of CODEX.events) {
+      expect(hooks[settingsKey]![0]!.hooks[0]!.timeout).toBe(subcommand === "session-end" ? 3 : 20);
+    }
+  });
+
+  test("adds a missing timeout to an existing entry, then is idempotent", () => {
+    const settings: { hooks: { PreToolUse: ClaudeHookGroup[] } } = {
+      hooks: {
+        PreToolUse: [
+          {
+            hooks: [
+              { type: "command", command: `bash ${HOOK} pre-tool-use --adapter codex` },
+              { type: "command", command: "echo keep-me" },
+            ],
+          },
+        ],
+      },
+    };
+    const first = wireHooks(settings as never, CODEX, HOOK, "codex");
+    expect(first.upgraded).toBe(1);
+    expect(settings.hooks.PreToolUse[0]!.hooks[0]).toEqual({
+      type: "command",
+      command: `bash ${HOOK} pre-tool-use --adapter codex`,
+      timeout: 20,
+    });
+    expect(settings.hooks.PreToolUse[0]!.hooks[1]).toEqual({
+      type: "command",
+      command: "echo keep-me",
+    });
+    const second = wireHooks(settings as never, CODEX, HOOK, "codex");
+    expect(second).toMatchObject({ wired: 0, upgraded: 0, removed: 0 });
+    expect(
+      diffWiring(settings as never, CODEX, { agentHookPath: HOOK, adapter: "codex" }).stale,
+    ).toEqual([]);
   });
 
   test("keeps current SessionEnd and removes legacy Codex events", () => {

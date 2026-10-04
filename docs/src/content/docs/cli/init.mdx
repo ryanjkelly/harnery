@@ -142,7 +142,7 @@ All four adapters are fully auto-wired. Pass `--adapter`:
 |---|---|---|
 | `claude-code` (default) | `.claude/settings.json` | 13 events; nested `{ hooks: [{ type, command }] }` entries |
 | `cursor` | `.cursor/hooks.json` | 13 events; flat `{ command }` entries + `"version": 1` |
-| `codex` | `.codex/hooks.json` | 11 native events; nested `{ hooks: [{ type, command }] }` entries; strict `description` + `hooks` top-level schema |
+| `codex` | `.codex/hooks.json` | 11 native events; nested `{ hooks: [{ type, command, timeout }] }` entries; strict `description` + `hooks` top-level schema |
 | `opencode` | `.opencode/plugins/harnery/index.ts` | 12 events delivered by an in-process plugin, not a hooks map; see below |
 
 Each writes only its own file, so several adapters can share one project: pass
@@ -182,6 +182,15 @@ an error, and `init` refuses to overwrite a file it does not own. `harn deinit
 --adapter opencode` removes the directory when Harnery owns it. The plugin
 observes turn completion after the fact, so the end-of-turn ritual is recorded
 but never re-prompted on OpenCode.
+
+### Codex hook timeouts
+
+Each Codex entry carries a `timeout` in seconds: 20 for most events and 3 for
+`SessionEnd`. Without one, Codex waits up to 600 seconds for a hook, so a
+stalled hook can hold a tool call for ten minutes. A Codex hook that times out
+fails open: Codex marks the run failed and the tool proceeds without that
+hook's checks. Re-running `init` adds or corrects the value, and `harn doctor`
+reports an entry whose timeout differs as stale.
 
 ### Codex authorization is a separate step
 

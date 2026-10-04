@@ -69,6 +69,13 @@ export interface AdapterSpec {
    * wandered (the session shell `cd`ing into a subdirectory or off-repo).
    */
   projectDirEnv?: string;
+  /**
+   * Per-handler `timeout` (seconds) written on every Harnery hook entry. Without
+   * one, an adapter's own default applies (Codex: 600 seconds), so a stalled
+   * hook can hold a tool call for ten minutes. `bySubcommand` overrides
+   * `default` for one event.
+   */
+  hookTimeouts?: { default: number; bySubcommand?: Record<string, number> };
 }
 
 /** Claude Code: `.claude/settings.json`. */
@@ -191,6 +198,10 @@ export const ADAPTER_SPECS: Record<AdapterId, AdapterSpec> = {
     legacyEvents: LEGACY_CODEX_EVENTS,
     allowedTopLevelKeys: ["description", "hooks"],
     allowedEventKeys: CODEX_ALLOWED_EVENT_KEYS,
+    // A Codex hook that times out fails open: the run is marked failed and
+    // the tool proceeds. Codex clamps SessionEnd to 3 seconds and defaults it
+    // to 1, which is too short for a cold hook start.
+    hookTimeouts: { default: 20, bySubcommand: { "session-end": 3 } },
   },
   opencode: {
     settingsFile: ".opencode/plugins/harnery/index.ts",

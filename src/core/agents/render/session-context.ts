@@ -126,6 +126,7 @@ export function renderSessionContext(opts: RenderOpts): string {
       if (d.missing.length > 0)
         bits.push(`missing: ${d.missing.map((m) => m.subcommand).join(", ")}`);
       if (d.orphans.length > 0) bits.push(`orphaned: ${d.orphans.join(", ")}`);
+      if (d.stale.length > 0) bits.push(`outdated: ${d.stale.map((m) => m.subcommand).join(", ")}`);
       return `  - ${d.settingsFile} — ${bits.join("; ")}`;
     });
     messages.push(

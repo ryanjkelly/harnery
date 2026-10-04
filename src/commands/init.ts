@@ -51,6 +51,7 @@ import {
   groupCommands,
   type HookGroup,
   hookCommand,
+  hookTimeoutFor,
   isAgentHookCommand,
   makeEntry,
   type SettingsFile,
@@ -606,6 +607,7 @@ export function wireHooks(
   }
   for (const { settingsKey, subcommand } of spec.events) {
     const command = hookCommand(spec, agentHookPath, subcommand, adapter);
+    const timeout = hookTimeoutFor(spec, subcommand);
     let present = false;
     for (const key of Object.keys(settings.hooks)) {
       if (key === settingsKey) continue;
@@ -616,7 +618,7 @@ export function wireHooks(
     const groups = settings.hooks[settingsKey] ?? [];
     const nextGroups: HookGroup[] = [];
     for (const group of groups) {
-      const normalized = normalizeEventGroup(group, subcommand, command, present);
+      const normalized = normalizeEventGroup(group, subcommand, command, timeout, present);
       if (normalized.found && !present) present = true;
       upgraded += normalized.upgraded;
       removed += normalized.removed;
@@ -635,7 +637,7 @@ export function wireHooks(
         command,
         spec.entryShape === "cursor" && subcommand === "stop"
           ? { loop_limit: CURSOR_STOP_FOLLOWUP_LOOP_LIMIT }
-          : undefined,
+          : { timeout },
       ),
     );
     settings.hooks[settingsKey] = current;
@@ -658,6 +660,7 @@ function normalizeEventGroup(
   group: HookGroup,
   subcommand: string,
   canonical: string,
+  timeout: number | undefined,
   alreadyFound: boolean,
 ): { group: HookGroup | null; found: boolean; upgraded: number; removed: number } {
   let found = false;
@@ -686,10 +689,16 @@ function normalizeEventGroup(
         continue;
       }
       found = true;
+      let changed = false;
       if (hook.command !== canonical) {
         hook.command = canonical;
-        upgraded++;
+        changed = true;
       }
+      if (timeout !== undefined && hook.timeout !== timeout) {
+        hook.timeout = timeout;
+        changed = true;
+      }
+      if (changed) upgraded++;
       kept.push(hook);
     }
     group.hooks = kept;

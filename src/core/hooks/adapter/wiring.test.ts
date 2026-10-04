@@ -15,6 +15,7 @@ import {
   agentHookPathForProject,
   diffWiring,
   harneryPackageRoot,
+  hookTimeoutFor,
   loadAdapterWiring,
   type SettingsFile,
   summarizeAdapterWiring,
@@ -147,6 +148,44 @@ describe("diffWiring", () => {
     expect(diff.duplicates.map((event) => event.settingsKey)).toEqual(["Stop"]);
     expect(diff.misplaced.map((event) => event.settingsKey)).toEqual(["Stop"]);
     expect(diff.stale.map((event) => event.settingsKey)).toEqual(["Stop"]);
+  });
+
+  test("Codex flags a missing or different timeout as stale", () => {
+    const codex = ADAPTER_SPECS.codex;
+    const entry = (subcommand: string, timeout?: number) => ({
+      hooks: [
+        {
+          type: "command",
+          command: `bash ${HOOK_BASE} ${subcommand} --adapter codex`,
+          ...(timeout === undefined ? {} : { timeout }),
+        },
+      ],
+    });
+    const settings: SettingsFile = {
+      hooks: {
+        PreToolUse: [entry("pre-tool-use")],
+        PostToolUse: [entry("post-tool-use", 60)],
+        Stop: [entry("stop", 20)],
+        SessionEnd: [entry("session-end", 3)],
+      },
+    };
+    const diff = diffWiring(settings, codex, { agentHookPath: HOOK_BASE, adapter: "codex" });
+    expect(diff.stale.map((event) => event.settingsKey)).toEqual(["PreToolUse", "PostToolUse"]);
+  });
+
+  test("hookTimeoutFor applies per-event overrides and none for undeclared adapters", () => {
+    expect(hookTimeoutFor(ADAPTER_SPECS.codex, "pre-tool-use")).toBe(20);
+    expect(hookTimeoutFor(ADAPTER_SPECS.codex, "session-end")).toBe(3);
+    expect(hookTimeoutFor(CLAUDE, "stop")).toBeUndefined();
+  });
+
+  test("a hand-set timeout on an adapter without declared timeouts is not drift", () => {
+    const settings: SettingsFile = {
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: `bash ${HOOK_BASE} stop`, timeout: 45 }] }],
+      },
+    };
+    expect(diffWiring(settings, CLAUDE).stale).toEqual([]);
   });
 
   test("recognizes a minimal command ending at the subcommand token", () => {

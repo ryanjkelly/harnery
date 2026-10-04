@@ -24,10 +24,10 @@ import {
 } from "./events.ts";
 import { checkOpenCodePlugin, isOwnedOpenCodePlugin } from "./opencode-plugin.ts";
 
-/** Claude Code + Codex entry: `{ hooks: [{ type, command }] }`. */
+/** Claude Code + Codex entry: `{ hooks: [{ type, command, timeout? }] }`. */
 export interface ClaudeHookGroup {
   matcher?: string;
-  hooks: { type: string; command: string }[];
+  hooks: { type: string; command: string; timeout?: number }[];
 }
 /** Cursor entry: a flat `{ command }`. */
 export interface CursorHookGroup {
@@ -53,12 +53,22 @@ export interface SettingsFile {
 export function makeEntry(
   shape: HookEntryShape,
   command: string,
-  extras?: { loop_limit?: number },
+  extras?: { loop_limit?: number; timeout?: number },
 ): HookGroup {
-  if (shape !== "cursor") return { hooks: [{ type: "command", command }] };
+  if (shape !== "cursor") {
+    return extras?.timeout !== undefined
+      ? { hooks: [{ type: "command", command, timeout: extras.timeout }] }
+      : { hooks: [{ type: "command", command }] };
+  }
   return extras?.loop_limit !== undefined
     ? { command, loop_limit: extras.loop_limit }
     : { command };
+}
+
+/** The `timeout` init writes on one event's Harnery hook, or undefined for none. */
+export function hookTimeoutFor(spec: AdapterSpec, subcommand: string): number | undefined {
+  if (!spec.hookTimeouts) return undefined;
+  return spec.hookTimeouts.bySubcommand?.[subcommand] ?? spec.hookTimeouts.default;
 }
 
 /** Pin Cursor Stop followups to Harnery's loop cap. Returns true when the entry changed. */
@@ -144,7 +154,7 @@ export interface WiringDiff {
   duplicates: HookEvent[];
   /** Spec events wired under an event key other than the canonical one. */
   misplaced: HookEvent[];
-  /** Spec events whose correct-key command differs from init's canonical command. */
+  /** Spec events whose correct-key command or `timeout` differs from what init writes. */
   stale: HookEvent[];
   /** Settings fields rejected by a adapter with a strict top-level schema. */
   invalidTopLevelKeys: string[];
@@ -182,7 +192,21 @@ export function diffWiring(
         event.subcommand,
         expected.adapter,
       );
-      if (commands.some((command) => command !== canonical)) stale.push(event);
+      const timeout = hookTimeoutFor(spec, event.subcommand);
+      const timeoutDrift =
+        timeout !== undefined &&
+        groups.some(
+          (group) =>
+            "hooks" in group &&
+            Array.isArray(group.hooks) &&
+            group.hooks.some(
+              (hook) =>
+                typeof hook.command === "string" &&
+                commandWiresSubcommand(hook.command, event.subcommand) &&
+                hook.timeout !== timeout,
+            ),
+        );
+      if (timeoutDrift || commands.some((command) => command !== canonical)) stale.push(event);
     }
     const wrongKey = Object.entries(hooks).some(
       ([key, otherGroups]) =>
