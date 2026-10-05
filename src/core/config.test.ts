@@ -9,6 +9,7 @@ import {
   artifactMaxBytes,
   artifactMaxUnitBytes,
   backupConfig,
+  codexWindowsBridgeConfig,
   coordFreshnessSeconds,
   DEFAULT_BIN_NAME,
   DEFAULT_FRESHNESS_SECS,
@@ -649,5 +650,36 @@ describe("user-global config layer", () => {
     expect(pinnedBinName(root)).toBeNull();
     // resolveBinName, by contrast, DOES honor the global fallback.
     expect(resolveBinName(root)).toBe("globalcli");
+  });
+});
+
+describe("codexWindowsBridgeConfig", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const root = (body?: string) => {
+    const r = makeRoot(body);
+    roots.push(r);
+    return r;
+  };
+
+  test("is off without the key", () => {
+    expect(codexWindowsBridgeConfig(root("{}"))).toEqual({ entryPoint: null, error: null });
+    expect(codexWindowsBridgeConfig(root())).toEqual({ entryPoint: null, error: null });
+  });
+
+  test("returns a plain command name", () => {
+    const r = root('{ "hooks": { "codexWindowsBridge": { "entryPoint": "codex-wsl-hook" } } }');
+    expect(codexWindowsBridgeConfig(r)).toEqual({ entryPoint: "codex-wsl-hook", error: null });
+  });
+
+  test("ignores and reports a value that could inject PowerShell", () => {
+    for (const bad of ['"x; rm -rf /"', '"$(evil)"', '"a b"', '""', "7"]) {
+      const r = root(`{ "hooks": { "codexWindowsBridge": { "entryPoint": ${bad} } } }`);
+      const result = codexWindowsBridgeConfig(r);
+      expect(result.entryPoint).toBeNull();
+      expect(result.error).toContain("hooks.codexWindowsBridge.entryPoint");
+    }
   });
 });

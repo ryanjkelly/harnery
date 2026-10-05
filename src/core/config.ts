@@ -80,6 +80,8 @@ interface HarneryConfig {
   /** Optional host prompt-context extension. Project config only. */
   hooks?: {
     promptContext?: unknown;
+    /** Project-only opt-in; read via `codexWindowsBridgeConfig()`. */
+    codexWindowsBridge?: unknown;
   };
   /**
    * Agent-ritual policy owned by the host project. Git finalization is opt-in:
@@ -495,6 +497,42 @@ export function resolveHooksSetupHint(coordRoot?: string | null): string | null 
  * values fail closed to no reminder so a malformed optional setting cannot
  * break the prompt hook.
  */
+/** A plain Windows command name, so it is safe to splice into a PowerShell hook command. */
+const CODEX_WINDOWS_BRIDGE_ENTRY_POINT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export interface CodexWindowsBridgeConfig {
+  /** Command name Windows-native Codex hooks hand off to, or null when not opted in. */
+  entryPoint: string | null;
+  /** Why the configured value was ignored, when it was. */
+  error: string | null;
+}
+
+/**
+ * Per-project opt-in that routes Windows-native Codex hooks through a resident
+ * WSL bridge (ADR 0197). Read from the project config only: the value is
+ * written into the committed `.codex/hooks.json`, so a user-level setting
+ * would make `init` output differ between machines. An invalid value is
+ * ignored and reported rather than spliced into a shell command.
+ */
+export function codexWindowsBridgeConfig(projectRoot: string): CodexWindowsBridgeConfig {
+  const raw = readProjectConfig(projectRoot).hooks?.codexWindowsBridge;
+  if (raw === undefined) return { entryPoint: null, error: null };
+  const entryPoint = isPlainObject(raw) ? raw.entryPoint : undefined;
+  if (typeof entryPoint !== "string") {
+    return {
+      entryPoint: null,
+      error: "hooks.codexWindowsBridge.entryPoint must be a command name",
+    };
+  }
+  if (!CODEX_WINDOWS_BRIDGE_ENTRY_POINT.test(entryPoint)) {
+    return {
+      entryPoint: null,
+      error: `hooks.codexWindowsBridge.entryPoint ${JSON.stringify(entryPoint)} is not a plain command name`,
+    };
+  }
+  return { entryPoint, error: null };
+}
+
 export function hostPromptReminder(coordRoot?: string | null): string | null {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return null;

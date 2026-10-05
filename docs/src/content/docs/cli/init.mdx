@@ -192,6 +192,14 @@ fails open: Codex marks the run failed and the tool proceeds without that
 hook's checks. Re-running `init` adds or corrects the value, and `harn doctor`
 reports an entry whose timeout differs as stale.
 
+A project that sets `hooks.codexWindowsBridge.entryPoint` in
+`.harnery/config.jsonc` also gets a `commandWindows` on each Codex entry.
+Windows-native Codex runs it instead of `command`: it hands the hook to the
+named command when that is on `PATH` and the working directory is a WSL path,
+and runs the usual command otherwise. Removing the setting and re-running
+`init` removes the field. See the
+[config reference](/reference/config-schema/#hooks).
+
 ### Codex authorization is a separate step
 
 Writing `.codex/hooks.json` does not authorize its commands. Codex stores

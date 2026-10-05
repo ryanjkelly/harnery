@@ -27,7 +27,12 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { DEFAULT_BIN_NAME, pinnedBinName, stripJsonComments } from "../core/config.ts";
+import {
+  codexWindowsBridgeConfig,
+  DEFAULT_BIN_NAME,
+  pinnedBinName,
+  stripJsonComments,
+} from "../core/config.ts";
 import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
 import { ADAPTER_CAPABILITY_PROFILES_V3 } from "../core/events/v3/capabilities.ts";
 import type { EventV3ControlState } from "../core/events/v3/control.ts";
@@ -48,14 +53,17 @@ import {
   CURSOR_STOP_FOLLOWUP_LOOP_LIMIT,
   commandWiresSubcommand,
   diffWiring,
+  expectedCommandWindows,
   groupCommands,
   type HookGroup,
   hookCommand,
   hookTimeoutFor,
   isAgentHookCommand,
   makeEntry,
+  orderHandlerKeys,
   type SettingsFile,
   summarizeAdapterWiring,
+  type WiringOptions,
 } from "../core/hooks/adapter/wiring.ts";
 import { detectInstalledAdapters } from "../core/workflow/adapters.ts";
 import { applyIndexerExclusions } from "../lib/indexer-exclusions.ts";
@@ -148,7 +156,11 @@ function checkAdapterHooks(
   let drift = false;
   try {
     const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
-    const hookDiff = diffWiring(settings, spec, { agentHookPath: agentHook, adapter });
+    const hookDiff = diffWiring(settings, spec, {
+      agentHookPath: agentHook,
+      adapter,
+      windowsBridgeEntryPoint: codexWindowsBridgeConfig(projectRoot).entryPoint,
+    });
     drift =
       hookDiff.missing.length > 0 ||
       hookDiff.stale.length > 0 ||
@@ -461,11 +473,16 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
           } else {
             settings = {};
           }
+          const bridge = codexWindowsBridgeConfig(projectRoot);
+          if (bridge.error && spec.windowsBridgeHooks) {
+            actions.push(`⚠ ${bridge.error}; writing ${adapter} hooks without commandWindows`);
+          }
           const { wired, already, removed, upgraded } = wireHooks(
             settings,
             spec,
             agentHook,
             adapter,
+            { windowsBridgeEntryPoint: bridge.entryPoint },
           );
 
           if (wired === 0 && removed === 0 && upgraded === 0) {
@@ -589,6 +606,7 @@ export function wireHooks(
   spec: AdapterSpec,
   agentHookPath: string,
   adapter: AdapterId,
+  options?: WiringOptions,
 ): { wired: number; already: number; removed: number; upgraded: number } {
   if (spec.rootVersion !== undefined && settings.version === undefined) {
     settings.version = spec.rootVersion;
@@ -608,6 +626,18 @@ export function wireHooks(
   for (const { settingsKey, subcommand } of spec.events) {
     const command = hookCommand(spec, agentHookPath, subcommand, adapter);
     const timeout = hookTimeoutFor(spec, subcommand);
+    const commandWindows = expectedCommandWindows(
+      spec,
+      agentHookPath,
+      subcommand,
+      adapter,
+      options,
+    );
+    const handlerFields = {
+      timeout,
+      commandWindows,
+      windowsBridge: spec.windowsBridgeHooks === true,
+    };
     let present = false;
     for (const key of Object.keys(settings.hooks)) {
       if (key === settingsKey) continue;
@@ -618,7 +648,7 @@ export function wireHooks(
     const groups = settings.hooks[settingsKey] ?? [];
     const nextGroups: HookGroup[] = [];
     for (const group of groups) {
-      const normalized = normalizeEventGroup(group, subcommand, command, timeout, present);
+      const normalized = normalizeEventGroup(group, subcommand, command, handlerFields, present);
       if (normalized.found && !present) present = true;
       upgraded += normalized.upgraded;
       removed += normalized.removed;
@@ -637,7 +667,7 @@ export function wireHooks(
         command,
         spec.entryShape === "cursor" && subcommand === "stop"
           ? { loop_limit: CURSOR_STOP_FOLLOWUP_LOOP_LIMIT }
-          : { timeout },
+          : { timeout, commandWindows },
       ),
     );
     settings.hooks[settingsKey] = current;
@@ -660,7 +690,7 @@ function normalizeEventGroup(
   group: HookGroup,
   subcommand: string,
   canonical: string,
-  timeout: number | undefined,
+  fields: { timeout?: number; commandWindows?: string; windowsBridge: boolean },
   alreadyFound: boolean,
 ): { group: HookGroup | null; found: boolean; upgraded: number; removed: number } {
   let found = false;
@@ -679,7 +709,8 @@ function normalizeEventGroup(
   }
   if ("hooks" in group && Array.isArray(group.hooks)) {
     const kept = [] as typeof group.hooks;
-    for (const hook of group.hooks) {
+    for (const original of group.hooks) {
+      let hook = original;
       if (typeof hook.command !== "string" || !commandWiresSubcommand(hook.command, subcommand)) {
         kept.push(hook);
         continue;
@@ -694,11 +725,21 @@ function normalizeEventGroup(
         hook.command = canonical;
         changed = true;
       }
-      if (timeout !== undefined && hook.timeout !== timeout) {
-        hook.timeout = timeout;
+      if (fields.timeout !== undefined && hook.timeout !== fields.timeout) {
+        hook.timeout = fields.timeout;
         changed = true;
       }
-      if (changed) upgraded++;
+      // Harnery owns commandWindows on its own handlers for adapters that run
+      // it: write the opted-in command, or remove one a project opted out of.
+      if (fields.windowsBridge && hook.commandWindows !== fields.commandWindows) {
+        if (fields.commandWindows === undefined) delete hook.commandWindows;
+        else hook.commandWindows = fields.commandWindows;
+        changed = true;
+      }
+      if (changed) {
+        hook = orderHandlerKeys(hook);
+        upgraded++;
+      }
       kept.push(hook);
     }
     group.hooks = kept;

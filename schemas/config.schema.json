@@ -406,6 +406,19 @@
               "default": 65536
             }
           }
+        },
+        "codexWindowsBridge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entryPoint"],
+          "description": "Route Windows-native Codex hooks through a resident WSL bridge (decision record 0197). init writes a commandWindows on each Codex hook that calls entryPoint when it is on PATH and the working directory is a WSL path, and otherwise runs the usual command. Project config only.",
+          "properties": {
+            "entryPoint": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+              "description": "Windows command name the bridge installs, for example codex-wsl-hook. Only a bridge that implements the decision record 0197 contract should install it."
+            }
+          }
         }
       }
     },

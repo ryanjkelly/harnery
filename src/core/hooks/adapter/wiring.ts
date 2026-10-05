@@ -14,7 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveBinName } from "../../config.ts";
+import { codexWindowsBridgeConfig, resolveBinName } from "../../config.ts";
 import {
   ADAPTER_SPECS,
   type AdapterId,
@@ -24,10 +24,19 @@ import {
 } from "./events.ts";
 import { checkOpenCodePlugin, isOwnedOpenCodePlugin } from "./opencode-plugin.ts";
 
-/** Claude Code + Codex entry: `{ hooks: [{ type, command, timeout? }] }`. */
+/** One Claude Code or Codex command handler. */
+export interface ClaudeHookHandler {
+  type: string;
+  command: string;
+  /** Codex: run instead of `command` on Windows. */
+  commandWindows?: string;
+  timeout?: number;
+}
+
+/** Claude Code + Codex entry: `{ hooks: [{ type, command, commandWindows?, timeout? }] }`. */
 export interface ClaudeHookGroup {
   matcher?: string;
-  hooks: { type: string; command: string; timeout?: number }[];
+  hooks: ClaudeHookHandler[];
 }
 /** Cursor entry: a flat `{ command }`. */
 export interface CursorHookGroup {
@@ -53,16 +62,84 @@ export interface SettingsFile {
 export function makeEntry(
   shape: HookEntryShape,
   command: string,
-  extras?: { loop_limit?: number; timeout?: number },
+  extras?: { loop_limit?: number; timeout?: number; commandWindows?: string },
 ): HookGroup {
   if (shape !== "cursor") {
-    return extras?.timeout !== undefined
-      ? { hooks: [{ type: "command", command, timeout: extras.timeout }] }
-      : { hooks: [{ type: "command", command }] };
+    return {
+      hooks: [
+        orderHandlerKeys({
+          type: "command",
+          command,
+          commandWindows: extras?.commandWindows,
+          timeout: extras?.timeout,
+        }),
+      ],
+    };
   }
   return extras?.loop_limit !== undefined
     ? { command, loop_limit: extras.loop_limit }
     : { command };
+}
+
+/**
+ * Rebuild a handler with Harnery's fields first in a fixed order, dropping
+ * undefined ones and keeping any other fields after them.
+ */
+export function orderHandlerKeys(handler: ClaudeHookHandler): ClaudeHookHandler {
+  const { type, command, commandWindows, timeout, ...rest } = handler;
+  return {
+    type,
+    command,
+    ...(commandWindows !== undefined ? { commandWindows } : {}),
+    ...(timeout !== undefined ? { timeout } : {}),
+    ...rest,
+  };
+}
+
+/**
+ * The Windows command for an opted-in project (ADR 0197). It hands the hook to
+ * the bridge entry point when that is on PATH and the working directory is a
+ * WSL UNC path, and otherwise runs the usual command. `ProviderPath` drops the
+ * provider prefix that `Path` carries. The trailing `exit $LASTEXITCODE` is
+ * required: without it PowerShell reports any non-zero exit from inside the
+ * `if` block as 1, which would turn a hook's blocking exit 2 into a failure.
+ */
+export function hookCommandWindows(
+  spec: AdapterSpec,
+  agentHookPath: string,
+  subcommand: string,
+  adapter: AdapterId,
+  entryPoint: string,
+): string {
+  const direct = hookCommand(spec, agentHookPath, subcommand, adapter);
+  return (
+    `if ((Get-Command ${entryPoint} -ErrorAction Ignore) -and $PWD.ProviderPath -like '\\\\wsl*') ` +
+    `{ ${entryPoint} ${subcommand} --adapter ${adapter} } else { ${direct} }; exit $LASTEXITCODE`
+  );
+}
+
+/** Project-level choices that change what init writes. */
+export interface WiringOptions {
+  /** Bridge entry point from `hooks.codexWindowsBridge`, or null when not opted in. */
+  windowsBridgeEntryPoint?: string | null;
+}
+
+/** The `commandWindows` init writes for one event, or undefined for none. */
+export function expectedCommandWindows(
+  spec: AdapterSpec,
+  agentHookPath: string,
+  subcommand: string,
+  adapter: AdapterId,
+  options?: WiringOptions,
+): string | undefined {
+  if (!spec.windowsBridgeHooks || !options?.windowsBridgeEntryPoint) return undefined;
+  return hookCommandWindows(
+    spec,
+    agentHookPath,
+    subcommand,
+    adapter,
+    options.windowsBridgeEntryPoint,
+  );
 }
 
 /** The `timeout` init writes on one event's Harnery hook, or undefined for none. */
@@ -154,7 +231,7 @@ export interface WiringDiff {
   duplicates: HookEvent[];
   /** Spec events wired under an event key other than the canonical one. */
   misplaced: HookEvent[];
-  /** Spec events whose correct-key command or `timeout` differs from what init writes. */
+  /** Spec events whose correct-key command, `commandWindows`, or `timeout` differs from what init writes. */
   stale: HookEvent[];
   /** Settings fields rejected by a adapter with a strict top-level schema. */
   invalidTopLevelKeys: string[];
@@ -169,7 +246,7 @@ export interface WiringDiff {
 export function diffWiring(
   settings: SettingsFile,
   spec: AdapterSpec,
-  expected?: { agentHookPath: string; adapter: AdapterId },
+  expected?: { agentHookPath: string; adapter: AdapterId } & WiringOptions,
 ): WiringDiff {
   const missing: HookEvent[] = [];
   const present: HookEvent[] = [];
@@ -193,20 +270,26 @@ export function diffWiring(
         expected.adapter,
       );
       const timeout = hookTimeoutFor(spec, event.subcommand);
-      const timeoutDrift =
-        timeout !== undefined &&
-        groups.some(
-          (group) =>
-            "hooks" in group &&
-            Array.isArray(group.hooks) &&
-            group.hooks.some(
-              (hook) =>
-                typeof hook.command === "string" &&
-                commandWiresSubcommand(hook.command, event.subcommand) &&
-                hook.timeout !== timeout,
-            ),
-        );
-      if (timeoutDrift || commands.some((command) => command !== canonical)) stale.push(event);
+      const commandWindows = expectedCommandWindows(
+        spec,
+        expected.agentHookPath,
+        event.subcommand,
+        expected.adapter,
+        expected,
+      );
+      const handlerDrift = groups.some(
+        (group) =>
+          "hooks" in group &&
+          Array.isArray(group.hooks) &&
+          group.hooks.some(
+            (hook) =>
+              typeof hook.command === "string" &&
+              commandWiresSubcommand(hook.command, event.subcommand) &&
+              ((timeout !== undefined && hook.timeout !== timeout) ||
+                (spec.windowsBridgeHooks === true && hook.commandWindows !== commandWindows)),
+          ),
+      );
+      if (handlerDrift || commands.some((command) => command !== canonical)) stale.push(event);
     }
     const wrongKey = Object.entries(hooks).some(
       ([key, otherGroups]) =>
@@ -349,6 +432,7 @@ export function loadAdapterWiring(projectRoot: string): AdapterWiringStatus[] {
         ? {
             agentHookPath: agentHookPathForProject(projectRoot, packageRoot),
             adapter: id,
+            windowsBridgeEntryPoint: codexWindowsBridgeConfig(projectRoot).entryPoint,
           }
         : undefined,
     );

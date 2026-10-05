@@ -14,7 +14,11 @@ import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { stripJsonComments } from "../core/config.ts";
 import { initializeEventLedgerV3, sha256V3 } from "../core/events/v3/index.ts";
 import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
-import { type ClaudeHookGroup, diffWiring } from "../core/hooks/adapter/wiring.ts";
+import {
+  type ClaudeHookGroup,
+  diffWiring,
+  hookCommandWindows,
+} from "../core/hooks/adapter/wiring.ts";
 import {
   codexHookReviewAction,
   eventLedgerV3RuntimeIssues,
@@ -481,6 +485,63 @@ describe("wireHooks: Codex", () => {
     );
     expect(settings.hooks.SessionEnd[1]!.hooks[0]!.command).toBe("echo keep-me");
     expect((settings.hooks as Record<string, unknown>).StopFailure).toBeUndefined();
+  });
+
+  test("an opted-in project gets commandWindows on every Codex hook, in a fixed key order", () => {
+    const settings: Record<string, unknown> = {};
+    const options = { windowsBridgeEntryPoint: "codex-wsl-hook" };
+    wireHooks(settings as never, CODEX, HOOK, "codex", options);
+    const hooks = (settings as { hooks: Record<string, ClaudeHookGroup[]> }).hooks;
+    for (const { settingsKey, subcommand } of CODEX.events) {
+      const handler = hooks[settingsKey]![0]!.hooks[0]!;
+      expect(handler.commandWindows).toBe(
+        hookCommandWindows(CODEX, HOOK, subcommand, "codex", "codex-wsl-hook"),
+      );
+      expect(Object.keys(handler)).toEqual(["type", "command", "commandWindows", "timeout"]);
+    }
+    const again = wireHooks(settings as never, CODEX, HOOK, "codex", options);
+    expect(again).toMatchObject({ wired: 0, upgraded: 0, removed: 0 });
+    expect(
+      diffWiring(settings as never, CODEX, { agentHookPath: HOOK, adapter: "codex", ...options })
+        .stale,
+    ).toEqual([]);
+  });
+
+  test("opting out removes commandWindows and keeps other handlers untouched", () => {
+    const settings = {
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: `bash ${HOOK} stop --adapter codex`,
+                commandWindows: "old",
+                timeout: 20,
+              },
+              { type: "command", command: "echo keep-me", commandWindows: "echo keep-me-too" },
+            ],
+          },
+        ],
+      },
+    } as { hooks: { Stop: ClaudeHookGroup[] } };
+    const result = wireHooks(settings as never, CODEX, HOOK, "codex");
+    expect(result.upgraded).toBe(1);
+    expect(settings.hooks.Stop[0]!.hooks[0]).toEqual({
+      type: "command",
+      command: `bash ${HOOK} stop --adapter codex`,
+      timeout: 20,
+    });
+    expect(settings.hooks.Stop[0]!.hooks[1]!.commandWindows).toBe("echo keep-me-too");
+  });
+
+  test("Claude Code never gets commandWindows, even with the option set", () => {
+    const settings: Record<string, unknown> = {};
+    wireHooks(settings as never, CLAUDE, HOOK, "claude-code", {
+      windowsBridgeEntryPoint: "codex-wsl-hook",
+    });
+    const hooks = (settings as { hooks: Record<string, ClaudeHookGroup[]> }).hooks;
+    expect(hooks.Stop![0]!.hooks[0]!.commandWindows).toBeUndefined();
   });
 
   test("wires the current SessionEnd lifecycle event", () => {

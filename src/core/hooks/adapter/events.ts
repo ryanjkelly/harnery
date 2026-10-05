@@ -76,6 +76,13 @@ export interface AdapterSpec {
    * `default` for one event.
    */
   hookTimeouts?: { default: number; bySubcommand?: Record<string, number> };
+  /**
+   * The adapter runs a handler's `commandWindows` instead of `command` on
+   * Windows. A project that opts in (`hooks.codexWindowsBridge`) gets one that
+   * hands the hook to a resident WSL bridge (ADR 0197); otherwise init leaves
+   * the field off.
+   */
+  windowsBridgeHooks?: boolean;
 }
 
 /** Claude Code: `.claude/settings.json`. */
@@ -202,6 +209,7 @@ export const ADAPTER_SPECS: Record<AdapterId, AdapterSpec> = {
     // the tool proceeds. Codex clamps SessionEnd to 3 seconds and defaults it
     // to 1, which is too short for a cold hook start.
     hookTimeouts: { default: 20, bySubcommand: { "session-end": 3 } },
+    windowsBridgeHooks: true,
   },
   opencode: {
     settingsFile: ".opencode/plugins/harnery/index.ts",

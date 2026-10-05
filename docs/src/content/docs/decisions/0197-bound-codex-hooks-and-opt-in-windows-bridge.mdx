@@ -59,9 +59,11 @@ timeout is accepted: bounded tool latency is worth more than a guard that
 would otherwise have run after a ten-minute wait. Other adapters are
 unchanged, and a timeout set by hand on their entries is kept.
 
-**The Windows bridge route is a per-project opt-in.** A project that names a
-bridge entry point in its Harnery config gets a `commandWindows` on each Codex
-entry. Other projects get `command` and `timeout` only. The text does two
+**The Windows bridge route is a per-project opt-in.** A project that sets
+`hooks.codexWindowsBridge.entryPoint` in `.harnery/config.jsonc` (project
+config only, because the value lands in a committed manifest) gets a
+`commandWindows` on each Codex entry. The value must be a plain command name,
+so nothing else can be spliced into the PowerShell text. Other projects get `command` and `timeout` only. The text does two
 checks and hands off:
 
 ```powershell
@@ -84,9 +86,11 @@ WSL session, never reruns a hook that may already have started, and maps its
 own faults to exit 0 with one stderr line and a local record that the guard
 did not complete. Harnery does not ship the bridge.
 
-**Skipped guards stay visible.** `agent-hook` will write a start marker that
-it clears on completion, so doctor can report hooks that Codex killed on
-timeout.
+**Skipped guards stay visible.** For Codex events, `agent-hook` writes a start
+marker under `.harnery/active/hook-runs/` before it reads stdin and removes it
+on completion. `harn doctor` reports markers from the last 24 hours whose run
+outlived its timeout and whose process is gone (`codex:hook runs`). Bridge
+faults are recorded by the bridge itself, outside Harnery.
 
 ## Result and gotchas
 

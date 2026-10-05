@@ -90,6 +90,7 @@ import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/
 import { stableScopeId } from "../workflow/scope-id.ts";
 import { type AdapterBehavior, adapterBehavior } from "./adapter/behaviors/index.ts";
 import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
+import { ADAPTER_SPECS } from "./adapter/events.ts";
 import {
   extractBashCommand,
   extractToolDescription,
@@ -98,6 +99,7 @@ import {
   type ParsedPayload,
   parsePayload,
 } from "./adapter/parse.ts";
+import { hookTimeoutFor } from "./adapter/wiring.ts";
 import { scheduleBackupSnapshot } from "./backup-schedule.ts";
 import {
   captureImages,
@@ -131,6 +133,7 @@ import {
   scanStatusBoxPresent,
   scanTranscriptRuntime,
 } from "./resolve/transcript.ts";
+import { clearHookRunMarker, writeHookRunMarker } from "./run-markers.ts";
 import { sessionNamePresence } from "./session-name-presence.ts";
 import { shellWaiterReason } from "./shell-waiter.ts";
 
@@ -140,6 +143,7 @@ interface Argv {
 }
 
 let hookHealthState: HookHealthState | undefined;
+let hookRunMarkerPath: string | null = null;
 
 function parseArgv(argv: string[]): Argv {
   const out: Argv = { eventName: null, extra: [] };
@@ -671,6 +675,24 @@ async function main(): Promise<number> {
   const { eventName, extra } = parseArgv(process.argv.slice(2));
   const adapter = detectAdapter(process.argv.slice(2));
   const behavior = adapter ? adapterBehavior(adapter) : null;
+  // Adapters that kill a hook at its timeout get a start marker, so a killed
+  // run leaves evidence for doctor (ADR 0197). Written before stdin is read.
+  const markerSpec = adapter ? ADAPTER_SPECS[adapter] : undefined;
+  const markerTimeout =
+    markerSpec && eventName && markerSpec.events.some((e) => e.subcommand === eventName)
+      ? hookTimeoutFor(markerSpec, eventName)
+      : undefined;
+  if (markerTimeout !== undefined && adapter && eventName && coordEnv("AGENT_COORD_OFF") !== "1") {
+    const markerRoot = resolveCoordRoot(process.cwd());
+    if (markerRoot) {
+      hookRunMarkerPath = writeHookRunMarker(markerRoot, {
+        event: eventName,
+        adapter,
+        pid: process.pid,
+        timeout_sec: markerTimeout,
+      });
+    }
+  }
   const raw = await readStdin();
   hookHealthState = beginHookHealth({
     started_at_ms: hookStartedAt,
@@ -2324,6 +2346,7 @@ function completeRecoveryInjection(
 
 main()
   .then(async (code) => {
+    clearHookRunMarker(hookRunMarkerPath);
     writeHookHealthCompletion(hookHealthState, {
       finished_at_ms: performance.now(),
       finished_rss_bytes: process.memoryUsage().rss,
@@ -2338,6 +2361,7 @@ main()
       pid: process.pid,
       phase: "top-level",
     });
+    clearHookRunMarker(hookRunMarkerPath);
     writeHookHealthCompletion(hookHealthState, {
       finished_at_ms: performance.now(),
       finished_rss_bytes: process.memoryUsage().rss,

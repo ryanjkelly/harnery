@@ -18,7 +18,7 @@ import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { BUILTIN_ADAPTER_IDS } from "../core/adapters/index.ts";
-import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
+import { codexWindowsBridgeConfig, resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
 import {
   countSummarizedSinceV3,
   listDiagnosticSummariesV3,
@@ -33,6 +33,7 @@ import {
   type CodexWslBridgeStatus,
   inspectCodexWslBridge,
 } from "../core/hooks/codex-wsl-bridge.ts";
+import { findUnfinishedHookRuns } from "../core/hooks/run-markers.ts";
 import {
   ADAPTER_BINARIES,
   ADAPTER_INSTALL_HINTS,
@@ -115,6 +116,8 @@ export async function runChecks(): Promise<Check[]> {
   const codexWslStatus = inspectCodexWslBridge();
   const recentCodexMidFlightCount = root ? countRecentCodexMidFlightOnboardings(root) : 0;
   const codexWslBridge = codexWslBridgeCheck(codexWslStatus, recentCodexMidFlightCount);
+  const codexHookRuns = codexHookRunsCheck(root);
+  const codexWindowsRoute = codexWindowsBridgeCheck(root);
   // Probe the adapter CLIs before the hook check runs, not in output order:
   // an unwired adapter only matters if its CLI is actually installed, and
   // probing once here keeps that join to one spawn per CLI.
@@ -131,6 +134,8 @@ export async function runChecks(): Promise<Check[]> {
     ...(codexAuthorization ? [codexAuthorization] : []),
     checkGitHookRegions(),
     ...(codexWslBridge ? [codexWslBridge] : []),
+    ...(codexWindowsRoute ? [codexWindowsRoute] : []),
+    ...(codexHookRuns ? [codexHookRuns] : []),
     ...workflow.map((w) => w.check),
     checkRestic(),
     checkRclone(),
@@ -186,6 +191,52 @@ export function codexWslBridgeCheck(
       status?.ok && !historical
         ? undefined
         : "forward CODEX_THREAD_ID through WSLENV in the Codex shell environment policy, then start a fresh task",
+  };
+}
+
+/**
+ * Hook runs that started but never finished (ADR 0197). Codex kills a hook at
+ * its timeout and the tool proceeds without that hook's checks; the start
+ * marker is the only trace such a run leaves.
+ */
+export function codexHookRunsCheck(
+  coordRoot: string | null,
+  nowMs = Date.now(),
+  isAlive?: (pid: number) => boolean,
+): Check | null {
+  if (!coordRoot) return null;
+  const runs = findUnfinishedHookRuns(coordRoot, nowMs, undefined, isAlive);
+  if (runs.count === 0) return null;
+  const events = runs.events.map((e) => `${e.event} ×${e.count}`).join(", ");
+  return {
+    name: "codex:hook runs",
+    severity: "warn",
+    detail:
+      `${runs.count} hook run${runs.count === 1 ? "" : "s"} started but never finished in the last 24h ` +
+      `(${events}; latest ${runs.latest}); their tools proceeded without those hooks' checks`,
+    hint: "a hook that outlives its timeout is killed; look for a stalled WSL session or a slow hook",
+  };
+}
+
+/** Report the per-project Windows bridge opt-in, or an invalid value init ignored. */
+export function codexWindowsBridgeCheck(coordRoot: string | null): Check | null {
+  if (!coordRoot) return null;
+  const bridge = codexWindowsBridgeConfig(coordRoot);
+  if (bridge.error) {
+    return {
+      name: "codex:Windows hook route",
+      severity: "warn",
+      detail: `${bridge.error}; Codex hooks are wired without commandWindows`,
+      hint: "set hooks.codexWindowsBridge.entryPoint to a plain command name in .harnery/config.jsonc, then re-run init",
+    };
+  }
+  if (!bridge.entryPoint) return null;
+  return {
+    name: "codex:Windows hook route",
+    severity: "ok",
+    detail:
+      `opted in: Windows-native Codex hooks hand off to \`${bridge.entryPoint}\` from WSL paths ` +
+      `when it is on PATH, otherwise run the usual command; bridge health is reported by the bridge itself`,
   };
 }
 

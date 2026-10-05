@@ -15,6 +15,7 @@ import {
   agentHookPathForProject,
   diffWiring,
   harneryPackageRoot,
+  hookCommandWindows,
   hookTimeoutFor,
   loadAdapterWiring,
   type SettingsFile,
@@ -171,6 +172,50 @@ describe("diffWiring", () => {
     };
     const diff = diffWiring(settings, codex, { agentHookPath: HOOK_BASE, adapter: "codex" });
     expect(diff.stale.map((event) => event.settingsKey)).toEqual(["PreToolUse", "PostToolUse"]);
+  });
+
+  test("hookCommandWindows produces the frozen ADR 0197 text", () => {
+    expect(
+      hookCommandWindows(
+        ADAPTER_SPECS.codex,
+        "harnery/bin/agent-hook",
+        "pre-tool-use",
+        "codex",
+        "codex-wsl-hook",
+      ),
+    ).toBe(
+      "if ((Get-Command codex-wsl-hook -ErrorAction Ignore) -and $PWD.ProviderPath -like '\\\\wsl*') " +
+        "{ codex-wsl-hook pre-tool-use --adapter codex } else " +
+        "{ bash harnery/bin/agent-hook pre-tool-use --adapter codex }; exit $LASTEXITCODE",
+    );
+  });
+
+  test("Codex commandWindows drift follows the project's opt-in", () => {
+    const codex = ADAPTER_SPECS.codex;
+    const win = hookCommandWindows(codex, HOOK_BASE, "stop", "codex", "codex-wsl-hook");
+    const handler = (commandWindows?: string) => ({
+      type: "command",
+      command: `bash ${HOOK_BASE} stop --adapter codex`,
+      ...(commandWindows ? { commandWindows } : {}),
+      timeout: 20,
+    });
+    const settingsWith = (commandWindows?: string): SettingsFile => ({
+      hooks: { Stop: [{ hooks: [handler(commandWindows)] }] },
+    });
+    const optedIn = {
+      agentHookPath: HOOK_BASE,
+      adapter: "codex" as const,
+      windowsBridgeEntryPoint: "codex-wsl-hook",
+    };
+    const optedOut = { agentHookPath: HOOK_BASE, adapter: "codex" as const };
+    expect(diffWiring(settingsWith(), codex, optedIn).stale.map((e) => e.settingsKey)).toEqual([
+      "Stop",
+    ]);
+    expect(diffWiring(settingsWith(win), codex, optedIn).stale).toEqual([]);
+    expect(diffWiring(settingsWith(win), codex, optedOut).stale.map((e) => e.settingsKey)).toEqual([
+      "Stop",
+    ]);
+    expect(diffWiring(settingsWith(), codex, optedOut).stale).toEqual([]);
   });
 
   test("hookTimeoutFor applies per-event overrides and none for undeclared adapters", () => {
