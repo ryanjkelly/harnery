@@ -1,0 +1,106 @@
+---
+title: "0197: Bound Codex hooks and route Windows-native hooks through an opt-in bridge"
+description: "ADR: write a timeout on every Codex hook, accept fail-open on timeout, and let a project opt in to a short Windows hook command that hands off to a resident bridge."
+---
+
+**Status:** accepted (2026-10-05) · **Scope:** Codex adapter wiring (`harn init`, `harn doctor`) · **Related:** [0059](/decisions/0059-guard-unsafe-codex-wsl-shell-strings/), [0152](/decisions/0152-attribute-bridge-tool-processes-from-validated-session-environment/)
+
+## Context
+
+Codex Desktop can run its agent Windows-native against a project that lives in
+WSL. It then runs each hook through PowerShell with a `\\wsl.localhost\...`
+working directory, and the hook's `bash harnery/bin/agent-hook ...` command
+resolves to the Windows WSL launcher. Every hook therefore starts a new WSL
+session, and PreToolUse holds the tool call until it exits. New-session
+creation is the most failure-prone WSL operation. When it stalls, every tool
+call waits behind it.
+
+Harnery wrote no `timeout`, so Codex's default of 600 seconds applied. Reading
+the Codex hook engine (`codex-rs/hooks`, versions 0.155.1 and 0.160.0) settles
+what a timeout does:
+
+- A timed-out hook has its process tree killed and is marked failed, not
+  blocked. The tool proceeds.
+- PreToolUse blocks only on a parsed deny decision on stdout, or on exit 2
+  with non-empty stderr. Any other non-zero exit fails open.
+- Stdout that looks like JSON but does not parse is a failure, so the tool
+  proceeds. A truncated denial becomes an allow.
+- `SessionEnd` and `Interrupt` default to a 1-second timeout and are clamped
+  to 3. Other events default to 600.
+- A handler's `commandWindows`, when present, replaces `command` on Windows.
+
+Changing any field of a hook entry changes its trust hash, so every wiring
+change costs the operator a re-approval in Codex.
+
+## Alternatives considered
+
+- **Keep no timeout.** A stalled hook holds a tool for ten minutes and then
+  fails open anyway.
+- **Run the Codex agent in WSL.** This removes the problem, but some Codex
+  features, including computer use and browser control, do not work with a
+  WSL agent, and the setting is global rather than per project.
+- **Write `commandWindows` for every Codex consumer.** It would put one
+  bridge's contract in every project's manifest, including projects that have
+  never installed it.
+- **Put the bridge logic in the hook text** (capability checks, deadlines,
+  fallback). Every later fix would change the trusted text and force another
+  re-approval, and an inner deadline in PowerShell is hard to add without
+  breaking stdin, stdout, or the exit code.
+- **Gate a new flag or environment variable on the existing bridge command.**
+  An older bridge exits 2 on an unknown flag, which Codex treats as a block
+  when stderr has text, and silently ignores an unknown variable.
+
+## Decision
+
+**Every Codex hook gets a timeout.** `harn init` writes `timeout: 20` on each
+Codex entry and `timeout: 3` on `session-end`, refreshes existing entries, and
+`harn doctor` reports a missing or different value as stale. Fail-open on
+timeout is accepted: bounded tool latency is worth more than a guard that
+would otherwise have run after a ten-minute wait. Other adapters are
+unchanged, and a timeout set by hand on their entries is kept.
+
+**The Windows bridge route is a per-project opt-in.** A project that names a
+bridge entry point in its Harnery config gets a `commandWindows` on each Codex
+entry. Other projects get `command` and `timeout` only. The text does two
+checks and hands off:
+
+```powershell
+if ((Get-Command <entry-point> -ErrorAction Ignore) -and $PWD.ProviderPath -like '\\wsl*') { <entry-point> <event> --adapter codex } else { bash harnery/bin/agent-hook <event> --adapter codex }; exit $LASTEXITCODE
+```
+
+- `ProviderPath` is required. `Path` carries a
+  `Microsoft.PowerShell.Core\FileSystem::` prefix.
+- `exit $LASTEXITCODE` is required. Without it PowerShell reports every
+  non-zero exit from inside the `if` block as 1, which turns a hook's exit 2
+  into a failure that Codex does not block on.
+- The entry point is the capability signal. Only a bridge that implements the
+  whole contract below installs it, so an older bridge is never selected.
+
+**The bridge owns everything else.** It forwards stdin unchanged, buffers the
+hook's stdout until the hook exits and then publishes it whole with the
+hook's own exit code, enforces a total deadline below the Codex `timeout`,
+retries a full admission queue within that deadline instead of opening a new
+WSL session, never reruns a hook that may already have started, and maps its
+own faults to exit 0 with one stderr line and a local record that the guard
+did not complete. Harnery does not ship the bridge.
+
+**Skipped guards stay visible.** `agent-hook` will write a start marker that
+it clears on completion, so doctor can report hooks that Codex killed on
+timeout.
+
+## Result and gotchas
+
+Fixture runs through Codex's bundled PowerShell 7.6.5, launched the way Codex
+launches hooks, confirmed the frozen text: it routes to the entry point only
+from a WSL path with the entry point on PATH, delivers 5 KB and 64 KB of stdin
+intact on both routes, leaves JSON stdout byte-identical, and passes exit
+codes 0, 2, and 7 through. Without `exit $LASTEXITCODE`, exit 2 and 7 both
+arrived as 1.
+
+- Once the wiring code is in a checkout, any `init` run re-wires the
+  manifest. Land a wiring change together with its re-approval.
+- An entry point that fails to start (for example under a restrictive
+  execution policy) leaves `$LASTEXITCODE` empty, so the command exits 0 and
+  the hook is skipped. That is the same fail-open outcome as a timeout.
+- Without a Harnery checkout in the working directory, the direct route exits
+  127 with empty stdout, which Codex treats as a failed hook.
