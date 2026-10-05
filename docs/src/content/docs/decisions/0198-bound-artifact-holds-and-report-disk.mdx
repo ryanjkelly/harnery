@@ -1,0 +1,67 @@
+---
+title: "0198: Bound artifact holds by time and report held bytes and free disk"
+description: "ADR: holds lapse after a renewable window, held bytes get an advisory budget, and artifact commands report free disk and refuse new large work below a floor."
+---
+
+**Status:** accepted (2026-10-05) · **Scope:** working artifacts (`artifacts hold`, `list`, `clean`, `create`) · **Related:** [0150](/decisions/0150-bound-local-coordination-storage/), [0193](/decisions/0193-idle-grace-for-artifact-size-rules/)
+
+## Context
+
+A hold makes a workspace `managed-held`: cleanup never deletes it, and it is
+excluded from the repository budget and the per-workspace ceiling. Holds had no
+expiry and no budget of their own, so protection outlived the work it was meant
+to cover. On one busy host, held artifacts grew to 100 GB on a 500 GB disk.
+Nothing reported the growth until the disk was nearly full, because every size
+rule deliberately skipped held work.
+
+## Alternatives considered
+
+- Count held bytes in the main repository budget. Cleanup can never remove held
+  work, so the extra pressure would evict unheld workspaces without reducing
+  the held total.
+- Delete held work once held bytes exceed a budget. A hold records its owner's
+  intent that the files must survive; deleting material under review or awaiting
+  a handoff loses work that cannot be rebuilt.
+- Give existing holds an expiry retroactively. Holds written before this change
+  would lapse at once and their workspaces could be deleted at the next
+  cleanup, with no notice to their owners.
+
+## Decision
+
+Holds lapse. A new hold records `expires_at`, by default `artifacts.hold_days`
+(14) days after it is set; `hold --days` or `--minutes` chooses another window.
+Repeating `hold` with the same id, owner, and reason renews it from now. A
+different owner or reason still fails. Embedding hosts whose hold mirrors an
+external lease, such as an open checkout with unsynchronized work, pass
+`persistent: true` through the API; that hold never lapses. There is no CLI flag
+for it.
+
+Only holds in force make a workspace `managed-held`. When every hold has lapsed,
+the workspace returns to ordinary retention. Its effective expiry and its
+size-rule idle clock both count from no earlier than the latest lapse, and an
+expired row names the lapsed holds. Lapsed holds stay in the manifest so their
+owner can remove or renew them. Holds recorded before this change have no
+`expires_at` and stay in force, with a warning that re-holding starts an expiry.
+A hold that lapses within 48 hours carries a warning with the exact renewal
+command.
+
+Held bytes get an advisory budget, `artifacts.max_held_bytes` (20 GiB). Above
+it, `list` and `clean` report `held_over_budget`, the five largest held
+workspaces with their holds, and a plain warning. Nothing is deleted.
+
+Artifact commands report free disk on the store's filesystem. Below
+`artifacts.min_free_bytes` (20 GiB), `list`, `clean`, `create`, and `hold` warn,
+and `create --big` refuses unless `--allow-low-disk` is passed. Every full
+inventory records held bytes and free disk in `.harnery/artifact-usage.json`,
+so `create` and `hold` can warn from that cache and a live free-space reading
+without walking the store.
+
+## Consequences
+
+Held growth is now bounded by time unless an owner keeps renewing, and
+visible before the disk fills. Long reviews need a renewal every two weeks or a
+longer `--days`. The held budget and the disk floor never delete anything, so a
+store can still fill if owners ignore the warnings; the warnings name the
+workspaces and commands that free space. Holds written before this change stay
+unbounded until their owners renew or remove them. The cached held total can be
+stale by up to one cleanup interval; the free-disk reading is always live.

@@ -20,6 +20,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statfsSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -29,9 +30,12 @@ import {
   artifactAutoCleanEnabled,
   artifactAutoCleanIntervalHours,
   artifactDefaultRetentionDays,
+  artifactHoldDays,
   artifactIdleGraceHours,
   artifactMaxBytes,
+  artifactMaxHeldBytes,
   artifactMaxUnitBytes,
+  artifactMinFreeBytes,
   coordFreshnessSeconds,
   resolveBinName,
 } from "../config.ts";
@@ -94,11 +98,23 @@ export interface ArtifactHold {
   reason: string;
   set_by: ArtifactActor;
   set_at: string;
+  /** When the hold lapses unless renewed. Absent only on a persistent hold or
+   * a hold recorded before holds expired; the latter stays in force. */
+  expires_at?: string;
+  /** Set by embedding hosts whose hold mirrors an external lease. Never lapses. */
+  persistent?: true;
 }
 
 export interface ArtifactHoldInput {
   id: string;
   reason: string;
+  /** Hold lifetime in days (1 to 365); defaults to `artifacts.hold_days`. */
+  days?: number;
+  /** Hold lifetime in minutes (1 to 525,600); replaces `days`. */
+  minutes?: number;
+  /** For a hold that mirrors an external lease, such as an open checkout with
+   * unsynchronized work. The hold never lapses; its owner must remove it. */
+  persistent?: boolean;
 }
 
 export function artifactCapabilities() {
@@ -111,6 +127,9 @@ export function artifactCapabilities() {
     minute_retention: true,
     discard_after_review: true,
     allow_big_after_create: true,
+    hold_expiry: true,
+    held_budget: true,
+    disk_free_report: true,
   } as const;
 }
 
@@ -226,7 +245,8 @@ function createArtifactUnlocked(
   if (!isSafeId(artifactId)) {
     throw new Error("artifact id must use ASCII letters, digits, hyphens, or underscores");
   }
-  const holds = (input.holds ?? []).map((hold) => makeHold(hold, input.actor, now));
+  const holdDays = artifactHoldDays(repoRoot);
+  const holds = (input.holds ?? []).map((hold) => makeHold(hold, input.actor, now, holdDays));
   if (new Set(holds.map((hold) => hold.id)).size !== holds.length) {
     throw new Error("duplicate hold id");
   }
@@ -450,7 +470,7 @@ export function holdArtifact(
   ref: string,
   input: ArtifactHoldInput & { actor: ArtifactActor; now?: Date },
 ): ArtifactManifestV2 {
-  const hold = makeHold(input, input.actor, input.now ?? new Date());
+  const hold = makeHold(input, input.actor, input.now ?? new Date(), artifactHoldDays(repoRoot));
   return withArtifactLock(repoRoot, () => {
     const path = resolveArtifactRef(repoRoot, ref);
     const parsed = readManifest(path);
@@ -463,7 +483,19 @@ export function holdArtifact(
       ) {
         throw new Error("hold id already exists with a different owner or reason");
       }
-      return parsed.manifest;
+      // Repeating a hold renews it: the original owner and set_at stay, and the
+      // window restarts from now. A persistent hold stays persistent.
+      const { expires_at: _expires, persistent: _persistent, ...kept } = previous;
+      const renewed: ArtifactHold =
+        previous.persistent || hold.persistent
+          ? { ...kept, persistent: true }
+          : { ...kept, expires_at: hold.expires_at! };
+      const manifest = {
+        ...parsed.manifest,
+        holds: parsed.manifest.holds.map((item) => (item.id === hold.id ? renewed : item)),
+      };
+      atomicWriteManifest(path, manifest, input.now);
+      return manifest;
     }
     const manifest = { ...parsed.manifest, holds: [...parsed.manifest.holds, hold] };
     atomicWriteManifest(path, manifest, input.now);
@@ -792,6 +824,227 @@ export function readArtifactDeletions(
   return records;
 }
 
+/** Sibling of the artifacts root, like the deletion log, so it never enters the inventory. */
+const USAGE_CACHE = ".harnery/artifact-usage.json";
+const LARGEST_HOLDS = 5;
+
+export interface ArtifactHeldSummary {
+  name: string;
+  bytes: number;
+  holds: Array<{
+    id: string;
+    /** The hold owner's name when recorded, otherwise its instance id. */
+    set_by: string;
+    expires_at: string | null;
+    persistent: boolean;
+  }>;
+}
+
+/** Last full-inventory measurement, read by commands that must not walk the store. */
+export interface ArtifactUsageCache {
+  measured_at: string;
+  bytes: number;
+  held_bytes: number;
+  free_bytes: number | null;
+  largest_holds: ArtifactHeldSummary[];
+}
+
+export interface ArtifactUsageReport {
+  held_bytes: number;
+  max_held_bytes: number;
+  held_over_budget: boolean;
+  largest_holds: ArtifactHeldSummary[];
+  free_bytes: number | null;
+  min_free_bytes: number;
+  low_disk: boolean;
+  /** Plain sentences for a human; empty when nothing needs attention. */
+  warnings: string[];
+}
+
+/** Bytes available to this user on the artifact store's filesystem, or null. */
+export function artifactFreeBytes(repoRoot: string): number | null {
+  try {
+    const root = artifactsRoot(repoRoot);
+    const stat = statfsSync(existsSync(root) ? root : resolve(repoRoot));
+    const free = Number(stat.bavail) * Number(stat.bsize);
+    return Number.isFinite(free) && free >= 0 ? free : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Held bytes, free disk, and warnings for one full inventory. Held work is
+ * never deleted: the held budget and the disk floor only report. Records the
+ * measurement in `.harnery/artifact-usage.json` so `create` and `hold` can
+ * warn without walking the store.
+ */
+export function artifactUsageReport(
+  repoRoot: string,
+  rows: ArtifactInventoryEntry[],
+  opts: { now?: Date } = {},
+): ArtifactUsageReport {
+  const now = opts.now ?? new Date();
+  const kept = rows.filter((row) => row.action !== "deleted");
+  const held = kept.filter((row) => row.classification === "managed-held");
+  const heldBytes = held.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
+  const largest = [...held]
+    .sort((left, right) => (right.bytes ?? 0) - (left.bytes ?? 0))
+    .slice(0, LARGEST_HOLDS)
+    .map((row) => heldSummary(row));
+  const freeBytes = artifactFreeBytes(repoRoot);
+  if (existsSync(artifactsRoot(repoRoot))) {
+    writeUsageCache(repoRoot, {
+      measured_at: now.toISOString(),
+      bytes: kept.reduce((sum, row) => sum + (row.bytes ?? 0), 0),
+      held_bytes: heldBytes,
+      free_bytes: freeBytes,
+      largest_holds: largest,
+    });
+  }
+  return usageReport(repoRoot, heldBytes, largest, freeBytes, null);
+}
+
+/** The cached measurement, or null when none was recorded or it is unreadable. */
+export function readArtifactUsageCache(repoRoot: string): ArtifactUsageCache | null {
+  try {
+    const value = JSON.parse(readFileSync(join(resolve(repoRoot), USAGE_CACHE), "utf8"));
+    if (
+      !value ||
+      !validIso(value.measured_at) ||
+      typeof value.held_bytes !== "number" ||
+      typeof value.bytes !== "number"
+    )
+      return null;
+    return {
+      measured_at: value.measured_at,
+      bytes: value.bytes,
+      held_bytes: value.held_bytes,
+      free_bytes: typeof value.free_bytes === "number" ? value.free_bytes : null,
+      largest_holds: Array.isArray(value.largest_holds) ? value.largest_holds : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Usage for commands that must stay cheap (`create`, `hold`): held bytes from
+ * the last full inventory, free disk measured now. Never walks the store.
+ */
+export function artifactQuickUsage(repoRoot: string): {
+  usage: { held_bytes: number | null; held_measured_at: string | null; free_bytes: number | null };
+  low_disk: boolean;
+  min_free_bytes: number;
+  warnings: string[];
+} {
+  const cache = readArtifactUsageCache(repoRoot);
+  const freeBytes = artifactFreeBytes(repoRoot);
+  const report = usageReport(
+    repoRoot,
+    cache?.held_bytes ?? 0,
+    cache?.largest_holds ?? [],
+    freeBytes,
+    cache?.measured_at ?? null,
+  );
+  return {
+    usage: {
+      held_bytes: cache?.held_bytes ?? null,
+      held_measured_at: cache?.measured_at ?? null,
+      free_bytes: freeBytes,
+    },
+    low_disk: report.low_disk,
+    min_free_bytes: report.min_free_bytes,
+    warnings: report.warnings,
+  };
+}
+
+/**
+ * Refuse new large work when the artifact store's disk is below its floor.
+ * `create --big` calls this; `--allow-low-disk` is the deliberate override.
+ */
+export function assertArtifactDiskFloor(repoRoot: string): void {
+  const minFree = artifactMinFreeBytes(repoRoot);
+  const freeBytes = artifactFreeBytes(repoRoot);
+  if (minFree === 0 || freeBytes === null || freeBytes >= minFree) return;
+  const bin = resolveBinName(repoRoot);
+  throw new Error(
+    `only ${gib(freeBytes)} is free on the artifact store's disk, below the ${gib(minFree)} floor (artifacts.min_free_bytes), so a --big workspace was not created. Free space with \`${bin} artifacts clean --yes\`, \`${bin} artifacts discard <ref> --reason <text>\` for reviewed work, or \`${bin} artifacts unhold <ref> --id <id>\` for finished holds, then retry. Pass --allow-low-disk to create it anyway.`,
+  );
+}
+
+function heldSummary(row: ArtifactInventoryEntry): ArtifactHeldSummary {
+  const parsed = readManifest(row.path);
+  return {
+    name: row.name,
+    bytes: row.bytes ?? 0,
+    holds: parsed.ok
+      ? parsed.manifest.holds.map((hold) => ({
+          id: hold.id,
+          set_by: hold.set_by.name ?? hold.set_by.instance_id,
+          expires_at: hold.expires_at ?? null,
+          persistent: hold.persistent === true,
+        }))
+      : [],
+  };
+}
+
+function usageReport(
+  repoRoot: string,
+  heldBytes: number,
+  largest: ArtifactHeldSummary[],
+  freeBytes: number | null,
+  measuredAt: string | null,
+): ArtifactUsageReport {
+  const maxHeld = artifactMaxHeldBytes(repoRoot);
+  const minFree = artifactMinFreeBytes(repoRoot);
+  const heldOver = heldBytes > maxHeld;
+  const lowDisk = minFree > 0 && freeBytes !== null && freeBytes < minFree;
+  const bin = resolveBinName(repoRoot);
+  const warnings: string[] = [];
+  if (heldOver) {
+    const list = largest
+      .map(
+        (item) =>
+          `${item.name} (${gib(item.bytes)}${item.holds.length ? `, hold ${item.holds.map((hold) => hold.id).join(", ")}` : ""})`,
+      )
+      .join("; ");
+    warnings.push(
+      `Held artifacts use ${gib(heldBytes)}${measuredAt ? ` as of ${measuredAt}` : ""}, above the ${gib(maxHeld)} held budget (artifacts.max_held_bytes). Holds are never deleted automatically; release or prune the largest${list ? `: ${list}` : ""}. Remove a finished hold with \`${bin} artifacts unhold <name> --id <id>\`.`,
+    );
+  }
+  if (lowDisk) {
+    warnings.push(
+      `Only ${gib(freeBytes!)} is free on the artifact store's disk, below the ${gib(minFree)} floor (artifacts.min_free_bytes). Free space with \`${bin} artifacts clean --yes\`, discard reviewed workspaces, or unhold finished work; \`${bin} artifacts create --big\` refuses until then.`,
+    );
+  }
+  return {
+    held_bytes: heldBytes,
+    max_held_bytes: maxHeld,
+    held_over_budget: heldOver,
+    largest_holds: largest,
+    free_bytes: freeBytes,
+    min_free_bytes: minFree,
+    low_disk: lowDisk,
+    warnings,
+  };
+}
+
+function writeUsageCache(repoRoot: string, cache: ArtifactUsageCache): void {
+  try {
+    const path = join(resolve(repoRoot), USAGE_CACHE);
+    const temp = `${path}.${randomUUID()}.tmp`;
+    writeFileSync(temp, `${JSON.stringify(cache, null, 2)}\n`, { mode: stateFileMode() });
+    renameSync(temp, path);
+  } catch {
+    // The cache only feeds warnings; a failed write must not fail the inventory.
+  }
+}
+
+function gib(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+}
+
 /** Sibling of the artifacts root so the stamp never appears in the inventory scan. */
 const AUTO_CLEAN_STAMP = ".harnery/artifacts-auto-clean.json";
 
@@ -891,6 +1144,7 @@ function autoCleanArtifactsUnlocked(
       .filter((row) => row.classification === "unknown")
       .map((row) => ({ name: row.name, reason: row.reason }));
     const status = failures.length ? "failed" : remaining ? "partial" : "completed";
+    artifactUsageReport(repoRoot, rows, { now });
     writeStamp({
       ...attempt,
       status,
@@ -969,9 +1223,18 @@ function classifyArtifactPath(
   const retentionAnchorMs = Date.parse(manifest.retention.renewed_at ?? manifest.created_at);
   const retentionWindowMs = Date.parse(manifest.retention.expires_at) - retentionAnchorMs;
   const effectiveLastModifiedMs = Math.max(retentionAnchorMs, lastModifiedMs ?? 0);
-  const effectiveExpiresAt = new Date(effectiveLastModifiedMs + retentionWindowMs).toISOString();
+  const holds = artifactHoldState(manifest, now);
+  // A lapsed hold protected the files until its deadline, so ordinary expiry
+  // and the size-rule idle clock both count from the latest lapse.
+  const lapsedMs = Math.max(0, ...holds.lapsed.map((hold) => Date.parse(hold.expires_at!)));
+  const effectiveExpiresAt = new Date(
+    Math.max(effectiveLastModifiedMs + retentionWindowMs, lapsedMs),
+  ).toISOString();
   const base = rowFor(path, name, repoRoot, "managed-current", "retention has not expired", usage);
-  const releasedMs = manifest.released_at ? Date.parse(manifest.released_at) : 0;
+  const releasedMs = Math.max(
+    manifest.released_at ? Date.parse(manifest.released_at) : 0,
+    lapsedMs,
+  );
   Object.assign(base, {
     artifact_id: manifest.artifact_id,
     slug: manifest.slug,
@@ -983,12 +1246,13 @@ function classifyArtifactPath(
     idle_since: new Date(Math.max(effectiveLastModifiedMs, releasedMs)).toISOString(),
   });
 
-  if (manifest.holds.length > 0) {
+  if (holds.active.length > 0) {
     return {
       ...base,
       classification: "managed-held",
-      reason: `held: ${manifest.holds.map((hold) => hold.id).join(", ")}`,
+      reason: `held: ${holds.active.map((hold) => hold.id).join(", ")}`,
       action: "keep",
+      warning: holdWarning(repoRoot, name, holds.active, now),
     };
   }
   if (base.bytes === null || lastModifiedMs === null) {
@@ -1037,12 +1301,38 @@ function classifyArtifactPath(
     }
   }
   if (Date.parse(effectiveExpiresAt) > now.getTime()) return base;
+  const lapsedNote = holds.lapsed.length
+    ? `; hold ${holds.lapsed.map((hold) => `${hold.id} lapsed at ${hold.expires_at}`).join(", ")}`
+    : "";
   return {
     ...base,
     classification: "managed-expired",
-    reason: `retention expired at ${effectiveExpiresAt}`,
+    reason: `retention expired at ${effectiveExpiresAt}${lapsedNote}`,
     action: "would-delete",
   };
+}
+
+/** Advice for held rows: an imminent lapse, or a hold that never expires. */
+function holdWarning(
+  repoRoot: string,
+  name: string,
+  active: ArtifactHold[],
+  now: Date,
+): string | null {
+  const bin = resolveBinName(repoRoot);
+  const notes: string[] = [];
+  for (const hold of active) {
+    if (hold.persistent) continue;
+    const renew = `${bin} artifacts hold ${name} --id ${hold.id} --reason ${JSON.stringify(hold.reason)}`;
+    if (!hold.expires_at) {
+      notes.push(
+        `hold ${hold.id} has no expiry because it predates hold expiry; re-holding with \`${renew}\` starts one, or unhold it when the work is done`,
+      );
+    } else if (Date.parse(hold.expires_at) - now.getTime() <= HOLD_LAPSE_WARNING_MS) {
+      notes.push(`hold ${hold.id} lapses at ${hold.expires_at}; renew with \`${renew}\``);
+    }
+  }
+  return notes.length ? notes.join("; ") : null;
 }
 
 /** When a size rule may first delete this unit, or null when it never may. */
@@ -1481,26 +1771,73 @@ function validHold(value: unknown): value is ArtifactHold {
     typeof hold.reason === "string" &&
     !!hold.reason.trim() &&
     validActor(hold.set_by) &&
-    validIso(hold.set_at)
+    validIso(hold.set_at) &&
+    (hold.expires_at === undefined || validIso(hold.expires_at)) &&
+    (hold.persistent === undefined || hold.persistent === true) &&
+    !(hold.persistent && hold.expires_at !== undefined)
   );
+}
+
+const HOLD_LAPSE_WARNING_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Split holds into those still in force and those that lapsed. A persistent
+ * hold never lapses. A hold recorded before holds expired has no `expires_at`
+ * and stays in force until its owner removes or renews it.
+ */
+export function artifactHoldState(
+  manifest: Pick<ArtifactManifestV2, "holds">,
+  now: Date = new Date(),
+): { active: ArtifactHold[]; lapsed: ArtifactHold[] } {
+  const active: ArtifactHold[] = [];
+  const lapsed: ArtifactHold[] = [];
+  for (const hold of manifest.holds) {
+    if (hold.persistent || !hold.expires_at || Date.parse(hold.expires_at) > now.getTime())
+      active.push(hold);
+    else lapsed.push(hold);
+  }
+  return { active, lapsed };
 }
 
 function makeHold(
   input: ArtifactHoldInput,
   actor: ArtifactActor | undefined,
   now: Date,
+  defaultDays: number,
 ): ArtifactHold {
   assertValidDate(now, "now");
   if (!validActor(actor)) throw new Error("a valid hold actor is required");
   if (!validHoldId(input.id)) throw new Error("invalid hold id");
   if (typeof input.reason !== "string" || !input.reason.trim())
     throw new Error("hold reason must not be empty");
-  return {
+  if (input.days !== undefined && input.minutes !== undefined)
+    throw new Error("choose either hold days or hold minutes");
+  if (input.persistent && (input.days !== undefined || input.minutes !== undefined))
+    throw new Error("a persistent hold takes no duration");
+  const hold: ArtifactHold = {
     id: input.id,
     reason: input.reason.trim(),
     set_by: { ...actor },
     set_at: now.toISOString(),
   };
+  if (input.persistent) return { ...hold, persistent: true };
+  const minutes =
+    input.minutes !== undefined
+      ? holdMinutes(input.minutes)
+      : holdDaysValue(input.days ?? defaultDays) * 24 * 60;
+  return { ...hold, expires_at: addMinutes(now, minutes).toISOString() };
+}
+
+function holdDaysValue(value: number): number {
+  if (!Number.isInteger(value) || value <= 0 || value > 365)
+    throw new Error("hold days must be between 1 and 365");
+  return value;
+}
+
+function holdMinutes(value: number): number {
+  if (!Number.isInteger(value) || value <= 0 || value > 365 * 24 * 60)
+    throw new Error("hold minutes must be between 1 and 525600");
+  return value;
 }
 
 function ownerLiveness(

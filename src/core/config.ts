@@ -174,6 +174,9 @@ interface HarneryConfig {
     max_bytes?: number;
     max_unit_bytes?: number;
     idle_grace_hours?: number;
+    hold_days?: number;
+    max_held_bytes?: number;
+    min_free_bytes?: number;
   };
   /**
    * Page review packs. `auto_clean` lets `qa-run` and `review-pack create`
@@ -919,6 +922,56 @@ export function artifactIdleGraceHours(coordRoot?: string | null): number {
     1,
     24 * 365,
     24,
+  );
+}
+
+/**
+ * Default lifetime of an artifact hold. A hold that is not renewed lapses after
+ * this many days and the workspace returns to ordinary retention. Precedence:
+ * `HARNERY_ARTIFACT_HOLD_DAYS` -> `artifacts.hold_days` -> 14.
+ */
+export function artifactHoldDays(coordRoot?: string | null): number {
+  const root = coordRoot ?? findCoordRoot();
+  return integerSetting(
+    coordEnv("ARTIFACT_HOLD_DAYS"),
+    root ? readConfig(root).artifacts?.hold_days : undefined,
+    1,
+    365,
+    14,
+  );
+}
+
+/**
+ * Advisory budget for held artifact bytes. Exceeding it produces warnings
+ * only: holds record owner intent, so cleanup never deletes held work.
+ * Precedence: `HARNERY_ARTIFACT_MAX_HELD_BYTES` -> `artifacts.max_held_bytes`
+ * -> 20 GiB.
+ */
+export function artifactMaxHeldBytes(coordRoot?: string | null): number {
+  const root = coordRoot ?? findCoordRoot();
+  return integerSetting(
+    coordEnv("ARTIFACT_MAX_HELD_BYTES"),
+    root ? readConfig(root).artifacts?.max_held_bytes : undefined,
+    64 * 1024 * 1024,
+    1024 * 1024 * 1024 * 1024,
+    DEFAULT_ARTIFACT_MAX_BYTES,
+  );
+}
+
+/**
+ * Free-disk floor for the artifact store. Below it, artifact commands warn and
+ * `artifacts create --big` refuses unless `--allow-low-disk` is passed.
+ * Precedence: `HARNERY_ARTIFACT_MIN_FREE_BYTES` -> `artifacts.min_free_bytes`
+ * -> 20 GiB. Zero disables the floor.
+ */
+export function artifactMinFreeBytes(coordRoot?: string | null): number {
+  const root = coordRoot ?? findCoordRoot();
+  return integerSetting(
+    coordEnv("ARTIFACT_MIN_FREE_BYTES"),
+    root ? readConfig(root).artifacts?.min_free_bytes : undefined,
+    0,
+    1024 * 1024 * 1024 * 1024 * 1024,
+    20 * 1024 * 1024 * 1024,
   );
 }
 

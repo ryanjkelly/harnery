@@ -8,8 +8,11 @@ import {
   adoptUnmanagedArtifactFiles,
   allowBigArtifact,
   artifactCapabilities,
+  artifactQuickUsage,
   artifactReviewGuidance,
   artifactsRoot,
+  artifactUsageReport,
+  assertArtifactDiskFloor,
   autoCleanArtifacts,
   cleanArtifacts,
   createArtifact,
@@ -55,6 +58,10 @@ export function registerArtifactsCommand(
     .option("--days <n>", "Retention in days (default from artifacts.default_retention_days)")
     .option("--minutes <n>", "Retention in minutes; cannot be combined with --days")
     .option("--big", "Acknowledge that this workspace may exceed the per-bundle size ceiling")
+    .option(
+      "--allow-low-disk",
+      "Create a --big workspace even though free disk is below artifacts.min_free_bytes",
+    )
     .option("--hold <id>", "Create the workspace with this hold already present")
     .option("--hold-reason <text>", "Why the initial hold is required")
     .option("--actor <instance-id>", "Stable owner identity for the initial hold")
@@ -66,6 +73,7 @@ export function registerArtifactsCommand(
           days?: string;
           minutes?: string;
           big?: boolean;
+          allowLowDisk?: boolean;
           hold?: string;
           holdReason?: string;
           actor?: string;
@@ -91,6 +99,7 @@ export function registerArtifactsCommand(
               "warn",
             );
           }
+          if (opts.big && !opts.allowLowDisk) assertArtifactDiskFloor(repoRoot);
           const created = createArtifact(repoRoot, {
             slug,
             purpose: opts.purpose,
@@ -106,6 +115,7 @@ export function registerArtifactsCommand(
             expires_at: created.manifest.retention.expires_at,
             owner_instance_id: actor?.instance_id ?? null,
             holds: created.manifest.holds,
+            ...usageFields(emit, repoRoot),
             ...(opts.big
               ? {}
               : {
@@ -158,7 +168,11 @@ export function registerArtifactsCommand(
         const recentDeletions = readArtifactDeletions(repoRoot, {
           since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
         });
-        emit.data({ rows, meta: summarize(rows), recent_deletions: recentDeletions });
+        emit.data({
+          rows,
+          meta: inventoryMeta(emit, repoRoot, rows),
+          recent_deletions: recentDeletions,
+        });
       });
     });
 
@@ -314,21 +328,32 @@ export function registerArtifactsCommand(
 
   root
     .command("hold <ref>")
-    .description("Protect an artifact from cleanup until its owner removes this exact hold.")
+    .description(
+      "Protect an artifact from cleanup until the hold lapses or its owner removes it; repeating the same id and reason renews it.",
+    )
     .requiredOption("--id <id>", "Unique hold id within this artifact")
     .requiredOption("--reason <text>", "Why cleanup must retain these files")
     .option("--actor <instance-id>", "Stable hold owner; defaults to the current agent")
-    .action((ref: string, opts: { id: string; reason: string; actor?: string }) =>
-      run(emit, () => {
-        const repoRoot = requireRepoRoot(context);
-        emit.data(
-          holdArtifact(repoRoot, ref, {
+    .option("--days <n>", "Hold lifetime in days, 1 to 365 (default from artifacts.hold_days)")
+    .option("--minutes <n>", "Hold lifetime in minutes; cannot be combined with --days")
+    .action(
+      (
+        ref: string,
+        opts: { id: string; reason: string; actor?: string; days?: string; minutes?: string },
+      ) =>
+        run(emit, () => {
+          const repoRoot = requireRepoRoot(context);
+          if (opts.days !== undefined && opts.minutes !== undefined)
+            throw new Error("choose either --days or --minutes");
+          const manifest = holdArtifact(repoRoot, ref, {
             id: opts.id,
             reason: opts.reason,
             actor: requireHoldActor(repoRoot, opts.actor),
-          }),
-        );
-      }),
+            ...(opts.days !== undefined ? { days: parseHoldDays(opts.days) } : {}),
+            ...(opts.minutes !== undefined ? { minutes: parseHoldMinutes(opts.minutes) } : {}),
+          });
+          emit.data({ ...manifest, ...usageFields(emit, repoRoot) });
+        }),
     );
 
   root
@@ -361,7 +386,7 @@ export function registerArtifactsCommand(
           : undefined;
         emit.data({
           rows,
-          meta: summarize(rows),
+          meta: inventoryMeta(emit, repoRoot, rows),
           ...(reviewPacks ? { review_packs: reviewPacks } : {}),
         });
       });
@@ -406,6 +431,41 @@ function parseMinutes(value: string): number {
   return parsed;
 }
 
+function parseHoldDays(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 365)
+    throw new Error("--days must be between 1 and 365 for a hold");
+  return parsed;
+}
+
+function parseHoldMinutes(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 525600)
+    throw new Error("--minutes must be between 1 and 525600 for a hold");
+  return parsed;
+}
+
+/** Cheap usage for create and hold: cached held bytes plus live free disk. */
+function usageFields(
+  emit: EmitContext,
+  repoRoot: string,
+): { usage: ReturnType<typeof artifactQuickUsage>["usage"]; warnings: string[] } {
+  const quick = artifactQuickUsage(repoRoot);
+  for (const warning of quick.warnings) emit.log(warning, "warn");
+  return { usage: quick.usage, warnings: quick.warnings };
+}
+
+/** Summary plus held budget and free disk for a full inventory; warnings also go to stderr. */
+function inventoryMeta(
+  emit: EmitContext,
+  repoRoot: string,
+  rows: Parameters<typeof artifactUsageReport>[1],
+): Record<string, unknown> {
+  const report = artifactUsageReport(repoRoot, rows);
+  for (const warning of report.warnings) emit.log(warning, "warn");
+  return { ...summarize(rows), ...report };
+}
+
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
@@ -424,19 +484,14 @@ function summarize(
     classifications[row.classification] = (classifications[row.classification] ?? 0) + 1;
   }
   const bytes = rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
-  const heldBytes = rows.reduce(
-    (sum, row) => sum + (row.classification === "managed-held" ? (row.bytes ?? 0) : 0),
-    0,
-  );
   return {
     total: rows.length,
     // Disk use. `apparent_bytes` is the sum of file lengths; a large gap
     // between the two means sparse or hard-linked files.
     bytes,
     apparent_bytes: rows.reduce((sum, row) => sum + (row.apparent_bytes ?? 0), 0),
-    // Holds keep their bytes out of the repository budget.
-    held_bytes: heldBytes,
-    warnings: rows.filter((row) => row.warning).length,
+    // Rows carrying a per-row `warning`; `warnings` holds store-level sentences.
+    row_warnings: rows.filter((row) => row.warning).length,
     classifications,
     would_delete: rows.filter((row) => row.action === "would-delete").length,
     deleted: rows.filter((row) => row.action === "deleted").length,

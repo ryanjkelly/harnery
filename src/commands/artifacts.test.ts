@@ -215,4 +215,107 @@ describe("artifacts command", () => {
       rmSync(repoRoot, { recursive: true, force: true });
     }
   });
+
+  test("create --big refuses below the free-disk floor unless --allow-low-disk; hold takes --days", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "harnery-artifact-disk-"));
+    Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });
+    const saved = process.env.HARNERY_ARTIFACT_MIN_FREE_BYTES;
+    process.env.HARNERY_ARTIFACT_MIN_FREE_BYTES = String(1024 ** 5);
+    try {
+      const invoke = async (args: string[]) => {
+        const data: Record<string, unknown>[] = [];
+        const errors: { message?: string }[] = [];
+        const logs: string[] = [];
+        const program = createHarneryProgram({
+          context: { repoRoot },
+          emit: {
+            config() {},
+            data: (value) => {
+              data.push(value as Record<string, unknown>);
+            },
+            rows() {},
+            text() {},
+            file() {},
+            log: (message) => {
+              logs.push(message);
+            },
+            error: (value) => {
+              errors.push(value as { message?: string });
+            },
+            setExitCode() {},
+          },
+        });
+        await program.parseAsync(["artifacts", ...args], { from: "user" });
+        return { data, errors, logs };
+      };
+      const refused = await invoke(["create", "huge", "--purpose", "Large", "--big"]);
+      expect(refused.data).toEqual([]);
+      expect(refused.errors[0]?.message).toContain("artifacts.min_free_bytes");
+      expect(refused.errors[0]?.message).toContain("--allow-low-disk");
+      const allowed = await invoke([
+        "create",
+        "huge",
+        "--purpose",
+        "Large",
+        "--big",
+        "--allow-low-disk",
+      ]);
+      expect(allowed.errors).toEqual([]);
+      expect(allowed.data[0]?.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining("min_free_bytes")]),
+      );
+      expect(allowed.logs.some((line) => line.includes("min_free_bytes"))).toBe(true);
+      const plain = await invoke(["create", "small", "--purpose", "Small"]);
+      expect(plain.errors).toEqual([]);
+      // The cleanup sweep before this create measured the store; create read that cache.
+      expect(plain.data[0]?.usage).toMatchObject({
+        held_bytes: 0,
+        held_measured_at: expect.any(String),
+      });
+
+      const listed = await invoke(["list"]);
+      const meta = listed.data[0]?.meta as Record<string, unknown>;
+      expect(meta).toMatchObject({ low_disk: true, held_over_budget: false, held_bytes: 0 });
+      expect(typeof meta.row_warnings).toBe("number");
+      const id = plain.data[0]?.artifact_id as string;
+      const held = await invoke([
+        "hold",
+        id,
+        "--id",
+        "review",
+        "--reason",
+        "Pending review",
+        "--actor",
+        "binding_first_123",
+        "--days",
+        "2",
+      ]);
+      expect(held.errors).toEqual([]);
+      const hold = (held.data[0]?.holds as { expires_at: string; set_at: string }[])[0]!;
+      expect(Date.parse(hold.expires_at) - Date.parse(hold.set_at)).toBe(2 * 24 * 60 * 60 * 1000);
+      expect(held.data[0]?.usage).toMatchObject({ held_bytes: 0 });
+      expect(
+        (
+          await invoke([
+            "hold",
+            id,
+            "--id",
+            "x",
+            "--reason",
+            "x",
+            "--actor",
+            "binding_first_123",
+            "--days",
+            "1",
+            "--minutes",
+            "1",
+          ])
+        ).errors,
+      ).toHaveLength(1);
+    } finally {
+      if (saved === undefined) delete process.env.HARNERY_ARTIFACT_MIN_FREE_BYTES;
+      else process.env.HARNERY_ARTIFACT_MIN_FREE_BYTES = saved;
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
 });

@@ -173,6 +173,10 @@ way. See [ADR 0190](/decisions/0190-group-shared-project-state/).
 | `auto_clean` | boolean | `true` | Hourly-throttled cleanup at session start and before new artifact or managed QA work (same guarded deletion as `artifacts clean --yes`) |
 | `max_bytes` | integer | `21474836480` | Soft managed-store budget; valid range 64 MiB through 1 TiB |
 | `max_unit_bytes` | integer | `1073741824` | Per-workspace ceiling unless creation records `--big`; valid range 16 MiB through 1 TiB |
+| `idle_grace_hours` | integer | `24` | Hours a workspace must be idle before a size rule may delete it |
+| `hold_days` | integer | `14` | Days a hold stays in force unless renewed; valid range 1 through 365 |
+| `max_held_bytes` | integer | `21474836480` | Advisory budget for held workspaces; exceeding it warns and never deletes; valid range 64 MiB through 1 TiB |
+| `min_free_bytes` | integer | `21474836480` | Free-disk floor for the artifact store; below it commands warn and `create --big` refuses without `--allow-low-disk`; `0` disables it |
 
 Resolution: `HARNERY_ARTIFACT_RETENTION_DAYS` env → this `config.jsonc` key →
 `3`. See [`harn artifacts`](/cli/artifacts/) for cleanup behavior.
@@ -453,6 +457,9 @@ vars and CLI flags override other config values per invocation:
 | `storage` | `sharing` | `HARNERY_STORAGE_SHARING` | project file only |
 | `artifacts` | `default_retention_days` | `HARNERY_ARTIFACT_RETENTION_DAYS` | `artifacts create --days` |
 | `artifacts` | `auto_clean` | `HARNERY_ARTIFACT_AUTO_CLEAN` | — |
+| `artifacts` | `hold_days` | `HARNERY_ARTIFACT_HOLD_DAYS` | `artifacts hold --days` / `--minutes` |
+| `artifacts` | `max_held_bytes` | `HARNERY_ARTIFACT_MAX_HELD_BYTES` | — |
+| `artifacts` | `min_free_bytes` | `HARNERY_ARTIFACT_MIN_FREE_BYTES` | `artifacts create --allow-low-disk` |
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
 | `sync` | `remote`, `prefix` | `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX` | `~/.config/harnery/sync.json` (written by `harn sync init`) is a lower-precedence fallback than the `sync` config section |
 | `files` | `deny_globs`, `allow_overrides` | (none) | read by the web layer, not the core reader |

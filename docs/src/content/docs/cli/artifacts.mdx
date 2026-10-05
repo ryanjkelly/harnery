@@ -17,7 +17,7 @@ Each workspace lives under `.harnery/artifacts/` with a versioned manifest.
 ## Subcommands
 
 ```bash
-harn artifacts create <slug> --purpose <text> [--days <n> | --minutes <n>] [--big]
+harn artifacts create <slug> --purpose <text> [--days <n> | --minutes <n>] [--big [--allow-low-disk]]
 harn artifacts adopt-unmanaged [--days <n>] [--big] [--yes]
 harn artifacts list
 harn artifacts show <ref>
@@ -27,7 +27,7 @@ harn artifacts release <ref>
 harn artifacts discard <ref> --reason <text> [--minutes <n>]
 harn artifacts capabilities --json
 harn artifacts create <slug> --purpose <text> --hold <id> --hold-reason <text> --actor <instance-id>
-harn artifacts hold <ref> --id <id> --reason <text> [--actor <instance-id>]
+harn artifacts hold <ref> --id <id> --reason <text> [--days <n> | --minutes <n>] [--actor <instance-id>]
 harn artifacts unhold <ref> --id <id> [--actor <instance-id>]
 harn artifacts migrate [--yes]
 harn artifacts repair-activity [--yes]
@@ -210,7 +210,7 @@ eligible, `list` and `show` carry a `warning` that says when cleanup will
 remove it and how to keep it. `create` without `--big` returns the ceiling as
 `size_ceiling_bytes` with a `size_note`.
 
-Holds, live owners, Git-tracked content, unreadable paths, and direct-child symlinks
+Holds in force, live owners, Git-tracked content, unreadable paths, and direct-child symlinks
 stay protected under pressure. The limits therefore bound eligible managed
 data, not storage Harnery cannot safely delete. Configure the limits in bytes
 and the grace in hours:
@@ -231,6 +231,53 @@ and the grace in hours:
 `list` and `clean` expose `managed-over-budget` and `managed-oversize` before
 anything changes. `clean --yes` recalculates the whole plan and checks the
 candidate's ID, size, last modification, and expiry immediately before removal.
+
+## Held bytes and free disk
+
+Held work never counts toward the repository budget and is never deleted by a
+size rule, so it has its own advisory budget, `artifacts.max_held_bytes`
+(default 20 GiB). When held workspaces use more, `list` and `clean` report it
+and keep everything. Their `meta` carries:
+
+- `held_bytes`, `max_held_bytes`, and `held_over_budget`.
+- `largest_holds`: the five largest held workspaces, each with its `name`,
+  `bytes`, and `holds` (`id`, `set_by`, `expires_at`, `persistent`).
+- `free_bytes` on the artifact store's filesystem (null when it cannot be
+  read), `min_free_bytes`, and `low_disk`.
+- `warnings`: plain sentences naming what to release or prune. The count of
+  rows that carry their own `warning` is `row_warnings`.
+
+The same warnings print on standard error, so JSON on standard output stays
+parseable. When free disk drops below `artifacts.min_free_bytes` (default
+20 GiB; `0` disables the floor), artifact commands warn and `create --big`
+refuses:
+
+```bash
+harn artifacts create renders --purpose "Full-resolution renders" --big
+# refused: names free space, the floor, and the commands that free space
+harn artifacts create renders --purpose "Full-resolution renders" --big --allow-low-disk
+```
+
+`--allow-low-disk` is a deliberate override for one command. A workspace
+created without `--big` only warns.
+
+Every full inventory (`list`, `clean`, and the automatic sweep) records its
+measurement in `.harnery/artifact-usage.json`. `create` and `hold` never walk
+the store; they return `usage` (`held_bytes` and `held_measured_at` from that
+record, `free_bytes` measured now) and `warnings`. Configure the budget and
+floor in bytes:
+
+```json
+{
+  "artifacts": {
+    "max_held_bytes": 21474836480,
+    "min_free_bytes": 21474836480
+  }
+}
+```
+
+`HARNERY_ARTIFACT_MAX_HELD_BYTES` and `HARNERY_ARTIFACT_MIN_FREE_BYTES` override
+them for one process.
 
 ## Adopt loose files
 
@@ -302,7 +349,7 @@ packs remain untouched. This setting also enables the review-pack sweep before
 
 | Classification | Meaning | `clean --yes` |
 | --- | --- | --- |
-| `managed-held` | At least one hold remains, regardless of expiry, owner activity, release, or size. | Keep |
+| `managed-held` | At least one hold is in force, regardless of expiry, owner activity, release, or size. | Keep |
 | `managed-active` | The creating agent has a fresh heartbeat and has not released the unit. | Keep |
 | `managed-current` | Retention has not expired. | Keep |
 | `managed-expired` | Retention expired and no protection remains. | Delete |
@@ -322,7 +369,7 @@ candidate and refuses to delete entries that changed classification.
 A hold protects files whose next step must finish before cleanup can remove
 them, such as an interrupted transfer or an unresolved handoff. Schema v2
 requires a `holds` array. Each hold records `id`, `reason`, `set_by` (an
-`ArtifactActor`), and `set_at`.
+`ArtifactActor`), `set_at`, and `expires_at`.
 
 Use `create --hold --hold-reason` to persist protection in the first manifest.
 Adding a hold after writing files leaves a cleanup window before protection
@@ -338,8 +385,35 @@ These identities prevent accidental cross-workflow removal. They are local
 coordination records, not an authentication boundary against someone who can
 edit the files.
 
-Repeating an identical hold is idempotent and preserves its original timestamp.
-Reusing its ID with another owner or reason fails. `unhold` requires the recorded
+### Hold expiry and renewal
+
+A hold lapses `artifacts.hold_days` days after it is set (default 14, range 1
+to 365; `HARNERY_ARTIFACT_HOLD_DAYS` overrides it for one process). Choose
+another window with `hold --days <n>` (1 to 365) or `hold --minutes <n>` (1 to
+525,600). `create --hold` uses the default.
+
+Repeating a hold with the same ID, owner, and reason renews it: `expires_at`
+restarts from now, and `set_at` and the owner stay. Reusing its ID with another
+owner or reason fails. Within 48 hours of a lapse, `list` and `show` carry a
+`warning` with the exact renewal command:
+
+```bash
+harn artifacts hold <name> --id <id> --reason "<same reason>" --days 14
+```
+
+When every hold on a workspace has lapsed, it returns to ordinary retention.
+Its effective expiry is no earlier than the latest lapse, and the size-rule
+idle grace also counts from that lapse. If retention had already run out, the
+workspace becomes `managed-expired` at the lapse, and its reason names the
+lapsed hold. Lapsed holds stay in the manifest; their owner can `unhold` them,
+or renew one to protect the files again.
+
+Holds recorded before hold expiry existed have no `expires_at` and stay in
+force. Their rows carry a warning that re-holding starts an expiry. Embedding
+hosts whose hold mirrors an external lease, such as an open checkout with
+unsynchronized work, can pass `persistent: true` to `holdArtifact()`. A
+persistent hold records `persistent: true` instead of `expires_at`, never
+lapses, and stays persistent when repeated. The CLI has no flag for it. `unhold` requires the recorded
 owner's `instance_id` and removes only the named hold. Repeating that removal
 after success is harmless. Remove a hold only after the workflow has verified
 its completion; artifact release alone does not establish that condition.
@@ -347,7 +421,9 @@ its completion; artifact release alone does not establish that condition.
 Embedding clients can call `artifactCapabilities()` from `harnery/core/artifacts`
 or run `artifacts capabilities --json`. Require `schema_version: 2`, `holds: true`,
 `atomic_create_holds: true`, and `owner_scoped_unhold: true` before starting work
-that depends on holds. An unknown command or missing capability is a refusal,
+that depends on holds. `hold_expiry: true` means holds lapse and must be renewed
+or made persistent; `held_budget` and `disk_free_report` mean `list` and `clean`
+report the held budget and free disk. An unknown command or missing capability is a refusal,
 not permission to continue without protection.
 
 ## Migrate existing manifests

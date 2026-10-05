@@ -15,6 +15,7 @@ import type {
 } from "../artifacts/index.ts";
 import {
   ARTIFACT_MANIFEST,
+  artifactHoldState,
   artifactsRoot,
   configuredArtifactRetentionDays,
   createArtifact,
@@ -412,7 +413,7 @@ function candidateArtifactId(artifactPath: string): string | undefined {
 function candidateClassification(
   manifest: ArtifactManifestV2,
 ): ArtifactInventoryEntry["classification"] {
-  if (manifest.holds.length > 0) return "managed-held";
+  if (artifactHoldState(manifest).active.length > 0) return "managed-held";
   if (!manifest.released_at) return "managed-active";
   return Date.parse(manifest.retention.expires_at) <= Date.now()
     ? "managed-expired"

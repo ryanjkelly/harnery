@@ -1,0 +1,5 @@
+---
+"harnery": minor
+---
+
+Bound artifact holds and report disk use. A new hold lapses after `artifacts.hold_days` (default 14) unless renewed by repeating `artifacts hold` with the same id and reason; `hold --days` and `--minutes` choose another window, and embedding hosts can set `persistent: true` for holds that mirror an external lease. When every hold has lapsed, the workspace returns to ordinary retention anchored at the lapse. Holds recorded earlier have no expiry and stay in force, with a warning. `list` and `clean` now report held bytes against an advisory `artifacts.max_held_bytes` budget (default 20 GiB, never deletes), the largest held workspaces, and free disk against `artifacts.min_free_bytes` (default 20 GiB); `meta.warnings` is now a list of sentences, and the per-row warning count moves to `meta.row_warnings`. `create` and `hold` include `usage` and `warnings` from a cached measurement plus a live free-space reading, and `create --big` refuses below the floor unless `--allow-low-disk` is passed. `artifactCapabilities()` reports `hold_expiry`, `held_budget`, and `disk_free_report`.

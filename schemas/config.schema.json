@@ -266,6 +266,27 @@
           "maximum": 8760,
           "default": 24,
           "description": "Hours an unexpired workspace must be idle (no file change, no owner heartbeat) before a size rule may delete it. Env override: HARNERY_ARTIFACT_IDLE_GRACE_HOURS."
+        },
+        "hold_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365,
+          "default": 14,
+          "description": "Days a hold protects a workspace before it lapses unless renewed with `harn artifacts hold` (same id and reason). Env override: HARNERY_ARTIFACT_HOLD_DAYS."
+        },
+        "max_held_bytes": {
+          "type": "integer",
+          "minimum": 67108864,
+          "maximum": 1099511627776,
+          "default": 21474836480,
+          "description": "Advisory budget in bytes of disk use for held workspaces. Exceeding it produces warnings; held work is never deleted. Env override: HARNERY_ARTIFACT_MAX_HELD_BYTES."
+        },
+        "min_free_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1125899906842624,
+          "default": 21474836480,
+          "description": "Free-disk floor for the artifact store. Below it, artifact commands warn and `artifacts create --big` refuses without --allow-low-disk. 0 disables the floor. Env override: HARNERY_ARTIFACT_MIN_FREE_BYTES."
         }
       }
     },
