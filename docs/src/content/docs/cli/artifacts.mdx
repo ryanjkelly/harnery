@@ -411,9 +411,13 @@ or renew one to protect the files again.
 Holds recorded before hold expiry existed have no `expires_at` and stay in
 force. Their rows carry a warning that re-holding starts an expiry. Embedding
 hosts whose hold mirrors an external lease, such as an open checkout with
-unsynchronized work, can pass `persistent: true` to `holdArtifact()`. A
-persistent hold records `persistent: true` instead of `expires_at`, never
-lapses, and stays persistent when repeated. The CLI has no flag for it. `unhold` requires the recorded
+unsynchronized work, can pass `persistent: true` to `holdArtifact()`, or use
+`create --hold <id> --hold-reason <text> --hold-persistent` and
+`hold <ref> --id <id> --reason <text> --persistent` from the CLI. A persistent
+hold records `persistent: true` instead of `expires_at`, never lapses, stays
+persistent when repeated, and still counts toward the held budget. Use it only
+when something outside the artifact store tracks the lease and will remove the
+hold; an ordinary review hold should lapse and be renewed. `unhold` requires the recorded
 owner's `instance_id` and removes only the named hold. Repeating that removal
 after success is harmless. Remove a hold only after the workflow has verified
 its completion; artifact release alone does not establish that condition.
@@ -422,7 +426,8 @@ Embedding clients can call `artifactCapabilities()` from `harnery/core/artifacts
 or run `artifacts capabilities --json`. Require `schema_version: 2`, `holds: true`,
 `atomic_create_holds: true`, and `owner_scoped_unhold: true` before starting work
 that depends on holds. `hold_expiry: true` means holds lapse and must be renewed
-or made persistent; `held_budget` and `disk_free_report` mean `list` and `clean`
+or made persistent; `persistent_holds: true` means the CLI accepts
+`--hold-persistent` and `--persistent`; `held_budget` and `disk_free_report` mean `list` and `clean`
 report the held budget and free disk. An unknown command or missing capability is a refusal,
 not permission to continue without protection.
 

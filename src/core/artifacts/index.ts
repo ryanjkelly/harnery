@@ -128,6 +128,7 @@ export function artifactCapabilities() {
     discard_after_review: true,
     allow_big_after_create: true,
     hold_expiry: true,
+    persistent_holds: true,
     held_budget: true,
     disk_free_report: true,
   } as const;

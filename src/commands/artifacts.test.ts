@@ -312,6 +312,59 @@ describe("artifacts command", () => {
           ])
         ).errors,
       ).toHaveLength(1);
+
+      const leased = await invoke([
+        "create",
+        "leased",
+        "--purpose",
+        "Open checkout",
+        "--hold",
+        "lease-1",
+        "--hold-reason",
+        "Unsynchronized work",
+        "--hold-persistent",
+        "--actor",
+        "binding_first_123",
+      ]);
+      expect(leased.errors).toEqual([]);
+      const leasedHold = (leased.data[0]?.holds as Record<string, unknown>[])[0]!;
+      expect(leasedHold).toMatchObject({ id: "lease-1", persistent: true });
+      expect(leasedHold.expires_at).toBeUndefined();
+      expect(
+        (await invoke(["create", "x", "--purpose", "x", "--hold-persistent"])).errors[0]?.message,
+      ).toContain("--hold-persistent requires --hold");
+      const upgraded = await invoke([
+        "hold",
+        id,
+        "--id",
+        "review",
+        "--reason",
+        "Pending review",
+        "--actor",
+        "binding_first_123",
+        "--persistent",
+      ]);
+      expect(upgraded.errors).toEqual([]);
+      const upgradedHold = (upgraded.data[0]?.holds as Record<string, unknown>[])[0]!;
+      expect(upgradedHold).toMatchObject({ id: "review", persistent: true });
+      expect(upgradedHold.expires_at).toBeUndefined();
+      expect(
+        (
+          await invoke([
+            "hold",
+            id,
+            "--id",
+            "y",
+            "--reason",
+            "y",
+            "--actor",
+            "binding_first_123",
+            "--persistent",
+            "--days",
+            "2",
+          ])
+        ).errors[0]?.message,
+      ).toContain("--persistent cannot be combined");
     } finally {
       if (saved === undefined) delete process.env.HARNERY_ARTIFACT_MIN_FREE_BYTES;
       else process.env.HARNERY_ARTIFACT_MIN_FREE_BYTES = saved;

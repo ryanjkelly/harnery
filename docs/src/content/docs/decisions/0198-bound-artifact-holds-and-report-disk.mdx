@@ -33,8 +33,10 @@ Holds lapse. A new hold records `expires_at`, by default `artifacts.hold_days`
 Repeating `hold` with the same id, owner, and reason renews it from now. A
 different owner or reason still fails. Embedding hosts whose hold mirrors an
 external lease, such as an open checkout with unsynchronized work, pass
-`persistent: true` through the API; that hold never lapses. There is no CLI flag
-for it.
+`persistent: true` through the API, or `--hold-persistent` on `create` and
+`--persistent` on `hold`, because embedding hosts that run as separate processes
+reach the store through the CLI. That hold never lapses and still counts toward
+the held budget, so the budget warning keeps an abandoned lease visible.
 
 Only holds in force make a workspace `managed-held`. When every hold has lapsed,
 the workspace returns to ordinary retention. Its effective expiry and its

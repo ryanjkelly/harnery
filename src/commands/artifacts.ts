@@ -64,6 +64,10 @@ export function registerArtifactsCommand(
     )
     .option("--hold <id>", "Create the workspace with this hold already present")
     .option("--hold-reason <text>", "Why the initial hold is required")
+    .option(
+      "--hold-persistent",
+      "Make the initial hold persistent: it never lapses and counts toward the held budget. Only for a hold that mirrors an external lease, such as an open checkout with unsynchronized work",
+    )
     .option("--actor <instance-id>", "Stable owner identity for the initial hold")
     .action(
       (
@@ -76,6 +80,7 @@ export function registerArtifactsCommand(
           allowLowDisk?: boolean;
           hold?: string;
           holdReason?: string;
+          holdPersistent?: boolean;
           actor?: string;
         },
       ) => {
@@ -86,6 +91,8 @@ export function registerArtifactsCommand(
           const actor = opts.actor ? { instance_id: opts.actor } : currentActor(repoRoot);
           if (!!opts.hold !== !!opts.holdReason)
             throw new Error("--hold and --hold-reason must be used together");
+          if (opts.holdPersistent && !opts.hold)
+            throw new Error("--hold-persistent requires --hold");
           const retentionDays = opts.days
             ? parseDays(opts.days)
             : artifactDefaultRetentionDays(repoRoot);
@@ -107,7 +114,15 @@ export function registerArtifactsCommand(
             retentionMinutes,
             actor,
             big: opts.big,
-            holds: opts.hold ? [{ id: opts.hold, reason: opts.holdReason! }] : [],
+            holds: opts.hold
+              ? [
+                  {
+                    id: opts.hold,
+                    reason: opts.holdReason!,
+                    ...(opts.holdPersistent ? { persistent: true } : {}),
+                  },
+                ]
+              : [],
           });
           emit.data({
             path: created.path,
@@ -336,21 +351,35 @@ export function registerArtifactsCommand(
     .option("--actor <instance-id>", "Stable hold owner; defaults to the current agent")
     .option("--days <n>", "Hold lifetime in days, 1 to 365 (default from artifacts.hold_days)")
     .option("--minutes <n>", "Hold lifetime in minutes; cannot be combined with --days")
+    .option(
+      "--persistent",
+      "Never lapse; counts toward the held budget. Only for a hold that mirrors an external lease, such as an open checkout with unsynchronized work",
+    )
     .action(
       (
         ref: string,
-        opts: { id: string; reason: string; actor?: string; days?: string; minutes?: string },
+        opts: {
+          id: string;
+          reason: string;
+          actor?: string;
+          days?: string;
+          minutes?: string;
+          persistent?: boolean;
+        },
       ) =>
         run(emit, () => {
           const repoRoot = requireRepoRoot(context);
           if (opts.days !== undefined && opts.minutes !== undefined)
             throw new Error("choose either --days or --minutes");
+          if (opts.persistent && (opts.days !== undefined || opts.minutes !== undefined))
+            throw new Error("--persistent cannot be combined with --days or --minutes");
           const manifest = holdArtifact(repoRoot, ref, {
             id: opts.id,
             reason: opts.reason,
             actor: requireHoldActor(repoRoot, opts.actor),
             ...(opts.days !== undefined ? { days: parseHoldDays(opts.days) } : {}),
             ...(opts.minutes !== undefined ? { minutes: parseHoldMinutes(opts.minutes) } : {}),
+            ...(opts.persistent ? { persistent: true } : {}),
           });
           emit.data({ ...manifest, ...usageFields(emit, repoRoot) });
         }),

@@ -441,6 +441,7 @@ describe("hold expiry", () => {
     );
     expect(artifactCapabilities()).toMatchObject({
       hold_expiry: true,
+      persistent_holds: true,
       held_budget: true,
       disk_free_report: true,
     });
