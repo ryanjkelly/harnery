@@ -215,7 +215,7 @@ interface BrowseOpts {
   collectOut?: string;
   networkHar?: string;
   login?: boolean;
-  plain?: boolean;
+  attached?: boolean;
   loginCloseFile?: string;
   controlFile?: string;
   headed?: boolean;
@@ -465,14 +465,18 @@ export function registerBrowseCommand(
         "Renders theme-aware pages in that scheme without page-specific toggles. " +
         "Absent = browser default (unchanged behavior).",
     )
-    .option("--login", "Headed mode for one-time auth flow (cookies persist in profile)")
     .option(
-      "--plain",
-      "With --login: open the URL in the installed Google Chrome with nothing attached (no DevTools " +
-        "protocol, no Playwright) on the same persistent profile. Use it for sign-in flows whose " +
-        "verification step detects automation itself (X does). Sign in, then close the window or " +
-        "create the --login-close-file; later browse and browse-session runs reuse the profile's cookies. " +
-        "Not compatible with --control-file, because nothing is attached to drive.",
+      "--login",
+      "Open the URL in the installed Google Chrome with nothing attached (no DevTools protocol, no " +
+        "Playwright) so a person can sign in; under WSL this is the Windows host's Chrome. Sign in, then " +
+        "close the window or create the --login-close-file; later browse and browse-session runs reuse " +
+        "the cookies. Sites cannot tell this window from the person's own browser.",
+    )
+    .option(
+      "--attached",
+      "With --login: open an automation-controlled Chrome that this process and --control-file can drive. " +
+        "Sites can detect it and may lock the account, so use it only for agent-driven headed sessions on " +
+        "sites you own. Never use it to sign in to a third-party account.",
     )
     .option(
       "--login-close-file <path>",
@@ -480,9 +484,12 @@ export function registerBrowseCommand(
     )
     .option(
       "--control-file <path>",
-      "With --login, publish an owner-only descriptor for repeated browse-session control",
+      "With --login --attached, publish an owner-only descriptor for repeated browse-session control",
     )
-    .option("--headed", "Headed mode for one-off (no auth-flow framing)")
+    .option(
+      "--headed",
+      "Automation-controlled headed window for one-off visual checks. Not for signing in; use --login.",
+    )
     .option(
       "--browser-channel <name>",
       "Browser to launch: chrome | chrome-beta | msedge | chromium. Headed launches (--login, --headed) " +
@@ -1000,7 +1007,8 @@ async function runBrowse(
       ? null
       : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-browse" });
   if (jar) applyExtraCookies(url, jar, context?.extraCookies);
-  const headed = opts.login || opts.headed;
+  const loginMode = resolveLoginMode(opts);
+  const headed = loginMode === "attached" || opts.headed;
   const viewport = parseViewport(opts.viewport ?? "desktop");
   const deviceScaleFactor = parseDeviceScaleFactor(opts.deviceScaleFactor);
   if (opts.reviewPackAllocation && !opts.reviewPack) {
@@ -1032,12 +1040,6 @@ async function runBrowse(
   }
   const proxy = opts.proxyFromEnv ? browserProxyFromEnv() : undefined;
   const proxyGate = opts.proxyFromEnv ? browserProxyGateFromEnv() : null;
-  if (opts.loginCloseFile && !opts.login) {
-    throw new Error("--login-close-file requires --login.");
-  }
-  if (opts.controlFile && !opts.login) {
-    throw new Error("--control-file requires --login.");
-  }
   const loginCloseFile = opts.loginCloseFile ? resolve(opts.loginCloseFile) : null;
   if (loginCloseFile && existsSync(loginCloseFile)) {
     throw new Error(
@@ -1048,13 +1050,7 @@ async function runBrowse(
   const collectPlan = opts.collect ? buildCollectPlan(opts) : null;
 
   const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
-  if (opts.plain) {
-    if (!opts.login) throw new Error("--plain requires --login.");
-    if (opts.controlFile) {
-      throw new Error(
-        "--plain cannot take --control-file: nothing is attached to drive the window.",
-      );
-    }
+  if (loginMode === "plain") {
     const plainExecutable = installedChromePath();
     const plainUa = resolveUserAgent({
       requested: opts.userAgent,
@@ -1602,13 +1598,13 @@ async function runBrowse(
       const closeWaits: Promise<void>[] = [];
       if (loginCloseFile) {
         emit.log(
-          `[--login] Headed Chromium is open. Drive the visible window now. Create ${loginCloseFile} to close cleanly.`,
+          `[--login --attached] Automation-controlled Chrome is open. Drive the visible window now. Create ${loginCloseFile} to close cleanly.`,
           "info",
         );
         closeWaits.push(waitForLoginCloseFile(loginCloseFile, lifecycleAbort.signal));
       } else {
         emit.log(
-          "[--login] Headed Chromium is open. Walk through your auth flow now. Press Enter here to close + persist cookies into the profile.",
+          "[--login --attached] Automation-controlled Chrome is open. Drive the visible window now. Press Enter here to close + persist cookies into the profile.",
           "info",
         );
         closeWaits.push(waitForTerminalEnter(lifecycleAbort.signal));
@@ -1828,7 +1824,7 @@ function parsePositiveInt(raw: string, flag: string): number {
 }
 
 function buildCollectPlan(opts: BrowseOpts): CollectPlan {
-  if (opts.login || opts.plain) throw new Error("--collect cannot run with --login or --plain.");
+  if (opts.login) throw new Error("--collect cannot run with --login.");
   if (opts.snapshot || opts.html || opts.json) {
     throw new Error("--collect prints its own JSON; drop --snapshot, --html and --json.");
   }
@@ -3372,7 +3368,28 @@ async function verifyBrowserProxyGate(
 }
 
 /**
- * `--login --plain`: spawn the installed Google Chrome directly on the shared
+ * How a `browse` run handles sign-in. `--login` opens the installed Google
+ * Chrome with nothing attached, because sites can detect an
+ * automation-controlled browser and disable the account that signed in with
+ * it. The attached window is reachable only through an explicit `--attached`.
+ */
+export function resolveLoginMode(
+  opts: Pick<BrowseOpts, "login" | "attached" | "controlFile" | "loginCloseFile">,
+): "none" | "plain" | "attached" {
+  if (opts.attached && !opts.login) throw new Error("--attached requires --login.");
+  if (opts.loginCloseFile && !opts.login) throw new Error("--login-close-file requires --login.");
+  if (opts.controlFile && !(opts.login && opts.attached)) {
+    throw new Error(
+      "--control-file requires --login --attached. A sign-in to a third-party account uses plain " +
+        "--login, which nothing can drive.",
+    );
+  }
+  if (!opts.login) return "none";
+  return opts.attached ? "attached" : "plain";
+}
+
+/**
+ * `--login`: spawn the installed Google Chrome directly on the shared
  * persistent profile, with no DevTools protocol attached. Playwright enables
  * its runtime hooks in every frame it drives, and sign-in verification vendors
  * (X's is the reported case) detect that and fail the flow with no explanation.
@@ -3390,7 +3407,8 @@ async function runPlainLogin(
   const executable = installedChromePath();
   if (!executable) {
     throw new Error(
-      "--plain needs an installed Google Chrome at a standard path; none was found on this machine.",
+      "--login needs an installed Google Chrome at a standard path; none was found on this machine. " +
+        "Install Google Chrome; do not fall back to --attached for a third-party sign-in.",
     );
   }
   mkdirSync(profileDir, { recursive: true });
@@ -3413,13 +3431,13 @@ async function runPlainLogin(
   const waits: Promise<void>[] = [exited];
   if (loginCloseFile) {
     emit.log(
-      `[--login --plain] Plain Google Chrome is open with nothing attached. Sign in, then close the window or create ${loginCloseFile}.`,
+      `[--login] Plain Google Chrome is open with nothing attached. Sign in, then close the window or create ${loginCloseFile}.`,
       "info",
     );
     waits.push(waitForLoginCloseFile(loginCloseFile, lifecycleAbort.signal));
   } else {
     emit.log(
-      "[--login --plain] Plain Google Chrome is open with nothing attached. Sign in, then close the window or press Enter here.",
+      "[--login] Plain Google Chrome is open with nothing attached. Sign in, then close the window or press Enter here.",
       "info",
     );
     waits.push(waitForTerminalEnter(lifecycleAbort.signal));
@@ -3430,11 +3448,11 @@ async function runPlainLogin(
     child.kill("SIGTERM");
     await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
   }
-  emit.log(`[--login --plain] Chrome closed; cookies persisted in ${profileDir}.`, "info");
+  emit.log(`[--login] Chrome closed; cookies persisted in ${profileDir}.`, "info");
 }
 
 /**
- * Under WSL, `--login --plain` opens the Windows host's Google Chrome when one
+ * Under WSL, `--login` opens the Windows host's Google Chrome when one
  * is installed. Some sign-in flows reject every browser running inside WSL,
  * even a plain Linux Chrome, while the Windows desktop Chrome signs in
  * normally. `HARNERY_BROWSER_WSL_PLAIN=linux` keeps the Linux Chrome.
@@ -3446,7 +3464,7 @@ function useWindowsPlainLogin(): boolean {
 }
 
 /**
- * The WSL form of `--login --plain`: the person signs in through the Windows
+ * The WSL form of `--login`: the person signs in through the Windows
  * Chrome on a dedicated Windows profile with nothing attached. When the window
  * closes, the profile's cookies for the sign-in site are read and merged into
  * the shared cookie store, which later `browse` runs attach.
@@ -3461,7 +3479,7 @@ async function runWindowsPlainLogin(
   const localAppData = windowsLocalAppData();
   if (!chromeLinux || !localAppData) {
     throw new Error(
-      "--plain under WSL needs the Windows Google Chrome and %LOCALAPPDATA%; neither was readable.",
+      "--login under WSL needs the Windows Google Chrome and %LOCALAPPDATA%; neither was readable.",
     );
   }
   const chromeWindows = wslPathToWindows(chromeLinux);
@@ -3479,7 +3497,7 @@ async function runWindowsPlainLogin(
   const waits: Promise<void>[] = [exited];
   const how = loginCloseFile ? `create ${loginCloseFile}` : "press Enter here";
   emit.log(
-    `[--login --plain] Windows Google Chrome is open with nothing attached (profile ${profileWindows}). Sign in, then close the window or ${how}.`,
+    `[--login] Windows Google Chrome is open with nothing attached (profile ${profileWindows}). Sign in, then close the window or ${how}.`,
     "info",
   );
   waits.push(
@@ -3495,7 +3513,7 @@ async function runWindowsPlainLogin(
   const cookies = harvestWindowsChromeCookies({ chromeWindows, profileWindows, domain });
   if (cookies.length === 0) {
     emit.log(
-      `[--login --plain] No ${domain} cookies were found in the Windows profile; the sign-in may not have completed.`,
+      `[--login] No ${domain} cookies were found in the Windows profile; the sign-in may not have completed.`,
       "warn",
     );
     return;
@@ -3504,7 +3522,7 @@ async function runWindowsPlainLogin(
   jar.save(mergeCookies(jar.load(), cookies));
   const names = [...new Set(cookies.map((cookie) => cookie.name))].sort().join(", ");
   emit.log(
-    `[--login --plain] Copied ${cookies.length} ${domain} cookies into ${storePath}: ${names}.`,
+    `[--login] Copied ${cookies.length} ${domain} cookies into ${storePath}: ${names}.`,
     "info",
   );
 }

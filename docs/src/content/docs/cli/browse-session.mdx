@@ -10,7 +10,10 @@ harn browse-session <command> --control-file <path>
 ```
 
 `browse-session` controls the original Playwright context of a visible
-[`harn browse --login`](/cli/browse/) process. Use it when the operator needs
+[`harn browse --login --attached`](/cli/browse/) process. Plain `--login`
+opens a browser with nothing attached, so `browse-session` cannot control it;
+sign in to a third-party account that way. Use `browse-session` when the
+operator needs
 the visible window for a human challenge while an agent handles inspection and
 routine browser actions. WSLg is one example: Chromium can paint normally even
 when the Windows RemoteApp handle cannot be activated or captured reliably.
@@ -20,7 +23,7 @@ The launch is explicit:
 ```bash
 install -d -m 700 ~/.cache/harnery/live-session
 harn browse https://example.com/login \
-  --login \
+  --login --attached \
   --control-file ~/.cache/harnery/live-session/control.json
 ```
 
