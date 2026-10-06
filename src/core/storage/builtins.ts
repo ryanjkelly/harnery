@@ -476,6 +476,7 @@ function cacheFamilies(): HarneryStorageFamily[] {
     ["pid-map-cache", ".harnery/pid-map", "active native process observations"],
     ["remote-presence-cache", ".harnery/presence/remote", "presence relay observations"],
     ["event-v3-live-display", ".harnery/live/v3", "Event Ledger V3 canonical events"],
+    ["local-server-registry", ".harnery/servers", "running local server processes"],
   ] as const;
   return [
     ...definitions.map(([id, root, source]) =>

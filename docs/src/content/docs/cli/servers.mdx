@@ -1,0 +1,120 @@
+---
+title: harn servers
+description: List, stop, and clean up every local server started in a project.
+sidebar:
+  order: 47
+---
+
+```bash
+harn servers [list|stop|gc|logs|open|register|unregister|touch]
+```
+
+Many tools start a local web server: preview UIs, tuning panels, review pages,
+dashboards, tunnel gates. Each one used to keep its own record of what it
+started, so nothing could list them together and nothing stopped the ones left
+behind. `servers` reads one registry under `.harnery/servers/` that every
+such tool writes to.
+
+## Kinds
+
+- **service**: one long-running copy, such as a dashboard or a tunnel. Listed
+  and stoppable by hand. Never stopped automatically.
+- **session**: one copy per piece of work, such as a preview for one scene.
+  Eligible for `gc` once the agent that started it is gone and nobody has
+  used it for the idle window.
+
+## List
+
+```bash
+harn servers
+harn servers list --json
+harn servers list --no-scan
+```
+
+The list shows each server's id, URL, label, starting agent, and use. Records
+of servers whose process has exited are removed as they are read. Open
+connections count as use, so a browser tab left open on a preview keeps it
+alive.
+
+The list also scans listening sockets. A process whose working directory or
+command line is inside the project, that listens on a port, and that is not a
+registered server or a descendant of one appears under **Unregistered
+servers**. Browser automation and editor servers are excluded. The scan uses
+procfs on Linux and `lsof` on macOS; other platforms report that it did not
+run.
+
+Running tunnels register when they start and are adopted automatically the
+first time the list is read, so tunnels started before the registry existed
+appear as services.
+
+## Stop
+
+```bash
+harn servers stop <id> [<id>...]
+harn servers stop --type preview          # preview
+harn servers stop --type preview --yes    # apply
+harn servers stop --pid 12345             # an unregistered server from the list
+```
+
+Named ids stop immediately. A `--type` selection previews unless `--yes`.
+`--pid` accepts only a pid that the scan currently reports as an
+unregistered server inside the project.
+
+A server's recorded stop command runs first. Then its process group receives
+SIGTERM, and SIGKILL after five seconds. A pid whose process start time no
+longer matches the record is never signalled, so a recycled pid cannot be
+killed by mistake.
+
+## Clean up
+
+```bash
+harn servers gc                 # preview
+harn servers gc --yes
+harn servers gc --idle-hours 4 --owner-stale-hours 48
+```
+
+`gc` stops a session server only when all of these hold:
+
+1. It runs on this machine.
+2. It recorded the agent session that started it.
+3. That session has ended, or has not been observed for the stale window
+   (default 24 hours).
+4. The server has had no recorded use for the idle window (default 2 hours).
+
+A server with no recorded agent, or whose agent's state cannot be read, is
+kept. Services are always kept. Run it from a scheduler to keep a machine
+clean.
+
+## Logs and URLs
+
+```bash
+harn servers logs <id> -n 100
+harn servers open <id>
+```
+
+## Registering a server
+
+TypeScript hosts import the registry:
+
+```ts
+import { createServerToucher, serverId, tryRegisterServer, unregisterServer } from "harnery/core/servers";
+
+const id = serverId("preview", sceneDir);
+tryRegisterServer({ id, kind: "session", type: "preview", url, port, scope: sceneDir, log });
+const touch = createServerToucher(id); // call on every request
+process.on("SIGTERM", () => unregisterServer(id, { pid: process.pid }));
+```
+
+The calling agent session is recorded as the owner. `tryRegisterServer`
+returns null instead of throwing when no project resolves, so a tool keeps
+working outside a Harnery project.
+
+Scripts in other languages use the CLI:
+
+```bash
+harn servers register --type review --port 8900 --pid $PID --url http://localhost:8900/ --scope ./run
+harn servers unregister review-run-1a2b3c --pid $PID
+```
+
+`register` prints the record as JSON. Without `--pid` it records the
+calling process's parent.

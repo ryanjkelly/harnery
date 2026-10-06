@@ -4,7 +4,14 @@ import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 
+import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { resolveBinName } from "../core/config.ts";
+import {
+  tryRegisterServer,
+  tunnelServerId,
+  tunnelServerInput,
+  unregisterServer,
+} from "../core/servers/index.ts";
 import {
   processLogDestination,
   runRotatingProcessSync,
@@ -694,6 +701,7 @@ async function up(opts: UpOpts): Promise<void> {
     tailscale_https_port: tailscaleHttpsPort,
   };
   writeState(state);
+  recordTunnelServer(state);
 
   const stopHint =
     name === DEFAULT_INSTANCE ? "harn tunnel down" : `harn tunnel down --name ${name}`;
@@ -722,6 +730,16 @@ async function up(opts: UpOpts): Promise<void> {
   emit.text("  Status: harn tunnel status\n");
 }
 
+/** The server registry lists tunnels beside every other local server. */
+function registryRoot(): string {
+  return resolveCoordRoot() ?? process.cwd();
+}
+
+function recordTunnelServer(state: TunnelState): void {
+  const coordRoot = registryRoot();
+  tryRegisterServer(tunnelServerInput(state, coordRoot), { coordRoot });
+}
+
 /** Tear down a single instance by name. Returns the number of processes killed. */
 function downOne(name: string, killed: Set<number>): number {
   const before = killed.size;
@@ -744,6 +762,7 @@ function downOne(name: string, killed: Set<number>): number {
   // lost; they'd otherwise squat on the port and break the next `up`.
   sweepStrays(state?.gate_port ?? DEFAULT_GATE_PORT, killed);
   clearState(name);
+  unregisterServer(tunnelServerId(name), { coordRoot: registryRoot() });
   return killed.size - before;
 }
 
@@ -892,6 +911,7 @@ export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; mess
   }
 
   writeState({ ...state, gate_pid: pid });
+  recordTunnelServer({ ...state, gate_pid: pid });
   const allowNote =
     state.provider === "cloudflare" ? ` Allowlist: ${cfg.allowed_ips.length} IP(s).` : "";
   return { ok: true, message: `[${name}] gate reloaded, URL unchanged: ${state.url}.${allowNote}` };

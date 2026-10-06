@@ -137,6 +137,11 @@
       "types": "./dist/core/supervisor/index.d.ts",
       "import": "./dist/core/supervisor/index.js"
     },
+    "./core/servers": {
+      "bun": "./src/core/servers/index.ts",
+      "types": "./dist/core/servers/index.d.ts",
+      "import": "./dist/core/servers/index.js"
+    },
     "./core/diagnostics": {
       "bun": "./src/core/diagnostics/index.ts",
       "types": "./dist/core/diagnostics/index.d.ts",

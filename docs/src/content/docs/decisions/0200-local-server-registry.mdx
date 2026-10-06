@@ -1,0 +1,52 @@
+---
+title: "0200: Local server registry"
+description: "ADR: one registry for every local server a project starts, with a scan for unregistered listeners and owner-aware cleanup."
+---
+
+**Status:** accepted (2026-10-06)
+
+## Context
+
+A project accumulates local servers: preview UIs, tuning panels, review pages,
+dashboards, and tunnel gates. Each tool recorded its own processes in its own
+place, or nowhere. No command listed them together, and nothing stopped the
+copies an agent started and forgot. On one working machine a scan found 27
+listening sockets inside the project, of which only the dashboard and tunnels
+were visible to any status command.
+
+## Alternatives considered
+
+- Keep per-tool state and teach one status command to read each format. Every
+  new tool needs a new reader, and a tool that forgets is invisible.
+- Discover servers only by scanning sockets. A scan finds the process but not
+  what it serves, who started it, how to stop it gracefully, or whether it is
+  in use.
+- Leave the registry in each host CLI. Tunnels and the dashboard are Harnery
+  features, and every host has the same problem.
+
+## Decision
+
+Add `harnery/core/servers`: one JSON record per server under
+`.harnery/servers/`, written by the tool that starts the server and removed
+when it stops. Records carry kind (`service` or `session`), pid with its start
+token, port, URL, scope, log, an optional graceful stop command, and the
+calling agent session as owner.
+
+Add `harn servers list|stop|gc|logs|open|register|unregister|touch`. Listing
+prunes exited records, counts open connections as use, and scans listening
+sockets for unregistered processes inside the project. Tunnels register on
+`up` and `reload` and are adopted when found running without a record.
+
+`gc` stops a session server only when it recorded an owner, that owner ended
+or went unobserved past 24 hours, and the server has been idle for two hours.
+An unreadable coordination view, a missing owner, a service, or another host
+keeps the server.
+
+## Result and limits
+
+The scan covers Linux and macOS. Docker-published ports have no visible owning
+process and do not appear as unregistered. Idle detection samples connections
+when the registry is read; a server that handles only short requests and does
+not touch its record can look idle between reads, so servers should call
+`createServerToucher`. A recycled pid fails the start-token check and is never
+signalled.

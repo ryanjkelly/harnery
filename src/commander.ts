@@ -675,6 +675,12 @@ function harneryCommandBundles({
         (await import("./commands/tunnel.ts")).registerTunnelCommand(program, emit, context),
     ),
     lazy(
+      "servers",
+      "Every local server started in this project: list, stop, clean up idle session servers, read logs",
+      async (program) =>
+        (await import("./commands/servers.ts")).registerServersCommand(program, emit, context),
+    ),
+    lazy(
       "docs",
       "Documentation tooling: freshness report, metadata, lint, sweep, index",
       async (program) =>
