@@ -6,7 +6,8 @@
  * and similar material. Each direct child of `.harnery/artifacts/` is one
  * managed unit with a small manifest. Cleanup fails closed: only a valid,
  * unheld, inactive, untracked managed unit is deletable, and only when its
- * retention expired or a size rule applies after its idle grace.
+ * retention expired or a size rule applies after its idle grace. Explicit
+ * removal lets a creating owner delete its reviewed, unheld workspace sooner.
  */
 
 import { spawnSync } from "node:child_process";
@@ -18,6 +19,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statfsSync,
@@ -39,6 +41,11 @@ import {
   coordFreshnessSeconds,
   resolveBinName,
 } from "../config.ts";
+import {
+  readCoordinationViewV3,
+  requireAuthoritySafeCoordinationViewV3,
+} from "../events/v3/coordination-view.ts";
+import { liveInstanceIdV3 } from "../events/v3/live-route-observer.ts";
 import { stateFileMode } from "../storage/modes.ts";
 import {
   type ArtifactActivity,
@@ -126,6 +133,7 @@ export function artifactCapabilities() {
     explicit_v1_migration: true,
     minute_retention: true,
     discard_after_review: true,
+    owner_scoped_remove: true,
     allow_big_after_create: true,
     hold_expiry: true,
     persistent_holds: true,
@@ -437,6 +445,112 @@ export function discardArtifact(
     atomicWriteManifest(path, updated, now);
     return updated;
   });
+}
+
+export interface ArtifactRemovalResult {
+  entry: ArtifactInventoryEntry;
+  reason: string;
+  deleted: boolean;
+}
+
+/** Preview or immediately remove one reviewed workspace belonging to this actor. */
+export function removeArtifact(
+  repoRoot: string,
+  ref: string,
+  reason: string,
+  input: ArtifactMutationInput & { yes?: boolean } = {},
+): ArtifactRemovalResult {
+  const why = reason.trim();
+  if (!why) throw new Error("remove requires a reason confirming the files are no longer needed");
+  if (!validActor(input.actor))
+    throw new Error("remove requires a current artifact owner identity");
+  const actor = input.actor;
+  const now = input.now ?? new Date();
+  assertValidDate(now, "now");
+  const store = artifactsRoot(repoRoot);
+  const checkStore = () => {
+    for (const path of [resolve(repoRoot), dirname(store), store]) {
+      const stat = lstatSync(path);
+      if (!stat.isDirectory() || stat.isSymbolicLink())
+        throw new Error("artifact store must use real directories, not symlinks");
+    }
+  };
+  checkStore();
+  return withArtifactLock(repoRoot, () => {
+    checkStore();
+    const path = resolveArtifactRef(repoRoot, ref);
+    const inspect = () => {
+      const target = realpathSync(path);
+      const cwd = realpathSync(process.cwd());
+      if (cwd === target || cwd.startsWith(`${target}${sep}`))
+        throw new Error("cannot remove the working directory or its ancestor");
+      if (lstatSync(path).dev !== lstatSync(store).dev)
+        throw new Error("artifact removal cannot cross a mount boundary");
+      const entry = classifyArtifactPath(repoRoot, path, now, coordFreshnessSeconds(repoRoot));
+      if (!["managed-current", "managed-expired", "managed-active"].includes(entry.classification))
+        throw new Error(`cannot remove artifact: ${entry.reason}`);
+      if (entry.owner_instance_id !== actor.instance_id)
+        throw new Error("only the creating artifact owner may remove this workspace");
+      const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(repoRoot));
+      for (const peer of Object.values(view.instances)) {
+        if (!peer.authority_eligible || peer.instance_id === liveInstanceIdV3(actor.instance_id))
+          continue;
+        for (const claim of peer.files_touched) {
+          const claimed = resolve(repoRoot, claim);
+          if (
+            path === claimed ||
+            path.startsWith(`${claimed}${sep}`) ||
+            claimed.startsWith(`${path}${sep}`)
+          )
+            throw new Error(`artifact overlaps another agent's claim: ${claim}`);
+        }
+      }
+      return entry;
+    };
+    const entry = inspect();
+    const before = artifactRemovalSnapshot(path);
+    if (!input.yes) return { entry, reason: why, deleted: false };
+    // Metadata mutations share this lock. Recheck payload, claims, and protections
+    // immediately before removal because ordinary file writers do not take it.
+    checkStore();
+    const current = inspect();
+    if (
+      !isDeepStrictEqual(entry, current) ||
+      !isDeepStrictEqual(before, artifactRemovalSnapshot(path))
+    )
+      throw new Error("artifact changed during removal inspection; preview it again");
+    rmSync(path, { recursive: true, force: false });
+    const removed = { ...current, action: "deleted" as const, reason: why };
+    recordArtifactDeletion(repoRoot, removed, now, actor);
+    return { entry: removed, reason: why, deleted: true };
+  });
+}
+
+/** Refuse links, mounts, special files, and embedded stores; fingerprint every entry. */
+function artifactRemovalSnapshot(path: string): Map<string, string> {
+  const device = lstatSync(path).dev;
+  const entries = new Map<string, string>();
+  const walk = (target: string) => {
+    const stat = lstatSync(target);
+    if (stat.isSymbolicLink() || stat.dev !== device || (!stat.isFile() && !stat.isDirectory()))
+      throw new Error(`unsafe artifact removal path: ${target}`);
+    if (target !== path && [".git", ".harnery"].includes(basename(target)))
+      throw new Error(`embedded repository or coordination state cannot be removed: ${target}`);
+    if (target !== join(path, ARTIFACT_MANIFEST) && basename(target) === ARTIFACT_MANIFEST)
+      throw new Error(`nested artifact must be managed separately: ${target}`);
+    entries.set(
+      target,
+      [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs].join(":"),
+    );
+    if (stat.isDirectory()) {
+      const names = readdirSync(target).sort();
+      if (names.includes("HEAD") && names.includes("objects") && names.includes("config"))
+        throw new Error(`embedded Git metadata cannot be removed: ${target}`);
+      for (const name of names) walk(join(target, name));
+    }
+  };
+  walk(path);
+  return entries;
 }
 
 /** Advice only: a successful check does not establish that its evidence is disposable. */
@@ -762,6 +876,7 @@ export interface ArtifactDeletionRecord {
   apparent_bytes: number | null;
   expires_at: string | null;
   idle_since: string | null;
+  removed_by?: ArtifactActor;
 }
 
 /**
@@ -769,7 +884,12 @@ export interface ArtifactDeletionRecord {
  * lock. Best-effort: the directory is already gone, so a failed write must not
  * turn a completed deletion into a reported failure.
  */
-function recordArtifactDeletion(repoRoot: string, row: ArtifactInventoryEntry, now: Date): void {
+function recordArtifactDeletion(
+  repoRoot: string,
+  row: ArtifactInventoryEntry,
+  now: Date,
+  removedBy?: ArtifactActor,
+): void {
   const record: ArtifactDeletionRecord = {
     deleted_at: now.toISOString(),
     name: row.name,
@@ -783,6 +903,7 @@ function recordArtifactDeletion(repoRoot: string, row: ArtifactInventoryEntry, n
     apparent_bytes: row.apparent_bytes,
     expires_at: row.expires_at,
     idle_since: row.idle_since,
+    ...(removedBy ? { removed_by: removedBy } : {}),
   };
   try {
     const path = join(resolve(repoRoot), DELETION_LOG);

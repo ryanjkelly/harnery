@@ -1,0 +1,47 @@
+---
+title: "0199: Remove one owned artifact immediately"
+description: "ADR: preview and apply immediate removal of one reviewed workspace with ownership and filesystem safeguards."
+---
+
+**Status:** accepted (2026-10-06)
+
+## Context
+
+An agent can finish reviewing a large disposable workspace while its retention
+window still has days left. `discard` shortens that window but deletes nothing
+immediately. `clean --yes` selects work across the repository. Neither gives
+the agent an immediate removal command limited to the workspace it owns.
+
+## Alternatives considered
+
+- Delete payload with guarded file removal and leave the manifest for later
+  cleanup. This frees disk, but requires enumerating payload and leaves an empty
+  workspace behind.
+- Expire the workspace and run repository cleanup. This introduces a wait and
+  can delete unrelated eligible workspaces.
+- Allow an arbitrary force removal. This bypasses holds and other agents' work.
+
+## Decision
+
+Add `removeArtifact()` and `artifacts remove <ref> --reason <text> [--yes]`.
+Preview is the default. Apply deletes one complete workspace without requiring
+expired retention or an idle owner. The actor must match the creating owner;
+unknown identities and ownerless workspaces refuse removal.
+
+Reuse artifact classification, the mutation lock, and deletion records.
+Refuse holds in force, tracked content, unsafe coordination state, peer claims,
+symlinks, mount boundaries, special files, and nested repository or artifact
+stores, and the caller's working directory or its ancestors. Fingerprint the
+complete tree and recheck protections immediately before deletion. There is no
+force or actor override in the CLI.
+
+## Result and limits
+
+The caller still decides whether evidence is disposable and stops its writers.
+The lock serializes metadata and cleanup, but ordinary payload writers do not
+take it. Inspection detects changes during the scan; it is not a filesystem
+transaction against a writer racing the final removal.
+
+Successful removal reports `deleted: true`. The existing best-effort deletion
+log also records the reason and actor; a log failure cannot undo deletion.
+Normal release, discard, retention, and repository cleanup behavior stays intact.

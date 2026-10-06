@@ -23,6 +23,7 @@ import {
   parseArtifactDeliverySpec,
   readArtifactDeletions,
   releaseArtifact,
+  removeArtifact,
   renderArtifactDeliveryCard,
   renewArtifact,
   repairArtifactActivity,
@@ -313,6 +314,20 @@ export function registerArtifactsCommand(
           actor: currentActor(repoRoot),
         });
         emit.data({ manifest, entry: showArtifact(repoRoot, ref).entry, deleted: false });
+      });
+    });
+
+  root
+    .command("remove <ref>")
+    .description("Preview immediate removal of one owned artifact; --yes permanently deletes it.")
+    .requiredOption("--reason <text>", "Why these reviewed files are no longer needed")
+    .option("--yes", "Permanently delete this one workspace after safety checks")
+    .action((ref: string, opts: { reason: string; yes?: boolean }) => {
+      run(emit, () => {
+        const repoRoot = requireRepoRoot(context);
+        emit.data(
+          removeArtifact(repoRoot, ref, opts.reason, { ...opts, actor: currentActor(repoRoot) }),
+        );
       });
     });
 

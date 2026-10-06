@@ -25,6 +25,7 @@ harn artifacts delivery-card <ref> [--title <text>] [--url <label=url>...] [--pa
 harn artifacts renew <ref> (--days <n> | --minutes <n>) --reason <text>
 harn artifacts release <ref>
 harn artifacts discard <ref> --reason <text> [--minutes <n>]
+harn artifacts remove <ref> --reason <text> [--yes]
 harn artifacts capabilities --json
 harn artifacts create <slug> --purpose <text> --hold <id> --hold-reason <text> --actor <instance-id>
 harn artifacts hold <ref> --id <id> --reason <text> [--days <n> | --minutes <n>] [--actor <instance-id>]
@@ -96,6 +97,35 @@ Artifact creation and release, managed `qa-run` results, and terminal `qa-status
 reports include `after_review` guidance with the appropriate discard command.
 Release returns this reminder alongside its unchanged manifest fields. The
 reminder never shortens retention by itself.
+
+## Remove one workspace immediately
+
+When reviewed files are no longer needed, the creating agent can preview removal
+of one workspace, then delete it immediately:
+
+```bash
+harn artifacts remove <artifact-id> --reason "Reviewed; no remaining use"
+harn artifacts remove <artifact-id> --reason "Reviewed; no remaining use" --yes
+```
+
+Preview leaves the payload and manifest unchanged. `--yes` removes the whole
+folder without waiting for expiry, including when its owner is active or its
+retention window has time left. Stop any writer first. The command requires a
+current agent identity matching the manifest's creating owner, and refuses
+holds in force, peer file claims, tracked content, invalid manifests, symlinks,
+mount boundaries, special files, embedded repositories or artifact stores, and
+the caller's working directory or its ancestors.
+It shares the artifact mutation lock and rechecks the folder before deletion.
+There is no force or ownership override.
+
+The result includes `deleted`, the workspace entry, and the supplied reason.
+Applied removals append the reason and `removed_by` actor to the existing
+deletion log on a best-effort basis. `artifacts list` includes recent removals,
+and `show` explains why a removed workspace is gone when its record is available.
+The `owner_scoped_remove` capability advertises this command.
+
+Use `discard` when a grace period is useful, or `release` to keep the existing
+retention window. `clean --yes` still applies the repository cleanup policy.
 
 ## Deliver review files consistently
 

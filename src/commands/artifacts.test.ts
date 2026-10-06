@@ -91,6 +91,7 @@ describe("artifacts command", () => {
       "allow-big",
       "release",
       "discard",
+      "remove",
       "capabilities",
       "migrate",
       "repair-activity",
