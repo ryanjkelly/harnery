@@ -269,9 +269,7 @@ describe("tunnelFileUrl", () => {
   test("skips a files-origin tunnel whose scope leaves out the page, and names the fix", () => {
     const root = fixture();
     const local = mintLocalFileUrl("docs/page name.html", { coordRoot: root, port: 4276 });
-    const states = [
-      tunnelState({ vhost: FILES_ORIGIN_HOST, allow_paths: ["/wiki/explainers"] }),
-    ];
+    const states = [tunnelState({ vhost: FILES_ORIGIN_HOST, allow_paths: ["/wiki/explainers"] })];
     expect(() => tunnelFileUrl(local, 4276, states, alive)).toThrow(TunnelLinkError);
     try {
       tunnelFileUrl(local, 4276, states, alive);

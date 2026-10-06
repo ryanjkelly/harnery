@@ -289,7 +289,12 @@ describe("agent-hook V3 hard cut", () => {
       const prompt = run(
         AGENT_HOOK,
         ["user-prompt-submit", "--adapter", "claude-code"],
-        { session_id: owner, cwd: root, prompt: "do the task", hook_event_name: "UserPromptSubmit" },
+        {
+          session_id: owner,
+          cwd: root,
+          prompt: "do the task",
+          hook_event_name: "UserPromptSubmit",
+        },
         root,
         { ...env, ...extra },
       );
