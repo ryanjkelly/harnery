@@ -11,6 +11,7 @@ import {
   Radio,
   Scale,
   ScrollText,
+  Server,
   Stethoscope,
   Target,
   Users,
@@ -50,6 +51,13 @@ export const APP_ROUTES: readonly AppRoute[] = [
     group: "activity",
     icon: Radio,
     keywords: ["session", "commands", "stream", "intent", "shell"],
+  },
+  {
+    href: "/servers",
+    label: "Servers",
+    group: "activity",
+    icon: Server,
+    keywords: ["ports", "localhost", "preview", "dev server", "tunnel", "listeners", "stop"],
   },
   {
     href: "/resources",
