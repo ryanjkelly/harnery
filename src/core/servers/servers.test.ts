@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -12,9 +12,14 @@ import {
   establishedConnectionCounts,
   findUnregisteredListeners,
   listServers,
+  lsofConnectionCounts,
+  lsofListeningSockets,
+  parseElapsed,
   parseLsofListen,
   parseProcNetTcp,
   planServerGc,
+  psProcessInfo,
+  readProcessInfo,
   readServer,
   registerServer,
   type ServerView,
@@ -235,6 +240,13 @@ describe("parsers", () => {
     ]);
   });
 
+  test("decode ps elapsed time", () => {
+    expect(parseElapsed("05:07")).toBe(307);
+    expect(parseElapsed(" 02:05:07")).toBe(7507);
+    expect(parseElapsed("3-02:05:07")).toBe(266_707);
+    expect(parseElapsed("")).toBeNull();
+  });
+
   test("decode lsof listening output", () => {
     expect(parseLsofListen("p42\nn127.0.0.1:4873\nn[::1]:4873\np7\nn*:3000\n")).toEqual([
       { pid: 7, port: 3000, address: "*" },
@@ -300,11 +312,39 @@ describe("adoption", () => {
       const { pid, port } = await startChildServer(root);
       const record = adoptServer(pid, { coordRoot: root, type: "preview", owner: "none" });
       expect(record).toMatchObject({ pid, port, type: "preview", kind: "session" });
+      expect(Date.parse(record.started_at)).toBeLessThanOrEqual(Date.parse(record.registered_at));
       expect(record.owner).toBeUndefined();
       expect(() => adoptServer(pid, { coordRoot: root })).toThrow(/not an unregistered listener/);
       expect(() => adoptServer(process.pid, { coordRoot: root })).toThrow(
         /not an unregistered listener/,
       );
+    },
+  );
+});
+
+const hasLsof =
+  spawnSync("lsof", ["-v"], { stdio: "ignore" }).status === 0 && process.platform !== "win32";
+
+describe("macOS scan path (lsof and ps)", () => {
+  test.skipIf(!hasLsof)(
+    "finds the same listener, process, and connection as the native path",
+    async () => {
+      const { pid, port } = await startChildServer(root);
+      expect(lsofListeningSockets().some((s) => s.pid === pid && s.port === port)).toBe(true);
+      const viaPs = psProcessInfo(pid);
+      const native = readProcessInfo(pid);
+      expect(viaPs?.cwd).toBe(native?.cwd ?? null);
+      expect(viaPs?.ppid).toBe(native?.ppid ?? null);
+      expect(viaPs?.command).toContain("Bun.serve");
+      const socket: Socket = connect(port, "127.0.0.1");
+      await new Promise((resolve) => socket.once("connect", resolve));
+      socket.write(`GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n`);
+      try {
+        await Bun.sleep(150);
+        expect(lsofConnectionCounts(new Set([port])).get(port) ?? 0).toBeGreaterThan(0);
+      } finally {
+        socket.destroy();
+      }
     },
   );
 });

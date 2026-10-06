@@ -42,6 +42,7 @@ import {
   establishedConnectionCounts,
   listListeningPorts,
   listListeningSockets,
+  processStartedAt,
   readProcessInfo,
   type ScanSupport,
   scanSupport,
@@ -53,8 +54,13 @@ export {
   establishedConnectionCounts,
   listListeningPorts,
   listListeningSockets,
+  lsofConnectionCounts,
+  lsofListeningSockets,
+  parseElapsed,
   parseLsofListen,
   parseProcNetTcp,
+  processStartedAt,
+  psProcessInfo,
   readProcessInfo,
   scanSupport,
 } from "./net.ts";
@@ -677,6 +683,7 @@ export function adoptServer(pid: number, options?: AdoptOptions): ServerRecord {
   const first = listeners[0]!;
   const type = options?.type ?? "adopted";
   const scope = options?.scope ?? first.cwd ?? undefined;
+  const started = processStartedAt(pid);
   const record = registerServer(
     {
       id: serverId(type, `${scope ?? ""}#${pid}`),
@@ -689,6 +696,7 @@ export function adoptServer(pid: number, options?: AdoptOptions): ServerRecord {
       ...(scope ? { scope } : {}),
       ...(first.cwd ? { cwd: first.cwd } : {}),
       ...(options?.owner === "none" ? { owner: null } : {}),
+      ...(started ? { started_at: started } : {}),
     },
     { coordRoot },
   );

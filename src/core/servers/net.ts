@@ -132,8 +132,7 @@ export function listListeningSockets(): ListeningSocket[] {
     }
     return sockets.sort((a, b) => a.port - b.port);
   }
-  if (support === "lsof")
-    return parseLsofListen(run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"]));
+  if (support === "lsof") return lsofListeningSockets();
   return [];
 }
 
@@ -191,15 +190,41 @@ export function establishedConnectionCounts(ports: number[]): Map<number, number
     }
     return counts;
   }
-  if (support === "lsof") {
-    const output = run("lsof", ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fn"]);
-    for (const line of output.split("\n")) {
-      const match = /^n.*?:(\d+)->/.exec(line);
-      const port = match?.[1] ? Number(match[1]) : 0;
-      if (wanted.has(port)) counts.set(port, (counts.get(port) ?? 0) + 1);
-    }
+  if (support === "lsof") return lsofConnectionCounts(wanted);
+  return counts;
+}
+
+/** Listening sockets via `lsof` (the macOS path; also runs wherever lsof exists). */
+export function lsofListeningSockets(): ListeningSocket[] {
+  return parseLsofListen(run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"]));
+}
+
+/** Server-side established connections per wanted local port, via `lsof`. */
+export function lsofConnectionCounts(wanted: Set<number>): Map<number, number> {
+  const counts = new Map<number, number>();
+  const output = run("lsof", ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fn"]);
+  for (const line of output.split("\n")) {
+    const match = /^n.*?:(\d+)->/.exec(line);
+    const port = match?.[1] ? Number(match[1]) : 0;
+    if (wanted.has(port)) counts.set(port, (counts.get(port) ?? 0) + 1);
   }
   return counts;
+}
+
+/** Parent, command line, and working directory via `ps` and `lsof` (the macOS path). */
+export function psProcessInfo(pid: number): ProcessInfo | null {
+  const ps = run("ps", ["-o", "ppid=,command=", "-p", String(pid)]).trim();
+  if (!ps) return null;
+  const match = /^(\d+)\s+(.*)$/.exec(ps);
+  const cwdLine = run("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"])
+    .split("\n")
+    .find((line) => line.startsWith("n"));
+  return {
+    pid,
+    ppid: match?.[1] ? Number(match[1]) : null,
+    command: match?.[2] ?? ps,
+    cwd: cwdLine ? cwdLine.slice(1) : null,
+  };
 }
 
 export function readProcessInfo(pid: number): ProcessInfo | null {
@@ -220,21 +245,25 @@ export function readProcessInfo(pid: number): ProcessInfo | null {
       return null;
     }
   }
-  if (process.platform === "darwin") {
-    const ps = run("ps", ["-o", "ppid=,command=", "-p", String(pid)]).trim();
-    if (!ps) return null;
-    const match = /^(\d+)\s+(.*)$/.exec(ps);
-    const cwdLine = run("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"])
-      .split("\n")
-      .find((line) => line.startsWith("n"));
-    return {
-      pid,
-      ppid: match?.[1] ? Number(match[1]) : null,
-      command: match?.[2] ?? ps,
-      cwd: cwdLine ? cwdLine.slice(1) : null,
-    };
-  }
+  if (process.platform === "darwin") return psProcessInfo(pid);
   return null;
+}
+
+/** Parse `ps -o etime=` output (`[[dd-]hh:]mm:ss`) into seconds. */
+export function parseElapsed(value: string): number | null {
+  const match = /^\s*(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)\s*$/.exec(value);
+  if (!match) return null;
+  const [, days, hours, minutes, seconds] = match;
+  return (
+    Number(days ?? 0) * 86_400 + Number(hours ?? 0) * 3_600 + Number(minutes) * 60 + Number(seconds)
+  );
+}
+
+/** When a process started, from its elapsed run time; null when unavailable. */
+export function processStartedAt(pid: number, now = Date.now()): string | null {
+  if (process.platform !== "linux" && process.platform !== "darwin") return null;
+  const elapsed = parseElapsed(run("ps", ["-o", "etime=", "-p", String(pid)]));
+  return elapsed === null ? null : new Date(now - elapsed * 1_000).toISOString();
 }
 
 /** The pid followed by its ancestors, nearest first (bounded). */
