@@ -29,6 +29,7 @@ import { listStates } from "../../lib/tunnel/state.ts";
 import { resolveCoordRoot } from "../agents/coord-client.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
+import { serverPortRange } from "../config.ts";
 import {
   readCoordinationViewV3,
   requireAuthoritySafeCoordinationViewV3,
@@ -39,6 +40,7 @@ import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import {
   ancestry,
   establishedConnectionCounts,
+  listListeningPorts,
   listListeningSockets,
   readProcessInfo,
   type ScanSupport,
@@ -49,6 +51,7 @@ import { tunnelServerId, tunnelServerInput } from "./tunnels.ts";
 export {
   ancestry,
   establishedConnectionCounts,
+  listListeningPorts,
   listListeningSockets,
   parseLsofListen,
   parseProcNetTcp,
@@ -630,6 +633,67 @@ async function exited(record: ServerRecord, waitMs: number): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 100));
   }
   return serverState(record) !== "running";
+}
+
+/**
+ * The first free port in the configured range for `type`
+ * (`.harnery/config.jsonc` `servers.port_ranges`). Skips ports any process is
+ * listening on and ports a registered server claims. Returns null when the
+ * type has no configured range; throws when the range is exhausted.
+ */
+export function allocateServerPort(type: string, options?: ServerOptions): number | null {
+  const coordRoot = rootOf(options);
+  const range = serverPortRange(type, coordRoot);
+  if (!range) return null;
+  const taken = listListeningPorts();
+  for (const record of readServerRecords({ coordRoot })) {
+    if (record.port && serverState(record) === "running") taken.add(record.port);
+  }
+  for (let port = range[0]; port <= range[1]; port++) if (!taken.has(port)) return port;
+  throw new Error(`no free port for ${type} in ${range[0]}-${range[1]}`);
+}
+
+export interface AdoptOptions extends ServerOptions {
+  type?: string;
+  kind?: ServerKind;
+  label?: string;
+  scope?: string;
+  /** `self` (default) records the adopting agent as owner; `none` records no owner. */
+  owner?: "self" | "none";
+}
+
+/**
+ * Register a running server that never registered itself. Only a pid the scan
+ * reports as an unregistered listener inside the project can be adopted.
+ */
+export function adoptServer(pid: number, options?: AdoptOptions): ServerRecord {
+  const coordRoot = rootOf(options);
+  if (!coordRoot) throw new Error("no Harnery project found (coordination root did not resolve)");
+  const report = listServers({ coordRoot, sample: false });
+  const listeners = report.unregistered.filter((item) => item.pid === pid);
+  if (!listeners.length)
+    throw new Error(`pid ${pid} is not an unregistered listener inside this project`);
+  const ports = listeners.map((item) => item.port).sort((a, b) => a - b);
+  const first = listeners[0]!;
+  const type = options?.type ?? "adopted";
+  const scope = options?.scope ?? first.cwd ?? undefined;
+  const record = registerServer(
+    {
+      id: serverId(type, `${scope ?? ""}#${pid}`),
+      kind: options?.kind ?? "session",
+      type,
+      label: options?.label ?? `Adopted: ${first.command.slice(0, 80)}`,
+      url: `http://127.0.0.1:${ports[0]}/`,
+      port: ports[0],
+      pid,
+      ...(scope ? { scope } : {}),
+      ...(first.cwd ? { cwd: first.cwd } : {}),
+      ...(options?.owner === "none" ? { owner: null } : {}),
+    },
+    { coordRoot },
+  );
+  if (!record) throw new Error("registration failed");
+  return record;
 }
 
 /** Ensure the registry directory exists (for hosts that write records directly). */

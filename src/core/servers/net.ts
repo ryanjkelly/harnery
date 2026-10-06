@@ -137,6 +137,22 @@ export function listListeningSockets(): ListeningSocket[] {
   return [];
 }
 
+/**
+ * Every listening TCP port on this machine, including ports whose owner this
+ * user cannot see (containers, other users). Used to avoid port collisions.
+ */
+export function listListeningPorts(): Set<number> {
+  const support = scanSupport();
+  if (support === "procfs")
+    return new Set(
+      readProcSockets()
+        .filter((row) => row.state === "0A")
+        .map((row) => row.localPort),
+    );
+  if (support === "lsof") return new Set(listListeningSockets().map((socket) => socket.port));
+  return new Set();
+}
+
 /** Parse `lsof -Fpn` output for listening sockets. */
 export function parseLsofListen(output: string): ListeningSocket[] {
   const sockets: ListeningSocket[] = [];

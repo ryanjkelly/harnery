@@ -3,8 +3,10 @@ import { hostname } from "node:os";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
-import { resolveBinName } from "../core/config.ts";
+import { resolveBinName, serverGcConfig } from "../core/config.ts";
 import {
+  adoptServer,
+  allocateServerPort,
   isValidServerId,
   listServers,
   planServerGc,
@@ -180,10 +182,15 @@ export function registerServersCommand(
       }) => {
         try {
           const coordRoot = root();
-          const idleHours = positive(options.idleHours, SERVER_DEFAULT_IDLE_HOURS, "--idle-hours");
+          const configured = serverGcConfig(coordRoot);
+          const idleHours = positive(
+            options.idleHours,
+            configured.idle_hours ?? SERVER_DEFAULT_IDLE_HOURS,
+            "--idle-hours",
+          );
           const ownerStaleHours = positive(
             options.ownerStaleHours,
-            SERVER_DEFAULT_OWNER_STALE_HOURS,
+            configured.owner_stale_hours ?? SERVER_DEFAULT_OWNER_STALE_HOURS,
             "--owner-stale-hours",
           );
           const report = listServers({ coordRoot, scan: false, ownerStaleHours });
@@ -216,6 +223,79 @@ export function registerServersCommand(
         }
       },
     );
+
+  cmd
+    .command("adopt")
+    .description(
+      "Register running servers that never registered (only pids the list reports as unregistered)",
+    )
+    .option(
+      "--pid <pid>",
+      "Adopt this unregistered listener (repeatable)",
+      (value: string, previous: string[] = []) => [...previous, value],
+    )
+    .option("--all", "Adopt every unregistered listener the scan reports")
+    .option("--type <type>", "Server family to record", "adopted")
+    .option("--kind <kind>", "session (cleaned up when idle) or service", "session")
+    .option("--label <label>", "Human-readable name (single --pid only)")
+    .option("--scope <path>", "What the server serves (default: its working directory)")
+    .option("--no-owner", "Record no owner, so gc never stops it")
+    .option("--json", "Emit JSON")
+    .action(
+      (options: {
+        pid?: string[];
+        all?: boolean;
+        type: string;
+        kind: string;
+        label?: string;
+        scope?: string;
+        owner?: boolean;
+        json?: boolean;
+      }) => {
+        try {
+          const coordRoot = root();
+          if (options.kind !== "session" && options.kind !== "service")
+            throw new Error("--kind must be session or service");
+          const pids = options.all
+            ? [...new Set(listServers({ coordRoot, sample: false }).unregistered.map((u) => u.pid))]
+            : (options.pid ?? []).map((value) => integer(value, "--pid"));
+          if (!pids.length)
+            throw new Error(options.all ? "no unregistered listeners" : "pass --pid or --all");
+          if (options.label && pids.length > 1) throw new Error("--label needs a single --pid");
+          const records = pids.map((pid) =>
+            adoptServer(pid, {
+              coordRoot,
+              type: options.type,
+              kind: options.kind as ServerKind,
+              ...(options.label ? { label: options.label } : {}),
+              ...(options.scope ? { scope: options.scope } : {}),
+              owner: options.owner === false ? "none" : "self",
+            }),
+          );
+          if (options.json) {
+            emit.config({ format: "json" });
+            emit.data({ adopted: records });
+          } else emit.text(records.map((r) => `adopted ${r.id}  ${r.url ?? ""}`).join("\n"));
+        } catch (error) {
+          fail(error);
+        }
+      },
+    );
+
+  cmd
+    .command("port <type>")
+    .description(
+      "Print a free port from the type's configured range (.harnery/config.jsonc servers.port_ranges)",
+    )
+    .action((type: string) => {
+      try {
+        const port = allocateServerPort(type, { coordRoot: root() });
+        if (port === null) throw new Error(`no port range configured for ${type}`);
+        emit.text(String(port));
+      } catch (error) {
+        fail(error);
+      }
+    });
 
   cmd
     .command("logs <id>")

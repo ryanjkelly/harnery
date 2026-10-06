@@ -85,6 +85,41 @@ A server with no recorded agent, or whose agent's state cannot be read, is
 kept. Services are always kept. Run it from a scheduler to keep a machine
 clean.
 
+## Adopt
+
+```bash
+harn servers adopt --pid 12345 --type preview --label "Scene preview"
+harn servers adopt --all
+harn servers adopt --pid 12345 --kind service --no-owner
+```
+
+`adopt` registers a server that started without registering. It accepts only
+pids that the scan currently reports as unregistered servers inside the
+project. The adopting agent becomes the owner, so `gc` can stop the server once
+that agent ends and the server sits idle; `--no-owner` records no owner, and
+`--kind service` keeps it out of cleanup entirely.
+
+## Port ranges
+
+```jsonc
+// .harnery/config.jsonc
+"servers": {
+  "port_ranges": { "preview": [3100, 3199], "review": [8900, 8949] },
+  "idle_hours": 2,
+  "owner_stale_hours": 24
+}
+```
+
+```bash
+harn servers port preview   # prints the first free port in the range
+```
+
+`port` skips ports any process listens on and ports a registered server
+claims. It fails when the type has no range or the range is exhausted.
+TypeScript callers use `allocateServerPort(type)`, which returns null when no
+range is configured. `idle_hours` and `owner_stale_hours` change the `gc`
+defaults; the command-line flags still win.
+
 ## Logs and URLs
 
 ```bash

@@ -168,6 +168,13 @@ interface HarneryConfig {
    * Managed working-artifact defaults. `default_retention_days` is the
    * create-time TTL when the caller does not pass `artifacts create --days`.
    */
+  /** Local server registry (`servers` command, `harnery/core/servers`). */
+  servers?: {
+    /** Inclusive port range per server type, e.g. `"preview": [3100, 3199]`. */
+    port_ranges?: Record<string, unknown>;
+    idle_hours?: number;
+    owner_stale_hours?: number;
+  };
   artifacts?: {
     default_retention_days?: number;
     auto_clean?: boolean;
@@ -826,6 +833,46 @@ export function resolveWebPort(explicitPort?: string, coordRoot?: string | null)
     return parseWebPort(configuredPort, "web.port");
   }
   return DEFAULT_WEB_PORT;
+}
+
+/** The configured inclusive port range for one server type, or null. */
+export function serverPortRange(type: string, coordRoot?: string | null): [number, number] | null {
+  const root = coordRoot ?? findCoordRoot();
+  const value = root ? readConfig(root).servers?.port_ranges?.[type] : undefined;
+  if (!Array.isArray(value) || value.length !== 2) return null;
+  const [low, high] = value as unknown[];
+  const valid = (n: unknown): n is number =>
+    Number.isInteger(n) && (n as number) > 0 && (n as number) < 65536;
+  return valid(low) && valid(high) && low <= high ? [low, high] : null;
+}
+
+/** Every configured server port range, keyed by type (invalid entries dropped). */
+export function serverPortRanges(coordRoot?: string | null): Record<string, [number, number]> {
+  const root = coordRoot ?? findCoordRoot();
+  const ranges = root ? readConfig(root).servers?.port_ranges : undefined;
+  const out: Record<string, [number, number]> = {};
+  for (const type of Object.keys(ranges ?? {})) {
+    const range = serverPortRange(type, root);
+    if (range) out[type] = range;
+  }
+  return out;
+}
+
+/** Configured `servers gc` windows; undefined fields use the built-in defaults. */
+export function serverGcConfig(coordRoot?: string | null): {
+  idle_hours?: number;
+  owner_stale_hours?: number;
+} {
+  const root = coordRoot ?? findCoordRoot();
+  const configured = root ? readConfig(root).servers : undefined;
+  const positive = (n: unknown): n is number =>
+    typeof n === "number" && Number.isFinite(n) && n > 0;
+  return {
+    ...(positive(configured?.idle_hours) ? { idle_hours: configured.idle_hours } : {}),
+    ...(positive(configured?.owner_stale_hours)
+      ? { owner_stale_hours: configured.owner_stale_hours }
+      : {}),
+  };
 }
 
 /** Policy for converging independent termination signals on one finalizer. */

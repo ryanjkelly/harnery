@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderReport } from "../../commands/servers.ts";
+import { serverGcConfig, serverPortRange } from "../config.ts";
 import {
+  adoptServer,
+  allocateServerPort,
   establishedConnectionCounts,
   findUnregisteredListeners,
   listServers,
@@ -258,4 +261,50 @@ describe("rendering", () => {
     expect(text).toContain("mybin servers stop --pid <pid>");
     expect(text).toContain("mybin servers gc");
   });
+});
+
+function writeConfig(dir: string, servers: unknown): void {
+  mkdirSync(join(dir, ".harnery"), { recursive: true });
+  writeFileSync(join(dir, ".harnery", "config.jsonc"), JSON.stringify({ servers }));
+}
+
+describe("port ranges", () => {
+  test("read valid ranges and ignore malformed ones", () => {
+    writeConfig(root, {
+      port_ranges: { a: [5100, 5109], bad: [10, 5], worse: "x" },
+      idle_hours: 4,
+    });
+    expect(serverPortRange("a", root)).toEqual([5100, 5109]);
+    expect(serverPortRange("bad", root)).toBeNull();
+    expect(serverPortRange("worse", root)).toBeNull();
+    expect(serverPortRange("missing", root)).toBeNull();
+    expect(serverGcConfig(root)).toEqual({ idle_hours: 4 });
+  });
+
+  test("skip listening and registered ports", async () => {
+    const { pid, port } = await startChildServer(root);
+    writeConfig(root, { port_ranges: { p: [port, port + 2] } });
+    registerServer(
+      { id: "claims-next", kind: "session", type: "p", pid, port: port + 1, owner: null },
+      { coordRoot: root },
+    );
+    expect(allocateServerPort("p", { coordRoot: root })).toBe(port + 2);
+    expect(allocateServerPort("none", { coordRoot: root })).toBeNull();
+  });
+});
+
+describe("adoption", () => {
+  test.skipIf(scanSupport() === "unsupported")(
+    "registers an unregistered listener and refuses anything else",
+    async () => {
+      const { pid, port } = await startChildServer(root);
+      const record = adoptServer(pid, { coordRoot: root, type: "preview", owner: "none" });
+      expect(record).toMatchObject({ pid, port, type: "preview", kind: "session" });
+      expect(record.owner).toBeUndefined();
+      expect(() => adoptServer(pid, { coordRoot: root })).toThrow(/not an unregistered listener/);
+      expect(() => adoptServer(process.pid, { coordRoot: root })).toThrow(
+        /not an unregistered listener/,
+      );
+    },
+  );
 });
