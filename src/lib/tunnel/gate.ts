@@ -14,7 +14,7 @@
 
 import { renderTunnelErrorPage } from "./error-page";
 import { applyUpstreamHeaders } from "./forward-headers";
-import { ALLOW_PATHS_ENV, isPathAllowed, parseAllowPathsEnv } from "./path-scope";
+import { ALLOW_PATHS_ENV, isPathAllowed, parseAllowPathsEnv } from "./path-scope.ts";
 
 // `--port`/`--name` are also passed on argv (not just env) so the gate's port
 // and instance name show up in its process command line. That's what lets

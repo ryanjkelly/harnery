@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
-import { isPathAllowed } from "./path-scope";
+import { isPathAllowed } from "./path-scope.ts";
 
 // Tunnel state lives under <root>/.cache/tunnel/. Root defaults to cwd for the
 // command surface and can be supplied by callers that already resolved a repo.
