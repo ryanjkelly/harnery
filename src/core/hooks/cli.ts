@@ -135,6 +135,7 @@ import {
 } from "./resolve/transcript.ts";
 import { clearHookRunMarker, writeHookRunMarker } from "./run-markers.ts";
 import { sessionNamePresence } from "./session-name-presence.ts";
+import { shellRmReason } from "./shell-rm.ts";
 import { shellWaiterReason } from "./shell-waiter.ts";
 
 interface Argv {
@@ -1556,6 +1557,17 @@ async function handleToolRequested(run: HookRun): Promise<number | undefined> {
   if (waiterReason) {
     const { emitDeny } = await import("./adapter/output.ts");
     emitDeny(adapter, waiterReason);
+    return 0;
+  }
+
+  const rmReason = shellRmReason(
+    payload?.tool_name,
+    payload?.tool_input,
+    resolveBinName(coordRoot),
+  );
+  if (rmReason) {
+    const { emitDeny } = await import("./adapter/output.ts");
+    emitDeny(adapter, rmReason);
     return 0;
   }
 

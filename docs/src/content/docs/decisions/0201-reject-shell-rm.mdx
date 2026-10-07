@@ -1,0 +1,54 @@
+---
+title: "0201: Reject shell rm"
+description: "Route deletions through the guarded rm command at the shell hook boundary."
+---
+
+**Status:** accepted (2026-10-07)
+
+## Context
+
+The `rm` command removes only inspected, untracked local outputs inside an
+explicit root, and it refuses targets another agent has claimed. The shipped
+instructions have told agents to use it instead of shell `rm` since it landed.
+Agents still reached for shell `rm` about ten times a day in one host project,
+often on an unquoted variable path such as `rm $D/$OLD`. Claude Code stops that
+shape for a human permission prompt even in its bypass mode, so each slip also
+interrupted the operator.
+
+## Decision
+
+The shared PreToolUse path calls `shellRmReason` after the waiter guard and
+denies a shell `rm` at any command position. The denial names the guarded
+routes: `<bin> rm --root <directory> <paths...>` for untracked files, `git rm`
+for tracked source, `<bin> artifacts discard` for managed evidence, and an
+in-place overwrite or `mv` when the goal is replacing a file. It also inspects
+`xargs rm`, `find -exec rm`, and literal shell `-c` arguments. Wrappers such as
+`sudo`, `env`, and `command` do not hide the call.
+
+`git rm`, `docker rm`, `npm rm`, `rmdir`, quoted text, comments, and heredoc
+bodies pass. `HARNERY_ALLOW_RM=1` anywhere on the command is the deliberate
+override for a removal the guarded command cannot express.
+
+The tokenizer and tool-input parsing moved from `shell-waiter.ts` into
+`shell-tokens.ts` so both guards read commands the same way. Like the waiter
+guard, this is a narrow accident guard, not a shell interpreter or security
+boundary. Script files, dynamic commands, and other languages are outside it.
+
+## Alternatives considered
+
+- More instruction prose had already failed; the rule existed and was ignored.
+- A host-only hook would cover one host and one adapter. The rule belongs to
+  the command Harnery ships, so the shared hook enforces it for Claude Code,
+  Codex, and Cursor at once.
+- Rewriting the command to `<bin> rm` automatically would hide the preview step
+  and could not choose between untracked, tracked, and artifact targets.
+- Allowing `rm` under temporary directories would keep the variable-path prompt
+  and the habit. The guarded command already accepts any root.
+
+## Validation
+
+Regression cases cover direct, absolute-path, wrapped, `xargs`, `find -exec`,
+subshell, conditional, and `bash -lc` removals, plus the allowed shapes above
+and Codex's serialized `exec_command` input. A live Claude Code session
+received the denial text for `rm -f <scratch file>` and then removed the same
+file with `<bin> rm --root <scratch> <file> --yes`.
