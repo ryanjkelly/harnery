@@ -331,13 +331,20 @@ export interface NameHistoryRow {
   ts: string;
   /** Durable persona UUID. Present after `agents identity assume`. */
   agent_id?: string;
-  /** Audit marker distinguishing an explicit role adoption from pool assignment. */
-  source?: "pool" | "identity.assume";
+  /** Audit marker distinguishing an explicit role adoption from pool assignment,
+   * and a lineage row appended after the name was already assigned. */
+  source?: "pool" | "identity.assume" | "fork.detected";
   previous_name?: string;
   /** Instance this session was forked/branched from (recorded fork lineage).
    * Stamped only on the row that first assigns this instance, when the adapter
    * layer detected or supplied a parent conversation. */
   forked_from?: string;
+  /** The adapter declared or inherited-history proved this instance is a fork,
+   * even when its parent could not be resolved yet. */
+  fork?: true;
+  /** Fork detection has run against this instance's transcript; the tool-path
+   * heal skips instances carrying it so the scan runs once per instance. */
+  fork_checked?: true;
 }
 
 function atomicWrite(path: string, content: string): void {
@@ -516,7 +523,13 @@ export function assignName(
   coordRoot: string,
   instanceId: string,
   kind: NameKind,
-  opts: { freshnessSecs: number; forkedFrom?: string; nowMs?: number },
+  opts: {
+    freshnessSecs: number;
+    forkedFrom?: string;
+    fork?: boolean;
+    forkChecked?: boolean;
+    nowMs?: number;
+  },
 ): string {
   // Check 1: existing history row → original name. A resume re-enters here,
   // which also makes fork stamping naturally idempotent: lineage lands only on
@@ -558,13 +571,111 @@ export function assignName(
     kind,
     source: "pool",
     ...(forkedFrom && forkedFrom !== instanceId ? { forked_from: forkedFrom } : {}),
+    ...(opts.fork || (forkedFrom && forkedFrom !== instanceId) ? { fork: true as const } : {}),
+    ...(opts.forkChecked ? { fork_checked: true as const } : {}),
     ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   });
   return name;
 }
 
+export interface ForkState {
+  /** True when the instance is a recorded fork, parent known or not. */
+  fork: boolean;
+  /** Detection already ran for this instance. */
+  checked: boolean;
+  parent: { instance_id: string; name: string | null } | null;
+}
+
+/** Recorded fork state for <instanceId>, or null when it has no history row. */
+export function readForkState(coordRoot: string, instanceId: string): ForkState | null {
+  const history = readHistory(coordRoot);
+  let seen = false;
+  let fork = false;
+  let checked = false;
+  let parentId: string | undefined;
+  for (const row of history) {
+    if (row.instance_id !== instanceId) continue;
+    seen = true;
+    if (row.fork || row.forked_from) fork = true;
+    if (row.fork_checked) checked = true;
+    if (row.forked_from && row.forked_from !== instanceId) parentId = row.forked_from;
+  }
+  if (!seen) return null;
+  const parent = parentId
+    ? { instance_id: parentId, name: resolveName(coordRoot, parentId)?.name ?? null }
+    : null;
+  return { fork, checked, parent };
+}
+
+/**
+ * Record fork detection that ran after the instance was already named (the
+ * tool-path heal). Appends a copy of the latest identity row, so the name,
+ * kind, and persona are unchanged, plus `fork_checked` and any lineage found.
+ * A no-op for an instance with no history row or one already checked.
+ */
+export function recordForkDetection(
+  coordRoot: string,
+  instanceId: string,
+  detection: { fork: boolean; forkedFrom?: string },
+): boolean {
+  const history = readHistory(coordRoot);
+  let latest: NameHistoryRow | undefined;
+  for (const row of history) {
+    if (row.instance_id !== instanceId) continue;
+    if (row.fork_checked) return false;
+    latest = row;
+  }
+  if (!latest) return false;
+  const forkedFrom =
+    detection.forkedFrom && detection.forkedFrom !== instanceId ? detection.forkedFrom : undefined;
+  appendHistory(coordRoot, {
+    instance_id: instanceId,
+    name: latest.name,
+    kind: latest.kind,
+    ...(latest.agent_id ? { agent_id: latest.agent_id } : {}),
+    source: "fork.detected",
+    ...(forkedFrom ? { forked_from: forkedFrom } : {}),
+    ...(detection.fork || forkedFrom || latest.fork ? { fork: true as const } : {}),
+    fork_checked: true,
+    ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+  });
+  return true;
+}
+
+/**
+ * Peer labels for recorded fork relations, keyed by instance id: this
+ * session's fork parent and its direct forks. `liveIds` marks which of them
+ * are running, so a fork can tell its live parent from its own earlier self.
+ */
+export function forkRelationLabels(
+  coordRoot: string,
+  instanceId: string,
+  liveIds: Set<string>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const parent = readForkParent(coordRoot, instanceId);
+  if (parent) {
+    out.set(
+      parent.instance_id,
+      liveIds.has(parent.instance_id) ? "your fork parent, live" : "your fork parent",
+    );
+  }
+  for (const child of readForkChildren(coordRoot, instanceId)) out.set(child, "your fork");
+  return out;
+}
+
+/** Instance ids recorded as direct forks of <instanceId>. */
+export function readForkChildren(coordRoot: string, instanceId: string): Set<string> {
+  const out = new Set<string>();
+  for (const row of readHistory(coordRoot)) {
+    if (row.forked_from === instanceId && row.instance_id !== instanceId) out.add(row.instance_id);
+  }
+  return out;
+}
+
 /** One step of recorded fork lineage: the latest row for <instanceId> that
- * carries `forked_from` (latest-row-wins, matching resolveName). */
+ * carries `forked_from`. Later rows without lineage (an identity assumption)
+ * do not erase it: a session never stops being a fork. */
 export function readForkParent(
   coordRoot: string,
   instanceId: string,
@@ -572,8 +683,8 @@ export function readForkParent(
   const history = readHistory(coordRoot);
   for (let i = history.length - 1; i >= 0; i--) {
     const row = history[i]!;
-    if (row.instance_id !== instanceId) continue;
-    if (!row.forked_from) return null;
+    if (row.instance_id !== instanceId || !row.forked_from) continue;
+    if (row.forked_from === instanceId) return null;
     const parent = resolveName(coordRoot, row.forked_from);
     return { instance_id: row.forked_from, name: parent?.name ?? null };
   }

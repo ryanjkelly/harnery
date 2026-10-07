@@ -1,0 +1,77 @@
+---
+title: "0202: Detect forks at their own session start, and guard the parent"
+description: "ADR: Claude Code forks now start under their own id, so fork lineage is detected at session start and finished at the first tool call; a live parent is named, labeled, and protected."
+---
+
+**Status:** accepted (2026-10-07) · **Amends:** [ADR 0057](/decisions/0057-recorded-fork-lineage/) · **Scope:** product tier (hook naming, name history, session-start and prompt context, `agents status`, `agents end`, `agents lifecycle`)
+
+## Context
+
+ADR 0057 recorded fork lineage from the `tool.pre_use` heal because, in August
+2026, a Claude Code fork never fired SessionStart under its own id. The V2 and
+V3 ledger migrations later removed that heal path, so no code path stamped
+`forked_from` for a Claude Code fork at all.
+
+On October 7, 2026 a session forked with the desktop app's "Fork from here"
+saw its parent in the peer list, read it as its own earlier run, and offered to
+close it. The parent was a live session in the middle of its own work.
+
+Probes against Claude Code 2.1.283 on October 7, 2026 established three facts:
+
+- Both fork flows now fire SessionStart under the fork's own id. The CLI
+  `--resume <id> --fork-session` flow sends `source: "fork"`.
+- At that SessionStart the CLI fork's transcript does not exist yet, and the
+  payload names no parent. The transcript appears before the first tool call,
+  with every copied row's `sessionId` rewritten and message `uuid`s preserved.
+- The desktop fork copies the parent's rows with their original `sessionId`,
+  so the parent's id is readable from the fork's own transcript.
+
+## Decision
+
+- Every main-session naming path goes through one helper. For a brand-new
+  Claude Code instance it runs fork detection and writes the result on the
+  first history row: `forked_from` when the parent is known, `fork: true` when
+  the instance is a fork, and `fork_checked: true` when detection had the
+  evidence it needs.
+- Detection uses two signals. Rows stamped with another session id name the
+  parent directly (desktop). A declared fork (`source: "fork"`) whose rows
+  carry no other id falls back to the ADR 0057 uuid containment scan (CLI).
+- Inherited rows alone are not proof. If the session they name still has an
+  unended generation, the new instance is a fork. If it has ended, the new
+  instance is a continuation and gets no lineage.
+- When session start lacked evidence (a CLI fork's transcript is not on disk
+  yet), the first tool call finishes detection and appends one
+  `source: "fork.detected"` row that copies the name and adds the lineage.
+  `fork_checked` stops later tool calls from scanning again.
+- A later row without lineage, such as an identity assumption, no longer
+  erases `forked_from`.
+- Session-start context for a fork whose parent is live names the parent, its
+  task, and the files it holds, says they belong to the parent, and says not
+  to end, release, or finalize that session without an operator instruction.
+  A fork whose parent is not yet known gets the same warning without the name.
+- The per-prompt peer table and `agents status` label the parent as
+  "your fork parent, live" and a fork as "your fork", and list them first.
+- `agents end --session-id/--instance-id` and `agents lifecycle --session-id`
+  refuse a target that is the caller's recorded fork ancestor with
+  `session_is_fork_ancestor`. `--force-ancestor` overrides it when the
+  operator asked for it, as with `identity assume`.
+
+## Alternatives considered
+
+- **Rely on `source: "fork"` alone.** It identifies the CLI flow but not its
+  parent, and the desktop fork's source is not recorded anywhere we can check.
+- **Treat any inherited row as a fork.** A continuation of a finished session
+  also inherits rows. Labeling it a fork would attach a warning about a parent
+  that no longer exists.
+- **Scan sibling transcripts for every new session.** The uuid scan reads
+  every transcript in the project directory. It runs only for declared forks;
+  the inherited-id scan is a bounded tail read of the session's own file.
+
+## Consequences
+
+- Sessions named before this change carry no `fork_checked`, so each runs the
+  inherited-id scan once on its next tool call and gains one history row.
+- The transcript layout is Claude Code's internal format. Every read fails
+  open: an unknown layout records no lineage and keeps the generic notice.
+- Codex and Cursor forks still have no detection; this decision covers Claude
+  Code only.

@@ -57,6 +57,7 @@ import {
   readLiveCoordinationRow,
   readLiveCoordinationRows,
 } from "../state/live-coordination-view.ts";
+import { forkRelationLabels } from "../state/names.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
 import { formatPendingCouncils, recordDeliveredMessages } from "./session-context.ts";
 
@@ -441,7 +442,11 @@ function computePeerTableIfChanged(
   if (oldHash && oldHash === newHash) return "";
 
   // Render peer table via the same formatter used at SessionStart.
-  const local = formatPeerTable(peers, mySessionId);
+  const local = formatPeerTable(
+    peers,
+    mySessionId,
+    forkRelationLabels(coordRoot, selfInstanceId, new Set(peers.map((p) => p.instance_id ?? ""))),
+  );
   const remoteTable = formatRemoteTable(remote);
   const table = [local, remoteTable].filter(Boolean).join("\n\n");
   if (!table) return "";
@@ -580,7 +585,11 @@ function writeHashFile(path: string, value: string): void {
  * (no cross-file imports of formatting internals). If both renderers diverge,
  * pull the shared bits into a small util module. */
 
-function formatPeerTable(peers: HeartbeatRow[], mySessionId: string): string {
+function formatPeerTable(
+  peers: HeartbeatRow[],
+  mySessionId: string,
+  relations: Map<string, string> = new Map(),
+): string {
   if (peers.length === 0) return "";
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -592,16 +601,20 @@ function formatPeerTable(peers: HeartbeatRow[], mySessionId: string): string {
     }
   }
 
-  type RowExt = HeartbeatRow & { display_files: string[] };
+  type RowExt = HeartbeatRow & { display_files: string[]; relation?: string };
   const rows: RowExt[] = peers
     .filter((p) => (p.kind ?? "unknown") !== "transient")
     .map((p) => {
       const folded = fold[p.instance_id ?? ""] ?? [];
       const display = Array.from(new Set([...(p.files_touched ?? []), ...folded])).sort();
-      return { ...p, display_files: display };
+      const relation = relations.get(p.instance_id ?? "");
+      return { ...p, display_files: display, ...(relation ? { relation } : {}) };
     });
 
-  const blocking = rows.filter((p) => p.session_id !== mySessionId).sort(byStartedAt);
+  // Related sessions sort first so a fork parent never hides in "+N more".
+  const blocking = rows
+    .filter((p) => p.session_id !== mySessionId)
+    .sort((a, b) => Number(!!b.relation) - Number(!!a.relation) || byStartedAt(a, b));
   const group = rows.filter((p) => p.session_id === mySessionId).sort(byStartedAt);
 
   const out: string[] = [];
@@ -625,7 +638,7 @@ function byStartedAt(a: HeartbeatRow, b: HeartbeatRow): number {
 }
 
 function renderSubtable(
-  rows: Array<HeartbeatRow & { display_files: string[] }>,
+  rows: Array<HeartbeatRow & { display_files: string[]; relation?: string }>,
   header: string,
   nowSec: number,
 ): string {
@@ -635,7 +648,10 @@ function renderSubtable(
   return `${header}\n${first.join("\n")}${overflow}`;
 }
 
-function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number): string {
+function formatRow(
+  r: HeartbeatRow & { display_files: string[]; relation?: string },
+  nowSec: number,
+): string {
   const taskPart = r.task ? ` "${r.task.slice(0, 60)}"` : "";
   const statePart = formatState(r);
   // Fall back started_at → last_heartbeat; if neither is a valid timestamp,
@@ -646,7 +662,8 @@ function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number
   // Prefer a short instance_id over a bare "unknown" so an incomplete row is
   // still identifiable.
   const label = r.name ?? (r.instance_id ? r.instance_id.slice(0, 8) : "unknown");
-  return `  - agent-${label}${taskPart}   (${statePart}, ${ageFrom}, ${filesPart})`;
+  const relation = r.relation ? ` [${r.relation}]` : "";
+  return `  - agent-${label}${relation}${taskPart}   (${statePart}, ${ageFrom}, ${filesPart})`;
 }
 
 function formatState(r: HeartbeatRow): string {

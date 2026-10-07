@@ -479,6 +479,49 @@ describe("harn agents lifecycle on the V3 ledger", () => {
     ).toBe(0);
   });
 
+  test("a fork cannot end or change the lifecycle of its live fork parent without --force-ancestor", () => {
+    const root = makeSandbox();
+    const fork = "9c1d2e3f-0000-4000-8000-000000000001";
+    writeFileSync(
+      path.join(root, ".harnery", ".name-history"),
+      `${JSON.stringify({ instance_id: fork, name: "Tammy", kind: "session", source: "pool", forked_from: OWNER, fork: true, ts: "2026-10-07T13:36:35Z" })}\n`,
+      { flag: "a" },
+    );
+    const asFork = (args: string[]): RunResult => {
+      const result = spawnSync("bash", [HARN, ...args], {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HARNERY_COORD_ROOT_OVERRIDE: root,
+          HARNERY_AGENT_COORD_SESSION_ID: fork,
+        },
+      });
+      return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status };
+    };
+
+    const end = asFork(["agents", "end", "--instance-id", OWNER]);
+    expect(end.status).toBe(1);
+    expect(`${end.stdout}${end.stderr}`).toContain("session_is_fork_ancestor");
+    const lifecycle = asFork(["agents", "lifecycle", "done", "--session-id", OWNER]);
+    expect(lifecycle.status).toBe(1);
+    expect(`${lifecycle.stdout}${lifecycle.stderr}`).toContain("session_is_fork_ancestor");
+    expect(lifecycleEvents(root)).toHaveLength(0);
+
+    const forced = asFork([
+      "agents",
+      "lifecycle",
+      "blocked",
+      "--reason",
+      "operator asked",
+      "--session-id",
+      OWNER,
+      "--force-ancestor",
+    ]);
+    expect(forced.status).toBe(0);
+    expect(lifecycleEvents(root)).toHaveLength(1);
+  });
+
   test("validates blocked reasons and rejects non-human-facing caches", () => {
     const root = makeSandbox();
     const missingReason = harn(root, ["agents", "lifecycle", "blocked", "--session-id", OWNER]);

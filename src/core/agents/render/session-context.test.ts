@@ -81,6 +81,96 @@ describe("renderSessionContext", () => {
     expect(out).not.toContain("was inherited from another session");
   });
 
+  test("a live fork parent is named with its task and files, and ending it is forbidden", () => {
+    seedV3Session(root, "parent-1", {
+      name: "Xola",
+      task: "Checkout redesign",
+      claims: ["docs/plans/checkout.md", "src/checkout.ts"],
+    });
+    writeFileSync(
+      join(root, ".harnery", ".name-history"),
+      `${[
+        JSON.stringify({
+          instance_id: "parent-1",
+          name: "Xola",
+          kind: "session",
+          source: "pool",
+          ts: "2026-10-06T19:33:00Z",
+        }),
+        JSON.stringify({
+          instance_id: "self",
+          name: "Tammy",
+          kind: "session",
+          source: "pool",
+          forked_from: "parent-1",
+          fork: true,
+          fork_checked: true,
+          ts: "2026-10-07T13:36:35Z",
+        }),
+      ].join("\n")}\n`,
+    );
+    const out = renderSessionContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Tammy",
+    });
+    expect(out).toContain(
+      'forked from agent-Xola, which is still running as a separate session on "Checkout redesign" and holds 2 files',
+    );
+    expect(out).toContain("belong to agent-Xola, not to you");
+    expect(out).toContain("Do not end, release, or finalize that session");
+    expect(out).toContain("agent-Xola [your fork parent, live]");
+  });
+
+  test("a declared fork with no resolved parent still gets the fork notice", () => {
+    writeFileSync(
+      join(root, ".harnery", ".name-history"),
+      `${JSON.stringify({ instance_id: "self", name: "Tammy", kind: "session", source: "pool", fork: true, ts: "2026-10-07T13:36:35Z" })}\n`,
+    );
+    const out = renderSessionContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Tammy",
+    });
+    expect(out).toContain("forked from another session, which may still be running");
+    expect(out).not.toContain("this one is authoritative");
+  });
+
+  test("a parent sees its live fork labeled in the peer table", () => {
+    seedV3Session(root, "fork-1", { name: "Tammy" });
+    writeFileSync(
+      join(root, ".harnery", ".name-history"),
+      `${[
+        JSON.stringify({
+          instance_id: "self",
+          name: "Xola",
+          kind: "session",
+          source: "pool",
+          ts: "2026-10-06T19:33:00Z",
+        }),
+        JSON.stringify({
+          instance_id: "fork-1",
+          name: "Tammy",
+          kind: "session",
+          source: "pool",
+          forked_from: "self",
+          fork: true,
+          ts: "2026-10-07T13:36:35Z",
+        }),
+      ].join("\n")}\n`,
+    );
+    const out = renderSessionContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Xola",
+    });
+    expect(out).toContain("agent-Tammy [your fork]");
+    expect(out).toContain("this one is authoritative");
+  });
+
   test("platformLabel renders adapter suffix on self-name", () => {
     const out = renderSessionContext({
       coordRoot: root,

@@ -11,8 +11,11 @@ import path from "node:path";
 import {
   assignName,
   COORD_NAMES,
+  forkRelationLabels,
   readForkParent,
+  readForkState,
   readLiveNames,
+  recordForkDetection,
   recordNameAssumption,
   resolveForkAncestry,
   resolveName,
@@ -67,20 +70,136 @@ describe("COORD_NAMES layout invariants", () => {
  * runtime.
  */
 const FEMALE_NAMES = new Set<string>([
-  "Adelaide", "Amelia", "Anita", "Anna", "Astrid", "Beatrice", "Bertha", "Bianca", "Bonnie",
-  "Brenda", "Calliope", "Carmen", "Cassidy", "Celeste", "Cora", "Dahlia", "Dalia", "Daphne",
-  "Delia", "Dolores", "Edith", "Edna", "Erika", "Esme", "Estelle", "Felicity", "Fern", "Fiona",
-  "Florence", "Francine", "Gemma", "Genevieve", "Gloria", "Greer", "Greta", "Harriet", "Hazel",
-  "Helene", "Hester", "Holly", "Imelda", "Imogen", "Ines", "Irene", "Iris", "Jenna", "Josephine",
-  "Jovi", "Joyce", "Juno", "Kaia", "Karen", "Kestrel", "Kira", "Klara", "Lainey", "Lila",
-  "Linda", "Lucia", "Lyric", "Margot", "Mavis", "Maxine", "Maya", "Mindy", "Nadine", "Naomi",
-  "Nila", "Noor", "Nora", "Oakley", "Odette", "Olga", "Olive", "Ophelia", "Patty", "Paulette",
-  "Pearl", "Petra", "Phoebe", "Quenby", "Querida", "Quetzal", "Quinn", "Quito", "Rebekah",
-  "Renee", "Rosa", "Rosalind", "Rylie", "Sage", "Sara", "Scout", "Sienna", "Stella", "Talia",
-  "Tammy", "Tatum", "Tessa", "Theresa", "Uma", "Una", "Undine", "Unity", "Ursula", "Valerie",
-  "Vera", "Vesper", "Violet", "Vivian", "Whitney", "Willow", "Winifred", "Wren", "Wynne",
-  "Xanthe", "Xena", "Ximena", "Xiomara", "Xuxa", "Yael", "Yara", "Yolanda", "Yvette", "Yvonne",
-  "Zara", "Zelda", "Zinnia", "Zoe", "Zora"
+  "Adelaide",
+  "Amelia",
+  "Anita",
+  "Anna",
+  "Astrid",
+  "Beatrice",
+  "Bertha",
+  "Bianca",
+  "Bonnie",
+  "Brenda",
+  "Calliope",
+  "Carmen",
+  "Cassidy",
+  "Celeste",
+  "Cora",
+  "Dahlia",
+  "Dalia",
+  "Daphne",
+  "Delia",
+  "Dolores",
+  "Edith",
+  "Edna",
+  "Erika",
+  "Esme",
+  "Estelle",
+  "Felicity",
+  "Fern",
+  "Fiona",
+  "Florence",
+  "Francine",
+  "Gemma",
+  "Genevieve",
+  "Gloria",
+  "Greer",
+  "Greta",
+  "Harriet",
+  "Hazel",
+  "Helene",
+  "Hester",
+  "Holly",
+  "Imelda",
+  "Imogen",
+  "Ines",
+  "Irene",
+  "Iris",
+  "Jenna",
+  "Josephine",
+  "Jovi",
+  "Joyce",
+  "Juno",
+  "Kaia",
+  "Karen",
+  "Kestrel",
+  "Kira",
+  "Klara",
+  "Lainey",
+  "Lila",
+  "Linda",
+  "Lucia",
+  "Lyric",
+  "Margot",
+  "Mavis",
+  "Maxine",
+  "Maya",
+  "Mindy",
+  "Nadine",
+  "Naomi",
+  "Nila",
+  "Noor",
+  "Nora",
+  "Oakley",
+  "Odette",
+  "Olga",
+  "Olive",
+  "Ophelia",
+  "Patty",
+  "Paulette",
+  "Pearl",
+  "Petra",
+  "Phoebe",
+  "Quenby",
+  "Querida",
+  "Quetzal",
+  "Quinn",
+  "Quito",
+  "Rebekah",
+  "Renee",
+  "Rosa",
+  "Rosalind",
+  "Rylie",
+  "Sage",
+  "Sara",
+  "Scout",
+  "Sienna",
+  "Stella",
+  "Talia",
+  "Tammy",
+  "Tatum",
+  "Tessa",
+  "Theresa",
+  "Uma",
+  "Una",
+  "Undine",
+  "Unity",
+  "Ursula",
+  "Valerie",
+  "Vera",
+  "Vesper",
+  "Violet",
+  "Vivian",
+  "Whitney",
+  "Willow",
+  "Winifred",
+  "Wren",
+  "Wynne",
+  "Xanthe",
+  "Xena",
+  "Ximena",
+  "Xiomara",
+  "Xuxa",
+  "Yael",
+  "Yara",
+  "Yolanda",
+  "Yvette",
+  "Yvonne",
+  "Zara",
+  "Zelda",
+  "Zinnia",
+  "Zoe",
+  "Zora",
 ]);
 
 describe("COORD_NAMES gender layout", () => {
@@ -281,9 +400,42 @@ describe("recorded fork lineage", () => {
     expect(readForkParent(root, "fork-1")?.name).toBe("Yann");
   });
 
+  test("lineage survives a later identity row for the fork", () => {
+    assignName(root, "parent-1", "session", { freshnessSecs: 600 });
+    assignName(root, "fork-1", "session", { freshnessSecs: 600, forkedFrom: "parent-1" });
+    recordNameAssumption(root, "fork-1", "Quill", "agent-uuid-2");
+    expect(readForkParent(root, "fork-1")?.instance_id).toBe("parent-1");
+  });
+
+  test("recordForkDetection appends lineage once, keeping the assigned name", () => {
+    assignName(root, "parent-1", "session", { freshnessSecs: 600 });
+    const forkName = assignName(root, "fork-1", "session", { freshnessSecs: 600, fork: true });
+    expect(readForkState(root, "fork-1")).toEqual({ fork: true, checked: false, parent: null });
+    expect(recordForkDetection(root, "fork-1", { fork: true, forkedFrom: "parent-1" })).toBe(true);
+    expect(recordForkDetection(root, "fork-1", { fork: true, forkedFrom: "other" })).toBe(false);
+    const state = readForkState(root, "fork-1");
+    expect(state?.checked).toBe(true);
+    expect(state?.parent?.instance_id).toBe("parent-1");
+    expect(resolveName(root, "fork-1")?.name).toBe(forkName);
+    expect(recordForkDetection(root, "never-named", { fork: false })).toBe(false);
+  });
+
+  test("forkRelationLabels marks a live parent and direct forks", () => {
+    assignName(root, "parent-1", "session", { freshnessSecs: 600 });
+    assignName(root, "fork-1", "session", { freshnessSecs: 600, forkedFrom: "parent-1" });
+    expect(forkRelationLabels(root, "fork-1", new Set(["parent-1"])).get("parent-1")).toBe(
+      "your fork parent, live",
+    );
+    expect(forkRelationLabels(root, "fork-1", new Set()).get("parent-1")).toBe("your fork parent");
+    expect(forkRelationLabels(root, "parent-1", new Set()).get("fork-1")).toBe("your fork");
+  });
+
   test("resolveForkAncestry walks the chain nearest-first with depth + cycle guards", () => {
     const gName = assignName(root, "gp-1", "session", { freshnessSecs: 600 });
-    const pName = assignName(root, "parent-1", "session", { freshnessSecs: 600, forkedFrom: "gp-1" });
+    const pName = assignName(root, "parent-1", "session", {
+      freshnessSecs: 600,
+      forkedFrom: "gp-1",
+    });
     assignName(root, "fork-1", "session", { freshnessSecs: 600, forkedFrom: "parent-1" });
     expect(resolveForkAncestry(root, "fork-1")).toEqual([
       { instance_id: "parent-1", name: pName },
@@ -293,8 +445,20 @@ describe("recorded fork lineage", () => {
     writeFileSync(
       path.join(root, ".harnery", ".name-history"),
       [
-        JSON.stringify({ instance_id: "a", name: "Anna", kind: "session", forked_from: "b", ts: "2026-01-01T00:00:00Z" }),
-        JSON.stringify({ instance_id: "b", name: "Bob", kind: "session", forked_from: "a", ts: "2026-01-01T00:00:00Z" }),
+        JSON.stringify({
+          instance_id: "a",
+          name: "Anna",
+          kind: "session",
+          forked_from: "b",
+          ts: "2026-01-01T00:00:00Z",
+        }),
+        JSON.stringify({
+          instance_id: "b",
+          name: "Bob",
+          kind: "session",
+          forked_from: "a",
+          ts: "2026-01-01T00:00:00Z",
+        }),
       ].join("\n") + "\n",
     );
     expect(resolveForkAncestry(root, "a")).toEqual([{ instance_id: "b", name: "Bob" }]);

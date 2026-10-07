@@ -356,6 +356,94 @@ const FORK_SCAN_MAX_BYTES = 128 * 1024 * 1024;
 /** How many message uuids to sample across the fork's copied prefix. */
 const FORK_SAMPLE_SIZE = 24;
 
+/** Tail window scanned for inherited rows; a fork's own rows are few when the
+ * scan runs (session start or the first tool call), so the copied history ends
+ * well inside it. */
+const INHERITED_TAIL_BYTES = 4 * 1024 * 1024;
+const INHERITED_HEAD_BYTES = 64 * 1024;
+const SESSION_ID_FIELD_RE =
+  /"sessionId":"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/gi;
+
+/**
+ * Detect inherited history from row session ids: the session whose rows were
+ * copied into this transcript, or undefined when every row is this session's.
+ *
+ * Empirical basis (verified 2026-10-07, Claude Code 2.1.283): the desktop
+ * app's "Fork from here" copies the parent's rows into the fork's transcript
+ * WITHOUT rewriting their `sessionId`, so the fork's file opens with thousands
+ * of rows stamped with the parent's id. The CLI `--fork-session` path rewrites
+ * the ids instead and is covered by {@link detectForkParent}.
+ *
+ * When the history is itself several generations deep, the LAST foreign row is
+ * the nearest ancestor, so the tail is scanned first. Whether the foreign
+ * session is a fork parent or a dead predecessor (a continuation) is the
+ * caller's call. Fail-soft: never throws, undefined on any read problem.
+ */
+export function detectInheritedSessionParent(
+  transcriptPath: string | undefined,
+  sessionId: string,
+): string | undefined {
+  try {
+    const readablePath = resolveTranscriptPath(transcriptPath);
+    if (!readablePath || !sessionId) return undefined;
+    const size = statSync(readablePath).size;
+    const fromTail = lastForeignSessionId(
+      readRange(readablePath, Math.max(0, size - INHERITED_TAIL_BYTES), size),
+      sessionId,
+    );
+    if (fromTail || size <= INHERITED_TAIL_BYTES) return fromTail;
+    return lastForeignSessionId(
+      readRange(readablePath, 0, Math.min(size, INHERITED_HEAD_BYTES)),
+      sessionId,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function lastForeignSessionId(text: string | undefined, sessionId: string): string | undefined {
+  if (!text) return undefined;
+  const own = sessionId.toLowerCase();
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (!line.includes('"sessionId":"')) continue;
+    let foreign = false;
+    for (const m of line.matchAll(SESSION_ID_FIELD_RE)) {
+      if (m[1]!.toLowerCase() !== own) foreign = true;
+    }
+    if (!foreign) continue;
+    // Confirm on the parsed row: a nested object can carry another session's
+    // id, but only the row's own top-level field says whose row it is. A
+    // partial line at a window edge fails to parse and is skipped.
+    try {
+      const row = JSON.parse(line) as { sessionId?: unknown };
+      if (typeof row.sessionId === "string" && row.sessionId.toLowerCase() !== own) {
+        return row.sessionId;
+      }
+    } catch {
+      /* torn line */
+    }
+  }
+  return undefined;
+}
+
+function readRange(path: string, start: number, end: number): string | undefined {
+  try {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const fd = fs.openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(Math.max(0, end - start));
+      fs.readSync(fd, buf, 0, buf.length, start);
+      return buf.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Detect the parent session of a forked CC conversation from its transcript.
  *

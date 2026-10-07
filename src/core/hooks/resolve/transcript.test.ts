@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { assistantTextStartsWithSessionNameBlock } from "../../agents/session-name-display.ts";
 import {
   detectForkParent,
+  detectInheritedSessionParent,
   inspectSessionNameDisplayImmediately,
   scanAssistantStatusBoxPresent,
   scanAssistantTextIncludes,
@@ -799,5 +800,59 @@ describe("detectForkParent", () => {
     expect(detectForkParent(fork, F)).toBeUndefined();
     expect(detectForkParent(undefined, F)).toBeUndefined();
     expect(detectForkParent(join(dir, "missing.jsonl"), F)).toBeUndefined();
+  });
+});
+
+describe("detectInheritedSessionParent", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "harn-inherit-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const G = "22222222-2222-4222-8222-222222222222";
+  const P = "11111111-1111-4111-8111-111111111111";
+  const F = "33333333-3333-4333-8333-333333333333";
+  function write(rows: object[]): string {
+    const p = join(dir, `${F}.jsonl`);
+    writeFileSync(p, `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+    return p;
+  }
+
+  test("names the session whose rows a desktop fork copied unchanged", () => {
+    const p = write([
+      { type: "bridge-session", sessionId: P },
+      { type: "user", uuid: "u1", sessionId: P },
+      { type: "assistant", uuid: "u2", sessionId: P },
+      { type: "custom-title", sessionId: F },
+      { type: "user", uuid: "u3", sessionId: F },
+    ]);
+    expect(detectInheritedSessionParent(p, F)).toBe(P);
+  });
+
+  test("picks the nearest generation when history is several forks deep", () => {
+    const p = write([
+      { type: "user", uuid: "u1", sessionId: G },
+      { type: "user", uuid: "u2", sessionId: P },
+      { type: "user", uuid: "u3", sessionId: F },
+    ]);
+    expect(detectInheritedSessionParent(p, F)).toBe(P);
+  });
+
+  test("ignores another session's id nested inside this session's own row", () => {
+    const p = write([
+      { type: "user", uuid: "u1", sessionId: F, toolUseResult: { sessionId: P } },
+      { type: "assistant", uuid: "u2", sessionId: F },
+    ]);
+    expect(detectInheritedSessionParent(p, F)).toBeUndefined();
+  });
+
+  test("fails open on a missing file, garbage, or an undefined path", () => {
+    writeFileSync(join(dir, `${F}.jsonl`), `{"sessionId":"${P}", torn\n`);
+    expect(detectInheritedSessionParent(join(dir, `${F}.jsonl`), F)).toBeUndefined();
+    expect(detectInheritedSessionParent(join(dir, "missing.jsonl"), F)).toBeUndefined();
+    expect(detectInheritedSessionParent(undefined, F)).toBeUndefined();
   });
 });

@@ -303,6 +303,12 @@ tool request, delegation, or resume cancels it instead of terminating new work.
 Use `--session-id` or `--instance-id` when automatic identity resolution is
 unavailable.
 
+A fork cannot end its recorded fork ancestor: targeting it with `--session-id`
+or `--instance-id` fails with `session_is_fork_ancestor`, and `agents lifecycle
+--session-id` refuses the same target. Pass `--force-ancestor` only when the
+operator asked for it. See
+[ADR 0202](/decisions/0202-fork-detection-on-own-session-start/).
+
 For an agent ending itself, prefer the one-command closing ritual:
 
 ```bash

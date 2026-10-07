@@ -34,19 +34,23 @@ id, so the coord layer sees a new session and draws a fresh name from the pool.
 That is the right outcome, since the branches edit files independently and each
 needs its own claims.
 
-The relationship itself is recorded, not just tolerated. On Claude Code the
-branch's transcript preserves the parent's message uuids, so Harnery detects the
-parent, stamps `forked_from` on the branch's name-history row, and uses it in
-two places. Session-start context names the parent ("branched from agent-X's
-session…"), because the branch is about to read a transcript full of that exact
-name asserting a task and file claims that are not its own. And
-`agents identity assume` refuses a target that is the caller's fork ancestor,
-since a branch trying to become its parent is usually a session misled by its
-scrollback rather than a deliberate successor; `--force-ancestor` overrides it
-when succession is the intent. Adapters with no detectable parent signal fall
-back to a generic clause stating that any different name in earlier context was
+The relationship itself is recorded, not just tolerated. On Claude Code,
+Harnery finds the parent from the branch's transcript (copied rows that keep
+the parent's session id, or the parent's message uuids), stamps `forked_from`
+on the branch's name-history row, and uses it in several places. Session-start
+context names the parent, and when the parent is still running it also names
+the parent's task and files and says not to end that session, because the
+branch is about to read a transcript full of that exact name asserting work
+that is not its own. The peer table and `agents status` label the parent
+"your fork parent, live" and the branch "your fork". `agents identity assume`,
+`agents end`, and `agents lifecycle --session-id` refuse a target that is the
+caller's fork ancestor, since a branch acting on its parent is usually a
+session misled by its scrollback; `--force-ancestor` overrides it when the
+operator intends it. Adapters with no detectable parent signal fall back to a
+generic clause stating that any different name in earlier context was
 inherited. Full rationale:
-[ADR 0057](/decisions/0057-recorded-fork-lineage/).
+[ADR 0057](/decisions/0057-recorded-fork-lineage/) and
+[ADR 0202](/decisions/0202-fork-detection-on-own-session-start/).
 
 One cosmetic seam remains. Adapters usually title a conversation once and never
 revise it, so a forked chat keeps the parent's title even though it is now a

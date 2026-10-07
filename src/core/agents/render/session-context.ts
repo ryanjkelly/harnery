@@ -16,7 +16,7 @@ import { appendEntry } from "../../journal/index.ts";
 import { readRemoteMachines } from "../../presence/index.ts";
 import { drainMailbox, formatMailboxDelivery, type MailboxMessageV1 } from "../mailbox.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
-import { readForkParent } from "../state/names.ts";
+import { forkRelationLabels, readForkState } from "../state/names.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
 
 interface HeartbeatRow {
@@ -54,7 +54,17 @@ export function renderSessionContext(opts: RenderOpts): string {
 
   // 1. Self-name line + peer table (folded if peers present)
   const peers = readActivePeers(coordRoot, instanceId);
-  const localTable = formatPeerTable(peers, sessionId);
+  const forkState = readForkState(coordRoot, instanceId);
+  const forkParent = forkState?.parent ?? null;
+  const parentRow = forkParent
+    ? peers.find((peer) => peer.instance_id === forkParent.instance_id)
+    : undefined;
+  const relations = forkRelationLabels(
+    coordRoot,
+    instanceId,
+    new Set(peers.map((peer) => peer.instance_id ?? "")),
+  );
+  const localTable = formatPeerTable(peers, sessionId, relations);
   // Cross-machine presence (ADR 0016): sessions on other machines (advisory).
   const peerTable = [localTable, formatRemoteMachines(coordRoot)].filter(Boolean).join("\n\n");
   if (agentName) {
@@ -64,13 +74,11 @@ export function renderSessionContext(opts: RenderOpts): string {
     // asserts the parent's name, claims, and task. When recorded fork lineage
     // (.name-history forked_from) names the parent, say so specifically — the
     // fork is about to read a transcript full of that exact name. Otherwise
-    // fall back to the generic clause, which needs no fork detection.
-    const forkParent = readForkParent(coordRoot, instanceId);
-    const authority = forkParent?.name
-      ? `This conversation was branched from agent-${forkParent.name}'s session: earlier context showing agent-${forkParent.name}'s name, task, or file claims belongs to the pre-fork session, not to you.`
-      : forkParent
-        ? `This conversation was branched from another session (${forkParent.instance_id}); any agent name in earlier context belongs to that session, not to you.`
-        : "Any different agent name in earlier context was inherited from another session; this one is authoritative.";
+    // fall back to the generic clause, which needs no fork detection. A live
+    // parent is the dangerous case (2026-10-07: a fork read its running
+    // parent as its own earlier self and offered to close it), so the notice
+    // names what the parent is doing and forbids ending it.
+    const authority = forkAuthorityClause(forkParent, forkState?.fork === true, parentRow);
     const selfLine = `You are agent-${agentName}${suffix}. ${authority}`;
     messages.push(peerTable ? `${selfLine}\n\n${peerTable}` : selfLine);
   } else if (peerTable) {
@@ -194,13 +202,64 @@ function readActivePeers(coordRoot: string, selfInstanceId: string): HeartbeatRo
   );
 }
 
+const DO_NOT_END =
+  "Do not end, release, or finalize that session unless the operator explicitly tells you to.";
+
+function forkAuthorityClause(
+  parent: { instance_id: string; name: string | null } | null,
+  fork: boolean,
+  parentRow: HeartbeatRow | undefined,
+): string {
+  if (parent?.name && parentRow) {
+    const files = parentRow.files_touched ?? [];
+    const task = parentRow.task ? ` on "${parentRow.task.slice(0, 80)}"` : "";
+    const holds =
+      files.length > 0
+        ? ` and holds ${files.length} file${files.length === 1 ? "" : "s"} (${fmtFileList(files)})`
+        : "";
+    const owned =
+      files.length > 0
+        ? parentRow.task
+          ? "That name, task, and those files"
+          : "That name and those files"
+        : parentRow.task
+          ? "That name and task"
+          : "That name";
+    return (
+      `This conversation was forked from agent-${parent.name}, which is still running as a separate session${task}${holds}. ` +
+      `${owned} belong${owned === "That name" ? "s" : ""} to agent-${parent.name}, not to you. ${DO_NOT_END}`
+    );
+  }
+  if (parent?.name) {
+    return `This conversation was branched from agent-${parent.name}'s session: earlier context showing agent-${parent.name}'s name, task, or file claims belongs to the pre-fork session, not to you.`;
+  }
+  if (parent) {
+    return `This conversation was branched from another session (${parent.instance_id}); any agent name in earlier context belongs to that session, not to you.`;
+  }
+  if (fork) {
+    return `This conversation was forked from another session, which may still be running. Any agent name, task, or file claim in earlier context belongs to that session, not to you. ${DO_NOT_END}`;
+  }
+  return "Any different agent name in earlier context was inherited from another session; this one is authoritative.";
+}
+
+function fmtFileList(files: string[]): string {
+  const sorted = [...files].sort();
+  return sorted.length <= 3
+    ? sorted.join(", ")
+    : `${sorted.slice(0, 3).join(", ")}, +${sorted.length - 3} more`;
+}
+
 /**
  * Renders the peer table as
  * two subsections: "Other agent groups active" (blocking) and "Your group"
  * (subagents/siblings, no mutual block). Folds transient subagents' files
  * into their parent session.
  */
-function formatPeerTable(peers: HeartbeatRow[], mySessionId: string): string {
+function formatPeerTable(
+  peers: HeartbeatRow[],
+  mySessionId: string,
+  relations: Map<string, string> = new Map(),
+): string {
   if (peers.length === 0) return "";
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -214,16 +273,20 @@ function formatPeerTable(peers: HeartbeatRow[], mySessionId: string): string {
   }
 
   // Build rows with display_files (own files + folded transient files).
-  type RowExt = HeartbeatRow & { display_files: string[] };
+  type RowExt = HeartbeatRow & { display_files: string[]; relation?: string };
   const rows: RowExt[] = peers
     .filter((p) => (p.kind ?? "unknown") !== "transient")
     .map((p) => {
       const folded = fold[p.instance_id ?? ""] ?? [];
       const display = Array.from(new Set([...(p.files_touched ?? []), ...folded])).sort();
-      return { ...p, display_files: display };
+      const relation = relations.get(p.instance_id ?? "");
+      return { ...p, display_files: display, ...(relation ? { relation } : {}) };
     });
 
-  const blocking = rows.filter((p) => p.session_id !== mySessionId).sort(byStartedAt);
+  // Related sessions sort first so the parent never hides in "+N more".
+  const blocking = rows
+    .filter((p) => p.session_id !== mySessionId)
+    .sort((a, b) => Number(!!b.relation) - Number(!!a.relation) || byStartedAt(a, b));
   const group = rows.filter((p) => p.session_id === mySessionId).sort(byStartedAt);
 
   const sections: string[] = [];
@@ -248,7 +311,7 @@ function byStartedAt(a: HeartbeatRow, b: HeartbeatRow): number {
 }
 
 function renderSubtable(
-  rows: Array<HeartbeatRow & { display_files: string[] }>,
+  rows: Array<HeartbeatRow & { display_files: string[]; relation?: string }>,
   header: string,
   nowSec: number,
 ): string {
@@ -258,7 +321,10 @@ function renderSubtable(
   return `${header}\n${first.join("\n")}${overflow}`;
 }
 
-function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number): string {
+function formatRow(
+  r: HeartbeatRow & { display_files: string[]; relation?: string },
+  nowSec: number,
+): string {
   const taskPart = r.task ? ` "${r.task.slice(0, 60)}"` : "";
   const activity = r.activity ?? "unknown";
   const lifecycle = r.task_state ?? "active";
@@ -266,7 +332,8 @@ function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number
     lifecycle === "blocked" && r.task_state_reason ? `: ${r.task_state_reason.slice(0, 80)}` : "";
   const ageFrom = fmtAge(nowSec - parseIsoSec(r.started_at));
   const filesPart = fmtFiles(r.display_files);
-  return `  - agent-${r.name ?? "unknown"}${taskPart}   (activity=${activity}, lifecycle=${lifecycle}${reason}, ${ageFrom}, ${filesPart})`;
+  const relation = r.relation ? ` [${r.relation}]` : "";
+  return `  - agent-${r.name ?? "unknown"}${relation}${taskPart}   (activity=${activity}, lifecycle=${lifecycle}${reason}, ${ageFrom}, ${filesPart})`;
 }
 
 function fmtFiles(files: string[]): string {

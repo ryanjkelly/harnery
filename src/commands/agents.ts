@@ -84,6 +84,7 @@ import {
   readLiveCoordinationRow,
   readLiveCoordinationRows,
 } from "../core/agents/state/live-coordination-view.ts";
+import { forkRelationLabels, resolveForkAncestry } from "../core/agents/state/names.ts";
 import {
   type AgentActivity,
   foldSessionState,
@@ -107,6 +108,7 @@ import {
   projectCoordinationViewV3,
   readCoordinationViewV3,
 } from "../core/events/v3/coordination-view.ts";
+import { nativeInstanceIdV3 } from "../core/events/v3/live-route-observer.ts";
 import { liveInstanceIdV3 } from "../core/events/v3/live-routing.ts";
 import {
   countSummarizedSinceV3,
@@ -437,9 +439,15 @@ export function registerAgentsCommand(
       "--session-id <id>",
       "Target the heartbeat with this session_id directly, bypassing the ppid walk.",
     )
-    .action((state: string, opts: { reason?: string; sessionId?: string }) => {
-      runLifecycle(state, opts);
-    });
+    .option(
+      "--force-ancestor",
+      "Allow a fork to change its fork ancestor's lifecycle (only on explicit operator instruction)",
+    )
+    .action(
+      (state: string, opts: { reason?: string; sessionId?: string; forceAncestor?: boolean }) => {
+        runLifecycle(state, opts);
+      },
+    );
 
   cmd
     .command("end")
@@ -453,9 +461,20 @@ export function registerAgentsCommand(
       "succeeded | failed | cancelled | timed_out | denied | interrupted | unknown",
       "succeeded",
     )
-    .action((opts: { sessionId?: string; instanceId?: string; outcome: string }) => {
-      runEndSession(opts);
-    });
+    .option(
+      "--force-ancestor",
+      "Allow a fork to finalize its fork ancestor's session (only on explicit operator instruction)",
+    )
+    .action(
+      (opts: {
+        sessionId?: string;
+        instanceId?: string;
+        outcome: string;
+        forceAncestor?: boolean;
+      }) => {
+        runEndSession(opts);
+      },
+    );
 
   cmd
     .command("reconcile")
@@ -666,7 +685,40 @@ const SESSION_OUTCOMES = new Set([
   "unknown",
 ]);
 
-function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome: string }) {
+/**
+ * Refuse when the calling session targets one of its recorded fork ancestors.
+ * A fork's transcript is full of its parent's name, task, and claims, so a
+ * fork that "cleans up its earlier self" is usually cutting off a live parent
+ * (2026-10-07: a fork offered to close its running parent). Returns the
+ * refusal message, or null when the call may proceed.
+ */
+function forkAncestorRefusal(
+  root: string,
+  targetIds: Array<string | undefined>,
+  force: boolean | undefined,
+  action: string,
+): string | null {
+  if (force) return null;
+  const ids = new Set(targetIds.filter((id): id is string => !!id));
+  if (ids.size === 0) return null;
+  const self = resolveOwner() ?? sessionIdentityFromEnv();
+  if (!self || ids.has(self)) return null;
+  const ancestor = resolveForkAncestry(root, self).find((a) => ids.has(a.instance_id));
+  if (!ancestor) return null;
+  const label = ancestor.name ? `agent-${ancestor.name}` : ancestor.instance_id;
+  return (
+    `${label} is this session's fork ancestor: this conversation was branched from it, so its ` +
+    `name, task, and files in your context are its own, and it may still be running. Refusing to ` +
+    `${action} it. Rerun with --force-ancestor only when the operator explicitly asked for that.`
+  );
+}
+
+function runEndSession(opts: {
+  sessionId?: string;
+  instanceId?: string;
+  outcome: string;
+  forceAncestor?: boolean;
+}) {
   const root = monorepoRoot();
   if (!root) return failCommand("not_in_repo", "not in an agent session");
   if (!SESSION_OUTCOMES.has(opts.outcome)) {
@@ -698,6 +750,15 @@ function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome:
     return failCommand("session_identity_missing", "live V3 generation disappeared");
   }
   const state = record.state;
+  if (opts.instanceId || opts.sessionId) {
+    const refusal = forkAncestorRefusal(
+      root,
+      [target, state.session_id, nativeInstanceIdV3(state.instance_id)],
+      opts.forceAncestor,
+      "finalize",
+    );
+    if (refusal) return failCommand("session_is_fork_ancestor", refusal);
+  }
   if (state.delegations.length > 0) {
     return failCommand(
       "session_work_open",
@@ -1992,7 +2053,10 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   });
 }
 
-function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: string }): void {
+function runLifecycle(
+  rawState: string,
+  opts: { reason?: string; sessionId?: string; forceAncestor?: boolean },
+): void {
   const state = rawState.trim().toLowerCase();
   if (state !== "active" && state !== "blocked" && state !== "done") {
     emit.error({
@@ -2013,6 +2077,19 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     return;
   }
   if (!opts.sessionId) ensureAdapterSession(root);
+  if (opts.sessionId) {
+    const refusal = forkAncestorRefusal(
+      root,
+      [opts.sessionId],
+      opts.forceAncestor,
+      "change the lifecycle of",
+    );
+    if (refusal) {
+      emit.error({ code: "session_is_fork_ancestor", message: refusal });
+      process.exitCode = 1;
+      return;
+    }
+  }
   const myOwner = opts.sessionId ?? resolveOwner() ?? sessionIdentityFromEnv();
   if (!myOwner) {
     emit.error(
@@ -2390,8 +2467,15 @@ function runStatus(opts: {
 
   const { livePeers, stale: peersStale } = collectStatusPeerHealth(root, myOwner);
 
-  // Sort: file-holders first (by file count desc), then idle peers by recency.
+  // Recorded fork relations label the parent and forks so a fork cannot read
+  // its live parent as its own earlier session; they sort first.
+  const relations = forkRelationLabels(root, myOwner, new Set(livePeers.map((p) => p.instance_id)));
+  // Sort: related sessions, then file-holders (by file count desc), then idle
+  // peers by recency.
   livePeers.sort((a, b) => {
+    const ar = relations.has(a.instance_id) ? 1 : 0;
+    const br = relations.has(b.instance_id) ? 1 : 0;
+    if (ar !== br) return br - ar;
     const af = a.files_touched?.length ?? 0;
     const bf = b.files_touched?.length ?? 0;
     if (af !== bf) return bf - af;
@@ -2406,7 +2490,7 @@ function runStatus(opts: {
   );
   // Cross-machine presence (ADR 0016): sessions on other machines, advisory.
   const remoteMachines = readRemoteMachines(root);
-  const peersStr = formatPeers(livePeers, 4, peersStale, remoteMachines);
+  const peersStr = formatPeers(livePeers, 4, peersStale, remoteMachines, relations);
 
   const ctxUsage = readContextUsage(hb.native_session_id ?? hb.session_id, hb.platform);
   let ctxStr: string;
@@ -2600,13 +2684,15 @@ function formatPeers(
   cap: number,
   staleCount: number,
   remoteMachines: RemoteMachine[] = [],
+  relations: Map<string, string> = new Map(),
 ): string {
   if (peers.length === 0 && staleCount === 0 && remoteMachines.length === 0) return "none";
   const labels = peers.map((p) => {
     const name = p.name || "unnamed";
     const plat = formatPlatformLabel(p.platform);
     const files = p.files_touched?.length ?? 0;
-    const base = `${name} (${plat})`;
+    const relation = relations.get(p.instance_id);
+    const base = relation ? `${name} (${plat}, ${relation})` : `${name} (${plat})`;
     return files > 0 ? `${base}, ${files} files` : base;
   });
   let main: string;

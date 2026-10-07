@@ -57,7 +57,13 @@ import {
 } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
-import { assignName } from "../agents/state/names.ts";
+import {
+  assignName,
+  readForkParent,
+  readForkState,
+  recordForkDetection,
+  resolveName,
+} from "../agents/state/names.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import {
   agentsRequireGitFinalization,
@@ -115,6 +121,7 @@ import {
   soundForEvent,
 } from "./effects/index.ts";
 import { toolInputHash, toolTargetHash } from "./events/input-hash.ts";
+import { detectClaudeCodeFork } from "./fork-lineage.ts";
 import { canonicalize } from "./guard-path.ts";
 import {
   beginHookHealth,
@@ -251,17 +258,79 @@ function assignNameInProcess(
   coordRoot: string,
   instanceId: string,
   kind: "session" | "subagent" | "transient",
-  forkedFrom?: string,
+  fork?: { forkedFrom?: string; fork?: boolean; forkChecked?: boolean },
 ): { name: string; kind: string } | null {
   try {
     const name = assignName(coordRoot, instanceId, kind, {
       freshnessSecs: coordFreshnessSeconds(coordRoot),
-      ...(forkedFrom ? { forkedFrom } : {}),
+      ...(fork?.forkedFrom ? { forkedFrom: fork.forkedFrom } : {}),
+      ...(fork?.fork ? { fork: true } : {}),
+      ...(fork?.forkChecked ? { forkChecked: true } : {}),
     });
     return { name, kind };
   } catch {
     return null;
   }
+}
+
+/**
+ * Name a main session, recording fork lineage when the instance is new. Every
+ * main-session naming path goes through here: whichever hook first sees a new
+ * instance writes its history row, and lineage can only ride that first row
+ * (later detection appends a `fork.detected` row instead).
+ */
+function assignSessionNameInProcess(
+  coordRoot: string,
+  instanceId: string,
+  payload: ParsedPayload | null,
+  adapter: Adapter,
+): { name: string; kind: string } | null {
+  let fork: { forkedFrom?: string; fork?: boolean; forkChecked?: boolean } | undefined;
+  try {
+    if (
+      adapter === "claude-code" &&
+      payload?.session_id === instanceId &&
+      !resolveName(coordRoot, instanceId)
+    ) {
+      const detected = detectClaudeCodeFork({
+        coordRoot,
+        transcriptPath: payload.transcript_path,
+        sessionId: instanceId,
+        source: payload.source,
+      });
+      fork = {
+        ...(detected.forkedFrom ? { forkedFrom: detected.forkedFrom } : {}),
+        fork: detected.fork,
+        forkChecked: detected.checked,
+      };
+    }
+  } catch {
+    fork = undefined;
+  }
+  return assignNameInProcess(coordRoot, instanceId, "session", fork);
+}
+
+/**
+ * Finish fork detection that session start could not: a CLI fork starts before
+ * its transcript exists, and a mid-flight instance may never see SessionStart.
+ * Runs once per instance; the appended `fork_checked` row stops later calls.
+ */
+function healForkLineage(
+  coordRoot: string,
+  instanceId: string,
+  payload: ParsedPayload | null,
+): void {
+  if (!payload?.transcript_path || payload.session_id !== instanceId) return;
+  const state = readForkState(coordRoot, instanceId);
+  if (!state || state.checked) return;
+  const detected = detectClaudeCodeFork({
+    coordRoot,
+    transcriptPath: payload.transcript_path,
+    sessionId: instanceId,
+    knownFork: state.fork,
+  });
+  if (!detected.checked) return;
+  recordForkDetection(coordRoot, instanceId, detected);
 }
 
 /** Mid-flight sessions can emit tools before SessionStart assigns a pool name.
@@ -271,13 +340,14 @@ function ensureSessionDisplayName(
   instanceId: string,
   sessionId: string,
   adapter: Adapter,
+  payload: ParsedPayload | null,
 ): void {
   if (coordEnv("WORKFLOW_CHILD") === "1") return;
   const row =
     readLiveCoordinationRow(coordRoot, instanceId) ?? readHeartbeat(coordRoot, instanceId);
   if (row?.kind === "subagent" || row?.kind === "transient" || row?.workflow_run_id) return;
   if (row?.name?.trim()) return;
-  const assigned = assignNameInProcess(coordRoot, instanceId, "session");
+  const assigned = assignSessionNameInProcess(coordRoot, instanceId, payload, adapter);
   if (!assigned?.name) return;
   if (!readHeartbeat(coordRoot, instanceId)) {
     try {
@@ -346,22 +416,22 @@ function buildEventData(
       // The platform label is the adapter id itself; enumerating and defaulting
       // to codex silently mislabels any adapter not in the list.
       const adapterPlatform = ctx.adapter;
-      // Recorded fork lineage is NOT detected here. On claude-code a fork
-      // never fires its own session.started — SessionStart fires under the
-      // PARENT's session id (source=resume) before the fork id is minted
-      // (verified 2026-08-05) — so detection at this point can only mislabel
-      // the resumed parent. The fork's new instance is caught by the
-      // tool.requested heal path instead. The forkedFrom plumbing below stays
-      // for adapters that DO report a parent at session start.
-      const forkedFrom: string | undefined = undefined;
       // Assign (or recover) name + kind in-process. Idempotent: resume
-      // returns the original name; new owner consumes a counter slot.
+      // returns the original name; new owner consumes a counter slot and,
+      // on claude-code, runs fork detection (fork-lineage.ts). Since Claude
+      // Code 2.1.283 both fork flows fire SessionStart under the FORK's own
+      // id (verified 2026-10-07), superseding the 2026-08-05 finding that a
+      // fork never started on its own id. A resumed parent keeps its existing
+      // history row, so it is never relabeled here.
       // Workflow children stay unnamed, as on the tool path: a pool name
       // would make them the addressee of mail held for that name.
       const assigned =
         coordEnv("WORKFLOW_CHILD") === "1"
           ? undefined
-          : assignNameInProcess(ctx.coordRoot, ctx.instanceId, "session", forkedFrom);
+          : assignSessionNameInProcess(ctx.coordRoot, ctx.instanceId, p, ctx.adapter);
+      const forkedFrom = assigned
+        ? readForkParent(ctx.coordRoot, ctx.instanceId)?.instance_id
+        : undefined;
       // Write the adapter pid-map row so `harn agents whoami` ppid-walks find
       // this owner. Prefer the payload pid (the actual claude binary), then the
       // anchor walk (the `node` ancestor for Cursor, which has no payload pid),
@@ -430,7 +500,7 @@ function buildEventData(
         coordEnv("WORKFLOW_CHILD") !== "1" &&
         !readLiveCoordinationRow(ctx.coordRoot, ctx.instanceId)?.name
       ) {
-        assignNameInProcess(ctx.coordRoot, ctx.instanceId, "session");
+        assignSessionNameInProcess(ctx.coordRoot, ctx.instanceId, p, ctx.adapter);
       }
       const prompt = p?.prompt ?? "";
       const { value, truncated } = clampString(prompt, 4000);
@@ -852,7 +922,7 @@ async function main(): Promise<number> {
     !priorCoordination?.workflow_run_id &&
     !priorCoordination?.name?.trim()
   ) {
-    assignNameInProcess(coordRoot, owner.instance_id, "session");
+    assignSessionNameInProcess(coordRoot, owner.instance_id, payload, adapter);
   }
 
   const data = buildEventData(norm.event_type, {
@@ -1064,9 +1134,16 @@ function recordSignal(run: HookRun): void {
   }
   if (norm.event_type !== "session.ended") {
     try {
-      ensureSessionDisplayName(coordRoot, owner.instance_id, sessionId, adapter);
+      ensureSessionDisplayName(coordRoot, owner.instance_id, sessionId, adapter, payload);
     } catch (error) {
       logError(coordRoot, error, { phase: "session-display-name" });
+    }
+  }
+  if (norm.event_type === "tool.requested" && adapter === "claude-code" && run.topLevelSession) {
+    try {
+      healForkLineage(coordRoot, owner.instance_id, payload);
+    } catch (error) {
+      logError(coordRoot, error, { phase: "fork-lineage-heal" });
     }
   }
   const v3EventId =
