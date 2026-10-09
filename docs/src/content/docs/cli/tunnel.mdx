@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```
-harn tunnel up | down | reload | status | logs | allow [...]
+harn tunnel up | down | reload | status | logs | allow [list | add | rm]
 ```
 
 `harn tunnel` puts a local reverse-proxy gate in front of a provider tunnel, so you can reach a local service (the [web UI](/concepts/web-ui/), a dev server, etc.) from your phone or another machine without opening a firewall port or deploying. The gate rewrites the upstream `Host` header so vhost-routed servers see the review host, and it copies the browser `Host` to `X-Forwarded-Host` so the upstream can still see the public hostname. The gate also enforces a path scope: it forwards only the URL paths you name with `--allow-path` and refuses every other request, so sharing one page does not publish the rest of the app. Cloudflare mode uses a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) plus an IP allowlist checked against `CF-Connecting-IP`; Tailscale mode uses [Tailscale Serve/Funnel](https://tailscale.com/docs/reference/tailscale-cli/serve) and lets Tailscale own the access boundary.
@@ -14,6 +14,8 @@ harn tunnel up | down | reload | status | logs | allow [...]
 :::caution[Requires Bun]
 This is the one Harnery command that needs [Bun](https://bun.sh) installed: the gate worker is a `Bun.serve` process. Every other command runs on plain Node. Without Bun, `harn tunnel up` fails fast with a clear message.
 :::
+
+The tunnel runs on Linux, macOS, and Windows. A host CLI shipped as a single-file Bun bundle works too: the gate has no file of its own there, so the CLI re-executes itself with a hidden `tunnel gate` task and the running Bun binary starts the worker in-process.
 
 ## Commands
 
@@ -56,15 +58,26 @@ The scope is saved with the instance, so `harn tunnel reload` keeps it and `harn
 
 ## Cloudflare Allowlist
 
-The Cloudflare provider denies every request whose origin IP isn't on the allowlist (shared across Cloudflare instances):
+The Cloudflare provider denies every request whose origin IP isn't on the allowlist (shared across Cloudflare instances). An entry is an exact address or a CIDR range, IPv4 or IPv6:
 
 ```bash
-harn tunnel allow              # list allowed IPs
-harn tunnel allow add 1.2.3.4  # add, then `harn tunnel reload --all` to apply
-harn tunnel allow rm 1.2.3.4   # remove
+harn tunnel allow                          # list allowed entries
+harn tunnel allow add 1.2.3.4              # add, then `harn tunnel reload --all` to apply
+harn tunnel allow add 203.0.113.0/24       # a whole IPv4 range
+harn tunnel allow add 2601:db8:1:2::/64    # a whole IPv6 network
+harn tunnel allow add --current            # this machine, detected automatically
+harn tunnel allow rm 1.2.3.4               # remove
 ```
 
+Entries are normalized when added, so `2601:DB8:0:0::1` and `2601:db8::1` are one entry, and `203.0.113.77/24` becomes the network `203.0.113.0/24`. On IPv6, a phone and a laptop on one Wi-Fi network have different addresses but share a /64 prefix, so a /64 entry admits both.
+
 Each gate reads the allowlist once, when it starts, so editing the config alone changes nothing for a tunnel that is already running.
+
+### `allow add --current`
+
+`--current` asks Cloudflare which public addresses this machine reaches it from (`https://1.1.1.1/cdn-cgi/trace` over IPv4 and `https://[2606:4700:4700::1111]/cdn-cgi/trace` over IPv6, the same address the gate later sees in `CF-Connecting-IP`). It allows the IPv4 address as a /32 and the IPv6 address as its /64, then reloads every live Cloudflare gate so the public URLs stay the same.
+
+Entries it adds are listed as `(automatic)` and recorded in the config's `auto_allowed` field. The next `--current` replaces exactly those entries, so moving to another network leaves no stale address behind, and an entry you added by hand is never removed. An address you already listed by hand stays yours. A family Cloudflare did not answer for (an IPv4-only network has no IPv6) counts as absent from that network. If neither family answers, the allowlist is left unchanged and the command prints a warning; it never empties the list.
 
 ## Reload
 
@@ -91,7 +104,8 @@ harn tunnel reload --all
 ## Caveats
 
 - **Quick tunnels reroll their hostname on every restart.** Use `harn tunnel reload` for allowlist changes so the URL survives. A hostname that persists across a full `down`/`up` would need a named Cloudflare tunnel tied to a domain, which isn't built today.
-- `cloudflared` auto-installs to `~/.local/bin/` on first run (Linux); on macOS, `brew install cloudflared`.
+- `cloudflared` is taken from `$HARNERY_CLOUDFLARED`, then `cloudflared_path` in the tunnel config, then `PATH`, then `~/.local/bin/`. When none exists it auto-installs to `~/.local/bin/` on Linux; on macOS, `brew install cloudflared`, and on Windows, `winget install Cloudflare.cloudflared`. A path named explicitly that does not exist is an error rather than a fall-through to another copy.
+- Process and port discovery uses `pgrep`/`ps` and `ss` or `lsof` on Linux and macOS, and PowerShell and `netstat` on Windows. A missing tool is tolerated: ports are then probed by connecting to them.
 - Tailscale mode requires the `tailscale` CLI to be installed, signed in, and reporting a MagicDNS name from `tailscale status --json`.
 - Tailscale Funnel is public internet exposure. Use Tailscale Serve when the reviewing device is in the tailnet.
-- State lives under `.cache/tunnel/`.
+- State lives under `.cache/tunnel/`. Set `HARNERY_TUNNEL_DIR` to keep it elsewhere.

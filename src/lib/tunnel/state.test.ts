@@ -1,8 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findLiveTunnelForOrigin, isTunnelStateLive, type TunnelState } from "./state.ts";
+import {
+  CLOUDFLARED_ENV,
+  ensureCloudflared,
+  findLiveTunnelForOrigin,
+  isTunnelStateLive,
+  readConfig,
+  TUNNEL_DIR_ENV,
+  type TunnelState,
+  tunnelDir,
+  writeConfig,
+} from "./state.ts";
 
 function state(overrides: Partial<TunnelState> = {}): TunnelState {
   return {
@@ -135,5 +145,96 @@ describe("isTunnelStateLive", () => {
         (pid) => pid === 10 || pid === 20,
       ),
     ).toBe(true);
+  });
+});
+
+describe("tunnelDir", () => {
+  test("defaults to <root>/.cache/tunnel and honors the directory override", () => {
+    expect(tunnelDir("/work/repo", {})).toBe("/work/repo/.cache/tunnel");
+    expect(tunnelDir("/work/repo", { [TUNNEL_DIR_ENV]: "/kit/.harnery/tunnel" })).toBe(
+      "/kit/.harnery/tunnel",
+    );
+    expect(tunnelDir("/work/repo", { [TUNNEL_DIR_ENV]: "  " })).toBe("/work/repo/.cache/tunnel");
+  });
+
+  test("config round-trips the automatic-entry and cloudflared fields, and survives a bad file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "harnery-tunnel-config-"));
+    const before = process.env[TUNNEL_DIR_ENV];
+    process.env[TUNNEL_DIR_ENV] = dir;
+    try {
+      writeConfig({
+        allowed_ips: ["203.0.113.8/32"],
+        auto_allowed: ["203.0.113.8/32"],
+        cloudflared_path: "/opt/cf",
+      });
+      expect(readConfig()).toEqual({
+        allowed_ips: ["203.0.113.8/32"],
+        auto_allowed: ["203.0.113.8/32"],
+        cloudflared_path: "/opt/cf",
+      });
+      writeFileSync(join(dir, "config.json"), JSON.stringify({ cloudflared_path: "/opt/cf" }));
+      expect(readConfig().allowed_ips).toEqual([]);
+      writeFileSync(join(dir, "config.json"), "{ not json");
+      expect(readConfig().allowed_ips).toEqual([]);
+    } finally {
+      if (before === undefined) delete process.env[TUNNEL_DIR_ENV];
+      else process.env[TUNNEL_DIR_ENV] = before;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ensureCloudflared with an explicit binary", () => {
+  function fakeBinary(): { dir: string; path: string } {
+    const dir = mkdtempSync(join(tmpdir(), "harnery-cloudflared-"));
+    const path = join(dir, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
+    writeFileSync(path, "#!/bin/sh\nexit 0\n");
+    chmodSync(path, 0o755);
+    return { dir, path };
+  }
+
+  test("$HARNERY_CLOUDFLARED wins over the config path and PATH", () => {
+    const env = fakeBinary();
+    const cfg = fakeBinary();
+    try {
+      expect(ensureCloudflared({ [CLOUDFLARED_ENV]: env.path, PATH: cfg.dir }, cfg.path)).toBe(
+        env.path,
+      );
+    } finally {
+      rmSync(env.dir, { recursive: true, force: true });
+      rmSync(cfg.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the config path is used when the environment names none", () => {
+    const cfg = fakeBinary();
+    try {
+      expect(ensureCloudflared({}, cfg.path)).toBe(cfg.path);
+    } finally {
+      rmSync(cfg.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an explicit path that is missing is an error, never a silent fall-through", () => {
+    const onPath = fakeBinary();
+    try {
+      expect(() =>
+        ensureCloudflared({ [CLOUDFLARED_ENV]: "/nope/cloudflared", PATH: onPath.dir }, undefined),
+      ).toThrow(/HARNERY_CLOUDFLARED.*missing or not runnable/);
+      expect(() => ensureCloudflared({ PATH: onPath.dir }, "/nope/cloudflared")).toThrow(
+        /tunnel config.*missing or not runnable/,
+      );
+    } finally {
+      rmSync(onPath.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to cloudflared on PATH, as a full path", () => {
+    const onPath = fakeBinary();
+    try {
+      expect(ensureCloudflared({ PATH: onPath.dir }, undefined)).toBe(onPath.path);
+    } finally {
+      rmSync(onPath.dir, { recursive: true, force: true });
+    }
   });
 });

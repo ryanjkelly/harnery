@@ -1,22 +1,43 @@
 // Tunnel config + state persistence + provider helpers. Commands default to
 // <cwd>/.cache/tunnel/; gitignored, so the allowlist is per-machine.
 
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
+  accessSync,
+  chmodSync,
+  constants,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, join, resolve } from "node:path";
 import { isPathAllowed } from "./path-scope.ts";
 
-// Tunnel state lives under <root>/.cache/tunnel/. Root defaults to cwd for the
-// command surface and can be supplied by callers that already resolved a repo.
-function cachePath(tool: string, filename: string, root: string = process.cwd()): string {
-  const dir = resolve(root, ".cache", tool);
+/** Overrides the directory that holds tunnel state and config (a host keeps it out of `.cache/`). */
+export const TUNNEL_DIR_ENV = "HARNERY_TUNNEL_DIR";
+/** Explicit cloudflared binary, for a host that ships a managed copy. */
+export const CLOUDFLARED_ENV = "HARNERY_CLOUDFLARED";
+
+/**
+ * Where tunnel state lives: `$HARNERY_TUNNEL_DIR` when set, else
+ * `<root>/.cache/tunnel/`. Root defaults to cwd for the command surface and can
+ * be supplied by callers that already resolved a repo.
+ */
+export function tunnelDir(
+  root: string = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const override = env[TUNNEL_DIR_ENV]?.trim();
+  return override ? resolve(override) : resolve(root, ".cache", "tunnel");
+}
+
+function cachePath(filename: string, root: string = process.cwd()): string {
+  const dir = tunnelDir(root);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return resolve(dir, filename);
 }
@@ -63,7 +84,16 @@ const DEFAULT_CONFIG: TunnelConfig = {
 };
 
 export interface TunnelConfig {
+  /** Exact addresses and CIDR ranges the gate admits (Cloudflare provider). */
   allowed_ips: string[];
+  /**
+   * Entries `allow add --current` added for this machine's own public
+   * addresses. They are a subset of `allowed_ips`; the next refresh replaces
+   * exactly these and never touches an entry added by hand.
+   */
+  auto_allowed?: string[];
+  /** Explicit cloudflared binary; `$HARNERY_CLOUDFLARED` wins over this. */
+  cloudflared_path?: string;
 }
 
 export type TunnelProvider = "cloudflare" | "tailscale";
@@ -104,27 +134,31 @@ function normalizeState(raw: TunnelState, fallbackName: string): TunnelState {
 }
 
 export function readConfig(): TunnelConfig {
-  const p = cachePath("tunnel", CONFIG_FILE);
+  const p = cachePath(CONFIG_FILE);
   if (!existsSync(p)) {
     writeConfig(DEFAULT_CONFIG);
     return { ...DEFAULT_CONFIG, allowed_ips: [...DEFAULT_CONFIG.allowed_ips] };
   }
   try {
-    return JSON.parse(readFileSync(p, "utf-8")) as TunnelConfig;
+    const parsed = JSON.parse(readFileSync(p, "utf-8")) as Partial<TunnelConfig>;
+    return {
+      ...parsed,
+      allowed_ips: Array.isArray(parsed.allowed_ips) ? parsed.allowed_ips : [],
+    };
   } catch {
     return { ...DEFAULT_CONFIG, allowed_ips: [...DEFAULT_CONFIG.allowed_ips] };
   }
 }
 
 export function writeConfig(cfg: TunnelConfig): void {
-  writeFileSync(cachePath("tunnel", CONFIG_FILE), JSON.stringify(cfg, null, 2));
+  writeFileSync(cachePath(CONFIG_FILE), JSON.stringify(cfg, null, 2));
 }
 
 export function readState(
   name: string = DEFAULT_INSTANCE,
   root: string = process.cwd(),
 ): TunnelState | null {
-  const p = cachePath("tunnel", stateFile(name), root);
+  const p = cachePath(stateFile(name), root);
   if (!existsSync(p)) return null;
   try {
     return normalizeState(JSON.parse(readFileSync(p, "utf-8")) as TunnelState, name);
@@ -134,11 +168,11 @@ export function readState(
 }
 
 export function writeState(state: TunnelState, root: string = process.cwd()): void {
-  writeFileSync(cachePath("tunnel", stateFile(state.name), root), JSON.stringify(state, null, 2));
+  writeFileSync(cachePath(stateFile(state.name), root), JSON.stringify(state, null, 2));
 }
 
 export function clearState(name: string = DEFAULT_INSTANCE, root: string = process.cwd()): void {
-  const p = cachePath("tunnel", stateFile(name), root);
+  const p = cachePath(stateFile(name), root);
   if (existsSync(p)) unlinkSync(p);
 }
 
@@ -147,7 +181,7 @@ export function clearState(name: string = DEFAULT_INSTANCE, root: string = proce
  * `state*.json` under `.cache/tunnel/`; tolerates missing/corrupt files.
  */
 export function listStates(root: string = process.cwd()): TunnelState[] {
-  const dir = resolve(root, ".cache", "tunnel");
+  const dir = tunnelDir(root);
   if (!existsSync(dir)) return [];
   const out: TunnelState[] = [];
   for (const file of readdirSync(dir)) {
@@ -226,31 +260,93 @@ export function tunnelServesPaths(state: TunnelState, paths: readonly string[]):
   return paths.every((path) => isPathAllowed(path, state.allow_paths));
 }
 
-/**
- * Ensure cloudflared is on PATH or installed at ~/.local/bin/cloudflared.
- * Auto-downloads on Linux; throws on other platforms with brew hint.
- */
-export function ensureCloudflared(): string {
+function isRunnableFile(path: string): boolean {
   try {
-    execSync("command -v cloudflared", { stdio: "ignore" });
-    return "cloudflared";
+    if (!statSync(path).isFile()) return false;
+    if (process.platform === "win32") return true;
+    accessSync(path, constants.X_OK);
+    return true;
   } catch {
-    /* not on PATH; fall through */
+    return false;
   }
-  const local = `${process.env.HOME}/.local/bin/cloudflared`;
-  if (existsSync(local)) return local;
+}
 
-  if (process.platform !== "linux") {
+/** First `name` on PATH (honoring `.exe` on Windows), or null. Needs no shell. */
+function findOnPath(name: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const names = process.platform === "win32" ? [`${name}.exe`, name] : [name];
+  for (const dir of (env.PATH ?? env.Path ?? "").split(delimiter)) {
+    if (!dir) continue;
+    for (const candidate of names) {
+      const full = join(dir, candidate);
+      if (isRunnableFile(full)) return full;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the cloudflared binary:
+ *   1. `$HARNERY_CLOUDFLARED`, then `cloudflared_path` in the tunnel config: an
+ *      explicit choice, so a missing or non-runnable file is an error, never a
+ *      silent fall-through to some other copy.
+ *   2. `cloudflared` on PATH.
+ *   3. `~/.local/bin/cloudflared`.
+ *   4. Linux x86-64 and arm64: download the latest release to (3).
+ * Elsewhere it throws with install guidance.
+ */
+export function ensureCloudflared(
+  env: NodeJS.ProcessEnv = process.env,
+  configuredPath: string | undefined = readConfig().cloudflared_path,
+): string {
+  const explicit = env[CLOUDFLARED_ENV]?.trim();
+  const fromConfig = configuredPath?.trim();
+  for (const [source, path] of [
+    [CLOUDFLARED_ENV, explicit],
+    ["cloudflared_path in the tunnel config", fromConfig],
+  ] as const) {
+    if (!path) continue;
+    if (isRunnableFile(path)) return path;
     throw new Error(
-      "cloudflared not installed. On macOS: `brew install cloudflared`. " +
+      `cloudflared is set by ${source} to ${path}, but that file is missing or not runnable.`,
+    );
+  }
+
+  const onPath = findOnPath("cloudflared", env);
+  if (onPath) return onPath;
+  const exe = process.platform === "win32" ? "cloudflared.exe" : "cloudflared";
+  const local = join(homedir(), ".local", "bin", exe);
+  if (isRunnableFile(local)) return local;
+
+  const asset =
+    process.platform === "linux"
+      ? (
+          { x64: "cloudflared-linux-amd64", arm64: "cloudflared-linux-arm64" } as Record<
+            string,
+            string
+          >
+        )[process.arch]
+      : undefined;
+  if (!asset) {
+    throw new Error(
+      "cloudflared not installed. Install it (macOS: `brew install cloudflared`; Windows: " +
+        "`winget install Cloudflare.cloudflared`), or point `$HARNERY_CLOUDFLARED` at a binary. " +
         "On Linux it auto-installs to ~/.local/bin/cloudflared.",
     );
   }
 
   process.stderr.write("Installing cloudflared to ~/.local/bin/...\n"); // lint-ok-emission: sync setup phase before structured output; pairs with the inherited stdio of the curl below
-  execSync(
-    `curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ${local} && chmod +x ${local}`,
+  mkdirSync(join(homedir(), ".local", "bin"), { recursive: true });
+  const download = spawnSync(
+    "curl",
+    [
+      "-fsSL",
+      `https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`,
+      "-o",
+      local,
+    ],
     { stdio: "inherit" },
   );
+  if (download.status !== 0) throw new Error("Downloading cloudflared failed; install it by hand.");
+  chmodSync(local, 0o755);
   return local;
 }

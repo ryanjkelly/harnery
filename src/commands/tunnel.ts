@@ -17,7 +17,15 @@ import {
   runRotatingProcessSync,
   spawnRotatingProcess,
 } from "../core/storage/process-log.ts";
+import { normalizeAllowEntry } from "../lib/tunnel/allowlist.ts";
+import { detectPublicAddresses, planCurrentAddresses } from "../lib/tunnel/current-address.ts";
 import { ALLOW_PATHS_ENV, normalizeAllowPaths } from "../lib/tunnel/path-scope.ts";
+import {
+  connectProbe,
+  findPidsByCommandLine,
+  listeningPorts,
+  portListening,
+} from "../lib/tunnel/processes.ts";
 import {
   clearState,
   DEFAULT_INSTANCE,
@@ -46,9 +54,11 @@ import {
  * Every provider also passes through a path scope: `up` requires at least one
  * `--allow-path <prefix>`, and the gate refuses any request outside it.
  *
- * State + config persisted under `.cache/tunnel/`. cloudflared auto-installs
- * to ~/.local/bin/ on first run (Linux only; macOS users `brew install`);
- * Tailscale requires an installed/authenticated `tailscale` CLI.
+ * State + config persisted under `.cache/tunnel/` (or `$HARNERY_TUNNEL_DIR`).
+ * cloudflared comes from `$HARNERY_CLOUDFLARED` / the config's `cloudflared_path`
+ * when set, else PATH, else auto-installs to ~/.local/bin/ on Linux (macOS and
+ * Windows hosts install it themselves); Tailscale requires an installed and
+ * authenticated `tailscale` CLI.
  */
 
 const DEFAULT_TARGET = "127.0.0.1:8001";
@@ -220,19 +230,78 @@ function gateScriptPath(): string {
   return resolve(import.meta.dirname, "..", "lib", "tunnel", "gate.ts");
 }
 
-/**
- * `harn tunnel` is the one command that hard-requires Bun: the gate worker is a
- * `Bun.serve` process (HTTP + WebSocket reverse proxy), spawned as `bun run
- * gate.ts`. Everything else in harnery runs on Node, but this can't until the
- * gate is ported off `Bun.serve` (node:http + `ws`). Detect Bun up front so the
- * failure is a clear message rather than an opaque ENOENT from the gate spawn.
- */
-function bunAvailable(): boolean {
-  return spawnSync("bun", ["--version"], { stdio: "ignore" }).status === 0;
+/** The gate worker's `--name`/`--port` marker, also what the stray sweep matches. */
+const GATE_SUBCOMMAND = ["tunnel", "gate"] as const;
+
+export interface GateLaunch {
+  command: string;
+  /** Arguments before the gate's own `--name` and `--port`. */
+  arguments: string[];
 }
 
+export interface GateLaunchInputs {
+  /** Absolute path of `lib/tunnel/gate.ts` beside this file, whether or not it exists. */
+  gateScript: string;
+  gateScriptExists: boolean;
+  /** True when this process runs on Bun (so `execPath` is a Bun binary). */
+  underBun: boolean;
+  execPath: string;
+  /** The script this process was started with (`argv[1]`): the host CLI's entry or bundle. */
+  entryScript: string | undefined;
+  entryScriptExists: boolean;
+  bunOnPath: boolean;
+}
+
+/**
+ * How to start the gate worker, which is a `Bun.serve` process (HTTP and
+ * WebSocket reverse proxy):
+ *   1. From a source or package checkout, `gate.ts` sits beside this module and
+ *      runs directly.
+ *   2. Inside a single-file bundle there is no such file. The CLI then
+ *      re-executes itself with the hidden `tunnel gate` task, which loads the
+ *      gate in-process. This uses the running Bun binary, so Bun need not be
+ *      on PATH.
+ * Null means neither works (a Node host with no Bun, or an unknown entry).
+ */
+export function resolveGateLaunch(i: GateLaunchInputs): GateLaunch | null {
+  if (i.gateScriptExists && (i.underBun || i.bunOnPath)) {
+    return {
+      command: i.underBun ? i.execPath : "bun",
+      arguments: ["run", i.gateScript],
+    };
+  }
+  if (i.underBun && i.entryScript && i.entryScriptExists) {
+    return { command: i.execPath, arguments: [i.entryScript, ...GATE_SUBCOMMAND] };
+  }
+  return null;
+}
+
+function currentGateLaunch(): GateLaunch | null {
+  const gateScript = gateScriptPath();
+  const entryScript = process.argv[1] ? resolve(process.argv[1]) : undefined;
+  const underBun = typeof process.versions.bun === "string";
+  const gateScriptExists = existsSync(gateScript);
+  return resolveGateLaunch({
+    gateScript,
+    gateScriptExists,
+    underBun,
+    execPath: process.execPath,
+    entryScript,
+    entryScriptExists: entryScript ? existsSync(entryScript) : false,
+    bunOnPath: !underBun && gateScriptExists && bunOnPath(),
+  });
+}
+
+function bunOnPath(): boolean {
+  return spawnSync("bun", ["--version"], { stdio: "ignore", windowsHide: true }).status === 0;
+}
+
+const requiresBunMessage = () =>
+  `${resolveBinName()} tunnel requires Bun: the gate worker is a Bun.serve process. ` +
+  "Install Bun (https://bun.sh) and re-run. (Every other command runs on Node.)";
+
 function tailscaleAvailable(): boolean {
-  return spawnSync("tailscale", ["version"], { stdio: "ignore" }).status === 0;
+  return spawnSync("tailscale", ["version"], { stdio: "ignore", windowsHide: true }).status === 0;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -240,17 +309,15 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Kill every process whose command line matches `pattern` (via `pgrep -f`),
- * skipping our own PID and any already-killed. Returns the count killed. Used
- * as a fallback so orphaned gate/cloudflared processes get cleaned even when
- * the state file was lost (which otherwise left them squatting on the port).
+ * Kill every process whose command line matches `pattern` (an extended regular
+ * expression), skipping our own PID and any already-killed. Returns the count
+ * killed. Used as a fallback so orphaned gate/cloudflared processes get cleaned
+ * even when the state file was lost (which otherwise left them squatting on the
+ * port).
  */
 function killByPattern(pattern: string, alreadyKilled: Set<number>): number {
-  const r = spawnSync("pgrep", ["-f", pattern], { encoding: "utf-8" });
-  if (r.status !== 0 || typeof r.stdout !== "string") return 0;
   let killed = 0;
-  for (const line of r.stdout.split("\n")) {
-    const pid = Number(line.trim());
+  for (const pid of findPidsByCommandLine(pattern)) {
     if (!pid || pid === process.pid || alreadyKilled.has(pid)) continue;
     try {
       process.kill(pid);
@@ -264,44 +331,28 @@ function killByPattern(pattern: string, alreadyKilled: Set<number>): number {
 }
 
 /**
- * Sweep stray gate + cloudflared processes for ONE instance, identified by its
- * gate port. Both signatures are port-scoped so tearing down one tunnel never
- * touches another:
- *   - gate:        `gate.ts ... --port <port>` (the port is on the gate's argv)
- *   - cloudflared: `--url http://localhost:<port>` (order-independent, so it
- *     matches regardless of the `--protocol http2` flag we also pass).
- * Port boundary is guarded with `( |$)` so port 9001 doesn't match 90011.
+ * Command-line pattern for ONE instance's gate, identified by its port. Matches
+ * both launch forms: `bun run .../gate.ts --name N --port P` and a host CLI
+ * re-executing itself as `<cli> tunnel gate --name N --port P`. Port boundary is
+ * guarded with `( |$)` so port 9001 doesn't match 90011.
  */
-function sweepStrays(gatePort: number, alreadyKilled: Set<number>): number {
-  return (
-    killByPattern(`gate\\.ts.*--port ${gatePort}( |$)`, alreadyKilled) +
-    killByPattern(`--url http://localhost:${gatePort}( |$)`, alreadyKilled)
-  );
+function gatePattern(gatePort: number): string {
+  return `(gate\\.ts|tunnel gate) .*--port ${gatePort}( |$)`;
 }
 
 /**
- * Ports currently bound by a LISTEN socket (best-effort, platform-dependent).
- *
- * `ss` (iproute2) is Linux-only. Without the lsof fallback this returns an empty
- * set on macOS/BSD. That does not fail loudly. It reports every port as free, so
- * `allocateGatePort` can hand out an occupied port and the reload port-release
- * check becomes inert.
+ * Sweep stray gate + cloudflared processes for ONE instance, identified by its
+ * gate port. Both signatures are port-scoped so tearing down one tunnel never
+ * touches another:
+ *   - gate:        see gatePattern (the port is on the gate's argv)
+ *   - cloudflared: `--url http://localhost:<port>` (order-independent, so it
+ *     matches regardless of the `--protocol http2` flag we also pass).
  */
-function listeningPorts(): Set<number> {
-  const ports = new Set<number>();
-  const ss = spawnSync("ss", ["-tlnH"], { encoding: "utf-8" });
-  if (ss.status === 0 && typeof ss.stdout === "string") {
-    for (const m of ss.stdout.matchAll(/:(\d+)\s/g)) ports.add(Number(m[1]));
-    return ports;
-  }
-  // Rows look like: `bun 123 user 4u IPv4 0x… 0t0 TCP 127.0.0.1:58055 (LISTEN)`.
-  // Status can be nonzero while stdout still holds usable rows (lsof reports a
-  // failure when any single process is unreadable), so judge it on the output.
-  const lsof = spawnSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"], { encoding: "utf-8" });
-  if (typeof lsof.stdout === "string") {
-    for (const m of lsof.stdout.matchAll(/:(\d+) \(LISTEN\)$/gm)) ports.add(Number(m[1]));
-  }
-  return ports;
+function sweepStrays(gatePort: number, alreadyKilled: Set<number>): number {
+  return (
+    killByPattern(gatePattern(gatePort), alreadyKilled) +
+    killByPattern(`--url http://localhost:${gatePort}( |$)`, alreadyKilled)
+  );
 }
 
 /**
@@ -309,17 +360,19 @@ function listeningPorts(): Set<number> {
  * (and rejected if it's already taken); otherwise scan upward from 9001 for the
  * first port that's neither held by a live instance nor currently listening.
  */
-function allocateGatePort(preferred: number | undefined): number {
+async function allocateGatePort(preferred: number | undefined): Promise<number> {
   const used = new Set<number>(
     listStates()
       .filter((s) => isProcessAlive(s.gate_pid))
       .map((s) => s.gate_port),
   );
+  // No discovery tool (null) is not "every port free": probe candidates by connecting.
   const listening = listeningPorts();
-  const taken = (p: number) => used.has(p) || listening.has(p);
+  const taken = async (p: number) =>
+    used.has(p) || (listening ? listening.has(p) : await connectProbe(p));
 
   if (preferred !== undefined) {
-    if (taken(preferred)) {
+    if (await taken(preferred)) {
       emit.error({
         code: "tunnel_port_taken",
         message: `Gate port ${preferred} is already in use. Omit --gate-port to auto-allocate, or pick a free one.`,
@@ -329,7 +382,7 @@ function allocateGatePort(preferred: number | undefined): number {
     return preferred;
   }
   for (let p = DEFAULT_GATE_PORT; p <= MAX_GATE_PORT; p++) {
-    if (!taken(p)) return p;
+    if (!(await taken(p))) return p;
   }
   emit.error({
     code: "tunnel_no_free_port",
@@ -507,13 +560,13 @@ interface GateSpawnOpts {
  * is passed as an env var, which the gate snapshots at module load and never
  * re-reads — that snapshot is precisely why `reload` has to exist.
  */
-function spawnGate(o: GateSpawnOpts): ChildProcess {
+function spawnGate(o: GateSpawnOpts, launch: GateLaunch): ChildProcess {
   // `--name`/`--port` on argv mirror the env vars; they're what makes the gate
-  // process distinguishable per-instance in `pgrep -f` (see sweepStrays).
+  // process distinguishable per-instance in a command-line search (see sweepStrays).
   const gateProc = spawnRotatingProcess({
     path: o.gateLogPath,
-    command: "bun",
-    arguments: ["run", gateScriptPath(), "--name", o.name, "--port", String(o.gatePort)],
+    command: launch.command,
+    arguments: [...launch.arguments, "--name", o.name, "--port", String(o.gatePort)],
     env: {
       ...process.env,
       HARNERY_TUNNEL_ALLOW: o.allowedIps.join(","),
@@ -530,13 +583,9 @@ function spawnGate(o: GateSpawnOpts): ChildProcess {
 }
 
 async function up(opts: UpOpts): Promise<void> {
-  if (!bunAvailable()) {
-    emit.error({
-      code: "tunnel_requires_bun",
-      message:
-        "harn tunnel requires Bun: the gate worker is a Bun.serve process. " +
-        "Install Bun (https://bun.sh) and re-run. (Every other harn command runs on Node.)",
-    });
+  const launch = currentGateLaunch();
+  if (!launch) {
+    emit.error({ code: "tunnel_requires_bun", message: requiresBunMessage() });
     process.exit(1);
   }
   const name = resolveName(opts.name);
@@ -581,7 +630,7 @@ async function up(opts: UpOpts): Promise<void> {
 
   // Allocate the gate port (after clearing dead state so its old port frees up
   // for reuse). Explicit --gate-port is validated; otherwise auto-scan.
-  const gatePort = allocateGatePort(opts.gatePort ? Number(opts.gatePort) : undefined);
+  const gatePort = await allocateGatePort(opts.gatePort ? Number(opts.gatePort) : undefined);
 
   // Self-heal: clear any orphaned gate/cloudflared on THIS instance's port from
   // a prior crashed or state-cleared run so the gate port is free before we bind.
@@ -591,12 +640,23 @@ async function up(opts: UpOpts): Promise<void> {
   if (provider === "cloudflare" && cfg.allowed_ips.length === 0) {
     emit.error({
       code: "tunnel_allowlist_empty",
-      message: "Allowlist is empty; refusing to start. Add an IP first: harn tunnel allow add <ip>",
+      message: `Allowlist is empty; refusing to start. Add an IP first: ${resolveBinName()} tunnel allow add <ip> (or --current)`,
     });
     process.exit(1);
   }
 
-  const cloudflaredBin = provider === "cloudflare" ? ensureCloudflared() : null;
+  let cloudflaredBin: string | null = null;
+  if (provider === "cloudflare") {
+    try {
+      cloudflaredBin = ensureCloudflared();
+    } catch (error) {
+      emit.error({
+        code: "tunnel_cloudflared_missing",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      process.exit(1);
+    }
+  }
   if (provider === "tailscale" && !tailscaleAvailable()) {
     emit.error({
       code: "tunnel_tailscale_missing",
@@ -609,20 +669,31 @@ async function up(opts: UpOpts): Promise<void> {
   const gateLogPath = logPaths.gate;
   const providerLogPath = logPaths.provider;
 
-  const gateProc = spawnGate({
-    name,
-    gatePort,
-    target,
-    vhost,
-    provider,
-    allowedIps: cfg.allowed_ips,
-    allowPaths,
-    gateLogPath,
-  });
+  const gateProc = spawnGate(
+    {
+      name,
+      gatePort,
+      target,
+      vhost,
+      provider,
+      allowedIps: cfg.allowed_ips,
+      allowPaths,
+      gateLogPath,
+    },
+    launch,
+  );
 
   await sleep(800);
 
-  if (!isProcessAlive(gateProc.pid!)) {
+  // A host CLI that re-executes itself takes longer to load than a bare script,
+  // so wait for the gate to actually listen before the provider forwards to it.
+  if (!isProcessAlive(gateProc.pid!) || !(await waitForPortBound(gatePort, 15_000))) {
+    try {
+      process.kill(gateProc.pid!);
+    } catch {
+      /* already dead */
+    }
+    sweepStrays(gatePort, new Set());
     emit.error({
       code: "tunnel_gate_failed",
       message: `Gate failed to start. Check log: ${gateLogPath}`,
@@ -703,8 +774,9 @@ async function up(opts: UpOpts): Promise<void> {
   writeState(state);
   recordTunnelServer(state);
 
+  const bin = resolveBinName();
   const stopHint =
-    name === DEFAULT_INSTANCE ? "harn tunnel down" : `harn tunnel down --name ${name}`;
+    name === DEFAULT_INSTANCE ? `${bin} tunnel down` : `${bin} tunnel down --name ${name}`;
   emit.text(`\n  Instance: ${name}\n`);
   emit.text(`  Provider: ${provider}${tailscaleMode ? ` (${tailscaleMode})` : ""}\n`);
   emit.text(`  URL: ${url}\n\n`);
@@ -723,11 +795,11 @@ async function up(opts: UpOpts): Promise<void> {
   }
   if (!registered) {
     emit.text(
-      `  ⚠ Edge connection didn't register within 30s (QUIC can wedge on a cold\n    start). If the URL 404s or times out, bounce it: ${stopHint} && harn tunnel up\n\n`,
+      `  ⚠ Edge connection didn't register within 30s (QUIC can wedge on a cold\n    start). If the URL 404s or times out, bounce it: ${stopHint} && ${bin} tunnel up\n\n`,
     );
   }
   emit.text(`  Stop:   ${stopHint}\n`);
-  emit.text("  Status: harn tunnel status\n");
+  emit.text(`  Status: ${bin} tunnel status\n`);
 }
 
 /** The server registry lists tunnels beside every other local server. */
@@ -789,7 +861,7 @@ function down(opts: DownOpts): void {
     const others = listStates();
     if (others.length > 0) {
       emit.text(
-        `No default tunnel running. Other tunnels up: ${others.map((s) => s.name).join(", ")}.\nUse \`harn tunnel down --name <name>\` or \`harn tunnel down --all\`.\n`,
+        `No default tunnel running. Other tunnels up: ${others.map((s) => s.name).join(", ")}.\nUse \`${resolveBinName()} tunnel down --name <name>\` or \`${resolveBinName()} tunnel down --all\`.\n`,
       );
       return;
     }
@@ -807,20 +879,20 @@ function down(opts: DownOpts): void {
 async function waitForPortFree(port: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!listeningPorts().has(port)) return true;
+    if (!(await portListening(port))) return true;
     await sleep(100);
   }
-  return !listeningPorts().has(port);
+  return !(await portListening(port));
 }
 
 /** Poll until `port` has a LISTEN socket (or the deadline passes). */
 async function waitForPortBound(port: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (listeningPorts().has(port)) return true;
+    if (await portListening(port)) return true;
     await sleep(100);
   }
-  return listeningPorts().has(port);
+  return portListening(port);
 }
 
 /**
@@ -847,8 +919,12 @@ export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; mess
         `Reloading the gate can't bring it back — run \`${bin} tunnel up --name ${name}\`.`,
     };
   }
-  if (!bunAvailable()) {
-    return { ok: false, message: `[${name}] bun is not on PATH, so the gate can't be respawned.` };
+  const launch = currentGateLaunch();
+  if (!launch) {
+    return {
+      ok: false,
+      message: `[${name}] Bun is not available, so the gate can't be respawned.`,
+    };
   }
   if (state.allow_paths.length === 0) {
     return {
@@ -872,7 +948,7 @@ export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; mess
       /* race: already gone */
     }
   }
-  killByPattern(`gate\\.ts.*--port ${gatePort}( |$)`, killed);
+  killByPattern(gatePattern(gatePort), killed);
 
   if (!(await waitForPortFree(gatePort, 5_000))) {
     return {
@@ -884,23 +960,26 @@ export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; mess
   }
 
   const cfg = readConfig();
-  const gateProc = spawnGate({
-    name,
-    gatePort,
-    target: state.target,
-    vhost: state.vhost,
-    provider: state.provider,
-    allowedIps: cfg.allowed_ips,
-    allowPaths: state.allow_paths,
-    gateLogPath: tunnelLogDestinations(name, state.provider).gate,
-  });
+  const gateProc = spawnGate(
+    {
+      name,
+      gatePort,
+      target: state.target,
+      vhost: state.vhost,
+      provider: state.provider,
+      allowedIps: cfg.allowed_ips,
+      allowPaths: state.allow_paths,
+      gateLogPath: tunnelLogDestinations(name, state.provider).gate,
+    },
+    launch,
+  );
 
   await sleep(800);
   const pid = gateProc.pid;
   if (
     typeof pid !== "number" ||
     !isProcessAlive(pid) ||
-    !(await waitForPortBound(gatePort, 5_000))
+    !(await waitForPortBound(gatePort, 15_000))
   ) {
     return {
       ok: false,
@@ -1077,8 +1156,15 @@ function allowList(): void {
     emit.text("(empty)\n");
     return;
   }
-  for (const ip of cfg.allowed_ips) emit.text(`${ip}\n`);
+  const automatic = cfg.auto_allowed ?? [];
+  for (const ip of cfg.allowed_ips) {
+    emit.text(`${ip}${sameEntryIn(automatic, ip) ? "  (automatic)" : ""}\n`);
+  }
 }
+
+const canonicalEntry = (entry: string) => normalizeAllowEntry(entry) ?? entry;
+const sameEntryIn = (list: readonly string[], entry: string) =>
+  list.some((e) => canonicalEntry(e) === canonicalEntry(entry));
 
 /**
  * Trailer for `allow add`/`allow rm`. Each gate snapshots the allowlist at
@@ -1097,29 +1183,147 @@ function allowChangedHint(): void {
   );
 }
 
-function allowAdd(ip: string): void {
-  const cfg = readConfig();
-  if (cfg.allowed_ips.includes(ip)) {
-    emit.text(`${ip} already in allowlist.\n`);
+interface AllowAddOpts {
+  current?: boolean;
+}
+
+async function allowAdd(entry: string | undefined, opts: AllowAddOpts = {}): Promise<void> {
+  if (opts.current) {
+    if (entry) {
+      emit.error({
+        code: "tunnel_allow_current_with_entry",
+        message: "Pass either an address or --current, not both.",
+      });
+      process.exit(1);
+    }
+    const result = await refreshCurrentAddress({ emit, reload: true });
+    if (!result.ok) process.exit(1);
     return;
   }
-  cfg.allowed_ips.push(ip);
+  if (!entry) {
+    emit.error({
+      code: "tunnel_allow_entry_missing",
+      message: `Name an address or range to allow, or use --current: ${resolveBinName()} tunnel allow add <ip|cidr>`,
+    });
+    process.exit(1);
+  }
+  const canonical = normalizeAllowEntry(entry);
+  if (!canonical) {
+    emit.error({
+      code: "tunnel_allow_entry_invalid",
+      message:
+        `"${entry}" is not an IP address or CIDR range. ` +
+        "Examples: 203.0.113.8, 203.0.113.0/24, 2601:db8:1:2::/64.",
+    });
+    process.exit(1);
+  }
+  const cfg = readConfig();
+  if (sameEntryIn(cfg.allowed_ips, canonical)) {
+    // Adding by hand an entry the refresh owns adopts it: later refreshes keep it.
+    if (cfg.auto_allowed && sameEntryIn(cfg.auto_allowed, canonical)) {
+      cfg.auto_allowed = cfg.auto_allowed.filter((e) => canonicalEntry(e) !== canonical);
+      writeConfig(cfg);
+      emit.text(`${canonical} is now a manual entry; automatic refreshes will keep it.\n`);
+      return;
+    }
+    emit.text(`${canonical} already in allowlist.\n`);
+    return;
+  }
+  cfg.allowed_ips.push(canonical);
   writeConfig(cfg);
-  emit.text(`Added ${ip}.\n`);
+  emit.text(`Added ${canonical}.\n`);
   allowChangedHint();
 }
 
-function allowRm(ip: string): void {
+function allowRm(entry: string): void {
   const cfg = readConfig();
-  const idx = cfg.allowed_ips.indexOf(ip);
+  const wanted = canonicalEntry(entry);
+  const idx = cfg.allowed_ips.findIndex((e) => e === entry || canonicalEntry(e) === wanted);
   if (idx === -1) {
-    emit.text(`${ip} not in allowlist.\n`);
+    emit.text(`${entry} not in allowlist.\n`);
     return;
   }
-  cfg.allowed_ips.splice(idx, 1);
+  const [removed] = cfg.allowed_ips.splice(idx, 1);
+  if (cfg.auto_allowed) {
+    cfg.auto_allowed = cfg.auto_allowed.filter(
+      (e) => canonicalEntry(e) !== canonicalEntry(removed as string),
+    );
+  }
   writeConfig(cfg);
-  emit.text(`Removed ${ip}.\n`);
+  emit.text(`Removed ${removed}.\n`);
   allowChangedHint();
+}
+
+export interface RefreshCurrentOptions {
+  emit?: EmitContext;
+  /** Reload running Cloudflare gates after an allowlist change, keeping their URLs. */
+  reload: boolean;
+  /** Skip the success lines (warnings and errors still print). */
+  quiet?: boolean;
+  detect?: typeof detectPublicAddresses;
+}
+
+export interface RefreshCurrentResult {
+  /** False only when a requested reload of a live gate failed. A failed lookup is a warning, not a failure. */
+  ok: boolean;
+  /** The allowlist gained or lost an entry. */
+  changed: boolean;
+  /** Entries newly allowed. */
+  added: string[];
+  removed: string[];
+  warnings: string[];
+}
+
+/**
+ * `tunnel allow add --current`: allow this machine's own public addresses, as
+ * Cloudflare sees them, and drop the ones allowed by the previous refresh.
+ * Exported so a host CLI can run it before `tunnel up` and from its own sync.
+ */
+export async function refreshCurrentAddress(
+  options: RefreshCurrentOptions,
+): Promise<RefreshCurrentResult> {
+  if (options.emit) emit = options.emit;
+  const detected = await (options.detect ?? detectPublicAddresses)();
+  const cfg = readConfig();
+  const plan = planCurrentAddresses(cfg, detected);
+  for (const warning of plan.warnings) emit.text(`  ⚠ ${warning}\n`);
+  const result: RefreshCurrentResult = {
+    ok: true,
+    changed: plan.changed,
+    added: plan.added,
+    removed: plan.removed,
+    warnings: plan.warnings,
+  };
+  const noAddress = !detected.v4 && !detected.v6;
+  if (noAddress) return result;
+
+  writeConfig(plan.config);
+  if (!options.quiet) {
+    const found = [detected.v4, detected.v6].filter(Boolean).join(", ");
+    emit.text(`This machine reaches Cloudflare as ${found}.\n`);
+    emit.text(
+      plan.changed
+        ? `Allowlist updated${plan.added.length ? `: added ${plan.added.join(", ")}` : ""}${plan.removed.length ? `; removed ${plan.removed.join(", ")}` : ""}.\n`
+        : "Allowlist already covers this machine.\n",
+    );
+  }
+  if (!plan.changed || !options.reload) return result;
+
+  const live = listStates().filter((s) => s.provider === "cloudflare" && providerIsAlive(s));
+  for (const s of live) {
+    const r = await reloadOne(s);
+    emit.text(`${r.ok ? "ok  " : "FAIL"} ${r.message}\n`);
+    if (!r.ok) result.ok = false;
+  }
+  return result;
+}
+
+/** Hidden task: run the gate worker in this process (the self-launch form of the gate). */
+async function runGateInProcess(): Promise<void> {
+  await import("../lib/tunnel/gate.ts");
+  // The gate's server keeps the process alive. Never resolve, so a host's
+  // post-command exit or output finalization cannot end the worker.
+  await new Promise<never>(() => {});
 }
 
 let emit: EmitContext;
@@ -1206,9 +1410,31 @@ export function registerTunnelCommand(
 
   const allow = cmd
     .command("allow")
-    .description("Manage the Cloudflare CF-Connecting-IP allowlist")
+    .description(
+      "Manage the Cloudflare CF-Connecting-IP allowlist (addresses and CIDR ranges, IPv4 and IPv6)",
+    )
     .action(allowList);
-  allow.command("add <ip>").description("Add an IP to the allowlist").action(allowAdd);
-  allow.command("rm <ip>").description("Remove an IP from the allowlist").action(allowRm);
-  allow.command("list").description("List allowed IPs (default action)").action(allowList);
+  allow
+    .command("add [entry]")
+    .description(
+      "Add an IP address or CIDR range (203.0.113.0/24, 2601:db8:1:2::/64), or --current for this machine",
+    )
+    .option(
+      "--current",
+      "allow this machine's public addresses as Cloudflare sees them (IPv4 /32 and IPv6 /64), " +
+        "replace the ones the previous --current added, and reload running gates",
+    )
+    .action(allowAdd);
+  allow
+    .command("rm <entry>")
+    .description("Remove an address or range from the allowlist")
+    .action(allowRm);
+  allow.command("list").description("List allowed entries (default action)").action(allowList);
+
+  cmd
+    .command("gate", { hidden: true })
+    .description("Internal: run the gate worker in this process")
+    .option("--name <name>", "instance name")
+    .option("--port <port>", "port to listen on")
+    .action(runGateInProcess);
 }

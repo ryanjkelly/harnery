@@ -12,6 +12,7 @@
 // available; stdout/stderr is captured into .cache/tunnel/gate.log by the
 // spawner.
 
+import { allowlistMatches, compileAllowlist } from "./allowlist.ts";
 import { renderTunnelErrorPage } from "./error-page";
 import { applyUpstreamHeaders } from "./forward-headers";
 import { ALLOW_PATHS_ENV, isPathAllowed, parseAllowPathsEnv } from "./path-scope.ts";
@@ -27,12 +28,8 @@ function argvFlag(flag: string): string | undefined {
   return i !== -1 ? process.argv[i + 1] : undefined;
 }
 
-const ALLOW = new Set(
-  (process.env.HARNERY_TUNNEL_ALLOW ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
-);
+// Entries are exact addresses or CIDR ranges (`203.0.113.0/24`, `2601:db8:1:2::/64`).
+const ALLOW = compileAllowlist((process.env.HARNERY_TUNNEL_ALLOW ?? "").split(","));
 const TARGET = process.env.HARNERY_TUNNEL_TARGET ?? "127.0.0.1:8001";
 const VHOST = process.env.HARNERY_TUNNEL_VHOST ?? "localhost";
 const PORT = Number(process.env.HARNERY_TUNNEL_PORT ?? argvFlag("--port") ?? "9001");
@@ -81,7 +78,7 @@ const server = Bun.serve<WsData, never>({
     const url = new URL(req.url);
     if (ACCESS === "cloudflare-allowlist") {
       const ip = req.headers.get("cf-connecting-ip") ?? "";
-      if (!ALLOW.has(ip)) {
+      if (!allowlistMatches(ALLOW, ip)) {
         const details = requestDetails(req, url);
         // Log denials so operators can whitelist a phone/laptop that just
         // hit 403 without asking the human to dig up their public IP.
@@ -213,4 +210,15 @@ const server = Bun.serve<WsData, never>({
 console.log(`harn-tunnel-gate :${server.port} -> ${UPSTREAM_HTTP} (Host: ${VHOST})`); // lint-ok-emission: detached worker, see file note above
 console.log(`access: ${ACCESS}`); // lint-ok-emission: detached worker, see file note above
 console.log(`paths: ${ALLOW_PATHS.join(", ") || "(empty, every path refused)"}`); // lint-ok-emission: detached worker, see file note above
-console.log(`allow: ${[...ALLOW].join(", ") || "(empty, not used outside allowlist mode)"}`); // lint-ok-emission: detached worker, see file note above
+console.log(
+  // lint-ok-emission: detached worker, see file note above
+  `allow: ${
+    process.env.HARNERY_TUNNEL_ALLOW?.split(",")
+      .filter((s) => s.trim())
+      .join(", ") || "(empty, not used outside allowlist mode)"
+  }`,
+);
+if (ALLOW.invalid.length > 0) {
+  // lint-ok-emission: detached worker, see file note above
+  console.log(`allow: ignoring unreadable entries: ${ALLOW.invalid.join(", ")}`);
+}

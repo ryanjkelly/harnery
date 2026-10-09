@@ -280,6 +280,38 @@ export async function registerHarneryLogStorageCommands(
   return parent;
 }
 
+export interface HarneryTunnelCommandOptions {
+  emit?: EmitContext;
+  context?: HarneryProgramContext;
+}
+
+/**
+ * Mount `tunnel` under `parent`, for a host whose own program does not come
+ * from `createHarneryProgram` (a host CLI that exposes the tunnel as one of its
+ * command families).
+ */
+export async function registerHarneryTunnelCommand(
+  parent: Command,
+  options: HarneryTunnelCommandOptions = {},
+): Promise<Command> {
+  const { registerTunnelCommand } = await import("./commands/tunnel.ts");
+  registerTunnelCommand(parent, options.emit ?? defaultEmit, options.context);
+  return parent;
+}
+
+export type { RefreshCurrentOptions, RefreshCurrentResult } from "./commands/tunnel.ts";
+
+/**
+ * `tunnel allow add --current` as a function: allow this machine's public
+ * addresses and optionally reload running gates, keeping their URLs.
+ */
+export async function refreshTunnelCurrentAddress(
+  options: import("./commands/tunnel.ts").RefreshCurrentOptions,
+): Promise<import("./commands/tunnel.ts").RefreshCurrentResult> {
+  const { refreshCurrentAddress } = await import("./commands/tunnel.ts");
+  return refreshCurrentAddress(options);
+}
+
 export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   const program = new Command();
   const emit = opts.emit ?? defaultEmit;

@@ -36,13 +36,17 @@ interface Gate {
   proc: ChildProcess;
 }
 
-async function startGate(upstreamPort: number, allowPaths: string): Promise<Gate> {
+async function startGate(
+  upstreamPort: number,
+  allowPaths: string,
+  allow: string = CLIENT_IP,
+): Promise<Gate> {
   const port = await freePort();
   const proc = spawn("bun", ["run", join(import.meta.dir, "gate.ts"), "--port", String(port)], {
     env: {
       ...process.env,
       HARNERY_TUNNEL_ACCESS: "cloudflare-allowlist",
-      HARNERY_TUNNEL_ALLOW: CLIENT_IP,
+      HARNERY_TUNNEL_ALLOW: allow,
       HARNERY_TUNNEL_TARGET: `127.0.0.1:${upstreamPort}`,
       HARNERY_TUNNEL_VHOST: `localhost:${upstreamPort}`,
       HARNERY_TUNNEL_PORT: String(port),
@@ -139,5 +143,47 @@ describe("tunnel gate path scope", () => {
     });
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("This device is not allowed yet");
+  });
+});
+
+describe("tunnel gate allowlist ranges", () => {
+  let upstream: ReturnType<typeof Bun.serve>;
+  let gate: Gate;
+
+  beforeAll(async () => {
+    upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("ok") });
+    gate = await startGate(
+      upstream.port as number,
+      "/",
+      "198.51.100.0/24, 2601:db8:1:2::/64,203.0.113.8,not-an-ip",
+    );
+  });
+
+  afterAll(() => {
+    gate?.proc.kill();
+    upstream?.stop(true);
+  });
+
+  async function status(ip: string | null): Promise<number> {
+    const headers: Record<string, string> = ip === null ? {} : { "cf-connecting-ip": ip };
+    return (await fetch(`http://127.0.0.1:${gate.port}/`, { headers })).status;
+  }
+
+  test("admits any address inside an IPv4 range and the exact address beside it", async () => {
+    expect(await status("198.51.100.77")).toBe(200);
+    expect(await status("203.0.113.8")).toBe(200);
+    expect(await status("198.51.101.1")).toBe(403);
+    expect(await status("203.0.113.9")).toBe(403);
+  });
+
+  test("admits every host on an IPv6 /64, in any spelling, and nothing on the next one", async () => {
+    expect(await status("2601:db8:1:2::1")).toBe(200);
+    expect(await status("2601:DB8:1:2:abcd:ef01:2345:6789")).toBe(200);
+    expect(await status("2601:db8:1:3::1")).toBe(403);
+  });
+
+  test("refuses a missing address header and ignores an unreadable entry", async () => {
+    expect(await status(null)).toBe(403);
+    expect(await status("not-an-ip")).toBe(403);
   });
 });

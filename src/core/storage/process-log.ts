@@ -136,7 +136,10 @@ export function spawnRotatingProcess(options: RotatingProcessOptions): ChildProc
     command: options.command,
     arguments: options.arguments ?? [],
   });
-  return spawn("bun", [fileURLToPath(import.meta.url), "--run", specification], {
+  // Run the wrapper with the Bun that is running this code: a host may carry a
+  // managed Bun that is not on PATH.
+  const bun = typeof process.versions.bun === "string" ? process.execPath : "bun";
+  return spawn(bun, [fileURLToPath(import.meta.url), "--run", specification], {
     detached: true,
     stdio: "ignore",
     env: { ...(options.env ?? process.env) } as NodeJS.ProcessEnv,

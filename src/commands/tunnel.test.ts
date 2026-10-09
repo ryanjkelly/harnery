@@ -6,8 +6,13 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, loadLazyCommand } from "../commander.ts";
-import type { TunnelState } from "../lib/tunnel/state.ts";
-import { reloadOne, tunnelLogDestinations } from "./tunnel.ts";
+import { readConfig, TUNNEL_DIR_ENV, type TunnelState, writeConfig } from "../lib/tunnel/state.ts";
+import {
+  refreshCurrentAddress,
+  reloadOne,
+  resolveGateLaunch,
+  tunnelLogDestinations,
+} from "./tunnel.ts";
 
 async function tunnelCommand() {
   const program = createHarneryProgram();
@@ -167,4 +172,173 @@ describe("reloadOne", () => {
       server.close();
     }
   }, 15_000);
+});
+
+describe("resolveGateLaunch", () => {
+  const base = {
+    gateScript: "/pkg/src/lib/tunnel/gate.ts",
+    gateScriptExists: true,
+    underBun: true,
+    execPath: "/home/u/.bun/bin/bun",
+    entryScript: "/kit/bpc.mjs",
+    entryScriptExists: true,
+    bunOnPath: false,
+  };
+
+  test("a source checkout runs gate.ts beside the command with the running Bun", () => {
+    expect(resolveGateLaunch(base)).toEqual({
+      command: "/home/u/.bun/bin/bun",
+      arguments: ["run", "/pkg/src/lib/tunnel/gate.ts"],
+    });
+  });
+
+  test("a Node host with gate.ts on disk and bun on PATH uses bun from PATH", () => {
+    expect(resolveGateLaunch({ ...base, underBun: false, bunOnPath: true })).toEqual({
+      command: "bun",
+      arguments: ["run", "/pkg/src/lib/tunnel/gate.ts"],
+    });
+  });
+
+  test("inside a single-file bundle the CLI re-executes itself with the hidden gate task", () => {
+    expect(resolveGateLaunch({ ...base, gateScriptExists: false })).toEqual({
+      command: "/home/u/.bun/bin/bun",
+      arguments: ["/kit/bpc.mjs", "tunnel", "gate"],
+    });
+  });
+
+  test("returns null when no Bun can run the gate", () => {
+    expect(resolveGateLaunch({ ...base, underBun: false, gateScriptExists: false })).toBeNull();
+    expect(resolveGateLaunch({ ...base, underBun: false })).toBeNull();
+    expect(
+      resolveGateLaunch({ ...base, gateScriptExists: false, entryScriptExists: false }),
+    ).toBeNull();
+    expect(
+      resolveGateLaunch({ ...base, gateScriptExists: false, entryScript: undefined }),
+    ).toBeNull();
+  });
+});
+
+describe("tunnel gate task", () => {
+  test("is registered but hidden from help", async () => {
+    const tunnel = await tunnelCommand();
+    const gate = tunnel?.commands.find((c) => c.name() === "gate");
+    expect(gate).toBeDefined();
+    expect((gate as unknown as { _hidden: boolean })._hidden).toBe(true);
+    expect(tunnel?.helpInformation()).not.toMatch(/^\s+gate\b/m);
+  });
+});
+
+describe("allowlist commands", () => {
+  async function inTempConfig<T>(body: (output: string[]) => Promise<T>): Promise<T> {
+    const dir = mkdtempSync(join(tmpdir(), "harnery-tunnel-allow-"));
+    const before = process.env[TUNNEL_DIR_ENV];
+    process.env[TUNNEL_DIR_ENV] = dir;
+    try {
+      return await body([]);
+    } finally {
+      if (before === undefined) delete process.env[TUNNEL_DIR_ENV];
+      else process.env[TUNNEL_DIR_ENV] = before;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  async function run(output: string[], ...args: string[]): Promise<void> {
+    const program = createHarneryProgram({
+      emit: {
+        config() {},
+        data() {},
+        rows() {},
+        text: (s) => void output.push(s),
+        file() {},
+        error: (e) => void output.push(`ERROR ${JSON.stringify(e)}`),
+        log() {},
+        setExitCode() {},
+      },
+    });
+    program.exitOverride();
+    await program.parseAsync(["node", "harn", "tunnel", ...args]);
+  }
+
+  test("add normalizes IPv6 spellings and ranges, and rejects what is not an address", () =>
+    inTempConfig(async (out) => {
+      await run(out, "allow", "add", "2601:DB8:0:0::1");
+      await run(out, "allow", "add", "2601:db8::1");
+      await run(out, "allow", "add", "203.0.113.77/24");
+      expect(readConfig().allowed_ips).toEqual(["2601:db8::1", "203.0.113.0/24"]);
+      expect(out.join("")).toContain("already in allowlist");
+      const exit = process.exit;
+      let code: number | undefined;
+      process.exit = ((c?: number) => {
+        code = c;
+        throw new Error("exit");
+      }) as never;
+      try {
+        await expect(run(out, "allow", "add", "not-an-ip")).rejects.toThrow("exit");
+      } finally {
+        process.exit = exit;
+      }
+      expect(code).toBe(1);
+      expect(readConfig().allowed_ips).toHaveLength(2);
+    }));
+
+  test("rm accepts any spelling and forgets an automatic entry's mark", () =>
+    inTempConfig(async (out) => {
+      writeConfig({
+        allowed_ips: ["2601:db8:1:2::/64", "198.51.100.1"],
+        auto_allowed: ["2601:db8:1:2::/64"],
+      });
+      await run(out, "allow", "rm", "2601:0db8:1:2:0::/64");
+      expect(readConfig()).toEqual({ allowed_ips: ["198.51.100.1"], auto_allowed: [] });
+    }));
+
+  test("adding by hand an automatic entry adopts it", () =>
+    inTempConfig(async (out) => {
+      writeConfig({ allowed_ips: ["203.0.113.8/32"], auto_allowed: ["203.0.113.8/32"] });
+      await run(out, "allow", "add", "203.0.113.8");
+      expect(readConfig().auto_allowed).toEqual([]);
+      expect(readConfig().allowed_ips).toEqual(["203.0.113.8/32"]);
+    }));
+
+  test("list marks automatic entries", () =>
+    inTempConfig(async (out) => {
+      writeConfig({
+        allowed_ips: ["198.51.100.1", "203.0.113.8/32"],
+        auto_allowed: ["203.0.113.8/32"],
+      });
+      await run(out, "allow", "list");
+      expect(out.join("")).toBe("198.51.100.1\n203.0.113.8/32  (automatic)\n");
+    }));
+
+  test("refreshCurrentAddress records what it added and keeps the list on a failed lookup", () =>
+    inTempConfig(async (out) => {
+      const emit = {
+        config() {},
+        data() {},
+        rows() {},
+        text: (s: string) => void out.push(s),
+        file() {},
+        error() {},
+        log() {},
+        setExitCode() {},
+      };
+      writeConfig({ allowed_ips: ["198.51.100.1"] });
+      const first = await refreshCurrentAddress({
+        emit,
+        reload: false,
+        detect: async () => ({ v4: "203.0.113.8", v6: "2601:db8:1:2::9", failures: [] }),
+      });
+      expect(first.changed).toBe(true);
+      expect(readConfig()).toEqual({
+        allowed_ips: ["198.51.100.1", "203.0.113.8/32", "2601:db8:1:2::/64"],
+        auto_allowed: ["203.0.113.8/32", "2601:db8:1:2::/64"],
+      });
+      const failed = await refreshCurrentAddress({
+        emit,
+        reload: false,
+        detect: async () => ({ failures: ["IPv4: down", "IPv6: down"] }),
+      });
+      expect(failed.ok).toBe(true);
+      expect(failed.warnings[0]).toContain("Could not detect");
+      expect(readConfig().allowed_ips).toHaveLength(3);
+    }));
 });
