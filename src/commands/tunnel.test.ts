@@ -11,6 +11,7 @@ import {
   refreshCurrentAddress,
   reloadOne,
   resolveGateLaunch,
+  resolveWorkerLaunch,
   tunnelLogDestinations,
 } from "./tunnel.ts";
 
@@ -218,12 +219,43 @@ describe("resolveGateLaunch", () => {
   });
 });
 
-describe("tunnel gate task", () => {
-  test("is registered but hidden from help", async () => {
+describe("resolveWorkerLaunch", () => {
+  const inputs = {
+    gateScript: "/pkg/src/lib/tunnel/gate.ts",
+    gateScriptExists: false,
+    underBun: true,
+    execPath: "/home/u/.bun/bin/bun",
+    entryScript: "/kit/bpc.mjs",
+    entryScriptExists: true,
+    bunOnPath: false,
+  };
+
+  test("a source checkout keeps the package's own wrapper", () => {
+    expect(resolveWorkerLaunch({ ...inputs, gateScriptExists: true })).toBeUndefined();
+  });
+
+  test("a single-file bundle re-executes itself with the hidden log-worker task", () => {
+    expect(resolveWorkerLaunch(inputs)).toEqual({
+      command: "/home/u/.bun/bin/bun",
+      arguments: ["/kit/bpc.mjs", "tunnel", "log-worker"],
+    });
+  });
+
+  test("falls back to the default when the entry script is unknown", () => {
+    expect(resolveWorkerLaunch({ ...inputs, entryScript: undefined })).toBeUndefined();
+    expect(resolveWorkerLaunch({ ...inputs, underBun: false })).toBeUndefined();
+  });
+});
+
+describe("tunnel hidden tasks", () => {
+  test("gate and log-worker are registered but hidden from help", async () => {
     const tunnel = await tunnelCommand();
-    const gate = tunnel?.commands.find((c) => c.name() === "gate");
-    expect(gate).toBeDefined();
-    expect((gate as unknown as { _hidden: boolean })._hidden).toBe(true);
+    for (const name of ["gate", "log-worker"]) {
+      const task = tunnel?.commands.find((c) => c.name() === name);
+      expect(task).toBeDefined();
+      expect((task as unknown as { _hidden: boolean })._hidden).toBe(true);
+    }
+    expect(tunnel?.helpInformation()).not.toMatch(/^\s+log-worker\b/m);
     expect(tunnel?.helpInformation()).not.toMatch(/^\s+gate\b/m);
   });
 });

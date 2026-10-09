@@ -14,11 +14,16 @@ import {
 } from "../core/servers/index.ts";
 import {
   processLogDestination,
+  runProcessLogWorker,
   runRotatingProcessSync,
   spawnRotatingProcess,
 } from "../core/storage/process-log.ts";
 import { normalizeAllowEntry } from "../lib/tunnel/allowlist.ts";
-import { detectPublicAddresses, planCurrentAddresses } from "../lib/tunnel/current-address.ts";
+import {
+  type DetectOptions,
+  detectPublicAddresses,
+  planCurrentAddresses,
+} from "../lib/tunnel/current-address.ts";
 import { ALLOW_PATHS_ENV, normalizeAllowPaths } from "../lib/tunnel/path-scope.ts";
 import {
   connectProbe,
@@ -276,12 +281,26 @@ export function resolveGateLaunch(i: GateLaunchInputs): GateLaunch | null {
   return null;
 }
 
-function currentGateLaunch(): GateLaunch | null {
+/**
+ * How to start the log wrapper that rotates each process's output. Beside a
+ * source or package checkout the default (this package's own wrapper file)
+ * works; inside a single-file bundle the CLI re-executes itself with the hidden
+ * `tunnel log-worker` task instead.
+ */
+export function resolveWorkerLaunch(i: GateLaunchInputs): GateLaunch | undefined {
+  if (i.gateScriptExists) return undefined;
+  if (i.underBun && i.entryScript && i.entryScriptExists) {
+    return { command: i.execPath, arguments: [i.entryScript, "tunnel", "log-worker"] };
+  }
+  return undefined;
+}
+
+function currentLaunchInputs(): GateLaunchInputs {
   const gateScript = gateScriptPath();
   const entryScript = process.argv[1] ? resolve(process.argv[1]) : undefined;
   const underBun = typeof process.versions.bun === "string";
   const gateScriptExists = existsSync(gateScript);
-  return resolveGateLaunch({
+  return {
     gateScript,
     gateScriptExists,
     underBun,
@@ -289,7 +308,15 @@ function currentGateLaunch(): GateLaunch | null {
     entryScript,
     entryScriptExists: entryScript ? existsSync(entryScript) : false,
     bunOnPath: !underBun && gateScriptExists && bunOnPath(),
-  });
+  };
+}
+
+function currentGateLaunch(): GateLaunch | null {
+  return resolveGateLaunch(currentLaunchInputs());
+}
+
+function currentWorkerLaunch(): GateLaunch | undefined {
+  return resolveWorkerLaunch(currentLaunchInputs());
 }
 
 function bunOnPath(): boolean {
@@ -567,6 +594,7 @@ function spawnGate(o: GateSpawnOpts, launch: GateLaunch): ChildProcess {
     path: o.gateLogPath,
     command: launch.command,
     arguments: [...launch.arguments, "--name", o.name, "--port", String(o.gatePort)],
+    worker: currentWorkerLaunch(),
     env: {
       ...process.env,
       HARNERY_TUNNEL_ALLOW: o.allowedIps.join(","),
@@ -715,6 +743,7 @@ async function up(opts: UpOpts): Promise<void> {
       path: providerLogPath,
       command: cloudflaredBin!,
       arguments: ["tunnel", "--protocol", "http2", "--url", `http://localhost:${gatePort}`],
+      worker: currentWorkerLaunch(),
     });
     cfdProc.unref();
     cloudflaredPid = cfdProc.pid!;
@@ -1258,8 +1287,11 @@ export interface RefreshCurrentOptions {
   emit?: EmitContext;
   /** Reload running Cloudflare gates after an allowlist change, keeping their URLs. */
   reload: boolean;
-  /** Skip the success lines (warnings and errors still print). */
+  /** Speak only when the allowlist changed or no address could be detected. */
   quiet?: boolean;
+  /** Lookup timeout and retries; a sync that must not stall offline passes small ones. */
+  detectOptions?: DetectOptions;
+  /** Replaces the lookup (tests). */
   detect?: typeof detectPublicAddresses;
 }
 
@@ -1283,10 +1315,15 @@ export async function refreshCurrentAddress(
   options: RefreshCurrentOptions,
 ): Promise<RefreshCurrentResult> {
   if (options.emit) emit = options.emit;
-  const detected = await (options.detect ?? detectPublicAddresses)();
+  const detected = await (options.detect ?? detectPublicAddresses)(options.detectOptions);
   const cfg = readConfig();
   const plan = planCurrentAddresses(cfg, detected);
-  for (const warning of plan.warnings) emit.text(`  ⚠ ${warning}\n`);
+  const noAddress = !detected.v4 && !detected.v6;
+  // Quiet runs (a host's sync) speak only when something changed or nothing
+  // could be detected; "no IPv6 on this network" is not news every time.
+  if (!options.quiet || noAddress || plan.changed) {
+    for (const warning of plan.warnings) emit.text(`  ⚠ ${warning}\n`);
+  }
   const result: RefreshCurrentResult = {
     ok: true,
     changed: plan.changed,
@@ -1294,11 +1331,10 @@ export async function refreshCurrentAddress(
     removed: plan.removed,
     warnings: plan.warnings,
   };
-  const noAddress = !detected.v4 && !detected.v6;
   if (noAddress) return result;
 
   writeConfig(plan.config);
-  if (!options.quiet) {
+  if (!options.quiet || plan.changed) {
     const found = [detected.v4, detected.v6].filter(Boolean).join(", ");
     emit.text(`This machine reaches Cloudflare as ${found}.\n`);
     emit.text(
@@ -1430,6 +1466,13 @@ export function registerTunnelCommand(
     .description("Remove an address or range from the allowlist")
     .action(allowRm);
   allow.command("list").description("List allowed entries (default action)").action(allowList);
+
+  cmd
+    .command("log-worker <specification>", { hidden: true })
+    .description("Internal: run the output-rotating wrapper for one tunnel process")
+    .action(async (specification: string) => {
+      await runProcessLogWorker(specification);
+    });
 
   cmd
     .command("gate", { hidden: true })

@@ -38,6 +38,13 @@ export interface RotatingProcessOptions {
   env?: Readonly<Record<string, string | undefined>>;
   max_bytes?: number;
   backups?: number;
+  /**
+   * How to start the log wrapper, as an argv prefix that takes the JSON
+   * specification as its final argument and ends in `runProcessLogWorker`. The
+   * default runs this module's own file, which does not exist inside a
+   * single-file host bundle; such a host supplies a hidden task of its own.
+   */
+  worker?: { command: string; arguments: string[] };
 }
 
 const DEFAULT_PROCESS_LOG_BYTES = 5 * 1024 * 1024;
@@ -139,7 +146,11 @@ export function spawnRotatingProcess(options: RotatingProcessOptions): ChildProc
   // Run the wrapper with the Bun that is running this code: a host may carry a
   // managed Bun that is not on PATH.
   const bun = typeof process.versions.bun === "string" ? process.execPath : "bun";
-  return spawn(bun, [fileURLToPath(import.meta.url), "--run", specification], {
+  const launcher = options.worker ?? {
+    command: bun,
+    arguments: [fileURLToPath(import.meta.url), "--run"],
+  };
+  return spawn(launcher.command, [...launcher.arguments, specification], {
     detached: true,
     stdio: "ignore",
     env: { ...(options.env ?? process.env) } as NodeJS.ProcessEnv,
@@ -165,7 +176,8 @@ export function runRotatingProcessSync(options: RotatingProcessOptions): number 
   return result.status;
 }
 
-async function runProcessLogWorker(raw: string | undefined): Promise<void> {
+/** The wrapper's body: run the specified command and rotate its output into the log. */
+export async function runProcessLogWorker(raw: string | undefined): Promise<void> {
   const parsed = JSON.parse(raw ?? "null") as RotatingProcessOptions | null;
   if (!parsed || typeof parsed.command !== "string" || !Array.isArray(parsed.arguments)) {
     throw new Error("invalid process log worker specification");
