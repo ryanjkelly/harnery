@@ -5,11 +5,15 @@ on:
     branches: [main, next]
     paths:
       - "web/**"
+      - "scripts/check-local.mjs"
+      - "package.json"
       - ".github/workflows/web.yml"
   pull_request:
     branches: [main]
     paths:
       - "web/**"
+      - "scripts/check-local.mjs"
+      - "package.json"
       - ".github/workflows/web.yml"
   workflow_dispatch:
 
@@ -40,11 +44,6 @@ jobs:
         working-directory: .
         run: bun install --frozen-lockfile
 
-      - name: Install dashboard dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Unit tests
-        run: bun test
-
-      - name: Production build
-        run: bun run build
+      - name: Dashboard dependencies, tests, and production build
+        working-directory: .
+        run: bun run check:local web

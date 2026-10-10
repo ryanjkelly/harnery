@@ -31,14 +31,8 @@ jobs:
       - name: Install Playwright Chromium
         run: bun x playwright install --with-deps chromium
 
-      - name: Lint (Biome)
-        run: bun run lint
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Unit tests
-        run: bun run test
+      - name: Lint, typecheck, and unit tests
+        run: bun run check:local core
 
       # Integration tests are bash-based: they shell out to `bin/harn` and
       # assert on stdout/stderr + filesystem side effects. Skipped on PRs from
@@ -46,7 +40,7 @@ jobs:
       # which Actions provides, but the test script assumes a specific repo
       # layout we set up via the integration runner).
       - name: Integration tests
-        run: bun run test:integration
+        run: bun run check:local integration
         if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
 
   smoke:
@@ -76,10 +70,10 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Run with Node (not `bun run`) so process.execPath inside the script is
-      # the Node binary, exercising the real end-user runtime.
+      # The shared runner spawns the smoke script with Node, so process.execPath
+      # exercises the real end-user runtime rather than Bun.
       - name: Smoke test (build, pack, install --omit=dev, run on Node)
-        run: node scripts/smoke-test.mjs
+        run: bun run check:local smoke
 
   openclaw-node24:
     name: OpenClaw plugin on Node 24

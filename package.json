@@ -266,6 +266,7 @@
     "test:web": "cd web && bun install && bun test",
     "test:integration": "bash tests/integration/run.sh",
     "smoke": "node scripts/smoke-test.mjs",
+    "check:local": "node scripts/check-local.mjs",
     "docs:dev": "bun run --cwd docs dev",
     "docs:build": "bun run --cwd docs build",
     "brand:showcase": "node scripts/build-brand-showcase.mjs",

@@ -58,8 +58,23 @@ The release PR is opened by the Actions bot, so branch-protection checks never r
 **Published-package CI only runs on `main`.** Commits to `next` do not run the root suite, so a green `next` is not release-verified; the full suite runs only once you push to `main`. Run it locally before releasing:
 
 ```bash
-bun run typecheck && bun run lint && bun run test && bun run test:integration
+bun run check:local
 ```
+
+This command runs lint, typechecking, the isolated core test suite, integration
+tests, the packed Node package smoke test, and the dashboard tests and production
+build. It stops on the first failure and never publishes or opens a release PR.
+GitHub CI and the Web workflow call the same groups. For a focused check, use
+`bun run check:local web`, `bun run check:local core`, or
+`bun run check:local smoke`; `--list` prints the selected commands without running
+them. Install root dependencies with `bun install --frozen-lockfile` first.
+
+Local checks use the installed Node version. GitHub still verifies its pinned
+Node runtimes, installer jobs, and release permissions. npm trusted publishing
+uses GitHub's identity token, so an ordinary local run cannot verify or replace
+that publishing step. GitHub Actions email delivery is a separate account
+notification preference; passing local checks reduces avoidable failures but
+does not disable those emails.
 
 The `installers` job also runs only on `main`: it packs the tarball and exercises the `install.sh` / `uninstall.sh` one-liners plus a `scripts/setup.sh` → `scripts/teardown.sh` round-trip. Those shell scripts have no unit tests, so if you touch them, run that round-trip against a throwaway project yourself, or a regression stays hidden on `next` until release.
 

@@ -1,0 +1,30 @@
+---
+title: "0203: Share workflow checks with local verification"
+description: "Run the core, integration, package, and dashboard checks locally through the same commands used in GitHub."
+---
+
+**Status:** accepted (2026-10-10) · **Scope:** development checks
+
+## Context
+
+Hosted checks expose failures after a push. The core and dashboard already have
+local test commands, but no single command covers both surfaces and the packed
+Node package. Their workflow steps can also drift from local instructions.
+
+## Alternatives considered
+
+- Emulate the complete workflows in Docker. That adds a runner dependency and
+  still cannot reproduce GitHub's trusted-publishing identity locally.
+- Remove hosted checks. That loses the independent runtime and installer checks
+  required before a release.
+
+## Decision
+
+`bun run check:local` runs the existing checks in order and stops on the first
+failure. Named groups select core, integration, packed-package smoke, or dashboard
+checks. CI and Web call those same groups. The script resolves its repository
+from its own location and uses child argument arrays without a shell.
+
+Hosted checks retain pinned Node runtimes, installer coverage, and release
+authority. Local verification never publishes, pushes, or opens a release PR.
+Workflow email delivery remains a separate GitHub account preference.
