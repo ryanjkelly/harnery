@@ -1,0 +1,38 @@
+---
+title: "0204: Check Codec runtime imports without rejecting read-only Git discovery"
+description: "Ignore erased type imports and constrain the existing Git root probe while keeping process control forbidden."
+---
+
+**Status:** accepted (2026-10-10) · **Scope:** dashboard dependency check
+
+## Context
+
+The dashboard workflow failed because its regex import walker followed erased
+TypeScript imports and rejected the fixed Git query used by passive storage
+permission readers.
+
+## Alternatives considered
+
+- Drop the process ban. Rejected because it would also permit arbitrary agent
+  and workflow launchers.
+- Split every shared reader from its writer and configuration dependencies.
+  Rejected for this repair because it changes core modules to address a test
+  that should distinguish read-only discovery from process control.
+
+## Decision
+
+
+The Codec boundary check uses TypeScript syntax to distinguish runtime imports
+from erased type imports. It also checks side-effect imports, re-exports, dynamic
+imports, and literal `require` calls. Its process ban retains one narrow exception
+for the canonical repository-root resolver: syntax checks require its sole
+process call to use `git rev-parse`, fixed read flags, and only cwd and encoding
+options. Shell commands, write commands, and process aliases fail the check.
+This allows existing passive configuration reads without permitting agent or
+workflow control.
+
+## Result
+
+Focused tests reproduce and reject shell execution, write flags, process aliases,
+extra process imports, and exported access to the private Git probe. The current
+Codec graph passes without relaxing any other forbidden dependency.
