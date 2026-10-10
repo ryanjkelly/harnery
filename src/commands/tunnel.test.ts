@@ -6,8 +6,16 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, loadLazyCommand } from "../commander.ts";
-import { readConfig, TUNNEL_DIR_ENV, type TunnelState, writeConfig } from "../lib/tunnel/state.ts";
 import {
+  readConfig,
+  readState,
+  TUNNEL_DIR_ENV,
+  type TunnelState,
+  writeConfig,
+  writeState,
+} from "../lib/tunnel/state.ts";
+import {
+  downOne,
   refreshCurrentAddress,
   reloadOne,
   resolveGateLaunch,
@@ -92,6 +100,59 @@ describe("tunnel command registration", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+describe("downOne", () => {
+  /**
+   * After a reboot every record is stale and a new instance can be allocated a
+   * stale record's old gate port. Stopping the stale record must not sweep that
+   * port, or it kills the live tunnel that now owns it (and the heal loop then
+   * rerolls that tunnel's public URL every pass).
+   */
+  test("leaves a port alone when another live instance owns it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "harnery-tunnel-down-"));
+    const before = process.env[TUNNEL_DIR_ENV];
+    process.env[TUNNEL_DIR_ENV] = dir;
+    const port = 9099;
+    // The live owner's gate and provider, with command lines the port sweep matches.
+    const spawnLike = (...args: string[]) => {
+      const child = spawn("bash", ["-c", "sleep 30; :", "x", ...args], { stdio: "ignore" });
+      const handle = { child, exited: false };
+      child.once("exit", () => {
+        handle.exited = true;
+      });
+      return handle;
+    };
+    const gate = spawnLike("gate.ts", "--name", "live-owner", "--port", String(port));
+    const provider = spawnLike("--url", `http://localhost:${port}`);
+    try {
+      const gone = await deadPid();
+      writeState(
+        state({
+          name: "live-owner",
+          gate_port: port,
+          gate_pid: gate.child.pid,
+          cloudflared_pid: provider.child.pid,
+        }),
+      );
+      writeState(
+        state({ name: "stale-old", gate_port: port, gate_pid: gone, cloudflared_pid: gone }),
+      );
+      downOne("stale-old", new Set());
+      await new Promise((r) => setTimeout(r, 200));
+      // An unreaped child still answers kill(pid, 0), so watch the exit events.
+      expect(gate.exited).toBe(false);
+      expect(provider.exited).toBe(false);
+      expect(readState("stale-old")).toBeNull();
+      expect(readState("live-owner")).not.toBeNull();
+    } finally {
+      gate.child.kill();
+      provider.child.kill();
+      if (before === undefined) delete process.env[TUNNEL_DIR_ENV];
+      else process.env[TUNNEL_DIR_ENV] = before;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 describe("reloadOne", () => {

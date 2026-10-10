@@ -842,7 +842,13 @@ function recordTunnelServer(state: TunnelState): void {
 }
 
 /** Tear down a single instance by name. Returns the number of processes killed. */
-function downOne(name: string, killed: Set<number>): number {
+function portHeldByOtherLiveInstance(port: number, name: string): boolean {
+  return listStates().some(
+    (s) => s.name !== name && s.gate_port === port && isProcessAlive(s.gate_pid),
+  );
+}
+
+export function downOne(name: string, killed: Set<number>): number {
   const before = killed.size;
   const state = readState(name);
   if (state) {
@@ -860,8 +866,11 @@ function downOne(name: string, killed: Set<number>): number {
     }
   }
   // Fallback: sweep orphans on this instance's gate port, even when state was
-  // lost; they'd otherwise squat on the port and break the next `up`.
-  sweepStrays(state?.gate_port ?? DEFAULT_GATE_PORT, killed);
+  // lost; they'd otherwise squat on the port and break the next `up`. Skip it
+  // when another live instance now owns that port: a stale record's port is
+  // reused after a reboot, and sweeping it would kill the live tunnel there.
+  const port = state?.gate_port ?? DEFAULT_GATE_PORT;
+  if (!portHeldByOtherLiveInstance(port, name)) sweepStrays(port, killed);
   clearState(name);
   unregisterServer(tunnelServerId(name), { coordRoot: registryRoot() });
   return killed.size - before;

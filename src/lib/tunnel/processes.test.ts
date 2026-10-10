@@ -66,6 +66,16 @@ describe("findPidsByCommandLine", () => {
     expect(calls).toEqual(["pgrep"]);
   });
 
+  test("ends pgrep options before the pattern, so a pattern starting with -- is not read as a flag", () => {
+    const seen: string[][] = [];
+    const run = (command: string, args: string[]) => {
+      seen.push([command, ...args]);
+      return ok("103\n");
+    };
+    expect(findPidsByCommandLine("--url http://localhost:9002( |$)", "linux", run)).toEqual([103]);
+    expect(seen).toEqual([["pgrep", "-f", "--", "--url http://localhost:9002( |$)"]]);
+  });
+
   test("pgrep finding nothing is an empty answer, not a reason to try another tool", () => {
     const { run, calls } = runner({ pgrep: failed });
     expect(findPidsByCommandLine(pattern, "linux", run)).toEqual([]);

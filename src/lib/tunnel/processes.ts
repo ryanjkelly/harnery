@@ -67,7 +67,9 @@ export function findPidsByCommandLine(
   run: Run = runTool,
 ): number[] {
   if (platform !== "win32") {
-    const r = run("pgrep", ["-f", pattern]);
+    // `--` ends options: the provider pattern starts with `--url`, which pgrep
+    // would otherwise reject as an unknown flag and report as "no match".
+    const r = run("pgrep", ["-f", "--", pattern]);
     if (!r.missing) {
       if (r.status !== 0) return [];
       return r.stdout
