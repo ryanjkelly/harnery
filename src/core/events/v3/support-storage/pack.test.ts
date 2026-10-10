@@ -178,6 +178,18 @@ describe("Event Ledger V3 support-pack protocol", () => {
     ).toThrow("event_v3_support_pack_wrong_genesis_authority");
   });
 
+  test("settles rejected decompression before another pack reuses file handles", async () => {
+    const invalid = rawPack([record("diagnostics/a.json", "0123456789")]);
+    const valid = rawPack([record("diagnostics/b.json", "safe")]);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      await expect(
+        validateEventV3SupportPack(invalid, { max_decompressed_bytes: 8 }),
+      ).rejects.toThrow("event_v3_support_decompression_bound_exceeded");
+      const result = await validateEventV3SupportPack(valid);
+      expect(result.records[0]?.content.toString("utf8")).toBe("safe");
+    }
+  });
+
   test("rolls back a partial unpack when final logical validation fails", async () => {
     const invalid = rawPack([record("diagnostics/a.json", "safe")], {
       manifestLogicalDigest: `sha256:${"f".repeat(64)}`,

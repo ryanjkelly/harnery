@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { constants, createReadStream } from "node:fs";
+import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { finished } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
 import { createGunzip, createInflateRaw } from "node:zlib";
 import { stateDirMode, stateFileMode } from "../../../storage/modes.ts";
@@ -89,24 +91,17 @@ async function* streamEventV3SupportPackRecordsForManifest(
       throw new Error("event_v3_support_payload_length_mismatch");
     if (payloadStat.size > bounded.max_payload_bytes)
       throw new Error("event_v3_support_payload_too_large");
-    if ((await hashHandle(payloadPath, payloadHandle)) !== manifest.payload.digest) {
+    if ((await hashHandle(payloadHandle)) !== manifest.payload.digest) {
       throw new Error("event_v3_support_payload_digest_mismatch");
     }
     limits.fault?.("after_payload_digest", payloadPath);
     await assertCanonicalSingleGzipMember(
-      payloadPath,
       payloadHandle,
       payloadStat.size,
       bounded.max_decompressed_bytes,
     );
 
     const gunzip = createGunzip();
-    const source = createReadStream(payloadPath, {
-      fd: payloadHandle.fd,
-      autoClose: false,
-      start: 0,
-    });
-    source.pipe(gunzip);
     const decoder = new StringDecoder("utf8");
     let pending = "";
     let decompressedBytes = 0;
@@ -116,7 +111,7 @@ async function* streamEventV3SupportPackRecordsForManifest(
     const entries: EventV3LogicalAuthorityEntry[] = [];
     const seen = new Set<string>();
 
-    for await (const current of gunzip) {
+    for await (const current of decompressHandle(payloadHandle, 0, gunzip)) {
       const chunk = current as Buffer;
       decompressedBytes += chunk.length;
       if (decompressedBytes > bounded.max_decompressed_bytes) {
@@ -247,14 +242,47 @@ export async function unpackEventV3SupportPack(
   }
 }
 
-async function hashHandle(
-  path: string,
-  handle: Awaited<ReturnType<typeof open>>,
-): Promise<`sha256:${string}`> {
+async function hashHandle(handle: Awaited<ReturnType<typeof open>>): Promise<`sha256:${string}`> {
   const hash = createHash("sha256");
-  const stream = createReadStream(path, { fd: handle.fd, autoClose: false, start: 0 });
-  for await (const current of stream) hash.update(current as Buffer);
+  for await (const current of handleChunks(handle, 0)) hash.update(current);
   return `sha256:${hash.digest("hex")}`;
+}
+
+async function* handleChunks(handle: Awaited<ReturnType<typeof open>>, position: number) {
+  while (true) {
+    const buffer = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+    if (bytesRead === 0) return;
+    position += bytesRead;
+    yield buffer.subarray(0, bytesRead);
+  }
+}
+
+async function* decompressHandle(
+  handle: Awaited<ReturnType<typeof open>>,
+  start: number,
+  decoder: ReturnType<typeof createGunzip>,
+): AsyncGenerator<Buffer> {
+  const source = Readable.from(handleChunks(handle, start));
+  // Observe failures immediately, then settle source reads before the caller
+  // can close and reuse the verified handle, including on early rejection.
+  const completed = finished(source, { cleanup: true }).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  source.once("error", (error) => decoder.destroy(error));
+  source.pipe(decoder);
+  try {
+    for await (const chunk of decoder) yield chunk as Buffer;
+    source.unpipe(decoder);
+    source.resume();
+    const error = await completed;
+    if (error) throw error;
+  } finally {
+    source.destroy();
+    decoder.destroy();
+    await completed;
+  }
 }
 
 async function realDirectory(path: string): Promise<string> {
@@ -265,7 +293,6 @@ async function realDirectory(path: string): Promise<string> {
 }
 
 async function assertCanonicalSingleGzipMember(
-  path: string,
   handle: Awaited<ReturnType<typeof open>>,
   payloadBytes: number,
   maximumDecompressedBytes: number,
@@ -284,9 +311,8 @@ async function assertCanonicalSingleGzipMember(
     throw new Error("event_v3_support_gzip_header_noncanonical");
   }
   const inflate = createInflateRaw();
-  createReadStream(path, { fd: handle.fd, autoClose: false, start: 10 }).pipe(inflate);
   let decompressed = 0;
-  for await (const current of inflate) {
+  for await (const current of decompressHandle(handle, 10, inflate)) {
     decompressed += (current as Buffer).length;
     if (decompressed > maximumDecompressedBytes) {
       inflate.destroy();

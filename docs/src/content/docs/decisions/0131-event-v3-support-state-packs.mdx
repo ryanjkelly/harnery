@@ -83,3 +83,9 @@ state, and committed receipt remains reproducible byte-for-byte with its
 original path and digest. Health reporting keeps its category and rate
 signals from manifest rollups, and recovery receipts keep their meaning
 because the logical digest equals the physical digest they recorded.
+
+Malformed-payload verification settles its source reads before closing the
+verified file handle. Hashing and decompression read through that handle with
+explicit positions, so a rejected stream cannot retain a raw descriptor that a
+later pack reuses. A repeated rejection-and-valid-read regression covers this
+cleanup boundary (2026-10-10).
