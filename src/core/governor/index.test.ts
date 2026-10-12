@@ -926,13 +926,17 @@ describe("durable goal governor", () => {
       durationMs: 1,
     });
 
-    await expect(
-      runGovernor({
-        coordRoot: root,
-        goalId: "goal-ambiguous-plan-root",
-        engine: { spawners: { codex: spawner }, probeBilling },
-      }),
-    ).rejects.toThrow("plan must have exactly one final outcome; found alpha, beta");
+    const report = await runGovernor({
+      coordRoot: root,
+      goalId: "goal-ambiguous-plan-root",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(report.stop_reason).toBe("budget_exhausted");
+    expect(report.plan_outcomes[0]?.status).toBe("failed");
+    expect(report.plan_outcomes[0]?.reason).toBe(
+      "plan must have exactly one final outcome; found alpha, beta",
+    );
+    expect(report.projection.plan_generation).toBe(0);
   });
 
   test("reviewed auto-apply still requires pre-existing frozen auto_apply", async () => {
@@ -2195,16 +2199,94 @@ describe("durable goal governor", () => {
       }),
       durationMs: 1,
     });
-    await expect(
-      runGovernor({
-        coordRoot: root,
-        goalId: "goal-replan-invalid",
-        engine: { spawners: { codex: spawner }, probeBilling },
-      }),
-    ).rejects.toThrow("is not active or earlier in the plan");
+    const report = await runGovernor({
+      coordRoot: root,
+      goalId: "goal-replan-invalid",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(report.stop_reason).toBe("budget_exhausted");
+    expect(report.plan_outcomes[0]?.reason).toContain("is not active or earlier in the plan");
     const invalid = readGovernor(root, "goal-replan-invalid");
     expect(invalid.plans[0]?.status).toBe("failed");
     expect(invalid.projection.state).toBe("budget_exhausted");
+  });
+
+  test.each([
+    "recover",
+    "exhaust",
+    "tick",
+  ] as const)("invalid planner proposals preserve bounded %s behavior", async (scenario) => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "invalid-recovery-root",
+      title: "Invalid recovery root",
+      objective: "Recover without accepting an invalid graph",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createGovernor({
+      coordRoot: root,
+      id: "goal-invalid-recovery",
+      rootWorkId: "invalid-recovery-root",
+      specialists: {
+        planner: { instructions: "Plan", adapter: "codex" },
+        implementer: { instructions: "Implement", adapter: "codex" },
+      },
+      automation: { accept_passing_proof: true },
+      replanning: {
+        plannerSpecialist: "planner",
+        autoApply: true,
+        maxReplans: 3,
+        templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    let plannerCalls = 0;
+    const spawner: Spawner = async (request) => {
+      if (!request.prompt.includes("bounded replacement plan")) {
+        return { ok: true, text: "implemented", durationMs: 1 };
+      }
+      plannerCalls++;
+      const candidate = JSON.parse(replacementProposal());
+      if (scenario !== "recover" || plannerCalls === 1) {
+        candidate.work.push({ ...candidate.work[0], key: "unconnected" });
+      }
+      return { ok: true, text: JSON.stringify(candidate), durationMs: 1 };
+    };
+    const input = {
+      coordRoot: root,
+      goalId: "goal-invalid-recovery",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    };
+    // First fail the original work item so a tick reaches the planner directly.
+    await runGovernor({ ...input, mode: "tick" });
+    const report = await runGovernor({
+      ...input,
+      mode: scenario === "tick" ? "tick" : "run",
+    });
+    const record = readGovernor(root, input.goalId);
+    const first = record.plans[0]!;
+    expect(first.status).toBe("failed");
+    expect(first.events.filter((event) => event.event === "plan.failed")).toHaveLength(1);
+    expect(first.proposal).toBeUndefined();
+    expect(report.plan_outcomes[0]?.reason).toContain("exactly one final outcome");
+    expect(report.replans).toBe(plannerCalls);
+    if (scenario === "recover") {
+      expect(report.stop_reason).toBe("succeeded");
+      expect(plannerCalls).toBe(2);
+      expect(report.plan_outcomes.map((plan) => plan.status)).toEqual(["failed", "applied"]);
+      expect(record.projection.replans_remaining).toBe(1);
+    } else if (scenario === "exhaust") {
+      expect(report.stop_reason).toBe("budget_exhausted");
+      expect(plannerCalls).toBe(3);
+      expect(record.projection.replans_remaining).toBe(0);
+      expect(record.projection.plan_generation).toBe(0);
+    } else {
+      expect(report.stop_reason).toBe("tick_complete");
+      expect(plannerCalls).toBe(1);
+      expect(record.projection.next_action).toBe("replan");
+      expect(record.projection.replans_remaining).toBe(2);
+    }
   });
 
   test("creates an objective-first mission without inventing executable root work", () => {

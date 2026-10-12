@@ -124,6 +124,7 @@ export async function runGovernorPlanner(
     if (recovered) return recovered;
   }
   let proposalWritten = false;
+  let invalidProposal = false;
   try {
     const reviewRunId = reviewWorkflowRunId(request.id);
     const resumingReview = Boolean(
@@ -153,14 +154,22 @@ export async function runGovernorPlanner(
             onLog: input.onLog,
           })
         ).result;
-    const proposal = normalizeProposal(
-      request.id,
-      rawProposal,
-      input.record,
-      history.materialized_work_ids.length,
-      request.trigger ?? "recovery",
-      reviewInput ? persistedProposalTimestamp(reviewInput.candidate) : undefined,
-    );
+    let proposal: GovernorPlanProposal;
+    try {
+      proposal = normalizeProposal(
+        request.id,
+        rawProposal,
+        input.record,
+        history.materialized_work_ids.length,
+        request.trigger ?? "recovery",
+        reviewInput ? persistedProposalTimestamp(reviewInput.candidate) : undefined,
+      );
+    } catch (error) {
+      // A fresh invalid proposal can consume a replan without aborting the run.
+      // Corrupt persisted review input still requires investigation.
+      invalidProposal = !reviewInput;
+      throw error;
+    }
     if (policy.review) {
       if (proposal.decision === "attention") {
         appendPlanEvent(coordRoot, input.record.intent.id, request.id, {
@@ -258,6 +267,9 @@ export async function runGovernorPlanner(
       reason: bounded((error as Error).message, "plan failure", MAX_REASON),
       ...(failureClass ? { class: failureClass } : {}),
     });
+    if (invalidProposal) {
+      return outcome(readGovernorPlan(coordRoot, input.record.intent.id, request.id));
+    }
     throw error;
   }
 }
