@@ -32,7 +32,7 @@ harn governor service logs [--lines <n>]
 ```
 
 A governor is a bounded host above
-[`harn work`](./work/). It reconstructs a root work item's immutable dependency
+[`harn work`](/cli/work/). It reconstructs a root work item's immutable dependency
 closure, selects legal progress actions, dispatches bounded workflow attempts,
 and reconstructs the graph from transcripts and proof before every new cycle.
 
@@ -115,7 +115,7 @@ hits its limit. These adapters are attested and idle: codex, cursor.
 Attested, not merely registered. A registered adapter that has never completed a
 turn on this machine is not an alternative, and recommending it would trade one
 failure for a quieter one: every child handed to it would fail closed. Only
-[`harn adapter attest`](./adapter/) records that an adapter actually ran, so only
+[`harn adapter attest`](/cli/adapter/) records that an adapter actually ran, so only
 an attested adapter is grounds for the advice.
 
 It fires at `create` rather than at run time because the intent freezes with no

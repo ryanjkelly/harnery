@@ -3,7 +3,7 @@ title: "0085: Gate session-name display before later tools"
 description: "ADR: treat a suggested session name as a pending display latch and satisfy it only when the next assistant text starts with the exact copyable block."
 ---
 
-**Status:** accepted (2026-08-20); lifecycle re-mint scope narrowed by [ADR 0086](./0086-limit-session-name-changes-to-start-and-done) · **Scope:** product tier (`core/agents`, `core/hooks`)
+**Status:** accepted (2026-08-20); lifecycle re-mint scope narrowed by [ADR 0086](/decisions/0086-limit-session-name-changes-to-start-and-done/) · **Scope:** product tier (`core/agents`, `core/hooks`)
 
 ## Context
 
@@ -20,7 +20,7 @@ the prompt nudge stopped once a suggestion existed but
 
 Stop enforcement cannot provide one portable enforcement point. Claude Code can continue
 the same turn, Cursor does not expose reply text in its Stop payload, and
-[ADR 0051](./0051-codex-stop-checks-are-observe-only) keeps Codex Stop checks
+[ADR 0051](/decisions/0051-codex-stop-checks-are-observe-only/) keeps Codex Stop checks
 observe-only because a continuation can replace the completed answer.
 
 ## Alternatives

@@ -63,7 +63,7 @@ external actions, unknown cost, and the schema defaults shown above.
 The workflow engine owns dispatch, so dispatch policy is authoritative. External
 mutation policy is authoritative when host code calls `ctx.authorize()` before
 the operation. It does not intercept arbitrary tools inside a subprocess
-adapter. Use [`harn adapter`](./adapter/) to inspect each adapter's separate
+adapter. Use [`harn adapter`](/cli/adapter/) to inspect each adapter's separate
 `policyMapping` capability claim.
 
 Every final decision is included in the workflow proof packet. Receipts contain

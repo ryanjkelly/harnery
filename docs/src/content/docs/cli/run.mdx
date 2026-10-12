@@ -183,8 +183,8 @@ export default async function run({ agent, parallel, stage, log, evidence }) {
 
 ### Work-linked context
 
-When the workflow runs through [`harn work`](./work/) or
-[`harn governor`](./governor/), `ctx.work` contains the frozen assignment:
+When the workflow runs through [`harn work`](/cli/work/) or
+[`harn governor`](/cli/governor/), `ctx.work` contains the frozen assignment:
 
 ```js
 export default async function run({ work, agent, evidence }) {
@@ -296,7 +296,7 @@ only checked when the call executes.
 `low | medium | high | xhigh | max`; Codex accepts
 `none | minimal | low | medium | high | xhigh`. Cursor does not accept a
 separate effort option through Harnery because its effort syntax is embedded
-inside some parameterized model ids. See [`harn adapter`](./adapter/) for the
+inside some parameterized model ids. See [`harn adapter`](/cli/adapter/) for the
 executable capability declaration.
 
 ### Blocking on a human
@@ -328,7 +328,7 @@ The distinction is load-bearing because it changes what happens next:
   its full budget. The same three classes share this treatment; see
   [failure classes](#failure-classes).
 - The work item goes to `blocked` with `next_action: "none"`, so a
-  [`harn governor`](./governor/) running with `retry_blocked` **cannot re-issue
+  [`harn governor`](/cli/governor/) running with `retry_blocked` **cannot re-issue
   it**. That automation exists to clear failures without a human; a correct
   refusal is not a failure.
 - The goal's own reason names the decision rather than reporting a count of
@@ -342,7 +342,7 @@ told, because the thing it is waiting for is a person who was never asked.
 
 Pass the `decision` id whenever you have one; it is what turns "something needs
 a human" into a question someone can actually answer. File it first with
-[`harn decision`](./decision/). Blocking without an id still stops the item, but
+[`harn decision`](/cli/decision/). Blocking without an id still stops the item, but
 the operator gets prose and has to go find the question themselves.
 
 ### Failure classes
@@ -362,7 +362,7 @@ Absent class ⇒ an ordinary work failure, charged and retryable as before.
 ### Specialist profiles
 
 An embedding host may provide `EngineOpts.specialists`, and a
-[`harn governor`](./governor/) freezes those profiles into its durable goal
+[`harn governor`](/cli/governor/) freezes those profiles into its durable goal
 intent. A workflow selects one with `agent(prompt, { specialist: "reviewer" })`.
 The profile contributes bounded instructions plus optional adapter, model,
 effort, turn, timeout, and schema-retry defaults; options on the individual
@@ -397,7 +397,7 @@ writes a durable request under `.harnery/approvals/`; no protected operation
 runs while it is pending. Library callers remain fail-closed by default and
 must select `EngineOpts.approvalMode = "park"` deliberately. An embedding host
 can still supply `EngineOpts.resolvePolicyAsk` for immediate decisions. Use
-[`harn policy`](./policy/) to validate a document before a run.
+[`harn policy`](/cli/policy/) to validate a document before a run.
 
 `--isolation` declares the requested boundary: `shared`, `worktree`, `sandbox`,
 or `remote`. The standalone CLI can create the built-in local Git boundary

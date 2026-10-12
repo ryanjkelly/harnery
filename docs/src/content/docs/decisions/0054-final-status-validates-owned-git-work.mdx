@@ -3,7 +3,7 @@ title: "0054: Final status validates owned Git work"
 description: "ADR: the opt-in final status call issues its box only after the current session's held paths are committed and their repositories are pushed."
 ---
 
-**Status:** superseded by [ADR 0055](./0055-git-finalization-is-host-opt-in) (2026-08-05) · **Scope:** product tier (`commands/agents`, `core/agents`)
+**Status:** superseded by [ADR 0055](/decisions/0055-git-finalization-is-host-opt-in/) (2026-08-05) · **Scope:** product tier (`commands/agents`, `core/agents`)
 
 ## Context
 
@@ -19,9 +19,9 @@ A whole-worktree cleanliness check would turn another session's legitimate work
 into a false block. A pre-commit hook cannot help because the failure happens
 when the agent never starts a commit.
 
-Codex cannot use a hard Stop block for this. [ADR 0051](./0051-codex-stop-checks-are-observe-only)
+Codex cannot use a hard Stop block for this. [ADR 0051](/decisions/0051-codex-stop-checks-are-observe-only/)
 keeps that path observe-only because a continuation can replace the substantive
-answer. [ADR 0052](./0052-codex-status-footer-is-prompted-not-enforced) instead
+answer. [ADR 0052](/decisions/0052-codex-status-footer-is-prompted-not-enforced/) instead
 puts a fresh final-command reminder in every Codex prompt.
 
 ## Decision

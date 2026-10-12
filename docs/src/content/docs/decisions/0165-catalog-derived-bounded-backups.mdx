@@ -12,7 +12,7 @@ sidebar:
 
 `harn backup snapshot` used a second, hand-written list of directories. That list included the event ledger but missed several smaller recovery stores. In one active project, the ledger had grown to about 1.2 GB across roughly 80,000 files while the durable coordination records needed for routine recovery totaled about 23 MB.
 
-The source-owned storage catalog introduced by [ADR 0129](./0129-source-owned-storage-catalog/) now states which component owns each persistent family, how durable it is, and where its roots live. Maintaining another directory list in the backup command would let catalog and backup coverage drift apart.
+The source-owned storage catalog introduced by [ADR 0129](/decisions/0129-source-owned-storage-catalog/) now states which component owns each persistent family, how durable it is, and where its roots live. Maintaining another directory list in the backup command would let catalog and backup coverage drift apart.
 
 Backups also ran only when someone remembered the command. A project could have a valid repository and still have no recent snapshot. Multiple agent adapters already share the session-start hook, which provides a portable place to request a snapshot when the machine is in use.
 
