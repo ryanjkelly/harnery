@@ -82,11 +82,17 @@ export function nodeOptionsWithHeapCap(mb: number): string | undefined {
   return `${inherited} --max-old-space-size=${mb}`.trim();
 }
 
-/** Preload the request diagnostics hook without replacing Next's HTTP server. */
+/**
+ * Preload the dashboard's server hooks (keep-alive and request diagnostics)
+ * without replacing Next's HTTP server. NODE_OPTIONS reaches the child that
+ * `next dev` forks, but Next re-parses every `--import` into one value, so
+ * this names the single combined preload; a second, different `--import`
+ * would collapse into an unloadable path (web/server-preload.mjs).
+ */
 export function nodeOptionsWithWebDiagnostics(webDir: string, mb: number): string {
   const inherited = nodeOptionsWithHeapCap(mb) ?? "";
-  if (inherited.includes("server-performance.mjs")) return inherited;
-  const preload = pathToFileURL(path.join(webDir, "server-performance.mjs")).href;
+  if (inherited.includes("server-preload.mjs")) return inherited;
+  const preload = pathToFileURL(path.join(webDir, "server-preload.mjs")).href;
   return `${inherited} --import=${preload}`.trim();
 }
 

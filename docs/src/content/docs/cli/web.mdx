@@ -127,7 +127,7 @@ launch is logged as a warning and never prevents the dashboard from starting.
 The npm package omits the dashboard to keep the CLI lean. When `web/` is absent (a plain `npm i -g harnery`), the first `harn web up` fetches it:
 
 1. Clones the harnery repo at the matching version tag (`v<your version>`) into `~/.cache/harnery/web/<ref>/`.
-2. Installs the web app's deps there (just `web/`; no root install, no browser downloads).
+2. Installs dependencies there, first at the repository root and then in `web/`, because the dashboard reads harnery's `src/` and resolves the `playwright` package. No browsers are downloaded.
 3. Boots it. Later runs reuse the cache, so only the first launch pays the cost.
 
 | Flag / env | Effect |

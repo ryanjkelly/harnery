@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -160,14 +160,29 @@ describe("nodeOptionsWithHeapCap", () => {
     process.env.NODE_OPTIONS = "--enable-source-maps";
     const options = nodeOptionsWithWebDiagnostics("/tmp/harnery web", 2048);
     expect(options).toContain("--enable-source-maps --max-old-space-size=2048");
-    expect(options).toContain("--import=file:///tmp/harnery%20web/server-performance.mjs");
+    expect(options).toContain("--import=file:///tmp/harnery%20web/server-preload.mjs");
   });
 
   test("does not add a duplicate web diagnostics preload", () => {
-    process.env.NODE_OPTIONS = "--import=file:///tmp/server-performance.mjs";
+    process.env.NODE_OPTIONS = "--import=file:///tmp/server-preload.mjs";
     expect(nodeOptionsWithWebDiagnostics("/elsewhere", 0)).toBe(
-      "--import=file:///tmp/server-performance.mjs",
+      "--import=file:///tmp/server-preload.mjs",
     );
+  });
+
+  test("next dev gets exactly one preload, written with '=' so Next cannot merge it", () => {
+    // Next re-parses `--import` flags from the arguments and NODE_OPTIONS into
+    // one value for its dev child; a bare `--import x` or a second preload
+    // turns into one space-joined path and the child cannot start.
+    const webDir = join(import.meta.dir, "..", "..", "web");
+    const pkg = JSON.parse(readFileSync(join(webDir, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    const imports = pkg.scripts.dev?.match(/--import[=\s]\S+/g) ?? [];
+    expect(imports).toEqual(["--import=./server-preload.mjs"]);
+    const preload = readFileSync(join(webDir, "server-preload.mjs"), "utf8");
+    expect(preload).toContain('import "./server-keepalive.mjs";');
+    expect(preload).toContain('import "./server-performance.mjs";');
   });
 });
 

@@ -16,9 +16,11 @@ import type { EmitContext } from "../commander.ts";
  * harnery repo at the *matching version tag* into a cache dir and install the
  * web app's deps. Subsequent runs reuse the cache.
  *
- * The only thing `web/` pulls from `src/` is `harnery/core/journal` (a single,
- * dependency-free module), so the install is `web/` deps only: no root install,
- * no Playwright browser download.
+ * `web/` imports readers from `src/`, and `web/next.config.ts` resolves the
+ * root `playwright` package, so the install covers the repository root and
+ * then `web/`. Installing the `playwright` package downloads no browsers.
+ * Installing `web/` alone left `harn web up` failing with
+ * `Cannot find module 'playwright/package.json'`.
  */
 
 const DEFAULT_REPO_URL = "https://github.com/ryanjkelly/harnery.git";
@@ -53,8 +55,8 @@ function webCacheRoot(ref: string): string {
 }
 
 /** bun if available (preferred), else npm. Both support `<runner> install` and `<runner> run <script>`. */
-export function webRunner(): "bun" | "npm" {
-  const r = spawnSync("bun", ["--version"], { stdio: "ignore" });
+export function webRunner(spawn: typeof spawnSync = spawnSync): "bun" | "npm" {
+  const r = spawn("bun", ["--version"], { stdio: "ignore" });
   return r.status === 0 ? "bun" : "npm";
 }
 
@@ -63,14 +65,20 @@ export function webRunner(): "bun" | "npm" {
  * its path, fetching (clone + install) on first use. Returns null on failure
  * (after emitting an actionable error).
  */
-export function lazyFetchWebRoot(emit: EmitContext): string | null {
+export function lazyFetchWebRoot(
+  emit: EmitContext,
+  spawn: typeof spawnSync = spawnSync,
+): string | null {
   const { version, repoUrl } = readPkg();
   const ref = resolveRef(version);
   const cacheRoot = webCacheRoot(ref);
   const webDir = path.join(cacheRoot, "web");
 
-  // node_modules in the cached web/ is the "fetched + installed" marker.
-  if (existsSync(path.join(webDir, "node_modules"))) {
+  // node_modules in both the cached root and web/ is the "fetched + installed" marker.
+  if (
+    existsSync(path.join(cacheRoot, "node_modules")) &&
+    existsSync(path.join(webDir, "node_modules"))
+  ) {
     emit.log(`harn web · using cached dashboard (${ref})`, "info");
     return webDir;
   }
@@ -85,7 +93,7 @@ export function lazyFetchWebRoot(emit: EmitContext): string | null {
   if (existsSync(cacheRoot)) rmSync(cacheRoot, { recursive: true, force: true });
   mkdirSync(path.dirname(cacheRoot), { recursive: true });
 
-  const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", ref, repoUrl, cacheRoot], {
+  const clone = spawn("git", ["clone", "--depth", "1", "--branch", ref, repoUrl, cacheRoot], {
     stdio: "inherit",
   });
   if (clone.status !== 0) {
@@ -100,16 +108,19 @@ export function lazyFetchWebRoot(emit: EmitContext): string | null {
     return null;
   }
 
-  const runner = webRunner();
-  emit.log(`harn web · installing dashboard deps (${runner} install in web/)`, "info");
-  const install = spawnSync(runner, ["install"], { cwd: webDir, stdio: "inherit" });
-  if (install.status !== 0) {
-    emit.error({
-      code: "web_fetch_failed",
-      message: `${runner} install in ${webDir} failed (status ${install.status})`,
-      hint: `Try manually: cd ${webDir} && ${runner} install`,
-    });
-    return null;
+  const runner = webRunner(spawn);
+  for (const dir of [cacheRoot, webDir]) {
+    const where = dir === webDir ? "web/" : "the harnery root";
+    emit.log(`harn web · installing dashboard deps (${runner} install in ${where})`, "info");
+    const install = spawn(runner, ["install"], { cwd: dir, stdio: "inherit" });
+    if (install.status !== 0) {
+      emit.error({
+        code: "web_fetch_failed",
+        message: `${runner} install in ${dir} failed (status ${install.status})`,
+        hint: `Try manually: cd ${dir} && ${runner} install`,
+      });
+      return null;
+    }
   }
 
   emit.log(`harn web · dashboard ready (cached at ${webDir})`, "info");
