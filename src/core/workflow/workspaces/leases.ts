@@ -39,7 +39,8 @@ export type LeaseRecoveryStep =
   | "claim_created"
   | "stale_pinned"
   | "current_removed"
-  | "new_current_linked";
+  | "new_current_linked"
+  | "recovery_retired";
 
 export interface AcquireNoClobberLeaseInput {
   path: string;
@@ -156,7 +157,7 @@ export function acquireNoClobberLease(input: AcquireNoClobberLeaseInput): NoClob
       linkSync(currentPath, pinPath);
       assertSameInodeAndBytes(currentPath, pinPath, observed.bytes);
     } catch {
-      abortUnchangedRecoveryClaim(leaseDir, recoveryPath, pinPath, owner);
+      abortUnchangedRecoveryClaim(leaseDir, recoveryPath, owner);
       recoveryClaimed = false;
       throw new Error(`lease ${input.scope} recovery raced with another contender`);
     }
@@ -174,10 +175,9 @@ export function acquireNoClobberLease(input: AcquireNoClobberLeaseInput): NoClob
     input.onRecoveryStep?.("new_current_linked");
 
     removePinnedOwner(leaseDir, pinPath, observed.owner);
-    unlinkSync(pinPath);
-    unlinkSync(join(recoveryPath, "claim.json"));
-    rmdirSync(recoveryPath);
-    fsyncDirectory(leaseDir);
+    retireRecoveryClaim(leaseDir, recoveryPath, owner, () =>
+      input.onRecoveryStep?.("recovery_retired"),
+    );
     return {
       ...leaseHandle(leaseDir, ownerPath, ownerBytes, owner),
       recovered_owner: observed.owner,
@@ -326,16 +326,34 @@ function reclaimAbandonedRecovery(
 function abortUnchangedRecoveryClaim(
   leaseDir: string,
   recoveryPath: string,
-  pinPath: string,
   claimant: NoClobberLeaseOwner,
 ): void {
   const claim = readRecoveryClaim(recoveryPath);
   if (claim.claimant.owner_id !== claimant.owner_id) {
     throw new Error(`lease ${claimant.scope} recovery ownership changed`);
   }
-  safeUnlink(pinPath);
-  unlinkSync(join(recoveryPath, "claim.json"));
-  rmdirSync(recoveryPath);
+  retireRecoveryClaim(leaseDir, recoveryPath, claimant);
+}
+
+/**
+ * Move this claimant's recovery directory to a private name before emptying
+ * it. Renaming a directory onto an existing empty directory replaces it, so
+ * emptying `recovery` in place would let a contender's claim land there and
+ * fail this claimant's final rmdir after it already holds the lease.
+ */
+function retireRecoveryClaim(
+  leaseDir: string,
+  recoveryPath: string,
+  claimant: NoClobberLeaseOwner,
+  onRetired?: () => void,
+): void {
+  const retired = join(leaseDir, `recovery-retired-${claimant.owner_id}`);
+  renameSync(recoveryPath, retired);
+  fsyncDirectory(leaseDir);
+  onRetired?.();
+  safeUnlink(join(retired, "stale-pin"));
+  unlinkSync(join(retired, "claim.json"));
+  rmdirSync(retired);
   fsyncDirectory(leaseDir);
 }
 

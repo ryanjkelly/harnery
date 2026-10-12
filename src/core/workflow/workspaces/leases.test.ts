@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -209,6 +210,52 @@ describe("no-clobber workspace leases", () => {
     expect(readdirSync(path).filter((entry) => entry.startsWith("recovery"))).toEqual([]);
     expect(readCurrentOwner(path).owner_id).toBe(racerId);
     expect(readdirSync(path).filter((entry) => entry.startsWith("owner-"))).toHaveLength(2);
+  });
+
+  test("a contender's claim landing on an emptied recovery directory cannot strand the winner", () => {
+    const fixture = resolve(import.meta.dir, "__fixtures__/leases-race.ts");
+    const run = Bun.spawnSync([process.execPath, "test", fixture], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(`${run.stdout}${run.stderr}`).toContain(" 1 pass");
+    expect(run.exitCode).toBe(0);
+  });
+
+  test("finishes its recovery when a contender's claim lands after the claim is retired", () => {
+    const path = join(tempRoot("workspace-lease-late-claim"), "operation.lease");
+    const now = Date.parse("2026-01-01T00:00:00.000Z");
+    acquireNoClobberLease({
+      path,
+      scope: "repository",
+      authoritySha256: DIGEST,
+      staleAfterMs: 1_000,
+      now: () => now,
+      pid: DEAD_PID,
+    });
+    const recovery = join(path, "recovery");
+    const late = join(path, "recovery-claim-late");
+
+    const lease = acquireNoClobberLease({
+      path,
+      scope: "repository",
+      authoritySha256: DIGEST,
+      staleAfterMs: 1_000,
+      now: () => now + 2_000,
+      validateStaleOwner: (owner) => owner.authority_sha256 === DIGEST,
+      onRecoveryStep: (step) => {
+        if (step !== "recovery_retired") return;
+        // A contender's rename succeeds once the shared name is free.
+        mkdirSync(late);
+        writeFileSync(join(late, "claim.json"), "{}\n");
+        renameSync(late, recovery);
+      },
+    });
+
+    expect(readCurrentOwner(path).owner_id).toBe(lease.owner.owner_id);
+    expect(existsSync(join(recovery, "claim.json"))).toBe(true);
+    expect(readdirSync(path).filter((entry) => entry.startsWith("recovery-retired-"))).toEqual([]);
+    lease.release();
   });
 
   for (const boundary of [
