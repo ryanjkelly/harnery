@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.43.0
+
+### Minor Changes
+
+- be5a79d: The shared PreToolUse hook now denies shell `rm` (including `xargs rm`, `find -exec rm`, and `bash -c` forms) and points agents to `<bin> rm`, `git rm`, or `artifacts discard`. `HARNERY_ALLOW_RM=1` on the command overrides.
+- cf57ac6: Claude Code forks record their lineage again. Both fork flows now start under the fork's own id, so Harnery detects the parent at session start (from copied rows that keep the parent's session id) or at the fork's first tool call (from preserved message uuids), and treats inherited history from a finished session as a continuation. A fork of a live session is told the parent's name, task, and files and not to end it; peer tables and `agents status` label the parent and the fork; and `agents end` and `agents lifecycle --session-id` refuse a fork ancestor without `--force-ancestor`.
+- 8323bce: `tunnel` runs on macOS and Windows and from a single-file host bundle, and its gate allowlist understands ranges. Entries in `tunnel allow` can be CIDR ranges (`203.0.113.0/24`, `2601:db8:1:2::/64`) as well as addresses, and IPv6 spellings are normalized. `tunnel allow add --current` allows this machine's public IPv4 /32 and IPv6 /64 as Cloudflare sees them, replaces only the entries the previous `--current` added, and reloads running gates so public URLs are kept. When the gate script is not on disk (a bundled host CLI), the CLI re-executes itself with hidden `tunnel gate` and `tunnel log-worker` tasks (the log wrapper launcher is now an option of `spawnRotatingProcess`). Process and port discovery gains macOS and Windows paths and tolerates missing tools. `HARNERY_CLOUDFLARED` and the config's `cloudflared_path` name an explicit cloudflared binary, and `HARNERY_TUNNEL_DIR` moves tunnel state. Host programs can mount the command with `registerHarneryTunnelCommand` and refresh the allowlist with `refreshTunnelCurrentAddress`.
+
+### Patch Changes
+
+- 77e4a9a: Settle support-pack decompression reads before closing the verified payload handle, preventing malformed packs from disrupting later file reads.
+- 5006cfb: `tunnel down` no longer kills a live tunnel that shares a stale instance's old gate port. After a reboot a new instance can be allocated a stale record's port; stopping the stale record used to sweep that port, kill the live gate, and make the heal loop reroll the live tunnel's public URL on every pass. The orphan sweep also passes `--` to `pgrep`, which had read the `--url ...` provider pattern as an unknown option and never matched a stray `cloudflared`.
+- 63a8c42: `harn web up` works again from an npm install. The first-run dashboard fetch now installs the repository root's dependencies as well as `web/`'s, so `next.config.ts` can resolve `playwright`; it previously stopped with `Cannot find module 'playwright/package.json'`. `next dev` now receives one combined preload, `web/server-preload.mjs`, which loads the keep-alive and request-diagnostics hooks. Next merges every `--import` it forwards to its dev server into a single space-joined path, so the two separate preloads made the dashboard exit with `ERR_MODULE_NOT_FOUND` before it started. A cached dashboard with only `web/` installed is fetched again.
+
 ## 0.42.0
 
 ### Minor Changes
