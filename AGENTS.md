@@ -47,9 +47,9 @@ bun run test             # full unit + alongside-source suite, with browser proc
 bun run test:list        # list the full runner's partitions without executing them
 bun run test:integration
 bun run typecheck        # tsc --noEmit (strict mode)
-bun run lint             # Biome over src/ (check + assists, read-only)
-bun run lint:fix         # auto-fix lint AND import-sort/assists (`format` only fixes whitespace)
-bun run build            # tsc -> dist/ (JS + .d.ts) for the Node target; prepublishOnly runs this
+bun run lint             # Biome check + assists in src/, openclaw-plugin/, opencode-plugin/ (read-only)
+bun run lint:fix         # write Biome fixes, formatting and assists in those same three directories
+bun run build            # remove dist/, emit JS + .d.ts, rewrite declaration imports; prepublishOnly runs this
 bun run docs:dev         # Starlight docs site
 bin/harn --help
 ```
