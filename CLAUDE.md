@@ -103,7 +103,7 @@ harnery can be developed standalone or embedded in a host monorepo as a **git su
 
 ### Branch model
 
-`main` is the released, CI-verified line. Day-to-day work lands on `next`, the long-lived integration branch; CI and the Release workflow only run on `main`, so commits to `next` are quiet, and a release happens when `next` merges to `main` (with a changeset present). Active development from a host therefore happens on `next`, and the host's superproject pointer tracks a `next` commit until a release is cut.
+`main` is the released, CI-verified line. Day-to-day work lands on `next`, the long-lived integration branch. Pushes to `main` trigger the named CI and Release workflows. The separate [Web workflow](.github/workflows/web.yml) tests and builds the dashboard for pushes to `next` or `main` and pull requests to `main` when `web/**`, `scripts/check-local.mjs`, `package.json` or its workflow file changes; it also supports manual dispatch. A release happens when `next` merges to `main` (with a changeset present). Active development from a host therefore happens on `next`, and the host's superproject pointer tracks a `next` commit until a release is cut.
 
 Treat `gh run watch` as progress display, not the final scripted verdict. Never pipe it through `tail` or another consumer when relying on its status: without `set -o pipefail`, the shell reports the consumer's exit code. Capture the run with both workflow and commit filters, then read the terminal result explicitly:
 
