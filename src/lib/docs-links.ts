@@ -363,6 +363,52 @@ export function slugify(heading: string): string {
     .replace(/\s/g, "-");
 }
 
+/** Keep literal code text out of the heading's inline-markup replacements. */
+function shieldHeadingCode(text: string): { text: string; restore: (text: string) => string } {
+  let marker = "\u0000";
+  while (text.includes(marker)) marker += "\u0000";
+  const spans: string[] = [];
+  const tokens = /<[^>]+>|`+/g;
+  let masked = "";
+  let copiedThrough = 0;
+
+  for (let opening = tokens.exec(text); opening; opening = tokens.exec(text)) {
+    // An HTML tag starts before its attribute values; their backticks are not
+    // code delimiters. Escaped opening backticks are literal punctuation too.
+    if (!opening[0].startsWith("`")) continue;
+    let backslashes = 0;
+    for (let i = opening.index - 1; i >= 0 && text[i] === "\\"; i--) backslashes++;
+    if (backslashes % 2 !== 0) continue;
+
+    const closingRuns = /`+/g;
+    closingRuns.lastIndex = opening.index + opening[0].length;
+    let closing = closingRuns.exec(text);
+    while (closing && closing[0].length !== opening[0].length) {
+      closing = closingRuns.exec(text);
+    }
+    if (!closing) continue;
+
+    let code = text.slice(opening.index + opening[0].length, closing.index);
+    // Code spans remove one padding space at each end, except all-space spans.
+    if (code.startsWith(" ") && code.endsWith(" ") && /[^ ]/.test(code)) {
+      code = code.slice(1, -1);
+    }
+    masked += text.slice(copiedThrough, opening.index) + marker + spans.length + marker;
+    spans.push(code);
+    copiedThrough = closing.index + closing[0].length;
+    tokens.lastIndex = copiedThrough;
+  }
+
+  return {
+    text: masked + text.slice(copiedThrough),
+    restore: (filtered) =>
+      filtered.replace(
+        new RegExp(`${marker}(\\d+)${marker}`, "g"),
+        (_, index: string) => spans[Number(index)]!,
+      ),
+  };
+}
+
 /**
  * Every fragment a reader can legitimately target in one document: Markdown
  * heading slugs (ATX and Setext), explicit `{#custom-id}` suffixes, and HTML
@@ -388,7 +434,8 @@ export function collectAnchors(content: string): Set<string> {
     // so only word-boundary underscores are markup. `_` counts as a word
     // character in JS regex, so \b sits exactly at the space-to-underscore
     // seam these delimiters occupy.
-    text = text
+    const code = shieldHeadingCode(text);
+    text = code.text
       // Backslash escapes render as the bare character, so `snake\_case`
       // must anchor exactly like `snake_case`. Unescape before the emphasis
       // strip or the escaped underscore gains a phantom word boundary.
@@ -397,7 +444,7 @@ export function collectAnchors(content: string): Set<string> {
       .replace(/[*~`]/g, "")
       .replace(/\b_+|_+\b/g, "")
       .replace(/<[^>]+>/g, "");
-    const base = slugify(text);
+    const base = slugify(code.restore(text));
     if (!base) return;
     const n = seen.get(base) ?? 0;
     seen.set(base, n + 1);

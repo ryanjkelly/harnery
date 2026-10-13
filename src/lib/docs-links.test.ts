@@ -150,6 +150,45 @@ describe("slugify / collectAnchors", () => {
     const anchors = collectAnchors("### `harn query`\n");
     expect(anchors.has("harn-query")).toBe(true);
   });
+
+  test("keeps angle-bracket text inside inline code", () => {
+    expect(collectAnchors("## Command `args.<id>`").has("command-argsid")).toBe(true);
+  });
+
+  test("strips actual HTML while keeping code contents", () => {
+    const anchors = collectAnchors('<h2>Ignored</h2>\n## <span data-kind="cmd">Tool</span> `<id>`');
+    expect(anchors.has("tool-id")).toBe(true);
+  });
+
+  test("keeps literal code underscores while stripping outside emphasis", () => {
+    expect(collectAnchors("## Code `_key_` and _title_").has("code-_key_-and-title")).toBe(true);
+  });
+
+  test("matches whole backtick runs and normalizes code padding", () => {
+    const anchors = collectAnchors("## Use `` <id> `literal` `` now");
+    expect(anchors.has("use-id-literal-now")).toBe(true);
+  });
+
+  test("does not shield unmatched or escaped code delimiters", () => {
+    const anchors = collectAnchors("## Unmatched ``<id>` syntax\n## Escaped \\`<id>\\` syntax");
+    expect(anchors.has("unmatched--syntax")).toBe(true);
+    expect(anchors.has("escaped--syntax")).toBe(true);
+  });
+
+  test("suffixes equivalent code, plain and HTML headings", () => {
+    const anchors = collectAnchors("## `<id>`\n## id\n## <span>id</span>");
+    expect([...anchors]).toEqual(["id", "id-1", "id-2"]);
+  });
+
+  test("does not parse backticks inside actual HTML attributes as code", () => {
+    const anchors = collectAnchors("## <span data-note='`'>Tool</span> and `<id>`");
+    expect(anchors.has("tool-and-id")).toBe(true);
+  });
+
+  test("keeps literal link syntax inside code while stripping an outside link", () => {
+    const anchors = collectAnchors("## `[label](target.md)` and [title](other.md)");
+    expect(anchors.has("labeltargetmd-and-title")).toBe(true);
+  });
 });
 
 describe("checkFile", () => {
@@ -229,6 +268,13 @@ describe("checkFile", () => {
     const bad = check("docs/index.md", "[t](target.md#no-such-heading)");
     expect(bad.findings).toHaveLength(1);
     expect(bad.findings[0]?.rule).toBe("missing-fragment");
+  });
+
+  test("validates a target heading containing literal angle-bracket code", () => {
+    write("docs/target.md", "## Command `args.<id>`\n");
+    const result = check("docs/index.md", "[command](target.md#command-argsid)");
+    expect(result.findings).toEqual([]);
+    expect(result.checked).toBe(1);
   });
 
   test("validates a same-document fragment", () => {
