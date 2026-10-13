@@ -1,0 +1,22 @@
+---
+title: "ZIP toolkit"
+description: "Create and inspect bounded ZIP archives from an embedding host."
+---
+
+The toolkit export `harnery/lib/zip` provides `buildZip`, `createZip`, `listZip`, `readZipEntries`, `readZipEntry`, `readZipText`, and `extractZip`. It runs on Node and Bun without a system `zip` or `unzip` executable.
+
+```ts
+import { createZip, extractZip, listZip } from "harnery/lib/zip";
+
+createZip("output/bundle.zip", ["documents"], { base: "." });
+const entries = listZip("output/bundle.zip");
+extractZip("output/bundle.zip", "output/unpacked");
+```
+
+Creation and extraction refuse existing files unless `overwrite: true` is explicit. Extraction preflights names, collisions, and existing filesystem paths before decoding or writing. Selected files are decoded and checksum-verified before the first write. A filesystem error during publication can still leave earlier completed files in place.
+
+All archive reads accept a filesystem path or a `Uint8Array`. Pass `limits` to adjust the defaults: `archiveBytes` is 64 MiB, `entryBytes` is 64 MiB, `totalBytes` is 256 MiB, and `entries` is 10,000. Whole selected file contents remain in memory. Use a streaming archive tool for larger archives. Split, encrypted, and ZIP64 archives are rejected.
+
+Extraction rejects traversal, absolute paths, Windows device names and alternate streams, ambiguous path components, duplicate destinations, and existing symbolic links, including dangling links. Files are written with private permissions and archive modes are not restored. Atomic overwrite replaces the destination inode, preserving any other hard links. These checks cover the archive and existing filesystem state; a hostile process concurrently swapping directories requires operating-system isolation.
+
+For selected extraction, pass `filter: (entryName) => boolean`. `readZipEntries` accepts the same filter as its second argument. The resource limits apply to the complete archive metadata even when only a subset is selected.

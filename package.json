@@ -182,6 +182,11 @@
       "types": "./dist/lib/format.d.ts",
       "import": "./dist/lib/format.js"
     },
+    "./lib/zip": {
+      "bun": "./src/lib/zip/index.ts",
+      "types": "./dist/lib/zip/index.d.ts",
+      "import": "./dist/lib/zip/index.js"
+    },
     "./lib/headless": {
       "bun": "./src/lib/headless/index.ts",
       "types": "./dist/lib/headless/index.d.ts",
@@ -284,6 +289,7 @@
     "@sinclair/typebox": "^0.34.52",
     "axe-core": "^4.12.1",
     "commander": "^14.0.3",
+    "fflate": "^0.8.2",
     "gpt-tokenizer": "^3.4.0",
     "js-yaml": "^4.3.0",
     "linkedom": "^0.18.0",

@@ -1,0 +1,24 @@
+---
+title: "0205: Contained ZIP toolkit for embedding hosts"
+description: "Provide shared archive operations with explicit resource and filesystem boundaries."
+---
+
+Date: 2026-10-12. Status: accepted.
+
+## Context
+
+Two embedding applications need ZIP creation, inspection, entry reads, and extraction on machines with different system utilities. A lexical path check alone does not contain extraction: an existing symbolic link under the output directory can redirect a write. Directly overwriting an existing file can also modify other hard links to that inode.
+
+## Alternatives
+
+System utilities would leave behavior dependent on the host installation. Separate utility implementations would duplicate the same filesystem boundary. Treating path normalization as sufficient would leave existing links and collisions unchecked.
+
+## Decision
+
+Export `harnery/lib/zip` in the toolkit tier. It has no dependency on the coordination core. Use a JavaScript ZIP codec, preflight selected paths and existing ancestors, reject ambiguous portable names and collisions, verify decoded sizes and checksums, and enforce compressed, per-entry, total decoded, and entry-count limits. Publish output files atomically and require an explicit overwrite option.
+
+The default limits are 64 MiB compressed, 64 MiB per entry, 256 MiB decoded in total, and 10,000 entries. Callers can supply explicit finite limits. Split, encrypted, and ZIP64 archives are unsupported. Extraction creates regular files and directories; it does not restore archive permissions or symbolic links. It rejects symbolic links in existing output ancestors. It is not a sandbox against another process concurrently replacing those directories.
+
+## Result
+
+Regression fixtures cover normal round trips, destination and ancestor links, dangling links, hard-link replacement, traversal, portable-name ambiguity, file/directory collisions, resource limits, damaged checksums, truncated archives, and filtered extraction. The toolkit export passes the layering and portability checks.
