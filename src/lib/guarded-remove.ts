@@ -16,6 +16,8 @@ export interface RemoveOptions {
   allowProtected?: string[];
   /** Directories whose own Git metadata and Harnery state may never be allowed (the live workspace). */
   liveRoots?: string[];
+  /** Command-layer validation of the current caller's ownership of this exact managed artifact root. */
+  assertOwnedArtifact?: (root: string) => void;
 }
 
 export interface RemovalLink {
@@ -48,7 +50,12 @@ export function guardedRemove(
 ): RemovalReport {
   const cwd = realpathSync(process.cwd());
   const root = checkedPath(options.root, new Set(), true);
-  const allowed = allowedProtected(options.allowProtected ?? [], root, options.liveRoots ?? []);
+  const allowed = allowedProtected(
+    options.allowProtected ?? [],
+    root,
+    options.liveRoots ?? [],
+    options.assertOwnedArtifact,
+  );
   const rootStat = lstatSync(root);
   const rootFingerprint = fingerprint(rootStat);
   if (!rootStat.isDirectory()) throw new Error("--root must be a directory");
@@ -185,6 +192,13 @@ export function guardedRemove(
     fingerprint(lstatSync(root)) !== rootFingerprint
   )
     throw new Error("Allowed root changed during inspection");
+  // Ownership may have been released or changed while the contents were inspected.
+  allowedProtected(
+    options.allowProtected ?? [],
+    root,
+    options.liveRoots ?? [],
+    options.assertOwnedArtifact,
+  );
   for (const target of targets) {
     checkedPath(target, allowed);
     assertUntracked(target);
@@ -238,9 +252,14 @@ function insideAllowed(path: string, allowed: ReadonlySet<string>): boolean {
  * protected path strictly inside the root, reached without symlinks, and
  * never the Git metadata or Harnery state of a live workspace root.
  */
-function allowedProtected(paths: string[], root: string, liveRoots: string[]): Set<string> {
+function allowedProtected(
+  paths: string[],
+  root: string,
+  liveRoots: string[],
+  assertOwnedArtifact?: (root: string) => void,
+): Set<string> {
   const allowed = new Set<string>();
-  const live = liveRoots.map((dir) => resolve(dir));
+  const live = liveRoots.map((dir) => realpathSync(dir));
   for (const input of paths) {
     if (!input?.trim() || /[\0\r\n*?[\]$]/.test(input))
       throw new Error("Use a nonempty explicit --allow-protected path without wildcards");
@@ -261,13 +280,26 @@ function allowedProtected(paths: string[], root: string, liveRoots: string[]): S
     if (!named && !(info.isDirectory() && isRepositoryMetadata(path)))
       throw new Error(`--allow-protected must name a protected path itself: ${path}`);
     for (const dir of live) {
-      const own = [".git", ".harnery"].map((name) => resolve(dir, name));
-      if (
-        path === dir ||
-        strictlyInside(path, dir) ||
-        own.some((state) => path === state || strictlyInside(state, path))
-      )
+      if (path === dir || strictlyInside(path, dir))
         throw new Error(`The live workspace's own state cannot be allowed: ${path}`);
+      for (const name of [".git", ".harnery"]) {
+        const state = resolve(dir, name);
+        if (path !== state && !strictlyInside(state, path)) continue;
+        // Only an explicitly named copied state directory inside one owned
+        // artifact may cross the outer live-state ancestor. Other live roots
+        // (including a checkout inside that artifact) still veto the path.
+        if (
+          name === ".harnery" &&
+          basename(path) === ".harnery" &&
+          info.isDirectory() &&
+          dirname(root) === resolve(state, "artifacts") &&
+          assertOwnedArtifact
+        ) {
+          assertOwnedArtifact(root);
+          continue;
+        }
+        throw new Error(`The live workspace's own state cannot be allowed: ${path}`);
+      }
     }
     allowed.add(realpathSync(path));
   }

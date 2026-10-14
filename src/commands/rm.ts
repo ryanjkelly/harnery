@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
+import { artifactsRoot, parseArtifactManifest } from "../core/artifacts/index.ts";
 import {
   readCoordinationViewV3,
   requireAuthoritySafeCoordinationViewV3,
@@ -65,7 +66,34 @@ export function registerRmCommand(
         const liveRoots = [coordRoot, gitTopLevel(process.cwd())].filter((dir): dir is string =>
           Boolean(dir),
         );
-        const report = guardedRemove(paths, { ...options, liveRoots }, checkClaims);
+        const assertOwnedArtifact = (root: string): void => {
+          if (!coordRoot || dirname(root) !== realpathSync(artifactsRoot(coordRoot)))
+            throw new Error("Copied state requires --root to name one owned managed artifact");
+          const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
+          const owner = resolveOwner({ payload: null, coordRoot });
+          const ownId = owner ? liveInstanceIdV3(owner.instance_id) : undefined;
+          if (!ownId || !view.instances[ownId]?.authority_eligible)
+            throw new Error("Copied state requires an authenticated current artifact owner");
+          const record = resolve(root, ".harnery-artifact.json");
+          const stat = lstatSync(record);
+          if (!stat.isFile() || stat.isSymbolicLink())
+            throw new Error("An owned artifact requires a regular manifest file");
+          const parsed = parseArtifactManifest(JSON.parse(readFileSync(record, "utf8")));
+          if (
+            !parsed.ok ||
+            parsed.manifest.released_at ||
+            !parsed.manifest.created_by?.instance_id ||
+            liveInstanceIdV3(parsed.manifest.created_by.instance_id) !== ownId
+          )
+            throw new Error(
+              "Copied state requires a valid unreleased artifact owned by the caller",
+            );
+        };
+        const report = guardedRemove(
+          paths,
+          { ...options, liveRoots, assertOwnedArtifact },
+          checkClaims,
+        );
         if (options.json) {
           emit.config({ format: "json" });
           emit.data(report);

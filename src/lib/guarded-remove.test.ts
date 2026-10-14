@@ -413,3 +413,142 @@ test("an ancestor's protected state is named as the container, without a mislead
   expect(message).toContain(`Protected state contains this path: ${join(root, ".credentials")}`);
   expect(message).not.toContain("--allow-protected");
 });
+
+function artifactCopy() {
+  const { root: live } = fixture();
+  const workspace = join(live, ".harnery", "artifacts", "owned-copy");
+  const copy = join(workspace, "snapshot", ".harnery");
+  mkdirSync(copy, { recursive: true });
+  writeFileSync(join(copy, "state.json"), "copied");
+  const record = join(workspace, ".harnery-artifact.json");
+  writeFileSync(record, "owner record");
+  const options = {
+    root: workspace,
+    recursive: true,
+    allowProtected: [copy],
+    liveRoots: [live],
+    assertOwnedArtifact: (root: string) => {
+      expect(root).toBe(workspace);
+    },
+  };
+  return { live, workspace, copy, record, options };
+}
+
+test("an explicitly named copied state in an owned artifact previews and removes only the copy", () => {
+  const { workspace, copy, record, options } = artifactCopy();
+  const other = join(workspace, "keep.txt");
+  writeFileSync(other, "keep");
+  expect(guardedRemove([copy], options)).toMatchObject({ applied: false, protected: [copy] });
+  expect(guardedRemove([copy], { ...options, yes: true, dryRun: true }).applied).toBe(false);
+  expect(existsSync(copy)).toBe(true);
+  expect(guardedRemove([copy], { ...options, yes: true }).applied).toBe(true);
+  expect(existsSync(copy)).toBe(false);
+  expect(existsSync(record)).toBe(true);
+  expect(existsSync(other)).toBe(true);
+});
+
+test("copied live-state descendants require verified ownership and the exact artifact root", () => {
+  const { live, workspace, copy, options } = artifactCopy();
+  expect(() => guardedRemove([copy], { ...options, assertOwnedArtifact: undefined })).toThrow(
+    "live workspace",
+  );
+  expect(() =>
+    guardedRemove([copy], {
+      ...options,
+      assertOwnedArtifact: () => {
+        throw new Error("unowned artifact");
+      },
+    }),
+  ).toThrow("unowned artifact");
+  for (const root of [live, join(workspace, "snapshot")])
+    expect(() => guardedRemove([copy], { ...options, root })).toThrow("live workspace");
+  expect(() => guardedRemove([copy], { ...options, allowProtected: [] })).toThrow("Protected");
+  expect(existsSync(copy)).toBe(true);
+});
+
+test("owned-copy exception cannot remove actual live state, aliases, other protected state or artifact records", () => {
+  const { live, workspace, copy, record, options } = artifactCopy();
+  const alias = join(fixture().root, "live-alias");
+  symlinkSync(live, alias);
+  const liveState = join(live, ".harnery");
+  for (const liveRoots of [[live], [alias]])
+    expect(() =>
+      guardedRemove([liveState], {
+        ...options,
+        root: live,
+        allowProtected: [liveState],
+        liveRoots,
+      }),
+    ).toThrow("live workspace");
+  const gitState = stateDir(live, ".harnery/artifacts/owned-copy/snapshot", ".git");
+  const credentials = stateDir(live, ".harnery/artifacts/owned-copy/snapshot", ".credentials");
+  for (const path of [gitState, credentials])
+    expect(() => guardedRemove([path], { ...options, allowProtected: [path] })).toThrow(
+      "live workspace",
+    );
+  expect(() =>
+    guardedRemove([copy], {
+      ...options,
+      liveRoots: [live, join(workspace, "snapshot")],
+    }),
+  ).toThrow("live workspace");
+  expect(() => guardedRemove([record], { ...options, allowProtected: [] })).toThrow("record");
+  expect(() =>
+    guardedRemove([workspace], {
+      ...options,
+      root: join(live, ".harnery", "artifacts"),
+      allowProtected: [],
+    }),
+  ).toThrow("Protected");
+  expect(existsSync(copy)).toBe(true);
+  expect(existsSync(record)).toBe(true);
+});
+
+test("owned copied state remains subject to symlink, tracked-file and peer-claim controls", () => {
+  const { live, workspace, copy, options } = artifactCopy();
+  const alias = join(workspace, "alias");
+  symlinkSync(join(workspace, "snapshot"), alias);
+  expect(() =>
+    guardedRemove([copy], {
+      ...options,
+      allowProtected: [join(alias, ".harnery")],
+    }),
+  ).toThrow("symlink");
+  expect(() =>
+    guardedRemove([copy], options, () => {
+      throw new Error("peer claim");
+    }),
+  ).toThrow("peer claim");
+  git(["init", "-q", live]);
+  git(["-C", live, "add", "--", join(copy, "state.json")]);
+  expect(() => guardedRemove([copy], options)).toThrow("Tracked files");
+  expect(existsSync(copy)).toBe(true);
+});
+
+test("artifact ownership is checked again before applying an inspected copy removal", () => {
+  const { copy, options } = artifactCopy();
+  let owned = true;
+  expect(() =>
+    guardedRemove(
+      [copy],
+      {
+        ...options,
+        yes: true,
+        assertOwnedArtifact: () => {
+          if (!owned) throw new Error("ownership released");
+        },
+      },
+      () => {
+        owned = false;
+      },
+    ),
+  ).toThrow("ownership released");
+  expect(existsSync(copy)).toBe(true);
+});
+
+test("owned copied state cannot bypass the 10000-entry inspection limit", () => {
+  const { copy, options } = artifactCopy();
+  for (let i = 0; i < 10_000; i++) writeFileSync(join(copy, `entry-${i}`), "x");
+  expect(() => guardedRemove([copy], { ...options, yes: true })).toThrow("10000-entry limit");
+  expect(existsSync(copy)).toBe(true);
+});

@@ -1,9 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3-runtime.ts";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
+import { createArtifact } from "../core/artifacts/index.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -114,4 +124,109 @@ test("CLI removes a protected path only when --allow-protected names it", async 
     else expect(output.errors[0]).toMatchObject({ code: "removal_refused" });
     expect(existsSync(copy)).toBe(!allow);
   }
+});
+
+function ownedCopy(owner = "rm-owner-self") {
+  const { root } = fixture();
+  initializeV3Fixture(root);
+  seedV3Session(root, "rm-owner-self", { name: "Self" });
+  const artifact = createArtifact(root, {
+    slug: "copy",
+    purpose: "Synthetic copied state",
+    retentionDays: 1,
+    actor: { instance_id: owner },
+  });
+  const copy = join(artifact.path, "snapshot", ".harnery");
+  mkdirSync(copy, { recursive: true });
+  writeFileSync(join(copy, "state.json"), "copy");
+  return {
+    root,
+    workspace: artifact.path,
+    copy,
+    record: join(artifact.path, ".harnery-artifact.json"),
+  };
+}
+
+async function copyCommand(
+  input: ReturnType<typeof ownedCopy>,
+  options: { actor?: string; allow?: boolean; yes?: boolean; root?: string; target?: string } = {},
+) {
+  const savedOwner = process.env.HARNERY_AGENT_COORD_OWNER;
+  const savedBridge = process.env.HARNERY_AGENT_COORD_BRIDGE;
+  try {
+    if (options.actor === "none") delete process.env.HARNERY_AGENT_COORD_OWNER;
+    else process.env.HARNERY_AGENT_COORD_OWNER = options.actor ?? "rm-owner-self";
+    // Exercise the supported environment identity route in this isolated fixture.
+    delete process.env.HARNERY_AGENT_COORD_BRIDGE;
+    const output = capture();
+    const program = createHarneryProgram({ emit: output.emit, context: { repoRoot: input.root } });
+    await program.parseAsync(
+      [
+        "rm",
+        "--root",
+        options.root ?? input.workspace,
+        "--recursive",
+        "--json",
+        ...(options.yes ? ["--yes"] : []),
+        ...(options.allow === false ? [] : ["--allow-protected", input.copy]),
+        "--",
+        options.target ?? input.copy,
+      ],
+      { from: "user" },
+    );
+    return output;
+  } finally {
+    if (savedOwner === undefined) delete process.env.HARNERY_AGENT_COORD_OWNER;
+    else process.env.HARNERY_AGENT_COORD_OWNER = savedOwner;
+    if (savedBridge === undefined) delete process.env.HARNERY_AGENT_COORD_BRIDGE;
+    else process.env.HARNERY_AGENT_COORD_BRIDGE = savedBridge;
+  }
+}
+
+test("CLI previews and applies only the authenticated caller's explicitly named copied state", async () => {
+  const input = ownedCopy();
+  const preview = await copyCommand(input);
+  expect(preview.code()).toBe(0);
+  expect(preview.data[0]).toMatchObject({ applied: false, protected: [input.copy] });
+  expect(existsSync(input.copy)).toBe(true);
+  const unnamed = await copyCommand(input, { allow: false, yes: true });
+  expect(unnamed.code()).toBe(1);
+  expect(existsSync(input.copy)).toBe(true);
+  const applied = await copyCommand(input, { yes: true });
+  expect(applied.code()).toBe(0);
+  expect(applied.data[0]).toMatchObject({ applied: true, protected: [input.copy] });
+  expect(existsSync(input.copy)).toBe(false);
+  expect(existsSync(input.record)).toBe(true);
+});
+
+test("CLI refuses unowned, released, invalid and unauthenticated copied-state removal", async () => {
+  for (const mode of ["unowned", "released", "invalid", "unauthenticated"]) {
+    const input = ownedCopy(mode === "unowned" ? "rm-owner-peer" : "rm-owner-self");
+    const manifest = JSON.parse(readFileSync(input.record, "utf8"));
+    if (mode === "released") manifest.released_at = new Date().toISOString();
+    if (mode === "invalid") manifest.schema_version = 999;
+    writeFileSync(input.record, JSON.stringify(manifest));
+    const output = await copyCommand(input, {
+      yes: true,
+      actor: mode === "unauthenticated" ? "rm-owner-unknown" : "rm-owner-self",
+    });
+    expect(output.code()).toBe(1);
+    expect(output.errors[0]).toMatchObject({ code: "removal_refused" });
+    expect(existsSync(input.copy)).toBe(true);
+  }
+});
+
+test("CLI preserves peer claims and refuses broad or symlink artifact roots", async () => {
+  const claimed = ownedCopy();
+  seedV3Session(claimed.root, "peer", { claims: [claimed.copy] });
+  const output = await copyCommand(claimed, { yes: true });
+  expect(output.code()).toBe(1);
+  expect(JSON.stringify(output.errors)).toContain("another agent's claim");
+  expect(existsSync(claimed.copy)).toBe(true);
+  const input = ownedCopy();
+  expect((await copyCommand(input, { root: input.root, yes: true })).code()).toBe(1);
+  const alias = join(input.root, "artifact-alias");
+  symlinkSync(input.workspace, alias);
+  expect((await copyCommand(input, { root: alias, yes: true })).code()).toBe(1);
+  expect(existsSync(input.copy)).toBe(true);
 });
