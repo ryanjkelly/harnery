@@ -55,6 +55,7 @@ test("registers lazily with root requirement, recursive and preview flags", asyn
   const rm = program.commands.find((command) => command.name() === "rm");
   expect(rm?.helpInformation()).toContain("--root");
   expect(rm?.helpInformation()).toContain("--dry-run");
+  expect(rm?.helpInformation()).toContain("--entry-limit");
   expect(rm?.helpInformation()).not.toContain("--force");
   expect(
     createHarneryProgram({ skipCommands: ["rm"] }).commands.some(
@@ -149,7 +150,14 @@ function ownedCopy(owner = "rm-owner-self") {
 
 async function copyCommand(
   input: ReturnType<typeof ownedCopy>,
-  options: { actor?: string; allow?: boolean; yes?: boolean; root?: string; target?: string } = {},
+  options: {
+    actor?: string;
+    allow?: boolean;
+    yes?: boolean;
+    root?: string;
+    target?: string;
+    entryLimit?: string;
+  } = {},
 ) {
   const savedOwner = process.env.HARNERY_AGENT_COORD_OWNER;
   const savedBridge = process.env.HARNERY_AGENT_COORD_BRIDGE;
@@ -168,6 +176,7 @@ async function copyCommand(
         "--recursive",
         "--json",
         ...(options.yes ? ["--yes"] : []),
+        ...(options.entryLimit ? ["--entry-limit", options.entryLimit] : []),
         ...(options.allow === false ? [] : ["--allow-protected", input.copy]),
         "--",
         options.target ?? input.copy,
@@ -199,8 +208,8 @@ test("CLI previews and applies only the authenticated caller's explicitly named 
   expect(existsSync(input.record)).toBe(true);
 });
 
-test("CLI refuses unowned, released, invalid and unauthenticated copied-state removal", async () => {
-  for (const mode of ["unowned", "released", "invalid", "unauthenticated"]) {
+for (const mode of ["unowned", "released", "invalid", "unauthenticated"]) {
+  test(`CLI refuses ${mode} copied-state removal`, async () => {
     const input = ownedCopy(mode === "unowned" ? "rm-owner-peer" : "rm-owner-self");
     const manifest = JSON.parse(readFileSync(input.record, "utf8"));
     if (mode === "released") manifest.released_at = new Date().toISOString();
@@ -213,8 +222,8 @@ test("CLI refuses unowned, released, invalid and unauthenticated copied-state re
     expect(output.code()).toBe(1);
     expect(output.errors[0]).toMatchObject({ code: "removal_refused" });
     expect(existsSync(input.copy)).toBe(true);
-  }
-});
+  });
+}
 
 test("CLI preserves peer claims and refuses broad or symlink artifact roots", async () => {
   const claimed = ownedCopy();
@@ -229,4 +238,82 @@ test("CLI preserves peer claims and refuses broad or symlink artifact roots", as
   symlinkSync(input.workspace, alias);
   expect((await copyCommand(input, { root: alias, yes: true })).code()).toBe(1);
   expect(existsSync(input.copy)).toBe(true);
+});
+
+test("CLI entry limits verify the exact current owner and retain the artifact and its hold", async () => {
+  const input = ownedCopy();
+  const manifest = JSON.parse(readFileSync(input.record, "utf8"));
+  manifest.holds = [
+    {
+      id: "review",
+      reason: "Keep retained evidence",
+      set_by: { instance_id: "rm-owner-self" },
+      set_at: new Date().toISOString(),
+      persistent: true,
+    },
+  ];
+  const before = JSON.stringify(manifest);
+  writeFileSync(input.record, before);
+  const result = await copyCommand(input, { entryLimit: "100000", yes: true });
+  expect(result.code()).toBe(0);
+  expect(result.data[0]).toMatchObject({ applied: true, entry_limit: 100_000 });
+  expect(existsSync(input.copy)).toBe(false);
+  expect(existsSync(input.workspace)).toBe(true);
+  expect(readFileSync(input.record, "utf8")).toBe(before);
+});
+
+for (const entryLimit of ["0", "-1", "1.5", "NaN", "Infinity", "100001"]) {
+  test(`CLI entry limits reject ${entryLimit}`, async () => {
+    const input = ownedCopy();
+    const output = await copyCommand(input, { entryLimit, yes: true });
+    expect(output.code()).toBe(1);
+    expect(JSON.stringify(output.errors)).toContain("entry limit");
+    expect(existsSync(input.copy)).toBe(true);
+  });
+}
+for (const mode of ["unowned", "released", "unauthenticated", "broad"]) {
+  test(`CLI entry limits reject ${mode} artifacts`, async () => {
+    const input = ownedCopy(mode === "unowned" ? "rm-owner-peer" : "rm-owner-self");
+    const ordinaryOutput = join(input.workspace, "output.txt");
+    writeFileSync(ordinaryOutput, "ordinary output");
+    if (mode === "released") {
+      const manifest = JSON.parse(readFileSync(input.record, "utf8"));
+      manifest.released_at = new Date().toISOString();
+      writeFileSync(input.record, JSON.stringify(manifest));
+    }
+    const output = await copyCommand(input, {
+      entryLimit: "10001",
+      yes: true,
+      allow: false,
+      target: ordinaryOutput,
+      root: mode === "broad" ? input.root : input.workspace,
+      actor: mode === "unauthenticated" ? "rm-owner-unknown" : "rm-owner-self",
+    });
+    expect(output.code()).toBe(1);
+    expect(JSON.stringify(output.errors)).toContain(
+      mode === "broad"
+        ? "--root to name one owned managed artifact"
+        : mode === "unauthenticated"
+          ? "authenticated current artifact owner"
+          : "valid unreleased artifact owned by the caller",
+    );
+    expect(readFileSync(ordinaryOutput, "utf8")).toBe("ordinary output");
+    expect(existsSync(input.record)).toBe(true);
+  });
+}
+
+test("CLI entry limits remove ordinary output under valid current ownership", async () => {
+  const input = ownedCopy();
+  const ordinaryOutput = join(input.workspace, "output.txt");
+  writeFileSync(ordinaryOutput, "ordinary output");
+  const output = await copyCommand(input, {
+    entryLimit: "10001",
+    yes: true,
+    allow: false,
+    target: ordinaryOutput,
+  });
+  expect(output.code()).toBe(0);
+  expect(output.data[0]).toMatchObject({ applied: true, entry_limit: 10_001 });
+  expect(existsSync(ordinaryOutput)).toBe(false);
+  expect(existsSync(input.record)).toBe(true);
 });

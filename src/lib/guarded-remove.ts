@@ -18,6 +18,8 @@ export interface RemoveOptions {
   liveRoots?: string[];
   /** Command-layer validation of the current caller's ownership of this exact managed artifact root. */
   assertOwnedArtifact?: (root: string) => void;
+  /** Inspection bound; values above 10,000 require verified ownership of the exact artifact root. */
+  entryLimit?: number;
 }
 
 export interface RemovalLink {
@@ -32,6 +34,7 @@ export interface RemovalReport {
   root: string;
   targets: string[];
   entries: number;
+  entry_limit: number;
   bytes: number;
   /** Protected paths removed because the caller named them with allowProtected. */
   protected: string[];
@@ -41,6 +44,7 @@ export interface RemovalReport {
 
 const protectedNames = new Set([".git", ".harnery", ".credentials", ".ssh", ".gnupg"]);
 const MAX_ENTRIES = 10_000;
+const MAX_OWNED_ARTIFACT_ENTRIES = 100_000;
 
 /** Permanent removal is deliberately limited to inspected, untracked local outputs. */
 export function guardedRemove(
@@ -50,6 +54,21 @@ export function guardedRemove(
 ): RemovalReport {
   const cwd = realpathSync(process.cwd());
   const root = checkedPath(options.root, new Set(), true);
+  const entryLimit = options.entryLimit ?? MAX_ENTRIES;
+  if (
+    !Number.isSafeInteger(entryLimit) ||
+    entryLimit < 1 ||
+    entryLimit > MAX_OWNED_ARTIFACT_ENTRIES
+  )
+    throw new Error(`The entry limit must be an integer from 1 to ${MAX_OWNED_ARTIFACT_ENTRIES}`);
+  const assertEntryLimitAuthority = () => {
+    if (entryLimit <= MAX_ENTRIES) return;
+    if (!options.assertOwnedArtifact)
+      throw new Error(
+        "An entry limit above 10000 requires one current caller-owned managed artifact",
+      );
+    options.assertOwnedArtifact(root);
+  };
   const allowed = allowedProtected(
     options.allowProtected ?? [],
     root,
@@ -61,6 +80,7 @@ export function guardedRemove(
   if (!rootStat.isDirectory()) throw new Error("--root must be a directory");
   if (root === parse(root).root || root === realpathSync(homedir()))
     throw new Error("--root cannot be a filesystem root or home directory");
+  assertEntryLimitAuthority();
   if (paths.length === 0 || paths.length > 100) throw new Error("Supply 1-100 explicit targets");
   const targets = paths.map((path) => checkedPath(path, allowed));
   const snapshots = new Map<string, string>();
@@ -133,9 +153,9 @@ export function guardedRemove(
         // read, followed, or counted. (The target itself and its ancestors
         // were already refused if they were links, in checkedPath.)
         if (path === target) throw new Error(`Path contains a symlink: ${path}`);
-        if (snapshots.size >= MAX_ENTRIES)
+        if (snapshots.size >= entryLimit)
           throw new Error(
-            `Removal exceeds the ${MAX_ENTRIES}-entry limit; use the owning cleanup command`,
+            `Removal exceeds the ${entryLimit}-entry limit; use the owning cleanup command`,
           );
         snapshots.set(path, fingerprint(info));
         links.push({ path, target: readlinkSync(path) });
@@ -143,9 +163,9 @@ export function guardedRemove(
       }
       if (info.dev !== device || (!info.isDirectory() && !info.isFile()))
         throw new Error(`Mount boundary or special file cannot be removed: ${path}`);
-      if (snapshots.size >= MAX_ENTRIES)
+      if (snapshots.size >= entryLimit)
         throw new Error(
-          `Removal exceeds the ${MAX_ENTRIES}-entry limit; use the owning cleanup command`,
+          `Removal exceeds the ${entryLimit}-entry limit; use the owning cleanup command`,
         );
       snapshots.set(path, fingerprint(info));
       if (info.isFile()) bytes += info.size;
@@ -179,6 +199,7 @@ export function guardedRemove(
     root,
     targets,
     entries: snapshots.size,
+    entry_limit: entryLimit,
     bytes,
     protected: [...removedProtected].sort(),
     links,
@@ -192,6 +213,7 @@ export function guardedRemove(
     fingerprint(lstatSync(root)) !== rootFingerprint
   )
     throw new Error("Allowed root changed during inspection");
+  assertEntryLimitAuthority();
   // Ownership may have been released or changed while the contents were inspected.
   allowedProtected(
     options.allowProtected ?? [],

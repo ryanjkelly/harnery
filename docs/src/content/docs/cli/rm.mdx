@@ -1,0 +1,46 @@
+---
+title: rm
+description: "Preview or apply guarded removal of explicit untracked local outputs."
+---
+
+`harn rm <paths...> --root <directory>` previews the exact files it would
+permanently remove. Directories require `--recursive`; deletion requires
+`--yes`. `--dry-run` keeps the operation a preview even when `--yes` is present.
+
+```bash
+harn rm --root ./output --recursive --json -- ./output/obsolete-render
+```
+
+## Inspection limits
+
+A batch accepts at most 100 explicit, nonoverlapping targets and inspects at
+most 10,000 entries by default. `--entry-limit <n>` selects an integer limit
+from 1 through 100,000.
+
+A value above 10,000 works only when `--root` names one valid, unreleased
+managed artifact created by the current authenticated caller. The command
+checks that authority before inspection and again before applying. A parent
+artifact store, an ordinary directory or another caller's workspace cannot
+use the larger limit.
+
+The JSON report includes the chosen `entry_limit`, inspected entry count and
+byte count. Review the preview before adding `--yes`.
+
+## Protections
+
+Every target must lie strictly inside the resolved root. The command refuses
+tracked paths, overlaps with another live agent's claims, filesystem roots,
+home and system directories, the working directory and its ancestors, mount
+boundaries and special files. Targets and their ancestors cannot be symlinks.
+Links inside a recursive target are removed as links; their destinations stay
+untouched.
+
+Protected paths need an exact `--allow-protected <path>` for each one. Live
+Git and coordination state cannot be allowed. Copied coordination state has
+its existing exact-path and artifact-ownership restrictions. An artifact's
+root, record and holds stay in place when its disposable contents are pruned.
+
+The whole batch is inspected before the first deletion. Root identity, file
+fingerprints, Git ownership, peer claims and any required artifact authority
+are checked again before applying. Deletion remains permanent, and a
+filesystem error can leave a partially completed batch.

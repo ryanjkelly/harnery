@@ -1,0 +1,52 @@
+---
+title: "0206: Bound larger removal batches to one owned artifact"
+description: "ADR: retain the default inspection limit and require artifact ownership for an explicit larger bound."
+---
+
+**Status:** accepted (2026-10-15) · **Scope:** CLI utility (`rm`) · **Amends:** [0195](/decisions/0195-guard-local-file-removal/)
+
+## Context
+
+The removal guard inspects and fingerprints every entry before deleting any
+target. Its fixed 10,000-entry limit can force a caller to split one large
+generated subtree by hand, even when the caller owns its managed workspace.
+The inspection bound prevents unbounded work and remains necessary.
+
+## Alternatives considered
+
+- Remove the limit. A mistaken target could consume unbounded inspection time
+  and memory before the guard reaches a decision.
+- Raise the default for every directory. Ordinary cleanup would gain a larger
+  deletion scope without any additional authority check.
+- Require manual splitting. Each slice keeps its checks, but preparing the
+  slices creates another opportunity to select the wrong path.
+
+## Decision
+
+Keep the default at 10,000 entries and 100 explicit, nonoverlapping targets.
+Add `--entry-limit <n>` with an integer range of 1 through 100,000. A limit above
+10,000 requires `--root` to name one exact, valid, unreleased managed artifact
+created by the current authenticated caller. The command uses the existing
+artifact ownership validator before inspection and again before applying.
+
+The larger bound changes no path protection. Inspect and fingerprint the whole
+batch before its first mutation, then recheck ownership, root identity,
+tracked paths, peer claims and every inspected entry. Artifact roots and
+records, live state, symlink escapes, mount boundaries and unnamed protected
+paths remain refused. Holds and the artifact manifest are retained.
+
+The preview report includes `entry_limit` so a reviewer can see the selected
+bound alongside the inspected entry count. Preview remains the default;
+`--yes` is still required for permanent deletion.
+
+## Result and limits
+
+Focused tests cover a batch above the default, invalid and excessive bounds,
+missing or released ownership, an authority change during inspection and
+preservation of the artifact record and its hold. Existing removal protections
+run in the same affected gate.
+
+The 100,000-entry ceiling remains finite. Larger trees still require separate
+explicit batches or their owning cleanup tool. Filesystem changes after the
+last check and partial deletion after a filesystem error remain possible;
+this guard is not a filesystem transaction.

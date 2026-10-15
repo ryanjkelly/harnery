@@ -27,6 +27,11 @@ export function registerRmCommand(
     )
     .option("-r, --recursive", "Permit directory removal after inspecting its complete contents")
     .option(
+      "--entry-limit <n>",
+      "Maximum inspected entries, 1-100000 (default 10000); larger limits require one current caller-owned managed artifact as --root",
+      (value: string) => Number(value),
+    )
+    .option(
       "--allow-protected <path>",
       "Remove this one protected path (Git metadata, credentials, Harnery state, keys) inside a target; repeat per path",
       (value: string, previous: string[] = []) => [...previous, value],

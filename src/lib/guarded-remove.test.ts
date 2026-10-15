@@ -552,3 +552,72 @@ test("owned copied state cannot bypass the 10000-entry inspection limit", () => 
   expect(() => guardedRemove([copy], { ...options, yes: true })).toThrow("10000-entry limit");
   expect(existsSync(copy)).toBe(true);
 });
+
+test("entry limits allow a finite larger batch only after verifying artifact ownership", () => {
+  const { workspace, record, options } = artifactCopy();
+  const large = join(workspace, "large-output");
+  mkdirSync(large);
+  for (let i = 0; i < 10_000; i++) writeFileSync(join(large, `entry-${i}`), "x");
+  const bounded = { ...options, allowProtected: [], entryLimit: 10_001 };
+  expect(() => guardedRemove([large], { ...bounded, entryLimit: undefined })).toThrow(
+    "10000-entry limit",
+  );
+  expect(guardedRemove([large], bounded)).toMatchObject({
+    applied: false,
+    entries: 10_001,
+    entry_limit: 10_001,
+  });
+  expect(existsSync(large)).toBe(true);
+  expect(guardedRemove([large], { ...bounded, yes: true }).applied).toBe(true);
+  expect(existsSync(large)).toBe(false);
+  expect(existsSync(record)).toBe(true);
+});
+
+test("entry limits reject invalid bounds and require ownership even for small targets", () => {
+  const { root, file } = fixture();
+  for (const entryLimit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 100_001])
+    expect(() => guardedRemove([file], { root, entryLimit })).toThrow("entry limit");
+  expect(() => guardedRemove([file], { root, entryLimit: 10_001 })).toThrow(
+    "owned managed artifact",
+  );
+  expect(() =>
+    guardedRemove([file], {
+      root,
+      entryLimit: 10_001,
+      assertOwnedArtifact: () => {
+        throw new Error("not current owner");
+      },
+    }),
+  ).toThrow("not current owner");
+  expect(existsSync(file)).toBe(true);
+});
+
+test("entry limits recheck ownership and retain every other removal protection", () => {
+  const { workspace, record, options } = artifactCopy();
+  const file = join(workspace, "output.txt");
+  writeFileSync(file, "keep until verified");
+  let owned = true;
+  const bounded = {
+    ...options,
+    allowProtected: [],
+    entryLimit: 100_000,
+    yes: true,
+    assertOwnedArtifact: () => {
+      if (!owned) throw new Error("ownership released");
+    },
+  };
+  expect(() =>
+    guardedRemove([file], bounded, () => {
+      owned = false;
+    }),
+  ).toThrow("ownership released");
+  owned = true;
+  expect(() =>
+    guardedRemove([file], bounded, () => {
+      throw new Error("peer claim");
+    }),
+  ).toThrow("peer claim");
+  expect(() => guardedRemove([record], bounded)).toThrow("record");
+  expect(existsSync(file)).toBe(true);
+  expect(existsSync(record)).toBe(true);
+});
