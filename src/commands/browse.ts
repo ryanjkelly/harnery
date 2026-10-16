@@ -134,6 +134,7 @@ import {
 import {
   harvestDomain,
   harvestWindowsChromeCookies,
+  keepWindowsChromeSession,
   stopWindowsChromeProfile,
   windowsChromePath,
   windowsLocalAppData,
@@ -3465,15 +3466,18 @@ function useWindowsPlainLogin(): boolean {
 
 /**
  * The WSL form of `--login`: the person signs in through the Windows
- * Chrome on a dedicated Windows profile with nothing attached. When the window
- * closes, the profile's cookies for the sign-in site are read and merged into
- * the shared cookie store, which later `browse` runs attach.
+ * Chrome on a dedicated Windows profile with nothing attached. Before the
+ * window opens, the profile is set to continue where it left off, so Chrome
+ * keeps browser-session cookies when the window closes. When the window
+ * closes, the profile's cookies for the sign-in site are read and merged
+ * into the shared cookie store, which later `browse` runs attach, and the
+ * last page open on that site is reported so an agent can resume from it.
  */
 async function runWindowsPlainLogin(
   url: string,
   storePath: string,
   loginCloseFile: string | null,
-  emit: { log: (message: string, level: "info" | "warn" | "error" | "debug") => void },
+  emit: Pick<EmitContext, "log" | "data">,
 ): Promise<void> {
   const chromeLinux = windowsChromePath();
   const localAppData = windowsLocalAppData();
@@ -3484,6 +3488,13 @@ async function runWindowsPlainLogin(
   }
   const chromeWindows = wslPathToWindows(chromeLinux);
   const profileWindows = windowsPlainProfile(localAppData);
+  const keep = keepWindowsChromeSession({ chromeWindows, profileWindows });
+  if (!keep.kept) {
+    emit.log(
+      "[--login] Could not set the sign-in profile to keep browser-session cookies. A sign-in that relies on them survives only if you end it from the terminal instead of closing the window.",
+      "warn",
+    );
+  }
   const child = spawn(
     chromeLinux,
     [`--user-data-dir=${profileWindows}`, "--no-first-run", "--no-default-browser-check", url],
@@ -3507,24 +3518,49 @@ async function runWindowsPlainLogin(
   );
   await Promise.race(waits);
   lifecycleAbort.abort();
-  stopWindowsChromeProfile(profileWindows);
+  const stop = stopWindowsChromeProfile(profileWindows);
+  if (stop.forced > 0) {
+    emit.log(
+      "[--login] Chrome did not close when asked and was stopped. Cookies set in its last 30 seconds may be missing; run the sign-in again if later pages are signed out.",
+      "warn",
+    );
+  }
   await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
   const domain = harvestDomain(url);
-  const cookies = harvestWindowsChromeCookies({ chromeWindows, profileWindows, domain });
+  const { cookies, pages } = harvestWindowsChromeCookies({ chromeWindows, profileWindows, domain });
+  const lastPage = pages[0] ?? null;
+  const names = [...new Set(cookies.map((cookie) => cookie.name))].sort();
+  const sessionCookies = cookies.filter((cookie) => cookie.expires <= 0).length;
   if (cookies.length === 0) {
     emit.log(
       `[--login] No ${domain} cookies were found in the Windows profile; the sign-in may not have completed.`,
       "warn",
     );
-    return;
+  } else {
+    const jar = new CookieJar({ path: storePath, source: "harn-browse" });
+    jar.save(mergeCookies(jar.load(), cookies));
+    emit.log(
+      `[--login] Copied ${cookies.length} ${domain} cookies (${sessionCookies} browser-session) into ${storePath}: ${names.join(", ")}.`,
+      "info",
+    );
   }
-  const jar = new CookieJar({ path: storePath, source: "harn-browse" });
-  jar.save(mergeCookies(jar.load(), cookies));
-  const names = [...new Set(cookies.map((cookie) => cookie.name))].sort().join(", ");
-  emit.log(
-    `[--login] Copied ${cookies.length} ${domain} cookies into ${storePath}: ${names}.`,
-    "info",
-  );
+  if (lastPage) {
+    emit.log(
+      `[--login] Last page: ${lastPage} (the last page you had open on ${domain}; open it to continue where the sign-in left off, since its address may carry a sign-in token that cookies alone do not replace).`,
+      "info",
+    );
+  }
+  emit.data({
+    login: {
+      domain,
+      store: storePath,
+      cookies: cookies.length,
+      sessionCookies,
+      names,
+      lastPage,
+      pages,
+    },
+  });
 }
 
 async function waitForLoginCloseFile(path: string, signal?: AbortSignal): Promise<void> {
