@@ -14,21 +14,25 @@
  *     for `gc` once its starting agent has ended or been unobserved for a long
  *     time AND nobody has used the server for the idle window.
  *
- * Fail-closed rules: a record whose pid was recycled is treated as dead, never
- * signalled; an unreadable coordination view makes every owner `unknown`,
+ * Fail-closed rules: a record whose pid was recycled is never signalled;
+ * an unreadable start token or coordination view is `unknown`,
  * which `gc` never stops; a record without an owner is never stopped
  * automatically.
  */
 
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import { listStates } from "../../lib/tunnel/state.ts";
 import { resolveCoordRoot } from "../agents/coord-client.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
-import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
+import {
+  type ProcessGenerationSignalDependencies,
+  type ProcessGenerationVerdict,
+  processStartToken,
+  signalIfSameGeneration,
+  verifyProcessGeneration,
+} from "../agents/state/proc-start.ts";
 import { serverPortRange } from "../config.ts";
 import {
   readCoordinationViewV3,
@@ -47,7 +51,6 @@ import {
   type ScanSupport,
   scanSupport,
 } from "./net.ts";
-import { tunnelServerId, tunnelServerInput } from "./tunnels.ts";
 
 export {
   ancestry,
@@ -87,13 +90,13 @@ export interface ServerRecord {
   start_token?: string;
   /** Further processes that belong to this server (helpers, children). */
   pids?: number[];
+  /** Generation witnesses captured when the further processes registered. */
+  pids_start_tokens?: Record<string, string>;
   host: string;
   /** What the server serves, usually a directory. */
   scope?: string;
   cwd?: string;
   log?: string;
-  /** Graceful stop command; signals are the fallback. */
-  stop_argv?: string[];
   owner?: { instance_id: string; name?: string };
   started_at: string;
   registered_at: string;
@@ -108,11 +111,12 @@ export interface RegisterServerInput {
   url?: string;
   port?: number;
   pid?: number;
+  /** Preserve an observed witness when adopting, rather than probing a new generation. */
+  start_token?: string;
   pids?: number[];
   scope?: string;
   cwd?: string;
   log?: string;
-  stop_argv?: string[];
   started_at?: string;
   /** `null` records no owner; omitted resolves the calling agent session. */
   owner?: { instance_id: string; name?: string } | null;
@@ -122,7 +126,7 @@ export interface ServerOptions {
   coordRoot?: string | null;
 }
 
-export type ServerState = "running" | "dead" | "other-host";
+export type ServerState = "running" | "dead" | "other-host" | "unknown";
 export type OwnerState = "live" | "abandoned" | "ended" | "unknown" | "none";
 
 export interface ServerView {
@@ -136,6 +140,8 @@ export interface ServerView {
 
 export interface UnregisteredListener {
   pid: number;
+  /** Captured during the scan, before a stop can be authorized. */
+  start_token?: string;
   port: number;
   address: string;
   command: string;
@@ -204,7 +210,13 @@ export function registerServer(
     throw new Error(`invalid server port: ${input.port}`);
   const id = input.id ?? serverId(input.type, input.scope);
   const now = new Date().toISOString();
-  const startToken = processStartToken(pid);
+  const startToken = input.start_token ?? processStartToken(pid);
+  const pids = [...new Set(input.pids?.filter((p) => Number.isSafeInteger(p) && p > 0))];
+  const pidsStartTokens: Record<string, string> = {};
+  for (const auxiliaryPid of pids) {
+    const token = processStartToken(auxiliaryPid);
+    if (token) pidsStartTokens[auxiliaryPid] = token;
+  }
   const owner = input.owner === undefined ? callingOwner(coordRoot) : (input.owner ?? undefined);
   const record: ServerRecord = {
     schema_version: SERVER_RECORD_SCHEMA_VERSION,
@@ -216,19 +228,18 @@ export function registerServer(
     ...(input.port ? { port: input.port } : {}),
     pid,
     ...(startToken ? { start_token: startToken } : {}),
-    ...(input.pids?.length
-      ? { pids: input.pids.filter((p) => Number.isSafeInteger(p) && p > 0) }
-      : {}),
+    ...(pids.length ? { pids, pids_start_tokens: pidsStartTokens } : {}),
     host: hostname(),
     ...(input.scope ? { scope: resolve(input.scope) } : {}),
     ...(input.cwd ? { cwd: resolve(input.cwd) } : {}),
     ...(input.log ? { log: resolve(input.log) } : {}),
-    ...(input.stop_argv?.length ? { stop_argv: input.stop_argv } : {}),
     ...(owner ? { owner } : {}),
     started_at: input.started_at ?? now,
     registered_at: now,
     last_active_at: now,
   };
+  if (input.start_token !== undefined && verifyProcessGeneration(pid, input.start_token) !== "same")
+    throw new Error(`pid ${pid} generation could not be verified before registration`);
   writePrivateJsonAtomic(recordPath(coordRoot, id), record);
   return record;
 }
@@ -351,10 +362,14 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
-export function serverState(record: ServerRecord): ServerState {
+export function serverState(
+  record: ServerRecord,
+  readToken?: (pid: number) => string | null,
+): ServerState {
   if (record.host !== hostname()) return "other-host";
   if (!pidAlive(record.pid)) return "dead";
-  return checkPidToken(record.pid, record.start_token) === "mismatch" ? "dead" : "running";
+  const verdict = verifyProcessGeneration(record.pid, record.start_token, readToken);
+  return verdict === "same" ? "running" : verdict === "different" ? "dead" : "unknown";
 }
 
 type OwnerReader = (instanceId: string) => OwnerState;
@@ -395,7 +410,6 @@ export function listServers(options?: ListServersOptions): ServersReport {
   const now = options?.now ?? new Date();
   const nowMs = now.getTime();
   const ownerStaleMs = hours(options?.ownerStaleHours ?? SERVER_DEFAULT_OWNER_STALE_HOURS);
-  adoptRunningTunnels(coordRoot);
   const records = readServerRecords({ coordRoot });
   const ownerOf = ownerReader(coordRoot, ownerStaleMs, nowMs);
   const states = records.map((record) => serverState(record));
@@ -407,7 +421,7 @@ export function listServers(options?: ListServersOptions): ServersReport {
   const servers: ServerView[] = [];
   records.forEach((record, i) => {
     const state = states[i]!;
-    if (state === "dead" && options?.prune !== false) {
+    if (state === "dead" && !pidAlive(record.pid) && options?.prune !== false) {
       unregisterServer(record.id, { coordRoot, pid: record.pid });
       pruned.push(record.id);
       return;
@@ -446,24 +460,6 @@ export function listServers(options?: ListServersOptions): ServersReport {
   };
 }
 
-/** Register running tunnels that have no current record. Returns adopted ids. */
-export function adoptRunningTunnels(coordRoot: string): string[] {
-  const adopted: string[] = [];
-  let states: ReturnType<typeof listStates>;
-  try {
-    states = listStates(coordRoot);
-  } catch {
-    return adopted;
-  }
-  for (const state of states) {
-    if (!state.gate_pid || !pidAlive(state.gate_pid)) continue;
-    const id = tunnelServerId(state.name);
-    if (readServer(id, { coordRoot })?.pid === state.gate_pid) continue;
-    if (tryRegisterServer(tunnelServerInput(state, coordRoot), { coordRoot })) adopted.push(id);
-  }
-  return adopted;
-}
-
 /** Processes that browser automation and editors start; never project servers. */
 const IGNORED_LISTENER_COMMANDS = [
   /(^|\/)(chrome|chromium|chrome-headless-shell|headless_shell|msedge|firefox)( |$)/i,
@@ -481,10 +477,10 @@ export function findUnregisteredListeners(
   coordRoot: string,
   servers: Array<Pick<ServerView, "record" | "state">>,
 ): UnregisteredListener[] {
-  const running = servers.filter((server) => server.state === "running");
+  const registered = servers.filter((server) => server.record.host === hostname());
   const covered = new Set<number>();
   const ports = new Set<number>();
-  for (const { record } of running) {
+  for (const { record } of registered) {
     covered.add(record.pid);
     for (const pid of record.pids ?? []) covered.add(pid);
     if (record.port) ports.add(record.port);
@@ -492,7 +488,8 @@ export function findUnregisteredListeners(
   const results: UnregisteredListener[] = [];
   const seenPids = new Map<number, boolean>();
   for (const socket of listListeningSockets()) {
-    if (ports.has(socket.port) || socket.pid === process.pid) continue;
+    if (ports.has(socket.port) || covered.has(socket.pid) || socket.pid === process.pid) continue;
+    const startToken = processStartToken(socket.pid);
     let inside = seenPids.get(socket.pid);
     const info = readProcessInfo(socket.pid);
     if (!info) continue;
@@ -506,6 +503,7 @@ export function findUnregisteredListeners(
     if (!inside) continue;
     results.push({
       pid: socket.pid,
+      ...(startToken ? { start_token: startToken } : {}),
       port: socket.port,
       address: socket.address,
       command: info.command.slice(0, 300),
@@ -568,77 +566,117 @@ export function planServerGc(views: ServerView[], policy?: GcPolicy): GcDecision
 export interface StopResult {
   id: string;
   stopped: boolean;
-  method: "not-running" | "stop-command" | "signal" | "refused";
+  method: "not-running" | "signal" | "refused";
+  generation?: ProcessGenerationVerdict;
   detail?: string;
 }
 
 /**
- * Stop one server: its graceful stop command first when recorded, then
- * SIGTERM to its process group, then SIGKILL after the grace period. A pid
- * whose start token no longer matches is never signalled.
+ * Stop a verified server with SIGTERM, then SIGKILL after the grace period.
+ * Each signal, including the process group and auxiliary processes, requires
+ * a fresh generation check. Unknown or different generations retain the record.
  */
 export async function stopServer(
   record: ServerRecord,
-  options?: ServerOptions & { graceMs?: number },
+  options?: ServerOptions & {
+    graceMs?: number;
+    signalDependencies?: ProcessGenerationSignalDependencies;
+  },
 ): Promise<StopResult> {
   const coordRoot = rootOf(options);
   const graceMs = options?.graceMs ?? 5_000;
+  const dependencies = options?.signalDependencies ?? {};
+  const targets = [
+    { pid: record.pid, token: record.start_token },
+    ...[...new Set(record.pids ?? [])]
+      .filter((pid) => pid !== record.pid)
+      .map((pid) => ({ pid, token: record.pids_start_tokens?.[pid] })),
+  ];
+  const refuse = (pid: number, generation: ProcessGenerationVerdict): StopResult => ({
+    id: record.id,
+    stopped: false,
+    method: "refused",
+    generation,
+    detail: `pid ${pid} generation is ${generation}; left the server record in place`,
+  });
   const finish = (result: StopResult): StopResult => {
     if (result.stopped || result.method === "not-running")
       unregisterServer(record.id, { coordRoot, pid: record.pid });
     return result;
   };
-  const state = serverState(record);
-  if (state === "other-host")
+  if (record.host !== hostname())
     return { id: record.id, stopped: false, method: "refused", detail: `runs on ${record.host}` };
-  if (state === "dead") return finish({ id: record.id, stopped: false, method: "not-running" });
+  // Check every recorded live process before sending the first signal.
+  for (const target of targets) {
+    if (!pidAlive(target.pid)) continue;
+    const verdict = verifyProcessGeneration(target.pid, target.token, dependencies.readToken);
+    if (verdict !== "same") return refuse(target.pid, verdict);
+  }
+  if (targets.every((target) => !pidAlive(target.pid)))
+    return finish({ id: record.id, stopped: false, method: "not-running" });
 
-  if (record.stop_argv?.length) {
-    const [command, ...args] = record.stop_argv;
-    spawnSync(command!, args, { stdio: "ignore", timeout: 30_000, cwd: record.cwd });
-    if (await exited(record, graceMs))
-      return finish({ id: record.id, stopped: true, method: "stop-command" });
+  for (const name of ["SIGTERM", "SIGKILL"] as const) {
+    for (const target of targets) {
+      if (!pidAlive(target.pid)) continue;
+      const result =
+        target.pid === record.pid
+          ? signalServerLeader(target.pid, target.token, name, dependencies)
+          : signalIfSameGeneration(target.pid, target.token, name, dependencies);
+      if (result.verdict !== "same") return refuse(target.pid, result.verdict);
+    }
+    const observed = await waitForExit(targets, name === "SIGTERM" ? graceMs : 2_000, dependencies);
+    if (observed.refused) return refuse(observed.refused.pid, observed.refused.verdict);
+    if (observed.exited)
+      return finish({ id: record.id, stopped: true, method: "signal", generation: "same" });
   }
-  signal(record.pid, "SIGTERM");
-  for (const pid of record.pids ?? []) signal(pid, "SIGTERM");
-  if (await exited(record, graceMs))
-    return finish({ id: record.id, stopped: true, method: "signal" });
-  if (serverState(record) === "running") {
-    signal(record.pid, "SIGKILL");
-    for (const pid of record.pids ?? []) signal(pid, "SIGKILL");
-  }
-  const stopped = await exited(record, 2_000);
-  return finish({
+  return {
     id: record.id,
-    stopped,
+    stopped: false,
     method: "signal",
-    ...(stopped ? {} : { detail: "process survived SIGKILL" }),
+    generation: "same",
+    detail: "process survived SIGKILL",
+  };
+}
+
+function signalServerLeader(
+  pid: number,
+  token: string | undefined,
+  name: NodeJS.Signals,
+  dependencies: ProcessGenerationSignalDependencies,
+): { sent: boolean; verdict: ProcessGenerationVerdict } {
+  // The leader's generation authorizes its group. A failed group signal must
+  // not reuse that observation for the direct-PID fallback.
+  const kill = dependencies.kill ?? process.kill;
+  const group = signalIfSameGeneration(pid, token, name, {
+    readToken: dependencies.readToken,
+    kill: (leader, signal) => kill(-leader, signal),
   });
+  return group.sent || group.verdict !== "same"
+    ? group
+    : signalIfSameGeneration(pid, token, name, dependencies);
 }
 
-function signal(pid: number, name: NodeJS.Signals): void {
-  // Detached servers lead their own process group; signal the group so a
-  // wrapper (npm, bunx) does not orphan the real listener.
-  try {
-    process.kill(-pid, name);
-    return;
-  } catch {
-    // Not a group leader, or already gone.
-  }
-  try {
-    process.kill(pid, name);
-  } catch {
-    // Already gone.
-  }
-}
-
-async function exited(record: ServerRecord, waitMs: number): Promise<boolean> {
+async function waitForExit(
+  targets: Array<{ pid: number; token: string | undefined }>,
+  waitMs: number,
+  dependencies: ProcessGenerationSignalDependencies,
+): Promise<{
+  exited: boolean;
+  refused?: { pid: number; verdict: ProcessGenerationVerdict };
+}> {
   const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline) {
-    if (serverState(record) !== "running") return true;
+  while (true) {
+    let live = false;
+    for (const target of targets) {
+      if (!pidAlive(target.pid)) continue;
+      const verdict = verifyProcessGeneration(target.pid, target.token, dependencies.readToken);
+      if (verdict !== "same") return { exited: false, refused: { pid: target.pid, verdict } };
+      live = true;
+    }
+    if (!live) return { exited: true };
+    if (Date.now() >= deadline) return { exited: false };
     await new Promise((r) => setTimeout(r, 100));
   }
-  return serverState(record) !== "running";
 }
 
 /**
@@ -653,7 +691,8 @@ export function allocateServerPort(type: string, options?: ServerOptions): numbe
   if (!range) return null;
   const taken = listListeningPorts();
   for (const record of readServerRecords({ coordRoot })) {
-    if (record.port && serverState(record) === "running") taken.add(record.port);
+    const state = serverState(record);
+    if (record.port && (state === "running" || state === "unknown")) taken.add(record.port);
   }
   for (let port = range[0]; port <= range[1]; port++) if (!taken.has(port)) return port;
   throw new Error(`no free port for ${type} in ${range[0]}-${range[1]}`);
@@ -666,6 +705,10 @@ export interface AdoptOptions extends ServerOptions {
   scope?: string;
   /** `self` (default) records the adopting agent as owner; `none` records no owner. */
   owner?: "self" | "none";
+  dependencies?: {
+    listServers?: typeof listServers;
+    readToken?: (pid: number) => string | null;
+  };
 }
 
 /**
@@ -675,12 +718,19 @@ export interface AdoptOptions extends ServerOptions {
 export function adoptServer(pid: number, options?: AdoptOptions): ServerRecord {
   const coordRoot = rootOf(options);
   if (!coordRoot) throw new Error("no Harnery project found (coordination root did not resolve)");
-  const report = listServers({ coordRoot, sample: false });
+  const report = (options?.dependencies?.listServers ?? listServers)({ coordRoot, sample: false });
   const listeners = report.unregistered.filter((item) => item.pid === pid);
   if (!listeners.length)
     throw new Error(`pid ${pid} is not an unregistered listener inside this project`);
   const ports = listeners.map((item) => item.port).sort((a, b) => a - b);
   const first = listeners[0]!;
+  const generation = verifyProcessGeneration(
+    pid,
+    first.start_token,
+    options?.dependencies?.readToken,
+  );
+  if (generation !== "same")
+    throw new Error(`pid ${pid} generation is ${generation}; adoption refused`);
   const type = options?.type ?? "adopted";
   const scope = options?.scope ?? first.cwd ?? undefined;
   const started = processStartedAt(pid);
@@ -693,6 +743,7 @@ export function adoptServer(pid: number, options?: AdoptOptions): ServerRecord {
       url: `http://127.0.0.1:${ports[0]}/`,
       port: ports[0],
       pid,
+      start_token: first.start_token,
       ...(scope ? { scope } : {}),
       ...(first.cwd ? { cwd: first.cwd } : {}),
       ...(options?.owner === "none" ? { owner: null } : {}),

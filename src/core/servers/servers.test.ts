@@ -1,10 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderReport } from "../../commands/servers.ts";
+import { processStartToken } from "../agents/state/proc-start.ts";
 import { serverGcConfig, serverPortRange } from "../config.ts";
 import {
   adoptServer,
@@ -25,6 +34,7 @@ import {
   type ServerView,
   scanSupport,
   serverId,
+  serverState,
   serversDir,
   stopServer,
   touchServer,
@@ -110,6 +120,75 @@ describe("register, read, unregister", () => {
 });
 
 describe("listing", () => {
+  test("shows an unknown generation without pruning it or renewing its authority", async () => {
+    const { pid, port } = await startChildServer(root);
+    const record = registerServer(
+      { id: "unknown", kind: "session", type: "preview", pid, port, owner: null },
+      { coordRoot: root },
+    )!;
+    delete record.start_token;
+    const path = join(serversDir(root), `${record.id}.json`);
+    writeFileSync(path, JSON.stringify(record));
+    const before = readFileSync(path, "utf8");
+    const report = listServers({ coordRoot: root, sample: false });
+    expect(report.servers[0]?.state).toBe("unknown");
+    expect(report.pruned).toEqual([]);
+    expect(report.unregistered.some((item) => item.pid === pid)).toBe(false);
+    expect(renderReport(report, "harn")).toContain("unknown [unknown]");
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("keeps a mismatched live pid record and does not expose it as unregistered", async () => {
+    const { pid, port } = await startChildServer(root);
+    const record = registerServer(
+      { id: "different", kind: "session", type: "preview", pid, port, owner: null },
+      { coordRoot: root },
+    )!;
+    record.start_token = "different-generation";
+    const path = join(serversDir(root), `${record.id}.json`);
+    writeFileSync(path, JSON.stringify(record));
+    const before = readFileSync(path, "utf8");
+    const report = listServers({ coordRoot: root, sample: false });
+    expect(report.servers[0]?.state).toBe("dead");
+    expect(report.pruned).toEqual([]);
+    expect(report.unregistered.some((item) => item.pid === pid)).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("an unreadable process token is unknown", () => {
+    const record = registerServer(
+      { id: "unreadable", kind: "session", type: "preview", owner: null },
+      { coordRoot: root },
+    )!;
+    expect(serverState(record, () => null)).toBe("unknown");
+    expect(
+      serverState(record, () => {
+        throw new Error("probe failed");
+      }),
+    ).toBe("unknown");
+  });
+
+  test("does not turn saved tunnel pids into fresh ownership", async () => {
+    const { pid, port } = await startChildServer(root);
+    const dir = join(root, ".cache", "tunnel");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "state.json"),
+      JSON.stringify({
+        name: "default",
+        provider: "cloudflare",
+        gate_pid: pid,
+        gate_port: port,
+        target: "http://127.0.0.1:3000",
+        url: "https://example.test",
+        started_at: new Date().toISOString(),
+      }),
+    );
+    const report = listServers({ coordRoot: root, scan: false });
+    expect(report.servers).toEqual([]);
+    expect(readServer("tunnel-default", { coordRoot: root })).toBeNull();
+  });
+
   test("prunes records whose process exited", async () => {
     const { pid } = await startChildServer(root);
     registerServer(
@@ -180,8 +259,155 @@ describe("stopping", () => {
       { id: "recycled", kind: "session", type: "preview", owner: null },
       { coordRoot: root },
     )!;
-    const result = await stopServer({ ...record, start_token: "l0.0" }, { coordRoot: root });
-    expect(result.method).toBe("not-running");
+    const signals: number[] = [];
+    const result = await stopServer(
+      { ...record, start_token: "l0.0" },
+      {
+        coordRoot: root,
+        signalDependencies: { kill: (pid) => signals.push(pid) },
+      },
+    );
+    expect(result).toMatchObject({ method: "refused", generation: "different", stopped: false });
+    expect(signals).toEqual([]);
+    expect(readServer(record.id, { coordRoot: root })).toEqual(record);
+  });
+
+  for (const unreadable of ["missing", "null", "throws"] as const) {
+    test(`refuses an ${unreadable} token without changing the record`, async () => {
+      const record = registerServer(
+        { id: "unreadable", kind: "session", type: "preview", owner: null },
+        { coordRoot: root },
+      )!;
+      const signals: number[] = [];
+      const result = await stopServer(
+        { ...record, ...(unreadable === "missing" ? { start_token: undefined } : {}) },
+        {
+          coordRoot: root,
+          signalDependencies: {
+            readToken:
+              unreadable === "throws"
+                ? () => {
+                    throw new Error("probe failed");
+                  }
+                : () => null,
+            kill: (pid) => signals.push(pid),
+          },
+        },
+      );
+      expect(result).toMatchObject({ method: "refused", generation: "unknown", stopped: false });
+      expect(signals).toEqual([]);
+      expect(readServer(record.id, { coordRoot: root })).toEqual(record);
+    });
+  }
+
+  test("rechecks after observation and before the first signal", async () => {
+    const record = registerServer(
+      { id: "changed", kind: "session", type: "preview", owner: null },
+      { coordRoot: root },
+    )!;
+    let reads = 0;
+    const signals: number[] = [];
+    const result = await stopServer(record, {
+      coordRoot: root,
+      signalDependencies: {
+        readToken: () => (++reads === 1 ? record.start_token! : "different-generation"),
+        kill: (pid) => signals.push(pid),
+      },
+    });
+    expect(result.generation).toBe("different");
+    expect(signals).toEqual([]);
+    expect(readServer(record.id, { coordRoot: root })).toEqual(record);
+  });
+
+  for (const nextToken of [null, "different-generation"]) {
+    test(`rechecks before SIGKILL when the token becomes ${nextToken ?? "unreadable"}`, async () => {
+      const record = registerServer(
+        { id: "escalate", kind: "session", type: "preview", owner: null },
+        { coordRoot: root },
+      )!;
+      let reads = 0;
+      const signals: Array<{ pid: number; name: NodeJS.Signals | number }> = [];
+      const result = await stopServer(record, {
+        coordRoot: root,
+        graceMs: 0,
+        signalDependencies: {
+          readToken: () => (++reads < 4 ? record.start_token! : nextToken),
+          kill: (pid, name) => signals.push({ pid, name }),
+        },
+      });
+      expect(result).toMatchObject({
+        method: "refused",
+        generation: nextToken ? "different" : "unknown",
+      });
+      expect(signals).toEqual([{ pid: -record.pid, name: "SIGTERM" }]);
+      expect(readServer(record.id, { coordRoot: root })).toEqual(record);
+    });
+  }
+
+  test("rechecks the direct pid after a failed group signal", async () => {
+    const record = registerServer(
+      { id: "fallback", kind: "session", type: "preview", owner: null },
+      { coordRoot: root },
+    )!;
+    let failed = false;
+    const signals: number[] = [];
+    const result = await stopServer(record, {
+      coordRoot: root,
+      signalDependencies: {
+        readToken: () => (failed ? "different-generation" : record.start_token!),
+        kill: (pid) => {
+          signals.push(pid);
+          failed = true;
+          throw new Error("no process group");
+        },
+      },
+    });
+    expect(result.generation).toBe("different");
+    expect(signals).toEqual([-record.pid]);
+  });
+
+  test("records auxiliary tokens and refuses any unverified live auxiliary", async () => {
+    const { pid } = await startChildServer(root);
+    const record = registerServer(
+      { id: "helpers", kind: "session", type: "preview", pids: [pid], owner: null },
+      { coordRoot: root },
+    )!;
+    expect(record.pids_start_tokens?.[pid]).toBe(processStartToken(pid) ?? undefined);
+    const signals: number[] = [];
+    for (const token of [undefined, "different-generation"]) {
+      const result = await stopServer(
+        { ...record, pids_start_tokens: token ? { [pid]: token } : undefined },
+        {
+          coordRoot: root,
+          signalDependencies: { kill: (target) => signals.push(target) },
+        },
+      );
+      expect(result).toMatchObject({
+        method: "refused",
+        generation: token ? "different" : "unknown",
+      });
+      expect(signals).toEqual([]);
+      expect(readServer(record.id, { coordRoot: root })).toEqual(record);
+    }
+  });
+
+  test("stops a verified leader and individually verified auxiliary process", async () => {
+    const leader = await startChildServer(root);
+    const auxiliary = await startChildServer(root);
+    const record = registerServer(
+      {
+        id: "verified-helpers",
+        kind: "session",
+        type: "preview",
+        pid: leader.pid,
+        pids: [auxiliary.pid],
+        owner: null,
+      },
+      { coordRoot: root },
+    )!;
+    const result = await stopServer(record, { coordRoot: root, graceMs: 3_000 });
+    expect(result).toMatchObject({ stopped: true, method: "signal", generation: "same" });
+    expect(readServer(record.id, { coordRoot: root })).toBeNull();
   });
 });
 
@@ -219,6 +445,7 @@ describe("gc policy", () => {
     expect(decide({ owner_state: "none" })).toBe("keep");
     expect(decide({ idle_ms: 30 * 60_000 })).toBe("keep");
     expect(decide({ state: "other-host" })).toBe("keep");
+    expect(decide({ state: "unknown" })).toBe("keep");
     expect(planServerGc([view({ idle_ms: 30 * 60_000 })], { idleHours: 0.25 })[0]!.action).toBe(
       "stop",
     );
@@ -281,6 +508,17 @@ function writeConfig(dir: string, servers: unknown): void {
 }
 
 describe("port ranges", () => {
+  test("reserves ports claimed by unknown registered processes", () => {
+    writeConfig(root, { port_ranges: { p: [51000, 51002] } });
+    const record = registerServer(
+      { id: "unknown-port", kind: "session", type: "p", port: 51000, owner: null },
+      { coordRoot: root },
+    )!;
+    delete record.start_token;
+    writeFileSync(join(serversDir(root), `${record.id}.json`), JSON.stringify(record));
+    expect(allocateServerPort("p", { coordRoot: root })).toBe(51001);
+  });
+
   test("read valid ranges and ignore malformed ones", () => {
     writeConfig(root, {
       port_ranges: { a: [5100, 5109], bad: [10, 5], worse: "x" },
@@ -306,6 +544,60 @@ describe("port ranges", () => {
 });
 
 describe("adoption", () => {
+  for (const token of [undefined, "different-generation"]) {
+    test(`refuses a scan witness that is ${token ? "different" : "unknown"}`, async () => {
+      const { pid, port } = await startChildServer(root);
+      const currentToken = processStartToken(pid);
+      expect(currentToken).toBeTruthy();
+      expect(() =>
+        adoptServer(pid, {
+          coordRoot: root,
+          owner: "none",
+          dependencies: {
+            listServers: () => ({
+              schema_version: 1,
+              coord_root: root,
+              scan: "procfs",
+              servers: [],
+              pruned: [],
+              unregistered: [
+                {
+                  pid,
+                  port,
+                  address: "127.0.0.1",
+                  command: "server",
+                  cwd: root,
+                  start_token: token,
+                },
+              ],
+            }),
+            readToken: () => currentToken,
+          },
+        }),
+      ).toThrow(/adoption refused/);
+      expect(listServers({ coordRoot: root, scan: false }).servers).toEqual([]);
+    });
+  }
+
+  test("registration preserves an observed witness and refuses a changed one before writing", () => {
+    const token = processStartToken(process.pid)!;
+    const input = {
+      id: "observed",
+      kind: "session" as const,
+      type: "preview",
+      owner: null,
+      start_token: token,
+    };
+    const record = registerServer(input, { coordRoot: root })!;
+    expect(record.start_token).toBe(token);
+    const path = join(serversDir(root), `${record.id}.json`);
+    const before = readFileSync(path, "utf8");
+    expect(() =>
+      registerServer({ ...input, start_token: "different-generation" }, { coordRoot: root }),
+    ).toThrow(/generation could not be verified/);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
   test.skipIf(scanSupport() === "unsupported")(
     "registers an unregistered listener and refuses anything else",
     async () => {

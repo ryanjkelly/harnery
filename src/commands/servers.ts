@@ -120,6 +120,7 @@ export function registerServersCommand(
                   type: "unregistered",
                   label: stray.command,
                   pid: stray.pid,
+                  ...(stray.start_token ? { start_token: stray.start_token } : {}),
                   host: hostname(),
                   started_at: new Date().toISOString(),
                   registered_at: new Date().toISOString(),

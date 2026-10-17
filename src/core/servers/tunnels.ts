@@ -9,7 +9,6 @@
 
 import { resolve } from "node:path";
 import { gateLogFile, type TunnelState } from "../../lib/tunnel/state.ts";
-import { resolveBinName } from "../config.ts";
 import type { RegisterServerInput } from "./index.ts";
 
 export function tunnelServerId(name: string): string {
@@ -32,7 +31,6 @@ export function tunnelServerInput(state: TunnelState, coordRoot: string): Regist
     ...(helpers.length ? { pids: helpers } : {}),
     log: resolve(coordRoot, ".cache", "tunnel", gateLogFile(state.name)),
     cwd: coordRoot,
-    stop_argv: [resolveBinName(coordRoot), "tunnel", "down", "--name", state.name],
     started_at: state.started_at,
     owner: null,
   };
