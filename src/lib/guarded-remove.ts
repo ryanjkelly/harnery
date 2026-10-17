@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readlinkSync, realpathSync, rmSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
 export interface RemoveOptions {
   root: string;
@@ -20,6 +20,8 @@ export interface RemoveOptions {
   assertOwnedArtifact?: (root: string) => void;
   /** Inspection bound; values above 10,000 require verified ownership of the exact artifact root. */
   entryLimit?: number;
+  /** Remove only verified-clean standalone clones inside the caller's owned artifact. */
+  cleanClone?: boolean;
 }
 
 export interface RemovalLink {
@@ -54,6 +56,14 @@ export function guardedRemove(
 ): RemovalReport {
   const cwd = realpathSync(process.cwd());
   const root = checkedPath(options.root, new Set(), true);
+  if (options.cleanClone) {
+    if (!options.recursive) throw new Error("Clean clone removal requires --recursive");
+    if (options.allowProtected?.length)
+      throw new Error("Clean clone removal cannot be combined with --allow-protected");
+    if (!options.assertOwnedArtifact)
+      throw new Error("Clean clone removal requires one current caller-owned managed artifact");
+    options.assertOwnedArtifact(root);
+  }
   const entryLimit = options.entryLimit ?? MAX_ENTRIES;
   if (
     !Number.isSafeInteger(entryLimit) ||
@@ -87,6 +97,7 @@ export function guardedRemove(
   const removedProtected = new Set<string>();
   const links: RemovalLink[] = [];
   const gitDirs = new Set<string>();
+  const cleanClones = new Set<string>();
   let bytes = 0;
   const devices = new Set<number>();
 
@@ -137,6 +148,10 @@ export function guardedRemove(
     if (stat.isDirectory() && !options.recursive)
       throw new Error(`Directory removal requires --recursive: ${target}`);
     const device = stat.dev;
+    if (options.cleanClone) {
+      assertCleanClone(target);
+      cleanClones.add(target);
+    }
     devices.add(device);
     const pending = [target];
     while (pending.length) {
@@ -145,6 +160,12 @@ export function guardedRemove(
       if (basename(path) === ARTIFACT_RECORD && insideArtifactWorkspace(path, null))
         throw new Error(`An artifact's record is managed by the artifact commands: ${path}`);
       if (protectedNames.has(basename(path).toLowerCase())) {
+        if (options.cleanClone && basename(path) === ".git") {
+          const clone = dirname(path);
+          assertCleanClone(clone);
+          cleanClones.add(clone);
+          allowed.add(path);
+        }
         if (!allowed.has(path)) throw new Error(protectedMessage(path));
         removedProtected.add(path);
       }
@@ -214,6 +235,7 @@ export function guardedRemove(
   )
     throw new Error("Allowed root changed during inspection");
   assertEntryLimitAuthority();
+  if (options.cleanClone) options.assertOwnedArtifact!(root);
   // Ownership may have been released or changed while the contents were inspected.
   allowedProtected(
     options.allowProtected ?? [],
@@ -226,6 +248,7 @@ export function guardedRemove(
     assertUntracked(target);
   }
   for (const dir of gitDirs) assertNoUnpushedHistory(dir);
+  for (const clone of cleanClones) assertCleanClone(clone);
   checkClaims(targets);
   for (const [path, previous] of snapshots) {
     if (fingerprint(lstatSync(path)) !== previous)
@@ -234,6 +257,47 @@ export function guardedRemove(
   for (const target of targets)
     rmSync(target, { recursive: Boolean(options.recursive), force: false });
   return { ...report, applied: true };
+}
+
+/** A disposable clone must not be the only copy of work or a registered worktree. */
+function assertCleanClone(clone: string): void {
+  const metadata = join(clone, ".git");
+  const stat = lstatSync(metadata);
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    throw new Error(`Clean clone removal requires a standalone .git directory: ${clone}`);
+  const git = (args: string[]) => {
+    const result = spawnSync("git", ["-c", "core.fsmonitor=false", "-C", clone, ...args], {
+      encoding: "utf8",
+      timeout: 10_000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: {
+        ...process.env,
+        LC_ALL: "C",
+        GIT_DIR: undefined,
+        GIT_COMMON_DIR: undefined,
+        GIT_WORK_TREE: undefined,
+        GIT_INDEX_FILE: undefined,
+        GIT_OPTIONAL_LOCKS: "0",
+      },
+    });
+    if (result.error || result.status !== 0)
+      throw new Error(`Cannot verify clean clone ${clone}: git ${args[0]} failed`);
+    return result.stdout;
+  };
+  if (
+    realpathSync(git(["rev-parse", "--show-toplevel"]).trim()) !== clone ||
+    realpathSync(resolve(clone, git(["rev-parse", "--git-common-dir"]).trim())) !== metadata
+  )
+    throw new Error(`Clean clone removal refuses shared repository metadata: ${clone}`);
+  const worktrees = git(["worktree", "list", "--porcelain", "-z"])
+    .split("\0")
+    .filter((entry) => entry.startsWith("worktree "));
+  if (worktrees.length !== 1 || worktrees[0] !== `worktree ${clone}`)
+    throw new Error(`Clean clone removal refuses registered or linked worktrees: ${clone}`);
+  if (git(["status", "--porcelain=v1", "--untracked-files=all"]).trim())
+    throw new Error(`Clean clone has uncommitted or untracked work: ${clone}`);
+  if (git(["rev-list", "--max-count=1", "HEAD", "--all", "--reflog", "--not", "--remotes"]).trim())
+    throw new Error(`Clean clone has HEAD, ref or reflog commits not on any remote: ${clone}`);
 }
 
 /** The metadata file the artifact commands keep in each artifact workspace. */

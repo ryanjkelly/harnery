@@ -27,6 +27,10 @@ export function registerRmCommand(
     )
     .option("-r, --recursive", "Permit directory removal after inspecting its complete contents")
     .option(
+      "--clean-clone",
+      "Remove only clean standalone clones inside one owned artifact; refuse local-only commits and worktrees",
+    )
+    .option(
       "--entry-limit <n>",
       "Maximum inspected entries, 1-100000 (default 10000); larger limits require one current caller-owned managed artifact as --root",
       (value: string) => Number(value),
@@ -109,7 +113,9 @@ export function registerRmCommand(
           ];
           if (report.protected.length)
             lines.push(
-              "Protected paths named with --allow-protected:",
+              options.cleanClone
+                ? "Verified clone metadata:"
+                : "Protected paths named with --allow-protected:",
               ...report.protected.map((path) => `  ${path}`),
             );
           if (report.links.length)

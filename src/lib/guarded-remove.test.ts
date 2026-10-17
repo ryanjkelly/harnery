@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { guardedRemove } from "./guarded-remove.ts";
+import { guardedRemove, type RemoveOptions } from "./guarded-remove.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -287,6 +287,165 @@ function git(args: string[]) {
   expect(result.status).toBe(0);
   return result;
 }
+
+function cleanCloneFixture() {
+  const { root } = fixture();
+  const artifact = join(root, ".harnery", "artifacts", "owned");
+  mkdirSync(artifact, { recursive: true });
+  const remote = join(root, "remote.git");
+  git(["init", "-q", "--bare", remote]);
+  const clone = join(artifact, "clone");
+  git(["init", "-q", clone]);
+  writeFileSync(join(clone, "a.txt"), "a");
+  git(["-C", clone, "add", "a.txt"]);
+  git(["-C", clone, "commit", "-qm", "pushed"]);
+  git(["-C", clone, "remote", "add", "origin", remote]);
+  git(["-C", clone, "push", "-q", "origin", "HEAD:refs/heads/main"]);
+  git(["-C", clone, "fetch", "-q", "origin"]);
+  const options: RemoveOptions = {
+    root: artifact,
+    recursive: true,
+    cleanClone: true,
+    liveRoots: [root],
+    assertOwnedArtifact: (path) => {
+      if (path !== artifact) throw new Error("not owned");
+    },
+  };
+  return { root, artifact, remote, clone, options };
+}
+
+test("clean clone mode previews and prunes only the clone, retaining surrounding evidence and links", () => {
+  const { artifact, remote, clone, options } = cleanCloneFixture();
+  const record = join(artifact, ".harnery-artifact.json");
+  const evidence = join(artifact, "final.json");
+  writeFileSync(record, '{"holds":["review"]}');
+  writeFileSync(evidence, "retained");
+  // Tracked links are part of a clean checkout; their external targets are not removed.
+  symlinkSync(remote, join(clone, "remote-link"));
+  git(["-C", clone, "add", "remote-link"]);
+  git(["-C", clone, "commit", "-qm", "link"]);
+  git(["-C", clone, "push", "-q", "origin", "HEAD:refs/heads/main"]);
+  const preview = guardedRemove([clone], options);
+  expect(preview.applied).toBe(false);
+  expect(preview.protected).toEqual([join(clone, ".git")]);
+  expect(preview.links).toEqual([{ path: join(clone, "remote-link"), target: remote }]);
+  expect(guardedRemove([clone], { ...options, yes: true, dryRun: true }).applied).toBe(false);
+  expect(guardedRemove([clone], { ...options, yes: true }).applied).toBe(true);
+  for (const retained of [artifact, record, evidence, remote])
+    expect(existsSync(retained)).toBe(true);
+  expect(existsSync(clone)).toBe(false);
+});
+
+for (const kind of [
+  "modified",
+  "staged",
+  "untracked",
+  "detached",
+  "branch",
+  "tag",
+  "reflog",
+  "stash",
+  "worktree",
+]) {
+  test(`clean clone mode refuses ${kind} work before removing any target`, () => {
+    const { root, clone, options } = cleanCloneFixture();
+    if (["modified", "staged", "untracked"].includes(kind)) {
+      writeFileSync(join(clone, kind === "untracked" ? "new.txt" : "a.txt"), "uncommitted");
+      if (kind === "staged") git(["-C", clone, "add", "a.txt"]);
+    } else if (kind === "stash") {
+      writeFileSync(join(clone, "a.txt"), "stashed work");
+      git(["-C", clone, "stash", "push", "-qm", "unique work"]);
+    } else if (kind === "worktree") {
+      git(["-C", clone, "worktree", "add", "-q", "-b", "linked", join(root, "linked")]);
+    } else {
+      const original = git(["-C", clone, "rev-parse", "HEAD"]).stdout.trim();
+      git(["-C", clone, "checkout", "-q", "--detach"]);
+      writeFileSync(join(clone, "a.txt"), "local only");
+      git(["-C", clone, "add", "a.txt"]);
+      git(["-C", clone, "commit", "-qm", "local only"]);
+      if (kind === "branch") git(["-C", clone, "branch", "local-only"]);
+      if (kind === "tag") git(["-C", clone, "tag", "local-only"]);
+      if (kind !== "detached") git(["-C", clone, "checkout", "-q", "--detach", original]);
+    }
+    expect(() => guardedRemove([clone], { ...options, yes: true })).toThrow(
+      ["modified", "staged", "untracked"].includes(kind)
+        ? "uncommitted or untracked"
+        : kind === "worktree"
+          ? "registered or linked worktrees"
+          : "not on any remote",
+    );
+    expect(existsSync(join(clone, ".git"))).toBe(true);
+  });
+}
+
+test("clean clone mode rechecks ownership, clone state and peer claims before mutation", () => {
+  for (const changed of ["owner", "file", "peer"]) {
+    const { clone, options } = cleanCloneFixture();
+    let checks = 0;
+    const assertOwned = options.assertOwnedArtifact!;
+    options.assertOwnedArtifact = (path) => {
+      assertOwned(path);
+      if (changed === "owner" && checks > 0) throw new Error("owner changed");
+    };
+    expect(() =>
+      guardedRemove([clone], { ...options, yes: true }, () => {
+        checks++;
+        if (changed === "file") writeFileSync(join(clone, "a.txt"), "changed during inspection");
+        if (changed === "peer" && checks === 2) throw new Error("peer claim");
+      }),
+    ).toThrow();
+    expect(existsSync(clone)).toBe(true);
+  }
+});
+
+test("clean clone mode needs its exact artifact authority and does not allow other protected state", () => {
+  const { clone, options } = cleanCloneFixture();
+  expect(() => guardedRemove([clone], { ...options, assertOwnedArtifact: undefined })).toThrow(
+    "caller-owned",
+  );
+  expect(() => guardedRemove([clone], { ...options, recursive: false })).toThrow("--recursive");
+  expect(() =>
+    guardedRemove([clone], { ...options, allowProtected: [join(clone, ".git")] }),
+  ).toThrow("cannot be combined");
+  mkdirSync(join(clone, ".credentials"));
+  writeFileSync(join(clone, ".credentials", "key"), "copy");
+  git(["-C", clone, "add", ".credentials/key"]);
+  git(["-C", clone, "commit", "-qm", "copied state"]);
+  git(["-C", clone, "push", "-q", "origin", "HEAD:refs/heads/main"]);
+  expect(() => guardedRemove([clone], { ...options, yes: true })).toThrow("Protected state");
+  expect(existsSync(clone)).toBe(true);
+});
+
+test("clean clone mode accepts a published detached HEAD and validates every nested clone", () => {
+  const { clone, options, remote } = cleanCloneFixture();
+  git(["-C", clone, "checkout", "-q", "--detach"]);
+  // A disposable build can contain an independently cloned ignored dependency.
+  writeFileSync(join(clone, ".git", "info", "exclude"), "nested/\n");
+  const nested = join(clone, "nested");
+  git(["clone", "-q", "--branch", "main", remote, nested]);
+  writeFileSync(join(nested, "a.txt"), "local nested change");
+  expect(() => guardedRemove([clone], { ...options, yes: true })).toThrow(
+    "uncommitted or untracked",
+  );
+  expect(existsSync(clone)).toBe(true);
+  git(["-C", nested, "restore", "a.txt"]);
+  expect(guardedRemove([clone], { ...options, yes: true }).protected).toEqual(
+    [join(clone, ".git"), join(nested, ".git")].sort(),
+  );
+  expect(existsSync(clone)).toBe(false);
+  expect(existsSync(remote)).toBe(true);
+});
+
+test("clean clone mode refuses a linked worktree target with a gitdir file", () => {
+  const { clone, artifact, options } = cleanCloneFixture();
+  const linked = join(artifact, "linked");
+  git(["-C", clone, "worktree", "add", "-q", "-b", "linked", linked]);
+  expect(() => guardedRemove([linked], { ...options, yes: true })).toThrow(
+    "standalone .git directory",
+  );
+  expect(existsSync(linked)).toBe(true);
+  expect(existsSync(clone)).toBe(true);
+});
 
 test("an allowed .git is refused while it holds commits found on no remote", () => {
   const { root } = fixture();

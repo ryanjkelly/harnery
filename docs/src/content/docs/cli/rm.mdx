@@ -44,3 +44,26 @@ The whole batch is inspected before the first deletion. Root identity, file
 fingerprints, Git ownership, peer claims and any required artifact authority
 are checked again before applying. Deletion remains permanent, and a
 filesystem error can leave a partially completed batch.
+
+## Disposable repository copies
+
+Use `--clean-clone` with `--recursive` for a reviewed repository copy inside
+one valid, unreleased managed artifact owned by the current caller:
+
+```bash
+harn rm --root .harnery/artifacts/<workspace> --recursive --clean-clone --json -- .harnery/artifacts/<workspace>/copy
+```
+
+The default remains a preview. Add `--yes` only after reviewing its targets.
+This mode requires a standalone `.git` directory, no modified, staged or
+untracked files, and no HEAD, ref or reflog commit missing from all recorded
+remote refs. Detached HEADs and stashes are checked too. Registered or linked worktrees,
+shared Git metadata, and unverifiable repositories are refused. These checks
+do not fetch remotes; refresh a copy's remote refs before attempting cleanup
+when their currency is uncertain.
+
+Nested standalone repositories receive the same checks. Other protected
+state remains refused, and `--allow-protected` cannot be combined with this
+mode. Root identity, artifact ownership, repository state, fingerprints and
+peer claims are rechecked before deletion. The surrounding artifact,
+manifest, holds, sibling evidence and external symlink targets stay in place.

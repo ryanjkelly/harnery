@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -29,6 +30,7 @@ function fixture() {
 function capture() {
   const data: unknown[] = [];
   const errors: unknown[] = [];
+  const texts: string[] = [];
   let code = 0;
   const emit: EmitContext = {
     config() {},
@@ -38,7 +40,9 @@ function capture() {
       data.push(value);
     },
     rows() {},
-    text() {},
+    text(value) {
+      texts.push(value);
+    },
     error(value) {
       errors.push(value);
     },
@@ -46,7 +50,7 @@ function capture() {
       code = value;
     },
   };
-  return { emit, data, errors, code: () => code };
+  return { emit, data, errors, texts, code: () => code };
 }
 
 test("registers lazily with root requirement, recursive and preview flags", async () => {
@@ -56,6 +60,7 @@ test("registers lazily with root requirement, recursive and preview flags", asyn
   expect(rm?.helpInformation()).toContain("--root");
   expect(rm?.helpInformation()).toContain("--dry-run");
   expect(rm?.helpInformation()).toContain("--entry-limit");
+  expect(rm?.helpInformation()).toContain("--clean-clone");
   expect(rm?.helpInformation()).not.toContain("--force");
   expect(
     createHarneryProgram({ skipCommands: ["rm"] }).commands.some(
@@ -157,6 +162,8 @@ async function copyCommand(
     root?: string;
     target?: string;
     entryLimit?: string;
+    cleanClone?: boolean;
+    text?: boolean;
   } = {},
 ) {
   const savedOwner = process.env.HARNERY_AGENT_COORD_OWNER;
@@ -174,10 +181,14 @@ async function copyCommand(
         "--root",
         options.root ?? input.workspace,
         "--recursive",
-        "--json",
+        ...(options.text ? [] : ["--json"]),
         ...(options.yes ? ["--yes"] : []),
         ...(options.entryLimit ? ["--entry-limit", options.entryLimit] : []),
-        ...(options.allow === false ? [] : ["--allow-protected", input.copy]),
+        ...(options.cleanClone
+          ? ["--clean-clone"]
+          : options.allow === false
+            ? []
+            : ["--allow-protected", input.copy]),
         "--",
         options.target ?? input.copy,
       ],
@@ -190,6 +201,98 @@ async function copyCommand(
     if (savedBridge === undefined) delete process.env.HARNERY_AGENT_COORD_BRIDGE;
     else process.env.HARNERY_AGENT_COORD_BRIDGE = savedBridge;
   }
+}
+
+function ownedClone(owner = "rm-owner-self") {
+  const input = ownedCopy(owner);
+  const clone = join(input.workspace, "clone");
+  const remote = join(input.root, "remote.git");
+  const git = (args: string[]) => {
+    const result = spawnSync("git", args, {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@example.com",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@example.com",
+      },
+    });
+    expect(result.status).toBe(0);
+  };
+  git(["init", "-q", "--bare", remote]);
+  git(["init", "-q", clone]);
+  writeFileSync(join(clone, "a.txt"), "a");
+  git(["-C", clone, "add", "a.txt"]);
+  git(["-C", clone, "commit", "-qm", "pushed"]);
+  git(["-C", clone, "remote", "add", "origin", remote]);
+  git(["-C", clone, "push", "-q", "origin", "HEAD:refs/heads/main"]);
+  return { ...input, clone, remote };
+}
+
+test("CLI clean clone mode retains the held artifact, its manifest and unrelated evidence", async () => {
+  const input = ownedClone();
+  const manifest = JSON.parse(readFileSync(input.record, "utf8"));
+  manifest.holds = [
+    {
+      id: "review",
+      reason: "Keep evidence",
+      set_by: { instance_id: "rm-owner-self" },
+      set_at: new Date().toISOString(),
+      persistent: true,
+    },
+  ];
+  writeFileSync(input.record, JSON.stringify(manifest));
+  const before = readFileSync(input.record, "utf8");
+  const preview = await copyCommand(input, { cleanClone: true, target: input.clone });
+  expect(preview.code()).toBe(0);
+  expect(preview.data[0]).toMatchObject({ applied: false, protected: [join(input.clone, ".git")] });
+  const textPreview = await copyCommand(input, {
+    cleanClone: true,
+    target: input.clone,
+    text: true,
+  });
+  expect(textPreview.code()).toBe(0);
+  expect(textPreview.texts.join("\n")).toContain("Verified clone metadata:");
+  expect(textPreview.texts.join("\n")).not.toContain("named with --allow-protected");
+  const applied = await copyCommand(input, { cleanClone: true, target: input.clone, yes: true });
+  expect(applied.code()).toBe(0);
+  expect(applied.data[0]).toMatchObject({ applied: true });
+  expect(existsSync(input.clone)).toBe(false);
+  expect(existsSync(input.copy)).toBe(true);
+  expect(existsSync(input.remote)).toBe(true);
+  expect(readFileSync(input.record, "utf8")).toBe(before);
+});
+
+for (const mode of [
+  "unowned",
+  "released",
+  "invalid",
+  "unauthenticated",
+  "peer",
+  "broad",
+  "symlink",
+]) {
+  test(`CLI clean clone mode refuses ${mode} authority`, async () => {
+    const input = ownedClone(mode === "unowned" ? "rm-owner-peer" : "rm-owner-self");
+    const manifest = JSON.parse(readFileSync(input.record, "utf8"));
+    if (mode === "released") manifest.released_at = new Date().toISOString();
+    if (mode === "invalid") manifest.schema_version = 999;
+    writeFileSync(input.record, JSON.stringify(manifest));
+    if (mode === "peer") seedV3Session(input.root, "peer", { claims: [input.clone] });
+    const alias = join(input.root, "artifact-alias");
+    if (mode === "symlink") symlinkSync(input.workspace, alias);
+    const output = await copyCommand(input, {
+      cleanClone: true,
+      target: input.clone,
+      yes: true,
+      actor: mode === "unauthenticated" ? "rm-owner-unknown" : "rm-owner-self",
+      root: mode === "broad" ? input.root : mode === "symlink" ? alias : input.workspace,
+    });
+    expect(output.code()).toBe(1);
+    expect(output.errors[0]).toMatchObject({ code: "removal_refused" });
+    expect(existsSync(input.clone)).toBe(true);
+  });
 }
 
 test("CLI previews and applies only the authenticated caller's explicitly named copied state", async () => {

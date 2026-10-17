@@ -1,0 +1,68 @@
+---
+title: "0208: Remove clean repository copies inside owned artifacts"
+description: "An explicit cleanup mode proves a standalone repository copy has no unique work before pruning it from an owned artifact."
+---
+
+**Date:** 2026-10-17
+
+**Status:** Accepted
+
+## Context
+
+An artifact can hold a disposable repository copy beside retained review
+evidence. Removing the whole artifact loses that evidence. The generic
+protected-path override does not establish that a copy has no uncommitted
+work or registered worktrees. Its branch and tag check also does not cover
+an unpublished detached HEAD.
+
+The existing root, ownership and protected-state boundaries from
+[ADR 0196](/decisions/0196-name-protected-paths-for-removal/),
+[ADR 0199](/decisions/0199-remove-one-owned-artifact/) and
+[ADR 0206](/decisions/0206-bound-owned-artifact-removal/) remain required.
+
+## Alternatives considered
+
+Removing the entire artifact would discard evidence and its holds. Expanding
+`--allow-protected` would let an exact-path override stand in for repository
+validation. Waiting for artifact expiry would retain a large disposable copy
+and still prevent pruning it from a held workspace. None meets the cleanup
+scope.
+
+## Decision
+
+Add `rm --clean-clone --recursive` as a separate mode. The command layer
+requires an authenticated caller and one valid, unreleased artifact created
+by that caller as the exact root. Every target must be a standalone clone,
+and every nested standalone clone receives the same inspection.
+
+Require a real `.git` directory and matching repository root and common
+directory. Refuse modified, staged or untracked files, registered or linked
+worktrees, and any HEAD, ref or reflog commit missing from all recorded
+remote refs. Include detached HEAD and stashes explicitly. Fail closed when Git cannot
+prove a check. Do not fetch remotes during removal.
+
+Keep preview as the default and require `--yes` to apply. Preserve all other
+protected-state refusals; do not combine the mode with `--allow-protected`.
+Before mutation, recheck the artifact's authority, repository state, peer
+claims and filesystem fingerprints. Keep the artifact, its manifest, holds
+and sibling evidence. Remove internal symlinks as links.
+
+## Result and gotchas
+
+The focused library and CLI run passes 77 tests and 536 assertions. It
+covers successful preview and apply, nested clones, a published detached
+HEAD, unpublished HEADs and refs, stashes, reflog-only commits, uncommitted work, worktrees, authority
+failures, changed inputs, retained evidence and external symlink targets.
+
+After review corrected a mode-specific report label, the final CLI-only run
+passes 30 tests and 177 assertions. These stages overlap and are not summed.
+
+Git status normally refreshes the index. An initial apply test caught that
+write as a changed `.git` fingerprint. Set `GIT_OPTIONAL_LOCKS=0` for the
+inspection commands so validation does not mutate its own input. Disable
+the filesystem-monitor hook for these read-only checks as well.
+
+Remote reachability uses recorded refs, so uncertain remote freshness must
+be resolved before removal. Ignored generated files can remain in a clean
+clone; other protected state still causes refusal. Filesystem races remain
+possible after the final checks, as with the existing removal command.
