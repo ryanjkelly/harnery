@@ -9,13 +9,14 @@
  * shown to them, because nothing surfaces another session's journal.
  *
  * This module addresses the durable persona name instead of the instance, so a
- * message can be queued before its recipient exists. Delivery happens on the
- * recipient's side: their next SessionStart or prompt drains the queue, shows
- * the messages, and records them in their journal.
+ * message can be queued before its recipient exists. The recipient's next
+ * SessionStart or prompt can drain the queue for injection. A drain does not
+ * confirm that the adapter emitted the context or that anyone read it.
  *
  * Storage: `.harnery/mailbox/<slug>.jsonl`, one JSON record per line, appended
- * by senders and removed by an atomic claim on the recipient's side. Delivered
- * records are appended to `.harnery/mailbox/delivered/<slug>.jsonl` for audit.
+ * by senders and removed by an atomic claim on the recipient's side. Drained
+ * records are appended to `.harnery/mailbox/delivered/<slug>.jsonl` for audit,
+ * with injection explicitly unconfirmed.
  *
  * Related but distinct: `core/inbox` is an instance-keyed transport with a
  * storage-framework service behind it. This mailbox is name-keyed, file-only,
@@ -48,8 +49,8 @@ export const MAILBOX_MESSAGE_SCHEMA = "harnery.mailbox-message/v1" as const;
 export const MAX_BODY_BYTES = 4000;
 /** Pending messages held for one name before senders are refused. */
 export const MAX_PENDING = 25;
-/** Delivered-archive ceiling; the file is truncated from the head past this. */
-const MAX_DELIVERED_BYTES = 256 * 1024;
+/** Drain-archive ceiling; the file is truncated from the head past this. */
+const MAX_ARCHIVE_BYTES = 256 * 1024;
 
 export interface MailboxMessageV1 {
   schema: typeof MAILBOX_MESSAGE_SCHEMA;
@@ -104,7 +105,7 @@ export function mailboxPath(coordRoot: string, name: string): string {
   return join(mailboxDir(coordRoot), `${slugFor(name)}.jsonl`);
 }
 
-function deliveredPath(coordRoot: string, name: string): string {
+function archivePath(coordRoot: string, name: string): string {
   return join(mailboxDir(coordRoot), "delivered", `${slugFor(name)}.jsonl`);
 }
 
@@ -243,10 +244,10 @@ export function peekMailbox(coordRoot: string, name: string): MailboxMessageV1[]
 /**
  * Claim and return every pending message for a name.
  *
- * The claim is an atomic rename, so two sessions sharing a name cannot deliver
+ * The claim is an atomic rename, so two sessions sharing a name cannot claim
  * the same message twice: whichever rename wins owns the batch. Claimed records
- * are appended to the delivered archive before the claim file is removed, so a
- * crash between the two leaves an auditable copy rather than a silent loss.
+ * are archived before the claim file is removed. The archive records only the
+ * drain; output, recipient read, and turn completion remain unconfirmed.
  */
 export function drainMailbox(coordRoot: string, name: string): MailboxMessageV1[] {
   let path: string;
@@ -279,12 +280,20 @@ export function drainMailbox(coordRoot: string, name: string): MailboxMessageV1[
 
   if (messages.length > 0) {
     try {
-      const archive = deliveredPath(coordRoot, name);
+      const archive = archivePath(coordRoot, name);
       mkdirSync(join(mailboxDir(coordRoot), "delivered"), { recursive: true });
-      const deliveredAt = new Date().toISOString();
+      const drainedAt = new Date().toISOString();
       appendFileSync(
         archive,
-        `${messages.map((m) => JSON.stringify({ ...m, delivered_at: deliveredAt })).join("\n")}\n`,
+        `${messages
+          .map((m) =>
+            JSON.stringify({
+              ...m,
+              drained_at: drainedAt,
+              delivery_status: "injection-unconfirmed",
+            }),
+          )
+          .join("\n")}\n`,
         "utf8",
       );
       trimArchive(archive);
@@ -336,7 +345,7 @@ function sweepStaleClaims(coordRoot: string): void {
 
 function trimArchive(path: string): void {
   try {
-    if (statSync(path).size <= MAX_DELIVERED_BYTES) return;
+    if (statSync(path).size <= MAX_ARCHIVE_BYTES) return;
     const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
     const keep = lines.slice(Math.floor(lines.length / 2));
     writeFileSync(path, `${keep.join("\n")}\n`, "utf8");
@@ -354,8 +363,8 @@ export function formatMailboxDelivery(
   const bin = resolveBinName(coordRoot);
   const header =
     messages.length === 1
-      ? `Message from a peer agent (delivered now, recorded in your journal):`
-      : `${messages.length} messages from peer agents (delivered now, recorded in your journal):`;
+      ? `Message from a peer agent (prepared for injection, recorded in your journal):`
+      : `${messages.length} messages from peer agents (prepared for injection, recorded in your journal):`;
   const body = messages
     .map((m) => {
       const when = m.created_at.replace("T", " ").replace(/\.\d+Z$/, "Z");

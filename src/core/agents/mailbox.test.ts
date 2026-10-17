@@ -111,14 +111,19 @@ describe("drain", () => {
     expect(drainMailbox(root, "Maya")).toHaveLength(0);
   });
 
-  test("keeps an audit copy of what it delivered", () => {
-    queue("Maya", "audited");
+  test("keeps an unconfirmed audit copy of what it drained", () => {
+    const { message } = queue("Maya", "audited");
     drainMailbox(root, "Maya");
     const archive = join(root, ".harnery", "mailbox", "delivered", "maya.jsonl");
     expect(existsSync(archive)).toBe(true);
     const record = JSON.parse(readFileSync(archive, "utf8").trim());
     expect(record.body).toBe("audited");
-    expect(record.delivered_at).toBeTruthy();
+    expect(record.message_id).toBe(message.message_id);
+    expect(record.drained_at).toBeTruthy();
+    expect(record.delivery_status).toBe("injection-unconfirmed");
+    expect(record.delivered_at).toBeUndefined();
+    expect(record.read_at).toBeUndefined();
+    expect(record.consumed_at).toBeUndefined();
   });
 
   test("a message queued after a drain is still delivered", () => {
@@ -303,6 +308,8 @@ describe("formatMailboxDelivery", () => {
     expect(text).toContain("agent-Talia");
     expect(text).toContain("notes are at docs/foo.md");
     expect(text).toContain("agents ping Talia");
+    expect(text).toContain("prepared for injection");
+    expect(text).not.toContain("delivered now");
   });
 
   test("counts a multi-message batch in its header", () => {
