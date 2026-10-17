@@ -3,7 +3,7 @@ title: "0207: Fail closed on unknown state"
 description: "ADR: unavailable observations cannot authorize comparisons, process signals, or workspace reclaim."
 ---
 
-**Status:** accepted (2026-10-16) · **Scope:** recovery, workflow proof, services, servers and workspace reclaim
+**Status:** accepted (2026-10-16) · **Scope:** recovery, workflow proof, services, servers and workspace reclaim · **Amends:** [0200](/decisions/0200-local-server-registry/)
 
 ## Context
 
@@ -41,11 +41,20 @@ durable stop request, which remains the fallback when direct signaling is
 refused. Status reports the generation verdict and running package version;
 a different running version requires a restart.
 
+Registry stop uses guarded signals. It no longer invokes arbitrary stop
+commands, and old tunnel metadata without saved generation evidence cannot
+authorize automatic registration. Bootless Linux start tokens remain unknown
+because they cannot identify a process across machine boots.
+
 Both salvage and discard reclaim acquire the binding and repository leases,
 prove that workflow liveness is `inactive`, and require an `ok` ownership
 attestation before touching workspace files. Preparation and cleanup run under
 the same leases. Without `--yes`, reclaim prints the run, liveness, lease and
 dirty-path preview. Refusals preserve the workspace.
+
+Reclaim also holds the workflow resume lease so reattachment cannot race
+cleanup. An existing resume lock blocks acquisition, including when its owner
+is stale, foreign or unreadable. Only the proven owner releases its lock.
 
 ## Result and limits
 

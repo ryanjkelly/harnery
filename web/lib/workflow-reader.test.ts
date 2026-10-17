@@ -216,6 +216,26 @@ describe("workflow proof reader", () => {
       run_id: "wf-reader",
     });
   });
+
+  test("keeps repository drift unknown when a saved proof lacks observations", () => {
+    const proof = sampleProof();
+    writeFileSync(
+      join(runDir, "proof.json"),
+      JSON.stringify({
+        ...proof,
+        repository: {
+          ...proof.repository,
+          before: { cwd: root, dirty_paths: ["valuable.ts"] },
+          after: { cwd: root, dirty_paths: [] },
+        },
+      }),
+      "utf8",
+    );
+    const repository = readWorkflowRun(root, "wf-reader")?.proof?.repository;
+    expect(repository?.before.observation).toBe("unavailable");
+    expect(repository?.drift.dirty_paths_cleared).toBeNull();
+    expect(repository?.drift.incomplete).toBe(true);
+  });
 });
 
 describe("run coord-root resolution", () => {
@@ -364,7 +384,14 @@ function writeSharedManifest(): void {
       name: "reader",
       started_at: "2026-07-21T12:00:00.000Z",
       script: { path: join(root, "workflow.mjs"), sha256: "b".repeat(64) },
-      repository_before: { cwd: root, dirty_paths: [] },
+      repository_before: {
+        cwd: root,
+        root,
+        observation: "ok",
+        branch: "main",
+        head: "a".repeat(40),
+        dirty_paths: [],
+      },
       execution: {
         cwd: root,
         default_adapter: "claude-code",
@@ -473,8 +500,22 @@ function sampleProof(): WorkflowProof {
     },
     repository: {
       source: "engine",
-      before: { cwd: root, dirty_paths: [] },
-      after: { cwd: root, dirty_paths: [] },
+      before: {
+        cwd: root,
+        root,
+        observation: "ok",
+        branch: "main",
+        head: "a".repeat(40),
+        dirty_paths: [],
+      },
+      after: {
+        cwd: root,
+        root,
+        observation: "ok",
+        branch: "main",
+        head: "a".repeat(40),
+        dirty_paths: [],
+      },
       drift: {
         branch_changed: false,
         head_changed: false,

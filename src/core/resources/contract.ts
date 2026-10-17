@@ -180,4 +180,3 @@ export interface ResourceSampleResult {
   snapshot: ResourceSnapshot;
   state?: ResourceSamplerState;
 }
-

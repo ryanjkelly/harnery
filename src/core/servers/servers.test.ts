@@ -145,6 +145,49 @@ describe("register, read, unregister", () => {
 });
 
 describe("listing", () => {
+  test("retains unknown auxiliary authority when its leader has exited", async () => {
+    const leader = await startChildServer(root);
+    const auxiliary = await startChildServer(root);
+    const record = registerServer(
+      {
+        id: "orphaned",
+        kind: "session",
+        type: "preview",
+        pid: leader.pid,
+        pids: [auxiliary.pid],
+        owner: null,
+      },
+      { coordRoot: root },
+    )!;
+    delete record.pids_start_tokens;
+    const path = join(serversDir(root), `${record.id}.json`);
+    writeFileSync(path, JSON.stringify(record));
+    const before = readFileSync(path, "utf8");
+    const leaderExited = new Promise<void>((resolve) => {
+      children.find((child) => child.pid === leader.pid)!.once("exit", () => resolve());
+    });
+    process.kill(-leader.pid, "SIGKILL");
+    await leaderExited;
+    const report = listServers({ coordRoot: root, scan: false });
+    expect(report.servers[0]?.state).toBe("unknown");
+    expect(report.pruned).toEqual([]);
+    expect(readFileSync(path, "utf8")).toBe(before);
+    const signals: number[] = [];
+    const result = await stopServer(record, {
+      coordRoot: root,
+      signalDependencies: { kill: (pid) => signals.push(pid) },
+    });
+    expect(result).toMatchObject({ method: "refused", generation: "unknown", stopped: false });
+    expect(signals).toEqual([]);
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(
+      serverState(record, undefined, (pid) => {
+        if (pid === auxiliary.pid) throw Object.assign(new Error("read failed"), { code: "EIO" });
+        return false;
+      }),
+    ).toBe("unknown");
+  });
+
   test("shows an unknown generation without pruning it or renewing its authority", async () => {
     const { pid, port } = await startChildServer(root);
     const record = registerServer(

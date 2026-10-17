@@ -170,10 +170,19 @@ export function verifyProcessGeneration(
   recordedToken: string | null | undefined,
   readToken: ReadProcessStartToken = processStartToken,
 ): ProcessGenerationVerdict {
-  if (!Number.isInteger(pid) || pid <= 0 || !recordedToken) return "unknown";
+  if (
+    !Number.isInteger(pid) ||
+    pid <= 0 ||
+    typeof recordedToken !== "string" ||
+    !recordedToken.trim()
+  )
+    return "unknown";
+  // A bootless Linux token cannot identify a process across machine boots.
+  if (/^l\d+$/.test(recordedToken)) return "unknown";
   try {
     const currentToken = readToken(pid);
-    if (!currentToken) return "unknown";
+    if (typeof currentToken !== "string" || !currentToken.trim()) return "unknown";
+    if (/^l\d+$/.test(currentToken)) return "unknown";
     return currentToken === recordedToken ? "same" : "different";
   } catch {
     return "unknown";

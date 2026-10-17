@@ -43,7 +43,13 @@ describe("governor dashboard reader", () => {
     expect(readGovernorGoal(root, "dashboard-goal")?.projection.plan_generation).toBe(0);
     expect(readGovernorGoal(root, "dashboard-goal")?.plans).toEqual([]);
     expect(readGovernorGoal(root, "../escape")).toBeNull();
-    expect(readGovernorBackgroundService(root)).toEqual({ running: false, stale: false });
+    expect(readGovernorBackgroundService(root)).toMatchObject({
+      running: false,
+      stale: false,
+      generation: "unknown",
+      liveness: "stopped",
+      running_build: null,
+    });
   });
 
   test("reports reviewed proposals as awaiting decision instead of unreviewed", () => {

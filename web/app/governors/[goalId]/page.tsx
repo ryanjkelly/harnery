@@ -200,7 +200,9 @@ export default async function GovernorGoalPage({ params }: PageProps) {
               {enrolled
                 ? service.running
                   ? "enrolled · live"
-                  : "enrolled · stopped"
+                  : service.liveness === "unknown"
+                    ? "enrolled · unknown"
+                    : "enrolled · stopped"
                 : "not enrolled"}
             </Badge>
           </div>

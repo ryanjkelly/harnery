@@ -575,12 +575,23 @@ export default async function WorkflowRunPage({ params }: PageProps) {
             ) : null}
             <Tooltip content="The repository before and after the run: which branch it was on, which commit HEAD pointed at, and how many uncommitted paths the run added or cleared. This is what lets you tell a run that changed the checkout from one that only read it.">
               <p className="cursor-help text-xs text-muted-foreground">
-                Repository: {run.proof.repository.before.branch ?? "unknown"} →{" "}
-                {run.proof.repository.after.branch ?? "unknown"} · HEAD{" "}
-                {run.proof.repository.before.head?.slice(0, 8) ?? "unknown"} →{" "}
-                {run.proof.repository.after.head?.slice(0, 8) ?? "unknown"} ·{" "}
-                {run.proof.repository.drift.dirty_paths_added.length} dirty added ·{" "}
-                {run.proof.repository.drift.dirty_paths_cleared.length} cleared
+                {run.proof.repository.drift.incomplete ||
+                run.proof.repository.before.observation !== "ok" ||
+                run.proof.repository.after.observation !== "ok" ? (
+                  <>
+                    Repository comparison unknown:{" "}
+                    {run.proof.repository.drift.note ?? "The repository could not be verified."}
+                  </>
+                ) : (
+                  <>
+                    Repository: {run.proof.repository.before.branch ?? "unknown"} →{" "}
+                    {run.proof.repository.after.branch ?? "unknown"} · HEAD{" "}
+                    {run.proof.repository.before.head?.slice(0, 8) ?? "unknown"} →{" "}
+                    {run.proof.repository.after.head?.slice(0, 8) ?? "unknown"} · dirty added:{" "}
+                    {run.proof.repository.drift.dirty_paths_added?.length ?? "unknown"} · cleared:{" "}
+                    {run.proof.repository.drift.dirty_paths_cleared?.length ?? "unknown"}
+                  </>
+                )}
               </p>
             </Tooltip>
             {run.proof.unknowns.length > 0 ? (

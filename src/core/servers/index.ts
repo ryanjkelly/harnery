@@ -371,6 +371,12 @@ function processPresence(
   }
 }
 
+function allProcessesAbsent(record: ServerRecord, probePid?: (pid: number) => boolean): boolean {
+  return [record.pid, ...(record.pids ?? [])].every(
+    (pid) => processPresence(pid, probePid) === "absent",
+  );
+}
+
 export function serverState(
   record: ServerRecord,
   readToken?: (pid: number) => string | null,
@@ -378,7 +384,7 @@ export function serverState(
 ): ServerState {
   if (record.host !== hostname()) return "other-host";
   const presence = processPresence(record.pid, probePid);
-  if (presence === "absent") return "dead";
+  if (presence === "absent") return allProcessesAbsent(record, probePid) ? "dead" : "unknown";
   if (presence === "unknown") return "unknown";
   const verdict = verifyProcessGeneration(record.pid, record.start_token, readToken);
   return verdict === "same" ? "running" : verdict === "different" ? "dead" : "unknown";
@@ -433,7 +439,7 @@ export function listServers(options?: ListServersOptions): ServersReport {
   const servers: ServerView[] = [];
   records.forEach((record, i) => {
     const state = states[i]!;
-    if (state === "dead" && !pidAlive(record.pid) && options?.prune !== false) {
+    if (state === "dead" && allProcessesAbsent(record) && options?.prune !== false) {
       unregisterServer(record.id, { coordRoot, pid: record.pid });
       pruned.push(record.id);
       return;
@@ -622,6 +628,12 @@ export async function stopServer(
   };
   if (record.host !== hostname())
     return { id: record.id, stopped: false, method: "refused", detail: `runs on ${record.host}` };
+  const leaderPresence = processPresence(record.pid, dependencies.probePid);
+  if (
+    leaderPresence === "unknown" ||
+    (leaderPresence === "absent" && !allProcessesAbsent(record, dependencies.probePid))
+  )
+    return refuse(record.pid, "unknown");
   // Check every recorded live process before sending the first signal.
   for (const target of targets) {
     const presence = processPresence(target.pid, dependencies.probePid);

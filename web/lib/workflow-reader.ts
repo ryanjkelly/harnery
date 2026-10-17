@@ -6,6 +6,7 @@ import {
   type WorkflowWorkspaceInspection,
 } from "harnery/core/workflow/workspaces/inspect";
 import { readLiveCoordinationRows } from "../../src/core/agents/state/live-coordination-view";
+import { readWorkflowProof } from "../../src/core/workflow/proof";
 import { stableScopeId } from "../../src/core/workflow/scope-id";
 
 /**
@@ -395,7 +396,7 @@ function readProof(root: string, runId: string): WorkflowProof | undefined {
   const path = join(root, ".harnery", "workflows", runId, "proof.json");
   if (!existsSync(path)) return undefined;
   try {
-    const proof = JSON.parse(readFileSync(path, "utf8")) as WorkflowProof;
+    const proof = readWorkflowProof(root, runId);
     return proof.schema_version === 2 && proof.run?.id === runId ? proof : undefined;
   } catch {
     return undefined;

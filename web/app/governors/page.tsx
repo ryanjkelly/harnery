@@ -20,11 +20,14 @@ export default function GovernorsPage() {
   const { binName } = hostInfo();
   const records = readGovernors(root);
   const service = readGovernorBackgroundService(root);
-  const serviceState = service.running
-    ? (service.record?.state ?? "running")
-    : service.stale
-      ? "stale"
-      : "stopped";
+  const serviceState =
+    service.liveness === "unknown"
+      ? "unknown"
+      : service.running
+        ? (service.record?.state ?? "running")
+        : service.stale
+          ? "stale"
+          : "stopped";
   return (
     <div className="min-h-screen">
       <NavBar scannedDir={coordRoot()} />
@@ -36,7 +39,15 @@ export default function GovernorsPage() {
         <section className="mb-6 rounded-lg border border-border bg-card px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-sm font-semibold">Background service</h2>
-            <Badge variant={service.running ? "info" : service.stale ? "warning" : "muted"}>
+            <Badge
+              variant={
+                service.running
+                  ? "info"
+                  : service.liveness === "unknown" || service.stale
+                    ? "warning"
+                    : "muted"
+              }
+            >
               {service.config ? serviceState : "unconfigured"}
             </Badge>
           </div>
@@ -47,6 +58,9 @@ export default function GovernorsPage() {
               <span>active: {service.record.active_goal_id}</span>
             ) : null}
             {service.record ? <span>heartbeat: {service.record.heartbeat_at}</span> : null}
+            <span>generation: {service.generation}</span>
+            <span>running build: {service.running_build?.version ?? "unknown"}</span>
+            {service.restart_needed ? <span>restart needed</span> : null}
           </div>
           {service.record?.last_error ? (
             <p className="mt-2 text-xs text-red-700 dark:text-red-300">

@@ -222,7 +222,9 @@ describe("verifyProcessGeneration", () => {
     expect(verifyProcessGeneration(123, "labcd1234.5000", () => "labcd1234.5001")).toBe(
       "different",
     );
-    expect(verifyProcessGeneration(123, "l5000", () => "labcd1234.5000")).toBe("different");
+    expect(verifyProcessGeneration(123, "l5000", () => "labcd1234.5000")).toBe("unknown");
+    expect(verifyProcessGeneration(123, "l5000", () => "l5000")).toBe("unknown");
+    expect(verifyProcessGeneration(123, "labcd1234.5000", () => "l5000")).toBe("unknown");
   });
 
   test("reports unknown when either token is missing or the probe fails", () => {
@@ -254,6 +256,29 @@ describe("verifyProcessGeneration", () => {
       ).toBe("unknown");
     }
     expect(probes).toBe(0);
+  });
+
+  test("keeps malformed and bootless generation evidence unknown", () => {
+    for (const token of [123, {}, [], " "]) {
+      expect(verifyProcessGeneration(123, token as never, () => "current")).toBe("unknown");
+      expect(verifyProcessGeneration(123, "recorded", () => token as never)).toBe("unknown");
+    }
+    let signals = 0;
+    for (const pid of [0, -123, 1.5, Number.NaN]) {
+      expect(
+        signalIfSameGeneration(pid, "recorded", "SIGTERM", {
+          readToken: () => "recorded",
+          kill: () => signals++,
+        }),
+      ).toEqual({ sent: false, verdict: "unknown" });
+    }
+    expect(
+      signalIfSameGeneration(123, "l5000", "SIGTERM", {
+        readToken: () => "l5000",
+        kill: () => signals++,
+      }),
+    ).toEqual({ sent: false, verdict: "unknown" });
+    expect(signals).toBe(0);
   });
 
   test("reads a real process token and declines a missing process", () => {

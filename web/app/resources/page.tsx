@@ -61,7 +61,11 @@ export default function ResourcesPage() {
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-2xl font-semibold tracking-tight">Resource activity</h1>
-                <ObserverBadge running={report.service.running} stale={report.service.stale} />
+                <ObserverBadge
+                  running={report.service.running}
+                  stale={report.service.stale}
+                  unknownState={report.service.liveness === "unknown"}
+                />
                 {snapshot ? <SupportBadge state={snapshot.support.state} /> : null}
               </div>
               <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
@@ -94,7 +98,10 @@ export default function ResourcesPage() {
               </CardHeader>
               <CardContent className="text-sm text-muted-foreground">
                 The dashboard starts the local supervisor automatically. Service status:{" "}
-                {report.service.record?.state ?? "not started"}.
+                {report.service.liveness === "unknown"
+                  ? "unknown"
+                  : (report.service.record?.state ?? "not started")}
+                .
               </CardContent>
             </Card>
           ) : (
@@ -532,10 +539,18 @@ function Owner({
   return <span className="font-mono text-xs">{id}</span>;
 }
 
-function ObserverBadge({ running, stale }: { running: boolean; stale: boolean }) {
+function ObserverBadge({
+  running,
+  stale,
+  unknownState,
+}: {
+  running: boolean;
+  stale: boolean;
+  unknownState: boolean;
+}) {
   return (
-    <Badge variant={running ? "success" : stale ? "warning" : "secondary"}>
-      supervisor {running ? "running" : stale ? "stale" : "stopped"}
+    <Badge variant={running ? "success" : stale || unknownState ? "warning" : "secondary"}>
+      supervisor {unknownState ? "unknown" : running ? "running" : stale ? "stale" : "stopped"}
     </Badge>
   );
 }
