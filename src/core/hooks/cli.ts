@@ -2298,12 +2298,14 @@ async function emitUserPromptSubmitSystemMessage(
   if (coordEnv("WORKFLOW_CHILD") === "1") return false;
   const behavior = adapterBehavior(adapter);
   const { renderPromptContext } = await import("../agents/render/prompt-context.ts");
+  let peerMessageIds: readonly string[] = [];
   let additionalContext = renderPromptContext({
     coordRoot,
     instanceId,
     sessionId,
     sessionNameNudge: true,
     ...behavior.promptContextNudges,
+    onInboxPrepared: (ids) => { peerMessageIds = ids; },
   }).trim();
   const fileLinkContext = behavior.fileLinkContext?.(coordRoot, workspaceCwd) ?? "";
   if (fileLinkContext) {
@@ -2318,7 +2320,12 @@ async function emitUserPromptSubmitSystemMessage(
   if (!additionalContext) return false;
 
   const { emitContext } = await import("./adapter/output.ts");
-  return emitContext(adapter, "UserPromptSubmit", additionalContext);
+  const emitted = emitContext(adapter, "UserPromptSubmit", additionalContext);
+  if (emitted) {
+    const { acknowledgeEmittedPeerInbox } = await import("../inbox/peer-messages.ts");
+    await acknowledgeEmittedPeerInbox(coordRoot, instanceId, peerMessageIds);
+  }
+  return emitted;
 }
 
 async function emitSubagentStartContext(
@@ -2342,19 +2349,24 @@ async function emitSubagentStartContext(
   // is around. Reuse prompt-context (which dedups against the per-owner hash);
   // first call will always emit.
   let combined = message;
+  let peerMessageIds: readonly string[] = [];
   const { renderPromptContext } = await import("../agents/render/prompt-context.ts");
   const context = renderPromptContext({
     coordRoot,
     instanceId,
     sessionId,
     agentName: subagentName,
+    onInboxPrepared: (ids) => { peerMessageIds = ids; },
   }).trim();
   if (context) combined = `${message}\n\n${context}`;
 
   // Use SubagentStart event-name in CC's hookSpecificOutput shape; cursor's
   // flat `additional_context` works the same way.
   const { emitContext } = await import("./adapter/output.ts");
-  emitContext(adapter, "SubagentStart", combined);
+  if (emitContext(adapter, "SubagentStart", combined)) {
+    const { acknowledgeEmittedPeerInbox } = await import("../inbox/peer-messages.ts");
+    await acknowledgeEmittedPeerInbox(coordRoot, instanceId, peerMessageIds);
+  }
 }
 
 function adapterPlatform(adapter: Adapter): string {
@@ -2373,6 +2385,7 @@ async function emitSessionStartSystemMessage(
   const behavior = adapterBehavior(adapter);
   const workflowChild = coordEnv("WORKFLOW_CHILD") === "1";
   let additionalContext = "";
+  let peerMessageIds: readonly string[] = [];
   // Opportunistic reconciliation makes normal session starts a failsafe for
   // archive, idle, cascade, and host lifecycle observations. It also runs the
   // stale cache sweep through the shared ADR 0077 composition.
@@ -2392,6 +2405,7 @@ async function emitSessionStartSystemMessage(
       sessionId,
       agentName: agentName || undefined,
       platformLabel: behavior.sessionStartPlatformLabel,
+      onInboxPrepared: (ids) => { peerMessageIds = ids; },
     }).trim();
   }
 
@@ -2420,7 +2434,12 @@ async function emitSessionStartSystemMessage(
     }
   }
   const { emitContext } = await import("./adapter/output.ts");
-  return emitContext(adapter, "SessionStart", additionalContext);
+  const emitted = emitContext(adapter, "SessionStart", additionalContext);
+  if (emitted) {
+    const { acknowledgeEmittedPeerInbox } = await import("../inbox/peer-messages.ts");
+    await acknowledgeEmittedPeerInbox(coordRoot, instanceId, peerMessageIds);
+  }
+  return emitted;
 }
 
 function completeRecoveryInjection(

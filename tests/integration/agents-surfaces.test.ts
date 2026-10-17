@@ -29,6 +29,7 @@ import {
   recordApprovedSessionEndV3,
 } from "../../src/core/events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
+import { peerInbox } from "../../src/core/inbox/peer-messages.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
 const HARN = path.join(HARNERY_DIR, "bin", "harn");
@@ -297,6 +298,14 @@ describe("codex-wsl bridge ping attribution", () => {
     return path.join(root, ".harnery", "active", `${TARGET}.json`);
   }
 
+  test("an unknown ping target exits with no_peer before creating an inbox", () => {
+    const root = makeSandbox();
+    const result = harn(root, ["agents", "ping", "NeverAssignedTask", "must not deliver", "--json"]);
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("no_peer");
+    expect(existsSync(path.join(root, ".harnery", "inbox"))).toBe(false);
+  });
+
   test("validated bridge session delivers ping as the Codex owner", () => {
     const root = makeSandbox();
     addTarget(root);
@@ -310,10 +319,24 @@ describe("codex-wsl bridge ping attribution", () => {
     expect(result).toMatchObject({ status: 0 });
     const delivered = JSON.parse(result.stdout) as {
       from: string;
-      journal_path: string;
+      peer_instance_id: string;
+      message_id: string;
     };
     expect(delivered.from).toBe("Hollis");
-    expect(readFileSync(delivered.journal_path, "utf8")).toContain("from agent-Hollis");
+    expect(delivered.peer_instance_id).toBe(TARGET);
+    expect(peerInbox(root).pending(TARGET)).toMatchObject([
+      { message_id: delivered.message_id, sender_display_name: "Hollis", body: "bridge verdict" },
+    ]);
+    expect(existsSync(path.join(root, ".harnery", "journal", `${TARGET}.md`))).toBe(false);
+    const ledger = readLedgerV3(root);
+    const observation = ledger.events.find(({ event }) =>
+      event.event_type === "coord.message_observed" && event.payload.message_id === delivered.message_id,
+    );
+    expect(observation?.event.payload).toMatchObject({
+      message_id: delivered.message_id, direction: "sent", body_length: Buffer.byteLength("bridge verdict"),
+      body_fingerprint: expect.any(Object),
+    });
+    expect(JSON.stringify(ledger.events)).not.toContain("bridge verdict");
   });
 
   test("invalid bridge session delivers no ping", () => {

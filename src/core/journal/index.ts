@@ -20,6 +20,14 @@ import {
   readLiveCoordinationRow,
   readLiveCoordinationRows,
 } from "../agents/state/live-coordination-view.ts";
+import {
+  readCoordinationViewV3,
+  requireAuthoritySafeCoordinationViewV3,
+} from "../events/v3/coordination-view.ts";
+import {
+  liveInstanceIdV3,
+  observeLiveEventLedgerRouteV3,
+} from "../events/v3/live-route-observer.ts";
 
 /**
  * Agent journal: per-agent markdown journal at `.harnery/journal/<instance_id>.md`.
@@ -421,11 +429,20 @@ export function sweepOrphanJournals(): string[] {
   const dir = journalDir();
   const root = monorepoRoot();
   const archived: string[] = [];
+  if (!root) return archived;
+  let view: ReturnType<typeof readCoordinationViewV3>;
+  try {
+    if (observeLiveEventLedgerRouteV3(root).state === "blocked") return archived;
+    view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(root));
+    if (!view.source_complete) return archived;
+  } catch {
+    // A missing or unsafe read does not prove that an owner has ended.
+    return archived;
+  }
   for (const f of readdirSync(dir)) {
     if (!f.endsWith(".md")) continue;
     const instanceId = f.replace(/\.md$/, "");
-    const hb = root ? readLiveCoordinationRow(root, instanceId) : null;
-    if (!hb) {
+    if (!view.instances[liveInstanceIdV3(instanceId)]) {
       const dest = archiveJournal(instanceId);
       if (dest) archived.push(dest);
     }

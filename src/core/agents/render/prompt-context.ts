@@ -50,7 +50,7 @@ import { endOfTurnStatusCommand, hostPromptReminder, resolveBinName } from "../.
 import type { PressureWorkloadClass } from "../../diagnostics/contract.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { readResourceStatus } from "../../resources/status.ts";
-import { drainMailbox, formatMailboxDelivery } from "../mailbox.ts";
+import { formatPeerInbox, peerInbox } from "../../inbox/peer-messages.ts";
 import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
 import { heartbeatPath } from "../state/heartbeat-reader.ts";
 import {
@@ -59,7 +59,7 @@ import {
 } from "../state/live-coordination-view.ts";
 import { forkRelationLabels } from "../state/names.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
-import { formatPendingCouncils, recordDeliveredMessages } from "./session-context.ts";
+import { formatPendingCouncils } from "./session-context.ts";
 
 interface HeartbeatRow {
   instance_id?: string;
@@ -103,6 +103,8 @@ export interface PromptContextOpts {
    * being bounced into a retry. Not hash-deduped, same rationale as the
    * status footer. */
   turnRitualNudge?: string;
+  /** The emitter acknowledges exactly these IDs only after output succeeds. */
+  onInboxPrepared?: (messageIds: readonly string[]) => void;
 }
 
 /**
@@ -132,16 +134,12 @@ export function renderPromptContext(opts: PromptContextOpts): string {
   // skipped without it.
   const resolvedName = agentName ?? readLiveCoordinationRow(coordRoot, instanceId)?.name;
 
-  // 1. Peer messages. Drained first and never deduped: a message is delivered
-  // exactly once, and it is the one section here that carries new information
-  // from another agent rather than a reminder.
-  //
-  if (resolvedName) {
-    const delivered = drainMailbox(coordRoot, resolvedName);
-    if (delivered.length > 0) {
-      recordDeliveredMessages(instanceId, delivered);
-      sections.push(formatMailboxDelivery(coordRoot, delivered));
-    }
+  // 1. Instance-bound messages. Rendering is read-only; failed output leaves
+  // this same batch pending rather than losing it before a prompt sees it.
+  const delivered = peerInbox(coordRoot).prepareSurface(instanceId);
+  if (delivered.length > 0) {
+    opts.onInboxPrepared?.(delivered.map(({ message_id }) => message_id));
+    sections.push(formatPeerInbox(coordRoot, delivered));
   }
 
   // 2. Peer table with hash dedup.

@@ -1,0 +1,81 @@
+---
+title: "0209: Bind peer messages to task instances"
+description: "Use the existing private instance inbox for pings, prompt delivery and the web action."
+---
+
+**Date:** 2026-10-17
+**Status:** Accepted
+
+## Context
+
+A task can remain open while its process is quiet or its objective is marked
+done. Presence freshness describes who is working now; it cannot determine
+whether a task may receive feedback later. A display name can also be assigned
+to another task. A queue addressed only by name can therefore give an old
+message to an unrelated recipient.
+
+The coordination inbox already provides private per-instance JSONL histories,
+concurrent durable appends, pending and surfaced records, bounded prompt
+batches, a watcher and lifecycle planning. Pings, prompt hooks and the web
+action have not all used that service. Some paths still append peer messages
+to journals, while the name queue removes messages during rendering before
+the adapter emits its context.
+
+## Decision
+
+Use the existing instance inbox as the single peer-message path. Resolve a
+recipient before appending. A fresh exact name takes precedence; otherwise a
+single authority-safe resumable task may be addressed after presence expires,
+including a task whose objective is done or whose known session has ended.
+Terminal status permits queued feedback; it does not restore live authority.
+Refuse unknown or ambiguous targets
+and provide exact instance selection. Keep an explicit live-only option.
+Changing message resolution does not change roster freshness or file claims.
+Journal orphan maintenance also uses the complete authority-safe lifecycle
+view. It keeps quiet and done current generations, archives a proven ended
+generation, and leaves journals untouched when authority is unsafe or partial.
+
+The CLI and web action use the same core send service. Receipts distinguish a
+durable append for a fresh task from one queued for a dormant task. Neither
+receipt says that the recipient noticed the message. Stored messages carry
+the sender and recipient instance IDs as well as their display names. The
+sender instance field is required: a real agent has its actual instance ID,
+while `null` identifies an operator. Operator messages are presented as such
+and have no agent reply command. The store validates this contract on both
+append and replay.
+
+Prepare prompt batches without changing pending state. Append surfaced records
+only after the adapter has emitted the selected messages and its output has
+flushed. A failure before that point leaves the messages pending. A crash
+after output but before acknowledgement may repeat a message. A message that
+arrives while an older batch is emitted remains pending.
+
+The supported inbox watcher polls the instance history and emits message IDs.
+It acknowledges a message only after output. Prompt delivery remains the
+recovery path after a watcher stops or misses a notification. Pending messages
+remain protected through the seven-day idle finalization window; surfaced and
+terminal histories retain their documented grace before lifecycle cleanup.
+
+Peer messages stop being journal entries. Journals retain their own notes and
+explicit handoffs. Old journal entries and name-queue records are not imported
+or read by the new path because they lack a safe recipient binding or stable
+unread state. This replaces the earlier journal-based dead-drop proposal.
+There is one canonical write and read contract, without a dual-reader period.
+
+## Alternatives
+
+Keeping done tasks visible in the live roster confuses task lifetime with
+process presence. Increasing the freshness window postpones the same failure.
+Delivering to the next holder of a display name can disclose another task's
+message. Writing to both journals and inboxes creates conflicting unread
+state. A new transport would duplicate the existing inbox's storage controls.
+
+## Verification
+
+Focused tests cover stale and done targets, unknown and ambiguous names,
+explicit instance binding, name reuse, concurrent senders, bounded output,
+failed output, acknowledgement races and lifecycle protection. Supported
+watcher command tests establish staggered arrivals and output-before-acknowledgement.
+A real same-instance native prompt resumption establishes context delivery
+separately from synthetic render fixtures. No cross-machine delivery or
+automatic wake-up is claimed.

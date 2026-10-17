@@ -50,13 +50,9 @@ import {
   LiveCoordinationAuthorityV3Error,
   reopenLiveCoordinationGenerationV3,
 } from "../core/agents/live-authority-v3.ts";
-import {
-  isAddressableName,
-  MailboxCapacityError,
-  type QueueResult,
-  queueMailboxMessage,
-  suggestNames,
-} from "../core/agents/mailbox.ts";
+import { HarneryInboxCapacityError } from "../core/inbox/contract.ts";
+import { peerInbox, sendPeerMessage } from "../core/inbox/peer-messages.ts";
+import { registerInboxCommand } from "./inbox.ts";
 import { qaSignalStatusRow } from "../core/agents/qa-signal.ts";
 import { reconcileCoordinationV3 } from "../core/agents/reconcile-coordination-v3.ts";
 import {
@@ -313,6 +309,11 @@ export function registerAgentsCommand(
     );
 
   registerContextCommand(cmd, emitParam, programContext);
+  registerInboxCommand(cmd, emitParam, peerInbox(monorepoRoot() ?? process.cwd()), () => {
+    const owner = resolveOwner();
+    if (!owner) throw new Error("recipient instance is required outside an agent session");
+    return owner;
+  });
 
   cmd
     .command("whoami")
@@ -530,13 +531,14 @@ export function registerAgentsCommand(
   cmd
     .command("ping <name> <message...>")
     .description(
-      "Send a message to another agent by name. Works whether or not that agent " +
-        "is running: a live peer sees it on their next prompt, and a name with no " +
-        "live session gets it queued until a session of that name next starts. " +
-        "Only an unknown name is refused.",
+      "Queue a durable message for one known task instance by name. Stale or " +
+        "done tasks receive it when that same task resumes. Ambiguous names " +
+        "require an exact instance; receipts do not confirm attention.",
     )
+    .option("--instance-id <id>", "Select the exact known recipient instance")
+    .option("--require-live", "Refuse a recipient outside live presence")
     .option("--json", "JSON output")
-    .action((name: string, message: string[], opts: { json?: boolean }) => {
+    .action((name: string, message: string[], opts: { json?: boolean; instanceId?: string; requireLive?: boolean }) => {
       runPing(name, message.join(" "), opts);
     });
 
@@ -4870,7 +4872,7 @@ function formatDuration(ms: number): string {
   return h > 0 ? `${d}d${h}h` : `${d}d`;
 }
 
-function runPing(name: string, message: string, opts: { json?: boolean }): void {
+function runPing(name: string, message: string, opts: { json?: boolean; instanceId?: string; requireLive?: boolean }): void {
   if (!message || message.trim().length === 0) {
     emit.error({ code: "empty_message", message: "message is required (and non-empty)" });
     process.exit(1);
@@ -4891,51 +4893,28 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
     );
     process.exit(1);
   }
-  const coordRoot = monorepoRoot();
-  const peerOwner = resolveOwnerByName(name);
-
-  // A name with no live session is the common case, not an error: the agent it
-  // refers to may have ended minutes ago and may come back under the same name.
-  // Refuse only a name that no agent has ever held, which is a typo — queueing
-  // that would swallow the message silently.
-  if (!peerOwner && coordRoot && !isAddressableName(coordRoot, name)) {
-    const suggestions = suggestNames(coordRoot, name);
-    emit.error({
-      code: "unknown_agent",
-      message:
-        `no agent has ever been named "${name}". ` +
-        (suggestions.length > 0 ? `Did you mean ${suggestions.join(", ")}? ` : "") +
-        `Run \`${resolveBinName()} agents list\` for live sessions.`,
-    });
-    process.exit(1);
-  }
-
+  const coordRoot = monorepoRoot() ?? process.cwd();
   const myHb = readCurrentCoordinationRow(myOwner);
   const fromName = myHb?.name ?? "anonymous";
-  const body = `from agent-${fromName}: ${message.trim()}`;
-
-  // A live recipient gets the journal entry immediately, so a peer reading
-  // their own journal mid-session sees it without waiting for a prompt. A
-  // dormant recipient has no journal to write to yet; the drain writes it into
-  // whichever session picks the message up.
-  const doc = peerOwner ? appendEntry(peerOwner, "handoff", body) : null;
-
-  let queued: QueueResult;
+  let sent: ReturnType<typeof sendPeerMessage>;
   try {
-    queued = queueMailboxMessage({
-      coordRoot: coordRoot ?? process.cwd(),
-      toName: name,
-      fromName,
-      fromInstanceId: myOwner,
+    sent = sendPeerMessage({
+      coordRoot,
+      target: { name, instanceId: opts.instanceId, requireLive: opts.requireLive },
+      senderName: fromName,
+      senderInstanceId: myOwner,
       body: message.trim(),
-      journaled: Boolean(peerOwner),
     });
   } catch (error) {
-    if (error instanceof MailboxCapacityError) {
-      emit.error({ code: `mailbox_${error.reason_code}`, message: error.message });
+    if (error instanceof HarneryInboxCapacityError) {
+      emit.error({ code: `inbox_${error.reason_code}`, message: error.message });
       process.exit(1);
     }
     throw error;
+  }
+  if (!sent.ok) {
+    emit.error({ code: sent.code, message: sent.message, ...(sent.candidates ? { candidates: sent.candidates } : {}) });
+    process.exit(1);
   }
 
   // Canonical delivery record: sender is the envelope owner, recipient rides
@@ -4948,21 +4927,20 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
     observation: {
       event_type: "coord.message_observed",
       direction: "sent",
-      subject: peerOwner ?? `name:${queued.message.to_name}`,
+      subject: sent.target.instance_id,
+      message_id: sent.message_id,
       body: message.trim(),
     },
   });
 
   const data = {
-    peer: queued.message.to_name,
-    peer_instance_id: peerOwner,
-    delivery: peerOwner ? ("live" as const) : ("queued" as const),
-    message_id: queued.message.message_id,
-    pending: queued.pending,
+    peer: sent.target.name,
+    peer_instance_id: sent.target.instance_id,
+    state: sent.state,
+    message_id: sent.message_id,
+    synced: sent.synced,
+    body_bytes: sent.body_bytes,
     from: fromName,
-    body,
-    journal_path: doc?.path ?? null,
-    journal_bytes: doc?.bytes ?? null,
   };
 
   if (opts.json) {
@@ -4972,9 +4950,8 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
   }
   emit.data(data);
   emit.text(
-    peerOwner
-      ? `delivered to agent-${data.peer} (live; they see it on their next prompt): "${truncate(message.trim(), 80)}"\n`
-      : `queued for agent-${data.peer} (no live session; delivered when a session of that name next starts): "${truncate(message.trim(), 80)}"\n`,
+    `${data.state} for agent-${data.peer} (${data.peer_instance_id}); ` +
+      `stored as ${data.message_id}, pending until surfaced to that task.\n`,
   );
 }
 

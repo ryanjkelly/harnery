@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { readCrashSafeJsonlFile, updateCrashSafeJsonlFile } from "../storage/durable-history.ts";
+import { readCrashSafeJsonlFile, updateCrashSafeJsonlFile, type CrashSafeJsonlUpdate, type DurableHistoryReadOptions } from "../storage/durable-history.ts";
 import {
   HARNERY_INBOX_RECORD_SCHEMA,
   HARNERY_INBOX_STATUS_SCHEMA,
@@ -22,7 +22,7 @@ export interface HarneryInboxServiceOptions {
 }
 
 export interface HarneryInboxSendInput {
-  sender_instance_id: string;
+  sender_instance_id: string | null;
   sender_display_name: string;
   recipient_instance_id: string;
   recipient_display_name: string;
@@ -59,7 +59,7 @@ export class HarneryInboxService {
       schema: HARNERY_INBOX_RECORD_SCHEMA,
       kind: "message",
       message_id: `msg_${this.#options.id?.() ?? randomUUID()}`,
-      sender_instance_id: opaqueId(input.sender_instance_id, "sender instance"),
+      sender_instance_id: senderId(input.sender_instance_id),
       sender_display_name: boundedDisplay(input.sender_display_name),
       recipient_instance_id: recipient,
       recipient_display_name: boundedDisplay(input.recipient_display_name),
@@ -68,7 +68,7 @@ export class HarneryInboxService {
       body_bytes: bodyBytes,
     };
     const path = inboxPath(this.#options.coord_root, recipient);
-    return updateCrashSafeJsonlFile<HarneryInboxRecordV1, HarneryInboxSendReceipt>(
+    return updateInboxHistory<HarneryInboxRecordV1, HarneryInboxSendReceipt>(
       path,
       readOptions(limits),
       (records) => {
@@ -88,10 +88,12 @@ export class HarneryInboxService {
   }
 
   records(recipientInstanceId: string): HarneryInboxRecordV1[] {
-    return readCrashSafeJsonlFile<HarneryInboxRecordV1>(
+    const records = readCrashSafeJsonlFile<HarneryInboxRecordV1>(
       inboxPath(this.#options.coord_root, opaqueId(recipientInstanceId, "recipient instance")),
       readOptions(this.#options.limits),
     );
+    for (const record of records) validateRecord(record);
+    return records;
   }
 
   pending(recipientInstanceId: string): HarneryInboxMessageRecordV1[] {
@@ -133,13 +135,42 @@ export class HarneryInboxService {
       max_tokens: this.#options.limits.max_surface_tokens,
     },
   ): Promise<HarneryInboxSurfaceResult> {
-    validateSurfaceBudget(budget);
     const recipient = opaqueId(recipientInstanceId, "recipient instance");
-    const selected = selectOldestFitting(this.pending(recipient), budget);
+    const selected = this.prepareSurface(recipient, budget);
     await emit(selected);
-    if (selected.length > 0) {
+    this.acknowledgeSurface(recipient, selected.map(({ message_id }) => message_id));
+    const remaining = this.pending(recipient);
+    return {
+      emitted: selected,
+      remaining_pending_count: remaining.length,
+      remaining_pending_bytes: remaining.reduce((sum, record) => sum + record.body_bytes, 0),
+      repeated_after_crash_possible: true,
+    };
+  }
+
+  /** Preparing prompt text is read-only. A failed or abandoned emission must
+   * leave the same messages pending for the recipient's next prompt. */
+  prepareSurface(
+    recipientInstanceId: string,
+    budget: HarneryInboxSurfaceBudget = {
+      max_count: this.#options.limits.max_surface_count,
+      max_bytes: this.#options.limits.max_surface_bytes,
+      max_tokens: this.#options.limits.max_surface_tokens,
+    },
+  ): HarneryInboxMessageRecordV1[] {
+    validateSurfaceBudget(budget);
+    return selectOldestFitting(this.pending(recipientInstanceId), budget);
+  }
+
+  /** Call only after the selected IDs have actually been emitted. A message
+   * appended while output is in flight remains pending rather than being
+   * included in an acknowledgement of an older batch. */
+  acknowledgeSurface(recipientInstanceId: string, messageIds: readonly string[]): void {
+    const recipient = opaqueId(recipientInstanceId, "recipient instance");
+    const selected = new Set(messageIds);
+    if (selected.size > 0) {
       const surfacedAt = now(this.#options).toISOString();
-      updateCrashSafeJsonlFile<HarneryInboxRecordV1, void>(
+      updateInboxHistory<HarneryInboxRecordV1, void>(
         inboxPath(this.#options.coord_root, recipient),
         readOptions(this.#options.limits),
         (records) => {
@@ -147,9 +178,9 @@ export class HarneryInboxService {
             project(records).pending.map(({ message_id }) => message_id),
           );
           return {
-            append: selected
-              .filter(({ message_id }) => stillPending.has(message_id))
-              .map(({ message_id }) => ({
+            append: [...selected]
+              .filter((message_id) => stillPending.has(message_id))
+              .map((message_id) => ({
                 schema: HARNERY_INBOX_RECORD_SCHEMA,
                 kind: "surfaced" as const,
                 message_id,
@@ -160,13 +191,26 @@ export class HarneryInboxService {
         },
       );
     }
-    const remaining = this.pending(recipient);
-    return {
-      emitted: selected,
-      remaining_pending_count: remaining.length,
-      remaining_pending_bytes: remaining.reduce((sum, record) => sum + record.body_bytes, 0),
-      repeated_after_crash_possible: true,
-    };
+  }
+}
+
+/** The shared writer refuses an occupied lease before invoking the update.
+ * Briefly retry only that exact refusal so concurrent peer senders both get
+ * a chance to append. All validation, authority and I/O failures still fail
+ * immediately, and an occupied live lease is never removed or overridden. */
+function updateInboxHistory<T, R>(
+  path: string,
+  options: DurableHistoryReadOptions,
+  update: (records: readonly T[]) => CrashSafeJsonlUpdate<R>,
+): R {
+  const deadline = performance.now() + 2_000;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  while (true) {
+    try { return updateCrashSafeJsonlFile(path, options, update); }
+    catch (error) {
+      if (!(error instanceof Error) || error.message !== `durable history lease busy: ${path}.lease` || performance.now() >= deadline) throw error;
+      Atomics.wait(pause, 0, 0, Math.min(10, deadline - performance.now()));
+    }
   }
 }
 
@@ -270,8 +314,12 @@ function now(options: HarneryInboxServiceOptions): Date {
 }
 
 function opaqueId(value: string, field: string): string {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value)) throw new Error(`invalid ${field} id`);
+  if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value)) throw new Error(`invalid ${field} id`);
   return value;
+}
+
+function senderId(value: string | null): string | null {
+  return value === null ? null : opaqueId(value, "sender instance");
 }
 
 function boundedDisplay(value: string): string {
@@ -283,8 +331,11 @@ function boundedDisplay(value: string): string {
 
 function validateRecord(record: HarneryInboxRecordV1): void {
   if (record.schema !== HARNERY_INBOX_RECORD_SCHEMA) throw new Error("unknown inbox record schema");
-  if (record.kind === "message" && Buffer.byteLength(record.body) !== record.body_bytes) {
-    throw new Error(`inbox message ${record.message_id} has invalid body_bytes`);
+  if (record.kind === "message") {
+    senderId(record.sender_instance_id);
+    if (Buffer.byteLength(record.body) !== record.body_bytes) {
+      throw new Error(`inbox message ${record.message_id} has invalid body_bytes`);
+    }
   }
 }
 

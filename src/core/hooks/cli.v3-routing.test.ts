@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { peekMailbox, queueMailboxMessage } from "../agents/mailbox.ts";
+import { peerInbox } from "../inbox/peer-messages.ts";
 import {
   listSessionFinalizationRequestsV3,
   requestSessionEndExplicitV3,
@@ -332,7 +332,7 @@ describe("agent-hook V3 hard cut", () => {
     expect(child.tool).not.toContain('"deny"');
   });
 
-  test("injects an unread Cursor mailbox ping once at the next prompt", () => {
+  test("injects an unread Cursor instance inbox ping once at the next prompt", () => {
     const root = candidateRoot("cursor");
     const owner = "cursor-mailbox-owner";
     const env = { HARNERY_AGENT_COORD_BYPASS_STOP: "1" };
@@ -349,11 +349,11 @@ describe("agent-hook V3 hard cut", () => {
     const name = readLiveCoordinationRows(root)[0]?.name;
     if (!name) throw new Error("Cursor session name was not projected");
 
-    queueMailboxMessage({
-      coordRoot: root,
-      toName: name,
-      fromName: "Talia",
-      fromInstanceId: "mailbox-probe-sender",
+    peerInbox(root).send({
+      recipient_instance_id: owner,
+      recipient_display_name: name,
+      sender_display_name: "Talia",
+      sender_instance_id: "mailbox-probe-sender",
       body: "CURSOR_MAILBOX_FIXTURE",
     });
 
@@ -373,7 +373,7 @@ describe("agent-hook V3 hard cut", () => {
     expect(first.status).toBe(0);
     expect(first.stdout).toContain('"additional_context"');
     expect(first.stdout).toContain("CURSOR_MAILBOX_FIXTURE");
-    expect(peekMailbox(root, name)).toHaveLength(0);
+    expect(peerInbox(root).pending(owner)).toHaveLength(0);
 
     const second = run(
       AGENT_HOOK,
@@ -1622,6 +1622,215 @@ describe("agent-hook V3 hard cut", () => {
       "coord.task_changed",
     );
   }, 10_000);
+
+  test("Claude name recovery supersedes a failed display across a resumed day boundary", () => {
+    const root = candidateRoot();
+    const owner = `name-recovery-${randomUUID()}`;
+    const turnId = "resumed-name-recovery";
+    const hook = (event: string, payload: Record<string, unknown>) =>
+      run(
+        AGENT_HOOK,
+        [event, "--adapter", "claude-code"],
+        {
+          session_id: owner,
+          cwd: root,
+          turn_id: turnId,
+          ...payload,
+        },
+        root,
+      );
+    const coord = (args: string[]) =>
+      run(HARN, [...args, "--session-id", owner], {}, root, {
+        HARNERY_AGENT_COORD_SESSION_ID: owner,
+      });
+    const transcript = join(root, "resumed-name.jsonl");
+    const rows: Record<string, unknown>[] = [];
+    const append = (row: Record<string, unknown>) => {
+      rows.push(row);
+      writeFileSync(transcript, `${rows.map((value) => JSON.stringify(value)).join("\n")}\n`);
+    };
+    try {
+      expect(hook("session-start", { source: "startup" }).status).toBe(0);
+      expect(hook("user-prompt-submit", { prompt: "complete the work" }).status).toBe(0);
+      const task = coord(["agents", "set-task", "Resume recovery"]);
+      expect(task.status).toBe(0);
+      const name = JSON.parse(task.stdout).suggested_session_name as string;
+      expect(name).toMatch(/^Agent /);
+      append({
+        type: "user",
+        timestamp: "2026-09-11T23:59:00Z",
+        message: {
+          content: [{ type: "tool_result", content: task.stdout }],
+        },
+      });
+      append({
+        type: "assistant",
+        timestamp: "2026-09-11T23:59:01Z",
+        message: {
+          content: [{ type: "text", text: "Working before displaying the name." }],
+        },
+      });
+      // Every hook/CLI invocation above and below runs in a separate process.
+      expect(hook("session-start", { source: "resume", transcript_path: transcript }).status).toBe(
+        0,
+      );
+      expect(hook("user-prompt-submit", { prompt: "continue after resume" }).status).toBe(0);
+      expect(coord(["agents", "set-task", "Resume recovery"]).status).toBe(0);
+      expect(
+        hook("pre-tool-use", {
+          transcript_path: transcript,
+          tool_name: "Bash",
+          tool_use_id: "resume-status",
+          tool_input: { command: "harn agents status" },
+        }).status,
+      ).toBe(0);
+      const status = coord(["agents", "status"]);
+      expect(status.status).toBe(0);
+      expect(
+        hook("post-tool-use", {
+          transcript_path: transcript,
+          tool_name: "Bash",
+          tool_use_id: "resume-status",
+          tool_response: status.stdout,
+        }).status,
+      ).toBe(0);
+      const firstStop = hook("stop", {
+        transcript_path: transcript,
+        last_assistant_message: status.stdout,
+        stop_hook_active: false,
+      });
+      expect(firstStop).toMatchObject({ status: 2 });
+      expect(firstStop.stderr).toContain("rule=stop-hook.session_name");
+
+      for (let block = 2; block <= DEFAULT_STOP_REMEDIATION_CAP; block += 1) {
+        const unchanged = hook("stop", {
+          transcript_path: transcript,
+          last_assistant_message: status.stdout,
+          stop_hook_active: true,
+        });
+        expect(unchanged.status).toBe(2);
+        expect(unchanged.stderr).toContain("rule=stop-hook.session_name");
+      }
+      const exhausted = hook("stop", {
+        transcript_path: transcript,
+        last_assistant_message: status.stdout,
+        stop_hook_active: true,
+      });
+      expect(exhausted.status).toBe(0);
+      expect(
+        readFileSync(join(root, ".harnery", "logs", "agent-hook-debug", "active.jsonl"), "utf8"),
+      ).toContain('"blocked_rule":"stop-hook.session_name"');
+
+      // Repeating the title late cannot repair the first post-mint reply.
+      append({
+        type: "assistant",
+        timestamp: "2026-09-12T00:00:01Z",
+        message: {
+          content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }],
+        },
+      });
+      const stale = hook("pre-tool-use", {
+        transcript_path: transcript,
+        tool_name: "Read",
+        tool_use_id: "stale-name-read",
+        tool_input: { file_path: join(root, "seed.txt") },
+      });
+      expect(stale.stdout).toContain('"permissionDecision":"deny"');
+      expect(firstStop.stderr).toContain("agents suggest-name --json");
+
+      const retry = coord(["agents", "suggest-name", "--json"]);
+      expect(retry.status).toBe(0);
+      expect(JSON.parse(retry.stdout)).toMatchObject({
+        session_name_retry: true,
+        suggested_session_name: name,
+      });
+      append({
+        type: "user",
+        timestamp: "2026-09-12T00:00:02Z",
+        message: {
+          content: [{ type: "tool_result", content: retry.stdout }],
+        },
+      });
+      append({
+        type: "assistant",
+        timestamp: "2026-09-12T00:00:03Z",
+        message: {
+          content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }],
+        },
+      });
+      const recovered = hook("pre-tool-use", {
+        transcript_path: transcript,
+        tool_name: "Read",
+        tool_use_id: "recovered-name-read",
+        tool_input: { file_path: join(root, "seed.txt") },
+      });
+      expect(recovered.status).toBe(0);
+      expect(recovered.stdout).not.toContain('"permissionDecision":"deny"');
+      expect(readLiveCoordinationRows(root)[0]?.session_name_seen_for).toBe(name);
+      const nextStop = hook("stop", {
+        transcript_path: transcript,
+        last_assistant_message: status.stdout,
+        stop_hook_active: true,
+      });
+      expect(nextStop.status).toBe(0);
+      expect(nextStop.stderr).not.toContain("rule=stop-hook.session_name");
+      expect(JSON.parse(coord(["agents", "suggest-name", "--json"]).stdout)).toMatchObject({
+        session_name_retry: false,
+      });
+    } finally {
+      clearRemediationCount(owner);
+    }
+  }, 15_000);
+
+  test("Claude accepted name survives a later-day resume in a fresh hook process", () => {
+    const root = candidateRoot();
+    const owner = `accepted-name-resume-${randomUUID()}`;
+    const hook = (event: string, payload: Record<string, unknown>) =>
+      run(
+        AGENT_HOOK,
+        [event, "--adapter", "claude-code"],
+        {
+          session_id: owner,
+          cwd: root,
+          ...payload,
+        },
+        root,
+      );
+    expect(hook("session-start", { source: "startup" }).status).toBe(0);
+    const task = run(
+      HARN,
+      ["agents", "set-task", "Accepted resume", "--session-id", owner],
+      {},
+      root,
+    );
+    expect(task.status).toBe(0);
+    const name = JSON.parse(task.stdout).suggested_session_name as string;
+    const row = readLiveCoordinationRows(root)[0];
+    if (!row) throw new Error("session row missing");
+    writeFileSync(
+      join(root, ".harnery", "active", `${row.instance_id}.json`),
+      JSON.stringify({
+        ...row,
+        session_name_seen_for: name,
+        session_name_seen_at: "2026-09-11T23:59:59Z",
+      }),
+    );
+    expect(hook("session-start", { source: "resume" }).status).toBe(0);
+    const resumed = readLiveCoordinationRows(root)[0];
+    expect(resumed?.instance_id).toBe(row.instance_id);
+    expect(resumed?.suggested_session_name).toBe(name);
+    expect(resumed?.session_name_seen_for).toBe(name);
+    const retry = run(HARN, ["agents", "suggest-name", "--json", "--session-id", owner], {}, root);
+    expect(retry.status).toBe(0);
+    expect(JSON.parse(retry.stdout)).toMatchObject({ session_name_retry: false });
+    const nextTool = hook("pre-tool-use", {
+      tool_name: "Read",
+      tool_use_id: "accepted-resume-read",
+      tool_input: { file_path: join(root, "seed.txt") },
+    });
+    expect(nextTool.status).toBe(0);
+    expect(nextTool.stdout).not.toContain('"permissionDecision":"deny"');
+  });
 
   test("Claude Stop cap releases an unsatisfied cycle with a retained diagnostic", () => {
     const root = candidateRoot();

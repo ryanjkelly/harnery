@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { isSafeInstanceId } from "harnery/core/agents";
+import { sendPeerMessage } from "harnery/core/inbox";
 import {
   appendEntry,
   archiveJournal,
@@ -346,6 +347,8 @@ export interface PingResult {
   target_instance: string;
   bytes: number;
   error?: string;
+  state?: "written-live" | "queued";
+  message_id?: string;
 }
 
 export function pingAgent(targetInstanceId: string, message: string): PingResult {
@@ -362,10 +365,16 @@ export function pingAgent(targetInstanceId: string, message: string): PingResult
   if (!trimmed) {
     return { ok: false, target_instance: targetInstanceId, bytes: 0, error: "empty message" };
   }
-  const body = `from web-ui: ${trimmed}`;
   try {
-    const doc = appendEntry(targetInstanceId, "handoff", body);
-    return { ok: true, target_instance: targetInstanceId, bytes: doc.bytes };
+    const sent = sendPeerMessage({
+      coordRoot: coordRoot(),
+      target: { instanceId: resolveOperatorMutationOwner(targetInstanceId, coordRoot()) },
+      senderInstanceId: null,
+      senderName: "Operator",
+      body: trimmed,
+    });
+    if (!sent.ok) return { ok: false, target_instance: targetInstanceId, bytes: 0, error: sent.message };
+    return { ok: true, target_instance: sent.target.instance_id, bytes: sent.body_bytes, state: sent.state, message_id: sent.message_id };
   } catch (err) {
     return {
       ok: false,

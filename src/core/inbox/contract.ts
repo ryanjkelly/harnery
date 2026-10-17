@@ -19,7 +19,8 @@ export interface HarneryInboxMessageRecordV1 {
   schema: typeof HARNERY_INBOX_RECORD_SCHEMA;
   kind: "message";
   message_id: string;
-  sender_instance_id: string;
+  /** A required null identifies an operator; strings identify real agent instances. */
+  sender_instance_id: string | null;
   sender_display_name: string;
   recipient_instance_id: string;
   recipient_display_name: string;

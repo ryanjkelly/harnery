@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarneryInboxLimits } from "./contract.ts";
 import { planInboxCompaction } from "./lifecycle.ts";
-import { HarneryInboxService } from "./service.ts";
+import { HarneryInboxService, inboxPath, type HarneryInboxSendInput } from "./service.ts";
 import { watchInbox } from "./watcher.ts";
 
 const roots: string[] = [];
@@ -13,6 +13,37 @@ afterEach(() => {
 });
 
 describe("coordination inbox", () => {
+  test("operator null and actual agent IDs survive durable read, replay and acknowledgement", async () => {
+    const root = fixture();
+    const service = new HarneryInboxService({ coord_root: root, limits: limits() });
+    const operator = service.send({ ...message("operator feedback"), sender_instance_id: null, sender_display_name: "Operator" });
+    const agent = service.send(message("agent feedback"));
+    const replay = new HarneryInboxService({ coord_root: root, limits: limits() });
+    expect(replay.records("recipient")).toMatchObject([
+      { message_id: operator.message_id, sender_instance_id: null },
+      { message_id: agent.message_id, sender_instance_id: "sender" },
+    ]);
+    expect(replay.status("recipient").pending_count).toBe(2);
+    const emitted: (string | null)[] = [];
+    await replay.surface("recipient", (records) => { emitted.push(...records.map(({ sender_instance_id }) => sender_instance_id)); });
+    expect(emitted).toEqual([null, "sender"]);
+    expect(service.pending("recipient")).toEqual([]);
+  });
+
+  test("the sender field is required and only null represents an operator", () => {
+    const root = fixture();
+    const service = new HarneryInboxService({ coord_root: root, limits: limits() });
+    for (const invalid of [undefined, 42, "", "../sender"]) {
+      expect(() => service.send({ ...message("invalid actor"), sender_instance_id: invalid } as HarneryInboxSendInput)).toThrow("invalid sender instance id");
+    }
+    expect(service.pending("recipient")).toEqual([]);
+    service.send(message("valid actor"));
+    const [record] = service.records("recipient");
+    writeFileSync(inboxPath(root, "recipient"), JSON.stringify({ ...record, sender_instance_id: undefined }) + "\n");
+    expect(() => service.records("recipient")).toThrow("invalid sender instance id");
+    expect(() => service.pending("recipient")).toThrow("invalid sender instance id");
+  });
+
   test("rejects capacity before append and preserves pending history", () => {
     const service = inbox({ max_pending_count: 2 });
     service.send(message("one"));
@@ -88,6 +119,17 @@ describe("coordination inbox", () => {
     const observed = await next;
     controller.abort();
     expect(observed.value?.body).toBe("later");
+  });
+
+  test("prepared IDs cannot acknowledge an unseen concurrent append", () => {
+    const service = inbox();
+    service.send(message("prepared"));
+    const selected = service.prepareSurface("recipient");
+    service.send(message("newer"));
+    service.acknowledgeSurface("recipient", selected.map(({ message_id }) => message_id));
+    expect(service.pending("recipient").map(({ body }) => body)).toEqual(["newer"]);
+    service.acknowledgeSurface("recipient", selected.map(({ message_id }) => message_id));
+    expect(service.records("recipient").filter(({ kind }) => kind === "surfaced")).toHaveLength(1);
   });
 });
 

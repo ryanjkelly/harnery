@@ -381,24 +381,30 @@ The coordination-in-motion commands.
 - **`watch`** streams peer state changes live (a file watcher on
   `.harnery/active/`), printing one line per delta: started, ended, activity,
   file claim, task change. `--poll-ms <n>` tunes the debounce (default `200`).
-- **`ping <name> <message...>`** sends a message to an agent by name. It does
-  not require the recipient to be running, which is what makes it safe to use
-  as a single step: a live recipient is shown the message on their next prompt,
-  and a name with no live session has the message held in a durable mailbox
-  until a session of that name next starts. Either way the message is recorded
-  in the recipient's journal. The only refusal is a name no agent has ever
-  held, and that error lists the closest known names, so a sender never has to
-  look up who is live before sending or find another place to leave a note.
+- **`ping <name> <message...>`** stores a durable message for the task instance
+  resolved when the command runs. A fresh exact name takes precedence;
+  otherwise a unique known stale or done task can receive queued feedback.
+  Unknown or ambiguous names are refused. Use `--instance-id <id>` to select
+  an exact known instance, or `--require-live` when fresh presence is required.
+  A later task assigned the same display name cannot receive the old message.
 
-  Two ceilings keep a mailbox bounded: 4000 bytes per message and 25 pending
-  messages per name. Past either, the send is refused and the error says to
-  write the payload to a managed artifact and send its path instead. Delivered
-  messages are copied to `.harnery/mailbox/delivered/<name>.jsonl` for audit.
+  `written-live` and `queued` receipts confirm a synced append, not attention.
+  Messages live in private `.harnery/inbox/<instance-id>.jsonl` histories with
+  message IDs and separate surfaced records. They are not journal entries.
+  The body limit remains 4000 bytes, with at most 25 pending messages per
+  instance. Capacity errors point to a managed artifact for larger payloads.
 
-  Claude Code, Codex, and Cursor receive unread messages on their next prompt.
-  A message already waiting when a session starts may arrive with SessionStart
-  context instead. Delivery atomically claims the pending batch, so later
-  prompts cannot replay it. Senders need no adapter knowledge.
+  Native prompt and session-start hooks prepare a bounded batch without
+  consuming it. After the adapter emits and flushes context, the exact emitted
+  IDs are marked surfaced. Failed output leaves them pending; a crash after
+  output can repeat a message. Pending messages remain protected through the
+  seven-day idle finalization window.
+- **`inbox list [instance]`** lists pending message IDs and bodies. Without an
+  instance it uses the current agent. **`inbox watch [instance] --timeout 60`**
+  polls the same history while the task waits, emits each pending message and
+  then marks it surfaced. `--json` emits one message record per line. A missed
+  notification does not lose a message, and prompt delivery remains the
+  recovery path after the watcher stops.
 - **`wait <name>`** blocks until a peer releases its files (its `files_touched`
   empties) or exits. Scope it to specific paths with `--file <path>`
   (repeatable), cap it with `--timeout <dur>` (suffix `s`/`m`/`h`/`d`; a bare

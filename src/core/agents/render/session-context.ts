@@ -12,9 +12,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
-import { appendEntry } from "../../journal/index.ts";
 import { readRemoteMachines } from "../../presence/index.ts";
-import { drainMailbox, formatMailboxDelivery, type MailboxMessageV1 } from "../mailbox.ts";
+import { formatPeerInbox, peerInbox } from "../../inbox/peer-messages.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 import { forkRelationLabels, readForkState } from "../state/names.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
@@ -42,6 +41,8 @@ export interface RenderOpts {
   /** Adapter label rendered in parens after the self-name (e.g. "Cursor", "Codex").
    * Claude Code omits it. */
   platformLabel?: string;
+  /** The emitter acknowledges exactly these IDs only after output succeeds. */
+  onInboxPrepared?: (messageIds: readonly string[]) => void;
 }
 
 /**
@@ -92,15 +93,12 @@ export function renderSessionContext(opts: RenderOpts): string {
     );
   }
 
-  // 3. Peer messages queued for this name while no session held it. Draining
-  // here is what makes `agents ping` safe to use on a dormant agent: the sender
-  // never has to know whether the recipient is running.
-  if (agentName) {
-    const delivered = drainMailbox(coordRoot, agentName);
-    if (delivered.length > 0) {
-      recordDeliveredMessages(instanceId, delivered);
-      messages.push(formatMailboxDelivery(coordRoot, delivered));
-    }
+  // 3. Rendering never consumes a message. The native emitter acknowledges the
+  // prepared instance-bound batch only after it has flushed the output.
+  const delivered = peerInbox(coordRoot).prepareSurface(instanceId);
+  if (delivered.length > 0) {
+    opts.onInboxPrepared?.(delivered.map(({ message_id }) => message_id));
+    messages.push(formatPeerInbox(coordRoot, delivered));
   }
 
   // 4. Council invites
@@ -145,27 +143,6 @@ export function renderSessionContext(opts: RenderOpts): string {
   }
 
   return messages.join("\n\n");
-}
-
-/**
- * Write delivered peer messages into the recipient's own journal, so they
- * survive context compaction the way any other coordination breadcrumb does.
- * A message the sender already journaled (the recipient was live when it was
- * sent) is skipped to avoid a duplicate entry.
- */
-export function recordDeliveredMessages(
-  instanceId: string,
-  messages: readonly MailboxMessageV1[],
-): void {
-  for (const m of messages) {
-    if (m.journaled) continue;
-    try {
-      appendEntry(instanceId, "handoff", `from agent-${m.from_name}: ${m.body}`);
-    } catch {
-      // A journal write failure must never cost the delivery itself; the
-      // message is already in the rendered context the model reads.
-    }
-  }
 }
 
 /** One-line-per-agent view of sessions on other machines (presence refs). */
