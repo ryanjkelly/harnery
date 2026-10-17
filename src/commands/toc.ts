@@ -172,17 +172,25 @@ function renderToc(r: TocResult): string {
   return lines.join("\n");
 }
 
-async function runSection(file: string, query: string, opts: SectionOpts): Promise<SectionResult> {
+export async function runSection(
+  file: string,
+  query: string,
+  opts: SectionOpts,
+): Promise<SectionResult> {
   if (!query.trim()) throw new Error("header query required");
   const tocResult = await runToc(file, {});
   const absPath = resolve(file);
   const lines = readFileSync(absPath, "utf8").split("\n");
 
-  const matches = tocResult.headers.filter((h) =>
-    opts.caseSensitive
-      ? h.text.includes(query)
-      : h.text.toLowerCase().includes(query.toLowerCase()),
-  );
+  const same = (a: string, b: string) =>
+    opts.caseSensitive ? a === b : a.toLowerCase() === b.toLowerCase();
+  const contains = (a: string, b: string) =>
+    opts.caseSensitive ? a.includes(b) : a.toLowerCase().includes(b.toLowerCase());
+  // A header that equals the query wins over headers that merely contain it,
+  // so "Media" can still select "## Media" beside "## Media recipes".
+  const exact = tocResult.headers.filter((h) => same(h.text, query.trim()));
+  const matches =
+    exact.length > 0 ? exact : tocResult.headers.filter((h) => contains(h.text, query));
   if (matches.length === 0) {
     throw new Error(
       `no header matching "${query}". Run \`${resolveBinName()} toc ${file}\` to list available headers.`,
