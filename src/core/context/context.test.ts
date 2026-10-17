@@ -6,12 +6,12 @@ import { join } from "node:path";
 import { recordLiveClaimChangeV3, recordLiveTaskChangeV3 } from "../agents/live-authority-v3.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
-import { HarneryInboxService, inboxPath } from "../inbox/service.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
 import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
+import { HarneryInboxService, inboxPath } from "../inbox/service.ts";
 import {
   type ContinuityCapsule,
   checkpointContext,
@@ -291,6 +291,49 @@ function compactionCheckpoint(coordRoot: string) {
 }
 
 describe("compaction coordination input", () => {
+  // Capsule lookup is session-keyed and currently exposes a previous instance's
+  // continuation note when another instance reuses the provider session ID.
+  test.todo("reused session IDs cannot expose a different instance's capsule", () => {
+    mockGitReads();
+    const coordRoot = root();
+    checkpointContext(coordRoot, {
+      sessionId: "shared-provider-session",
+      instanceId: "owner-a",
+      adapter: "codex",
+      cwd: coordRoot,
+      reason: "pre_compact",
+      continuationNote: "private task belonging to owner-a",
+    });
+    const prepared = prepareContextRecovery(coordRoot, {
+      sessionId: "shared-provider-session",
+      instanceId: "owner-b",
+      cwd: coordRoot,
+    });
+    expect(prepared).toBeNull();
+    expect(readContextState(coordRoot, "shared-provider-session")?.phase).toBe("degraded");
+    expect(readContextState(coordRoot, "shared-provider-session")?.recovered_at).toBeUndefined();
+  });
+
+  // The completion API carries no prepared generation. A stale caller currently
+  // marks generation 2 recovered after accepting the generation 1 briefing.
+  test.todo("completion of a prepared generation cannot complete a newer checkpoint", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const input = { sessionId: "session-a", instanceId: "owner-a" };
+    compactionCheckpoint(coordRoot);
+    const old = prepareContextRecovery(coordRoot, { ...input, cwd: coordRoot })!;
+    const newer = checkpointContext(coordRoot, {
+      ...input,
+      adapter: "claude-code",
+      cwd: coordRoot,
+      reason: "manual",
+      continuationNote: "new generation",
+    });
+    expect(newer.capsule.generation).toBe(old.capsule.generation + 1);
+    completeContextRecovery(coordRoot, input);
+    expect(readContextState(coordRoot, input.sessionId)?.phase).toBe("checkpointed");
+  });
+
   test("recovery lists input surfaced immediately before compaction without changing history", async () => {
     mockGitReads();
     const coordRoot = root();
@@ -312,6 +355,7 @@ describe("compaction coordination input", () => {
 
     expect(prepared?.briefing).toContain(sent.message_id);
     expect(prepared?.briefing).toContain("check the pending review before editing");
+    expect(prepared?.briefing).toContain("`harn agents inbox list owner-a`");
     expect(inbox.pending("owner-a")).toEqual([]);
     expect(readFileSync(checkpoint.path, "utf8")).toBe(capsuleBefore);
     expect(readFileSync(inboxPath(coordRoot, "owner-a"), "utf8")).toBe(inboxBefore);
@@ -331,6 +375,7 @@ describe("compaction coordination input", () => {
         cwd: coordRoot,
       });
       expect(prepared).not.toBeNull();
+      // This covers abandoned preparation, not vendor-specific outcome signals.
       const error = new Error(`${outcome} native context acceptance`);
       if (outcome === "cancelled") error.name = "AbortError";
       await expect(Promise.reject(error)).rejects.toThrow(error.message);
@@ -379,6 +424,86 @@ describe("compaction coordination input", () => {
       completeContextRecovery(coordRoot, { sessionId: "session-a", instanceId: "owner-a" });
     }
     expect(readContextState(coordRoot, "session-a")?.generation).toBe(2);
+  });
+
+  test("recovery bounds excerpts while listing the full pending capacity and latest surfaced batch", async () => {
+    mockGitReads();
+    const coordRoot = root();
+    const inbox = continuityInbox(coordRoot);
+    const recent = Array.from(
+      { length: 10 },
+      (_, index) => coordinationInput(inbox, `recent feedback ${index}`).message_id,
+    );
+    await inbox.surface("owner-a", () => {});
+    const pending = Array.from(
+      { length: 25 },
+      () => coordinationInput(inbox, "🧭".repeat(1_000)).message_id,
+    );
+    compactionCheckpoint(coordRoot);
+    const briefing = prepareContextRecovery(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      cwd: coordRoot,
+    })!.briefing;
+    expect(briefing).toContain("Coordination input after compaction");
+    const input = briefing.slice(briefing.indexOf("Coordination input after compaction"));
+    expect(Buffer.byteLength(input)).toBeLessThanOrEqual(12 * 1024);
+    expect(input).toContain("[excerpt]");
+    expect(input).not.toContain("�");
+    for (const id of [...recent, ...pending]) expect(input.split(id)).toHaveLength(2);
+    expect(inbox.pending("owner-a").map(({ message_id }) => message_id)).toEqual(pending);
+  });
+
+  test("unreadable inbox history is explicit and recovery never rewrites it", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const inbox = continuityInbox(coordRoot);
+    coordinationInput(inbox, "do not erase unreadable input");
+    const path = inboxPath(coordRoot, "owner-a");
+    writeFileSync(path, "invalid-json\n");
+    compactionCheckpoint(coordRoot);
+    const prepared = prepareContextRecovery(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      cwd: coordRoot,
+    });
+    expect(prepared?.briefing).toContain("Coordination input could not be read");
+    expect(prepared?.briefing).toContain("`harn agents inbox list owner-a`");
+    expect(readFileSync(path, "utf8")).toBe("invalid-json\n");
+    expect(readContextState(coordRoot, "session-a")?.phase).toBe("checkpointed");
+  });
+
+  test("invalid inbox schema, receipt order, duplicate IDs and oversized IDs stay unreadable", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const inbox = continuityInbox(coordRoot);
+    coordinationInput(inbox, "keep invalid input out of the briefing");
+    const message = inbox.records("owner-a")[0]!;
+    const receipt = {
+      schema: "harnery.inbox-record/v1",
+      kind: "surfaced",
+      message_id: message.message_id,
+      surfaced_at: "2026-10-17T00:00:00Z",
+    };
+    const path = inboxPath(coordRoot, "owner-a");
+    compactionCheckpoint(coordRoot);
+    for (const records of [
+      [{ ...message, schema: "unknown" }],
+      [receipt, message],
+      [message, message],
+      [{ ...message, message_id: "x".repeat(7_000) }],
+    ]) {
+      const content = `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
+      writeFileSync(path, content);
+      const prepared = prepareContextRecovery(coordRoot, {
+        sessionId: "session-a",
+        instanceId: "owner-a",
+        cwd: coordRoot,
+      });
+      expect(prepared?.briefing).toContain("Coordination input could not be read");
+      expect(Buffer.byteLength(prepared!.briefing)).toBeLessThan(12 * 1024);
+      expect(readFileSync(path, "utf8")).toBe(content);
+    }
   });
 });
 

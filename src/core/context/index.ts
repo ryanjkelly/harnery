@@ -11,6 +11,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, isAbsolute, join } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
+import { resolveBinName } from "../config.ts";
+import type { HarneryInboxMessageRecordV1 } from "../inbox/contract.ts";
+import { peerInbox } from "../inbox/peer-messages.ts";
+import { project } from "../inbox/service.ts";
 import { stateFileMode } from "../storage/modes.ts";
 import type { RepoObservation, RepoSnapshot } from "./observation.ts";
 import { observationsComparable } from "./observation.ts";
@@ -23,6 +27,7 @@ export const MAX_CAPSULE_BYTES = 32 * 1024;
 const MAX_SNAPSHOT_PATHS = 15;
 const MAX_SNAPSHOT_PATH_CHARS = 500;
 const MAX_OBSERVATION_DETAIL_CHARS = 500;
+const MAX_RECOVERY_INPUT_BODY_BYTES = 160;
 
 export type ContextSampleSource = "hook" | "native_event" | "result" | "transcript" | "estimate";
 export type ContextSampleConfidence = "exact" | "reported" | "estimated";
@@ -287,8 +292,69 @@ export function prepareContextRecovery(
   }
 
   const liveRepo = snapshotRepo(input.cwd);
-  const briefing = renderRecoveryBriefing(capsule, liveRepo);
+  const briefing = [
+    renderRecoveryBriefing(capsule, liveRepo),
+    renderRecoveryInput(coordRoot, input.instanceId),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   return { state: current, capsule, briefing };
+}
+
+/** Recovery lists input without surfacing it again or changing its receipts. */
+function renderRecoveryInput(coordRoot: string, instanceId: string): string {
+  const readCommand = `${resolveBinName(coordRoot)} agents inbox list ${instanceId}`;
+  try {
+    const records = peerInbox(coordRoot).records(instanceId);
+    if (
+      records.some(
+        (record) =>
+          (record.kind !== "message" && record.kind !== "surfaced") ||
+          typeof record.message_id !== "string" ||
+          Buffer.byteLength(record.message_id) > 128,
+      )
+    ) {
+      throw new Error("inbox input cannot be listed safely");
+    }
+    const { surfaced } = project(records);
+    const messages = records.filter(
+      (record): record is HarneryInboxMessageRecordV1 =>
+        record.kind === "message" && record.recipient_instance_id === instanceId,
+    );
+    const pending = messages.filter((message) => !surfaced.has(message.message_id));
+    const recent = messages.filter((message) => surfaced.has(message.message_id)).slice(-10);
+    if (pending.length === 0 && recent.length === 0) return "";
+    const lines = [
+      "Coordination input after compaction (surfaced does not mean read):",
+      ...pending
+        .slice(0, 25)
+        .map((message) => inputLine(message.message_id, "pending", message.body)),
+      ...recent.map((message) =>
+        inputLine(message.message_id, "previously surfaced", message.body),
+      ),
+    ];
+    if (pending.length > 25)
+      lines.push(`${pending.length - 25} more pending messages are not listed.`);
+    lines.push(
+      `Recovery did not acknowledge these messages. Read pending input with \`${readCommand}\`.`,
+    );
+    return lines.join("\n");
+  } catch {
+    return `Coordination input could not be read. Check \`${readCommand}\` before continuing.`;
+  }
+}
+
+function inputLine(messageId: string, status: string, body: string): string {
+  const text = body.replace(/\s+/g, " ").trim();
+  let excerpt = "";
+  let bytes = 0;
+  for (const character of text) {
+    const size = Buffer.byteLength(character);
+    if (bytes + size > MAX_RECOVERY_INPUT_BODY_BYTES) break;
+    excerpt += character;
+    bytes += size;
+  }
+  return `- ${messageId} (${status}): ${excerpt}${excerpt.length < text.length ? " [excerpt]" : ""}`;
 }
 
 /** Advance continuity only after the adapter context channel accepted the briefing. */
