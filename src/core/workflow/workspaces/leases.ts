@@ -52,6 +52,8 @@ export interface AcquireNoClobberLeaseInput {
   now?: () => number;
   pid?: number;
   host?: string;
+  /** Probe dependency for deterministic liveness-failure tests. */
+  probePid?: (pid: number) => void;
   /** Fault-injection hook immediately before the lease directory is created. */
   onLeaseDirectoryCreate?: () => void;
   /** Fault-injection hook after contention is observed and before owner inspection. */
@@ -138,8 +140,10 @@ export function acquireNoClobberLease(input: AcquireNoClobberLeaseInput): NoClob
     if (observed === undefined) {
       throw new Error(`lease ${input.scope} changed repeatedly during contention`);
     }
-    if (leaseIsLive(observed.owner, now(), input.staleAfterMs)) {
-      throw new Error(`lease ${input.scope} is held by a live or unexpired owner`);
+    if (leaseIsLive(observed.owner, now(), input.staleAfterMs, input.probePid)) {
+      throw new Error(
+        `lease ${input.scope} is held by a live or unexpired owner, or its liveness is unknown`,
+      );
     }
     if (
       observed.owner.scope !== input.scope ||
@@ -266,7 +270,7 @@ function reclaimAbandonedRecovery(
   now: number,
 ): void {
   const claim = readRecoveryClaim(recoveryPath);
-  if (leaseIsLive(claim.claimant, now, input.staleAfterMs)) {
+  if (leaseIsLive(claim.claimant, now, input.staleAfterMs, input.probePid)) {
     throw new Error(`lease ${input.scope} recovery is already in progress`);
   }
   if (
@@ -484,7 +488,14 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   );
 }
 
-function leaseIsLive(owner: NoClobberLeaseOwner, now: number, staleAfterMs: number): boolean {
+function leaseIsLive(
+  owner: NoClobberLeaseOwner,
+  now: number,
+  staleAfterMs: number,
+  probePid: (pid: number) => void = (pid) => {
+    process.kill(pid, 0);
+  },
+): boolean {
   const created = Date.parse(owner.created_at);
   const expires = Date.parse(owner.expires_at);
   if (
@@ -496,12 +507,14 @@ function leaseIsLive(owner: NoClobberLeaseOwner, now: number, staleAfterMs: numb
   ) {
     return true;
   }
-  if (owner.host !== hostname()) return false;
+  // Expiry only makes a same-host owner eligible for a process check. Neither
+  // a remote owner nor an unreadable probe proves that its work has stopped.
+  if (owner.host !== hostname()) return true;
   try {
-    process.kill(owner.pid, 0);
+    probePid(owner.pid);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 

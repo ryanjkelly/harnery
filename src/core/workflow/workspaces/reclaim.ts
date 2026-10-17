@@ -17,8 +17,58 @@
 
 import { existsSync } from "node:fs";
 import { git, gitMaybe } from "./git.ts";
+import type { WorkflowLiveness } from "./recovery.ts";
+import type { WorkspaceCleanupAttempt, WorkspaceCleanupReceipt } from "./types.ts";
 
 export type ReclaimMode = "salvage" | "discard";
+
+export type WorkflowReclaimRefusalCode =
+  | "workflow_reclaim_run_live"
+  | "workflow_reclaim_liveness_unknown"
+  | "workflow_reclaim_ownership_unproven"
+  | "workflow_reclaim_lease_held";
+
+export class WorkflowReclaimError extends Error {
+  constructor(
+    readonly code: WorkflowReclaimRefusalCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WorkflowReclaimError";
+  }
+}
+
+export interface WorkspaceReclaimOptions {
+  mode: ReclaimMode;
+  yes?: boolean;
+}
+
+export interface ReclaimLeaseHolder {
+  scope: "binding" | "repository" | "resume";
+  owner_id?: string;
+  pid?: number;
+  host?: string;
+  detail?: string;
+}
+
+export interface WorkspaceReclaimPreview {
+  action: "preview";
+  run_id: string;
+  mode: ReclaimMode;
+  liveness: WorkflowLiveness;
+  ownership: "ok" | "unproven";
+  ownership_detail?: string;
+  dirty_paths: string[] | null;
+  lease_holder: ReclaimLeaseHolder[];
+}
+
+export type WorkspaceReclaimResult =
+  | WorkspaceReclaimPreview
+  | (Omit<WorkspaceReclaimPreview, "action"> & {
+      action: "reclaimed";
+      preparation: ReclaimPreparation;
+      cleanup: WorkspaceCleanupAttempt | WorkspaceCleanupReceipt;
+    });
 
 export type ReclaimPreparation =
   | { action: "salvaged"; branch: string; commit: string; detail: string }

@@ -19,6 +19,59 @@ const DIGEST = "a".repeat(64);
 const DEAD_PID = 2_000_000_000;
 
 describe("no-clobber workspace leases", () => {
+  test("an expired foreign owner cannot be recovered from elapsed time alone", () => {
+    const path = join(tempRoot("workspace-lease-foreign"), "operation.lease");
+    acquireNoClobberLease({
+      path,
+      scope: "binding",
+      authoritySha256: DIGEST,
+      staleAfterMs: 1_000,
+      now: () => 1_000,
+      host: "another-host",
+      pid: DEAD_PID,
+    });
+    const before = readFileSync(join(path, "current"), "utf8");
+    expect(() =>
+      acquireNoClobberLease({
+        path,
+        scope: "binding",
+        authoritySha256: DIGEST,
+        staleAfterMs: 1_000,
+        now: () => 10_000,
+      }),
+    ).toThrow(/liveness is unknown/);
+    expect(readFileSync(join(path, "current"), "utf8")).toBe(before);
+    expect(existsSync(join(path, "recovery"))).toBe(false);
+  });
+
+  for (const code of ["EIO", "EPERM", undefined]) {
+    test(`an expired owner with ${code ?? "unclassified"} process-probe failure cannot be recovered`, () => {
+      const path = join(tempRoot("workspace-lease-unknown"), "operation.lease");
+      acquireNoClobberLease({
+        path,
+        scope: "binding",
+        authoritySha256: DIGEST,
+        staleAfterMs: 1_000,
+        now: () => 1_000,
+        pid: DEAD_PID,
+      });
+      const before = readFileSync(join(path, "current"), "utf8");
+      expect(() =>
+        acquireNoClobberLease({
+          path,
+          scope: "binding",
+          authoritySha256: DIGEST,
+          staleAfterMs: 1_000,
+          now: () => 10_000,
+          probePid: () => {
+            throw Object.assign(new Error("probe failed"), { code });
+          },
+        }),
+      ).toThrow(/liveness is unknown/);
+      expect(readFileSync(join(path, "current"), "utf8")).toBe(before);
+      expect(existsSync(join(path, "recovery"))).toBe(false);
+    });
+  }
   test("refuses a live owner and releases only the exact owner inode", () => {
     const path = join(tempRoot("workspace-lease-live"), "operation.lease");
     const first = acquireNoClobberLease({

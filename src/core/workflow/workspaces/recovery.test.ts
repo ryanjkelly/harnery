@@ -26,6 +26,24 @@ function transcript(runDir: string, records: Array<Record<string, unknown>>): vo
 }
 
 describe("workspace recovery liveness", () => {
+  for (const record of [null, true, []]) {
+    test(`a non-object transcript record ${JSON.stringify(record)} reports unknown`, () => {
+      const { root, runId, runDir } = fixture();
+      writeFileSync(join(runDir, "transcript.jsonl"), `${JSON.stringify(record)}\n`);
+      expect(readWorkflowLiveness(root, runId)).toBe("unknown");
+    });
+  }
+  for (const event of ["run.resume", "run.start", "agent.start"]) {
+    test(`${event} after a terminal event reports active`, () => {
+      const { root, runId, runDir } = fixture();
+      transcript(runDir, [
+        { event: "run.start", run_id: runId },
+        { event: "run.end", run_id: runId, ok: true },
+        { event, run_id: runId },
+      ]);
+      expect(readWorkflowLiveness(root, runId)).toBe("active");
+    });
+  }
   test("treats durable reattachment failure as terminal without waiting for proof", () => {
     const { root, runId, runDir } = fixture();
     transcript(runDir, [

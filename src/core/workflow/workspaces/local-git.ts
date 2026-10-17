@@ -9,7 +9,9 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
+import { acquireWorkflowResumeLease } from "../run-state.ts";
 import { WorkspaceAttestationError } from "./attestation-error.ts";
+import { cleanupWorkspace } from "./cleanup.ts";
 import {
   git,
   gitMaybe,
@@ -36,6 +38,16 @@ import {
   type ValidatedRoot,
   validateConfiguredRoot,
 } from "./paths.ts";
+import {
+  prepareReclaim,
+  type ReclaimLeaseHolder,
+  type ReclaimMode,
+  type ReclaimPreparation,
+  WorkflowReclaimError,
+  type WorkspaceReclaimOptions,
+  type WorkspaceReclaimPreview,
+  type WorkspaceReclaimResult,
+} from "./reclaim.ts";
 import { readWorkflowLiveness } from "./recovery.ts";
 import {
   appendWorkspaceEvent,
@@ -86,11 +98,18 @@ export interface LocalGitWorktreeProviderOptions {
   descriptorPathsSupported?: () => boolean;
 }
 
+export interface LocalGitWorktreeProvider extends WorkspaceProvider {
+  reclaim(
+    binding: WorkspaceBinding,
+    options: WorkspaceReclaimOptions,
+  ): Promise<WorkspaceReclaimResult>;
+}
+
 export function createLocalGitWorktreeProvider(
   options: LocalGitWorktreeProviderOptions,
-): WorkspaceProvider {
+): LocalGitWorktreeProvider {
   const coordRoot = resolve(options.coordRoot);
-  return {
+  const provider: LocalGitWorktreeProvider = {
     probe: (input) => probe(input, options.descriptorPathsSupported),
     allocate: (request) => allocate(coordRoot, request),
     readBinding: async (binding) => {
@@ -103,7 +122,9 @@ export function createLocalGitWorktreeProvider(
     previewIntegration: (input) => previewIntegration(coordRoot, input),
     applyAuthorizedIntegration: (input) => applyAuthorizedIntegration(coordRoot, input),
     cleanup: (binding, intent) => cleanup(coordRoot, binding, intent),
+    reclaim: (binding, reclaimOptions) => reclaim(coordRoot, provider, binding, reclaimOptions),
   };
+  return provider;
 }
 
 export async function probe(
@@ -783,6 +804,204 @@ function cancelUnderLease(
   return { ...base, status: "cancelled" };
 }
 
+function reclaimPreview(
+  coordRoot: string,
+  binding: WorkspaceBinding,
+  mode: ReclaimMode,
+): WorkspaceReclaimPreview {
+  const preview: WorkspaceReclaimPreview = {
+    action: "preview",
+    run_id: binding.run_id,
+    mode,
+    liveness: readWorkflowLiveness(coordRoot, binding.run_id),
+    ownership: "unproven",
+    dirty_paths: null,
+    lease_holder: reclaimLeaseHolders(coordRoot, binding),
+  };
+  try {
+    const current = attestSync(coordRoot, binding);
+    if (current.status === "ok") {
+      preview.ownership = "ok";
+      preview.dirty_paths = [...(current.repository?.dirty_paths ?? [])];
+    } else {
+      preview.ownership_detail =
+        current.provider_drift.join("; ") || "ownership attestation failed";
+    }
+  } catch (error) {
+    preview.ownership_detail = (error as Error).message;
+  }
+  return preview;
+}
+
+function assertReclaimLiveness(coordRoot: string, binding: WorkspaceBinding): void {
+  const liveness = readWorkflowLiveness(coordRoot, binding.run_id);
+  if (liveness === "inactive") return;
+  throw new WorkflowReclaimError(
+    liveness === "active" ? "workflow_reclaim_run_live" : "workflow_reclaim_liveness_unknown",
+    liveness === "active"
+      ? `run ${binding.run_id} is active; its workspace was left untouched`
+      : `run ${binding.run_id} has missing, corrupt, or ambiguous liveness evidence; its workspace was left untouched`,
+  );
+}
+
+function assertReclaimOwnership(coordRoot: string, binding: WorkspaceBinding): WorkspaceClaim {
+  try {
+    const claim = requiredClaim(coordRoot, binding);
+    const current = attestSync(coordRoot, binding);
+    if (current.status !== "ok") {
+      throw new Error(current.provider_drift.join("; ") || "ownership attestation failed");
+    }
+    return claim;
+  } catch (error) {
+    throw new WorkflowReclaimError("workflow_reclaim_ownership_unproven", (error as Error).message);
+  }
+}
+
+async function reclaim(
+  coordRoot: string,
+  provider: WorkspaceProvider,
+  binding: WorkspaceBinding,
+  options: WorkspaceReclaimOptions,
+): Promise<WorkspaceReclaimResult> {
+  if (options.mode !== "salvage" && options.mode !== "discard") {
+    throw new Error("unsupported workspace reclaim mode");
+  }
+  if (!options.yes) return reclaimPreview(coordRoot, binding, options.mode);
+
+  // Liveness comes before terminal-proof cleanup helpers. A live run may not
+  // have a proof yet, and a missing proof must never be discovered after reset.
+  assertReclaimLiveness(coordRoot, binding);
+  const claim = assertReclaimOwnership(coordRoot, binding);
+  let releaseResume: () => void;
+  try {
+    releaseResume = acquireWorkflowResumeLease(coordRoot, binding.run_id);
+  } catch (error) {
+    throw new WorkflowReclaimError("workflow_reclaim_lease_held", (error as Error).message);
+  }
+  try {
+    let releaseBinding: () => void;
+    try {
+      releaseBinding = acquireLease(
+        coordRoot,
+        workspaceLockPath(coordRoot, PROVIDER_ID, binding.binding_id),
+        claim,
+        "binding",
+      );
+    } catch (error) {
+      throw new WorkflowReclaimError("workflow_reclaim_lease_held", (error as Error).message);
+    }
+    try {
+      let releaseRepository: () => void;
+      try {
+        releaseRepository = acquireRepositoryLease(coordRoot, claim);
+      } catch (error) {
+        throw new WorkflowReclaimError("workflow_reclaim_lease_held", (error as Error).message);
+      }
+      try {
+        assertReclaimLiveness(coordRoot, binding);
+        assertReclaimOwnership(coordRoot, binding);
+        const preview = reclaimPreview(coordRoot, binding, options.mode);
+        let preparation: ReclaimPreparation | undefined;
+        // Keep ordinary cleanup's terminal-evidence checks, intent and receipts.
+        // Its provider callback uses the leases already held here instead of
+        // trying to acquire them again. Preparation occurs only after all of
+        // cleanup's path, ownership, ref and registration checks have succeeded.
+        const cleanupResult = await cleanupWorkspace({
+          coordRoot,
+          runId: binding.run_id,
+          provider: {
+            ...provider,
+            cleanup: async (candidate, intent) => {
+              assertReclaimLiveness(coordRoot, candidate);
+              assertReclaimOwnership(coordRoot, candidate);
+              return cleanupUnderLease(coordRoot, candidate, claim, intent, {
+                mode: options.mode,
+                prepared: (value) => {
+                  preparation = value;
+                },
+              });
+            },
+          },
+        });
+        if (
+          !preparation &&
+          cleanupResult.status !== "released" &&
+          cleanupResult.status !== "already_released"
+        ) {
+          throw new WorkflowReclaimError(
+            "workflow_reclaim_ownership_unproven",
+            ("reason" in cleanupResult ? cleanupResult.reason : undefined) ??
+              "workspace cleanup preconditions could not be proved",
+          );
+        }
+        return {
+          ...preview,
+          action: "reclaimed",
+          lease_holder: [],
+          preparation: preparation ?? {
+            action: "already_gone",
+            detail: "the workspace is already released",
+          },
+          cleanup: cleanupResult,
+        };
+      } finally {
+        releaseRepository();
+      }
+    } finally {
+      releaseBinding();
+    }
+  } finally {
+    releaseResume();
+  }
+}
+
+function reclaimLeaseHolders(coordRoot: string, binding: WorkspaceBinding): ReclaimLeaseHolder[] {
+  const paths: Array<[ReclaimLeaseHolder["scope"], string]> = [
+    ["binding", workspaceLockPath(coordRoot, PROVIDER_ID, binding.binding_id)],
+  ];
+  if (binding.repository) {
+    const key = stableDigest({ common: binding.repository.common_dir.identity });
+    paths.push([
+      "repository",
+      join(coordRoot, ".harnery", "workspaces", PROVIDER_ID, ".leases", `repository-${key}.lock`),
+    ]);
+  }
+  const holders: ReclaimLeaseHolder[] = [];
+  try {
+    const owner = JSON.parse(
+      readFileSync(join(coordRoot, ".harnery", "workflows", binding.run_id, "resume.lock"), "utf8"),
+    ) as Record<string, unknown>;
+    holders.push({
+      scope: "resume",
+      pid: typeof owner.pid === "number" ? owner.pid : undefined,
+      host: typeof owner.host === "string" ? owner.host : undefined,
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      holders.push({ scope: "resume", detail: "lease holder could not be read" });
+    }
+  }
+  for (const [scope, path] of paths) {
+    try {
+      const owner = JSON.parse(readFileSync(join(path, "current"), "utf8")) as Record<
+        string,
+        unknown
+      >;
+      holders.push({
+        scope,
+        owner_id: typeof owner.owner_id === "string" ? owner.owner_id : undefined,
+        pid: typeof owner.pid === "number" ? owner.pid : undefined,
+        host: typeof owner.host === "string" ? owner.host : undefined,
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        holders.push({ scope, detail: "lease holder could not be read" });
+      }
+    }
+  }
+  return holders;
+}
+
 async function cleanup(
   coordRoot: string,
   binding: WorkspaceBinding,
@@ -813,6 +1032,7 @@ function cleanupUnderLease(
   binding: WorkspaceBinding,
   claim: WorkspaceClaim,
   intent: WorkspaceCleanupIntent,
+  reclaimRequest?: { mode: ReclaimMode; prepared: (value: ReclaimPreparation) => void },
 ): WorkspaceCleanupResult {
   const repository = binding.repository;
   if (
@@ -871,11 +1091,11 @@ function cleanupUnderLease(
     return { ...base, status: "blocked", reason: "ownership attestation failed" };
   }
   if (
-    (before.repository?.dirty_paths.length ?? 0) > 0 ||
+    (!reclaimRequest && (before.repository?.dirty_paths.length ?? 0) > 0) ||
     (before.repository?.conflicts.length ?? 0) > 0 ||
     (before.repository?.operation_in_progress.length ?? 0) > 0
   ) {
-    appendWorkspaceEvent(coordRoot, claim, "preserved_dirty");
+    if (!reclaimRequest) appendWorkspaceEvent(coordRoot, claim, "preserved_dirty");
     return {
       ...base,
       status: "preserved_dirty",
@@ -949,6 +1169,18 @@ function cleanupUnderLease(
     };
   }
 
+  if (reclaimRequest) {
+    assertReclaimLiveness(coordRoot, binding);
+    assertReclaimOwnership(coordRoot, binding);
+    revalidateClaimResources(claim, root);
+    reclaimRequest.prepared(
+      prepareReclaim({
+        worktreePath: binding.workspace_root,
+        mode: reclaimRequest.mode,
+        runId: binding.run_id,
+      }),
+    );
+  }
   appendWorkspaceEvent(coordRoot, claim, "cleanup_pending", {
     worktree_path: binding.workspace_root,
     gitdir: repository.gitdir,

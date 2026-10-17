@@ -618,11 +618,11 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
   workflow
     .command("reclaim <run-id>")
     .description(
-      "Resolve a workspace preserved because it was dirty: salvage the work to its branch, then release.",
+      "Preview reclaim of an inactive owned workspace, or confirm salvage or discard and release.",
     )
     .option("--yes", "Confirm that this commits or discards uncommitted work, then releases")
     .option("--discard", "Throw the uncommitted work away instead of salvaging it")
-    .option("--json", "Emit the reclaim preparation and cleanup result as JSON")
+    .option("--json", "Emit the reclaim preview or confirmed result as JSON")
     .action(async (runId: string, opts: WorkflowReclaimOpts) => {
       const coordRoot = resolveCoordRoot();
       if (!coordRoot) {
@@ -632,53 +632,53 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
-      if (!opts.yes) {
-        emit.error({
-          code: "reclaim_confirmation_required",
-          message: opts.discard
-            ? "reclaim --discard permanently destroys uncommitted work; pass --yes to confirm"
-            : "workspace reclaim commits uncommitted work to its branch and then releases the worktree; pass --yes to confirm",
-        });
-        process.exit(1);
-      }
       try {
-        const { inspectWorkflowWorkspace, prepareReclaim, cleanupWorkspace } = await import(
+        const { createLocalGitWorktreeProvider, readWorkflowRunManifest } = await import(
           "../core/workflow/index.ts"
         );
-        const inspection = inspectWorkflowWorkspace(coordRoot, runId);
-        if (!inspection.ok) {
-          emit.error({ code: "workflow_reclaim_failed", message: inspection.error });
-          process.exit(1);
-        }
-        const allocation = inspection.value.allocation;
-        if (!allocation) {
+        const binding = readWorkflowRunManifest(coordRoot, runId).execution.workspace_binding;
+        if (binding?.provider.id !== "local-git-worktree") {
           emit.error({
             code: "workflow_reclaim_unavailable",
             message: `run ${runId} has no provider-owned Git workspace to reclaim`,
           });
           process.exit(1);
         }
-        const preparation = prepareReclaim({
-          worktreePath: allocation.active_root,
+        const provider = createLocalGitWorktreeProvider({ coordRoot });
+        const result = await provider.reclaim(binding, {
           mode: opts.discard ? "discard" : "salvage",
-          runId,
+          yes: opts.yes,
         });
-        // Cleanup still owns removal. Reclaim only changes whether the tree it
-        // finds is dirty, so there is one audited release path, not two.
-        const provider = await builtInProviderForRun(coordRoot, runId);
-        const cleanup = await cleanupWorkspace({ coordRoot, runId, provider });
         if (opts.json) {
           emit.config({ format: "json" });
-          emit.data({ preparation, cleanup });
+          emit.data(result);
+          return;
+        }
+        if (result.action === "preview") {
+          const holders = result.lease_holder.map(
+            (holder) =>
+              `${holder.scope}: ${holder.owner_id ?? "unknown"}${holder.pid ? ` (pid ${holder.pid})` : ""}${holder.detail ? `; ${holder.detail}` : ""}`,
+          );
+          emit.text(
+            `reclaim preview: ${result.run_id}\n` +
+              `mode: ${result.mode}\nliveness: ${result.liveness}\nownership: ${result.ownership}\n` +
+              `lease holder: ${holders.length > 0 ? holders.join(", ") : "none observed"}\n` +
+              `dirty paths: ${result.dirty_paths === null ? "unknown" : result.dirty_paths.length > 0 ? result.dirty_paths.join(", ") : "none"}\n` +
+              (result.ownership_detail ? `ownership detail: ${result.ownership_detail}\n` : "") +
+              `Pass --yes to confirm ${result.mode} and release after all checks pass.\n`,
+          );
           return;
         }
         emit.text(
-          `reclaim ${preparation.action}: ${preparation.detail}\n` +
-            `workspace cleanup ${cleanup.status}: ${cleanup.binding_id}\n`,
+          `reclaim ${result.preparation.action}: ${result.preparation.detail}\n` +
+            `workspace cleanup ${result.cleanup.status}: ${result.cleanup.binding_id}\n`,
         );
       } catch (error) {
         emit.error({
-          code: "workflow_reclaim_failed",
+          code:
+            error instanceof Error && "code" in error && typeof error.code === "string"
+              ? error.code
+              : "workflow_reclaim_failed",
           message: error instanceof Error ? error.message : String(error),
         });
         process.exit(1);

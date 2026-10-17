@@ -6,16 +6,6 @@ export type WorkflowLiveness = "active" | "inactive" | "unknown";
 
 export function readWorkflowLiveness(coordRoot: string, runId: string): WorkflowLiveness {
   const root = resolve(coordRoot);
-  const proofPath = join(root, ".harnery", "workflows", runId, "proof.json");
-  if (existsSync(proofPath)) {
-    try {
-      const proof = readWorkflowProof(root, runId);
-      return ["succeeded", "failed"].includes(proof.run.status) ? "inactive" : "unknown";
-    } catch {
-      return "unknown";
-    }
-  }
-
   const transcriptPath = join(root, ".harnery", "workflows", runId, "transcript.jsonl");
   if (!existsSync(transcriptPath)) return "unknown";
   let events: Array<{ event?: string; run_id?: string; ok?: unknown; status?: unknown }>;
@@ -35,13 +25,23 @@ export function readWorkflowLiveness(coordRoot: string, runId: string): Workflow
   } catch {
     return "unknown";
   }
-  if (events.some((item) => item.run_id !== runId || typeof item.event !== "string")) {
+  if (
+    events.some(
+      (item) =>
+        !item ||
+        typeof item !== "object" ||
+        Array.isArray(item) ||
+        item.run_id !== runId ||
+        typeof item.event !== "string",
+    )
+  ) {
     return "unknown";
   }
 
   let liveness: WorkflowLiveness | undefined;
   for (const item of events) {
-    if (item.event === "run.start" || item.event === "run.resume") liveness = "active";
+    if (item.event === "run.start" || item.event === "run.resume" || item.event === "agent.start")
+      liveness = "active";
     if (item.event === "run.parked") liveness = "inactive";
     if (item.event === "run.end") {
       if (typeof item.ok !== "boolean") return "unknown";
@@ -52,5 +52,17 @@ export function readWorkflowLiveness(coordRoot: string, runId: string): Workflow
       liveness = "inactive";
     }
   }
-  return liveness ?? "unknown";
+  // A terminal proof can predate a resumed run. Only the current transcript
+  // can establish that no later activity invalidated that terminal observation.
+  if (liveness !== "inactive") return liveness ?? "unknown";
+  const proofPath = join(root, ".harnery", "workflows", runId, "proof.json");
+  if (existsSync(proofPath)) {
+    try {
+      const proof = readWorkflowProof(root, runId);
+      return ["succeeded", "failed"].includes(proof.run.status) ? "inactive" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+  return "inactive";
 }
