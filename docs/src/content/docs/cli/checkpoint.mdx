@@ -18,6 +18,15 @@ last tool, reported context usage, and Git state. After compaction it compares
 that snapshot with the live checkout and injects a recovery briefing through
 the adapter's context channel.
 
+Repository snapshots carry an `observation` of `ok`, `partial`, or
+`unavailable`, with a bounded `observation_detail` when a read fails. A capsule
+without the observation field is unavailable. The briefing compares the
+checkpoint and current repository only when both observations are `ok`.
+Otherwise it reports that it could not verify the repository, gives the
+reason, and asks for a re-check before editing. It does not claim a match or
+cleared dirty paths from a failed read. Missing branch or HEAD information is
+unknown. See [ADR 0207](/decisions/0207-fail-closed-on-unknown-state/).
+
 This preserves external work state; it does not initiate the adapter's native
 compaction command.
 

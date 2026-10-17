@@ -65,7 +65,38 @@ harn supervisor start --keep-alive
 The collection interval accepts 500 through 60,000 milliseconds and defaults
 to 2,000 milliseconds. The idle exit accepts 5,000 milliseconds through 24
 hours. `start` waits for a live heartbeat, and `stop` writes a durable request
-before signaling the exact same-host supervisor process.
+before checking whether it can signal the same-host supervisor process.
+
+## Identity and build status
+
+`harn supervisor status` includes the following fields under `service`:
+
+| Field | Meaning |
+| --- | --- |
+| `generation` | `same`, `different`, or `unknown`, from the recorded and current process start tokens |
+| `liveness` | `running`, `stopped`, or `unknown`; an unreadable identity is unknown |
+| `running_build` | The daemon's recorded `{ version, revision }`, or `null` when unavailable |
+| `installed_build` | The CLI's current `{ version, revision }` |
+| `restart_needed` | `true` when the builds differ or the running build is unknown |
+| `build_status` | `current`, `restart needed`, or `running build unknown; restart needed` |
+
+The revision identifies the source Git commit, or `npm-<version>` for a
+published package. A running supervisor keeps its original build until it
+restarts. `harn resources status` and `harn diagnostics` also expose the
+supervisor's generation and build status.
+
+A record without a start token, or a failed token probe, produces `unknown`.
+Harnery refuses a second start while it cannot establish the existing
+supervisor's identity. Run `harn supervisor stop` to write the durable stop
+request, then check status before starting it again.
+
+`stop` rechecks the start token immediately before signaling. It sends nothing
+when the verdict is `different` or `unknown`; its response includes
+`signal_sent` and `signal_verdict`. The supervisor can still honor the durable
+stop request. The token check narrows the PID-reuse race but does not eliminate
+the interval between the check and the signal.
+
+See [ADR 0207](/decisions/0207-fail-closed-on-unknown-state/) for the shared rule.
 
 ## Bounded storage
 

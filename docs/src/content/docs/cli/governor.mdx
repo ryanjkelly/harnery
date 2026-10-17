@@ -408,12 +408,42 @@ ledger, and a bounded-summary log beneath `.harnery/governor-service/`. The
 dashboard's Goals page shows heartbeat, enrollment, active goal, last tick
 result, and backoff state through a read-only package boundary.
 
-`service stop` is graceful: an active bounded tick finishes before the daemon
+`service status` reports process identity separately from the heartbeat:
+
+| Field | Meaning |
+| --- | --- |
+| `generation` | `same`, `different`, or `unknown`, from the recorded and current process start tokens |
+| `liveness` | `running`, `stopped`, or `unknown`; an unreadable identity is unknown |
+| `running_build` | The daemon's recorded `{ version, revision }`, or `null` when unavailable |
+| `installed_build` | The CLI's current `{ version, revision }` |
+| `restart_needed` | `true` when the builds differ or the running build is unknown |
+| `build_status` | `current`, `restart needed`, or `running build unknown; restart needed` |
+
+The revision identifies the source Git commit, or `npm-<version>` for a
+published package. Installing or changing the CLI does not update a running
+daemon. Stop and start the service when status says `restart needed`.
+
+A missing recorded token or an unreadable current token produces `unknown`.
+Harnery refuses another start or configuration change while the existing
+service's identity is unknown. Run `harn governor service stop` to write its
+durable stop request, then check status before starting it again.
+
+`service stop` writes that request before attempting a signal. It rechecks the
+start token immediately before signaling and sends nothing if the verdict is
+`different` or `unknown`. The result includes `signal_sent` and `signal_verdict`;
+the durable request remains available to the daemon when no signal was sent.
+The final check narrows the PID-reuse race but cannot eliminate the interval
+between the token read and the operating system's signal.
+
+Stopping is graceful: an active bounded tick finishes before the daemon
 exits, avoiding orphaned child processes. After a process or host restart, run
 `harn governor service start` with no goal IDs to reuse the existing frozen
 configuration and wake state. For automatic operating-system restart, use
 `harn governor service run` as the foreground command owned by the host's
 process manager.
+
+See [ADR 0207](/decisions/0207-fail-closed-on-unknown-state/) for the observation
+and process-identity rule.
 
 ## Automation policy
 

@@ -20,7 +20,7 @@ harn run integration prepare <run-id> --policy <file> [--reviewer <name>]
                                     [--accept-unknown <code>] [--approval-to <address>] [--json]
 harn run integration apply <run-id> --yes [--json]
 harn run cleanup <run-id> --yes [--json]
-harn run reclaim <run-id> --yes [--discard] [--json]
+harn run reclaim <run-id> [--discard] [--yes] [--json]
 harn approval list [--status pending|approved|denied] [--json]
 harn approval show <approval-id> [--json]
 harn approval approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
@@ -563,21 +563,52 @@ the built-in local Git provider. Embedding hosts use `prepareIntegration()`,
 Preserving dirty work is correct, but a preserved workspace needs a way out.
 Cleanup will keep finding the same dirty tree and preserving it again, so
 `reclaim` resolves the work first and then releases
-([ADR 0042](/decisions/0042-dirty-workspace-reclaim/)):
+([ADR 0042](/decisions/0042-dirty-workspace-reclaim/)). Preview either mode
+before confirming:
 
 ```bash
+harn run reclaim <run-id>                   # preview salvage
+harn run reclaim <run-id> --discard         # preview discard
 harn run reclaim <run-id> --yes             # salvage the work, then release
 harn run reclaim <run-id> --discard --yes   # throw the work away, then release
 ```
+
+Without `--yes`, the command reports the run ID, mode, liveness, ownership,
+lease holders, and dirty paths without changing workspace files. JSON previews
+have `action: "preview"`, `run_id`, `mode`, `liveness`, `ownership`,
+`lease_holder`, and `dirty_paths`. An unreadable path list is `null`, not an
+empty list. `lease_holder` is an array of resume, binding, or repository lease
+holders.
+
+Both modes require a proven inactive run and an `ok` workspace ownership
+attestation. The provider acquires the resume, binding, and repository leases
+before committing or discarding files, and holds them through ordinary cleanup.
+The resume lease prevents a parked run from restarting during reclaim.
+An existing resume lock blocks reclaim even when its timestamp is old or its
+owner cannot be read. Reclaim has no override for that missing evidence.
+These refusals leave workspace files untouched:
+
+| Code | Reason |
+| --- | --- |
+| `workflow_reclaim_run_live` | The run is active |
+| `workflow_reclaim_liveness_unknown` | The run's inactivity cannot be established from its evidence |
+| `workflow_reclaim_ownership_unproven` | Workspace ownership could not be attested |
+| `workflow_reclaim_lease_held` | A required resume, binding, or repository lease cannot be acquired |
+
+`--yes` confirms the selected mode; it does not bypass any of these checks.
+See [ADR 0207](/decisions/0207-fail-closed-on-unknown-state/) for the reclaim
+gate and the rule for unknown evidence.
 
 Salvage commits the uncommitted work to a durable `harnery/salvage/<run-id>`
 branch, so it stays recoverable by name after the worktree directory is gone.
 Discard is never the default.
 
-Neither mode removes anything itself. Each makes the working tree clean and then
-hands off to the ordinary cleanup path, so cleanup stays the only thing that
-removes a worktree. A workspace whose directory is already gone reports
-`already_gone` instead of failing.
+Once the checks pass, each mode makes the working tree clean and then hands
+off to the ordinary cleanup path under the same leases. Cleanup remains the
+only operation that removes a worktree. An already released workspace can
+report `already_gone` after its ownership and liveness checks. Confirmed
+JSON results have `action: "reclaimed"`, the preview fields, `preparation`, and
+`cleanup`.
 
 `harn run workspace <run-id>` lists the dirty paths, so the choice between
 salvaging and discarding can be made without leaving Harnery.
@@ -668,6 +699,12 @@ An item recorded through `ctx.evidence()` has source `workflow`: Harnery stores
 the declaration but does not claim it independently ran the command or test.
 Repository snapshots and packet integrity are marked separately as
 engine-observed.
+
+Each repository snapshot records `observation: "ok"`, `"partial"`, or
+`"unavailable"`, with a bounded `observation_detail` when needed. A persisted
+snapshot without that field is unavailable. Harnery compares only two `ok`
+observations. Otherwise drift is unknown, the proof is incomplete, and the
+packet does not claim that dirty paths were cleared.
 
 Inspect a packet with `harn run proof <run-id>`. Human mode renders the
 status, criteria, evidence count, repository drift, unknowns, and transcript

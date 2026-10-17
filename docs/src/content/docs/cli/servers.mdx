@@ -36,6 +36,12 @@ of servers whose process has exited are removed as they are read. Open
 connections count as use, so a browser tab left open on a preview keeps it
 alive.
 
+A server state is `running`, `dead`, `other-host`, or `unknown`. A same-host
+record is `unknown` when its process generation cannot be verified, including
+when its start token is missing. The list keeps that record and marks it
+`[unknown]`. Unknown records remain registered, reserve their configured port,
+and cannot become unregistered listeners through the scan.
+
 The list also scans listening sockets. A process whose working directory or
 command line is inside the project, that listens on a port, and that is not a
 registered server or a descendant of one appears under **Unregistered
@@ -43,9 +49,10 @@ servers**. Browser automation and editor servers are excluded. The scan uses
 procfs on Linux and `lsof` on macOS; other platforms report that it did not
 run.
 
-Running tunnels register when they start and are adopted automatically the
-first time the list is read, so tunnels started before the registry existed
-appear as services.
+Running tunnels register when they start. A tunnel with only an older tunnel
+state file has no recorded process-generation evidence, so the list does not
+automatically register it. If the scan finds it, it appears as an unregistered
+listener for explicit inspection or adoption.
 
 ## Stop
 
@@ -60,10 +67,19 @@ Named ids stop immediately. A `--type` selection previews unless `--yes`.
 `--pid` accepts only a pid that the scan currently reports as an
 unregistered server inside the project.
 
-A server's recorded stop command runs first. Then its process group receives
-SIGTERM, and SIGKILL after five seconds. A pid whose process start time no
-longer matches the record is never signalled, so a recycled pid cannot be
-killed by mistake.
+Stop uses generation-checked signals. Harnery checks the leader's recorded
+start token immediately before signaling its process group. It checks again
+before a direct-PID fallback and before escalating to SIGKILL after five
+seconds. Each recorded helper PID also needs its own matching start token.
+An unknown or different generation refuses the stop without signaling that
+process or deleting its registry record. Arbitrary recorded stop commands are
+not supported.
+
+JSON stop results include `id`, `stopped`, `method`, and an optional `detail`.
+`method` is `signal`, `not-running`, or `refused`; `generation` reports `same`,
+`different`, or `unknown` when a generation check was made. A refusal returns a
+nonzero exit status. A successful token check narrows the PID-reuse race but
+cannot remove the interval between the final read and the signal.
 
 ## Clean up
 
@@ -82,8 +98,11 @@ harn servers gc --idle-hours 4 --owner-stale-hours 48
 4. The server has had no recorded use for the idle window (default 2 hours).
 
 A server with no recorded agent, or whose agent's state cannot be read, is
-kept. Services are always kept. Run it from a scheduler to keep a machine
-clean.
+kept. Unknown server generations are also kept, and confirmed cleanup uses the
+same generation checks as `stop`. Services are always kept. Run it from a
+scheduler to keep a machine clean.
+
+See [ADR 0207](/decisions/0207-fail-closed-on-unknown-state/) for the shared rule.
 
 ## Adopt
 
@@ -95,7 +114,9 @@ harn servers adopt --pid 12345 --kind service --no-owner
 
 `adopt` registers a server that started without registering. It accepts only
 pids that the scan currently reports as unregistered servers inside the
-project. The adopting agent becomes the owner, so `gc` can stop the server once
+project. It keeps the scan's original start token and rechecks that witness
+before writing the registry record. An unknown or different generation refuses
+adoption. The adopting agent becomes the owner, so `gc` can stop the server once
 that agent ends and the server sits idle; `--no-owner` records no owner, and
 `--kind service` keeps it out of cleanup entirely.
 
