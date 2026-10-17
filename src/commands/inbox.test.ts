@@ -35,7 +35,14 @@ describe("inbox command", () => {
 
   test("watch emits back-to-back arrivals before acknowledging their exact IDs", async () => {
     const service = fixtureService();
-    const send = (body: string) => service.send({ sender_instance_id: "sender", sender_display_name: "Sender", recipient_instance_id: "recipient", recipient_display_name: "Recipient", body });
+    const send = (body: string) =>
+      service.send({
+        sender_instance_id: "sender",
+        sender_display_name: "Sender",
+        recipient_instance_id: "recipient",
+        recipient_display_name: "Recipient",
+        body,
+      });
     send("first");
     const output = capture();
     const program = new Command();
@@ -43,18 +50,37 @@ describe("inbox command", () => {
     const append = setTimeout(() => send("second"), 20);
     try {
       await program.parseAsync(["inbox", "watch", "--timeout", "0.4", "--json"], { from: "user" });
-      expect(output.data).toMatchObject([{ body: "first", state: "surfaced" }, { body: "second", state: "surfaced" }]);
+      expect(output.data).toMatchObject([
+        { body: "first", state: "surfaced" },
+        { body: "second", state: "surfaced" },
+      ]);
       expect(service.pending("recipient")).toEqual([]);
-      expect(service.records("recipient").filter(({ kind }) => kind === "surfaced")).toHaveLength(2);
-    } finally { clearTimeout(append); }
+      expect(service.records("recipient").filter(({ kind }) => kind === "surfaced")).toHaveLength(
+        2,
+      );
+    } finally {
+      clearTimeout(append);
+    }
   });
 
   test("watch output failure leaves the message pending for a native prompt", async () => {
     const service = fixtureService();
-    service.send({ sender_instance_id: "sender", sender_display_name: "Sender", recipient_instance_id: "recipient", recipient_display_name: "Recipient", body: "recover this" });
-    const output = capture(); output.emit.data = () => { throw new Error("output failed"); };
-    const program = new Command(); registerInboxCommand(program, output.emit, service);
-    await program.parseAsync(["inbox", "watch", "recipient", "--timeout", "0.05", "--json"], { from: "user" });
+    service.send({
+      sender_instance_id: "sender",
+      sender_display_name: "Sender",
+      recipient_instance_id: "recipient",
+      recipient_display_name: "Recipient",
+      body: "recover this",
+    });
+    const output = capture();
+    output.emit.data = () => {
+      throw new Error("output failed");
+    };
+    const program = new Command();
+    registerInboxCommand(program, output.emit, service);
+    await program.parseAsync(["inbox", "watch", "recipient", "--timeout", "0.05", "--json"], {
+      from: "user",
+    });
     expect(output.exits).toEqual([1]);
     expect(service.pending("recipient").map(({ body }) => body)).toEqual(["recover this"]);
     expect(service.records("recipient").map(({ kind }) => kind)).toEqual(["message"]);
@@ -65,7 +91,11 @@ export function fixtureService(): HarneryInboxService {
   const root = mkdtempSync(join(tmpdir(), "harnery-inbox-command-"));
   roots.push(root);
   let sequence = 0;
-  return new HarneryInboxService({ coord_root: root, limits: limits(), id: () => `fixture-${++sequence}` });
+  return new HarneryInboxService({
+    coord_root: root,
+    limits: limits(),
+    id: () => `fixture-${++sequence}`,
+  });
 }
 
 function limits(): HarneryInboxLimits {

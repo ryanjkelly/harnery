@@ -13,7 +13,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { peerInbox } from "../inbox/peer-messages.ts";
 import {
   listSessionFinalizationRequestsV3,
   requestSessionEndExplicitV3,
@@ -33,6 +32,7 @@ import { loadOrCreateFingerprintKeyStoreV3 } from "../events/v3/fingerprint-keys
 import { EVENT_V3_SCHEMA_DIGEST } from "../events/v3/generated.ts";
 import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
+import { peerInbox } from "../inbox/peer-messages.ts";
 import { relayDaemonStatus } from "../presence/index.ts";
 import { clearRemediationCount, DEFAULT_STOP_REMEDIATION_CAP } from "./remediation-cap.ts";
 

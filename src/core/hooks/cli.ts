@@ -2305,7 +2305,9 @@ async function emitUserPromptSubmitSystemMessage(
     sessionId,
     sessionNameNudge: true,
     ...behavior.promptContextNudges,
-    onInboxPrepared: (ids) => { peerMessageIds = ids; },
+    onInboxPrepared: (ids) => {
+      peerMessageIds = ids;
+    },
   }).trim();
   const fileLinkContext = behavior.fileLinkContext?.(coordRoot, workspaceCwd) ?? "";
   if (fileLinkContext) {
@@ -2356,7 +2358,9 @@ async function emitSubagentStartContext(
     instanceId,
     sessionId,
     agentName: subagentName,
-    onInboxPrepared: (ids) => { peerMessageIds = ids; },
+    onInboxPrepared: (ids) => {
+      peerMessageIds = ids;
+    },
   }).trim();
   if (context) combined = `${message}\n\n${context}`;
 
@@ -2405,7 +2409,9 @@ async function emitSessionStartSystemMessage(
       sessionId,
       agentName: agentName || undefined,
       platformLabel: behavior.sessionStartPlatformLabel,
-      onInboxPrepared: (ids) => { peerMessageIds = ids; },
+      onInboxPrepared: (ids) => {
+        peerMessageIds = ids;
+      },
     }).trim();
   }
 

@@ -48,9 +48,9 @@ import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
 import { endOfTurnStatusCommand, hostPromptReminder, resolveBinName } from "../../config.ts";
 import type { PressureWorkloadClass } from "../../diagnostics/contract.ts";
+import { formatPeerInbox, peerInbox } from "../../inbox/peer-messages.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { readResourceStatus } from "../../resources/status.ts";
-import { formatPeerInbox, peerInbox } from "../../inbox/peer-messages.ts";
 import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
 import { heartbeatPath } from "../state/heartbeat-reader.ts";
 import {

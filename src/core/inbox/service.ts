@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { readCrashSafeJsonlFile, updateCrashSafeJsonlFile, type CrashSafeJsonlUpdate, type DurableHistoryReadOptions } from "../storage/durable-history.ts";
+import {
+  type CrashSafeJsonlUpdate,
+  type DurableHistoryReadOptions,
+  readCrashSafeJsonlFile,
+  updateCrashSafeJsonlFile,
+} from "../storage/durable-history.ts";
 import {
   HARNERY_INBOX_RECORD_SCHEMA,
   HARNERY_INBOX_STATUS_SCHEMA,
@@ -138,7 +143,10 @@ export class HarneryInboxService {
     const recipient = opaqueId(recipientInstanceId, "recipient instance");
     const selected = this.prepareSurface(recipient, budget);
     await emit(selected);
-    this.acknowledgeSurface(recipient, selected.map(({ message_id }) => message_id));
+    this.acknowledgeSurface(
+      recipient,
+      selected.map(({ message_id }) => message_id),
+    );
     const remaining = this.pending(recipient);
     return {
       emitted: selected,
@@ -206,9 +214,15 @@ function updateInboxHistory<T, R>(
   const deadline = performance.now() + 2_000;
   const pause = new Int32Array(new SharedArrayBuffer(4));
   while (true) {
-    try { return updateCrashSafeJsonlFile(path, options, update); }
-    catch (error) {
-      if (!(error instanceof Error) || error.message !== `durable history lease busy: ${path}.lease` || performance.now() >= deadline) throw error;
+    try {
+      return updateCrashSafeJsonlFile(path, options, update);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        error.message !== `durable history lease busy: ${path}.lease` ||
+        performance.now() >= deadline
+      )
+        throw error;
       Atomics.wait(pause, 0, 0, Math.min(10, deadline - performance.now()));
     }
   }
@@ -314,7 +328,8 @@ function now(options: HarneryInboxServiceOptions): Date {
 }
 
 function opaqueId(value: string, field: string): string {
-  if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value)) throw new Error(`invalid ${field} id`);
+  if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value))
+    throw new Error(`invalid ${field} id`);
   return value;
 }
 

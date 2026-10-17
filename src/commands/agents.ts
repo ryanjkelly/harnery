@@ -50,9 +50,6 @@ import {
   LiveCoordinationAuthorityV3Error,
   reopenLiveCoordinationGenerationV3,
 } from "../core/agents/live-authority-v3.ts";
-import { HarneryInboxCapacityError } from "../core/inbox/contract.ts";
-import { peerInbox, sendPeerMessage } from "../core/inbox/peer-messages.ts";
-import { registerInboxCommand } from "./inbox.ts";
 import { qaSignalStatusRow } from "../core/agents/qa-signal.ts";
 import { reconcileCoordinationV3 } from "../core/agents/reconcile-coordination-v3.ts";
 import {
@@ -126,9 +123,12 @@ import {
   readRuntimeContextTelemetry,
   readRuntimeContextUsage,
 } from "../core/hooks/adapter/runtime-telemetry.ts";
+import { HarneryInboxCapacityError } from "../core/inbox/contract.ts";
+import { peerInbox, sendPeerMessage } from "../core/inbox/peer-messages.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { formatResourceSummary, readResourceStatus } from "../core/resources/status.ts";
 import { registerContextCommand } from "./context.ts";
+import { registerInboxCommand } from "./inbox.ts";
 
 type LiveCoordinationRow = ReturnType<typeof readLiveCoordinationRows>[number];
 
@@ -538,9 +538,15 @@ export function registerAgentsCommand(
     .option("--instance-id <id>", "Select the exact known recipient instance")
     .option("--require-live", "Refuse a recipient outside live presence")
     .option("--json", "JSON output")
-    .action((name: string, message: string[], opts: { json?: boolean; instanceId?: string; requireLive?: boolean }) => {
-      runPing(name, message.join(" "), opts);
-    });
+    .action(
+      (
+        name: string,
+        message: string[],
+        opts: { json?: boolean; instanceId?: string; requireLive?: boolean },
+      ) => {
+        runPing(name, message.join(" "), opts);
+      },
+    );
 
   cmd
     .command("wait <name>")
@@ -4872,7 +4878,11 @@ function formatDuration(ms: number): string {
   return h > 0 ? `${d}d${h}h` : `${d}d`;
 }
 
-function runPing(name: string, message: string, opts: { json?: boolean; instanceId?: string; requireLive?: boolean }): void {
+function runPing(
+  name: string,
+  message: string,
+  opts: { json?: boolean; instanceId?: string; requireLive?: boolean },
+): void {
   if (!message || message.trim().length === 0) {
     emit.error({ code: "empty_message", message: "message is required (and non-empty)" });
     process.exit(1);
@@ -4913,7 +4923,11 @@ function runPing(name: string, message: string, opts: { json?: boolean; instance
     throw error;
   }
   if (!sent.ok) {
-    emit.error({ code: sent.code, message: sent.message, ...(sent.candidates ? { candidates: sent.candidates } : {}) });
+    emit.error({
+      code: sent.code,
+      message: sent.message,
+      ...(sent.candidates ? { candidates: sent.candidates } : {}),
+    });
     process.exit(1);
   }
 

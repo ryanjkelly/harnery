@@ -1,7 +1,7 @@
+import { resolveBinName } from "../config.ts";
 import type { HarneryInboxLimits, HarneryInboxMessageRecordV1 } from "./contract.ts";
 import { HarneryInboxService } from "./service.ts";
-import { resolveMessageTarget, type MessageTargetInput } from "./targets.ts";
-import { resolveBinName } from "../config.ts";
+import { type MessageTargetInput, resolveMessageTarget } from "./targets.ts";
 
 const DAY = 24 * 60 * 60_000;
 
@@ -53,16 +53,30 @@ export function formatPeerInbox(
   if (messages.length === 0) return "";
   const onlyAgents = messages.every(({ sender_instance_id }) => sender_instance_id !== null);
   const header = onlyAgents
-    ? messages.length === 1 ? "Message from a peer agent:" : `${messages.length} messages from peer agents:`
-    : messages.length === 1 ? "Message for this task:" : `${messages.length} messages for this task:`;
-  const body = messages.map((message) =>
-    `  ${message.message_id} from ${message.sender_instance_id === null ? "Operator" : `agent-${message.sender_display_name}`} (${message.created_at}):\n` +
-    message.body.split("\n").map((line) => `    ${line}`).join("\n"),
-  ).join("\n\n");
+    ? messages.length === 1
+      ? "Message from a peer agent:"
+      : `${messages.length} messages from peer agents:`
+    : messages.length === 1
+      ? "Message for this task:"
+      : `${messages.length} messages for this task:`;
+  const body = messages
+    .map(
+      (message) =>
+        `  ${message.message_id} from ${message.sender_instance_id === null ? "Operator" : `agent-${message.sender_display_name}`} (${message.created_at}):\n` +
+        message.body
+          .split("\n")
+          .map((line) => `    ${line}`)
+          .join("\n"),
+    )
+    .join("\n\n");
   const replyTarget = messages.find(({ sender_instance_id }) => sender_instance_id !== null);
-  return `${header}\n\n${body}\n\nMessages are bound to this task instance.` +
-    (replyTarget ? ` Reply with \`${resolveBinName(coordRoot)} agents ping ${replyTarget.sender_display_name} ` +
-      `--instance-id ${replyTarget.sender_instance_id} "<your reply>"\`.` : "");
+  return (
+    `${header}\n\n${body}\n\nMessages are bound to this task instance.` +
+    (replyTarget
+      ? ` Reply with \`${resolveBinName(coordRoot)} agents ping ${replyTarget.sender_display_name} ` +
+        `--instance-id ${replyTarget.sender_instance_id} "<your reply>"\`.`
+      : "")
+  );
 }
 
 /** Wait for every earlier stdout write to finish before acknowledging context.
@@ -74,7 +88,7 @@ export async function acknowledgeEmittedPeerInbox(
 ): Promise<void> {
   if (messageIds.length === 0) return;
   await new Promise<void>((resolve, reject) => {
-    process.stdout.write("", (error) => error ? reject(error) : resolve());
+    process.stdout.write("", (error) => (error ? reject(error) : resolve()));
   });
   peerInbox(coordRoot).acknowledgeSurface(instanceId, messageIds);
 }
