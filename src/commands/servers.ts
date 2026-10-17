@@ -208,10 +208,20 @@ export function registerServersCommand(
             emit.config({ format: "json" });
             emit.data({ applied: Boolean(options.yes), pruned: report.pruned, decisions, results });
           } else {
-            const lines = decisions.map(
-              (d) =>
-                `${d.action === "stop" ? (options.yes ? "stopped" : "would stop") : "keep"}  ${d.id}  ${d.reason}`,
-            );
+            const lines = decisions.map((decision) => {
+              const result = results.find((item) => item.id === decision.id);
+              const action =
+                decision.action === "keep"
+                  ? "keep"
+                  : !options.yes
+                    ? "would stop"
+                    : result?.stopped
+                      ? "stopped"
+                      : result?.method === "not-running"
+                        ? "already stopped"
+                        : "could not stop";
+              return `${action}  ${decision.id}  ${result?.detail ?? decision.reason}`;
+            });
             if (report.pruned.length)
               lines.push(`Removed records of exited servers: ${report.pruned.join(", ")}`);
             if (!decisions.length) lines.push("No registered servers.");
@@ -219,6 +229,7 @@ export function registerServersCommand(
               lines.push("Preview only. Re-run with --yes to stop.");
             emit.text(lines.join("\n"));
           }
+          if (results.some((result) => result.method === "refused")) emit.setExitCode(1);
         } catch (error) {
           fail(error);
         }
