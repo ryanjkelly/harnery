@@ -404,7 +404,13 @@ async function executeWorkflow(
         durationMs,
         transcriptPath,
         before: resumeState.manifest.repository_before,
-        after: resumeState.manifest.repository_before,
+        after: {
+          cwd: frozenBinding.active_root,
+          observation: "unavailable",
+          observation_detail:
+            "Workspace reattachment failed; no trusted after-run snapshot was observed.",
+          dirty_paths: [],
+        },
         agents: [],
         evidence: [],
         diagnosticAdmission: initialDiagnosticAdmissionProof(diagnosticAdmissionConfig),

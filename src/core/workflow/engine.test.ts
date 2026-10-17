@@ -842,6 +842,38 @@ describe("runWorkflow", () => {
     expect(proof.integrity.transcript.bytes).toBe(statSync(report.transcriptPath).size);
   });
 
+  test("an unreadable after-run repository never clears checkpoint dirty paths", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "workflow-test@example.invalid"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "Workflow Test"], { cwd: root });
+    writeFileSync(join(root, "checkpoint.txt"), "base\n");
+    execFileSync("git", ["add", "checkpoint.txt"], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
+    writeFileSync(join(root, "checkpoint.txt"), "keep this change\n");
+    const script = writeScript(`
+      import { renameSync } from "node:fs";
+      export default () => {
+        renameSync(${JSON.stringify(join(root, ".git"))}, ${JSON.stringify(join(root, ".git-unavailable"))});
+        return "finished";
+      };
+    `);
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      cwd: root,
+      spawners: { codex: async () => okSpawn("unused") },
+      defaultAdapter: "codex",
+      ...quiet,
+    });
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(proof.repository.before.observation).toBe("ok");
+    expect(proof.repository.before.dirty_paths).toContain("checkpoint.txt");
+    expect(proof.repository.after.observation).toBe("unavailable");
+    expect(proof.repository.drift.dirty_paths_cleared).toBeNull();
+    expect(proof.repository.drift.incomplete).toBe(true);
+    expect(proof.repository.drift.note).toContain("not_repository");
+    expect(readFileSync(join(root, "checkpoint.txt"), "utf8")).toBe("keep this change\n");
+  });
+
   test("a failed workflow still writes a terminal proof packet and exposes its path", async () => {
     const script = writeScript(`
       export const meta = {

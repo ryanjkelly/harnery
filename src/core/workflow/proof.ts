@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
-import type { RepoSnapshot } from "../context/index.ts";
+import { isAbsolute, join } from "node:path";
+import { observationsComparable, type RepoSnapshot } from "../context/index.ts";
 import { DIAGNOSTIC_ADVICE_SCHEMA_VERSION } from "../diagnostics/contract.ts";
 import type {
   NormalizedPolicy,
@@ -399,6 +399,22 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
   ) {
     throw new Error(`workflow proof at ${path} has an unsupported or mismatched schema`);
   }
+  if (
+    repoComparisonProblem(proof.repository.before, proof.repository.after) !== undefined ||
+    proof.repository.before.dirty_paths_truncated ||
+    proof.repository.after.dirty_paths_truncated ||
+    !proof.repository.before.branch?.trim() ||
+    !proof.repository.after.branch?.trim() ||
+    !proof.repository.before.head?.trim() ||
+    !proof.repository.after.head?.trim()
+  ) {
+    proof.repository = buildRepoEvidence(proof.repository.before, proof.repository.after);
+    proof.unknowns = proof.unknowns.filter((item) => item.code !== "repository_drift_incomplete");
+    proof.unknowns.push({
+      code: "repository_drift_incomplete",
+      message: proof.repository.drift.note!,
+    });
+  }
   const manifestPath = join(coordRoot, ".harnery", "workflows", runId, "run.json");
   if (proof.execution === undefined && !existsSync(manifestPath)) return proof;
   const manifest = readWorkflowRunManifest(coordRoot, runId);
@@ -512,13 +528,31 @@ export function renderWorkflowProof(proof: WorkflowProof): string {
         : "admission: shadow not needed; no real child dispatch",
     );
   }
-  const repo = proof.repository;
+  const comparable =
+    repoComparisonProblem(proof.repository.before, proof.repository.after) === undefined;
+  const repo =
+    comparable &&
+    !proof.repository.before.dirty_paths_truncated &&
+    !proof.repository.after.dirty_paths_truncated &&
+    proof.repository.before.branch?.trim() &&
+    proof.repository.after.branch?.trim() &&
+    proof.repository.before.head?.trim() &&
+    proof.repository.after.head?.trim()
+      ? proof.repository
+      : buildRepoEvidence(proof.repository.before, proof.repository.after);
   const drift = repo.drift;
-  lines.push(
-    `repository: branch ${repo.before.branch ?? "unknown"} -> ${repo.after.branch ?? "unknown"}; ` +
-      `HEAD ${short(repo.before.head)} -> ${short(repo.after.head)}; ` +
-      `${drift.dirty_paths_added.length} dirty added, ${drift.dirty_paths_cleared.length} cleared`,
-  );
+  if (!comparable) {
+    lines.push(`repository: drift unknown. ${drift.note}`);
+  } else {
+    const paths =
+      drift.dirty_paths_added === null || drift.dirty_paths_cleared === null
+        ? "dirty-path drift unknown"
+        : `${drift.dirty_paths_added.length} dirty added, ${drift.dirty_paths_cleared.length} cleared`;
+    lines.push(
+      `repository: branch ${repo.before.branch ?? "unknown"} -> ${repo.after.branch ?? "unknown"}; ` +
+        `HEAD ${short(repo.before.head)} -> ${short(repo.after.head)}; ${paths}`,
+    );
+  }
   if (proof.unknowns.length > 0) {
     lines.push(`unknowns: ${proof.unknowns.length}`);
     for (const unknown of proof.unknowns) lines.push(`  - ${unknown.message}`);
@@ -530,26 +564,56 @@ export function renderWorkflowProof(proof: WorkflowProof): string {
 function buildRepoEvidence(beforeRaw: RepoSnapshot, afterRaw: RepoSnapshot): WorkflowRepoEvidence {
   const before = normalizeRepoSnapshot(beforeRaw);
   const after = normalizeRepoSnapshot(afterRaw);
+  const problem = repoComparisonProblem(before, after);
+  if (problem !== undefined) {
+    return {
+      source: "engine",
+      before,
+      after,
+      drift: {
+        branch_changed: null,
+        head_changed: null,
+        dirty_paths_added: null,
+        dirty_paths_cleared: null,
+        dirty_paths_retained: null,
+        incomplete: true,
+        note: `Repository drift could not be verified: ${problem}. Re-check before editing.`,
+      },
+    };
+  }
+  const pathsComparable = !before.dirty_paths_truncated && !after.dirty_paths_truncated;
+  const branchKnown = Boolean(before.branch && after.branch);
+  const headKnown = Boolean(before.head && after.head);
   const beforeDirty = new Set(before.dirty_paths);
   const afterDirty = new Set(after.dirty_paths);
   const retained = after.dirty_paths.filter((path) => beforeDirty.has(path));
-  const incomplete = Boolean(
-    before.dirty_paths_truncated || after.dirty_paths_truncated || retained.length > 0,
-  );
+  const notes = [
+    ...(!pathsComparable
+      ? ["Dirty-path drift is unknown because a snapshot list was truncated."]
+      : []),
+    ...(!branchKnown ? ["Branch drift is unknown because a snapshot has no branch."] : []),
+    ...(!headKnown ? ["HEAD drift is unknown because a snapshot has no HEAD."] : []),
+    ...(pathsComparable && retained.length > 0
+      ? ["Snapshots cannot prove whether retained dirty paths changed during the run."]
+      : []),
+  ];
+  const incomplete = notes.length > 0;
   return {
     source: "engine",
     before,
     after,
     drift: {
-      branch_changed: before.branch !== after.branch,
-      head_changed: before.head !== after.head,
-      dirty_paths_added: after.dirty_paths.filter((path) => !beforeDirty.has(path)),
-      dirty_paths_cleared: before.dirty_paths.filter((path) => !afterDirty.has(path)),
-      dirty_paths_retained: retained,
+      branch_changed: branchKnown ? before.branch !== after.branch : null,
+      head_changed: headKnown ? before.head !== after.head : null,
+      dirty_paths_added: pathsComparable
+        ? after.dirty_paths.filter((path) => !beforeDirty.has(path))
+        : null,
+      dirty_paths_cleared: pathsComparable
+        ? before.dirty_paths.filter((path) => !afterDirty.has(path))
+        : null,
+      dirty_paths_retained: pathsComparable ? retained : null,
       incomplete,
-      note: incomplete
-        ? "Snapshots cannot prove whether retained dirty paths changed during the run, and truncated lists may omit paths."
-        : undefined,
+      note: incomplete ? notes.join(" ") : undefined,
     },
   };
 }
@@ -557,14 +621,40 @@ function buildRepoEvidence(beforeRaw: RepoSnapshot, afterRaw: RepoSnapshot): Wor
 function normalizeRepoSnapshot(snapshot: RepoSnapshot): WorkflowRepoSnapshot {
   return {
     cwd: snapshot.cwd,
-    observation: snapshot.observation,
-    observation_detail: snapshot.observation_detail,
+    observation: snapshot.observation ?? "unavailable",
+    observation_detail: snapshot.observation
+      ? clippedOptional(snapshot.observation_detail, 500)
+      : "No repository observation was recorded.",
     root: snapshot.root,
-    branch: snapshot.branch,
-    head: snapshot.head,
+    branch: snapshot.branch?.trim() || undefined,
+    head: snapshot.head?.trim() || undefined,
     dirty_paths: snapshot.dirty_paths,
     dirty_paths_truncated: snapshot.dirty_paths_truncated,
   };
+}
+
+function snapshotFailure(label: string, snapshot: WorkflowRepoSnapshot): string {
+  return `${label} snapshot is ${snapshot.observation}${snapshot.observation_detail ? ` (${snapshot.observation_detail})` : ""}`;
+}
+
+function repoComparisonProblem(
+  before: WorkflowRepoSnapshot,
+  after: WorkflowRepoSnapshot,
+): string | undefined {
+  if (!observationsComparable(before, after)) {
+    return [
+      ...(before.observation !== "ok" ? [snapshotFailure("before", before)] : []),
+      ...(after.observation !== "ok" ? [snapshotFailure("after", after)] : []),
+    ].join("; ");
+  }
+  const unknownRoots = [
+    ...(!before.root || !isAbsolute(before.root) ? ["before"] : []),
+    ...(!after.root || !isAbsolute(after.root) ? ["after"] : []),
+  ];
+  if (unknownRoots.length > 0)
+    return `${unknownRoots.join(" and ")} snapshot repository root is unknown`;
+  if (before.root !== after.root) return "snapshots name different repository roots";
+  return undefined;
 }
 
 function buildAdapterCoverage(

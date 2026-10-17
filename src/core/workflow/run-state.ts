@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -47,7 +47,6 @@ import {
 export const WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION = 2 as const;
 
 const MANIFEST_LIMIT_BYTES = 256 * 1024;
-const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
 
 export interface WorkflowRunManifest {
   schema_version: typeof WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION;
@@ -144,6 +143,13 @@ export function readWorkflowRunManifest(coordRoot: string, runId: string): Workf
   ) {
     throw new Error(`workflow run manifest at ${path} has an unsupported or mismatched schema`);
   }
+  if (manifest.repository_before.observation === undefined) {
+    manifest.repository_before = {
+      ...manifest.repository_before,
+      observation: "unavailable",
+      observation_detail: "No repository observation was recorded.",
+    };
+  }
   assertWorkspaceManifestAuthority(manifest, readManifestWorkspaceRequest(coordRoot, runId));
   return manifest;
 }
@@ -197,18 +203,26 @@ export function workflowRunManifestPath(coordRoot: string, runId: string): strin
   return join(coordRoot, ".harnery", "workflows", runId, "run.json");
 }
 
-/** Acquire an exclusive, crash-recoverable lease for one resume segment. */
+/** Acquire an exclusive lease shared by resume and reclaim. Existing locks
+ * always refuse: a stale observation cannot authorize unlinking a new owner.
+ * Crash recovery requires an audited ownership check outside this operation. */
 export function acquireWorkflowResumeLease(coordRoot: string, runId: string): () => void {
   assertWorkflowRunId(runId);
   const path = join(coordRoot, ".harnery", "workflows", runId, "resume.lock");
-  const owner = { pid: process.pid, host: hostname(), created_at: new Date().toISOString() };
+  const owner = {
+    owner_id: randomUUID(),
+    pid: process.pid,
+    host: hostname(),
+    created_at: new Date().toISOString(),
+  };
+  const ownerBytes = `${JSON.stringify(owner)}\n`;
   mkdirSync(dirname(path), { recursive: true });
 
   const acquire = (): boolean => {
     try {
       const fd = openSync(path, "wx", stateFileMode());
       try {
-        writeFileSync(fd, `${JSON.stringify(owner)}\n`, "utf8");
+        writeFileSync(fd, ownerBytes, "utf8");
       } finally {
         closeSync(fd);
       }
@@ -222,22 +236,17 @@ export function acquireWorkflowResumeLease(coordRoot: string, runId: string): ()
 
   if (!acquire()) {
     const existing = readResumeLease(path);
-    if (existing && resumeLeaseIsLive(existing)) {
-      throw new Error(
-        `workflow run ${runId} is already being resumed by pid ${existing.pid} on ${existing.host}`,
-      );
-    }
-    unlinkSync(path);
-    if (!acquire())
-      throw new Error(`workflow run ${runId} resume lease raced with another process`);
+    const holder = existing
+      ? ` by pid ${existing.pid} on ${existing.host}; its liveness has not been verified`
+      : "; its owner could not be verified";
+    throw new Error(`workflow run ${runId} resume lease is already held${holder}`);
   }
 
   return () => {
     try {
-      const existing = readResumeLease(path);
-      if (existing?.pid === owner.pid && existing.host === owner.host) unlinkSync(path);
+      if (readFileSync(path, "utf8") === ownerBytes) unlinkSync(path);
     } catch {
-      // Best effort. A stale lease is recoverable on the next resume attempt.
+      // Leave an unreadable or replaced lock untouched.
     }
   };
 }
@@ -254,19 +263,6 @@ function readResumeLease(path: string): { pid: number; host: string; created_at:
       : null;
   } catch {
     return null;
-  }
-}
-
-function resumeLeaseIsLive(lease: { pid: number; host: string; created_at: string }): boolean {
-  if (lease.host !== hostname()) {
-    const age = Date.now() - Date.parse(lease.created_at);
-    return Number.isFinite(age) && age < FOREIGN_LEASE_STALE_MS;
-  }
-  try {
-    process.kill(lease.pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -352,6 +348,12 @@ function validRepoSnapshot(value: RepoSnapshot): boolean {
   return (
     Boolean(value) &&
     typeof value === "object" &&
+    (value.observation === undefined ||
+      value.observation === "ok" ||
+      value.observation === "partial" ||
+      value.observation === "unavailable") &&
+    (value.observation_detail === undefined ||
+      (typeof value.observation_detail === "string" && value.observation_detail.length <= 500)) &&
     isAbsolute(value.cwd) &&
     (value.root === undefined || isAbsolute(value.root)) &&
     (value.branch === undefined || typeof value.branch === "string") &&

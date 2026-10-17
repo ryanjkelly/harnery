@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { RepoSnapshot } from "../context/index.ts";
 import {
   buildWorkflowProof,
   createEvidenceRecord,
@@ -136,6 +137,178 @@ describe("workflow proof contract", () => {
   });
 });
 
+describe("repository observation evidence", () => {
+  const before: RepoSnapshot = {
+    cwd: "/repo",
+    root: "/repo",
+    observation: "ok",
+    branch: "main",
+    head: "a".repeat(40),
+    dirty_paths: ["checkpoint.txt"],
+  };
+  const after: RepoSnapshot = {
+    ...before,
+    head: "b".repeat(40),
+    dirty_paths: ["new.txt"],
+  };
+
+  function build(beforeSnapshot: RepoSnapshot, afterSnapshot: RepoSnapshot): WorkflowProof {
+    const transcriptPath = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
+    writeFileSync(transcriptPath, "{}\n");
+    return buildWorkflowProof({
+      runId: "wf-test",
+      meta: { name: "repository-observation", acceptance: [] },
+      status: "succeeded",
+      startedAt: "2026-10-16T12:00:00.000Z",
+      endedAt: "2026-10-16T12:00:01.000Z",
+      durationMs: 1_000,
+      transcriptPath,
+      before: beforeSnapshot,
+      after: afterSnapshot,
+      agents: [],
+      evidence: [],
+    });
+  }
+
+  for (const side of ["before", "after"] as const) {
+    for (const observation of ["unavailable", "partial"] as const) {
+      test(`${side} ${observation} snapshot leaves every drift field unknown`, () => {
+        const failed: RepoSnapshot = {
+          ...(side === "before" ? before : after),
+          observation,
+          observation_detail: "timed_out",
+          dirty_paths: [],
+        };
+        const proof = build(side === "before" ? failed : before, side === "after" ? failed : after);
+        expect(proof.repository.drift).toEqual({
+          branch_changed: null,
+          head_changed: null,
+          dirty_paths_added: null,
+          dirty_paths_cleared: null,
+          dirty_paths_retained: null,
+          incomplete: true,
+          note: expect.stringContaining(`${side} snapshot is ${observation} (timed_out)`),
+        });
+        expect(proof.unknowns).toContainEqual({
+          code: "repository_drift_incomplete",
+          message: proof.repository.drift.note!,
+        });
+        expect(renderWorkflowProof(proof)).toContain("repository: drift unknown");
+        expect(renderWorkflowProof(proof)).not.toMatch(/\d+ cleared|matches|paths no longer dirty/);
+        expect(JSON.parse(JSON.stringify(proof)).repository.drift.dirty_paths_cleared).toBeNull();
+      });
+    }
+  }
+
+  test("successful complete reads retain their observed comparisons", () => {
+    const proof = build(before, after);
+    expect(proof.repository.drift).toEqual({
+      branch_changed: false,
+      head_changed: true,
+      dirty_paths_added: ["new.txt"],
+      dirty_paths_cleared: ["checkpoint.txt"],
+      dirty_paths_retained: [],
+      incomplete: false,
+      note: undefined,
+    });
+    expect(renderWorkflowProof(proof)).toContain("1 dirty added, 1 cleared");
+    expect(proof.unknowns).toEqual([]);
+  });
+
+  for (const repositoryRoot of [undefined, "relative-root", "/different-repository"]) {
+    test(`unproven or different repository roots never authorize path comparison: ${repositoryRoot}`, () => {
+      const proof = build(before, { ...after, root: repositoryRoot });
+      expect(proof.repository.drift).toMatchObject({
+        branch_changed: null,
+        head_changed: null,
+        dirty_paths_added: null,
+        dirty_paths_cleared: null,
+        dirty_paths_retained: null,
+        incomplete: true,
+      });
+      expect(proof.repository.drift.note).toContain("repository root");
+      expect(renderWorkflowProof(proof)).toContain("repository: drift unknown");
+      expect(renderWorkflowProof(proof)).not.toContain("1 cleared");
+    });
+  }
+
+  for (const field of ["branch", "head"] as const) {
+    test(`an ok snapshot missing ${field} cannot prove its change verdict`, () => {
+      const missing = { ...before, [field]: undefined };
+      const proof = build(missing, after);
+      expect(
+        proof.repository.drift[field === "branch" ? "branch_changed" : "head_changed"],
+      ).toBeNull();
+      expect(proof.repository.drift.incomplete).toBe(true);
+      expect(proof.repository.drift.note).toContain(
+        `${field === "branch" ? "Branch" : "HEAD"} drift is unknown`,
+      );
+      // Existing packets must not retain a false scalar comparison either.
+      proof.repository.drift[field === "branch" ? "branch_changed" : "head_changed"] = false;
+      const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
+      writeFileSync(path, `${JSON.stringify(proof)}\n`);
+      const loaded = readWorkflowProof(root, "wf-test");
+      expect(
+        loaded.repository.drift[field === "branch" ? "branch_changed" : "head_changed"],
+      ).toBeNull();
+    });
+    test(`blank ${field} metadata is unknown in proof and rendered output`, () => {
+      const proof = build({ ...before, [field]: "  " }, after);
+      expect(proof.repository.before[field]).toBeUndefined();
+      expect(
+        proof.repository.drift[field === "branch" ? "branch_changed" : "head_changed"],
+      ).toBeNull();
+      const rendered = renderWorkflowProof(proof);
+      expect(rendered).toContain(
+        field === "branch" ? "branch unknown -> main" : "HEAD unknown -> bbbbbbbb",
+      );
+    });
+  }
+
+  test("truncated lists cannot prove a checkpoint path was cleared", () => {
+    const proof = build(before, { ...after, dirty_paths_truncated: true });
+    expect(proof.repository.drift).toMatchObject({
+      branch_changed: false,
+      head_changed: true,
+      dirty_paths_added: null,
+      dirty_paths_cleared: null,
+      dirty_paths_retained: null,
+      incomplete: true,
+      note: expect.stringContaining("truncated"),
+    });
+    expect(renderWorkflowProof(proof)).toContain("dirty-path drift unknown");
+    expect(renderWorkflowProof(proof)).not.toContain("1 cleared");
+  });
+
+  test("legacy stored proofs cannot reuse unverified cleanup claims", () => {
+    const legacy = build(before, after);
+    const persisted = JSON.parse(JSON.stringify(legacy));
+    delete persisted.repository.before.observation;
+    delete persisted.repository.after.observation;
+    const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
+    writeFileSync(path, `${JSON.stringify(persisted)}\n`);
+    const proof = readWorkflowProof(root, "wf-test");
+    expect(proof.repository.before.observation).toBe("unavailable");
+    expect(proof.repository.after.observation).toBe("unavailable");
+    expect(proof.repository.drift.dirty_paths_cleared).toBeNull();
+    expect(proof.repository.drift.note).toContain("No repository observation was recorded");
+    expect(
+      proof.unknowns.filter((item) => item.code === "repository_drift_incomplete"),
+    ).toHaveLength(1);
+    expect(renderWorkflowProof(persisted)).toContain("repository: drift unknown");
+    expect(renderWorkflowProof(persisted)).not.toContain("1 cleared");
+  });
+
+  test("stored truncated proofs cannot reuse derived cleanup claims", () => {
+    const persisted = build(before, after);
+    persisted.repository.after.dirty_paths_truncated = true;
+    const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
+    writeFileSync(path, `${JSON.stringify(persisted)}\n`);
+    expect(readWorkflowProof(root, "wf-test").repository.drift.dirty_paths_cleared).toBeNull();
+    expect(renderWorkflowProof(persisted)).toContain("dirty-path drift unknown");
+  });
+});
+
 function sampleProof(): WorkflowProof {
   return {
     schema_version: 2,
@@ -173,8 +346,22 @@ function sampleProof(): WorkflowProof {
     ],
     repository: {
       source: "engine",
-      before: { cwd: "/tmp/project", observation: "ok", dirty_paths: [] },
-      after: { cwd: "/tmp/project", observation: "ok", dirty_paths: [] },
+      before: {
+        cwd: "/tmp/project",
+        root: "/tmp/project",
+        observation: "ok",
+        branch: "main",
+        head: "a".repeat(40),
+        dirty_paths: [],
+      },
+      after: {
+        cwd: "/tmp/project",
+        root: "/tmp/project",
+        observation: "ok",
+        branch: "main",
+        head: "a".repeat(40),
+        dirty_paths: [],
+      },
       drift: {
         branch_changed: false,
         head_changed: false,
@@ -191,7 +378,14 @@ function sampleProof(): WorkflowProof {
 }
 
 describe("adapter attestation citation (ADR 0038)", () => {
-  const snapshot = { cwd: "/repo", observation: "ok" as const, dirty_paths: [] as string[] };
+  const snapshot = {
+    cwd: "/repo",
+    root: "/repo",
+    observation: "ok" as const,
+    branch: "main",
+    head: "a".repeat(40),
+    dirty_paths: [] as string[],
+  };
   function transcript(): string {
     const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
@@ -264,7 +458,14 @@ describe("adapter attestation citation (ADR 0038)", () => {
 });
 
 describe("sandbox projection evidence (ADR 0039)", () => {
-  const snapshot = { cwd: "/repo", observation: "ok" as const, dirty_paths: [] as string[] };
+  const snapshot = {
+    cwd: "/repo",
+    root: "/repo",
+    observation: "ok" as const,
+    branch: "main",
+    head: "a".repeat(40),
+    dirty_paths: [] as string[],
+  };
   function transcriptFile(): string {
     const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
@@ -364,7 +565,14 @@ describe("run failure class derivation (ADR 0046)", () => {
 });
 
 describe("run-level class in the proof packet (ADR 0046)", () => {
-  const snapshot = { cwd: "/repo", observation: "ok" as const, dirty_paths: [] as string[] };
+  const snapshot = {
+    cwd: "/repo",
+    root: "/repo",
+    observation: "ok" as const,
+    branch: "main",
+    head: "a".repeat(40),
+    dirty_paths: [] as string[],
+  };
   function transcriptFile(): string {
     const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");

@@ -700,6 +700,11 @@ export default async ({ authorize, agent }) => {
       readFileSync(join(repo, ".harnery", "workflows", parked!.runId, "proof.json"), "utf8"),
     ) as WorkflowProof;
     expect(proof.run.status).toBe("failed");
+    expect(proof.repository.after.observation).toBe("unavailable");
+    expect(proof.repository.after.observation_detail).toContain("Workspace reattachment failed");
+    expect(proof.repository.drift.dirty_paths_cleared).toBeNull();
+    expect(proof.repository.drift.head_changed).toBeNull();
+    expect(proof.repository.drift.incomplete).toBe(true);
     expect(boundExecution(proof).binding).toEqual(frozenBinding);
     expect(["blocked", "lost"]).toContain(boundExecution(proof).terminal_lifecycle_state);
   });

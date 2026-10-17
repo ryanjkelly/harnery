@@ -164,12 +164,13 @@ export interface WorkflowRepoEvidence {
   before: WorkflowRepoSnapshot;
   after: WorkflowRepoSnapshot;
   drift: {
-    branch_changed: boolean;
-    head_changed: boolean;
-    dirty_paths_added: string[];
-    dirty_paths_cleared: string[];
-    dirty_paths_retained: string[];
-    /** True when snapshots cannot prove whether every retained dirty path changed. */
+    /** Null means the snapshots do not establish this comparison. */
+    branch_changed: boolean | null;
+    head_changed: boolean | null;
+    dirty_paths_added: string[] | null;
+    dirty_paths_cleared: string[] | null;
+    dirty_paths_retained: string[] | null;
+    /** True when an observation, comparison, or retained-path change is unknown. */
     incomplete: boolean;
     note?: string;
   };

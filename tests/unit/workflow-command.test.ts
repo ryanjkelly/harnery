@@ -22,7 +22,14 @@ beforeEach(() => {
       name: "command",
       started_at: "2026-07-21T12:00:00.000Z",
       script: { path: join(root, "workflow.mjs"), sha256: "b".repeat(64) },
-      repository_before: { cwd: root, observation: "ok", dirty_paths: [] },
+      repository_before: {
+        cwd: root,
+        root,
+        observation: "ok",
+        branch: "main",
+        head: "a".repeat(40),
+        dirty_paths: [],
+      },
       execution: {
         cwd: root,
         default_adapter: "claude-code",
@@ -50,6 +57,44 @@ afterEach(() => {
 });
 
 describe("workflow proof command", () => {
+  test("human and JSON proof output preserve unknown repository drift", async () => {
+    const proof = sampleProof();
+    proof.repository.before.dirty_paths = ["checkpoint.txt"];
+    proof.repository.after.observation = "unavailable";
+    proof.repository.after.observation_detail = "not_repository";
+    // An existing packet may contain a comparison made before observation checks.
+    proof.repository.drift.dirty_paths_cleared = ["checkpoint.txt"];
+    writeFileSync(
+      join(root, ".harnery", "workflows", "wf-command", "proof.json"),
+      `${JSON.stringify(proof)}\n`,
+    );
+    const output: string[] = [];
+    let captured: unknown;
+    const emit = {
+      text: (value: string) => output.push(value),
+      data: (value: unknown) => {
+        captured = value;
+      },
+      config: () => {},
+      error: (error: { message: string }) => {
+        throw new Error(error.message);
+      },
+    };
+    await runCommand(["run", "proof", "wf-command"], emit);
+    expect(output.join("\n")).toContain("repository: drift unknown");
+    expect(output.join("\n")).toContain("not_repository");
+    expect(output.join("\n")).not.toContain("1 cleared");
+    await runCommand(["run", "proof", "wf-command", "--json"], emit);
+    expect((captured as WorkflowProof).repository.drift).toMatchObject({
+      branch_changed: null,
+      head_changed: null,
+      dirty_paths_added: null,
+      dirty_paths_cleared: null,
+      dirty_paths_retained: null,
+      incomplete: true,
+    });
+  });
+
   test("freezes observer-only pressure mode from --observe-pressure", async () => {
     const script = join(root, "observe.mjs");
     writeFileSync(script, 'export default () => "no dispatch";\n', "utf8");
@@ -141,8 +186,22 @@ function sampleProof(): WorkflowProof {
     evidence: [],
     repository: {
       source: "engine",
-      before: { cwd: root, observation: "ok", dirty_paths: [] },
-      after: { cwd: root, observation: "ok", dirty_paths: [] },
+      before: {
+        cwd: root,
+        root,
+        observation: "ok",
+        branch: "main",
+        head: "a".repeat(40),
+        dirty_paths: [],
+      },
+      after: {
+        cwd: root,
+        root,
+        observation: "ok",
+        branch: "main",
+        head: "a".repeat(40),
+        dirty_paths: [],
+      },
       drift: {
         branch_changed: false,
         head_changed: false,
