@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { evaluatePolicy, normalizePolicy, policyDigest } from "../policy/index.ts";
+import { createWorkflowApproval, resolveWorkflowApproval } from "../workflow/approvals.ts";
 
 import {
   bareAgentName,
@@ -144,6 +148,113 @@ describe("drain", () => {
     // A drain on any name runs the sweep; the message returns to its queue.
     drainMailbox(root, "Someone");
     expect(peekMailbox(root, "Maya").map((m) => m.body)).toEqual(["stranded"]);
+  });
+});
+
+describe("mailbox delivery settlement", () => {
+  function archived() {
+    const archive = join(root, ".harnery", "mailbox", "delivered", "maya.jsonl");
+    return existsSync(archive)
+      ? readFileSync(archive, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+      : [];
+  }
+
+  function expectUnconfirmed(messageId: string) {
+    const records = archived().filter((record) => record.message_id === messageId);
+    for (const record of records) {
+      expect(record.delivered_at).toBeUndefined();
+      expect(record.read_at).toBeUndefined();
+      expect(record.consumed_at).toBeUndefined();
+    }
+    expect(
+      peekMailbox(root, "Maya").some((message) => message.message_id === messageId) ||
+        records.some((record) => record.delivery_status === "injection-unconfirmed"),
+    ).toBe(true);
+  }
+
+  test("a crash after drain before hook output leaves injection unconfirmed", () => {
+    const { message } = queue("Maya", "preserve the crash boundary");
+    let outputWritten = false;
+    const beforeOutput = () => {
+      throw new Error("hook failed before output");
+    };
+    expect(() => {
+      drainMailbox(root, "Maya");
+      beforeOutput();
+      outputWritten = true;
+    }).toThrow("hook failed before output");
+    expect(outputWritten).toBe(false);
+    expectUnconfirmed(message.message_id);
+  });
+
+  test("a hook killed at its timeout after drain leaves injection unconfirmed", async () => {
+    const { message } = queue("Maya", "preserve the timeout boundary");
+    const script = `
+      const { drainMailbox } = await import(${JSON.stringify(new URL("./mailbox.ts", import.meta.url).href)});
+      drainMailbox(${JSON.stringify(root)}, "Maya");
+      process.on("message", () => {});
+      process.send({ type: "drained-before-output" });
+    `;
+    const child = spawn(process.execPath, ["--eval", script], {
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    let output = "";
+    child.stdout!.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    const exited = once(child, "exit");
+    try {
+      const [boundary] = await once(child, "message");
+      expect(boundary).toEqual({ type: "drained-before-output" });
+      // Inject the timeout at a handshake, before any adapter output, rather
+      // than racing a wall-clock timer against the drain.
+      child.kill("SIGKILL");
+      const [, signal] = await exited;
+      expect(signal).toBe("SIGKILL");
+      expect(output).toBe("");
+      expectUnconfirmed(message.message_id);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await exited;
+      }
+    }
+  });
+
+  test("resolving approval leaves its unread notification unchanged", () => {
+    const policy = normalizePolicy({ network: "ask" });
+    const request = {
+      phase: "dispatch" as const,
+      action: "spawn agent",
+      isolation: "shared" as const,
+      network_access: "enabled" as const,
+    };
+    const { approval } = createWorkflowApproval({
+      coordRoot: root,
+      runId: "wf-notification",
+      decisionId: "p1",
+      policy: { name: policy.name, sha256: policyDigest(policy) },
+      request,
+      evaluation: evaluatePolicy(policy, request),
+    });
+    const { message } = queue("Maya", `Approval requested: ${approval.request.id}`);
+    const before = readFileSync(mailboxPath(root, "Maya"), "utf8");
+    const resolved = resolveWorkflowApproval({
+      coordRoot: root,
+      approvalId: approval.request.id,
+      verdict: "allow",
+      actor: "operator",
+    });
+    expect(resolved.approval.status).toBe("approved");
+    expect(readFileSync(mailboxPath(root, "Maya"), "utf8")).toBe(before);
+    expect(peekMailbox(root, "Maya").map((notification) => notification.message_id)).toEqual([
+      message.message_id,
+    ]);
+    expect(archived()).toEqual([]);
   });
 });
 
