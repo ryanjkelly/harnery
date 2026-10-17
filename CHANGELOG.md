@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.44.0
+
+### Minor Changes
+
+- bf87b5a: Add an explicit removal entry limit up to 100,000 for one verified
+  caller-owned managed artifact. Keep the 10,000-entry default and all existing
+  path, ownership and hold protections.
+- 3e5c1f0: Add a portable ZIP toolkit for embedding hosts, with bounded decoding, checksum validation, collision checks, and extraction that rejects existing symbolic links. Existing outputs require an explicit overwrite option, and atomic replacement preserves other hard links to an existing file.
+
+### Patch Changes
+
+- e1bc022: Keep governor runs moving after a planner returns an invalid dependency graph. Record the failed plan and charge the existing replan budget, then let the governor retry within its frozen limits. Workflow, storage, and persisted review-input failures keep their existing error behavior.
+- 2c09514: Stale workspace lease recovery no longer strands the winner. The winning claimant now moves its recovery directory to a private name before emptying it, so a contender's claim can no longer replace the emptied directory and fail the winner's cleanup after it already holds the lease.
+- 229f842: Keep literal inline-code contents when checking Markdown heading anchors. Angle-bracket text and underscores inside matching code spans now survive markup removal, while actual HTML tags outside code still disappear. Matching backtick runs and duplicate headings retain their heading-anchor behavior.
+- d67c8a6: `browse --login` under WSL now keeps browser-session cookies and reports where the sign-in ended. Before the Windows sign-in window opens, the dedicated profile is set to continue where it left off, so closing the window no longer deletes cookies that have no expiry date, and the headless read restores the last session so those cookies are copied into the store. The read also lists the pages left open on the sign-in site and prints the last one as `[--login] Last page: <url>`, plus a JSON `login` summary on stdout with `lastPage`, for sites whose landing address carries a per-session token. Closing the profile now fails loudly when a Chrome process survives, and both the sign-in and the read refuse to start while Chrome is still open on the profile instead of handing off to the open window.
+- 340224a: Allow explicitly named copied Harnery state inside an authenticated caller's owned managed artifact while preserving live workspace, artifact record, peer claim, Git and path protections.
+- b754332: `harn section` now picks the header that exactly matches the query when other headers only contain it, so "Media" selects `## Media` beside `## Media recipes`.
+
 ## 0.43.0
 
 ### Minor Changes
