@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { peerInbox } from "../inbox/peer-messages.ts";
 import { evaluatePolicy, normalizePolicy, policyDigest } from "../policy/index.ts";
 import { createWorkflowApproval, resolveWorkflowApproval } from "../workflow/approvals.ts";
 
@@ -320,31 +321,55 @@ describe("formatMailboxDelivery", () => {
 });
 
 describe("prompt delivery", () => {
+  function queueForInstance(body: string) {
+    return peerInbox(root).send({
+      sender_instance_id: "instance-talia",
+      sender_display_name: "Talia",
+      recipient_instance_id: "instance-maya",
+      recipient_display_name: "Maya",
+      body,
+    });
+  }
+
   test("Cursor prompt context delivers and empties the queue", async () => {
     const { renderPromptContext } = await import("./render/prompt-context.ts");
-    queue("Maya", "delivered on cursor");
+    const sent = queueForInstance("delivered on cursor");
+    let prepared: readonly string[] = [];
 
     const text = renderPromptContext({
       coordRoot: root,
       instanceId: "instance-maya",
       sessionId: "instance-maya",
       agentName: "Maya",
+      onInboxPrepared: (ids) => {
+        prepared = ids;
+      },
     });
     expect(text).toContain("delivered on cursor");
-    expect(peekMailbox(root, "Maya")).toEqual([]);
+    expect(prepared).toEqual([sent.message_id]);
+    expect(peerInbox(root).pending("instance-maya")).toHaveLength(1);
+    peerInbox(root).acknowledgeSurface("instance-maya", prepared);
+    expect(peerInbox(root).pending("instance-maya")).toEqual([]);
   });
 
   test("an adapter that can receive prompt context delivers and empties the queue", async () => {
     const { renderPromptContext } = await import("./render/prompt-context.ts");
-    queue("Maya", "delivered on codex");
+    const sent = queueForInstance("delivered on codex");
+    let prepared: readonly string[] = [];
 
     const text = renderPromptContext({
       coordRoot: root,
       instanceId: "instance-maya",
       sessionId: "instance-maya",
       agentName: "Maya",
+      onInboxPrepared: (ids) => {
+        prepared = ids;
+      },
     });
     expect(text).toContain("delivered on codex");
-    expect(peekMailbox(root, "Maya")).toEqual([]);
+    expect(prepared).toEqual([sent.message_id]);
+    expect(peerInbox(root).pending("instance-maya")).toHaveLength(1);
+    peerInbox(root).acknowledgeSurface("instance-maya", prepared);
+    expect(peerInbox(root).pending("instance-maya")).toEqual([]);
   });
 });
