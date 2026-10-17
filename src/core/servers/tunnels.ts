@@ -1,10 +1,8 @@
 /**
  * Tunnels as registry services.
  *
- * `tunnel up` and `tunnel reload` register the instance; `tunnel down`
- * removes it. Tunnels started before the registry existed are adopted the next
- * time the registry is read, so a long-lived tunnel never shows as an
- * unregistered listener.
+ * `tunnel up` and `tunnel reload` register the new gate; `tunnel down` removes
+ * its record. Older tunnels need an explicit adoption of an observed listener.
  */
 
 import { resolve } from "node:path";
@@ -15,11 +13,8 @@ export function tunnelServerId(name: string): string {
   return `tunnel-${name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
 }
 
-/** The registry input for one tunnel instance. */
+/** Register the new gate; saved helper PIDs have no generation witnesses. */
 export function tunnelServerInput(state: TunnelState, coordRoot: string): RegisterServerInput {
-  const helpers = [state.cloudflared_pid, state.provider_pid].filter(
-    (pid): pid is number => typeof pid === "number" && pid > 0,
-  );
   return {
     id: tunnelServerId(state.name),
     kind: "service",
@@ -28,7 +23,6 @@ export function tunnelServerInput(state: TunnelState, coordRoot: string): Regist
     url: state.url,
     port: state.gate_port,
     pid: state.gate_pid,
-    ...(helpers.length ? { pids: helpers } : {}),
     log: resolve(coordRoot, ".cache", "tunnel", gateLogFile(state.name)),
     cwd: coordRoot,
     started_at: state.started_at,

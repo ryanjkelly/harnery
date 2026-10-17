@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
+import { readGovernorServiceStatus } from "../governor/service-read.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import {
   type ObservedServiceHealth,
@@ -41,10 +42,7 @@ export function collectServiceHealth(
     join(coordRoot, ".harnery", "semantic", "v2", "service.json"),
     "semantic-reader",
   );
-  const governor = readDetachedService(
-    join(coordRoot, ".harnery", "governor-service", "service.json"),
-    "governor",
-  );
+  const governor = readGovernorHealth(coordRoot);
   const relay = readPresenceRelay(join(coordRoot, ".harnery", "presence", "relay-daemon.json"));
   const dashboard = consumers.find((consumer) => consumer.id === "dashboard");
   const services: ObservedServiceHealth[] = [
@@ -118,10 +116,7 @@ interface DetachedServiceRecord {
   heartbeat_at?: string;
 }
 
-function readDetachedService(
-  path: string,
-  id: "semantic-reader" | "governor",
-): ObservedServiceHealth {
+function readDetachedService(path: string, id: "semantic-reader"): ObservedServiceHealth {
   const record = readBoundedJson<DetachedServiceRecord>(path);
   if (!record || !Number.isSafeInteger(record.pid) || record.pid < 1) {
     return { id, state: "stopped" };
@@ -148,6 +143,29 @@ function readDetachedService(
     record,
     state === "stale" ? "recorded-running-process-missing" : undefined,
   );
+}
+
+function readGovernorHealth(coordRoot: string): ObservedServiceHealth {
+  const status = readGovernorServiceStatus(coordRoot);
+  const state =
+    status.liveness === "unknown"
+      ? "unknown"
+      : status.running
+        ? "running"
+        : status.stale
+          ? "stale"
+          : "stopped";
+  const reason =
+    state === "unknown"
+      ? "governor-process-generation-unknown"
+      : status.generation === "different"
+        ? "recorded-process-generation-different"
+        : status.stale
+          ? "recorded-running-process-missing"
+          : undefined;
+  return status.record
+    ? projection("governor", state, status.record, reason)
+    : { id: "governor", state, ...(reason ? { reason } : {}) };
 }
 
 function readPresenceRelay(path: string): ObservedServiceHealth {

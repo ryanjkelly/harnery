@@ -354,20 +354,32 @@ export function readServerRecords(options?: ServerOptions): ServerRecord[] {
 }
 
 export function pidAlive(pid: number): boolean {
+  return processPresence(pid) !== "absent";
+}
+
+function processPresence(
+  pid: number,
+  probePid?: (pid: number) => boolean,
+): "present" | "absent" | "unknown" {
   try {
+    if (probePid) return probePid(pid) ? "present" : "absent";
     process.kill(pid, 0);
-    return true;
+    return "present";
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ESRCH" ? "absent" : code === "EPERM" ? "present" : "unknown";
   }
 }
 
 export function serverState(
   record: ServerRecord,
   readToken?: (pid: number) => string | null,
+  probePid?: (pid: number) => boolean,
 ): ServerState {
   if (record.host !== hostname()) return "other-host";
-  if (!pidAlive(record.pid)) return "dead";
+  const presence = processPresence(record.pid, probePid);
+  if (presence === "absent") return "dead";
+  if (presence === "unknown") return "unknown";
   const verdict = verifyProcessGeneration(record.pid, record.start_token, readToken);
   return verdict === "same" ? "running" : verdict === "different" ? "dead" : "unknown";
 }
@@ -571,6 +583,10 @@ export interface StopResult {
   detail?: string;
 }
 
+export interface ServerProcessDependencies extends ProcessGenerationSignalDependencies {
+  probePid?: (pid: number) => boolean;
+}
+
 /**
  * Stop a verified server with SIGTERM, then SIGKILL after the grace period.
  * Each signal, including the process group and auxiliary processes, requires
@@ -580,7 +596,7 @@ export async function stopServer(
   record: ServerRecord,
   options?: ServerOptions & {
     graceMs?: number;
-    signalDependencies?: ProcessGenerationSignalDependencies;
+    signalDependencies?: ServerProcessDependencies;
   },
 ): Promise<StopResult> {
   const coordRoot = rootOf(options);
@@ -608,16 +624,20 @@ export async function stopServer(
     return { id: record.id, stopped: false, method: "refused", detail: `runs on ${record.host}` };
   // Check every recorded live process before sending the first signal.
   for (const target of targets) {
-    if (!pidAlive(target.pid)) continue;
+    const presence = processPresence(target.pid, dependencies.probePid);
+    if (presence === "absent") continue;
+    if (presence === "unknown") return refuse(target.pid, "unknown");
     const verdict = verifyProcessGeneration(target.pid, target.token, dependencies.readToken);
     if (verdict !== "same") return refuse(target.pid, verdict);
   }
-  if (targets.every((target) => !pidAlive(target.pid)))
+  if (targets.every((target) => processPresence(target.pid, dependencies.probePid) === "absent"))
     return finish({ id: record.id, stopped: false, method: "not-running" });
 
   for (const name of ["SIGTERM", "SIGKILL"] as const) {
     for (const target of targets) {
-      if (!pidAlive(target.pid)) continue;
+      const presence = processPresence(target.pid, dependencies.probePid);
+      if (presence === "absent") continue;
+      if (presence === "unknown") return refuse(target.pid, "unknown");
       const result =
         target.pid === record.pid
           ? signalServerLeader(target.pid, target.token, name, dependencies)
@@ -642,7 +662,7 @@ function signalServerLeader(
   pid: number,
   token: string | undefined,
   name: NodeJS.Signals,
-  dependencies: ProcessGenerationSignalDependencies,
+  dependencies: ServerProcessDependencies,
 ): { sent: boolean; verdict: ProcessGenerationVerdict } {
   // The leader's generation authorizes its group. A failed group signal must
   // not reuse that observation for the direct-PID fallback.
@@ -659,7 +679,7 @@ function signalServerLeader(
 async function waitForExit(
   targets: Array<{ pid: number; token: string | undefined }>,
   waitMs: number,
-  dependencies: ProcessGenerationSignalDependencies,
+  dependencies: ServerProcessDependencies,
 ): Promise<{
   exited: boolean;
   refused?: { pid: number; verdict: ProcessGenerationVerdict };
@@ -668,7 +688,10 @@ async function waitForExit(
   while (true) {
     let live = false;
     for (const target of targets) {
-      if (!pidAlive(target.pid)) continue;
+      const presence = processPresence(target.pid, dependencies.probePid);
+      if (presence === "absent") continue;
+      if (presence === "unknown")
+        return { exited: false, refused: { pid: target.pid, verdict: "unknown" } };
       const verdict = verifyProcessGeneration(target.pid, target.token, dependencies.readToken);
       if (verdict !== "same") return { exited: false, refused: { pid: target.pid, verdict } };
       live = true;

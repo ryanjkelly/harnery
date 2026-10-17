@@ -38,6 +38,7 @@ import {
   serversDir,
   stopServer,
   touchServer,
+  tunnelServerInput,
   unregisterServer,
 } from "./index.ts";
 
@@ -88,6 +89,30 @@ describe("server ids", () => {
 });
 
 describe("register, read, unregister", () => {
+  test("tunnel registration does not attest saved helper pids", () => {
+    const input = tunnelServerInput(
+      {
+        name: "default",
+        provider: "cloudflare",
+        url: "https://example.test",
+        gate_pid: process.pid,
+        cloudflared_pid: process.pid + 1,
+        provider_pid: process.pid + 2,
+        started_at: new Date().toISOString(),
+        target: "http://127.0.0.1:3000",
+        vhost: "localhost",
+        gate_port: 4999,
+        allow_paths: ["/"],
+      },
+      root,
+    );
+    expect(input.pid).toBe(process.pid);
+    expect(input.pids).toBeUndefined();
+    const record = registerServer(input, { coordRoot: root })!;
+    expect(record.pids).toBeUndefined();
+    expect(record.pids_start_tokens).toBeUndefined();
+  });
+
   test("round-trips a record and honors the pid guard", () => {
     const record = registerServer(
       { kind: "session", type: "preview", scope: root, port: 4999, owner: null },
@@ -243,6 +268,27 @@ describe("listing", () => {
 });
 
 describe("stopping", () => {
+  test("an unclassified liveness failure sends nothing and retains the record", async () => {
+    const record = registerServer(
+      { id: "probe-error", kind: "session", type: "preview", owner: null },
+      { coordRoot: root },
+    )!;
+    const path = join(serversDir(root), `${record.id}.json`);
+    const before = readFileSync(path, "utf8");
+    const probePid = () => {
+      throw Object.assign(new Error("read failed"), { code: "EIO" });
+    };
+    const signals: number[] = [];
+    expect(serverState(record, undefined, probePid)).toBe("unknown");
+    const result = await stopServer(record, {
+      coordRoot: root,
+      signalDependencies: { probePid, kill: (pid) => signals.push(pid) },
+    });
+    expect(result).toMatchObject({ method: "refused", generation: "unknown", stopped: false });
+    expect(signals).toEqual([]);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
   test("signals the process group and removes the record", async () => {
     const { pid } = await startChildServer(root);
     const record = registerServer(
