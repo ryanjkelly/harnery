@@ -8,7 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { stateFileMode } from "../storage/modes.ts";
@@ -371,14 +371,28 @@ export function readContextState(
 
 export function readLatestCapsule(coordRoot: string, sessionId: string): ContinuityCapsule | null {
   const state = readContextState(coordRoot, sessionId);
-  if (!state?.latest_capsule) return null;
+  if (typeof state?.latest_capsule !== "string" || !state.latest_capsule) return null;
   const capsule = readJson<ContinuityCapsule>(join(coordRoot, ".harnery", state.latest_capsule));
-  if (!capsule) return null;
+  if (
+    !capsule ||
+    !record(capsule.repo) ||
+    !record(capsule.work) ||
+    typeof capsule.repo.cwd !== "string" ||
+    !Array.isArray(capsule.repo.dirty_paths) ||
+    !capsule.repo.dirty_paths.every((path) => typeof path === "string") ||
+    !Array.isArray(capsule.work.files_held) ||
+    !capsule.work.files_held.every((path) => typeof path === "string")
+  ) {
+    return null;
+  }
   capsule.repo.observation = repoObservation(capsule.repo.observation);
   capsule.repo.observation_detail = clampString(
-    capsule.repo.observation_detail,
+    string(capsule.repo.observation_detail),
     MAX_OBSERVATION_DETAIL_CHARS,
   );
+  capsule.repo.branch = string(capsule.repo.branch)?.trim() || undefined;
+  capsule.repo.head = string(capsule.repo.head)?.trim() || undefined;
+  capsule.repo.root = string(capsule.repo.root)?.trim() || undefined;
   return capsule;
 }
 
@@ -400,6 +414,42 @@ export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: Rep
   }
   if (capsule.work.files_held.length > 0) {
     lines.push(`Files held: ${capsule.work.files_held.join(", ")}`);
+  }
+
+  const unknown: string[] = [];
+  if (!observationsComparable(capsule.repo, liveRepo)) {
+    for (const [label, repo] of [
+      ["checkpoint", capsule.repo],
+      ["current repository", liveRepo],
+    ] as const) {
+      if (repo.observation !== "ok") {
+        const detail = clampString(string(repo.observation_detail), MAX_OBSERVATION_DETAIL_CHARS);
+        unknown.push(
+          `${label}: ${repoObservation(repo.observation)}${detail ? ` (${detail})` : ""}`,
+        );
+      }
+    }
+  }
+  if (capsule.repo.dirty_paths_truncated || liveRepo.dirty_paths_truncated) {
+    unknown.push("dirty path list is truncated");
+  }
+  if (
+    !capsule.repo.root ||
+    !liveRepo.root ||
+    !isAbsolute(capsule.repo.root) ||
+    !isAbsolute(liveRepo.root)
+  ) {
+    unknown.push("repository root is unknown");
+  } else if (capsule.repo.root !== liveRepo.root) {
+    unknown.push("repository root differs from the checkpoint");
+  }
+  if (!capsule.repo.branch?.trim() || !liveRepo.branch?.trim()) unknown.push("branch is unknown");
+  if (!capsule.repo.head?.trim() || !liveRepo.head?.trim()) unknown.push("HEAD is unknown");
+  if (unknown.length > 0) {
+    lines.push(
+      `Repository could not be verified against the checkpoint: ${unknown.join("; ")}. Re-check before editing.`,
+    );
+    return lines.join("\n");
   }
 
   const drift: string[] = [];
@@ -425,42 +475,60 @@ export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: Rep
 
 export function snapshotRepo(cwd: string): RepoSnapshot {
   const root = git(cwd, ["rev-parse", "--show-toplevel"]);
-  if (!root.ok) {
-    return { cwd, observation: "unavailable", observation_detail: root.reason, dirty_paths: [] };
+  if (!root.ok || !root.out.trim()) {
+    return {
+      cwd: clampString(cwd, 2_000) ?? cwd,
+      observation: "unavailable",
+      observation_detail: `top-level: ${root.ok ? "empty result" : root.reason}`,
+      dirty_paths: [],
+    };
   }
   const status = git(cwd, ["status", "--porcelain=v1", "--untracked-files=normal"]);
   const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const head = git(cwd, ["rev-parse", "HEAD"]);
-  const reads = [status, branch, head];
-  const failures = reads.filter((read) => !read.ok);
+  const reads = [
+    ["status", status],
+    ["branch", branch],
+    ["HEAD", head],
+  ] as const;
+  const details = reads.flatMap(([label, read]) =>
+    !read.ok
+      ? [`${label}: ${read.reason}`]
+      : label !== "status" && !read.out.trim()
+        ? [`${label}: empty result`]
+        : [],
+  );
   const dirty = status.ok
     ? status.out
         .split("\n")
         .map((line) => line.trimEnd())
         .filter(Boolean)
-        .map((line) => clampString(line.slice(3).trim(), MAX_SNAPSHOT_PATH_CHARS) ?? "")
+        .map((line) => line.slice(3).trim())
         .filter(Boolean)
     : [];
+  const truncated =
+    dirty.length > MAX_SNAPSHOT_PATHS ||
+    dirty.some((path) => path.length > MAX_SNAPSHOT_PATH_CHARS);
+  if (truncated) details.push("dirty path list is truncated");
   return {
     cwd: clampString(cwd, 2_000) ?? cwd,
-    observation: failures.some((read) => read.reason === "timed_out")
+    observation: reads.some(([, read]) => !read.ok && read.reason === "timed_out")
       ? "unavailable"
-      : failures.length > 0
+      : details.length > 0
         ? "partial"
         : "ok",
-    ...(failures.length > 0
+    ...(details.length > 0
       ? {
-          observation_detail: clampString(
-            failures.map((read) => read.reason).join(", "),
-            MAX_OBSERVATION_DETAIL_CHARS,
-          ),
+          observation_detail: clampString(details.join("; "), MAX_OBSERVATION_DETAIL_CHARS),
         }
       : {}),
-    root: clampString(root.out, 2_000),
-    branch: branch.ok ? branch.out || undefined : undefined,
-    head: head.ok ? head.out || undefined : undefined,
-    dirty_paths: dirty.slice(0, MAX_SNAPSHOT_PATHS),
-    ...(dirty.length > MAX_SNAPSHOT_PATHS ? { dirty_paths_truncated: true } : {}),
+    root: clampString(root.out.trim(), 2_000),
+    branch: branch.ok ? branch.out.trim() || undefined : undefined,
+    head: head.ok ? head.out.trim() || undefined : undefined,
+    dirty_paths: dirty
+      .slice(0, MAX_SNAPSHOT_PATHS)
+      .map((path) => path.slice(0, MAX_SNAPSHOT_PATH_CHARS)),
+    ...(truncated ? { dirty_paths_truncated: true } : {}),
   };
 }
 
@@ -568,7 +636,7 @@ function git(cwd: string, args: string[]): GitReadResult {
             : "spawn_error",
       };
     }
-    if (result.status === 0) return { ok: true, out: result.stdout.trim() };
+    if (result.status === 0) return { ok: true, out: result.stdout.trimEnd() };
     return {
       ok: false,
       reason: /not a git repository/i.test(result.stderr) ? "not_repository" : "failed",

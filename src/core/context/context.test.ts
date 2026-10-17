@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import * as childProcess from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordLiveClaimChangeV3, recordLiveTaskChangeV3 } from "../agents/live-authority-v3.ts";
@@ -15,10 +16,14 @@ import {
   checkpointContext,
   extractContextSample,
   markContextCompactionCompleted,
+  observationsComparable,
+  type RepoSnapshot,
   readContextState,
+  readLatestCapsule,
   recordContextSample,
   recoverContext,
   renderRecoveryBriefing,
+  snapshotRepo,
 } from "./index.ts";
 
 const roots: string[] = [];
@@ -68,6 +73,7 @@ function seedLiveWork(root: string): void {
 }
 
 afterEach(() => {
+  mock.restore();
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
@@ -222,6 +228,7 @@ describe("continuity checkpoints", () => {
       repo: {
         cwd: "/repo",
         observation: "ok",
+        root: "/repo",
         branch: "next",
         head: "aaaaaaaaaaaaaaaa",
         dirty_paths: ["src/a.ts"],
@@ -230,6 +237,7 @@ describe("continuity checkpoints", () => {
     const briefing = renderRecoveryBriefing(capsule, {
       cwd: "/repo",
       observation: "ok",
+      root: "/repo",
       branch: "main",
       head: "bbbbbbbbbbbbbbbb",
       dirty_paths: ["src/b.ts"],
@@ -237,5 +245,220 @@ describe("continuity checkpoints", () => {
     expect(briefing).toContain("branch changed next -> main");
     expect(briefing).toContain("new dirty paths: src/b.ts");
     expect(briefing).toContain("Re-check before editing");
+  });
+});
+
+const observedRepo: RepoSnapshot = {
+  cwd: "/repo",
+  observation: "ok",
+  root: "/repo",
+  branch: "main",
+  head: "a".repeat(40),
+  dirty_paths: [],
+};
+
+function capsuleFor(repo: RepoSnapshot): ContinuityCapsule {
+  return {
+    schema_version: 1,
+    capsule_id: "snapshot-test",
+    generation: 1,
+    created_at: "2026-10-16T00:00:00Z",
+    reason: "manual",
+    session: { session_id: "session-a", instance_id: "owner-a", adapter: "claude-code" },
+    work: { files_held: [] },
+    repo,
+  };
+}
+
+function gitResult(out: string, status = 0, error?: NodeJS.ErrnoException) {
+  return {
+    pid: 1,
+    output: [null, out, ""],
+    stdout: out,
+    stderr: status === 0 ? "" : "fatal: test read failed",
+    status,
+    signal: null,
+    error,
+  } as unknown as ReturnType<typeof childProcess.spawnSync>;
+}
+
+function mockGitReads(overrides: Record<string, ReturnType<typeof gitResult>> = {}) {
+  const defaults = {
+    "rev-parse --show-toplevel": gitResult("/repo\n"),
+    "status --porcelain=v1 --untracked-files=normal": gitResult(""),
+    "rev-parse --abbrev-ref HEAD": gitResult("main\n"),
+    "rev-parse HEAD": gitResult(`${"a".repeat(40)}\n`),
+  };
+  return spyOn(childProcess, "spawnSync").mockImplementation(((
+    _command: string,
+    args?: readonly string[] | childProcess.SpawnSyncOptions,
+  ) => {
+    const key = Array.isArray(args) ? args.join(" ") : "";
+    return overrides[key] ?? defaults[key as keyof typeof defaults] ?? gitResult("", 1);
+  }) as typeof childProcess.spawnSync);
+}
+
+function expectUnverified(briefing: string) {
+  expect(briefing).toContain("could not be verified against the checkpoint");
+  expect(briefing).toContain("Re-check before editing");
+  expect(briefing).not.toContain("matches");
+  expect(briefing).not.toContain("paths no longer dirty");
+}
+
+describe("repository observation safety", () => {
+  test("the missing repository probe never establishes a match or cleared path", () => {
+    const live = snapshotRepo("/dev/null/not-a-repository");
+    expect(live.observation).toBe("unavailable");
+    expect(live.observation_detail).toContain("top-level:");
+    expectUnverified(renderRecoveryBriefing(capsuleFor(observedRepo), live));
+    expectUnverified(
+      renderRecoveryBriefing(
+        capsuleFor({
+          ...observedRepo,
+          dirty_paths: ["src/a.ts"],
+        }),
+        live,
+      ),
+    );
+  });
+
+  test("failed status reads preserve an explicit failure instead of clearing dirty paths", () => {
+    mockGitReads({ "status --porcelain=v1 --untracked-files=normal": gitResult("", 1) });
+    const live = snapshotRepo("/repo");
+    expect(live.observation).toBe("partial");
+    expect(live.observation_detail).toBe("status: failed");
+    expectUnverified(
+      renderRecoveryBriefing(
+        capsuleFor({
+          ...observedRepo,
+          dirty_paths: ["src/a.ts"],
+        }),
+        live,
+      ),
+    );
+  });
+
+  test("an injected timeout makes the entire observation unavailable", () => {
+    const error = Object.assign(new Error("read timed out"), { code: "ETIMEDOUT" });
+    mockGitReads({ "status --porcelain=v1 --untracked-files=normal": gitResult("", 1, error) });
+    const live = snapshotRepo("/repo");
+    expect(live.observation).toBe("unavailable");
+    expect(live.observation_detail).toBe("status: timed_out");
+    expectUnverified(renderRecoveryBriefing(capsuleFor(observedRepo), live));
+  });
+
+  test("a successful empty status still establishes a match", () => {
+    mockGitReads();
+    const live = snapshotRepo("/repo");
+    expect(live.observation).toBe("ok");
+    expect(live.dirty_paths).toEqual([]);
+    expect(renderRecoveryBriefing(capsuleFor(observedRepo), live)).toContain(
+      "Repository state matches the checkpoint.",
+    );
+  });
+
+  test("leading status spaces do not consume the first file name", () => {
+    mockGitReads({ "status --porcelain=v1 --untracked-files=normal": gitResult(" M README.md\n") });
+    expect(snapshotRepo("/repo").dirty_paths).toEqual(["README.md"]);
+  });
+
+  test("truncated lists cannot claim a path was cleared when it moved beyond the prefix", () => {
+    const paths = Array.from(
+      { length: 16 },
+      (_, index) => `src/${String(index).padStart(2, "0")}.ts`,
+    );
+    mockGitReads({
+      "status --porcelain=v1 --untracked-files=normal": gitResult(
+        paths.map((path) => ` M ${path}`).join("\n"),
+      ),
+    });
+    const live = snapshotRepo("/repo");
+    expect(live.observation).toBe("partial");
+    expect(live.dirty_paths_truncated).toBe(true);
+    expect(live.dirty_paths).toHaveLength(15);
+    expectUnverified(
+      renderRecoveryBriefing(
+        capsuleFor({
+          ...observedRepo,
+          dirty_paths: [paths[15]!],
+        }),
+        live,
+      ),
+    );
+    expectUnverified(
+      renderRecoveryBriefing(
+        capsuleFor({
+          ...observedRepo,
+          dirty_paths_truncated: true,
+        }),
+        observedRepo,
+      ),
+    );
+  });
+
+  test("failed branch and HEAD reads are reported as unknown", () => {
+    for (const field of ["branch", "head"] as const) {
+      for (const value of [undefined, "", " "]) {
+        const live = { ...observedRepo, [field]: value };
+        const briefing = renderRecoveryBriefing(capsuleFor(observedRepo), live);
+        expectUnverified(briefing);
+        expect(briefing).toContain(`${field === "head" ? "HEAD" : "branch"} is unknown`);
+      }
+    }
+    mockGitReads({
+      "rev-parse --abbrev-ref HEAD": gitResult("", 1),
+      "rev-parse HEAD": gitResult("", 1),
+    });
+    const live = snapshotRepo("/repo");
+    expect(live.observation).toBe("partial");
+    expect(live.observation_detail).toBe("branch: failed; HEAD: failed");
+    expectUnverified(renderRecoveryBriefing(capsuleFor(observedRepo), live));
+  });
+
+  test("missing, malformed, or different repository roots cannot establish a match", () => {
+    for (const root of [undefined, "relative-root", "/different-repository"]) {
+      const briefing = renderRecoveryBriefing(capsuleFor({ ...observedRepo, root }), observedRepo);
+      expectUnverified(briefing);
+      expect(briefing).toContain("repository root");
+    }
+  });
+
+  test("legacy snapshots are unavailable and observation details stay bounded", () => {
+    const coordRoot = root();
+    const checkpoint = checkpointContext(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      adapter: "claude-code",
+      cwd: coordRoot,
+      reason: "manual",
+    });
+    const persisted = JSON.parse(readFileSync(checkpoint.path, "utf8"));
+    delete persisted.repo.observation;
+    persisted.repo.observation_detail = "x".repeat(1_000);
+    writeFileSync(checkpoint.path, JSON.stringify(persisted));
+    const loaded = readLatestCapsule(coordRoot, "session-a")!;
+    expect(loaded.repo.observation).toBe("unavailable");
+    expect(loaded.repo.observation_detail).toHaveLength(500);
+    expect(observationsComparable({}, observedRepo)).toBe(false);
+    expectUnverified(renderRecoveryBriefing(loaded, observedRepo));
+  });
+
+  test("malformed capsule shapes degrade recovery without throwing", () => {
+    const coordRoot = root();
+    const checkpoint = checkpointContext(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      adapter: "claude-code",
+      cwd: coordRoot,
+      reason: "manual",
+    });
+    for (const repo of [null, [], {}, { cwd: "/repo", dirty_paths: "not a list" }]) {
+      writeFileSync(checkpoint.path, JSON.stringify({ ...checkpoint.capsule, repo }));
+      expect(readLatestCapsule(coordRoot, "session-a")).toBeNull();
+      expect(
+        recoverContext(coordRoot, { sessionId: "session-a", instanceId: "owner-a", cwd: coordRoot })
+          .state.phase,
+      ).toBe("degraded");
+    }
   });
 });
