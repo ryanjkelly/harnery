@@ -703,13 +703,14 @@ engine-observed.
 Each repository snapshot records `observation: "ok"`, `"partial"`, or
 `"unavailable"`, with a bounded `observation_detail` when needed. A persisted
 snapshot without that field is unavailable. Harnery compares only two `ok`
-observations. Otherwise drift is unknown, the proof is incomplete, and the
-packet does not claim that dirty paths were cleared.
+observations of the same repository. Otherwise drift is unknown, the proof is
+incomplete, and the packet does not claim that dirty paths were cleared.
 
 Inspect a packet with `harn run proof <run-id>`. Human mode renders the
 status, criteria, evidence count, repository drift, unknowns, and transcript
-digest. `--json` emits the stored schema unchanged. Failed `workflow run`
-commands include the proof path in their error output.
+digest. `--json` emits the validated packet. Older packets whose repository
+comparison cannot be proved read with unknown drift and incomplete evidence.
+Failed `workflow run` commands include the proof path in their error output.
 
 Proof packets are bounded to 50 criteria, 200 evidence records, and 512 KiB.
 Labels, summaries, and references have field-level limits. Unknown acceptance

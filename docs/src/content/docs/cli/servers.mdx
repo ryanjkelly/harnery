@@ -54,6 +54,10 @@ state file has no recorded process-generation evidence, so the list does not
 automatically register it. If the scan finds it, it appears as an unregistered
 listener for explicit inspection or adoption.
 
+The tunnel registry records the gate process. `harn servers stop tunnel-<name>`
+controls that gate only. Saved provider-helper PIDs have no recorded start
+tokens, so registry stop leaves those helpers alone.
+
 ## Stop
 
 ```bash
