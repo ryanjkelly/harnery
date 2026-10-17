@@ -12,6 +12,11 @@ import { dirname, isAbsolute, join } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { stateFileMode } from "../storage/modes.ts";
+import type { RepoObservation, RepoSnapshot } from "./observation.ts";
+import { observationsComparable } from "./observation.ts";
+
+export type { RepoObservation, RepoSnapshot } from "./observation.ts";
+export { observationsComparable } from "./observation.ts";
 
 export const CONTEXT_SCHEMA_VERSION = 1 as const;
 export const MAX_CAPSULE_BYTES = 32 * 1024;
@@ -23,7 +28,6 @@ export type ContextSampleSource = "hook" | "native_event" | "result" | "transcri
 export type ContextSampleConfidence = "exact" | "reported" | "estimated";
 export type ContextPhase = "observing" | "checkpointed" | "recovered" | "degraded";
 export type CheckpointReason = "manual" | "pressure" | "pre_compact" | "session_end";
-export type RepoObservation = "ok" | "unavailable" | "partial";
 
 export interface ContextSample {
   session_id: string;
@@ -49,18 +53,6 @@ export interface ContextContinuityState {
   recovered_at?: string;
   compaction_completed_at?: string;
   degraded_reason?: string;
-}
-
-export interface RepoSnapshot {
-  cwd: string;
-  observation: RepoObservation;
-  /** Bounded explanation of an unavailable or incomplete observation. */
-  observation_detail?: string;
-  root?: string;
-  branch?: string;
-  head?: string;
-  dirty_paths: string[];
-  dirty_paths_truncated?: boolean;
 }
 
 export interface ContinuityCapsule {
@@ -394,14 +386,6 @@ export function readLatestCapsule(coordRoot: string, sessionId: string): Continu
   capsule.repo.head = string(capsule.repo.head)?.trim() || undefined;
   capsule.repo.root = string(capsule.repo.root)?.trim() || undefined;
   return capsule;
-}
-
-/** Only explicitly successful observations can establish repository drift. */
-export function observationsComparable(
-  a: { observation?: string },
-  b: { observation?: string },
-): boolean {
-  return a.observation === "ok" && b.observation === "ok";
 }
 
 export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: RepoSnapshot): string {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { observationsComparable, type RepoSnapshot } from "../context/index.ts";
+import { observationsComparable, type RepoSnapshot } from "../context/observation.ts";
 import { DIAGNOSTIC_ADVICE_SCHEMA_VERSION } from "../diagnostics/contract.ts";
 import type {
   NormalizedPolicy,
