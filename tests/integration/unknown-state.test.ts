@@ -143,12 +143,16 @@ describe.skipIf(!hasGit())("unknown state CLI conformance", () => {
         expect(child.signalCode).toBeNull();
         expect(() => process.kill(pid, 0)).not.toThrow();
         expect(processStartToken(pid)).toBe(token);
-        expect(JSON.parse(result.stdout)).toMatchObject({ generation });
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          generation,
+          signal_sent: false,
+          signal_verdict: generation,
+        });
         expect(existsSync(join(directory, "stop.json"))).toBe(true);
       } finally {
         if (child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGTERM");
-          await once(child, "exit");
+          child.stdin.end();
+          await exited;
         }
       }
     }, 15_000);
@@ -156,7 +160,7 @@ describe.skipIf(!hasGit())("unknown state CLI conformance", () => {
 });
 
 describe.skipIf(!hasGit() || !descriptorPathsAvailable)("live reclaim CLI conformance", () => {
-  test("discard refuses an active transcript before changing its dirty provider worktree", async () => {
+  test("preview is read-only and discard refuses an active transcript before changing its dirty provider worktree", async () => {
     const { host, repo } = fixture("reclaim-live");
     const script = writeScript(repo, "export default async () => 'fixture';\n");
     git(repo, "add", "scripts");
@@ -185,6 +189,40 @@ describe.skipIf(!hasGit() || !descriptorPathsAvailable)("live reclaim CLI confor
     expect(readWorkflowLiveness(repo, report.runId)).toBe("active");
     const beforeStatus = git(workspace, "status", "--porcelain=v1");
     const beforeHead = git(workspace, "rev-parse", "HEAD");
+
+    for (const mode of ["discard", "salvage"]) {
+      for (const json of [false, true]) {
+        const preview = harn(repo, [
+          "run",
+          "reclaim",
+          report.runId,
+          ...(mode === "discard" ? ["--discard"] : []),
+          ...(json ? ["--json"] : []),
+        ]);
+        expect(preview.status).toBe(0);
+        if (json) {
+          expect(JSON.parse(preview.stdout)).toMatchObject({
+            action: "preview",
+            run_id: report.runId,
+            mode,
+            liveness: "active",
+            ownership: "ok",
+            dirty_paths: [expect.stringMatching(/README\.md$/)],
+            lease_holder: [],
+          });
+        } else {
+          expect(preview.stdout).toContain(`reclaim preview: ${report.runId}`);
+          expect(preview.stdout).toContain(`mode: ${mode}`);
+          expect(preview.stdout).toContain("liveness: active");
+          expect(preview.stdout).toContain("lease holder: none observed");
+          expect(preview.stdout).toMatch(/dirty paths: [^\n]*README\.md\n/);
+          expect(preview.stdout).toContain("Pass --yes");
+        }
+        expect(readFileSync(dirtyPath, "utf8")).toBe(content);
+        expect(git(workspace, "status", "--porcelain=v1")).toBe(beforeStatus);
+        expect(git(workspace, "rev-parse", "HEAD")).toBe(beforeHead);
+      }
+    }
 
     const result = harn(repo, ["run", "reclaim", report.runId, "--discard", "--yes"]);
 
