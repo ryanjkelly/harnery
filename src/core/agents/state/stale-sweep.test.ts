@@ -11,12 +11,15 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import { initializeEventLedgerV3 } from "../../events/v3/bootstrap.ts";
+import { sha256V3 } from "../../events/v3/canonical.ts";
 import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../events/v3/live-routing.ts";
 import { readLedgerV3 } from "../../events/v3/reader.ts";
 import { eventV3Paths } from "../../events/v3/writer.ts";
+import { readLiveCoordinationRows } from "./live-coordination-view.ts";
 import { staleSweep } from "./stale-sweep.ts";
 
 const roots: string[] = [];
@@ -104,6 +107,58 @@ describe("staleSweep V3 audit fallback", () => {
         reason: expect.stringContaining("hook_generation_not_joinable"),
       }),
     );
+  });
+
+  test("reaps an archived-epoch cache without changing either epoch or the current roster", () => {
+    const root = fixtureRoot();
+    seedV3Session(root, "archived", { adapter: "cursor", sessionId: "archived-session" });
+    const heartbeat = join(root, ".harnery", "active", "archived.json");
+    const cache = JSON.parse(readFileSync(heartbeat, "utf8"));
+    expect(cache.v3_generation_id).toMatch(/^gen_/);
+    writeFileSync(
+      heartbeat,
+      JSON.stringify({
+        ...cache,
+        last_heartbeat: "2020-01-01T00:00:00.000Z",
+      }),
+    );
+    const archivedBytesBefore = readFileSync(eventV3Paths(root).active);
+    expect(
+      readLedgerV3(root).events.some(({ event }) => event.event_type === "session.ended"),
+    ).toBeFalse();
+
+    const rotated = initializeEventLedgerV3({
+      coordRoot: root,
+      harneryBuild: "fixture",
+      hostBuild: "fixture",
+      configDigest: sha256V3("fixture-config"),
+      approvalRecordId: "test-archived-cache-sweep",
+      forceNewEpoch: true,
+    });
+    if (!rotated.archived_epoch) throw new Error("fixture epoch was not archived");
+    const archivedActive = join(rotated.archived_epoch, "active.ndjson");
+    expect(readFileSync(archivedActive)).toEqual(archivedBytesBefore);
+    expect(existsSync(heartbeat)).toBeTrue();
+    seedV3Session(root, "current", { adapter: "codex", sessionId: "current-session" });
+    const currentBytesBefore = readFileSync(eventV3Paths(root).active);
+    const currentRowsBefore = readLiveCoordinationRows(root);
+    expect(currentRowsBefore.map((row) => row.instance_id)).toEqual(["current"]);
+
+    expect(staleSweep(root).heartbeatsRemoved).toEqual(["archived.json"]);
+    expect(existsSync(heartbeat)).toBeFalse();
+    expect(existsSync(join(root, ".harnery", "active", "current.json"))).toBeTrue();
+    expect(readSweepDiagnostics(root)).toContainEqual(
+      expect.objectContaining({
+        category: "heartbeat_sweep_unrecorded",
+        instance_id: "archived",
+        reason: expect.stringContaining("hook_generation_not_joinable"),
+      }),
+    );
+    expect(staleSweep(root).heartbeatsRemoved).toEqual([]);
+    expect(readFileSync(archivedActive)).toEqual(archivedBytesBefore);
+    expect(readFileSync(eventV3Paths(root).active)).toEqual(currentBytesBefore);
+    expect(readLiveCoordinationRows(root)).toEqual(currentRowsBefore);
+    expect(readLedgerV3(root)).toMatchObject({ complete: true, diagnostics: [] });
   });
 
   test("records a provisional lifecycle observation for a joinable stale generation", () => {
