@@ -17,6 +17,10 @@ import {
 } from "../../../tests/helpers/resource-status.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { buildDiagnosticAdvice } from "../diagnostics/advice.ts";
+import * as heartbeatWriter from "../agents/state/heartbeat-writer.ts";
+import { projectCoordinationViewV3 } from "../events/v3/coordination-view.ts";
+import { liveInstanceIdV3 } from "../events/v3/live-routing.ts";
+import { readLedgerV3 } from "../events/v3/reader.ts";
 import { runWorkflow } from "./engine.ts";
 import * as childSessions from "./live-session-v3.ts";
 import { WORKFLOW_TRANSCRIPT_EVENT_BYTES } from "./transcript.ts";
@@ -1387,6 +1391,169 @@ describe("worker full access (ADR 0192)", () => {
     } finally {
       if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = previous;
+    }
+  });
+});
+
+
+describe("workflow child terminal conformance", () => {
+  const actualStart = childSessions.startWorkflowChildSessionV3;
+  const actualEnd = childSessions.endWorkflowChildSessionV3;
+
+  function rebuild() {
+    return projectCoordinationViewV3(readLedgerV3(root));
+  }
+
+  function proofAt(error: unknown): WorkflowProof {
+    const proofPath = (error as Error & { proofPath: string }).proofPath;
+    expect(proofPath).toBeString();
+    return JSON.parse(readFileSync(proofPath, "utf8"));
+  }
+
+  for (const cancelled of [false, true]) {
+    test(`terminal append failure stays blocked after rebuild (${cancelled ? "cancelled" : "completed"} child)`, async () => {
+      const end = spyOn(childSessions, "endWorkflowChildSessionV3").mockImplementation(() => {
+        throw new Error("injected terminal append failure");
+      });
+      let failure: unknown;
+      try {
+        const script = writeScript(`export default ({ agent }) => agent("bounded task");`);
+        try {
+          await runWorkflow(script, {
+            coordRoot: root,
+            spawners: {
+              codex: async () => {
+                if (cancelled) throw new DOMException("child cancelled", "AbortError");
+                return okSpawn("finished");
+              },
+            },
+            defaultAdapter: "codex",
+            ...quiet,
+          });
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(Error);
+        const proof = proofAt(failure);
+        expect(proof.run.status).toBe("failed");
+        expect(proof.run.error).toContain("terminal");
+        if (cancelled) expect(proof.run.error).toContain("child cancelled");
+        expect(proof.agents[0]?.status).toBe("failed");
+        const runDir = join(root, ".harnery", "workflows", proof.run.id);
+        const events = readFileSync(join(runDir, "transcript.jsonl"), "utf8")
+          .trim().split("\n").map((line) => JSON.parse(line));
+        expect(events.find((event) => event.event === "run.end")?.ok).toBe(false);
+        expect(events.some((event) => event.event === "agent.failed" && String(event.error).includes("terminal"))).toBe(true);
+        rmSync(join(root, ".harnery", "active"), { recursive: true, force: true });
+        const view = rebuild();
+        expect(view.source_complete).toBe(true);
+        const child = Object.values(view.instances)[0];
+        expect(child?.phase).toBe("live");
+        expect(child?.lifecycle_state).toBe("blocked");
+        expect(Object.keys(view.terminal_generations)).toHaveLength(0);
+      } finally {
+        end.mockRestore();
+      }
+    });
+  }
+
+  test("a crash after terminal append keeps the canonical result before cache release", async () => {
+    const clear = spyOn(heartbeatWriter, "clearCoordinationCache").mockImplementation(() => {
+      throw new Error("injected crash before cache release");
+    });
+    try {
+      const script = writeScript(`export default ({ agent }) => agent("bounded task");`);
+      try {
+        await runWorkflow(script, {
+          coordRoot: root,
+          spawners: { codex: async () => okSpawn("finished") },
+          defaultAdapter: "codex",
+          ...quiet,
+        });
+      } catch (error) {
+        expect(proofAt(error).run.status).toBe("failed");
+      }
+      expect(clear).toHaveBeenCalledTimes(1);
+      expect(readdirSync(join(root, ".harnery", "active"))).toHaveLength(1);
+      const view = rebuild();
+      expect(view.source_complete).toBe(true);
+      expect(Object.keys(view.instances)).toHaveLength(0);
+      expect(Object.values(view.terminal_generations)[0]?.terminal?.outcome).toBe("succeeded");
+    } finally {
+      clear.mockRestore();
+    }
+  });
+
+  test("a crash after cache release rebuilds the terminal and cleanup is idempotent", async () => {
+    let input: Parameters<typeof actualEnd>[0] | undefined;
+    const end = spyOn(childSessions, "endWorkflowChildSessionV3").mockImplementation((value) => {
+      input = value;
+      actualEnd(value);
+      expect(existsSync(join(root, ".harnery", "active", `${value.instanceId}.json`))).toBe(false);
+      throw new Error("injected crash after cache release");
+    });
+    try {
+      const script = writeScript(`export default ({ agent }) => agent("bounded task");`);
+      try {
+        await runWorkflow(script, {
+          coordRoot: root,
+          spawners: { codex: async () => okSpawn("finished") },
+          defaultAdapter: "codex",
+          ...quiet,
+        });
+      } catch (error) {
+        expect(proofAt(error).run.status).toBe("failed");
+      }
+      const view = rebuild();
+      expect(view.source_complete).toBe(true);
+      expect(Object.keys(view.instances)).toHaveLength(0);
+      expect(Object.values(view.terminal_generations)[0]?.terminal?.outcome).toBe("succeeded");
+      expect(input).toBeDefined();
+      expect(() => actualEnd(input!)).not.toThrow();
+    } finally {
+      end.mockRestore();
+    }
+  });
+
+  test("stale completion cannot end or block a reassigned native generation", async () => {
+    let started: Parameters<typeof actualStart>[0] | undefined;
+    let replacementGeneration: string | undefined;
+    const start = spyOn(childSessions, "startWorkflowChildSessionV3").mockImplementation((input) => {
+      started = input;
+      return actualStart(input);
+    });
+    try {
+      const script = writeScript(`export default ({ agent }) => agent("bounded task");`);
+      let failure: unknown;
+      try {
+        await runWorkflow(script, {
+          coordRoot: root,
+          spawners: {
+            codex: async () => {
+              expect(started).toBeDefined();
+              actualEnd({ ...started!, cleanExit: false });
+              const replacement = actualStart({ ...started!, sessionId: "replacement-native-session" });
+              replacementGeneration = replacement.v3_generation_id;
+              return okSpawn("stale finished");
+            },
+          },
+          defaultAdapter: "codex",
+          ...quiet,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(proofAt(failure).run.status).toBe("failed");
+      expect((failure as Error).message).toContain("generation");
+      const view = rebuild();
+      const replacement = view.instances[liveInstanceIdV3(started!.instanceId)];
+      expect(replacement?.generation_id).toBe(replacementGeneration!);
+      expect(replacement?.phase).toBe("live");
+      expect(replacement?.lifecycle_state).not.toBe("blocked");
+      expect(Object.values(view.terminal_generations)).toHaveLength(1);
+    } finally {
+      start.mockRestore();
     }
   });
 });
