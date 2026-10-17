@@ -50,6 +50,7 @@ export function registerDiagnosticsCommand(
           findings,
           bundles,
           capability,
+          supervisor: readSupervisorStatus(repoRoot),
           total_findings: findings.length,
           total_bundles: bundles.length,
         });
@@ -68,6 +69,7 @@ export function registerDiagnosticsCommand(
             schema_version: DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
             kind: "diagnostic_finding",
             finding,
+            supervisor: readSupervisorStatus(repoRoot),
             timeline:
               readSupervisorTimeline(repoRoot, finding.id) ?? buildSupervisorTimeline(finding),
             explanation:
@@ -118,6 +120,7 @@ export function registerDiagnosticsCommand(
           schema_version: DIAGNOSTIC_COMMAND_SCHEMA_VERSION,
           kind: "diagnostic_advice",
           source: { mode: "live" },
+          supervisor: readSupervisorStatus(repoRoot),
           advice: buildDiagnosticAdvice({
             assessment: published.assessment,
             priorHysteresis: published.prior_hysteresis,
@@ -204,6 +207,13 @@ function liveFindingsCapability(repoRoot: string, reportPresent: boolean): Super
   }
   const status = readSupervisorStatus(repoRoot);
   if (status.running) return { source_kind: "supervisor.findings", state: "supported" };
+  if (status.liveness === "unknown")
+    return {
+      source_kind: "supervisor.findings",
+      state: "error",
+      reason_code: "supervisor_generation_unknown",
+      detail: status.build_status,
+    };
   return {
     source_kind: "supervisor.findings",
     state: "expired",

@@ -1,3 +1,4 @@
+import type { ProcessGenerationVerdict } from "../agents/state/proc-start.ts";
 import type {
   PressureAssessment,
   PressureHysteresisState,
@@ -47,10 +48,16 @@ export const SUPERVISOR_RESOURCE_BUDGET = {
 
 export type SupervisorProcessState = "starting" | "running" | "stopping" | "stopped" | "error";
 
+export interface SupervisorBuild {
+  version: string;
+  revision: string;
+}
+
 export interface SupervisorServiceStatusRecord {
   schema_version: typeof SUPERVISOR_STATUS_SCHEMA_VERSION;
   pid: number;
   start_token?: string;
+  running_build?: SupervisorBuild;
   host: string;
   nonce: string;
   state: SupervisorProcessState;
@@ -70,6 +77,12 @@ export interface SupervisorServiceStatusRecord {
 export interface SupervisorStatus {
   running: boolean;
   stale: boolean;
+  generation: ProcessGenerationVerdict;
+  liveness: "running" | "stopped" | "unknown";
+  running_build: SupervisorBuild | null;
+  installed_build: SupervisorBuild;
+  restart_needed: boolean;
+  build_status: string;
   record?: SupervisorServiceStatusRecord;
   status_path: string;
   snapshot_path: string;

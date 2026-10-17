@@ -83,11 +83,16 @@ export function registerSupervisorCommand(
     .action(async (options: { root?: string }) => {
       try {
         const root = resolve(options.root ?? coordRoot(context));
-        let status = requestSupervisorStop(root);
+        const requested = requestSupervisorStop(root);
+        let status = requested;
         const deadline = Date.now() + 5_000;
         while (status.running && Date.now() < deadline) {
           await new Promise((done) => setTimeout(done, 50));
-          status = readSupervisorStatus(root);
+          status = {
+            ...readSupervisorStatus(root),
+            signal_sent: requested.signal_sent,
+            signal_verdict: requested.signal_verdict,
+          };
         }
         emit.data(status);
       } catch (error) {

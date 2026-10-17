@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResourceSnapshot } from "../resources/contract.ts";
+import { resourcePaths } from "../resources/storage.ts";
+import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import {
   SUPERVISOR_ACTIVITY_SCHEMA_VERSION,
   SUPERVISOR_LOG_FEED_SCHEMA_VERSION,
@@ -16,12 +19,13 @@ import { updateSupervisorFindings } from "./findings.ts";
 import { updateSupervisorHistory } from "./history.ts";
 import { readSupervisorHookHealth } from "./hook-health-storage.ts";
 import { collectHookHealth, exactHookEntrypoint } from "./hooks.ts";
-import { runSupervisor } from "./service.ts";
+import { requestSupervisorStop, runSupervisor, spawnSupervisor } from "./service.ts";
 import {
   collectServiceHealth,
   registerSupervisorConsumer,
   unregisterSupervisorConsumer,
 } from "./services.ts";
+import { installedSupervisorBuild, readSupervisorStatus } from "./status.ts";
 import { supervisorPaths } from "./storage.ts";
 import { buildSupervisorTimeline } from "./timeline.ts";
 
@@ -29,6 +33,280 @@ const roots: string[] = [];
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("supervisor process identity", () => {
+  function fixture(overrides: Partial<SupervisorServiceStatusRecord> = {}): string {
+    const root = mkdtempSync(join(tmpdir(), "harn-supervisor-identity-"));
+    roots.push(root);
+    writePrivateJsonAtomic(supervisorPaths(root).service, {
+      ...statusRecord(),
+      start_token: "recorded",
+      ...overrides,
+    });
+    return root;
+  }
+
+  test("leaves a reused PID untouched and records a durable stop", () => {
+    const root = fixture();
+    const signals: number[] = [];
+    const result = requestSupervisorStop(root, {
+      readToken: () => "another-generation",
+      probePid: () => true,
+      kill: (pid) => signals.push(pid),
+    });
+    expect(result).toMatchObject({
+      running: false,
+      generation: "different",
+      liveness: "stopped",
+      signal_sent: false,
+      signal_verdict: "different",
+    });
+    expect(signals).toEqual([]);
+    expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+  });
+
+  test("a record without a start token is unknown and blocks another start", async () => {
+    const root = fixture({ start_token: undefined });
+    const signals: number[] = [];
+    const result = requestSupervisorStop(root, {
+      readToken: () => "current",
+      kill: (pid) => signals.push(pid),
+    });
+    expect(result).toMatchObject({
+      running: false,
+      generation: "unknown",
+      liveness: "unknown",
+      signal_sent: false,
+      signal_verdict: "unknown",
+    });
+    const stop = readFileSync(supervisorPaths(root).stop, "utf8");
+    await expect(spawnSupervisor(root)).rejects.toThrow("durable stop request");
+    await expect(runSupervisor({ coordRoot: root, maxCycles: 1 })).rejects.toThrow(
+      "durable stop request",
+    );
+    expect(readFileSync(supervisorPaths(root).stop, "utf8")).toBe(stop);
+    expect(signals).toEqual([]);
+  });
+
+  test("an unreadable token is unknown and never signals", () => {
+    const root = fixture();
+    const signals: number[] = [];
+    const result = requestSupervisorStop(root, {
+      readToken: () => {
+        throw new Error("probe unavailable");
+      },
+      probePid: () => true,
+      kill: (pid) => signals.push(pid),
+    });
+    expect(result).toMatchObject({
+      generation: "unknown",
+      liveness: "unknown",
+      signal_sent: false,
+      signal_verdict: "unknown",
+    });
+    expect(signals).toEqual([]);
+  });
+
+  test("rechecks a token changed after status and before the signal", () => {
+    const root = fixture();
+    let reads = 0;
+    const signals: number[] = [];
+    const result = requestSupervisorStop(root, {
+      probePid: () => true,
+      readToken: () => {
+        reads += 1;
+        if (reads > 1) expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+        return reads === 1 ? "recorded" : "replacement";
+      },
+      kill: (pid) => signals.push(pid),
+    });
+    expect(result.signal_sent).toBe(false);
+    expect(result.signal_verdict).toBe(process.platform === "win32" ? "same" : "different");
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(signals).toEqual([]);
+  });
+
+  test("sends a verified signal only after writing the durable request", () => {
+    const root = fixture();
+    const signals: Array<[number, NodeJS.Signals | number]> = [];
+    const result = requestSupervisorStop(root, {
+      probePid: () => true,
+      readToken: () => "recorded",
+      kill: (pid, signal) => {
+        expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+        signals.push([pid, signal]);
+      },
+    });
+    expect(result.signal_verdict).toBe("same");
+    expect(result.signal_sent).toBe(process.platform !== "win32");
+    expect(signals).toEqual(process.platform === "win32" ? [] : [[process.pid, "SIGTERM"]]);
+  });
+
+  test("supervisor stop also writes a durable request for an unknown legacy observer", () => {
+    const root = fixture();
+    writePrivateJsonAtomic(resourcePaths(root).service, {
+      schema_version: 1,
+      pid: process.pid,
+      host: hostname(),
+      state: "running",
+      heartbeat_at: new Date().toISOString(),
+    });
+    const signals: number[] = [];
+    const result = requestSupervisorStop(root, {
+      readToken: () => null,
+      probePid: () => true,
+      kill: (pid) => signals.push(pid),
+    });
+    expect(result.signal_sent).toBe(false);
+    expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+    expect(existsSync(resourcePaths(root).stop)).toBe(true);
+    expect(signals).toEqual([]);
+  });
+
+  test("only a clear missing process proves dead when token reads fail", () => {
+    const root = fixture();
+    for (const code of ["ESRCH", "EPERM", "EIO"]) {
+      const status = readSupervisorStatus(root, Date.now(), {
+        readToken: () => "recorded",
+        probePid: () => {
+          throw Object.assign(new Error(code), { code });
+        },
+      });
+      expect(status.generation).toBe("unknown");
+      expect(status.liveness).toBe(code === "ESRCH" ? "stopped" : "unknown");
+      expect(status.running).toBe(false);
+    }
+  });
+
+  test("a stale heartbeat does not authorize replacing a live owner", () => {
+    const root = fixture({ heartbeat_at: new Date(0).toISOString() });
+    expect(readSupervisorStatus(root, Date.now(), { readToken: () => "recorded" })).toMatchObject({
+      running: false,
+      stale: true,
+      liveness: "running",
+      generation: "same",
+    });
+  });
+
+  test("a foreign host is unknown even when its last record says stopped", () => {
+    const root = fixture({ host: `${hostname()}-elsewhere`, state: "stopped" });
+    expect(readSupervisorStatus(root)).toMatchObject({
+      running: false,
+      generation: "unknown",
+      liveness: "unknown",
+    });
+  });
+
+  test("a stopped record cannot hide an unverified process during start", async () => {
+    const root = fixture({ start_token: undefined, state: "stopped" });
+    await expect(spawnSupervisor(root)).rejects.toThrow("durable stop request");
+    await expect(runSupervisor({ coordRoot: root, maxCycles: 1 })).rejects.toThrow(
+      "durable stop request",
+    );
+    expect(readSupervisorStatus(root).liveness).toBe("unknown");
+  });
+
+  test("a verified local foreground completion can report stopped", () => {
+    const root = fixture({ start_token: "recorded", state: "stopped" });
+    expect(readSupervisorStatus(root, Date.now(), { readToken: () => "recorded" })).toMatchObject({
+      generation: "same",
+      liveness: "stopped",
+      running: false,
+    });
+  });
+
+  test("malformed lease ownership is unknown and is never removed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harn-supervisor-malformed-lease-"));
+    roots.push(root);
+    const paths = supervisorPaths(root);
+    writePrivateJsonAtomic(paths.lease, { pid: -99999999, host: hostname(), nonce: "invalid" });
+    const before = readFileSync(paths.lease, "utf8");
+    await expect(spawnSupervisor(root)).rejects.toThrow("durable stop request");
+    await expect(runSupervisor({ coordRoot: root, maxCycles: 1 })).rejects.toThrow(
+      "durable stop request",
+    );
+    expect(readFileSync(paths.lease, "utf8")).toBe(before);
+  });
+
+  test("startup never signals an unverified legacy observer or removes a durable request", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harn-supervisor-legacy-"));
+    roots.push(root);
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+    });
+    try {
+      if (!child.pid) throw new Error("child did not start");
+      writePrivateJsonAtomic(resourcePaths(root).service, {
+        schema_version: 1,
+        pid: child.pid,
+        host: hostname(),
+        state: "running",
+        heartbeat_at: new Date().toISOString(),
+      });
+      writePrivateJsonAtomic(supervisorPaths(root).stop, { retained: true });
+      const stop = readFileSync(supervisorPaths(root).stop, "utf8");
+      await expect(spawnSupervisor(root)).rejects.toThrow(
+        "legacy resource observer has not stopped",
+      );
+      expect(child.exitCode).toBeNull();
+      expect(process.kill(child.pid, 0)).toBe(true);
+      expect(existsSync(resourcePaths(root).stop)).toBe(true);
+      expect(readFileSync(supervisorPaths(root).stop, "utf8")).toBe(stop);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((done) => child.once("exit", () => done()));
+    }
+  });
+
+  test("an unknown lease blocks the daemon and launcher without removing its stop request", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harn-supervisor-lease-"));
+    roots.push(root);
+    const paths = supervisorPaths(root);
+    writePrivateJsonAtomic(paths.lease, {
+      pid: process.pid,
+      host: hostname(),
+      nonce: "owner",
+      created_at: new Date().toISOString(),
+    });
+    writePrivateJsonAtomic(paths.stop, { retained: true });
+    const lease = readFileSync(paths.lease, "utf8");
+    const stop = readFileSync(paths.stop, "utf8");
+    await expect(runSupervisor({ coordRoot: root, maxCycles: 1 })).rejects.toThrow(
+      "durable stop request",
+    );
+    await expect(spawnSupervisor(root)).rejects.toThrow("durable stop request");
+    expect(readFileSync(paths.lease, "utf8")).toBe(lease);
+    expect(readFileSync(paths.stop, "utf8")).toBe(stop);
+  });
+
+  test("missing build evidence is unknown and different builds require restart", () => {
+    const root = fixture();
+    expect(readSupervisorStatus(root)).toMatchObject({
+      running_build: null,
+      restart_needed: true,
+      build_status: "running build unknown; restart needed",
+    });
+    const installed = installedSupervisorBuild();
+    writePrivateJsonAtomic(supervisorPaths(root).service, {
+      ...statusRecord(),
+      running_build: installed,
+    });
+    expect(readSupervisorStatus(root)).toMatchObject({
+      running_build: installed,
+      installed_build: installed,
+      restart_needed: false,
+      build_status: "current",
+    });
+    writePrivateJsonAtomic(supervisorPaths(root).service, {
+      ...statusRecord(),
+      running_build: { ...installed, revision: "other-build" },
+    });
+    expect(readSupervisorStatus(root)).toMatchObject({
+      restart_needed: true,
+      build_status: "restart needed",
+    });
+  });
 });
 
 describe("local supervisor collectors", () => {
@@ -607,6 +885,7 @@ describe("local supervisor collectors", () => {
       },
     });
     expect(result.state).toBe("stopped");
+    expect(result.running_build).toEqual(installedSupervisorBuild());
     expect(result.cycle_count).toBeGreaterThan(1);
     expect(Date.parse(result.stopped_at ?? "")).toBeGreaterThanOrEqual(
       Date.parse(result.started_at) + 5_000,

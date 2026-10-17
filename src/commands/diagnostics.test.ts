@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
@@ -10,6 +10,47 @@ import { supervisorPaths } from "../core/supervisor/storage.ts";
 import { registerDiagnosticsCommand } from "./diagnostics.ts";
 
 describe("diagnostics command", () => {
+  test("reports an unknown supervisor and restart needed beside live findings", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-diagnostics-unknown-"));
+    try {
+      const paths = supervisorPaths(root);
+      mkdirSync(paths.root, { recursive: true });
+      writeFileSync(
+        paths.service,
+        JSON.stringify({
+          schema_version: 1,
+          pid: process.pid,
+          host: hostname(),
+          heartbeat_at: new Date().toISOString(),
+          state: "running",
+          keep_alive: true,
+        }),
+      );
+      writeFileSync(
+        paths.findings,
+        JSON.stringify({
+          schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
+          active: [],
+          transitions: [],
+        }),
+      );
+      const listed = capturedEmit();
+      const program = new Command();
+      registerDiagnosticsCommand(program, listed.emit, { repoRoot: root });
+      await program.parseAsync(["node", "harn", "diagnostics", "list"]);
+      expect(listed.payloads[0]).toMatchObject({
+        capability: { state: "error", reason_code: "supervisor_generation_unknown" },
+        supervisor: {
+          liveness: "unknown",
+          generation: "unknown",
+          restart_needed: true,
+          build_status: "running build unknown; restart needed",
+        },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   test("registers the stable bundle lifecycle", () => {
     const program = new Command();
     registerDiagnosticsCommand(program, quietEmit());

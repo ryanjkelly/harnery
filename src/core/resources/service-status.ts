@@ -1,5 +1,9 @@
+import { existsSync } from "node:fs";
 import { hostname } from "node:os";
-import { checkPidToken } from "../agents/state/proc-start.ts";
+import {
+  type ProcessGenerationVerdict,
+  verifyProcessGeneration,
+} from "../agents/state/proc-start.ts";
 import {
   RESOURCE_SERVICE_STATUS_SCHEMA_VERSION,
   type ResourceServiceStatus,
@@ -9,9 +13,15 @@ import { readResourceServiceRecord, resourcePaths } from "./storage.ts";
 
 const STALE_HEARTBEAT_MS = 15_000;
 
+export interface ResourceProcessDependencies {
+  readToken?: (pid: number) => string | null;
+  probePid?: (pid: number) => unknown;
+}
+
 export function readResourceServiceStatus(
   coordRoot: string,
   nowMs = Date.now(),
+  dependencies: ResourceProcessDependencies = {},
 ): ResourceServiceStatus {
   const paths = resourcePaths(coordRoot);
   const record = readResourceServiceRecord(coordRoot);
@@ -19,21 +29,22 @@ export function readResourceServiceStatus(
     return {
       running: false,
       stale: false,
+      generation: "unknown",
+      liveness: existsSync(paths.service) ? "unknown" : "stopped",
       status_path: paths.service,
       snapshot_path: paths.snapshot,
     };
   }
   const heartbeatAt = Date.parse(record.heartbeat_at);
   const stale = !Number.isFinite(heartbeatAt) || nowMs - heartbeatAt > STALE_HEARTBEAT_MS;
-  const local = record.host === hostname();
-  const running =
-    local &&
-    !stale &&
-    (record.state === "starting" || record.state === "running" || record.state === "stopping") &&
-    pidStillMatches(record.pid, record.start_token);
+  const owner = resourceProcessLiveness(record, dependencies);
+  const liveness =
+    owner.generation === "same" && record.state === "stopped" ? "stopped" : owner.liveness;
   return {
-    running,
+    running: liveness === "running" && !stale,
     stale,
+    generation: owner.generation,
+    liveness,
     record,
     status_path: paths.service,
     snapshot_path: paths.snapshot,
@@ -52,11 +63,23 @@ function validRecord(
   );
 }
 
-function pidStillMatches(pid: number, startToken: string | undefined): boolean {
+export function resourceProcessLiveness(
+  owner: { pid: number; host: string; start_token?: string },
+  dependencies: ResourceProcessDependencies = {},
+): { generation: ProcessGenerationVerdict; liveness: ResourceServiceStatus["liveness"] } {
+  if (owner.host !== hostname()) return { generation: "unknown", liveness: "unknown" };
   try {
-    process.kill(pid, 0);
+    (dependencies.probePid ?? ((pid) => process.kill(pid, 0)))(owner.pid);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
+    return {
+      generation: "unknown",
+      liveness: (error as NodeJS.ErrnoException).code === "ESRCH" ? "stopped" : "unknown",
+    };
   }
-  return checkPidToken(pid, startToken) !== "mismatch";
+  const generation = verifyProcessGeneration(owner.pid, owner.start_token, dependencies.readToken);
+  return {
+    generation,
+    liveness:
+      generation === "same" ? "running" : generation === "different" ? "stopped" : "unknown",
+  };
 }

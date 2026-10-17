@@ -154,6 +154,12 @@ function status(lastCycleAt?: number): SupervisorStatus {
   return {
     running: true,
     stale: false,
+    generation: "same",
+    liveness: "running",
+    running_build: { version: "test", revision: "test" },
+    installed_build: { version: "test", revision: "test" },
+    restart_needed: false,
+    build_status: "current",
     record,
     status_path: "/repo/.harnery/supervisor/service.json",
     snapshot_path: "/repo/.harnery/supervisor/snapshot.json",

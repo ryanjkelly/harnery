@@ -1,5 +1,6 @@
 import { utimesSync } from "node:fs";
 import { hostname } from "node:os";
+import { processStartToken } from "../../src/core/agents/state/proc-start.ts";
 import {
   PRESSURE_ASSESSMENT_SCHEMA_VERSION,
   PRESSURE_POLICY,
@@ -17,6 +18,7 @@ import {
   SUPERVISOR_PRESSURE_SCHEMA_VERSION,
   type SupervisorPressureRecord,
 } from "../../src/core/supervisor/contract";
+import { installedSupervisorBuild } from "../../src/core/supervisor/status.ts";
 import { supervisorPaths } from "../../src/core/supervisor/storage";
 
 export function resourceStatusFixture(root: string, nowMs = Date.now()): ResourceSnapshot {
@@ -93,6 +95,8 @@ export function resourceStatusFixture(root: string, nowMs = Date.now()): Resourc
   writePrivateJsonAtomic(supervisorPaths(root).service, {
     schema_version: 1,
     pid: process.pid,
+    start_token: processStartToken(process.pid),
+    running_build: installedSupervisorBuild(),
     host: hostname(),
     nonce: "fixture",
     state: "running",

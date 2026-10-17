@@ -10,8 +10,9 @@ import {
   SUPERVISOR_PRESSURE_SCHEMA_VERSION,
   type SupervisorCapability,
   type SupervisorPressureRecord,
+  type SupervisorStatus,
 } from "../supervisor/contract.ts";
-import { readSupervisorStatus } from "../supervisor/status.ts";
+import { installedSupervisorBuild, readSupervisorStatus } from "../supervisor/status.ts";
 import { supervisorPaths } from "../supervisor/storage.ts";
 import {
   RESOURCE_SNAPSHOT_SCHEMA_VERSION,
@@ -43,7 +44,17 @@ export interface ResourceStatus {
   platform: NodeJS.Platform | null;
   namespace: ResourceSnapshot["namespace"];
   support: ResourceSnapshot["support"] | null;
-  writer: { running: boolean; stale: boolean };
+  writer: Pick<
+    SupervisorStatus,
+    | "running"
+    | "stale"
+    | "generation"
+    | "liveness"
+    | "running_build"
+    | "installed_build"
+    | "restart_needed"
+    | "build_status"
+  >;
   /**
    * The one published pressure assessment, read from the observer's record so
    * this surface, the prompt notice, the dashboard, and a diagnostic bundle all
@@ -222,12 +233,16 @@ export function formatResourceSummary(status: ResourceStatus): string {
       ? "unknown"
       : `${formatBytes(m.memory_available_bytes)} available`;
   const diskText = disk ? `${formatBytes(disk.available_bytes as number)} available` : "unknown";
-  return `${lead} ${status.namespace}/${status.platform}: CPU ${cpu}, RAM ${ram}, disk ${diskText}; ${Math.round((status.sample_age_ms ?? 0) / 1_000)}s old${status.support?.state === "partial" ? "; partial" : ""}${!status.writer.running ? "; writer stopped" : ""}.`;
+  return `${lead} ${status.namespace}/${status.platform}: CPU ${cpu}, RAM ${ram}, disk ${diskText}; ${Math.round((status.sample_age_ms ?? 0) / 1_000)}s old${status.support?.state === "partial" ? "; partial" : ""}${!status.writer.running ? `; writer ${status.writer.liveness === "unknown" ? "unknown" : status.writer.stale ? "stale" : "stopped"}` : ""}.`;
 }
 
 export function formatResourceStatus(status: ResourceStatus, bin: string): string {
   const a = status.assessment;
   const lines = [formatResourceSummary(status)];
+  const writer = status.writer;
+  lines.push(
+    `Writer: ${writer.liveness}; generation ${writer.generation}; running build ${writer.running_build ? `${writer.running_build.version} (${writer.running_build.revision})` : "unknown"}; installed build ${writer.installed_build.version} (${writer.installed_build.revision}); ${writer.build_status}.`,
+  );
   lines.push(
     `Assessment: ${a.state} at ${a.scope} scope; limiting resource ${a.limiting_resource}; trend ${a.trend}; evidence ${a.evidence_state}; recommended action ${a.recommended_action}.`,
   );
@@ -247,7 +262,11 @@ export function formatResourceStatus(status: ResourceStatus, bin: string): strin
     lines.push(
       `Unattributed memory: ${Math.round(a.unattributed_memory_percent)}% of machine memory has no validated owner.`,
     );
-  if (status.state !== "fresh" || !status.writer.running)
+  if (status.writer.liveness === "unknown")
+    lines.push(
+      `Inspect the writer with ${bin} supervisor status. Run ${bin} supervisor stop to write its durable stop request before starting again.`,
+    );
+  else if (status.state !== "fresh" || !status.writer.running)
     lines.push(
       `Start or inspect the writer with ${bin} supervisor start --keep-alive and ${bin} supervisor status.`,
     );
@@ -345,7 +364,15 @@ export function readPublishedPressure(
   });
   // A record can only be trusted while its writer is alive. Every surface makes
   // the same check here so none of them reports a state the others do not.
-  if (!(writer ?? readWriterState(coordRoot, nowMs)).running) {
+  const observer = writer ?? readWriterState(coordRoot, nowMs);
+  if (observer.liveness === "unknown") {
+    return gap(
+      "error",
+      "pressure_observer_unknown",
+      "Local resource pressure cannot be determined because the resource observer's process identity is unknown.",
+    );
+  }
+  if (!observer.running) {
     return gap(
       "expired",
       "pressure_observer_not_running",
@@ -407,7 +434,7 @@ function readWriterState(coordRoot: string, nowMs: number): ResourceStatus["writ
     // Keep malformed service metadata from making the read expensive. The shared
     // status reader retains ownership of PID/start-token liveness checks.
     if (statSync(supervisorPaths(coordRoot).service).size > 65_536) {
-      return { running: false, stale: false };
+      return unknownWriterState();
     }
     const writer = readSupervisorStatus(coordRoot, nowMs);
     const futureHeartbeat =
@@ -415,11 +442,33 @@ function readWriterState(coordRoot: string, nowMs: number): ResourceStatus["writ
     return {
       running: writer.running && !futureHeartbeat,
       stale: writer.stale || !!futureHeartbeat,
+      generation: writer.generation,
+      liveness: writer.liveness,
+      running_build: writer.running_build,
+      installed_build: writer.installed_build,
+      restart_needed: writer.restart_needed,
+      build_status: writer.build_status,
     };
-  } catch {
+  } catch (error) {
     // A missing writer must not break normal coordination.
-    return { running: false, stale: false };
+    return {
+      ...unknownWriterState(),
+      liveness: (error as NodeJS.ErrnoException).code === "ENOENT" ? "stopped" : "unknown",
+    };
   }
+}
+
+function unknownWriterState(): ResourceStatus["writer"] {
+  return {
+    running: false,
+    stale: false,
+    generation: "unknown",
+    liveness: "unknown",
+    running_build: null,
+    installed_build: installedSupervisorBuild(),
+    restart_needed: true,
+    build_status: "running build unknown; restart needed",
+  };
 }
 
 function validPressureRecord(v: unknown): v is SupervisorPressureRecord {

@@ -1,3 +1,5 @@
+import type { ProcessGenerationVerdict } from "../agents/state/proc-start.ts";
+
 export const RESOURCE_SNAPSHOT_SCHEMA_VERSION = 2;
 export const RESOURCE_SERVICE_STATUS_SCHEMA_VERSION = 1;
 
@@ -154,6 +156,8 @@ export interface ResourceServiceStatusRecord {
 export interface ResourceServiceStatus {
   running: boolean;
   stale: boolean;
+  generation: ProcessGenerationVerdict;
+  liveness: "running" | "stopped" | "unknown";
   record?: ResourceServiceStatusRecord;
   status_path: string;
   snapshot_path: string;
@@ -176,3 +180,4 @@ export interface ResourceSampleResult {
   snapshot: ResourceSnapshot;
   state?: ResourceSamplerState;
 }
+

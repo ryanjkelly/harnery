@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,6 +27,31 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe("cached resource status", () => {
+  test("an unknown writer identity hides pressure and reports its build state", () => {
+    resourceStatusFixture(root, nowMs);
+    const path = supervisorPaths(root).service;
+    const record = JSON.parse(readFileSync(path, "utf8"));
+    delete record.start_token;
+    delete record.running_build;
+    writeFileSync(path, JSON.stringify(record));
+    const status = readResourceStatus(root, { nowMs });
+    expect(status).toMatchObject({
+      writer: {
+        running: false,
+        liveness: "unknown",
+        generation: "unknown",
+        running_build: null,
+        restart_needed: true,
+      },
+      assessment: { state: "unknown" },
+      assessment_capability: { reason_code: "pressure_observer_unknown" },
+    });
+    const text = formatResourceStatus(status, "project");
+    expect(text).toContain("generation unknown");
+    expect(text).toContain("running build unknown; restart needed");
+    expect(text).toContain("project supervisor stop");
+    expect(text).not.toContain("writer stopped");
+  });
   test("projects fresh totals, scope and age without command strings or unknown fields", () => {
     const snapshot = resourceStatusFixture(root, nowMs - 2000);
     writePrivateJsonAtomic(resourcePaths(root).snapshot, {
