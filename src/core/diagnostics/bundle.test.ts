@@ -30,10 +30,16 @@ import {
   replayDiagnosticBundle,
   validateDiagnosticBundle,
 } from "./bundle.ts";
-import { PRESSURE_POLICY, type PressureHysteresisState } from "./contract.ts";
+import {
+  DIAGNOSTIC_INPUT_SCHEMA_VERSION,
+  type DiagnosticObservations,
+  type DiagnosticThresholds,
+  PRESSURE_POLICY,
+  type PressureHysteresisState,
+} from "./contract.ts";
 import { pseudonymousMachineId } from "./identity.ts";
 import { assessPressure } from "./pressure.ts";
-import { sha256 } from "./replay.ts";
+import { replayDiagnosticInputs, sha256 } from "./replay.ts";
 import { sanitizeDiagnosticValue } from "./sanitize.ts";
 
 const roots: string[] = [];
@@ -467,6 +473,90 @@ describe("diagnostic bundles", () => {
 });
 
 describe("diagnostic sanitization", () => {
+  test("independently replays raw and sanitized observations with the same owners and ceilings", () => {
+    const raw = identityReplayObservations(["worker-a", "worker-b"]);
+    const before = JSON.stringify(raw);
+    const thresholds = identityReplayThresholds();
+    const sanitized = sanitizeDiagnosticValue(raw).value as DiagnosticObservations;
+    const rawFindings = replayDiagnosticInputs(raw, thresholds).findings;
+    const sanitizedFindings = replayDiagnosticInputs(sanitized, thresholds).findings;
+    expect(rawFindings).toHaveLength(2);
+    expect(sanitizedFindings).toEqual(rawFindings);
+    expect(sanitized.sources[0]!.value).toMatchObject({
+      authority: { owner_id: "worker-a", iteration: 3, charged_attempts: 2, max_attempts: 3 },
+    });
+    expect(JSON.stringify(raw)).toBe(before);
+  });
+
+  // Distinct home-based owners currently collapse from two replay findings to one.
+  test.todo("independently replays path owners without merging their finding identities", () => {
+    const owners = ["/home/owner-one/worker", "/home/owner-two/worker"];
+    const raw = identityReplayObservations(owners);
+    const before = JSON.stringify(raw);
+    const thresholds = identityReplayThresholds();
+    const sanitized = sanitizeDiagnosticValue(raw).value as DiagnosticObservations;
+    const rawFindings = replayDiagnosticInputs(raw, thresholds).findings;
+    const sanitizedFindings = replayDiagnosticInputs(sanitized, thresholds).findings;
+    const sanitizedOwners = owners.map(
+      (owner_id) => (sanitizeDiagnosticValue({ owner_id }).value as { owner_id: string }).owner_id,
+    );
+    expect(rawFindings).toHaveLength(2);
+    expect(sanitizedFindings).toHaveLength(rawFindings.length);
+    expect(new Set(sanitizedFindings.map((finding) => finding.id)).size).toBe(2);
+    expect(new Set(sanitizedFindings.map((finding) => finding.attribution?.owner_id)).size).toBe(2);
+    const semanticRows = (findings: typeof rawFindings, sourceOwners: string[]) =>
+      findings
+        .map((finding) => ({
+          owner: sourceOwners.indexOf(finding.attribution!.owner_id!),
+          scope: sourceOwners.indexOf(finding.scope_id),
+          kind: finding.finding_kind,
+          state: finding.state,
+          severity: finding.severity,
+          occurrence_count: finding.occurrence_count,
+          observed_value: finding.evidence[0]!.observed_value,
+        }))
+        .sort((left, right) => left.owner - right.owner);
+    expect(semanticRows(sanitizedFindings, sanitizedOwners)).toEqual(
+      semanticRows(rawFindings, owners),
+    );
+    expect(sanitized.sources[0]!.value).toMatchObject({
+      authority: {
+        owner_id: sanitizedOwners[0],
+        iteration: 3,
+        charged_attempts: 2,
+        max_attempts: 3,
+      },
+    });
+    expect(JSON.stringify(sanitized)).not.toContain("/home/owner-");
+    expect(JSON.stringify(raw)).toBe(before);
+  });
+
+  // Redacted owner paths no longer match the projection's original hashed fingerprints.
+  test.todo("replays captured path owner episodes without resetting their lifecycle", () => {
+    const owners = ["/home/owner-one/worker", "/home/owner-two/worker"];
+    const raw = identityReplayObservations(owners);
+    const findings = replayDiagnosticInputs(raw, identityReplayThresholds()).findings.map(
+      (finding) => ({ ...finding, occurrence_count: 3 }),
+    );
+    const root = repo();
+    writeReplaySources(root, raw.captured_at);
+    writeSource(root, "resources/snapshot.json", raw.sources[0]!.value);
+    writeSource(root, "supervisor/findings.json", {
+      schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
+      active: findings,
+      transitions: findings,
+    });
+    const sourcePath = join(root, ".harnery", "supervisor", "findings.json");
+    const before = readFileSync(sourcePath, "utf8");
+    const captured = captureDiagnosticBundle(root, { now: new Date(raw.captured_at) });
+    const replay = replayDiagnosticBundle(root, captured.manifest.artifact_id);
+    expect(replay.matched).toBeTrue();
+    const bundle = validateDiagnosticBundle(root, captured.manifest.artifact_id);
+    expect(bundle.expected.findings).toHaveLength(2);
+    expect(bundle.expected.findings.every((finding) => finding.occurrence_count === 3)).toBeTrue();
+    expect(readFileSync(sourcePath, "utf8")).toBe(before);
+  });
+
   test("removes every credential-shaped shared fixture sentinel", () => {
     const fixture = JSON.parse(
       readFileSync(
@@ -487,6 +577,34 @@ describe("diagnostic sanitization", () => {
     expect(pseudonymousMachineId("machine-a")).toMatch(/^machine_[0-9a-f]{64}$/);
   });
 });
+
+function identityReplayThresholds(): DiagnosticThresholds {
+  return { schema_version: DIAGNOSTIC_INPUT_SCHEMA_VERSION, values: {} };
+}
+
+function identityReplayObservations(owners: string[]): DiagnosticObservations {
+  const sampledAt = "2026-08-30T12:10:00.000Z";
+  const root = repo();
+  writeReplaySources(root, sampledAt);
+  const resource = JSON.parse(
+    readFileSync(join(root, ".harnery", "resources", "snapshot.json"), "utf8"),
+  );
+  resource.authority = { owner_id: owners[0], iteration: 3, charged_attempts: 2, max_attempts: 3 };
+  resource.groups = owners.map((id, index) => ({
+    kind: "agent",
+    id,
+    process_count: 1,
+    cpu_percent: 1,
+    rss_bytes: 3_221_225_472 + index,
+    root_pids: [4242 + index],
+  }));
+  return {
+    schema_version: DIAGNOSTIC_INPUT_SCHEMA_VERSION,
+    captured_at: sampledAt,
+    selection: { start_at: "2026-08-30T12:00:00.000Z", end_at: sampledAt },
+    sources: [{ source_kind: "resources.snapshot", capability: "supported", value: resource }],
+  };
+}
 
 function repo(): string {
   const root = mkdtempSync(join(tmpdir(), "harnery-diagnostics-"));
