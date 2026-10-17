@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { recordLiveClaimChangeV3, recordLiveTaskChangeV3 } from "../agents/live-authority-v3.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
+import { HarneryInboxService, inboxPath } from "../inbox/service.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
 import {
   recordLiveHookSignalV3,
@@ -14,9 +15,11 @@ import {
 import {
   type ContinuityCapsule,
   checkpointContext,
+  completeContextRecovery,
   extractContextSample,
   markContextCompactionCompleted,
   observationsComparable,
+  prepareContextRecovery,
   type RepoSnapshot,
   readContextState,
   readLatestCapsule,
@@ -245,6 +248,137 @@ describe("continuity checkpoints", () => {
     expect(briefing).toContain("branch changed next -> main");
     expect(briefing).toContain("new dirty paths: src/b.ts");
     expect(briefing).toContain("Re-check before editing");
+  });
+});
+
+function continuityInbox(coordRoot: string): HarneryInboxService {
+  return new HarneryInboxService({
+    coord_root: coordRoot,
+    limits: {
+      max_message_body_bytes: 4_000,
+      max_pending_count: 25,
+      max_pending_bytes: 100_000,
+      max_history_bytes: 1024 * 1024,
+      max_history_records: 10_000,
+      warning_pressure_ratio: 0.8,
+      max_surface_count: 10,
+      max_surface_bytes: 16_000,
+      max_surface_tokens: 4_000,
+      surfaced_grace_ms: 604_800_000,
+      terminal_grace_ms: 604_800_000,
+    },
+  });
+}
+
+function coordinationInput(inbox: HarneryInboxService, body: string, recipient = "owner-a") {
+  return inbox.send({
+    sender_instance_id: "peer-instance",
+    sender_display_name: "Peer",
+    recipient_instance_id: recipient,
+    recipient_display_name: "Recipient",
+    body,
+  });
+}
+
+function compactionCheckpoint(coordRoot: string) {
+  return checkpointContext(coordRoot, {
+    sessionId: "session-a",
+    instanceId: "owner-a",
+    adapter: "claude-code",
+    cwd: coordRoot,
+    reason: "pre_compact",
+  });
+}
+
+describe("compaction coordination input", () => {
+  test("recovery lists input surfaced immediately before compaction without changing history", async () => {
+    mockGitReads();
+    const coordRoot = root();
+    seedLiveWork(coordRoot);
+    const inbox = continuityInbox(coordRoot);
+    const sent = coordinationInput(inbox, "check the pending review before editing");
+    await inbox.surface("owner-a", () => {});
+    const checkpoint = compactionCheckpoint(coordRoot);
+    const capsuleBefore = readFileSync(checkpoint.path, "utf8");
+    const inboxBefore = readFileSync(inboxPath(coordRoot, "owner-a"), "utf8");
+    const ledgerPath = join(coordRoot, ".harnery", "ledgers", "v3", "active.ndjson");
+    const ledgerBefore = readFileSync(ledgerPath, "utf8");
+
+    const prepared = prepareContextRecovery(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      cwd: coordRoot,
+    });
+
+    expect(prepared?.briefing).toContain(sent.message_id);
+    expect(prepared?.briefing).toContain("check the pending review before editing");
+    expect(inbox.pending("owner-a")).toEqual([]);
+    expect(readFileSync(checkpoint.path, "utf8")).toBe(capsuleBefore);
+    expect(readFileSync(inboxPath(coordRoot, "owner-a"), "utf8")).toBe(inboxBefore);
+    expect(readFileSync(ledgerPath, "utf8")).toBe(ledgerBefore);
+  });
+
+  for (const outcome of ["failed", "cancelled"] as const) {
+    test(`${outcome} recovery injection never records successful recovery`, async () => {
+      mockGitReads();
+      const coordRoot = root();
+      const inbox = continuityInbox(coordRoot);
+      coordinationInput(inbox, `preserve input after ${outcome} compaction`);
+      const checkpoint = compactionCheckpoint(coordRoot);
+      const prepared = prepareContextRecovery(coordRoot, {
+        sessionId: "session-a",
+        instanceId: "owner-a",
+        cwd: coordRoot,
+      });
+      expect(prepared).not.toBeNull();
+      const error = new Error(`${outcome} native context acceptance`);
+      if (outcome === "cancelled") error.name = "AbortError";
+      await expect(Promise.reject(error)).rejects.toThrow(error.message);
+
+      const state = readContextState(coordRoot, "session-a")!;
+      expect(state.phase).toBe("checkpointed");
+      expect(state.recovered_at).toBeUndefined();
+      expect(state.compaction_completed_at).toBeUndefined();
+      expect(inbox.pending("owner-a")).toHaveLength(1);
+      const retry = compactionCheckpoint(coordRoot);
+      expect(retry.reused).toBe(true);
+      expect(retry.capsule.capsule_id).toBe(checkpoint.capsule.capsule_id);
+    });
+  }
+
+  test("two overflows retain steering input and retries stay in one generation", async () => {
+    mockGitReads();
+    const coordRoot = root();
+    const inbox = continuityInbox(coordRoot);
+    const first = coordinationInput(inbox, "first feedback before the tool batch");
+    let laterId = "";
+    await inbox.surface("owner-a", () => {
+      laterId = coordinationInput(inbox, "steering queued during the tool batch").message_id;
+    });
+    coordinationInput(inbox, "private input for a different instance", "other-instance");
+    const history = readFileSync(inboxPath(coordRoot, "owner-a"), "utf8");
+    let generation = 0;
+
+    for (let overflow = 0; overflow < 2; overflow++) {
+      const checkpoint = compactionCheckpoint(coordRoot);
+      expect(checkpoint.capsule.generation).toBe(++generation);
+      for (let retry = 0; retry < 2; retry++) {
+        expect(compactionCheckpoint(coordRoot).reused).toBe(true);
+        const prepared = prepareContextRecovery(coordRoot, {
+          sessionId: "session-a",
+          instanceId: "owner-a",
+          cwd: coordRoot,
+        })!;
+        expect(prepared.briefing.split(first.message_id)).toHaveLength(2);
+        expect(prepared.briefing.split(laterId)).toHaveLength(2);
+        expect(prepared.briefing).toContain("steering queued during the tool batch");
+        expect(prepared.briefing).not.toContain("private input for a different instance");
+        expect(inbox.pending("owner-a").map(({ message_id }) => message_id)).toEqual([laterId]);
+        expect(readFileSync(inboxPath(coordRoot, "owner-a"), "utf8")).toBe(history);
+      }
+      completeContextRecovery(coordRoot, { sessionId: "session-a", instanceId: "owner-a" });
+    }
+    expect(readContextState(coordRoot, "session-a")?.generation).toBe(2);
   });
 });
 
