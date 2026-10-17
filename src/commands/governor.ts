@@ -385,12 +385,13 @@ function registerServiceCommand(
     .action(async (opts: { json?: boolean }) => {
       await withGovernorRootAsync(emit, async (coordRoot) => {
         let status = requestGovernorServiceStop(coordRoot);
+        const signal = { signal_sent: status.signal_sent, signal_verdict: status.signal_verdict };
         const deadline = Date.now() + 5_000;
         while (status.running && Date.now() < deadline) {
           await delay(50);
           status = readGovernorServiceStatus(coordRoot);
         }
-        emitServiceStatus(status, opts.json, emit);
+        emitServiceStatus({ ...status, ...signal }, opts.json, emit);
       });
     });
 
@@ -534,19 +535,31 @@ function emitServiceStatus(
     emit.data(status);
     return;
   }
-  if (!status.config && !status.record) {
-    emit.text("governor service: unconfigured\n");
-    return;
-  }
-  const state = status.running
-    ? (status.record?.state ?? "running")
-    : status.stale
-      ? "stale"
-      : "stopped";
+  const state =
+    status.liveness === "unknown"
+      ? "unknown"
+      : !status.config && !status.record
+        ? "unconfigured"
+        : status.running
+          ? (status.record?.state ?? "running")
+          : status.stale
+            ? "stale"
+            : "stopped";
   const lines = [
     `governor service: ${state}`,
+    `generation: ${status.generation}`,
+    `liveness: ${status.liveness}`,
+    `running build: ${status.running_build ? `${status.running_build.version} (${status.running_build.revision})` : "unknown"}`,
+    `installed build: ${status.installed_build.version} (${status.installed_build.revision})`,
+    `build: ${status.build_status}`,
     `goals: ${status.config?.goal_ids.join(", ") || "none"}`,
   ];
+  if (status.signal_sent !== undefined) {
+    lines.push(`signal sent: ${status.signal_sent ? "yes" : "no"} (${status.signal_verdict})`);
+    if (!status.signal_sent && status.record?.state !== "stopped") {
+      lines.push("The durable stop request remains for the service to read.");
+    }
+  }
   if (status.record) {
     lines.push(`pid: ${status.record.pid} on ${status.record.host}`);
     lines.push(`heartbeat: ${status.record.heartbeat_at}`);

@@ -16,12 +16,24 @@ import {
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
+import {
+  type ProcessGenerationSignalDependencies,
+  type ProcessGenerationVerdict,
+  processStartToken,
+  signalIfSameGeneration,
+} from "../agents/state/proc-start.ts";
+import { resolveBinName } from "../config.ts";
 import { type NormalizedPolicy, normalizePolicy, type PolicyIsolation } from "../policy/index.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { RotatingTextSink } from "../storage/process-log.ts";
 import type { RunWorkItemInput } from "../work/index.ts";
 import { type GovernorRunReport, type GovernorStopReason, runGovernor } from "./runner.ts";
+import {
+  currentGovernorServiceBuild,
+  governorServiceBuildStatus,
+  observeGovernorServiceProcess,
+} from "./service-read.ts";
 import { type GovernorRecord, readGovernor } from "./state.ts";
 
 export const GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION = 1 as const;
@@ -31,7 +43,6 @@ export const GOVERNOR_SERVICE_STATUS_SCHEMA_VERSION = 1 as const;
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_GOALS = 100;
 const MAX_ERROR = 2_000;
-const FOREIGN_STATUS_STALE_MS = 30_000;
 
 export interface GovernorServiceEngineConfig {
   default_adapter?: string;
@@ -85,9 +96,20 @@ export interface GovernorServiceRuntime {
 
 export type GovernorServiceProcessState = "starting" | "running" | "stopping" | "stopped";
 
+export interface GovernorServiceBuild {
+  version: string;
+  revision: string;
+}
+
+export interface GovernorServiceProcessDependencies extends ProcessGenerationSignalDependencies {
+  probePid?: (pid: number) => boolean;
+}
+
 export interface GovernorServiceStatusRecord {
   schema_version: typeof GOVERNOR_SERVICE_STATUS_SCHEMA_VERSION;
   pid: number;
+  start_token?: string;
+  running_build?: GovernorServiceBuild;
   host: string;
   nonce: string;
   state: GovernorServiceProcessState;
@@ -105,6 +127,14 @@ export interface GovernorServiceStatusRecord {
 export interface GovernorServiceStatus {
   running: boolean;
   stale: boolean;
+  generation: ProcessGenerationVerdict;
+  liveness: "running" | "stopped" | "unknown";
+  running_build: GovernorServiceBuild | null;
+  installed_build: GovernorServiceBuild;
+  restart_needed: boolean;
+  build_status: string;
+  signal_sent?: boolean;
+  signal_verdict?: ProcessGenerationVerdict;
   record?: GovernorServiceStatusRecord;
   config?: GovernorServiceConfig;
   runtime?: GovernorServiceRuntime;
@@ -145,6 +175,8 @@ export interface RunGovernorServiceDaemonInput {
 
 interface ServiceLease {
   pid: number;
+  start_token?: string;
+  running_build?: GovernorServiceBuild;
   host: string;
   nonce: string;
   created_at: string;
@@ -155,8 +187,12 @@ export function configureGovernorService(
 ): GovernorServiceConfig {
   const coordRoot = resolve(input.coordRoot);
   const active = readStatusRecord(coordRoot);
-  if (active && statusOwnerIsLive(active)) {
-    throw new Error(`stop governor service pid ${active.pid} before changing its configuration`);
+  if (!active && existsSync(serviceStatusPath(coordRoot))) {
+    throw serviceStartRefusal(coordRoot, undefined, "unknown");
+  }
+  if (active) {
+    const liveness = statusOwnerIsLive(active);
+    if (liveness !== "stopped") throw serviceStartRefusal(coordRoot, active.pid, liveness);
   }
   const goalIds = unique(input.goalIds.map((value) => value.trim()).filter(Boolean));
   if (goalIds.length < 1 || goalIds.length > MAX_GOALS) {
@@ -235,7 +271,10 @@ export function readGovernorServiceRuntime(
   return runtime;
 }
 
-export function readGovernorServiceStatus(coordRootRaw: string): GovernorServiceStatus {
+export function readGovernorServiceStatus(
+  coordRootRaw: string,
+  dependencies: GovernorServiceProcessDependencies = {},
+): GovernorServiceStatus {
   const coordRoot = resolve(coordRootRaw);
   const record = readStatusRecord(coordRoot);
   let config: GovernorServiceConfig | undefined;
@@ -250,17 +289,25 @@ export function readGovernorServiceStatus(coordRootRaw: string): GovernorService
   } catch {
     // Status remains readable when recoverable runtime state is corrupt.
   }
-  if (!record) return { running: false, stale: false, config, runtime };
-  const running = statusOwnerIsLive(record);
-  return { running, stale: !running && record.state !== "stopped", record, config, runtime };
+  const observation = observeGovernorServiceProcess(record, dependencies);
+  if (!record && existsSync(serviceStatusPath(coordRoot))) observation.liveness = "unknown";
+  return {
+    running: observation.liveness === "running" && record?.state !== "stopped",
+    stale: observation.liveness === "stopped" && record !== undefined && record.state !== "stopped",
+    ...observation,
+    ...governorServiceBuildStatus(record),
+    record,
+    config,
+    runtime,
+  };
 }
 
 export async function spawnGovernorService(coordRootRaw: string): Promise<GovernorServiceStatus> {
   const coordRoot = resolve(coordRootRaw);
   readGovernorServiceConfig(coordRoot);
   const current = readGovernorServiceStatus(coordRoot);
-  if (current.running) {
-    throw new Error(`governor service is already running under pid ${current.record?.pid}`);
+  if (current.liveness !== "stopped") {
+    throw serviceStartRefusal(coordRoot, current.record?.pid, current.liveness);
   }
   mkdirSync(serviceDir(coordRoot), { recursive: true, mode: stateDirMode() });
   const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
@@ -298,22 +345,33 @@ export async function spawnGovernorService(coordRootRaw: string): Promise<Govern
   throw new Error(`governor service failed to start; inspect ${governorServiceLogPath(coordRoot)}`);
 }
 
-export function requestGovernorServiceStop(coordRootRaw: string): GovernorServiceStatus {
+export function requestGovernorServiceStop(
+  coordRootRaw: string,
+  dependencies: GovernorServiceProcessDependencies = {},
+): GovernorServiceStatus {
   const coordRoot = resolve(coordRootRaw);
-  const status = readGovernorServiceStatus(coordRoot);
-  if (!status.running || !status.record) return status;
+  const status = readGovernorServiceStatus(coordRoot, dependencies);
+  if ((status.record?.state === "stopped" || !status.record) && status.liveness === "stopped") {
+    return { ...status, signal_sent: false, signal_verdict: status.generation };
+  }
   writePrivateJsonAtomic(serviceStopPath(coordRoot), {
     requested_at: new Date().toISOString(),
     requested_by_pid: process.pid,
   });
-  if (status.record.host === hostname()) {
-    try {
-      process.kill(status.record.pid, "SIGTERM");
-    } catch {
-      // The durable stop request remains for a racing or restarted daemon.
-    }
-  }
-  return readGovernorServiceStatus(coordRoot);
+  const signal =
+    status.record?.host === hostname() && status.record.state !== "stopped"
+      ? signalIfSameGeneration(
+          status.record.pid,
+          status.record.start_token,
+          "SIGTERM",
+          dependencies,
+        )
+      : { sent: false, verdict: status.generation };
+  return {
+    ...readGovernorServiceStatus(coordRoot, dependencies),
+    signal_sent: signal.sent,
+    signal_verdict: signal.verdict,
+  };
 }
 
 export async function runGovernorServiceSweep(
@@ -461,12 +519,22 @@ export async function runGovernorServiceDaemon(
 ): Promise<GovernorServiceStatusRecord> {
   const coordRoot = resolve(input.coordRoot);
   const config = readGovernorServiceConfig(coordRoot);
+  const existing = readStatusRecord(coordRoot);
+  if (!existing && existsSync(serviceStatusPath(coordRoot))) {
+    throw serviceStartRefusal(coordRoot, undefined, "unknown");
+  }
+  if (existing) {
+    const liveness = statusOwnerIsLive(existing);
+    if (liveness !== "stopped") throw serviceStartRefusal(coordRoot, existing.pid, liveness);
+  }
   const release = acquireServiceLease(coordRoot);
   rmSync(serviceStopPath(coordRoot), { force: true });
   const now = new Date().toISOString();
   const status: GovernorServiceStatusRecord = {
     schema_version: GOVERNOR_SERVICE_STATUS_SCHEMA_VERSION,
     pid: process.pid,
+    start_token: processStartToken(process.pid) ?? undefined,
+    running_build: currentGovernorServiceBuild(),
     host: hostname(),
     nonce: randomUUID(),
     state: "starting",
@@ -493,6 +561,8 @@ export async function runGovernorServiceDaemon(
   appendGovernorServiceDiagnostic(coordRoot, {
     event: "service.started",
     pid: process.pid,
+    start_token: status.start_token,
+    running_build: status.running_build,
     goals: config.goal_ids,
     config_created_at: config.created_at,
   });
@@ -716,6 +786,8 @@ function acquireServiceLease(coordRoot: string): () => void {
   mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const owner: ServiceLease = {
     pid: process.pid,
+    start_token: processStartToken(process.pid) ?? undefined,
+    running_build: currentGovernorServiceBuild(),
     host: hostname(),
     nonce: randomUUID(),
     created_at: new Date().toISOString(),
@@ -736,8 +808,9 @@ function acquireServiceLease(coordRoot: string): () => void {
   };
   if (!acquire()) {
     const existing = readLease(path);
-    if (existing && leaseOwnerIsLive(existing)) {
-      throw new Error(`governor service is already running under pid ${existing.pid}`);
+    const liveness = existing ? leaseOwnerIsLive(existing) : "unknown";
+    if (liveness !== "stopped") {
+      throw serviceStartRefusal(coordRoot, existing?.pid, liveness);
     }
     unlinkSync(path);
     if (!acquire()) throw new Error("governor service lease raced with another process");
@@ -760,19 +833,18 @@ function readLease(path: string): ServiceLease | null {
       typeof value.host === "string" &&
       typeof value.nonce === "string" &&
       typeof value.created_at === "string"
-      ? (value as ServiceLease)
+      ? ({
+          ...value,
+          start_token: typeof value.start_token === "string" ? value.start_token : undefined,
+        } as ServiceLease)
       : null;
   } catch {
     return null;
   }
 }
 
-function leaseOwnerIsLive(lease: ServiceLease): boolean {
-  if (lease.host !== hostname()) {
-    const age = Date.now() - Date.parse(lease.created_at);
-    return Number.isFinite(age) && age < FOREIGN_STATUS_STALE_MS;
-  }
-  return pidAlive(lease.pid);
+function leaseOwnerIsLive(lease: ServiceLease): GovernorServiceStatus["liveness"] {
+  return observeGovernorServiceProcess({ ...lease, state: "running" }).liveness;
 }
 
 function readStatusRecord(coordRoot: string): GovernorServiceStatusRecord | undefined {
@@ -793,26 +865,31 @@ function readStatusRecord(coordRoot: string): GovernorServiceStatusRecord | unde
     ) {
       return undefined;
     }
-    return value;
+    return {
+      ...value,
+      start_token: typeof value.start_token === "string" ? value.start_token : undefined,
+    };
   } catch {
     return undefined;
   }
 }
 
-function statusOwnerIsLive(record: GovernorServiceStatusRecord): boolean {
-  if (record.state === "stopped") return false;
-  if (record.host === hostname()) return pidAlive(record.pid);
-  const age = Date.now() - Date.parse(record.heartbeat_at);
-  return Number.isFinite(age) && age < FOREIGN_STATUS_STALE_MS;
+function statusOwnerIsLive(record: GovernorServiceStatusRecord): GovernorServiceStatus["liveness"] {
+  return observeGovernorServiceProcess(record).liveness;
 }
 
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+function serviceStartRefusal(
+  coordRoot: string,
+  pid: number | undefined,
+  liveness: GovernorServiceStatus["liveness"],
+): Error {
+  const reason =
+    liveness === "unknown"
+      ? `governor service process generation is unknown${pid ? ` for pid ${pid}` : ""}`
+      : `governor service process is still running under pid ${pid}`;
+  return new Error(
+    `${reason}; run \`${resolveBinName(coordRoot)} governor service stop\` to write a durable stop request before starting or reconfiguring it`,
+  );
 }
 
 export function appendGovernorServiceDiagnostic(

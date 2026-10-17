@@ -1,19 +1,25 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
+import { processStartToken } from "../agents/state/proc-start.ts";
 import { normalizePolicy } from "../policy/index.ts";
 import { closeProcessLoggers } from "../storage/logger.ts";
 import { acceptWorkItem, createWorkItem, readWorkItem } from "../work/index.ts";
 import {
   appendGovernorServiceDiagnostic,
   configureGovernorService,
+  type GovernorServiceStatusRecord,
   governorServiceLogPath,
   readGovernorServiceConfig,
   readGovernorServiceRuntime,
   readGovernorServiceStatus,
+  requestGovernorServiceStop,
   runGovernorServiceDaemon,
   runGovernorServiceSweep,
+  spawnGovernorService,
 } from "./service.ts";
+import { currentGovernorServiceBuild } from "./service-read.ts";
 import { createGovernor, readGovernor } from "./state.ts";
 
 const roots: string[] = [];
@@ -60,6 +66,210 @@ function fixture(options: { accept?: boolean; goalId?: string; workId?: string }
   });
   return { root, workId, goalId };
 }
+
+function serviceRecord(root: string, overrides: Partial<GovernorServiceStatusRecord> = {}) {
+  const now = new Date().toISOString();
+  const record: GovernorServiceStatusRecord = {
+    schema_version: 1,
+    pid: process.pid,
+    host: hostname(),
+    nonce: "service-fixture",
+    state: "running",
+    start_token: processStartToken(process.pid) ?? undefined,
+    running_build: currentGovernorServiceBuild(),
+    started_at: now,
+    heartbeat_at: now,
+    config_created_at: now,
+    sweep_count: 0,
+    ...overrides,
+  };
+  writeFileSync(join(root, ".harnery", "governor-service", "status.json"), JSON.stringify(record));
+  return record;
+}
+
+describe("governor service process safety", () => {
+  test("does not signal a reused PID and preserves the durable stop request", () => {
+    const { root, goalId } = fixture();
+    configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    serviceRecord(root, { start_token: "replacement-generation" });
+    let signals = 0;
+    const status = requestGovernorServiceStop(root, { kill: () => signals++ });
+    expect(status).toMatchObject({
+      running: false,
+      stale: true,
+      generation: "different",
+      liveness: "stopped",
+      signal_sent: false,
+      signal_verdict: "different",
+    });
+    expect(signals).toBe(0);
+    expect(existsSync(join(root, ".harnery", "governor-service", "stop.json"))).toBe(true);
+  });
+
+  test("missing tokens block a second start and use the durable stop fallback", async () => {
+    const { root, goalId } = fixture();
+    configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    serviceRecord(root, { start_token: undefined, running_build: undefined });
+    const before = readFileSync(join(root, ".harnery", "governor-service", "status.json"), "utf8");
+    expect(readGovernorServiceStatus(root)).toMatchObject({
+      running: false,
+      generation: "unknown",
+      liveness: "unknown",
+      running_build: null,
+      restart_needed: true,
+      build_status: "running build unknown; restart needed",
+    });
+    expect(() => configureGovernorService({ coordRoot: root, goalIds: [goalId] })).toThrow(
+      "governor service stop",
+    );
+    await expect(spawnGovernorService(root)).rejects.toThrow("durable stop request");
+    await expect(
+      runGovernorServiceDaemon({ coordRoot: root, engine: { spawners: {} }, maxSweeps: 1 }),
+    ).rejects.toThrow("process generation is unknown");
+    expect(readFileSync(join(root, ".harnery", "governor-service", "status.json"), "utf8")).toBe(
+      before,
+    );
+    let signals = 0;
+    expect(requestGovernorServiceStop(root, { kill: () => signals++ })).toMatchObject({
+      signal_sent: false,
+      signal_verdict: "unknown",
+    });
+    expect(signals).toBe(0);
+    expect(existsSync(join(root, ".harnery", "governor-service", "stop.json"))).toBe(true);
+  });
+
+  test("unreadable tokens stay unknown and never authorize a signal", () => {
+    const { root, goalId } = fixture();
+    configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    serviceRecord(root);
+    let signals = 0;
+    const status = requestGovernorServiceStop(root, {
+      readToken: () => {
+        throw new Error("token probe failed");
+      },
+      probePid: () => true,
+      kill: () => signals++,
+    });
+    expect(status).toMatchObject({
+      generation: "unknown",
+      liveness: "unknown",
+      signal_sent: false,
+      signal_verdict: "unknown",
+    });
+    expect(signals).toBe(0);
+  });
+
+  test("a terminal marker cannot hide an unknown live process generation", async () => {
+    const { root, goalId } = fixture();
+    configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    serviceRecord(root, { state: "stopped", start_token: undefined });
+    expect(readGovernorServiceStatus(root)).toMatchObject({
+      running: false,
+      generation: "unknown",
+      liveness: "unknown",
+    });
+    await expect(spawnGovernorService(root)).rejects.toThrow("process generation is unknown");
+    await expect(
+      runGovernorServiceDaemon({ coordRoot: root, engine: { spawners: {} }, maxSweeps: 1 }),
+    ).rejects.toThrow("process generation is unknown");
+    let signals = 0;
+    expect(requestGovernorServiceStop(root, { kill: () => signals++ })).toMatchObject({
+      signal_sent: false,
+      signal_verdict: "unknown",
+    });
+    expect(signals).toBe(0);
+    expect(existsSync(join(root, ".harnery", "governor-service", "stop.json"))).toBe(true);
+  });
+
+  test("rechecks the token after the durable request and before the signal", () => {
+    const { root, goalId } = fixture();
+    configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    serviceRecord(root, { start_token: "recorded" });
+    let reads = 0;
+    let signals = 0;
+    const stopPath = join(root, ".harnery", "governor-service", "stop.json");
+    const status = requestGovernorServiceStop(root, {
+      readToken: () => {
+        reads++;
+        if (reads === 1) return "recorded";
+        expect(existsSync(stopPath)).toBe(true);
+        return "replacement";
+      },
+      probePid: () => true,
+      kill: () => signals++,
+    });
+    expect(reads).toBe(3);
+    expect(status).toMatchObject({ signal_sent: false, signal_verdict: "different" });
+    expect(signals).toBe(0);
+  });
+
+  test("signals a verified generation and preserves a failed signal result", () => {
+    const { root, goalId } = fixture();
+    configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    const record = serviceRecord(root);
+    let signals = 0;
+    expect(
+      requestGovernorServiceStop(root, {
+        kill: (pid, signal) => {
+          expect(pid).toBe(record.pid);
+          expect(signal).toBe("SIGTERM");
+          signals++;
+        },
+      }),
+    ).toMatchObject({ signal_sent: true, signal_verdict: "same" });
+    expect(signals).toBe(1);
+    expect(
+      requestGovernorServiceStop(root, {
+        kill: () => {
+          throw new Error("signal refused");
+        },
+      }),
+    ).toMatchObject({
+      signal_sent: false,
+      signal_verdict: "same",
+    });
+  });
+
+  test("unknown lease ownership blocks a daemon without changing the lease or stop file", async () => {
+    const { root, goalId } = fixture();
+    configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    const leasePath = join(root, ".harnery", "governor-service", "lease.json");
+    const stopPath = join(root, ".harnery", "governor-service", "stop.json");
+    const lease = JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      nonce: "previous",
+      created_at: new Date().toISOString(),
+    });
+    writeFileSync(leasePath, lease);
+    writeFileSync(stopPath, "preserve this stop request");
+    await expect(
+      runGovernorServiceDaemon({ coordRoot: root, engine: { spawners: {} }, maxSweeps: 1 }),
+    ).rejects.toThrow("durable stop request");
+    expect(readFileSync(leasePath, "utf8")).toBe(lease);
+    expect(readFileSync(stopPath, "utf8")).toBe("preserve this stop request");
+  });
+
+  test("an unreadable status blocks startup and still accepts a durable stop request", async () => {
+    const { root, goalId } = fixture();
+    configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    const statusPath = join(root, ".harnery", "governor-service", "status.json");
+    writeFileSync(statusPath, "{invalid");
+    expect(readGovernorServiceStatus(root)).toMatchObject({
+      generation: "unknown",
+      liveness: "unknown",
+    });
+    await expect(spawnGovernorService(root)).rejects.toThrow("process generation is unknown");
+    let signals = 0;
+    expect(requestGovernorServiceStop(root, { kill: () => signals++ })).toMatchObject({
+      signal_sent: false,
+      signal_verdict: "unknown",
+    });
+    expect(signals).toBe(0);
+    expect(readFileSync(statusPath, "utf8")).toBe("{invalid");
+    expect(existsSync(join(root, ".harnery", "governor-service", "stop.json"))).toBe(true);
+  });
+});
 
 describe("governor background service", () => {
   test("freezes a private canonical service configuration for explicit goals", () => {
@@ -249,12 +459,27 @@ describe("governor background service", () => {
       wakeIntervalMs: 50,
       heartbeatIntervalMs: 25,
     });
+    let lease: Record<string, unknown> | undefined;
     const status = await runGovernorServiceDaemon({
       coordRoot: root,
       engine: { spawners: {} },
       maxSweeps: 1,
+      onLog: (line) => {
+        if (line.startsWith("governor service started")) {
+          lease = JSON.parse(
+            readFileSync(join(root, ".harnery", "governor-service", "lease.json"), "utf8"),
+          );
+        }
+      },
     });
     expect(status).toMatchObject({ state: "stopped", sweep_count: 1 });
+    expect(status.start_token).toBe(processStartToken(process.pid) ?? undefined);
+    expect(status.running_build).toEqual(currentGovernorServiceBuild());
+    expect(lease).toMatchObject({
+      pid: process.pid,
+      start_token: processStartToken(process.pid) ?? undefined,
+      running_build: currentGovernorServiceBuild(),
+    });
     expect(readGovernorServiceStatus(root)).toMatchObject({
       running: false,
       stale: false,

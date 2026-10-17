@@ -1,12 +1,22 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { processStartToken } from "../agents/state/proc-start.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
 import type { HarneryLogRecordV1 } from "../storage/jsonl.ts";
 import { encodeLogRecord } from "../storage/jsonl.ts";
 import { FileSegmentSink } from "../storage/segments.ts";
-import { governorServiceLogPath, readGovernorServiceLogs } from "./service-read.ts";
+import {
+  type GovernorServiceStatusRecord,
+  readGovernorServiceStatus as readWriterStatus,
+} from "./service.ts";
+import {
+  currentGovernorServiceBuild,
+  governorServiceLogPath,
+  readGovernorServiceLogs,
+  readGovernorServiceStatus,
+} from "./service-read.ts";
 
 const roots: string[] = [];
 const originalSharedLogs = process.env.HARNERY_SHARED_LOGS;
@@ -15,6 +25,118 @@ afterEach(() => {
   if (originalSharedLogs === undefined) delete process.env.HARNERY_SHARED_LOGS;
   else process.env.HARNERY_SHARED_LOGS = originalSharedLogs;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("governor service status reader", () => {
+  test("both readers report the same generation and running build", () => {
+    const root = fixture();
+    const record = statusFixture(root);
+    const status = readGovernorServiceStatus(root);
+    expect(status).toMatchObject({
+      running: true,
+      liveness: "running",
+      generation: "same",
+      running_build: record.running_build,
+      installed_build: currentGovernorServiceBuild(),
+      restart_needed: false,
+      build_status: "current",
+    });
+    expect(readWriterStatus(root)).toEqual(status);
+  });
+
+  test("a missing token or failed probe stays unknown in both readers", () => {
+    const root = fixture();
+    statusFixture(root, { start_token: undefined, running_build: undefined });
+    expect(readGovernorServiceStatus(root)).toMatchObject({
+      running: false,
+      generation: "unknown",
+      liveness: "unknown",
+      running_build: null,
+      restart_needed: true,
+      build_status: "running build unknown; restart needed",
+    });
+    statusFixture(root);
+    const dependencies = { readToken: () => null, probePid: () => true };
+    expect(readGovernorServiceStatus(root, dependencies)).toMatchObject({
+      running: false,
+      generation: "unknown",
+      liveness: "unknown",
+    });
+    expect(readGovernorServiceStatus(root, dependencies)).toEqual(
+      readWriterStatus(root, dependencies),
+    );
+  });
+
+  test("a reused PID is stopped without claiming the replacement is owned", () => {
+    const root = fixture();
+    statusFixture(root, { start_token: "different-generation" });
+    expect(readGovernorServiceStatus(root)).toMatchObject({
+      running: false,
+      stale: true,
+      generation: "different",
+      liveness: "stopped",
+    });
+  });
+
+  test("permission errors are unknown while ESRCH proves the process stopped", () => {
+    const root = fixture();
+    statusFixture(root);
+    const permission = {
+      probePid: () => {
+        throw Object.assign(new Error("denied"), { code: "EPERM" });
+      },
+    };
+    expect(readGovernorServiceStatus(root, permission)).toMatchObject({
+      running: false,
+      generation: "same",
+      liveness: "unknown",
+    });
+    const gone = {
+      probePid: () => {
+        throw Object.assign(new Error("missing"), { code: "ESRCH" });
+      },
+    };
+    expect(readGovernorServiceStatus(root, gone)).toMatchObject({
+      running: false,
+      liveness: "stopped",
+    });
+  });
+
+  test("a foreign-host process remains unknown even with a fresh heartbeat", () => {
+    const root = fixture();
+    statusFixture(root, { host: `other-${hostname()}` });
+    expect(readGovernorServiceStatus(root)).toMatchObject({
+      running: false,
+      generation: "unknown",
+      liveness: "unknown",
+    });
+  });
+
+  test("both package and source revision changes need a restart", () => {
+    const root = fixture();
+    const installed = currentGovernorServiceBuild();
+    statusFixture(root, { running_build: { ...installed, version: "older-version" } });
+    expect(readGovernorServiceStatus(root)).toMatchObject({
+      restart_needed: true,
+      build_status: "restart needed",
+    });
+    statusFixture(root, { running_build: { ...installed, revision: "older-revision" } });
+    expect(readGovernorServiceStatus(root)).toMatchObject({
+      restart_needed: true,
+      build_status: "restart needed",
+    });
+  });
+
+  test("an unreadable status is unknown rather than absent", () => {
+    const root = fixture();
+    write(join(root, ".harnery", "governor-service", "status.json"), "{bad");
+    expect(readGovernorServiceStatus(root)).toMatchObject({
+      running: false,
+      generation: "unknown",
+      liveness: "unknown",
+    });
+    expect(readWriterStatus(root)).toEqual(readGovernorServiceStatus(root));
+  });
 });
 
 describe("governor service log reader", () => {
@@ -92,6 +214,26 @@ function fixture(): string {
   const root = mkdtempSync(join(tmpdir(), "harnery-governor-service-read-"));
   roots.push(root);
   return root;
+}
+
+function statusFixture(root: string, overrides: Partial<GovernorServiceStatusRecord> = {}) {
+  const now = new Date().toISOString();
+  const record: GovernorServiceStatusRecord = {
+    schema_version: 1,
+    pid: process.pid,
+    host: hostname(),
+    nonce: "reader-fixture",
+    state: "running",
+    started_at: now,
+    heartbeat_at: now,
+    config_created_at: now,
+    sweep_count: 0,
+    start_token: processStartToken(process.pid) ?? undefined,
+    running_build: currentGovernorServiceBuild(),
+    ...overrides,
+  };
+  write(join(root, ".harnery", "governor-service", "status.json"), JSON.stringify(record));
+  return record;
 }
 
 function write(path: string, body: string): void {
