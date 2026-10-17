@@ -9,8 +9,10 @@ import {
   procfsStartToken,
   psStartToken,
   resetStartTokenCaches,
+  signalIfSameGeneration,
   startTokenProbe,
   tokensAgree,
+  verifyProcessGeneration,
 } from "./proc-start.ts";
 
 /** A pid nothing is using, so no token can be read for it. */
@@ -211,5 +213,119 @@ describe("checkPidToken", () => {
       expect(checkPidToken(process.pid, token)).toBe("match");
       expect(checkPidToken(process.pid, "pWed Jan  1 00:00:00 2020")).toBe("mismatch");
     });
+  });
+});
+
+describe("verifyProcessGeneration", () => {
+  test("requires an exact recorded and current token match", () => {
+    expect(verifyProcessGeneration(123, "labcd1234.5000", () => "labcd1234.5000")).toBe("same");
+    expect(verifyProcessGeneration(123, "labcd1234.5000", () => "labcd1234.5001")).toBe(
+      "different",
+    );
+    expect(verifyProcessGeneration(123, "l5000", () => "labcd1234.5000")).toBe("different");
+  });
+
+  test("reports unknown when either token is missing or the probe fails", () => {
+    let probes = 0;
+    const readToken = () => {
+      probes++;
+      return "current";
+    };
+    for (const recordedToken of [undefined, null, ""]) {
+      expect(verifyProcessGeneration(123, recordedToken, readToken)).toBe("unknown");
+    }
+    expect(probes).toBe(0);
+    expect(verifyProcessGeneration(123, "recorded", () => null)).toBe("unknown");
+    expect(
+      verifyProcessGeneration(123, "recorded", () => {
+        throw new Error("probe unavailable");
+      }),
+    ).toBe("unknown");
+  });
+
+  test("rejects invalid process IDs before probing", () => {
+    let probes = 0;
+    for (const pid of [0, -123, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        verifyProcessGeneration(pid, "recorded", () => {
+          probes++;
+          return "recorded";
+        }),
+      ).toBe("unknown");
+    }
+    expect(probes).toBe(0);
+  });
+
+  test("reads a real process token and declines a missing process", () => {
+    expect(verifyProcessGeneration(process.pid, processStartToken(process.pid))).toBe("same");
+    expect(verifyProcessGeneration(deadPid(), "recorded")).toBe("unknown");
+  });
+});
+
+describe("signalIfSameGeneration", () => {
+  test("reads the token immediately before signaling the same generation", () => {
+    const events: string[] = [];
+    const result = signalIfSameGeneration(123, "recorded", "SIGTERM", {
+      readToken: (pid) => {
+        events.push(`read:${pid}`);
+        return "recorded";
+      },
+      kill: (pid, signal) => events.push(`kill:${pid}:${signal}`),
+    });
+    expect(result).toEqual({ sent: true, verdict: "same" });
+    expect(events).toEqual(["read:123", "kill:123:SIGTERM"]);
+  });
+
+  test("does not trust an earlier successful generation check", () => {
+    let current = "recorded";
+    let signals = 0;
+    const readToken = () => current;
+    expect(verifyProcessGeneration(123, "recorded", readToken)).toBe("same");
+    current = "replacement";
+    expect(
+      signalIfSameGeneration(123, "recorded", "SIGTERM", {
+        readToken,
+        kill: () => signals++,
+      }),
+    ).toEqual({ sent: false, verdict: "different" });
+    expect(signals).toBe(0);
+  });
+
+  test("never signals a missing, unreadable, or different generation", () => {
+    let signals = 0;
+    const kill = () => signals++;
+    expect(signalIfSameGeneration(123, undefined, "SIGTERM", { kill })).toEqual({
+      sent: false,
+      verdict: "unknown",
+    });
+    expect(
+      signalIfSameGeneration(123, "recorded", "SIGTERM", { readToken: () => null, kill }),
+    ).toEqual({
+      sent: false,
+      verdict: "unknown",
+    });
+    expect(
+      signalIfSameGeneration(123, "recorded", "SIGTERM", {
+        readToken: () => {
+          throw new Error("probe failed");
+        },
+        kill,
+      }),
+    ).toEqual({ sent: false, verdict: "unknown" });
+    expect(
+      signalIfSameGeneration(123, "recorded", "SIGTERM", { readToken: () => "replacement", kill }),
+    ).toEqual({ sent: false, verdict: "different" });
+    expect(signals).toBe(0);
+  });
+
+  test("reports when a verified signal could not be sent", () => {
+    expect(
+      signalIfSameGeneration(123, "recorded", "SIGTERM", {
+        readToken: () => "recorded",
+        kill: () => {
+          throw new Error("process exited");
+        },
+      }),
+    ).toEqual({ sent: false, verdict: "same" });
   });
 });

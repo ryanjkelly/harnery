@@ -221,6 +221,7 @@ describe("continuity checkpoints", () => {
       work: { task: "ship it", files_held: ["src/a.ts"] },
       repo: {
         cwd: "/repo",
+        observation: "ok",
         branch: "next",
         head: "aaaaaaaaaaaaaaaa",
         dirty_paths: ["src/a.ts"],
@@ -228,6 +229,7 @@ describe("continuity checkpoints", () => {
     } satisfies ContinuityCapsule;
     const briefing = renderRecoveryBriefing(capsule, {
       cwd: "/repo",
+      observation: "ok",
       branch: "main",
       head: "bbbbbbbbbbbbbbbb",
       dirty_paths: ["src/b.ts"],

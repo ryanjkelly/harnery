@@ -557,6 +557,8 @@ function buildRepoEvidence(beforeRaw: RepoSnapshot, afterRaw: RepoSnapshot): Wor
 function normalizeRepoSnapshot(snapshot: RepoSnapshot): WorkflowRepoSnapshot {
   return {
     cwd: snapshot.cwd,
+    observation: snapshot.observation,
+    observation_detail: snapshot.observation_detail,
     root: snapshot.root,
     branch: snapshot.branch,
     head: snapshot.head,

@@ -17,11 +17,13 @@ export const CONTEXT_SCHEMA_VERSION = 1 as const;
 export const MAX_CAPSULE_BYTES = 32 * 1024;
 const MAX_SNAPSHOT_PATHS = 15;
 const MAX_SNAPSHOT_PATH_CHARS = 500;
+const MAX_OBSERVATION_DETAIL_CHARS = 500;
 
 export type ContextSampleSource = "hook" | "native_event" | "result" | "transcript" | "estimate";
 export type ContextSampleConfidence = "exact" | "reported" | "estimated";
 export type ContextPhase = "observing" | "checkpointed" | "recovered" | "degraded";
 export type CheckpointReason = "manual" | "pressure" | "pre_compact" | "session_end";
+export type RepoObservation = "ok" | "unavailable" | "partial";
 
 export interface ContextSample {
   session_id: string;
@@ -51,6 +53,9 @@ export interface ContextContinuityState {
 
 export interface RepoSnapshot {
   cwd: string;
+  observation: RepoObservation;
+  /** Bounded explanation of an unavailable or incomplete observation. */
+  observation_detail?: string;
   root?: string;
   branch?: string;
   head?: string;
@@ -367,7 +372,22 @@ export function readContextState(
 export function readLatestCapsule(coordRoot: string, sessionId: string): ContinuityCapsule | null {
   const state = readContextState(coordRoot, sessionId);
   if (!state?.latest_capsule) return null;
-  return readJson<ContinuityCapsule>(join(coordRoot, ".harnery", state.latest_capsule));
+  const capsule = readJson<ContinuityCapsule>(join(coordRoot, ".harnery", state.latest_capsule));
+  if (!capsule) return null;
+  capsule.repo.observation = repoObservation(capsule.repo.observation);
+  capsule.repo.observation_detail = clampString(
+    capsule.repo.observation_detail,
+    MAX_OBSERVATION_DETAIL_CHARS,
+  );
+  return capsule;
+}
+
+/** Only explicitly successful observations can establish repository drift. */
+export function observationsComparable(
+  a: { observation?: string },
+  b: { observation?: string },
+): boolean {
+  return a.observation === "ok" && b.observation === "ok";
 }
 
 export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: RepoSnapshot): string {
@@ -405,10 +425,16 @@ export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: Rep
 
 export function snapshotRepo(cwd: string): RepoSnapshot {
   const root = git(cwd, ["rev-parse", "--show-toplevel"]);
-  if (!root) return { cwd, dirty_paths: [] };
+  if (!root.ok) {
+    return { cwd, observation: "unavailable", observation_detail: root.reason, dirty_paths: [] };
+  }
   const status = git(cwd, ["status", "--porcelain=v1", "--untracked-files=normal"]);
-  const dirty = status
-    ? status
+  const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const head = git(cwd, ["rev-parse", "HEAD"]);
+  const reads = [status, branch, head];
+  const failures = reads.filter((read) => !read.ok);
+  const dirty = status.ok
+    ? status.out
         .split("\n")
         .map((line) => line.trimEnd())
         .filter(Boolean)
@@ -417,9 +443,22 @@ export function snapshotRepo(cwd: string): RepoSnapshot {
     : [];
   return {
     cwd: clampString(cwd, 2_000) ?? cwd,
-    root: clampString(root, 2_000),
-    branch: git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]),
-    head: git(cwd, ["rev-parse", "HEAD"]),
+    observation: failures.some((read) => read.reason === "timed_out")
+      ? "unavailable"
+      : failures.length > 0
+        ? "partial"
+        : "ok",
+    ...(failures.length > 0
+      ? {
+          observation_detail: clampString(
+            failures.map((read) => read.reason).join(", "),
+            MAX_OBSERVATION_DETAIL_CHARS,
+          ),
+        }
+      : {}),
+    root: clampString(root.out, 2_000),
+    branch: branch.ok ? branch.out || undefined : undefined,
+    head: head.ok ? head.out || undefined : undefined,
     dirty_paths: dirty.slice(0, MAX_SNAPSHOT_PATHS),
     ...(dirty.length > MAX_SNAPSHOT_PATHS ? { dirty_paths_truncated: true } : {}),
   };
@@ -513,13 +552,34 @@ function readJson<T>(path: string): T | null {
   }
 }
 
-function git(cwd: string, args: string[]): string | undefined {
+type GitReadResult =
+  | { ok: true; out: string }
+  | { ok: false; reason: "not_repository" | "failed" | "timed_out" | "spawn_error" };
+
+function git(cwd: string, args: string[]): GitReadResult {
   try {
     const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 2_000 });
-    return result.status === 0 ? result.stdout.trim() || undefined : undefined;
+    if (result.error) {
+      return {
+        ok: false,
+        reason:
+          (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT"
+            ? "timed_out"
+            : "spawn_error",
+      };
+    }
+    if (result.status === 0) return { ok: true, out: result.stdout.trim() };
+    return {
+      ok: false,
+      reason: /not a git repository/i.test(result.stderr) ? "not_repository" : "failed",
+    };
   } catch {
-    return undefined;
+    return { ok: false, reason: "spawn_error" };
   }
+}
+
+function repoObservation(value: unknown): RepoObservation {
+  return value === "ok" || value === "partial" ? value : "unavailable";
 }
 
 function sameMeasurement(a: ContextSample | undefined, b: ContextSample): boolean {

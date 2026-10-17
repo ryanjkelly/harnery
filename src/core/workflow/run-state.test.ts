@@ -34,7 +34,7 @@ describe("workflow run state", () => {
         name: "fixture",
         started_at: "2026-07-21T12:00:00.000Z",
         script: { path: join(root, "workflow.mjs"), sha256: "a".repeat(64) },
-        repository_before: { cwd: root, dirty_paths: [] },
+        repository_before: { cwd: root, observation: "ok", dirty_paths: [] },
         execution: {
           cwd: root,
           default_adapter: "claude-code",
@@ -77,7 +77,7 @@ describe("workflow run state", () => {
         name: "fixture",
         started_at: "2026-07-23T05:00:00.000Z",
         script: { path: join(root, "workflow.mjs"), sha256: "a".repeat(64) },
-        repository_before: { cwd: root, dirty_paths: [] },
+        repository_before: { cwd: root, observation: "ok", dirty_paths: [] },
         execution: {
           cwd: root,
           default_adapter: "codex",

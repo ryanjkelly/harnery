@@ -1,0 +1,64 @@
+---
+title: "0207: Fail closed on unknown state"
+description: "ADR: unavailable observations cannot authorize comparisons, process signals, or workspace reclaim."
+---
+
+**Status:** accepted (2026-10-16) · **Scope:** recovery, workflow proof, services, servers and workspace reclaim
+
+## Context
+
+A failed Git read can look like an empty working tree. Comparing that result
+with a checkpoint can claim that the repository matches or that dirty paths
+were cleared. A recorded process ID can also belong to a later process, and an
+unreadable start token does not establish which generation is running.
+Workspace reclaim must establish that the run is inactive and still owns its
+workspace before committing, resetting or cleaning any files.
+
+## Alternatives considered
+
+- Treat a failed repository read as changed. This replaces one unsupported
+  comparison with another and can invite cleanup without evidence.
+- Treat an unreadable process token as live and signal the recorded PID. The
+  PID alone cannot prove ownership of the current process.
+- Remove discard from reclaim. Preserved workspaces still need a confirmed
+  cleanup operation once inactivity and ownership are established.
+- Use generation-bound process handles immediately. Linux pidfds and Windows
+  process handles need separate runtime support beyond the current Node API.
+
+## Decision
+
+Repository snapshots carry an explicit observation: `ok`, `partial` or
+`unavailable`, with a bounded reason when needed. A snapshot without the field
+is unavailable. Recovery and workflow proof compare only successful
+observations. Unavailable evidence produces unknown drift and incomplete
+proof, never a match or a list of cleared paths.
+
+Process generation checks return `same`, `different` or `unknown`. A missing
+recorded token, failed probe or unreadable current token returns unknown.
+Stop operations re-read the token immediately before signaling and signal only
+the same generation. Governor and supervisor services first write their
+durable stop request, which remains the fallback when direct signaling is
+refused. Status reports the generation verdict and running package version;
+a different running version requires a restart.
+
+Both salvage and discard reclaim acquire the binding and repository leases,
+prove that workflow liveness is `inactive`, and require an `ok` ownership
+attestation before touching workspace files. Preparation and cleanup run under
+the same leases. Without `--yes`, reclaim prints the run, liveness, lease and
+dirty-path preview. Refusals preserve the workspace.
+
+## Result and limits
+
+Old records that lack observation or generation evidence remain unknown.
+Unknown process identity blocks a second service start and directs the caller
+to the durable stop request. Unknown workflow liveness blocks reclaim until
+the missing evidence can be established.
+
+The token recheck narrows the signal race but cannot eliminate it. A process
+can exit and its PID can be reused between the final read and the signal.
+Generation-bound handles remain future work. The leases coordinate Harnery
+writers; they do not make filesystem operations transactional.
+
+Focused regressions and CLI conformance fixtures cover unavailable repository
+reads, a live child with a mismatched token, and refusal to reclaim a live
+run's dirty workspace.

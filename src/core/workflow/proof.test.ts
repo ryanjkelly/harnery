@@ -173,8 +173,8 @@ function sampleProof(): WorkflowProof {
     ],
     repository: {
       source: "engine",
-      before: { cwd: "/tmp/project", dirty_paths: [] },
-      after: { cwd: "/tmp/project", dirty_paths: [] },
+      before: { cwd: "/tmp/project", observation: "ok", dirty_paths: [] },
+      after: { cwd: "/tmp/project", observation: "ok", dirty_paths: [] },
       drift: {
         branch_changed: false,
         head_changed: false,
@@ -191,7 +191,7 @@ function sampleProof(): WorkflowProof {
 }
 
 describe("adapter attestation citation (ADR 0038)", () => {
-  const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
+  const snapshot = { cwd: "/repo", observation: "ok" as const, dirty_paths: [] as string[] };
   function transcript(): string {
     const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
@@ -264,7 +264,7 @@ describe("adapter attestation citation (ADR 0038)", () => {
 });
 
 describe("sandbox projection evidence (ADR 0039)", () => {
-  const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
+  const snapshot = { cwd: "/repo", observation: "ok" as const, dirty_paths: [] as string[] };
   function transcriptFile(): string {
     const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
@@ -364,7 +364,7 @@ describe("run failure class derivation (ADR 0046)", () => {
 });
 
 describe("run-level class in the proof packet (ADR 0046)", () => {
-  const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
+  const snapshot = { cwd: "/repo", observation: "ok" as const, dirty_paths: [] as string[] };
   function transcriptFile(): string {
     const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");

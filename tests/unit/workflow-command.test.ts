@@ -22,7 +22,7 @@ beforeEach(() => {
       name: "command",
       started_at: "2026-07-21T12:00:00.000Z",
       script: { path: join(root, "workflow.mjs"), sha256: "b".repeat(64) },
-      repository_before: { cwd: root, dirty_paths: [] },
+      repository_before: { cwd: root, observation: "ok", dirty_paths: [] },
       execution: {
         cwd: root,
         default_adapter: "claude-code",
@@ -141,8 +141,8 @@ function sampleProof(): WorkflowProof {
     evidence: [],
     repository: {
       source: "engine",
-      before: { cwd: root, dirty_paths: [] },
-      after: { cwd: root, dirty_paths: [] },
+      before: { cwd: root, observation: "ok", dirty_paths: [] },
+      after: { cwd: root, observation: "ok", dirty_paths: [] },
       drift: {
         branch_changed: false,
         head_changed: false,

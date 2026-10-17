@@ -160,6 +160,54 @@ export function processStartToken(pid: number): string | null {
   return startTokenProbe() === "procfs" ? procfsStartToken(pid) : psStartToken(pid);
 }
 
+export type ProcessGenerationVerdict = "same" | "different" | "unknown";
+
+type ReadProcessStartToken = (pid: number) => string | null;
+
+/** A missing or unreadable token never establishes process identity. */
+export function verifyProcessGeneration(
+  pid: number,
+  recordedToken: string | null | undefined,
+  readToken: ReadProcessStartToken = processStartToken,
+): ProcessGenerationVerdict {
+  if (!Number.isInteger(pid) || pid <= 0 || !recordedToken) return "unknown";
+  try {
+    const currentToken = readToken(pid);
+    if (!currentToken) return "unknown";
+    return currentToken === recordedToken ? "same" : "different";
+  } catch {
+    return "unknown";
+  }
+}
+
+export interface ProcessGenerationSignalDependencies {
+  readToken?: ReadProcessStartToken;
+  kill?: (pid: number, signal: NodeJS.Signals | number) => unknown;
+}
+
+/**
+ * Recheck the process generation immediately before sending the signal.
+ *
+ * The process can still exit and its PID can be reused between the token read
+ * and the signal. Eliminating that race requires a generation-bound OS handle.
+ */
+export function signalIfSameGeneration(
+  pid: number,
+  recordedToken: string | null | undefined,
+  signal: NodeJS.Signals | number,
+  dependencies: ProcessGenerationSignalDependencies = {},
+): { sent: boolean; verdict: ProcessGenerationVerdict } {
+  const kill = dependencies.kill ?? process.kill;
+  const verdict = verifyProcessGeneration(pid, recordedToken, dependencies.readToken);
+  if (verdict !== "same") return { sent: false, verdict };
+  try {
+    kill(pid, signal);
+    return { sent: true, verdict };
+  } catch {
+    return { sent: false, verdict };
+  }
+}
+
 /**
  * Do two tokens describe the same run?
  *

@@ -149,6 +149,9 @@ export interface WorkflowAgentProof {
 
 export interface WorkflowRepoSnapshot {
   cwd: string;
+  observation: "ok" | "unavailable" | "partial";
+  /** Bounded explanation of an unavailable or incomplete observation. */
+  observation_detail?: string;
   root?: string;
   branch?: string;
   head?: string;
