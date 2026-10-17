@@ -6,7 +6,7 @@
  * reproduced the exact name the rule was asking for.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -79,6 +79,24 @@ describe("sessionNamePresence", () => {
       session_name_present: true,
       session_name_present_for: NAME,
     });
+  });
+
+  test("accepted naming survives a simulated day boundary without a process restart", () => {
+    try {
+      setSystemTime(new Date("2026-09-11T23:59:59Z"));
+      const root = rootWith({ suggested_session_name: NAME });
+      expect(sessionNamePresence(root, "self", () => ({ state: "present" }))).toMatchObject({
+        session_name_present: true,
+      });
+      setSystemTime(new Date("2026-09-12T00:00:01Z"));
+      expect(
+        sessionNamePresence(root, "self", () => {
+          throw new Error("accepted evidence must not be scanned again");
+        }),
+      ).toEqual({ session_name_present: true, session_name_present_for: NAME });
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("re-scans when the stamp covers a different (earlier) name", () => {

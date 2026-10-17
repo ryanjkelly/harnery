@@ -309,6 +309,28 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
   });
 
+  test("name remediation creates a fresh JSON retry boundary even when the name is known", () => {
+    const events = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      status(2),
+      task(3),
+      turnCompleted(4, ritual(true, { required: true, present: false })),
+    ];
+    const request = {
+      rule: "stop-hook" as const,
+      instance_id: "operator",
+      adapter: "claude-code",
+      now_ms: START + 10_000,
+    };
+    for (const coordRoot of [root(), stampedRoot("Agent Maya - Auth refactor", "Old name")]) {
+      const result = evaluateStopHookV3Events(coordRoot, request, events);
+      expect(result).toMatchObject({ allow: false, rule: "stop-hook.session_name" });
+      expect(result.reason).toContain("agents suggest-name --json");
+      expect(result.reason).toContain("fresh verification boundary");
+    }
+  });
+
   test("fails open when a Claude Code terminal predates structural ritual evidence", () => {
     expect(verdict("claude-code", [turnStarted(0), turnCompleted(1)])).toMatchObject({
       allow: true,

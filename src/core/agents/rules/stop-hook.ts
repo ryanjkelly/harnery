@@ -424,9 +424,9 @@ function sessionNameBlock(coordRoot: string, instanceId: string): VerdictResult 
   } catch {
     // The ledger evidence still authorizes the block; the cache is UX only.
   }
-  const instruction = name
-    ? `Reproduce it by itself in a fenced code block: ${name}`
-    : `Run \`${resolveBinName(coordRoot)} agents suggest-name\`, then reproduce its output by itself in a fenced code block.`;
+  // The first post-mint reply was already rejected. Repeating its title later
+  // cannot change that evidence; the JSON retry result opens a new window.
+  const instruction = `Run \`${resolveBinName(coordRoot)} agents suggest-name --json\` as your only tool call to create a fresh verification boundary, then display its suggested_session_name verbatim by itself in a fenced code block${name ? `: ${name}` : "."}`;
   return {
     allow: false,
     exit_code: 2,
