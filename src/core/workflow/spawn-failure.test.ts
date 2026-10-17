@@ -1,4 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AdapterRawResult } from "../adapters/types.ts";
+import { createWorkItem, readWorkItem, runWorkItem } from "../work/index.ts";
+import { normalizeCodexResult } from "./spawn-codex.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 
 describe("vendorFailureText", () => {
@@ -106,4 +112,144 @@ describe("isUpstreamFailureText (ADR 0046)", () => {
     expect(isUpstreamFailureText("TypeError: cannot read property of undefined")).toBe(false);
     expect(isUpstreamFailureText("")).toBe(false);
   });
+});
+
+describe("upstream failure evidence conformance", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  async function failedWork(raw: AdapterRawResult, recordEffect = false, maxSpawnAttempts = 1) {
+    const root = mkdtempSync(join(tmpdir(), "harnery-failure-evidence-"));
+    roots.push(root);
+    const workflowPath = join(root, "workflow.mjs");
+    const effectPath = join(root, "tool-effect.txt");
+    writeFileSync(
+      workflowPath,
+      `export default async ({ agent }) => agent("do the work", { maxAttempts: ${maxSpawnAttempts} });\n`,
+    );
+    createWorkItem({
+      coordRoot: root,
+      id: "failure-evidence",
+      title: "Preserve failure evidence",
+      objective: "Account for work before an upstream failure",
+      workflowPath,
+      maxAttempts: 1,
+    });
+    const normalized = normalizeCodexResult(raw);
+    let calls = 0;
+    await expect(
+      runWorkItem({
+        coordRoot: root,
+        workId: "failure-evidence",
+        engine: {
+          spawners: {
+            "claude-code": async () => {
+              calls++;
+              if (recordEffect) writeFileSync(effectPath, "tool effect committed\n");
+              return normalized;
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow();
+    return {
+      projection: readWorkItem(root, "failure-evidence").projection,
+      effectPath,
+      calls,
+      normalized,
+    };
+  }
+
+  // Deferred: the tool effect survives, but the attempt is uncharged (0, not 1).
+  // A safe repair needs effect evidence carried through spawn, proof and work.
+  test.todo("an upstream 503 after a tool effect consumes the work attempt", async () => {
+    const { projection, effectPath, calls } = await failedWork(
+      {
+        stdout: "tool effect committed",
+        stderr: "HTTP 503 Service Unavailable",
+        exitCode: 1,
+        durationMs: 1,
+      },
+      true,
+    );
+    expect(calls).toBe(1);
+    expect(readFileSync(effectPath, "utf8")).toBe("tool effect committed\n");
+    expect(projection.charged_attempts).toBe(1);
+    expect(projection.attempts[0]?.uncharged).toBeUndefined();
+  }, 30_000);
+
+  // Deferred: the refused request is dispatched twice, and its final text is lost.
+  // Refusal authority needs a typed signal rather than another text heuristic.
+  test.todo("a native refusal followed by an upstream error is not recoverable", async () => {
+    const refusal = "I cannot carry out this request.";
+    const { calls, normalized, projection } = await failedWork(
+      {
+        stdout: "",
+        resultFileText: refusal,
+        stderr: "HTTP 503 Service Unavailable",
+        exitCode: 1,
+        durationMs: 1,
+      },
+      false,
+      2,
+    );
+    expect(calls).toBe(1);
+    expect(normalized.class).toBeUndefined();
+    expect(normalized.text).toContain(refusal);
+    expect(projection.next_action).toBe("none");
+  }, 30_000);
+
+  // Deferred: normalization returns empty text, discarding the partial reply.
+  test.todo("a 429 after partial output preserves the partial-output evidence", () => {
+    const partial = "Completed the first requested change before the provider failed.";
+    const result = normalizeCodexResult({
+      stdout: partial,
+      resultFileText: partial,
+      stderr: "HTTP 429 Too Many Requests",
+      exitCode: 1,
+      durationMs: 1,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.text).toContain(partial);
+  });
+
+  // Deferred: status text alone grants an uncharged attempt without proving no effect.
+  test.todo("an upstream status without effect evidence does not grant a free attempt", async () => {
+    const { projection } = await failedWork({
+      stdout: "",
+      stderr: "HTTP 503 Service Unavailable",
+      exitCode: 1,
+      durationMs: 1,
+    });
+    expect(projection.charged_attempts).toBe(1);
+    expect(projection.attempts[0]?.uncharged).toBeUndefined();
+  }, 30_000);
+
+  test("a positively unstarted process keeps the existing uncharged path", async () => {
+    const { projection, calls } = await failedWork({
+      stdout: "",
+      stderr: "",
+      spawnErrno: "ENOENT",
+      exitCode: 127,
+      durationMs: 1,
+    });
+    expect(calls).toBe(1);
+    expect(projection.charged_attempts).toBe(0);
+    expect(projection.attempts[0]?.uncharged).toBe("environment");
+    expect(projection.next_action).toBe("none");
+  }, 30_000);
+
+  test("a failure without a positive infrastructure signal stays charged", async () => {
+    const { projection } = await failedWork({
+      stdout: "",
+      stderr: "",
+      exitCode: 1,
+      durationMs: 1,
+    });
+    expect(projection.charged_attempts).toBe(1);
+    expect(projection.attempts[0]?.uncharged).toBeUndefined();
+  }, 30_000);
 });
