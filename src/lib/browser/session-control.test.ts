@@ -32,6 +32,20 @@ class FakeTarget implements BrowserSessionTarget {
   actionDelayMs = 0;
   neverSettle = false;
   filled = "";
+  private heldAction?: { entered(): void; wait: Promise<void> };
+
+  holdNextAction(): { started: Promise<void>; release(): void } {
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.heldAction = { entered, wait };
+    return { started, release };
+  }
 
   private navigation() {
     return {
@@ -47,6 +61,12 @@ class FakeTarget implements BrowserSessionTarget {
     this.maxActiveActions = Math.max(this.maxActiveActions, this.activeActions);
     if (this.neverSettle) return await new Promise(() => {});
     try {
+      const held = this.heldAction;
+      this.heldAction = undefined;
+      if (held) {
+        held.entered();
+        await held.wait;
+      }
       if (this.actionDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, this.actionDelayMs));
       }
@@ -228,23 +248,32 @@ describe("browser session control protocol", () => {
 
   test("keeps timed-out actions in the serialization queue until they settle", async () => {
     const target = new FakeTarget();
-    target.actionDelayMs = 80;
+    const held = target.holdNextAction();
     const { controlFile } = await start(target, { actionTimeoutMs: 20 });
     const locator = { kind: "text", value: "Run", partial: false } as const;
 
-    await expect(
-      sendBrowserSessionRequest(controlFile, "click", { locator }),
-    ).rejects.toMatchObject({
-      code: "action_timeout",
+    try {
+      const firstTimeout = expect(
+        sendBrowserSessionRequest(controlFile, "click", { locator }),
+      ).rejects.toMatchObject({ code: "action_timeout" });
+      await held.started;
+      await firstTimeout;
+      expect(target.activeActions).toBe(1);
+      expect(target.revision).toBe(0);
+      await expect(
+        sendBrowserSessionRequest(controlFile, "press", { key: "Enter" }),
+      ).rejects.toMatchObject({ code: "action_timeout" });
+      expect(target.activeActions).toBe(1);
+      expect(target.maxActiveActions).toBe(1);
+      expect(target.revision).toBe(0);
+    } finally {
+      held.release();
+    }
+    expect(await sendBrowserSessionRequest(controlFile, "status", {})).toMatchObject({
+      revision: 2,
     });
-    target.actionDelayMs = 0;
-    await expect(
-      sendBrowserSessionRequest(controlFile, "press", { key: "Enter" }),
-    ).rejects.toMatchObject({
-      code: "action_timeout",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 80));
     expect(target.maxActiveActions).toBe(1);
+    expect(target.activeActions).toBe(0);
     expect(target.revision).toBe(2);
   });
 
