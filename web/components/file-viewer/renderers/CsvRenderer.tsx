@@ -66,7 +66,10 @@ export default function CsvRenderer({ file }: { file: FileText }) {
   // Zero usable rows → not really tabular; show raw text.
   if (rows.length === 0) return <TextRenderer file={file} />;
 
-  const colCount = Math.max(header.length, ...body.slice(0, 50).map((r) => r.length), 1);
+  const colCount = body.reduce(
+    (width, row) => Math.max(width, row.length),
+    Math.max(header.length, 1),
+  );
   const cols = Array.from({ length: colCount });
 
   return (
