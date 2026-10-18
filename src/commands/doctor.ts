@@ -421,15 +421,34 @@ function checkWorkflowAdapter(adapter: AdapterName): { check: Check; installed: 
 }
 
 function checkNode(): Check {
-  const v = process.versions.node;
+  return nodeCheck(whichVersion("node"), process.versions);
+}
+
+/**
+ * Report the `node` on PATH, which is what Node-based tools run. Under Bun,
+ * `process.versions.node` is the Node version Bun emulates, not an installed
+ * Node, so it is used only when doctor itself runs on Node and PATH has none.
+ */
+export function nodeCheck(
+  onPath: { ok: boolean; out: string },
+  runtime: { node: string; bun?: string },
+): Check {
+  const hint = "https://nodejs.org/en/download";
+  let v = onPath.ok ? onPath.out.replace(/^v/, "") : "";
+  if (!v) {
+    if (runtime.bun) {
+      return {
+        name: "node",
+        severity: "warn",
+        detail: "not on PATH (Bun runs harnery; Node-based tools need it)",
+        hint,
+      };
+    }
+    v = runtime.node;
+  }
   const major = Number.parseInt(v.split(".")[0], 10);
   if (Number.isNaN(major) || major < 20) {
-    return {
-      name: "node",
-      severity: "fail",
-      detail: `${v} (need ≥ 20)`,
-      hint: "https://nodejs.org/en/download",
-    };
+    return { name: "node", severity: "fail", detail: `${v} (need ≥ 20)`, hint };
   }
   return { name: "node", severity: "ok", detail: v };
 }

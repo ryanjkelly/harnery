@@ -6,6 +6,7 @@ import {
   codexAuthorizationCheck,
   codexWslBridgeCheck,
   countRecentCodexMidFlightOnboardings,
+  nodeCheck,
   runChecks,
 } from "../../src/commands/doctor.ts";
 
@@ -34,9 +35,23 @@ describe("harn doctor", () => {
     }
   });
 
-  test("node check passes on the test runner (we require ≥ 20)", () => {
+  test("node check does not fail on the test runner (we require ≥ 20)", () => {
     const node = checks.find((c) => c.name === "node");
-    expect(node?.severity).toBe("ok");
+    expect(node?.severity).not.toBe("fail");
+  });
+
+  test("node check reports the node on PATH, not the version Bun emulates", () => {
+    const bun = { node: "24.3.0", bun: "1.4.0" };
+    expect(nodeCheck({ ok: true, out: "v21.7.3" }, bun)).toMatchObject({
+      severity: "ok",
+      detail: "21.7.3",
+    });
+    expect(nodeCheck({ ok: true, out: "v18.20.0" }, bun).severity).toBe("fail");
+    expect(nodeCheck({ ok: false, out: "" }, bun).severity).toBe("warn");
+    expect(nodeCheck({ ok: false, out: "" }, { node: "22.12.0" })).toMatchObject({
+      severity: "ok",
+      detail: "22.12.0",
+    });
   });
 
   test("git check is ok or fail (never warn, git is required)", () => {
