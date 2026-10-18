@@ -44,6 +44,10 @@ jobs:
         working-directory: .
         run: bun install --frozen-lockfile
 
+      - name: Install Playwright Chromium
+        working-directory: .
+        run: bun x playwright install --with-deps chromium
+
       - name: Dashboard dependencies, tests, and production build
         working-directory: .
         run: bun run check:local web
