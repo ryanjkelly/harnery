@@ -10,7 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   descriptorPathsAvailable,
   git,
@@ -97,8 +97,7 @@ async function nestedWorkspace(outer: Awaited<ReturnType<typeof workspace>>) {
 
 describe.skipIf(!descriptorPathsAvailable)("exclusive workspace reclaim conformance", () => {
   for (const overlap of ["nested", "ancestor", "symlink", "archived", "after-preview"] as const) {
-    // Deferred: c0625d0a starts rollback before checking retained peer roots.
-    test.todo(`${overlap} peer ownership refuses discard before changing any file`, async () => {
+    test(`${overlap} peer ownership refuses discard before changing any file`, async () => {
       const outer = await workspace();
       if (overlap === "after-preview") {
         expect((await outer.provider.reclaim(outer.binding, { mode: "discard" })).ownership).toBe(
@@ -138,20 +137,18 @@ describe.skipIf(!descriptorPathsAvailable)("exclusive workspace reclaim conforma
       expect(readCleanupAttempts(repo, binding.run_id)).toHaveLength(0);
     });
   }
-  // Deferred: c0625d0a runs reset --hard and clean -fd after the claim appears.
-  // Claim publication and rollback need a shared ownership reservation.
-  test.todo("peer authority published after the final ownership check prevents rollback", async () => {
+  test("peer authority published after the final ownership check prevents rollback", async () => {
     const outer = await workspace();
     const peer = await nestedWorkspace(outer);
     const { repo, provider, binding } = outer;
     const claimPath = workspaceClaimPath(repo, peer.binding.provider.id, peer.binding.binding_id);
-    const unpublishedClaim = `${claimPath}.pending`;
+    const unpublishedDirectory = join(repo, "withheld-peer-claim");
     // Replay a valid immutable claim's publication at the allocation boundary.
     // Allocation publishes it before acquiring its repository lease.
     expect(
       readWorkspaceClaim(repo, peer.binding.provider.id, peer.binding.binding_id),
     ).toBeDefined();
-    renameSync(claimPath, unpublishedClaim);
+    renameSync(dirname(claimPath), unpublishedDirectory);
     const dirtyPath = join(binding.workspace_root, "README.md");
     writeFileSync(dirtyPath, "owned uncommitted work\n");
     const peerFile = join(peer.binding.workspace_root, "late-peer.txt");
@@ -165,7 +162,7 @@ describe.skipIf(!descriptorPathsAvailable)("exclusive workspace reclaim conforma
       const gitArgs = argv as string[];
       if (command === "git" && options?.cwd === binding.workspace_root) {
         if (!published && gitArgs[0] === "status" && gitArgs[1] === "--porcelain") {
-          renameSync(unpublishedClaim, claimPath);
+          renameSync(unpublishedDirectory, dirname(claimPath));
           writeFileSync(peerFile, "peer recovery work\n");
           published = true;
         }

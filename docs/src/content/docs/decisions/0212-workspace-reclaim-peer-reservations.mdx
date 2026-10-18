@@ -1,0 +1,68 @@
+---
+title: "0212: Reserve a workspace before reclaiming it"
+description: "Share path reservations between workspace claim publication and destructive reclaim while allowing unrelated allocations to progress."
+---
+
+**Status:** accepted (2026-10-18) · **Scope:** local Git workspace provider
+
+## Context
+
+Reclaim's liveness, binding, filesystem and repository checks establish the
+target's authority. They do not prove that a retained peer has no overlapping
+workspace. Resetting tracked files before checking peers can lose work even
+when Git later refuses to remove the worktree.
+
+A peer can also publish its immutable claim after an inventory check. Claim
+publication and destructive preparation need one reservation contract.
+
+## Decision
+
+Use the existing crash-safe no-clobber lease format for two purposes:
+
+- A brief provider publication lease serializes immutable claim publication and
+  reclaim reservation registration. It never spans Git commands.
+- A per-binding reclaim lease reserves the target path through preparation and
+  ordinary cleanup. Its authority digest pins the complete immutable claim;
+  its metadata identifies the binding and request.
+
+Publication examines active reservations before writing a claim. A claim cannot
+publish workspace or repository authority inside a reserved target, or an
+ancestor workspace that contains it. Sibling workspaces may share a source
+repository outside the destructive target.
+
+Reclaim registers its reservation, releases the publication lease, and checks
+retained peers. Every preparation effect and worktree removal rechecks the exact
+reservation owner, claim, target authority and peers. Ordinary cleanup uses the
+same reservation before removal. Lexical and physical paths both count;
+resolving the closest existing ancestor preserves aliases for absent children.
+Unreadable, malformed or conflicting authority refuses before effects.
+
+Termination, archival and lease expiry do not release a peer's files. Ignoring a
+released peer requires the provider's release event and a current attestation
+of resource absence. An expired reservation may be recovered only when the
+existing lease primitive proves an exact same-host owner dead. Recovery retires
+the lease, never the claim, worktree or Git ref. Unknown owners remain blocking.
+
+The existing confirmation, liveness, resume, binding, repository, frozen intent,
+identity and ref checks remain. Salvage still preserves work on its separate
+ref and uses ordinary cleanup, as described in [ADR 0042](/decisions/0042-dirty-workspace-reclaim/).
+
+## Alternatives
+
+- An inventory check without reservation leaves a publication gap.
+- Holding a provider-wide lock across Git operations prevents unrelated
+  allocations from progressing during slow preparation.
+- Keying only on the Git common directory misses nested independent repositories.
+- Treating terminal runs or expired leases as released resources loses retained
+  recovery authority.
+- A new global coordination schema or epoch is unnecessary; the existing lease
+  owner, hard-link and stale-recovery contract supplies the required primitive.
+
+## Verification
+
+Temporary real-provider fixtures cover nested, ancestor, aliased, archived and
+after-preview peers, plus publication at the preparation boundary. Additional
+tests cover unrelated allocation during a held reservation, sibling workspaces
+sharing a source, supported publication refusal, exact dead-owner recovery,
+foreign or mismatched owners, malformed inventory, identity drift and reusable,
+idempotent retries. No real user workspace is reclaimed by these tests.

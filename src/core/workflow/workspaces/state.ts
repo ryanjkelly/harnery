@@ -5,6 +5,7 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
@@ -18,6 +19,7 @@ import {
   stableDigest,
   writeImmutableJson,
 } from "../durable-record.ts";
+import { assertClaimAuthority, publishWorkspaceClaim } from "./ownership.ts";
 
 export { appendWorkflowTranscriptEvent } from "../transcript.ts";
 
@@ -141,6 +143,10 @@ export function readWorkspaceRequest(
 }
 
 export function writeWorkspaceClaim(coordRoot: string, claim: WorkspaceClaim): boolean {
+  return publishWorkspaceClaim(coordRoot, claim, () => writeClaim(coordRoot, claim));
+}
+
+function writeClaim(coordRoot: string, claim: WorkspaceClaim): boolean {
   const path = workspaceClaimPath(coordRoot, claim.provider_id, claim.binding_id);
   try {
     return writeImmutableJson(path, claim);
@@ -152,6 +158,20 @@ export function writeWorkspaceClaim(coordRoot: string, claim: WorkspaceClaim): b
     }
     throw error;
   }
+}
+
+export function readWorkspaceClaims(coordRoot: string, providerId: string): WorkspaceClaim[] {
+  const root = join(resolve(coordRoot), ".harnery", "workspaces", providerId);
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.name !== ".leases")
+    .map((entry) => {
+      if (!entry.isDirectory()) throw new Error("retained workspace inventory is unproven");
+      const claim = readWorkspaceClaim(coordRoot, providerId, entry.name);
+      if (!claim) throw new Error("retained workspace ownership claim is missing");
+      assertClaimAuthority(claim, providerId, entry.name);
+      return claim;
+    });
 }
 
 export function readWorkspaceClaim(

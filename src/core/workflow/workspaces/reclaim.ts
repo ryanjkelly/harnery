@@ -80,6 +80,8 @@ export interface PrepareReclaimInput {
   worktreePath: string;
   mode: ReclaimMode;
   runId: string;
+  /** Revalidate the held reservation and peer authority immediately before effects. */
+  beforeEffect?: () => void;
 }
 
 /**
@@ -109,7 +111,9 @@ export function prepareReclaim(input: PrepareReclaimInput): ReclaimPreparation {
   if (input.mode === "discard") {
     // Ordered: reset drops tracked modifications, clean removes what reset
     // cannot see. Running clean first would leave staged deletions behind.
+    input.beforeEffect?.();
     git(input.worktreePath, ["reset", "--hard"]);
+    input.beforeEffect?.();
     git(input.worktreePath, ["clean", "-fd"]);
     return { action: "discarded", detail: "uncommitted changes were discarded on request" };
   }
@@ -128,11 +132,15 @@ export function prepareReclaim(input: PrepareReclaimInput): ReclaimPreparation {
   // ref ends untouched, and the work lives on a ref cleanup has no reason to
   // touch.
   const before = git(input.worktreePath, ["rev-parse", "HEAD"]).trim();
+  input.beforeEffect?.();
   git(input.worktreePath, ["add", "-A"]);
+  input.beforeEffect?.();
   git(input.worktreePath, ["commit", "--no-verify", "-m", salvageMessage(input.runId)]);
   const commit = git(input.worktreePath, ["rev-parse", "HEAD"]).trim();
   const branch = salvageBranch(input.runId);
+  input.beforeEffect?.();
   git(input.worktreePath, ["branch", "--force", branch, commit]);
+  input.beforeEffect?.();
   git(input.worktreePath, ["reset", "--hard", before]);
   return {
     action: "salvaged",
