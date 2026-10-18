@@ -26,16 +26,14 @@ export default function JsonRenderer({ file }: { file: FileText }) {
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-    let anyParsed = false;
     const parsed = rows.map((line) => {
       try {
-        anyParsed = true;
         return { ok: true as const, value: JSON.parse(line) as unknown };
       } catch {
         return { ok: false as const, value: line };
       }
     });
-    if (!anyParsed) body = <CodeRenderer file={file} wrap={wrap} />;
+    if (!parsed.some((row) => row.ok)) body = <CodeRenderer file={file} wrap={wrap} />;
     else
       body = (
         <div className="flex flex-col gap-2 p-3">
