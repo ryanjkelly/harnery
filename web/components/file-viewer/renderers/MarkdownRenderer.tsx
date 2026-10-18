@@ -14,6 +14,7 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { markdownImageUrl } from "@/lib/file-viewer/client";
 import type { FileText } from "@/lib/file-viewer/types";
+import { rehypeHeadingLinks } from "./markdown-headings";
 import ShikiBlock from "./ShikiBlock";
 import { useWrapPref, WrapToggle } from "./WrapToggle";
 
@@ -51,7 +52,7 @@ export default function MarkdownRenderer({ file }: { file: FileText }) {
       >
         <Markdown
           remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeSanitize]}
+          rehypePlugins={[rehypeSanitize, rehypeHeadingLinks]}
           components={{
             // Pass-through <pre> so fenced code isn't double-wrapped; ShikiBlock
             // (from the `code` override) supplies its own container.
