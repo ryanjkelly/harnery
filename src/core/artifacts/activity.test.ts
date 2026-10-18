@@ -1,10 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import {
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -31,9 +33,55 @@ import {
 const roots: string[] = [];
 const day = 86400000;
 const actor = { instance_id: "activity_owner_123" };
+const originalLstat = fs.lstatSync;
+const migrationStats = new Map<
+  string,
+  { stat: fs.Stats; contents: string; transactionAt: number }
+>();
+let restoreMigrationStats: (() => void) | undefined;
 afterEach(() => {
+  restoreMigrationStats?.();
+  restoreMigrationStats = undefined;
+  migrationStats.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+function contents(path: fs.PathLike, stat: fs.Stats | fs.BigIntStats): string {
+  return stat.isDirectory() ? JSON.stringify(readdirSync(path).sort()) : readFileSync(path, "utf8");
+}
+
+function migrationTransaction(paths: string[]): void {
+  const observed = paths.map((path) => ({ path, stat: originalLstat(path) }));
+  const transactionAt = Math.max(...observed.flatMap(({ stat }) => [stat.mtimeMs, stat.ctimeMs]));
+  for (const { path, stat } of observed)
+    migrationStats.set(path, { stat, contents: contents(path, stat), transactionAt });
+  if (restoreMigrationStats) return;
+  const stat = spyOn(fs, "lstatSync").mockImplementation(((
+    ...args: Parameters<typeof fs.lstatSync>
+  ) => {
+    const actual = Reflect.apply(originalLstat, fs, args);
+    const observed = migrationStats.get(String(args[0]));
+    if (
+      !observed ||
+      !actual ||
+      typeof actual.mtimeMs !== "number" ||
+      actual.dev !== observed.stat.dev ||
+      actual.ino !== observed.stat.ino ||
+      actual.size !== observed.stat.size ||
+      actual.mtimeMs !== observed.stat.mtimeMs ||
+      actual.ctimeMs !== observed.stat.ctimeMs ||
+      contents(args[0], actual) !== observed.contents
+    )
+      return actual;
+    return Object.assign(Object.create(Object.getPrototypeOf(actual)), actual, {
+      mtimeMs: observed.transactionAt,
+      ctimeMs: observed.transactionAt,
+      mtime: new Date(observed.transactionAt),
+      ctime: new Date(observed.transactionAt),
+    });
+  }) as typeof fs.lstatSync);
+  restoreMigrationStats = () => stat.mockRestore();
+}
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "harnery-activity-"));
@@ -156,11 +204,12 @@ function legacyMigration(withPayload = false) {
   const preimage = join(folder, `${createHash("sha256").update(bytes).digest("hex")}.v1.json`);
   writeFileSync(preimage, bytes);
   const migrated = { ...old, schema_version: 2, holds: [] };
-  // One filesystem transaction timestamp reproduces the old migration. A
-  // mocked stat is unnecessary on the Linux filesystem used by the fixture.
+  // Model the migration's single timestamp explicitly. Separate write and
+  // rename syscalls can receive different filesystem ticks on any platform.
   const tmp = join(f.unit.path, "migration.tmp");
   writeFileSync(tmp, JSON.stringify(migrated));
   renameSync(tmp, f.manifest);
+  migrationTransaction([f.unit.path, f.manifest, preimage]);
   return { ...f, migrated, preimage };
 }
 
