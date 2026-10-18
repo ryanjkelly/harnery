@@ -118,7 +118,13 @@ process.on("message", async (message) => {
   try {
     const bytes = await render(message);
     process.send?.({ type: "result", id: message.id, bytes });
-  } catch {
-    process.send?.({ type: "result", id: message.id, error: "thumbnail_browser_failed" });
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    process.send?.({
+      type: "result",
+      id: message.id,
+      error: "thumbnail_browser_failed",
+      detail: detail.slice(0, 16 * 1024),
+    });
   }
 });

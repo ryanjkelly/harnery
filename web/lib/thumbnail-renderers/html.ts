@@ -25,7 +25,11 @@ const jobs = new Map<number, Job>();
 const stopped = new WeakSet<ChildProcess>();
 const browserPids = new WeakMap<ChildProcess, number>();
 
-function stop(instance: ChildProcess, reason: string): void {
+function failure(reason: string, detail?: string): Error {
+  return new Error(reason, detail ? { cause: new Error(detail.slice(0, 16 * 1024)) } : undefined);
+}
+
+function stop(instance: ChildProcess, reason: string, detail?: string): void {
   if (stopped.has(instance)) return;
   stopped.add(instance);
   if (child === instance) child = undefined;
@@ -33,7 +37,7 @@ function stop(instance: ChildProcess, reason: string): void {
     if (job.child === instance) {
       clearTimeout(job.timer);
       jobs.delete(id);
-      job.reject(new Error(reason));
+      job.reject(failure(reason, detail));
     }
   instance.kill("SIGTERM");
   const timer = setTimeout(() => {
@@ -92,14 +96,22 @@ function getWorker(): ChildProcess {
   });
   child = instance;
   let stderr = 0;
+  let stderrText = "";
   let completed = 0;
   const started = Date.now();
   instance.stderr?.on("data", (bytes: Buffer) => {
     stderr += bytes.length;
-    if (stderr > 64 * 1024) stop(instance, "thumbnail_output_limit");
+    stderrText = (stderrText + bytes.toString("utf8")).slice(-16 * 1024);
+    if (stderr > 64 * 1024) stop(instance, "thumbnail_output_limit", stderrText);
   });
-  instance.on("error", () => stop(instance, "thumbnail_browser_failed"));
-  instance.on("exit", () => stop(instance, "thumbnail_browser_failed"));
+  instance.on("error", (error) => stop(instance, "thumbnail_browser_failed", error.message));
+  instance.on("exit", (code, signal) =>
+    stop(
+      instance,
+      "thumbnail_browser_failed",
+      `Browser worker exited (code=${code}, signal=${signal}).\n${stderrText}`,
+    ),
+  );
   instance.on(
     "message",
     (message: {
@@ -109,6 +121,7 @@ function getWorker(): ChildProcess {
       pathname?: string;
       bytes?: Uint8Array;
       error?: string;
+      detail?: string;
       pid?: number;
     }) => {
       if (message.type === "browser-process" && typeof message.pid === "number") {
@@ -134,7 +147,7 @@ function getWorker(): ChildProcess {
       jobs.delete(message.id);
       completed++;
       if (message.error || !message.bytes || message.bytes.byteLength > 4 * 1024 * 1024)
-        job.reject(new Error(message.error ?? "thumbnail_output_limit"));
+        job.reject(failure(message.error ?? "thumbnail_output_limit", message.detail));
       else job.resolve(Buffer.from(message.bytes));
       if (![...jobs.values()].some((pending) => pending.child === instance)) {
         if (completed >= 256 || Date.now() - started > 600_000) {
@@ -205,7 +218,7 @@ export async function renderHtmlThumbnail(input: ThumbnailInput): Promise<Buffer
         url: thumbnailDocumentUrl(input.relPath),
       },
       (error) => {
-        if (error) stop(instance, "thumbnail_browser_failed");
+        if (error) stop(instance, "thumbnail_browser_failed", error.message);
       },
     );
   });
