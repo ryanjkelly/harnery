@@ -2,7 +2,6 @@ const SENSITIVE_KEY =
   /(?:authorization|cookie|credential|password|passwd|private[_-]?key|secret|session[_-]?token|access[_-]?token|refresh[_-]?token|api[_-]?key)/i;
 const OMITTED_CONTENT_KEY =
   /(?:^|[_-])(?:environment|env|prompt|prompts|tool[_-]?payload|tool[_-]?result|transcript|transcripts)(?:$|[_-])/i;
-const HOME_PATH = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/home\/[^/\s]+|\/Users\/[^/\s]+)/g;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi;
 const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi;
 const PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
@@ -76,7 +75,8 @@ function sanitize(value: unknown, stats: SanitizationStats, depth: number): unkn
 }
 
 function sanitizeString(value: string, stats: SanitizationStats): string {
-  let next = value;
+  let next = canonicalizeDiagnosticIdentity(value);
+  if (next !== value) stats.sanitized_value_count += 1;
   const replacements: Array<[RegExp, string | ((...args: string[]) => string)]> = [
     [PRIVATE_KEY, "[REDACTED:private-key]"],
     [BEARER_VALUE, "Bearer [REDACTED:token]"],
@@ -86,7 +86,6 @@ function sanitizeString(value: string, stats: SanitizationStats): string {
     [SENSITIVE_ENV, "$1[REDACTED]"],
     [SENSITIVE_ARGUMENT, "$1[REDACTED]"],
     [URL_CREDENTIALS, (_match, scheme: string) => `${scheme}[REDACTED]@`],
-    [HOME_PATH, "[REDACTED:home]"],
   ];
   for (const [pattern, replacement] of replacements) {
     const replaced = next.replace(pattern, replacement as never);
@@ -95,3 +94,5 @@ function sanitizeString(value: string, stats: SanitizationStats): string {
   }
   return next;
 }
+
+import { canonicalizeDiagnosticIdentity } from "./path-identity.ts";

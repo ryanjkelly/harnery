@@ -472,6 +472,16 @@ describe("diagnostic bundles", () => {
   });
 });
 
+const pathOwnerCases: Array<[string, string[]]> = [
+  ["Linux", ["/home/owner-one/worker", "/home/owner-two/worker"]],
+  ["macOS", ["/Users/owner-one/worker", "/Users/owner-two/worker"]],
+  ["Windows", [String.raw`C:\Users\owner-one\worker`, String.raw`C:\Users\owner-two\worker`]],
+  [
+    "Windows spaced home",
+    [String.raw`C:\Users\Jane Doe\worker`, String.raw`C:\Users\John Doe\worker`],
+  ],
+];
+
 describe("diagnostic sanitization", () => {
   test("independently replays raw and sanitized observations with the same owners and ceilings", () => {
     const raw = identityReplayObservations(["worker-a", "worker-b"]);
@@ -488,9 +498,9 @@ describe("diagnostic sanitization", () => {
     expect(JSON.stringify(raw)).toBe(before);
   });
 
-  // Distinct home-based owners currently collapse from two replay findings to one.
-  test.todo("independently replays path owners without merging their finding identities", () => {
-    const owners = ["/home/owner-one/worker", "/home/owner-two/worker"];
+  test.each(
+    pathOwnerCases,
+  )("%s: independently replays path owners without merging their finding identities", (_platform, owners) => {
     const raw = identityReplayObservations(owners);
     const before = JSON.stringify(raw);
     const thresholds = identityReplayThresholds();
@@ -531,9 +541,9 @@ describe("diagnostic sanitization", () => {
     expect(JSON.stringify(raw)).toBe(before);
   });
 
-  // Redacted owner paths no longer match the projection's original hashed fingerprints.
-  test.todo("replays captured path owner episodes without resetting their lifecycle", () => {
-    const owners = ["/home/owner-one/worker", "/home/owner-two/worker"];
+  test.each(
+    pathOwnerCases,
+  )("%s: replays captured path owner episodes without resetting their lifecycle", (_platform, owners) => {
     const raw = identityReplayObservations(owners);
     const findings = replayDiagnosticInputs(raw, identityReplayThresholds()).findings.map(
       (finding) => ({ ...finding, occurrence_count: 3 }),
@@ -550,11 +560,130 @@ describe("diagnostic sanitization", () => {
     const before = readFileSync(sourcePath, "utf8");
     const captured = captureDiagnosticBundle(root, { now: new Date(raw.captured_at) });
     const replay = replayDiagnosticBundle(root, captured.manifest.artifact_id);
-    expect(replay.matched).toBeTrue();
     const bundle = validateDiagnosticBundle(root, captured.manifest.artifact_id);
+    expect(replayDiagnosticInputs(bundle.observations, bundle.thresholds)).toEqual(bundle.expected);
+    expect(replay.matched).toBeTrue();
     expect(bundle.expected.findings).toHaveLength(2);
     expect(bundle.expected.findings.every((finding) => finding.occurrence_count === 3)).toBeTrue();
     expect(readFileSync(sourcePath, "utf8")).toBe(before);
+  });
+
+  test("preserves pre-repair opaque episode, source, and evidence links", () => {
+    const raw = identityReplayObservations(["/home/owner-one/worker", "/home/owner-two/worker"]);
+    const sampledAt = raw.captured_at;
+    const root = repo();
+    writeReplaySources(root, sampledAt);
+    const supervisor = JSON.parse(
+      readFileSync(join(root, ".harnery", "supervisor", "snapshot.json"), "utf8"),
+    );
+    supervisor.services = [
+      {
+        id: "/home/owner-one/service",
+        state: "stale",
+        reason: "recorded-running-process-missing",
+        heartbeat_at: sampledAt,
+      },
+    ];
+    raw.sources.push({
+      source_kind: "supervisor.snapshot",
+      capability: "supported",
+      value: supervisor,
+    });
+    const legacy = replayDiagnosticInputs(raw, identityReplayThresholds()).findings.map(
+      (finding) => {
+        // The old evaluator hashed raw path inputs. These fixtures deliberately
+        // derive those old opaque IDs without calling the new canonicalizer.
+        const oldHash = (value: string) => sha256(value);
+        const oldSource = (source: typeof finding.primary_source) => ({
+          ...source,
+          id: `src_${oldHash([source.source_kind, source.source_id, source.record_id ?? "", source.observed_at].join("\0")).slice(0, 24)}`,
+        });
+        const primary = oldSource(finding.primary_source);
+        const fingerprint = oldHash(
+          [
+            finding.source_kind,
+            finding.finding_kind,
+            finding.scope_kind,
+            finding.scope_id,
+            primary.source_id,
+          ].join("\0"),
+        ).slice(0, 32);
+        return {
+          ...finding,
+          id: `find_${oldHash(`${fingerprint}\0${finding.opened_at}`).slice(0, 24)}`,
+          fingerprint,
+          occurrence_count: 4,
+          primary_source: primary,
+          evidence: finding.evidence.map((entry) => {
+            const source = oldSource(entry.source);
+            return {
+              ...entry,
+              id: `ev_${oldHash([finding.finding_kind, finding.scope_kind, finding.scope_id, source.id].join("\0")).slice(0, 24)}`,
+              source,
+            };
+          }),
+        };
+      },
+    );
+    expect(legacy).toHaveLength(3);
+    writeSource(root, "resources/snapshot.json", raw.sources[0]!.value);
+    writeSource(root, "supervisor/snapshot.json", supervisor);
+    const prior = {
+      schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
+      active: legacy,
+      transitions: legacy,
+    };
+    writeSource(root, "supervisor/findings.json", prior);
+    const sourcePath = join(root, ".harnery", "supervisor", "findings.json");
+    const before = readFileSync(sourcePath, "utf8");
+    const captured = captureDiagnosticBundle(root, { now: new Date(sampledAt) });
+    const bundle = validateDiagnosticBundle(root, captured.manifest.artifact_id);
+    const replayed = replayDiagnosticInputs(bundle.observations, bundle.thresholds);
+    expect(replayed).toEqual(bundle.expected);
+    const expected = sanitizeDiagnosticValue(legacy).value as typeof legacy;
+    for (const finding of replayed.findings) {
+      const existing = expected.find((entry) => entry.id === finding.id)!;
+      expect(existing).toBeDefined();
+      expect(finding).toMatchObject({
+        id: existing.id,
+        fingerprint: existing.fingerprint,
+        state: "opened",
+        occurrence_count: 4,
+        opened_at: existing.opened_at,
+        primary_source: existing.primary_source,
+        evidence: existing.evidence,
+      });
+    }
+    expect(replayDiagnosticBundle(root, captured.manifest.artifact_id).matched).toBeTrue();
+    expect(readFileSync(sourcePath, "utf8")).toBe(before);
+
+    const resolved = legacy.map((finding) => ({
+      ...finding,
+      state: "resolved",
+      resolved_at: sampledAt,
+    }));
+    raw.sources.push({
+      source_kind: "supervisor.findings",
+      capability: "supported",
+      value: {
+        ...prior,
+        active: [],
+        transitions: resolved,
+      },
+    });
+    const reopened = replayDiagnosticInputs(raw, identityReplayThresholds());
+    const privateReopened = replayDiagnosticInputs(
+      sanitizeDiagnosticValue(raw).value as DiagnosticObservations,
+      identityReplayThresholds(),
+    );
+    expect(JSON.parse(JSON.stringify(privateReopened))).toEqual(
+      sanitizeDiagnosticValue(JSON.parse(JSON.stringify(reopened))).value,
+    );
+    for (const finding of privateReopened.findings) {
+      expect(legacy.some((entry) => entry.id === finding.id)).toBeTrue();
+      expect(finding.occurrence_count).toBe(5);
+      expect(finding.state).toBe("opened");
+    }
   });
 
   test("removes every credential-shaped shared fixture sentinel", () => {

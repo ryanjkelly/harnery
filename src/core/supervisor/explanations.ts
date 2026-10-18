@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalizeDiagnosticIdentity } from "../diagnostics/path-identity.ts";
 import {
   SUPERVISOR_DIAGNOSTIC_LIMITS,
   SUPERVISOR_EXPLANATION_SCHEMA_VERSION,
@@ -94,7 +95,9 @@ function statement(
 ): SupervisorExplanationStatement {
   return {
     id: `ex_${createHash("sha256")
-      .update(`${code}\u0000${summary}\u0000${evidenceIds.join(",")}`)
+      .update(
+        canonicalizeDiagnosticIdentity(`${code}\u0000${summary}\u0000${evidenceIds.join(",")}`),
+      )
       .digest("hex")
       .slice(0, 24)}`,
     code,

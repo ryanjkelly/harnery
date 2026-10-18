@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { CoordinationHealthSnapshot } from "../agents/health.ts";
+import { canonicalizeDiagnosticIdentity } from "../diagnostics/path-identity.ts";
 import type {
   ResourceProcessGroup,
   ResourceProcessSample,
@@ -96,15 +97,17 @@ export function updateSupervisorFindings(
   const candidates = evaluateCandidates(input)
     .sort((left, right) => severityRank(right.severity) - severityRank(left.severity))
     .slice(0, SUPERVISOR_DIAGNOSTIC_LIMITS.max_active_findings);
-  const priorActive = new Map(previous.active.map((entry) => [entry.fingerprint, entry]));
+  const priorActive = new Map(previous.active.map((entry) => [findingFingerprint(entry), entry]));
   const current = new Set<string>();
   const active: SupervisorFinding[] = [];
   const transitions = new Map(previous.transitions.map((entry) => [entry.id, entry]));
 
-  for (const candidate of candidates) {
-    const fingerprint = findingFingerprint(candidate);
-    current.add(fingerprint);
-    const prior = priorActive.get(fingerprint) ?? recentResolved(previous, fingerprint, observedAt);
+  for (const observed of candidates) {
+    const identity = findingFingerprint(observed);
+    current.add(identity);
+    const prior = priorActive.get(identity) ?? recentResolved(previous, identity, observedAt);
+    const candidate = preserveEpisodeReferences(observed, prior);
+    const fingerprint = prior?.fingerprint ?? identity;
     const openedAt = prior?.opened_at ?? candidate.primary_source.observed_at;
     const occurrenceCount = prior
       ? prior.state === "resolved"
@@ -114,7 +117,7 @@ export function updateSupervisorFindings(
     const peak = peakEvidence(prior, candidate.evidence, observedAt);
     const finding: SupervisorFinding = {
       schema_version: SUPERVISOR_FINDING_SCHEMA_VERSION,
-      id: deterministicId("find", `${fingerprint}\u0000${openedAt}`),
+      id: prior?.id ?? deterministicId("find", `${fingerprint}\u0000${openedAt}`),
       fingerprint,
       source_kind: candidate.source_kind,
       finding_kind: candidate.finding_kind,
@@ -139,7 +142,7 @@ export function updateSupervisorFindings(
   }
 
   for (const prior of priorActive.values()) {
-    if (current.has(prior.fingerprint)) continue;
+    if (current.has(findingFingerprint(prior))) continue;
     transitions.set(prior.id, {
       ...prior,
       state: "resolved",
@@ -859,7 +862,7 @@ function recentResolved(
   return findings.transitions
     .filter(
       (entry) =>
-        entry.fingerprint === fingerprint &&
+        findingFingerprint(entry) === fingerprint &&
         entry.state === "resolved" &&
         entry.resolved_at !== undefined &&
         observedMs - Date.parse(entry.resolved_at) >= 0 &&
@@ -898,7 +901,12 @@ function peakEvidence(
     : {};
 }
 
-function findingFingerprint(candidate: Candidate): string {
+function findingFingerprint(
+  candidate: Pick<
+    Candidate,
+    "source_kind" | "finding_kind" | "scope_kind" | "scope_id" | "primary_source"
+  >,
+): string {
   return digest(
     [
       candidate.source_kind,
@@ -915,7 +923,57 @@ function deterministicId(prefix: string, value: string): string {
 }
 
 function digest(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+  return createHash("sha256").update(canonicalizeDiagnosticIdentity(value)).digest("hex");
+}
+
+/** Keep opaque episode links when the same source observation is replayed privately. */
+function preserveEpisodeReferences(candidate: Candidate, prior?: SupervisorFinding): Candidate {
+  if (!prior) return candidate;
+  const sources = [
+    prior.primary_source,
+    ...prior.evidence.map((entry) => entry.source),
+    ...(prior.workload_context ? [prior.workload_context.source] : []),
+  ];
+  const byIdentity = new Map(sources.map((source) => [sourceIdentity(source), source]));
+  const retainSource = (source: SupervisorSourceReference): SupervisorSourceReference => {
+    const captured = byIdentity.get(sourceIdentity(source));
+    return captured ? { ...source, id: captured.id } : source;
+  };
+  return {
+    ...candidate,
+    primary_source: retainSource(candidate.primary_source),
+    evidence: candidate.evidence.map((entry) => {
+      const captured = prior.evidence.find(
+        (previous) =>
+          sourceIdentity(previous.source) === sourceIdentity(entry.source) &&
+          previous.unit === entry.unit &&
+          previous.observed_value === entry.observed_value &&
+          canonicalizeDiagnosticIdentity(previous.summary) ===
+            canonicalizeDiagnosticIdentity(entry.summary),
+      );
+      return {
+        ...entry,
+        ...(captured ? { id: captured.id } : {}),
+        source: retainSource(entry.source),
+      };
+    }),
+    ...(candidate.workload_context
+      ? {
+          workload_context: {
+            ...candidate.workload_context,
+            source: retainSource(candidate.workload_context.source),
+          },
+        }
+      : {}),
+  };
+}
+
+function sourceIdentity(source: SupervisorSourceReference): string {
+  return canonicalizeDiagnosticIdentity(
+    [source.source_kind, source.source_id, source.record_id ?? "", source.observed_at].join(
+      "\u0000",
+    ),
+  );
 }
 
 function validFindings(value: SupervisorFindings | undefined): value is SupervisorFindings {

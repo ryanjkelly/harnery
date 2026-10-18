@@ -35,8 +35,7 @@ describe("diagnostic identity and authority sanitization", () => {
     expect(JSON.stringify(raw)).toBe(before);
   });
 
-  // Home redaction currently collapses different owners to the same placeholder.
-  test.todo("keeps path owner identities distinct and consistent while removing private text", () => {
+  test("keeps path owner identities distinct and consistent while removing private text", () => {
     const first = "/home/owner-one/worker";
     const second = "/home/owner-two/worker";
     const raw = {
@@ -53,6 +52,19 @@ describe("diagnostic identity and authority sanitization", () => {
     });
     expect(JSON.stringify(sanitized)).not.toContain("/home/owner-");
     expect(sanitized.message).not.toContain("diagnostic-private-token");
+    expect(JSON.stringify(raw)).toBe(before);
+  });
+
+  test("canonicalizes token-shaped home identities before lossy secret redaction", () => {
+    const owners = ["a", "b"].map((letter) => `/home/sk-${letter.repeat(24)}/worker`);
+    const raw = { owners, message: "Bearer diagnostic-private-token", max_attempts: 3 };
+    const before = JSON.stringify(raw);
+    const sanitized = sanitizeDiagnosticValue(raw).value as typeof raw;
+    expect(sanitized.owners[0]).not.toBe(sanitized.owners[1]);
+    expect(sanitizeDiagnosticValue(sanitized).value).toEqual(sanitized);
+    expect(JSON.stringify(sanitized)).not.toContain("sk-");
+    expect(JSON.stringify(sanitized)).not.toContain("diagnostic-private-token");
+    expect(sanitized.max_attempts).toBe(3);
     expect(JSON.stringify(raw)).toBe(before);
   });
 });

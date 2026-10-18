@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalizeDiagnosticIdentity } from "../diagnostics/path-identity.ts";
 import {
   SUPERVISOR_DIAGNOSTIC_LIMITS,
   SUPERVISOR_TIMELINE_SCHEMA_VERSION,
@@ -129,5 +130,5 @@ function clusterRelatedSources(
 }
 
 function stableId(prefix: string, value: string): string {
-  return `${prefix}_${createHash("sha256").update(value).digest("hex").slice(0, 24)}`;
+  return `${prefix}_${createHash("sha256").update(canonicalizeDiagnosticIdentity(value)).digest("hex").slice(0, 24)}`;
 }

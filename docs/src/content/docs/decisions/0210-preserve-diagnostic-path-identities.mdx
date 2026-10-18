@@ -1,0 +1,53 @@
+---
+title: "0210: Preserve diagnostic path identities"
+description: "Share private-path canonicalization across diagnostic redaction and supervisor identity derivation."
+---
+
+**Date:** 2026-10-18
+**Status:** Accepted
+
+## Context
+
+Replacing every private home directory with one placeholder merges distinct
+path-valued owners. Independent replay can then produce fewer findings. A
+distinct replacement alone still changes the inputs used to derive finding,
+source, evidence, timeline and explanation IDs. Captured episodes can appear
+resolved and reopen with new identities, losing their recurrence history.
+
+## Decision
+
+Use one pure canonicalizer for home paths in Linux, macOS and Windows string
+forms. It replaces each matched home prefix with a stable, domain-separated
+SHA-256 pseudonym. The sanitizer applies this projection before lossy secret
+redaction, including when a home name itself resembles a credential. Ordinary
+identifiers, protocol keys, numbers, booleans and nulls keep their values.
+
+Supervisor identity derivation uses the same projection. Match prior episodes
+by their canonical semantic identity while retaining their existing opaque
+finding ID, fingerprint, opening time and occurrence count. Reopened episodes
+retain that identity and increment recurrence normally. Preserve prior source
+and evidence IDs only for matching source observations and evidence content;
+a different observation time remains a different source.
+
+Capture the producer's expected result from the original observations before
+sanitizing either payload. Replay independently evaluates the exported inputs.
+It cannot repair its own expected result or read live state. The capture keeps
+the existing JSON representation and per-source sanitization bounds, and never
+rewrites the source files.
+
+## Alternatives considered
+
+- A shared placeholder loses owner inequality.
+- Distinct pseudonyms without shared derivation reset captured episodes.
+- Rebuilding expectations from already-sanitized inputs lets the same mistake
+  affect both sides of the comparison.
+- Exporting raw paths would preserve identity but fail the privacy contract.
+
+## Verification
+
+The three retained reproductions are active. Focused tests compare raw and
+sanitized observations independently, exercise Linux, macOS and Windows path
+strings, and retain pre-repair IDs derived without the canonicalizer. They
+check episode recurrence, source and evidence links, credential removal,
+unchanged inputs and ordinary retry ceilings. The portable fixtures run under
+Linux/Bun; they do not establish native macOS or Windows execution.

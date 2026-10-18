@@ -134,12 +134,12 @@ export function captureDiagnosticBundle(
   const aggregateStats: SanitizationStats = { sanitized_value_count: 0, omitted_value_count: 0 };
   const sources = [
     ...SOURCE_SPECS.map(([sourceKind, relativePath]) =>
-      readCapturedSource(repoRoot, sourceKind, relativePath, aggregateStats),
+      readCapturedSource(repoRoot, sourceKind, relativePath),
     ),
-    readShadowAdmissionSource(repoRoot, capturedAt, aggregateStats),
+    readShadowAdmissionSource(repoRoot, capturedAt),
   ];
   const selection = diagnosticSelection(input, sources, now);
-  const observations: DiagnosticObservations = {
+  const rawObservations: DiagnosticObservations = {
     schema_version: DIAGNOSTIC_INPUT_SCHEMA_VERSION,
     captured_at: capturedAt,
     selection,
@@ -156,7 +156,23 @@ export function captureDiagnosticBundle(
       pressure_policy: PRESSURE_POLICY,
     },
   };
-  const expected = deriveCapturedExpected(observations, thresholds);
+  // Freeze the producer's actual output before sanitization. The replay must
+  // independently preserve that output, rather than share a transformed oracle.
+  const rawExpected = deriveCapturedExpected(rawObservations, thresholds);
+  const sanitizedExpected = sanitizeDiagnosticValue(JSON.parse(JSON.stringify(rawExpected)));
+  aggregateStats.sanitized_value_count += sanitizedExpected.stats.sanitized_value_count;
+  aggregateStats.omitted_value_count += sanitizedExpected.stats.omitted_value_count;
+  const observations: DiagnosticObservations = {
+    ...rawObservations,
+    sources: rawObservations.sources.map((source) => {
+      if (source.value === undefined) return source;
+      const sanitized = sanitizeDiagnosticValue(source.value);
+      aggregateStats.sanitized_value_count += sanitized.stats.sanitized_value_count;
+      aggregateStats.omitted_value_count += sanitized.stats.omitted_value_count;
+      return { ...source, value: sanitized.value };
+    }),
+  };
+  const expected = sanitizedExpected.value as typeof rawExpected;
   if (input.findingId && !expected.findings.some((finding) => finding.id === input.findingId)) {
     throw new Error(
       `finding "${input.findingId}" is not present in the captured findings projection`,
@@ -446,7 +462,6 @@ function readCapturedSource(
   repoRoot: string,
   sourceKind: string,
   relativePath: string,
-  aggregateStats: SanitizationStats,
 ): DiagnosticCapturedSource {
   const path = join(repoRoot, relativePath);
   if (!existsSync(path)) {
@@ -462,10 +477,7 @@ function readCapturedSource(
         : (() => {
             throw new Error("source_is_not_regular_file");
           })();
-    const sanitized = sanitizeDiagnosticValue(parsed);
-    aggregateStats.sanitized_value_count += sanitized.stats.sanitized_value_count;
-    aggregateStats.omitted_value_count += sanitized.stats.omitted_value_count;
-    const value = sanitized.value;
+    const value = parsed;
     const record = object(value);
     return {
       source_kind: sourceKind,
@@ -483,11 +495,7 @@ function readCapturedSource(
   }
 }
 
-function readShadowAdmissionSource(
-  repoRoot: string,
-  capturedAt: string,
-  aggregateStats: SanitizationStats,
-): DiagnosticCapturedSource {
+function readShadowAdmissionSource(repoRoot: string, capturedAt: string): DiagnosticCapturedSource {
   const sourceKind = "workflow.diagnostic-admission";
   const workflowsRoot = join(repoRoot, ".harnery", "workflows");
   if (!existsSync(workflowsRoot)) {
@@ -545,15 +553,12 @@ function readShadowAdmissionSource(
       invalid_run_count: invalidCount,
       records,
     };
-    const sanitized = sanitizeDiagnosticValue(projection);
-    aggregateStats.sanitized_value_count += sanitized.stats.sanitized_value_count;
-    aggregateStats.omitted_value_count += sanitized.stats.omitted_value_count;
     return {
       source_kind: sourceKind,
       capability: omittedCount > 0 || invalidCount > 0 ? "partial" : "supported",
       schema_version: 1,
       observed_at: records[0]?.ended_at as string | undefined,
-      value: sanitized.value,
+      value: projection,
       ...(omittedCount > 0
         ? { reason_code: "bounded_workflow_window_truncated" }
         : invalidCount > 0
