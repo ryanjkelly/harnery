@@ -48,6 +48,26 @@ jobs:
         working-directory: .
         run: bun x playwright install --with-deps chromium
 
+      - name: Permit sandboxed Playwright Chromium on the runner
+        working-directory: .
+        run: |
+          set -euo pipefail
+          restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -f "$restriction" ] && [ "$(cat "$restriction")" = 1 ]; then
+            # Ubuntu restricts user namespaces for downloaded browsers. Allow
+            # only the installed browser binaries; keep Chromium's sandbox on.
+            browser_cache=$(bun -e 'import { chromium } from "playwright"; import { dirname } from "node:path"; console.log(dirname(dirname(dirname(chromium.executablePath()))));')
+            count=0
+            while IFS= read -r browser; do
+              count=$((count + 1))
+              profile="$RUNNER_TEMP/harnery-playwright-$count.apparmor"
+              printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile harnery-playwright-%s "%s" flags=(unconfined) {\n  userns,\n}\n' "$count" "$browser" > "$profile"
+              sudo apparmor_parser -r "$profile"
+              echo "Allowed sandbox user namespaces for $browser"
+            done < <(find "$browser_cache" -mindepth 3 -maxdepth 3 -type f \( -name chrome -o -name chrome-headless-shell \))
+            test "$count" -gt 0
+          fi
+
       - name: Dashboard dependencies, tests, and production build
         working-directory: .
         run: bun run check:local web
