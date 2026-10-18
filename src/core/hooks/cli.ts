@@ -2454,8 +2454,11 @@ function completeRecoveryInjection(
   sessionId: string,
   recovery: PreparedContextRecovery,
 ): void {
-  completeContextRecovery(coordRoot, { sessionId, instanceId });
-  void recovery;
+  completeContextRecovery(coordRoot, {
+    sessionId,
+    instanceId,
+    checkpoint: recovery.checkpoint,
+  });
 }
 
 main()

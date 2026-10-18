@@ -121,3 +121,30 @@ for inspection and manual recovery preparation. Keep the existing bare
   read error, but this verification process runs with privileges that can still
   read that file. The isolated failure reproduces without the continuity
   changes.
+
+### Prepared checkpoint acceptance (2026-10-18)
+
+Recovery preparation verifies the task instance and the current state/capsule
+pair before rendering any continuation note. A reused provider session ID
+does not transfer another task's checkpoint. Duplicate pre-compaction
+checkpoints follow the same ownership check.
+
+[prepareContextRecovery](../../../../../src/core/context/index.ts) now returns
+a required checkpoint token containing the session, task instance, generation,
+capsule ID and capsule digest. Every completion caller passes that exact
+token after its context channel accepts the briefing. Completion compares it
+with the current checkpoint under the same per-session reservation used by
+context-state writers. A missing, changed, foreign or superseded token returns
+null without writing. Repeating an already accepted matching token preserves
+the existing state and recovery timestamp byte for byte.
+
+Accepting whichever checkpoint is latest would let an older briefing recover a
+newer checkpoint. Comparing before an unlocked write would leave that race
+open. The required token and shared reservation replace both behaviors; the
+API has no optional legacy acceptance path. The synchronous convenience API
+returns recovered=false and an empty briefing when completion refuses.
+
+These checks establish local checkpoint custody. They do not establish that a
+provider completed native compaction. Failed or cancelled provider outcomes
+need trustworthy adapter evidence before they can supply additional native
+fixtures.

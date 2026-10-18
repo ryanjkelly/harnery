@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as childProcess from "node:child_process";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { recordLiveClaimChangeV3, recordLiveTaskChangeV3 } from "../agents/live-authority-v3.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
@@ -12,6 +14,7 @@ import {
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
 import { HarneryInboxService, inboxPath } from "../inbox/service.ts";
+import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 import {
   type ContinuityCapsule,
   checkpointContext,
@@ -291,12 +294,11 @@ function compactionCheckpoint(coordRoot: string) {
 }
 
 describe("compaction coordination input", () => {
-  // Capsule lookup is session-keyed and currently exposes a previous instance's
-  // continuation note when another instance reuses the provider session ID.
-  test.todo("reused session IDs cannot expose a different instance's capsule", () => {
+  // A provider session ID alone never transfers the previous task's context.
+  test("reused session IDs cannot expose a different instance's capsule", () => {
     mockGitReads();
     const coordRoot = root();
-    checkpointContext(coordRoot, {
+    const checkpoint = checkpointContext(coordRoot, {
       sessionId: "shared-provider-session",
       instanceId: "owner-a",
       adapter: "codex",
@@ -304,19 +306,22 @@ describe("compaction coordination input", () => {
       reason: "pre_compact",
       continuationNote: "private task belonging to owner-a",
     });
+    const statePath = join(dirname(dirname(checkpoint.path)), "state.json");
+    const stateBefore = readFileSync(statePath, "utf8");
+    const capsuleBefore = readFileSync(checkpoint.path, "utf8");
     const prepared = prepareContextRecovery(coordRoot, {
       sessionId: "shared-provider-session",
       instanceId: "owner-b",
       cwd: coordRoot,
     });
     expect(prepared).toBeNull();
-    expect(readContextState(coordRoot, "shared-provider-session")?.phase).toBe("degraded");
+    expect(readFileSync(statePath, "utf8")).toBe(stateBefore);
+    expect(readFileSync(checkpoint.path, "utf8")).toBe(capsuleBefore);
     expect(readContextState(coordRoot, "shared-provider-session")?.recovered_at).toBeUndefined();
   });
 
-  // The completion API carries no prepared generation. A stale caller currently
-  // marks generation 2 recovered after accepting the generation 1 briefing.
-  test.todo("completion of a prepared generation cannot complete a newer checkpoint", () => {
+  // Acceptance applies only to the checkpoint whose briefing was prepared.
+  test("completion of a prepared generation cannot complete a newer checkpoint", () => {
     mockGitReads();
     const coordRoot = root();
     const input = { sessionId: "session-a", instanceId: "owner-a" };
@@ -330,8 +335,199 @@ describe("compaction coordination input", () => {
       continuationNote: "new generation",
     });
     expect(newer.capsule.generation).toBe(old.capsule.generation + 1);
-    completeContextRecovery(coordRoot, input);
+    const statePath = join(dirname(dirname(newer.path)), "state.json");
+    const newerBytes = readFileSync(statePath, "utf8");
+    expect(completeContextRecovery(coordRoot, { ...input, checkpoint: old.checkpoint })).toBeNull();
     expect(readContextState(coordRoot, input.sessionId)?.phase).toBe("checkpointed");
+    expect(readFileSync(statePath, "utf8")).toBe(newerBytes);
+  });
+
+  test("repeated completion of the same accepted checkpoint is a byte-stable no-op", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const checkpoint = compactionCheckpoint(coordRoot);
+    const prepared = prepareContextRecovery(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      cwd: coordRoot,
+    })!;
+    const input = {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      checkpoint: prepared.checkpoint,
+    };
+    const completed = completeContextRecovery(coordRoot, input)!;
+    expect(completed.phase).toBe("recovered");
+    const statePath = join(dirname(dirname(checkpoint.path)), "state.json");
+    const bytes = readFileSync(statePath, "utf8");
+    expect(completeContextRecovery(coordRoot, input)).toEqual(completed);
+    expect(readFileSync(statePath, "utf8")).toBe(bytes);
+    expect(readLatestCapsule(coordRoot, "session-a")?.capsule_id).toBe(
+      checkpoint.capsule.capsule_id,
+    );
+  });
+
+  test("missing or changed prepared authority never accepts the latest checkpoint", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const checkpoint = compactionCheckpoint(coordRoot);
+    const prepared = prepareContextRecovery(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      cwd: coordRoot,
+    })!;
+    const statePath = join(dirname(dirname(checkpoint.path)), "state.json");
+    const bytes = readFileSync(statePath, "utf8");
+    const input = { sessionId: "session-a", instanceId: "owner-a" };
+    // @ts-expect-error The prepared checkpoint is a required API argument.
+    expect(completeContextRecovery(coordRoot, input)).toBeNull();
+    for (const changed of [
+      { session_id: "other-session" },
+      { instance_id: "owner-b" },
+      { generation: prepared.checkpoint.generation + 1 },
+      { capsule_id: "different-capsule" },
+      { capsule_sha256: "0".repeat(64) },
+    ]) {
+      expect(
+        completeContextRecovery(coordRoot, {
+          ...input,
+          checkpoint: { ...prepared.checkpoint, ...changed },
+        }),
+      ).toBeNull();
+      expect(readFileSync(statePath, "utf8")).toBe(bytes);
+    }
+  });
+
+  test("amending the prepared capsule refuses acceptance without rewriting current state", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const checkpoint = compactionCheckpoint(coordRoot);
+    const prepared = prepareContextRecovery(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      cwd: coordRoot,
+    })!;
+    const statePath = join(dirname(dirname(checkpoint.path)), "state.json");
+    const bytes = readFileSync(statePath, "utf8");
+    const altered = {
+      ...checkpoint.capsule,
+      work: { ...checkpoint.capsule.work, continuation_note: "amended after preparation" },
+    };
+    writeFileSync(checkpoint.path, JSON.stringify(altered));
+    expect(
+      completeContextRecovery(coordRoot, {
+        sessionId: "session-a",
+        instanceId: "owner-a",
+        checkpoint: prepared.checkpoint,
+      }),
+    ).toBeNull();
+    expect(readFileSync(statePath, "utf8")).toBe(bytes);
+  });
+
+  test("pre-compaction reuse cannot return a foreign instance capsule", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const first = compactionCheckpoint(coordRoot);
+    const firstBytes = readFileSync(first.path, "utf8");
+    const second = checkpointContext(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-b",
+      adapter: "codex",
+      cwd: coordRoot,
+      reason: "pre_compact",
+      continuationNote: "owner-b task",
+    });
+    expect(second.reused).toBe(false);
+    expect(second.capsule.session.instance_id).toBe("owner-b");
+    expect(second.capsule.generation).toBe(first.capsule.generation + 1);
+    expect(second.capsule.work.continuation_note).toBe("owner-b task");
+    expect(readFileSync(first.path, "utf8")).toBe(firstBytes);
+  });
+
+  test("a foreign compaction observation does not change the current owner", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const first = compactionCheckpoint(coordRoot);
+    const statePath = join(dirname(dirname(first.path)), "state.json");
+    const bytes = readFileSync(statePath, "utf8");
+    markContextCompactionCompleted(coordRoot, { sessionId: "session-a", instanceId: "owner-b" });
+    expect(readFileSync(statePath, "utf8")).toBe(bytes);
+  });
+
+  test("one session reservation excludes completion and checkpoint writes until release", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const checkpoint = compactionCheckpoint(coordRoot);
+    const prepared = prepareContextRecovery(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      cwd: coordRoot,
+    })!;
+    const sessionDir = dirname(dirname(checkpoint.path));
+    const statePath = join(sessionDir, "state.json");
+    const bytes = readFileSync(statePath, "utf8");
+    const lease = acquireNoClobberLease({
+      path: join(sessionDir, "mutation.lease"),
+      scope: "context-continuity",
+      authoritySha256: createHash("sha256").update("session-a").digest("hex"),
+      staleAfterMs: 30_000,
+    });
+    try {
+      expect(() =>
+        completeContextRecovery(coordRoot, {
+          sessionId: "session-a",
+          instanceId: "owner-a",
+          checkpoint: prepared.checkpoint,
+        }),
+      ).toThrow("held by a live or unexpired owner");
+      expect(() => compactionCheckpoint(coordRoot)).toThrow("held by a live or unexpired owner");
+      expect(readFileSync(statePath, "utf8")).toBe(bytes);
+    } finally {
+      lease.release();
+    }
+    expect(
+      completeContextRecovery(coordRoot, {
+        sessionId: "session-a",
+        instanceId: "owner-a",
+        checkpoint: prepared.checkpoint,
+      })?.phase,
+    ).toBe("recovered");
+  });
+
+  test("convenience recovery reports refusal if a newer checkpoint wins after preparation", () => {
+    mockGitReads();
+    const coordRoot = root();
+    const checkpoint = compactionCheckpoint(coordRoot);
+    const currentLease = join(dirname(dirname(checkpoint.path)), "mutation.lease", "current");
+    const unlink = fs.unlinkSync;
+    let advanced = false;
+    spyOn(fs, "unlinkSync").mockImplementation((path) => {
+      unlink(path);
+      if (!advanced && String(path) === currentLease) {
+        advanced = true;
+        checkpointContext(coordRoot, {
+          sessionId: "session-a",
+          instanceId: "owner-a",
+          adapter: "claude-code",
+          cwd: coordRoot,
+          reason: "manual",
+          continuationNote: "new checkpoint after prepare",
+        });
+      }
+    });
+    const result = recoverContext(coordRoot, {
+      sessionId: "session-a",
+      instanceId: "owner-a",
+      cwd: coordRoot,
+    });
+    expect(advanced).toBe(true);
+    expect(result.recovered).toBe(false);
+    expect(result.capsule).toBeNull();
+    expect(result.briefing).toBe("");
+    expect(readContextState(coordRoot, "session-a")?.phase).toBe("checkpointed");
+    expect(readContextState(coordRoot, "session-a")?.generation).toBe(
+      checkpoint.capsule.generation + 1,
+    );
   });
 
   test("recovery lists input surfaced immediately before compaction without changing history", async () => {
@@ -421,7 +617,16 @@ describe("compaction coordination input", () => {
         expect(inbox.pending("owner-a").map(({ message_id }) => message_id)).toEqual([laterId]);
         expect(readFileSync(inboxPath(coordRoot, "owner-a"), "utf8")).toBe(history);
       }
-      completeContextRecovery(coordRoot, { sessionId: "session-a", instanceId: "owner-a" });
+      const accepted = prepareContextRecovery(coordRoot, {
+        sessionId: "session-a",
+        instanceId: "owner-a",
+        cwd: coordRoot,
+      })!;
+      completeContextRecovery(coordRoot, {
+        sessionId: "session-a",
+        instanceId: "owner-a",
+        checkpoint: accepted.checkpoint,
+      });
     }
     expect(readContextState(coordRoot, "session-a")?.generation).toBe(2);
   });

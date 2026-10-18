@@ -16,6 +16,7 @@ import type { HarneryInboxMessageRecordV1 } from "../inbox/contract.ts";
 import { peerInbox } from "../inbox/peer-messages.ts";
 import { project } from "../inbox/service.ts";
 import { stateFileMode } from "../storage/modes.ts";
+import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 import type { RepoObservation, RepoSnapshot } from "./observation.ts";
 import { observationsComparable } from "./observation.ts";
 
@@ -115,7 +116,20 @@ export interface RecoverContextResult {
   recovered: boolean;
 }
 
+/**
+ * Authority for accepting exactly the capsule supplied during preparation.
+ * It is returned by prepareContextRecovery, not reconstructed from latest state.
+ */
+export interface PreparedContextCheckpoint {
+  session_id: string;
+  instance_id: string;
+  generation: number;
+  capsule_id: string;
+  capsule_sha256: string;
+}
+
 export interface PreparedContextRecovery {
+  checkpoint: Readonly<PreparedContextCheckpoint>;
   state: ContextContinuityState;
   capsule: ContinuityCapsule;
   briefing: string;
@@ -192,19 +206,26 @@ export function recordContextSample(
   instanceId: string,
   sample: ContextSample,
 ): { state: ContextContinuityState; changed: boolean } {
-  const current = readContextState(coordRoot, sample.session_id);
-  const state =
-    current ?? newState({ sessionId: sample.session_id, instanceId, now: sample.observed_at });
-  const changed = !sameMeasurement(state.latest_context, sample);
-  if (!changed) return { state, changed: false };
-  const next: ContextContinuityState = {
-    ...state,
-    instance_id: instanceId,
-    latest_context: sample,
-    updated_at: sample.observed_at,
-  };
-  writeState(coordRoot, next);
-  return { state: next, changed: true };
+  return withContextMutation(coordRoot, sample.session_id, () => {
+    const current = readContextState(coordRoot, sample.session_id);
+    const state =
+      current?.instance_id === instanceId
+        ? current
+        : {
+            ...newState({ sessionId: sample.session_id, instanceId, now: sample.observed_at }),
+            generation: current?.generation ?? 0,
+          };
+    const changed = !sameMeasurement(state.latest_context, sample);
+    if (!changed) return { state, changed: false };
+    const next: ContextContinuityState = {
+      ...state,
+      instance_id: instanceId,
+      latest_context: sample,
+      updated_at: sample.observed_at,
+    };
+    writeState(coordRoot, next);
+    return { state: next, changed: true };
+  });
 }
 
 /**
@@ -216,57 +237,64 @@ export function checkpointContext(
   coordRoot: string,
   input: CheckpointContextInput,
 ): CheckpointContextResult {
-  const now = new Date().toISOString();
-  const current =
-    readContextState(coordRoot, input.sessionId) ??
-    newState({ sessionId: input.sessionId, instanceId: input.instanceId, now });
-  if (input.reason === "pre_compact" && current.phase === "checkpointed") {
-    const existing = readLatestCapsule(coordRoot, input.sessionId);
-    if (existing && current.latest_capsule) {
-      return {
-        capsule: existing,
-        path: join(coordRoot, ".harnery", current.latest_capsule),
-        state: current,
-        reused: true,
-      };
+  return withContextMutation(coordRoot, input.sessionId, () => {
+    const now = new Date().toISOString();
+    const previous = readContextState(coordRoot, input.sessionId);
+    const current =
+      previous?.instance_id === input.instanceId
+        ? previous
+        : {
+            ...newState({ sessionId: input.sessionId, instanceId: input.instanceId, now }),
+            generation: previous?.generation ?? 0,
+          };
+    if (input.reason === "pre_compact" && current.phase === "checkpointed") {
+      const existing = readLatestCapsule(coordRoot, input.sessionId);
+      if (existing && capsuleMatchesState(current, existing, input) && current.latest_capsule) {
+        return {
+          capsule: existing,
+          path: join(coordRoot, ".harnery", current.latest_capsule),
+          state: current,
+          reused: true,
+        };
+      }
     }
-  }
 
-  const heartbeat = readHeartbeat(coordRoot, input.instanceId);
-  const generation = current.generation + 1;
-  const capsule: ContinuityCapsule = {
-    schema_version: CONTEXT_SCHEMA_VERSION,
-    capsule_id: randomUUID(),
-    generation,
-    created_at: now,
-    reason: input.reason,
-    session: {
-      session_id: input.sessionId,
+    const heartbeat = readHeartbeat(coordRoot, input.instanceId);
+    const generation = current.generation + 1;
+    const capsule: ContinuityCapsule = {
+      schema_version: CONTEXT_SCHEMA_VERSION,
+      capsule_id: randomUUID(),
+      generation,
+      created_at: now,
+      reason: input.reason,
+      session: {
+        session_id: input.sessionId,
+        instance_id: input.instanceId,
+        adapter: input.adapter,
+        model: input.model ?? current.latest_context?.model ?? heartbeat?.model,
+      },
+      context: current.latest_context,
+      work: buildWorkSnapshot(heartbeat, input.continuationNote),
+      repo: snapshotRepo(input.cwd),
+    };
+
+    const relativePath = capsuleRelativePath(input.sessionId, generation);
+    const absolutePath = join(coordRoot, ".harnery", relativePath);
+    writeBoundedJson(absolutePath, capsule, MAX_CAPSULE_BYTES);
+    const next: ContextContinuityState = {
+      ...current,
       instance_id: input.instanceId,
-      adapter: input.adapter,
-      model: input.model ?? current.latest_context?.model ?? heartbeat?.model,
-    },
-    context: current.latest_context,
-    work: buildWorkSnapshot(heartbeat, input.continuationNote),
-    repo: snapshotRepo(input.cwd),
-  };
-
-  const relativePath = capsuleRelativePath(input.sessionId, generation);
-  const absolutePath = join(coordRoot, ".harnery", relativePath);
-  writeBoundedJson(absolutePath, capsule, MAX_CAPSULE_BYTES);
-  const next: ContextContinuityState = {
-    ...current,
-    instance_id: input.instanceId,
-    phase: "checkpointed",
-    generation,
-    latest_capsule: relativePath,
-    updated_at: now,
-    recovered_at: undefined,
-    compaction_completed_at: undefined,
-    degraded_reason: undefined,
-  };
-  writeState(coordRoot, next);
-  return { capsule, path: absolutePath, state: next, reused: false };
+      phase: "checkpointed",
+      generation,
+      latest_capsule: relativePath,
+      updated_at: now,
+      recovered_at: undefined,
+      compaction_completed_at: undefined,
+      degraded_reason: undefined,
+    };
+    writeState(coordRoot, next);
+    return { capsule, path: absolutePath, state: next, reused: false };
+  });
 }
 
 /** Prepare a briefing without claiming that a adapter has accepted it yet. */
@@ -274,31 +302,48 @@ export function prepareContextRecovery(
   coordRoot: string,
   input: { sessionId: string; instanceId: string; cwd: string },
 ): PreparedContextRecovery | null {
-  const now = new Date().toISOString();
-  const current =
-    readContextState(coordRoot, input.sessionId) ??
-    newState({ sessionId: input.sessionId, instanceId: input.instanceId, now });
-  const capsule = readLatestCapsule(coordRoot, input.sessionId);
-  if (!capsule) {
-    const degraded: ContextContinuityState = {
-      ...current,
-      instance_id: input.instanceId,
-      phase: "degraded",
-      updated_at: now,
-      degraded_reason: "post-compaction signal arrived without a continuity checkpoint",
-    };
-    writeState(coordRoot, degraded);
-    return null;
-  }
+  return withContextMutation(coordRoot, input.sessionId, () => {
+    const now = new Date().toISOString();
+    const current =
+      readContextState(coordRoot, input.sessionId) ??
+      newState({ sessionId: input.sessionId, instanceId: input.instanceId, now });
+    // A reused provider ID does not transfer the prior task's context.
+    if (current.instance_id !== input.instanceId) return null;
+    const capsule = readLatestCapsule(coordRoot, input.sessionId);
+    if (!capsule || !capsuleMatchesState(current, capsule, input)) {
+      const degraded: ContextContinuityState = {
+        ...current,
+        instance_id: input.instanceId,
+        phase: "degraded",
+        updated_at: now,
+        degraded_reason: capsule
+          ? "continuity checkpoint does not match the requesting instance and state"
+          : "post-compaction signal arrived without a continuity checkpoint",
+      };
+      writeState(coordRoot, degraded);
+      return null;
+    }
 
-  const liveRepo = snapshotRepo(input.cwd);
-  const briefing = [
-    renderRecoveryBriefing(capsule, liveRepo),
-    renderRecoveryInput(coordRoot, input.instanceId),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  return { state: current, capsule, briefing };
+    const liveRepo = snapshotRepo(input.cwd);
+    const briefing = [
+      renderRecoveryBriefing(capsule, liveRepo),
+      renderRecoveryInput(coordRoot, input.instanceId),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    return {
+      state: current,
+      capsule,
+      briefing,
+      checkpoint: Object.freeze({
+        session_id: input.sessionId,
+        instance_id: input.instanceId,
+        generation: capsule.generation,
+        capsule_id: capsule.capsule_id,
+        capsule_sha256: capsuleDigest(capsule),
+      }),
+    };
+  });
 }
 
 /** Recovery lists input without surfacing it again or changing its receipts. */
@@ -357,25 +402,56 @@ function inputLine(messageId: string, status: string, body: string): string {
   return `- ${messageId} (${status}): ${excerpt}${excerpt.length < text.length ? " [excerpt]" : ""}`;
 }
 
-/** Advance continuity only after the adapter context channel accepted the briefing. */
+/**
+ * Advance continuity only after the adapter accepted the prepared briefing.
+ * Missing, altered, foreign or superseded checkpoints refuse without writing.
+ * Repeating the same accepted checkpoint is an exact no-op.
+ */
 export function completeContextRecovery(
   coordRoot: string,
-  input: { sessionId: string; instanceId: string },
-): ContextContinuityState {
-  const now = new Date().toISOString();
-  const current =
-    readContextState(coordRoot, input.sessionId) ??
-    newState({ sessionId: input.sessionId, instanceId: input.instanceId, now });
-  const recovered: ContextContinuityState = {
-    ...current,
-    instance_id: input.instanceId,
-    phase: "recovered",
-    updated_at: now,
-    recovered_at: now,
-    degraded_reason: undefined,
-  };
-  writeState(coordRoot, recovered);
-  return recovered;
+  input: {
+    sessionId: string;
+    instanceId: string;
+    checkpoint: Readonly<PreparedContextCheckpoint>;
+  },
+): ContextContinuityState | null {
+  return withContextMutation(coordRoot, input.sessionId, () => {
+    const current = readContextState(coordRoot, input.sessionId);
+    const checkpoint = input.checkpoint;
+    if (
+      !current ||
+      !checkpoint ||
+      checkpoint.session_id !== input.sessionId ||
+      checkpoint.instance_id !== input.instanceId ||
+      !Number.isSafeInteger(checkpoint.generation) ||
+      checkpoint.generation < 1 ||
+      typeof checkpoint.capsule_id !== "string" ||
+      !checkpoint.capsule_id ||
+      !/^[a-f0-9]{64}$/.test(checkpoint.capsule_sha256) ||
+      (current.phase !== "checkpointed" && current.phase !== "recovered")
+    )
+      return null;
+    const capsule = readLatestCapsule(coordRoot, input.sessionId);
+    if (
+      !capsule ||
+      !capsuleMatchesState(current, capsule, input) ||
+      checkpoint.generation !== capsule.generation ||
+      checkpoint.capsule_id !== capsule.capsule_id ||
+      checkpoint.capsule_sha256 !== capsuleDigest(capsule)
+    )
+      return null;
+    if (current.phase === "recovered") return current;
+    const now = new Date().toISOString();
+    const recovered: ContextContinuityState = {
+      ...current,
+      phase: "recovered",
+      updated_at: now,
+      recovered_at: now,
+      degraded_reason: undefined,
+    };
+    writeState(coordRoot, recovered);
+    return recovered;
+  });
 }
 
 /** Record that the adapter, rather than Harnery, reported compaction complete. */
@@ -383,22 +459,25 @@ export function markContextCompactionCompleted(
   coordRoot: string,
   input: { sessionId: string; instanceId: string; observedAt?: string },
 ): ContextContinuityState {
-  const now = input.observedAt ?? new Date().toISOString();
-  const current =
-    readContextState(coordRoot, input.sessionId) ??
-    newState({ sessionId: input.sessionId, instanceId: input.instanceId, now });
-  const next: ContextContinuityState = {
-    ...current,
-    instance_id: input.instanceId,
-    phase: current.latest_capsule ? current.phase : "degraded",
-    compaction_completed_at: now,
-    updated_at: now,
-    degraded_reason: current.latest_capsule
-      ? current.degraded_reason
-      : "post-compaction signal arrived without a continuity checkpoint",
-  };
-  writeState(coordRoot, next);
-  return next;
+  return withContextMutation(coordRoot, input.sessionId, () => {
+    const now = input.observedAt ?? new Date().toISOString();
+    const current =
+      readContextState(coordRoot, input.sessionId) ??
+      newState({ sessionId: input.sessionId, instanceId: input.instanceId, now });
+    if (current.instance_id !== input.instanceId) return current;
+    const next: ContextContinuityState = {
+      ...current,
+      instance_id: input.instanceId,
+      phase: current.latest_capsule ? current.phase : "degraded",
+      compaction_completed_at: now,
+      updated_at: now,
+      degraded_reason: current.latest_capsule
+        ? current.degraded_reason
+        : "post-compaction signal arrived without a continuity checkpoint",
+    };
+    writeState(coordRoot, next);
+    return next;
+  });
 }
 
 /** Convenience API for callers whose injection is synchronous and guaranteed. */
@@ -411,7 +490,19 @@ export function recoverContext(
     const state = readContextState(coordRoot, input.sessionId)!;
     return { state, capsule: null, briefing: "", recovered: false };
   }
-  const recovered = completeContextRecovery(coordRoot, input);
+  const recovered = completeContextRecovery(coordRoot, {
+    sessionId: input.sessionId,
+    instanceId: input.instanceId,
+    checkpoint: prepared.checkpoint,
+  });
+  if (!recovered) {
+    return {
+      state: readContextState(coordRoot, input.sessionId) ?? prepared.state,
+      capsule: null,
+      briefing: "",
+      recovered: false,
+    };
+  }
   return {
     state: recovered,
     capsule: prepared.capsule,
@@ -622,6 +713,47 @@ function newState(input: {
     generation: 0,
     updated_at: input.now,
   };
+}
+
+function capsuleMatchesState(
+  state: ContextContinuityState,
+  capsule: ContinuityCapsule,
+  input: { sessionId: string; instanceId: string },
+): boolean {
+  return (
+    state.session_id === input.sessionId &&
+    state.instance_id === input.instanceId &&
+    capsule.session?.session_id === input.sessionId &&
+    capsule.session?.instance_id === input.instanceId &&
+    capsule.schema_version === CONTEXT_SCHEMA_VERSION &&
+    Number.isSafeInteger(capsule.generation) &&
+    capsule.generation > 0 &&
+    capsule.generation === state.generation &&
+    typeof capsule.capsule_id === "string" &&
+    capsule.capsule_id.length > 0 &&
+    state.latest_capsule === capsuleRelativePath(input.sessionId, capsule.generation)
+  );
+}
+
+function capsuleDigest(capsule: ContinuityCapsule): string {
+  return createHash("sha256").update(JSON.stringify(capsule)).digest("hex");
+}
+
+/** Every state writer shares the same crash-recoverable session reservation. */
+function withContextMutation<T>(coordRoot: string, sessionId: string, action: () => T): T {
+  const authority = createHash("sha256").update(sessionId).digest("hex");
+  const lease = acquireNoClobberLease({
+    path: join(contextDir(coordRoot, sessionId), "mutation.lease"),
+    scope: "context-continuity",
+    authoritySha256: authority,
+    staleAfterMs: 30_000,
+    validateStaleOwner: (owner) => owner.authority_sha256 === authority,
+  });
+  try {
+    return action();
+  } finally {
+    lease.release();
+  }
 }
 
 function writeState(coordRoot: string, state: ContextContinuityState): void {
