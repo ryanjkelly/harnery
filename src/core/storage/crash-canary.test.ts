@@ -159,6 +159,7 @@ function launch(...args: string[]): Worker {
   children.add(child);
   const lines = createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY });
   const iterator = lines[Symbol.asyncIterator]();
+  let lastMarker: string | undefined;
   return {
     process: child,
     lines,
@@ -170,8 +171,17 @@ function launch(...args: string[]): Worker {
           const item = await iterator.next();
           if (item.done) {
             const stderr = await streamText(child.stderr);
-            throw new Error(`crash worker exited before marker: ${stderr}`);
+            await exited(child);
+            throw new Error(
+              `crash worker exited before marker ${JSON.stringify({
+                args,
+                exit_code: child.exitCode,
+                signal: child.signalCode,
+                last_marker: lastMarker ?? null,
+              })}: ${stderr}`,
+            );
           }
+          lastMarker = item.value;
           if (predicate(item.value)) return item.value;
         }
       } finally {
