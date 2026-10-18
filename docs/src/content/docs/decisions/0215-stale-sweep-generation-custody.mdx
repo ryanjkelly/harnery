@@ -153,7 +153,8 @@ The storage contract requires atomic rename, stable descriptor and named-file
 identity, and same-filesystem hard links. No-follow opens are used where Node
 exposes them. The helper rechecks each private directory identity.
 
-POSIX private directories require owner-only permissions. Windows mode bits
+POSIX private directories require owner-only permissions. Manifest files use
+the project's state-file mode inside that private directory. Windows mode bits
 cannot establish ACLs, so Windows uses the caller-owned parent's inherited ACL.
 This does not exclude principals already allowed to modify that parent.
 Unsupported or uncertain operations retain evidence. Writers publish by atomic

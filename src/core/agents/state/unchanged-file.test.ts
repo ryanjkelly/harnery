@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { resetStorageSharing, stateFileMode } from "../../storage/modes.ts";
 import {
   captureFileRevision,
   deleteFileIfUnchanged,
@@ -96,6 +97,33 @@ describe("stable file revisions", () => {
 });
 
 describe("conditional file deletion custody", () => {
+  test.skipIf(process.platform === "win32")(
+    "takes manifest mode from state policy inside an owner-only pin directory",
+    () => {
+      const previousSharing = process.env.HARNERY_STORAGE_SHARING;
+      const previousUmask = process.umask();
+      process.env.HARNERY_STORAGE_SHARING = "group";
+      resetStorageSharing();
+      try {
+        const { root, path, revision } = fixture();
+        expect(
+          deleteFileIfUnchanged(path, revision, () => {
+            const pin = pinIn(root);
+            expect(fs.statSync(join(pin, "..", "intent.json")).mode & 0o777).toBe(stateFileMode());
+            expect(fs.statSync(join(pin, "..")).mode & 0o777).toBe(0o700);
+            return false;
+          }).state,
+        ).toBe("rejected");
+        expect(readFileSync(path, "utf8")).toBe("stale");
+      } finally {
+        if (previousSharing === undefined) delete process.env.HARNERY_STORAGE_SHARING;
+        else process.env.HARNERY_STORAGE_SHARING = previousSharing;
+        process.umask(previousUmask);
+        resetStorageSharing();
+      }
+    },
+  );
+
   test("deletes only an unchanged regular file and removes its private directory", () => {
     const { root, path, revision } = fixture();
     let validated = false;

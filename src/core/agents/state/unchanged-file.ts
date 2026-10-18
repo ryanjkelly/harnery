@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { stateFileMode } from "../../storage/modes.ts";
 
 export interface FileRevision {
   readonly bytes: Buffer;
@@ -192,7 +193,7 @@ function writeIntent(
   const fd = openSync(
     target,
     constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_CREAT | constants.O_EXCL,
-    0o600,
+    stateFileMode(),
   );
   try {
     writeFileSync(fd, JSON.stringify(intent));
