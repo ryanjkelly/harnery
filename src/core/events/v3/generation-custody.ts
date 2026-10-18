@@ -3,7 +3,6 @@ import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { readHookProducerStateByInstanceV3 } from "./producers/recorder.ts";
-import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "./writer.ts";
 
 const held = new Set<string>();
 
@@ -26,7 +25,8 @@ export function withGenerationCustodyV3<T>(
     if (held.has(key)) return enter(index + 1);
     const authority = createHash("sha256").update(key).digest("hex");
     const lease = acquireNoClobberLease({
-      path: join(coordRoot, EVENT_V3_LEDGER_RELATIVE_ROOT, "generation-custody", authority),
+      // Custody spans epoch rotation; the ledger directory itself is archived.
+      path: join(coordRoot, ".harnery", "private", "event-v3-generation-custody", authority),
       scope: "event-v3-generation-custody",
       authoritySha256: authority,
       // Expiry never permits stealing a live/unknown owner. A dead local process

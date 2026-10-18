@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initializeEventLedgerV3, rotateOversizedEventLedgerV3 } from "./bootstrap.ts";
+import { sha256V3 } from "./canonical.ts";
 import { withGenerationCustodyV3 } from "./generation-custody.ts";
 
 const roots: string[] = [];
@@ -51,4 +53,25 @@ test("a killed local custody owner can be recovered without a timing wait", () =
   const killed = child(coordRoot, "inst_crashed", true);
   expect(killed.signal).toBe("SIGKILL");
   expect(withGenerationCustodyV3(coordRoot, ["inst_crashed"], () => "recovered")).toBe("recovered");
+});
+
+test("custody excludes the same instance across epoch rotation while other instances progress", () => {
+  const coordRoot = root();
+  initializeEventLedgerV3({
+    coordRoot,
+    harneryBuild: "custody-rotation-fixture",
+    hostBuild: "fixture-host",
+    configDigest: sha256V3("custody-rotation-config"),
+    approvalRecordId: "fixture-custody-rotation",
+  });
+  withGenerationCustodyV3(coordRoot, ["inst_rotating"], () => {
+    expect(rotateOversizedEventLedgerV3(coordRoot, { thresholdBytes: 1 }).state).toBe("rotated");
+    const conflict = child(coordRoot, "inst_rotating");
+    expect(conflict.status).not.toBe(0);
+    expect(conflict.stderr).toContain("live or unexpired owner");
+    const other = child(coordRoot, "inst_independent");
+    expect(other.status).toBe(0);
+    expect(other.stdout).toBe("acquired");
+  });
+  expect(child(coordRoot, "inst_rotating").status).toBe(0);
 });
