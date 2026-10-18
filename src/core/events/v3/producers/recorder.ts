@@ -27,7 +27,6 @@ import {
 import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
-import { withGenerationCustodyV3 } from "../generation-custody.ts";
 import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../adapter-id.ts";
 import type { RuntimeAttestationV3Base } from "../base-contract.ts";
 import { buildEventV3 } from "../builder.ts";
@@ -44,6 +43,7 @@ import { markObservedClockRegressionV3 } from "../clock-order.ts";
 import type { EventV3 } from "../contract.ts";
 import { type EventV3WriteMode, readEventV3ControlState } from "../control.ts";
 import { fingerprintContextV3 } from "../fingerprint-keys.ts";
+import { withGenerationCustodyV3 } from "../generation-custody.ts";
 import {
   attestationIdV3,
   clockIdV3,

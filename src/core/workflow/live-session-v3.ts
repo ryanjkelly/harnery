@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, linkSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, linkSync, readdirSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { type Adapter, adapterFromPlatform } from "../adapter.ts";
 import {
@@ -209,26 +209,40 @@ function clearExpectedCache(
 
 function finishHeldCache(held: string, path: string, expectedGenerationId: string): void {
   let removed = false;
+  let cleanupFailed = false;
+  let cleanupError: unknown;
   try {
     const cache = JSON.parse(readFileSync(held, "utf8")) as Heartbeat;
-    if (cache.v3_generation_id !== expectedGenerationId) return;
-    unlinkSync(held);
-    fsyncParentDirectory(held);
-    removed = true;
-  } finally {
-    if (!removed) {
-      try {
-        // Never overwrite a later publication. Keep the held evidence when
-        // another cache already owns the live name.
-        linkSync(held, path);
-        fsyncParentDirectory(path);
-        unlinkSync(held);
-        fsyncParentDirectory(held);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (cache.v3_generation_id === expectedGenerationId) {
+      unlinkSync(held);
+      fsyncParentDirectory(held);
+      removed = true;
+    }
+  } catch (error) {
+    cleanupFailed = true;
+    cleanupError = error;
+  }
+  if (!removed) {
+    try {
+      // Never overwrite a later publication. Keep the held evidence when
+      // another cache already owns the live name.
+      linkSync(held, path);
+      fsyncParentDirectory(path);
+      unlinkSync(held);
+      fsyncParentDirectory(held);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        if (cleanupFailed) {
+          throw new AggregateError(
+            [cleanupError, error],
+            `workflow_child_v3_cache_cleanup_and_restore_failed: ${String(cleanupError)}; restoration: ${String(error)}`,
+          );
+        }
+        throw error;
       }
     }
   }
+  if (cleanupFailed) throw cleanupError;
 }
 
 function requireV3Route(coordRoot: string) {

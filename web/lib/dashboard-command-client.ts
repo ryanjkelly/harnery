@@ -10,6 +10,7 @@ import {
 } from "./dashboard-command-protocol";
 
 export type CommandStorage = Pick<Storage, "length" | "key" | "getItem" | "setItem">;
+export type CommandTransport = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
 interface Retained {
   intent: CommandIntent;
   receipt?: CommandReceipt;
@@ -19,7 +20,7 @@ export function dashboardCommandClient(
   action: DashboardAction,
   target: CommandArguments,
   storage: () => CommandStorage = () => window.localStorage,
-  send: typeof fetch = (...args) => fetch(...args),
+  send: CommandTransport = (...args) => fetch(...args),
 ) {
   const prefix = `harnery.dashboard-command.v1:${encodeURIComponent(canonicalCommand([root, action, target]))}:`;
   function records(): Retained[] {

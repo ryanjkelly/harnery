@@ -371,8 +371,13 @@ function writeWorkflowGeneration(
     sessionId: hb.session_id,
     adapter: "codex",
   };
-  startWorkflowChildSessionV3(input);
-  if (hb.ended_at) endWorkflowChildSessionV3({ ...input, cleanExit: true });
+  const child = startWorkflowChildSessionV3(input);
+  if (hb.ended_at)
+    endWorkflowChildSessionV3({
+      ...input,
+      cleanExit: true,
+      expectedGenerationId: child.v3_generation_id!,
+    });
 }
 
 function writeSharedManifest(): void {

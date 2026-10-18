@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { type CommandStorage, dashboardCommandClient } from "./dashboard-command-client";
+import {
+  type CommandStorage,
+  type CommandTransport,
+  dashboardCommandClient,
+} from "./dashboard-command-client";
 import type { CommandIntent } from "./dashboard-command-protocol";
 
 function memory() {
@@ -30,7 +34,7 @@ describe("browser command custody", () => {
       const send = (async () => {
         calls++;
         throw new Error("lost response");
-      }) as typeof fetch;
+      }) as CommandTransport;
       const make = () =>
         dashboardCommandClient("project", "ping", { instance_id: "fixture" }, () => storage, send);
       await expect(make().submit(args)).rejects.toThrow("lost response");
@@ -65,7 +69,7 @@ describe("browser command custody", () => {
       }
       reads++;
       return Response.json({ ...original, state: "settled", result: { ok: true, bytes: 41 } });
-    }) as typeof fetch;
+    }) as CommandTransport;
     const client = () =>
       dashboardCommandClient("project", "ping", { instance_id: "fixture" }, () => storage, send);
     await expect(client().submit(args)).rejects.toThrow("response lost");
@@ -88,7 +92,7 @@ describe("browser command custody", () => {
       ids.push(intent.command_id);
       if (ids.length === 1) throw new Error("request lost before server");
       return Response.json({ ...intent, state: "settled", result: { ok: true } });
-    }) as typeof fetch;
+    }) as CommandTransport;
     const client = () =>
       dashboardCommandClient("project", "ping", { instance_id: "fixture" }, () => storage, send);
     await expect(client().submit(args)).rejects.toThrow();
@@ -99,7 +103,7 @@ describe("browser command custody", () => {
   });
 
   test("unknown and pending receipts do not resend; new payload cannot replace retained intent", async () => {
-    for (const state of ["unknown", "pending"]) {
+    for (const state of ["unknown", "pending"] as const) {
       const { data, storage } = memory();
       let original!: CommandIntent,
         posts = 0;
@@ -113,7 +117,7 @@ describe("browser command custody", () => {
           { ...original, state, reason: "unconfirmed" },
           { status: state === "unknown" ? 409 : 202 },
         );
-      }) as typeof fetch;
+      }) as CommandTransport;
       const make = () =>
         dashboardCommandClient("project", "ping", { instance_id: "fixture" }, () => storage, send);
       await expect(make().submit(args)).rejects.toThrow();
@@ -142,7 +146,7 @@ describe("browser command custody", () => {
           ? { result: { ok: true } }
           : { reason: "unconfirmed first effect" }),
       });
-    }) as typeof fetch;
+    }) as CommandTransport;
     const make = () =>
       dashboardCommandClient("project", "ping", { instance_id: "fixture" }, () => storage, send);
     await expect(make().submit(args)).rejects.toThrow("lost");
@@ -183,7 +187,7 @@ describe("browser command custody", () => {
       (async () => {
         calls++;
         return Response.json({});
-      }) as typeof fetch,
+      }) as CommandTransport,
     );
     await expect(client.submit(args)).rejects.toThrow("quota");
     expect(calls).toBe(0);
@@ -195,7 +199,7 @@ describe("browser command custody", () => {
     const send = (async () => {
       calls++;
       throw new Error("lost");
-    }) as typeof fetch;
+    }) as CommandTransport;
     await expect(
       dashboardCommandClient("one", "ping", { instance_id: "fixture" }, () => storage, send).submit(
         args,
@@ -224,7 +228,7 @@ describe("browser command custody", () => {
         state: "settled",
         result: { ok: true },
       });
-    }) as typeof fetch;
+    }) as CommandTransport;
     await expect(
       dashboardCommandClient(
         "project",

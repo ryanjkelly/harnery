@@ -569,7 +569,11 @@ describe("diagnostic sanitization", () => {
   });
 
   test("preserves pre-repair opaque episode, source, and evidence links", () => {
-    const raw = identityReplayObservations(["/home/owner-one/worker", "/home/owner-two/worker"]);
+    const observations = identityReplayObservations([
+      "/home/owner-one/worker",
+      "/home/owner-two/worker",
+    ]);
+    const raw = { ...observations, sources: [...observations.sources] };
     const sampledAt = raw.captured_at;
     const root = repo();
     writeReplaySources(root, sampledAt);
