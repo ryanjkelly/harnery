@@ -520,6 +520,26 @@ describe("run failure class derivation (ADR 0046)", () => {
       attempts: 1,
       duration_ms: 1,
       ...(cls ? { class: cls } : {}),
+      ...(cls
+        ? {
+            failure_evidence: {
+              effect:
+                cls === "environment"
+                  ? {
+                      state: "none" as const,
+                      source: "spawn_errno" as const,
+                      reference: "ENOENT" as const,
+                    }
+                  : {
+                      state: "none" as const,
+                      source: "adapter_evidence" as const,
+                      reference: "fixture:pre-dispatch",
+                    },
+              refusal: { state: "unknown" as const },
+              partial_output: { state: "absent" as const, source: "stdout" as const },
+            },
+          }
+        : {}),
     };
   }
 
@@ -561,6 +581,25 @@ describe("run failure class derivation (ADR 0046)", () => {
     // The safety property: anything not positively environment/upstream charges.
     expect(deriveRunFailureClass("failed", [agent("failed")])).toBeUndefined();
     expect(deriveRunFailureClass("failed", [])).toBeUndefined();
+  });
+
+  test("a class alone or an unknown sibling cannot grant free work", () => {
+    const unknown = agent("failed", "upstream");
+    delete unknown.failure_evidence;
+    expect(deriveRunFailureClass("failed", [unknown])).toBeUndefined();
+    expect(
+      deriveRunFailureClass("failed", [agent("failed", "environment"), unknown]),
+    ).toBeUndefined();
+  });
+
+  test("refusal dominates contradictory positive no-effect evidence", () => {
+    const refused = agent("failed", "upstream");
+    refused.failure_evidence!.refusal = {
+      state: "refused",
+      source: "vendor_envelope",
+      reference: "fixture:refusal",
+    };
+    expect(deriveRunFailureClass("failed", [refused])).toBeUndefined();
   });
 });
 
@@ -604,6 +643,11 @@ describe("run-level class in the proof packet (ADR 0046)", () => {
           attempts: 1,
           duration_ms: 1,
           class: "environment",
+          failure_evidence: {
+            effect: { state: "none", source: "spawn_errno", reference: "ENOENT" },
+            refusal: { state: "unknown" },
+            partial_output: { state: "absent", source: "stdout" },
+          },
         },
       ],
     });
@@ -632,6 +676,28 @@ describe("run-level class in the proof packet (ADR 0046)", () => {
     const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
     const proof = sampleProof();
     (proof.run as Record<string, unknown>).class = "bogus";
+    writeFileSync(path, `${JSON.stringify(proof)}\n`, "utf8");
+    expect(() => readWorkflowProof(root, "wf-test")).toThrow(/schema/);
+  });
+
+  test("readWorkflowProof rejects malformed positive failure evidence", () => {
+    const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
+    const proof = sampleProof();
+    proof.agents = [
+      {
+        id: "a1",
+        label: "worker",
+        adapter: "codex",
+        status: "failed",
+        attempts: 1,
+        duration_ms: 1,
+        failure_evidence: {
+          effect: { state: "none" },
+          refusal: { state: "unknown" },
+          partial_output: { state: "unknown" },
+        },
+      } as unknown as WorkflowAgentProof,
+    ];
     writeFileSync(path, `${JSON.stringify(proof)}\n`, "utf8");
     expect(() => readWorkflowProof(root, "wf-test")).toThrow(/schema/);
   });

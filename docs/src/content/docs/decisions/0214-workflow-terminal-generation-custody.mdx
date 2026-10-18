@@ -1,0 +1,79 @@
+---
+title: "ADR 0214: Keep workflow terminals with their dispatched generation"
+description: Require the dispatched generation at authority mutation and replay boundaries, and recover terminal cache cleanup after process death.
+sidebar:
+  order: 214
+---
+
+**Date:** 2026-10-18
+**Status:** Accepted
+
+## Context
+
+A workflow child could return success even when its canonical session terminal
+failed. The engine also wrote the resumable `agent.end` record before terminal
+confirmation. Cancellation and a script that caught the error could hide the
+failure at the run boundary.
+
+Reading the current generation during cleanup was insufficient. A replacement
+could arrive between that read and an authority write, pending transaction
+replay, or cache deletion. A child must retain the generation it received at
+dispatch through every one of those boundaries.
+
+## Alternatives considered
+
+- Check the generation once before cleanup. A later replacement could still
+  receive the old child's mutation or lose its cache.
+- Throw only from the child. `parallel()` or the caller can catch that error,
+  leaving the workflow reported as successful.
+- Serialize all authority work with one long-lived lock. Unrelated instances
+  would wait for each other, and a dead workflow could block the whole system.
+- Add another event or epoch protocol. Existing generation IDs, event scopes
+  and pending transaction records already identify the required owner.
+
+## Decision
+
+The engine captures the child's generation at dispatch. It publishes
+`agent.end` only after the canonical terminal and cache cleanup succeed. A
+terminal failure records an agent failure and makes the run fail even when the
+script catches the child error. Cancellation retains its original error and
+costs; a terminal error cannot turn it into success.
+
+Hook transitions, terminal writes and coordination authority work use a short
+synchronous lease for each affected instance. The helper reuses the existing
+no-clobber lease primitive and acquires multiple instances in sorted order.
+Nested calls in the same synchronous operation reuse custody. Unrelated
+instances can proceed independently. A live or uncertain owner cannot be
+stolen; recovery requires proof that the local owning process died.
+
+Coordination preparation checks the captured generation. The authority outbox
+checks the generation already stored in `event.scope.generation_id` before
+publication and again at mutation and commit boundaries. Replaying a pending
+old transaction cannot rebind it to a replacement. An existing committed
+receipt remains readable after the owner ends. Quarantining an old pending
+transaction remains distinct from applying its authority mutation.
+
+After the canonical terminal, cache cleanup moves the live cache to a unique
+held filename. It validates those actual bytes before deleting them. If the
+move captured replacement bytes, cleanup restores them without overwriting a
+newer live cache and retains the held evidence when necessary. A retry can
+recover a held cache after process death using the exact terminal generation;
+it does not append another terminal. A contradictory terminal outcome fails.
+
+The V3 event and public transaction schemas remain unchanged. The generation
+precondition belongs to the shared authority boundary rather than a workflow
+fallback that can mutate whichever generation happens to be current.
+
+## Verification and limits
+
+The seven terminal conformance regressions now execute, alongside both existing
+crash controls. Focused checks cover cancellation, caught errors, resume,
+replacement during preparation and mutation, pending replay, explicit
+quarantine, per-instance exclusion and independent progress.
+
+A subprocess fixture receives `SIGKILL` immediately after the actual cache
+rename. The parent verifies the canonical terminal and held cache, then retries
+cleanup without a second terminal event. This establishes process-death
+recovery on the tested platform. It does not establish power-loss behavior or
+attest to a live provider event. The workflow fixtures use injected spawners
+and temporary coordination roots.

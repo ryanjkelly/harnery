@@ -20,7 +20,7 @@ import {
 import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { readWorkflowApproval } from "../workflow/approvals.ts";
 import { stableDigest } from "../workflow/durable-record.ts";
-import { readWorkflowProof } from "../workflow/proof.ts";
+import { deriveRunFailureClass, readWorkflowProof } from "../workflow/proof.ts";
 import { readWorkflowRunManifest, workflowScriptDigest } from "../workflow/run-state.ts";
 import { WORKFLOW_TRANSCRIPT_EVENT_BYTES, workflowTranscriptPath } from "../workflow/transcript.ts";
 import { isWorkspaceBoundExecutionEvidence } from "../workflow/workspaces/validate.ts";
@@ -718,14 +718,14 @@ function inspectAttempt(
       proof.acceptance.summary.unknown === 0
         ? "succeeded"
         : "failed";
-    // A failed attempt the run classified as uninformative about the work is
-    // uncharged (ADR 0046). Absent class ⇒ charged, as before. Read only for a
-    // failed attempt: a succeeded run never carries a class.
+    // Re-derive no-effect eligibility from every participant rather than
+    // trusting a persisted transport class. Missing evidence stays charged.
+    // The script's explicit decision authority remains a separate path.
     if (
       attempt.status === "failed" &&
-      (proof.run.class === "environment" ||
-        proof.run.class === "upstream" ||
-        proof.run.class === "decision")
+      (proof.run.class === "decision" ||
+        ((proof.run.class === "environment" || proof.run.class === "upstream") &&
+          deriveRunFailureClass(proof.run.status, proof.agents) === proof.run.class))
     ) {
       attempt.uncharged = proof.run.class;
       if (proof.run.class === "decision" && typeof proof.run.decision_id === "string") {

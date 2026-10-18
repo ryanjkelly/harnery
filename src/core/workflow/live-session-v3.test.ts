@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveName } from "../agents/state/names.ts";
@@ -92,8 +93,12 @@ describe("workflow child V3 lifecycle", () => {
       agentId: "a2",
       adapter: "cursor",
     } as const;
-    startWorkflowChildSessionV3(input);
-    endWorkflowChildSessionV3({ ...input, cleanExit: true });
+    const child = startWorkflowChildSessionV3(input);
+    endWorkflowChildSessionV3({
+      ...input,
+      cleanExit: true,
+      expectedGenerationId: child.v3_generation_id!,
+    });
 
     expect(existsSync(join(root, ".harnery", "active", "workflow-run-a2.json"))).toBe(false);
     expect(resolveName(root, "workflow-run-a2")).toEqual({
@@ -109,5 +114,51 @@ describe("workflow child V3 lifecycle", () => {
       authority: "approved",
       reason: "approved_explicit_end",
     });
+  });
+
+  test("recovers a cache handoff after the cleanup process is killed", () => {
+    const input = {
+      coordRoot: root,
+      instanceId: "crashed-cache-child",
+      runId: "cache-crash",
+      agentId: "a1",
+      adapter: "codex",
+    };
+    const started = startWorkflowChildSessionV3(input);
+    const end = { ...input, cleanExit: true, expectedGenerationId: started.v3_generation_id! };
+    const fixture = join(root, "cache-crash.test.ts");
+    writeFileSync(
+      fixture,
+      `
+      import { spyOn, test } from "bun:test";
+      import * as filesystem from "node:fs";
+      import { endWorkflowChildSessionV3 } from ${JSON.stringify(new URL("./live-session-v3.ts", import.meta.url).href)};
+      test("crash exactly after the atomic cache move", () => {
+        const rename = filesystem.renameSync;
+        spyOn(filesystem, "renameSync").mockImplementation((from, to) => {
+          rename(from, to);
+          if (String(to).includes(".terminal-")) process.kill(process.pid, "SIGKILL");
+        });
+        endWorkflowChildSessionV3(${JSON.stringify(end)});
+      });
+    `,
+    );
+    const crashed = spawnSync(process.execPath, ["test", fixture], {
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    expect(crashed.signal).toBe("SIGKILL");
+    const active = join(root, ".harnery", "active");
+    expect(existsSync(join(active, `${input.instanceId}.json`))).toBe(false);
+    expect(readdirSync(active).filter((name) => name.includes(".terminal-"))).toHaveLength(1);
+    expect(
+      readCoordinationViewV3(root).terminal_generations[end.expectedGenerationId]?.terminal
+        ?.outcome,
+    ).toBe("succeeded");
+    expect(() => endWorkflowChildSessionV3(end)).not.toThrow();
+    expect(readdirSync(active)).toHaveLength(0);
+    expect(
+      readLedgerV3(root).events.filter(({ event }) => event.event_type === "session.ended"),
+    ).toHaveLength(1);
   });
 });

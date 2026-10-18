@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { canRetryFailedSpawn } from "./failure-evidence.ts";
 import { buildClaudeInvocation, normalizeClaudeResult } from "./spawn-claude.ts";
 import { buildCodexInvocation, normalizeCodexResult } from "./spawn-codex.ts";
 import { buildCursorInvocation, normalizeCursorResult } from "./spawn-cursor.ts";
@@ -159,6 +160,67 @@ describe("worker full access rendering (ADR 0192)", () => {
 });
 
 describe("spawn failure classification (ADR 0046)", () => {
+  test("an empty final-message file does not erase retained Codex output", () => {
+    const result = normalizeCodexResult({
+      stdout: "A change completed before the transport failed.",
+      resultFileText: "",
+      stderr: "HTTP 503 Service Unavailable",
+      exitCode: 1,
+      durationMs: 1,
+    });
+    expect(result.text).toBe("A change completed before the transport failed.");
+    expect(result.failureEvidence?.partial_output).toMatchObject({
+      state: "present",
+      source: "stdout",
+    });
+    expect(result.failureEvidence?.effect.state).toBe("unknown");
+    expect(canRetryFailedSpawn(result)).toBe(false);
+  });
+
+  test("source-bound error envelopes preserve output without inventing native authority", () => {
+    for (const normalize of [normalizeClaudeResult, normalizeCursorResult]) {
+      const result = normalize({
+        stdout: JSON.stringify({
+          type: "result",
+          is_error: true,
+          subtype: "api_error",
+          errors: ["HTTP 503 Service Unavailable"],
+          result: "I cannot complete the remaining work.",
+        }),
+        stderr: "HTTP 503 Service Unavailable",
+        exitCode: 1,
+        durationMs: 1,
+      });
+      expect(result.text).toBe("I cannot complete the remaining work.");
+      expect(result.class).toBe("upstream");
+      expect(result.failureEvidence?.effect.state).toBe("unknown");
+      expect(result.failureEvidence?.refusal.state).toBe("unknown");
+      expect(result.failureEvidence?.partial_output).toMatchObject({
+        state: "present",
+        source: "vendor_envelope",
+      });
+      expect(canRetryFailedSpawn(result)).toBe(false);
+    }
+  });
+
+  test("an empty envelope result does not hide other retained output", () => {
+    const stdout = JSON.stringify({
+      type: "result",
+      is_error: true,
+      result: "",
+      errors: ["HTTP 503"],
+    });
+    for (const normalize of [normalizeClaudeResult, normalizeCursorResult]) {
+      const result = normalize({ stdout, stderr: "HTTP 503", exitCode: 1, durationMs: 1 });
+      expect(result.text).toBe(stdout);
+      expect(result.failureEvidence?.partial_output).toMatchObject({
+        state: "present",
+        source: "stdout",
+      });
+      expect(result.failureEvidence?.effect.state).toBe("unknown");
+    }
+  });
+
   const normalizers = [
     ["claude", normalizeClaudeResult],
     ["codex", normalizeCodexResult],

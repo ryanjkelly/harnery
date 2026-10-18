@@ -137,11 +137,12 @@ export interface WorkflowAgentProof {
   session_id?: string;
   result?: ResultDigest;
   error?: string;
-  /** Set on a failed agent whose spawn was classified uninformative about the
-   * work (ADR 0046): environment (binary absent) or upstream (vendor refused).
-   * Absent ⇒ a work failure. Recorded even when a script's parallel() swallows
-   * the rejection, so the run-level class can still be derived from proof. */
+  /** Failed-spawn transport class. It is retained even when a script swallows
+   * the rejection; charging additionally requires validated failure evidence. */
   class?: SpawnFailureClass;
+  /** Failure observations carried from the adapter. Missing observations are
+   * unknown and cannot authorize an uncharged attempt. */
+  failure_evidence?: SpawnFailureEvidence;
   /** Which vendor sandbox mode this agent launched with and why (ADR 0192).
    * Absent on a cached agent, which launched nothing. */
   access?: WorkerAccessDecision;
@@ -362,15 +363,16 @@ export interface WorkflowSpecialistProfile {
 }
 
 /**
- * Why a failed run was uninformative about the work (ADR 0046). Absent means
- * the attempt produced information about the work (or succeeded), which is the
- * default and is charged against the attempt budget exactly as before.
+ * The positively identified transport cause of a failed spawn (ADR 0046).
+ * This class alone proves neither absence of effects nor retry eligibility.
  *
  * - `environment`: the run never started — a precondition was missing (the
- *   vendor binary was absent). Uncharged AND not retried: retrying an unchanged
+ *   vendor binary was absent). With positive no-effect/output evidence it is
+ *   uncharged and not retried: retrying an unchanged
  *   environment cannot help, so the work item stops and names the precondition.
  * - `upstream`: the vendor was reached and refused (5xx, 429, circuit open).
- *   Uncharged, but retry stays available (bounded by max_uncharged_attempts).
+ *   Retry/free-attempt eligibility also requires positive no-effect evidence,
+ *   observed absent output, and no refusal. Unsupported evidence stays unknown.
  */
 export type SpawnFailureClass = "environment" | "upstream";
 
@@ -392,6 +394,30 @@ export type SpawnFailureClass = "environment" | "upstream";
  */
 export type RunFailureClass = SpawnFailureClass | "decision";
 
+/** Positive claims name the observation that supports them. A transport error
+ * or an empty reply is never evidence that no effects occurred. */
+export type SpawnEffectEvidence =
+  | { state: "unknown" }
+  | { state: "none"; source: "spawn_errno"; reference: "ENOENT" }
+  | { state: "none" | "observed"; source: "adapter_evidence"; reference: string };
+
+export type SpawnRefusalEvidence =
+  | { state: "unknown" }
+  | { state: "refused"; source: "vendor_envelope"; reference: string };
+
+export type SpawnOutputSource = "final_message" | "vendor_envelope" | "stdout";
+
+export type SpawnPartialOutputEvidence =
+  | { state: "unknown" }
+  | { state: "absent"; source: SpawnOutputSource }
+  | { state: "present"; source: SpawnOutputSource; bytes: number; sha256: string };
+
+export interface SpawnFailureEvidence {
+  effect: SpawnEffectEvidence;
+  refusal: SpawnRefusalEvidence;
+  partial_output: SpawnPartialOutputEvidence;
+}
+
 /** What a spawn adapter returns for one subagent run. */
 export interface SpawnResult {
   ok: boolean;
@@ -403,9 +429,13 @@ export interface SpawnResult {
   durationMs: number;
   /** Populated when ok=false. */
   error?: string;
-  /** Set when ok=false and the failure was positively identified as
-   * uninformative about the work. Absent ⇒ a work failure (charged). */
+  /** Transport classification when ok=false; never sufficient by itself to
+   * grant free work or automatic redispatch. */
   class?: SpawnFailureClass;
+  /** Transport classification alone grants neither a retry nor free work.
+   * Absent evidence is explicitly unknown. Positive adapter_evidence claims
+   * require a documented producer observation, never an HTTP/text heuristic. */
+  failureEvidence?: SpawnFailureEvidence;
 }
 
 export interface SpawnRequest {

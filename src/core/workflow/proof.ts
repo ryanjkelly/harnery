@@ -12,6 +12,7 @@ import type {
 import { policyDigest } from "../policy/index.ts";
 import { isCanonicalWorkflowAttemptContext } from "./attempt-context.ts";
 import { stableDigest, writeImmutableJson } from "./durable-record.ts";
+import { failureEvidenceAllowsUncharged, isSpawnFailureEvidence } from "./failure-evidence.ts";
 import { readWorkflowRunManifest } from "./run-state.ts";
 import type {
   AcceptanceCriterion,
@@ -242,17 +243,25 @@ export function digestResult(value: unknown, kind?: "text" | "json"): ResultDige
  *    attempt was informative about the work — charge it. This also keeps a
  *    resumed run whose earlier segment did real work from being written off by
  *    a later environment failure.
- * 3. Otherwise, among the failed agents, environment wins over upstream: a
- *    missing binary means nothing ran at all, and it is the operator-chosen
- *    hard stop.
+ * 3. Every participant must have failed with positive no-effect evidence,
+ *    observed absent output and no refusal. A class alone is insufficient.
+ *    Among those eligible failures, environment is the hard stop.
  * 4. Anything else is undefined ⇒ a charged work failure, exactly as today.
  */
 export function deriveRunFailureClass(
   status: "succeeded" | "failed",
-  agents: readonly Pick<WorkflowAgentProof, "status" | "class">[],
+  agents: readonly Pick<WorkflowAgentProof, "status" | "class" | "failure_evidence">[],
 ): SpawnFailureClass | undefined {
   if (status !== "failed") return undefined;
-  if (agents.some((agent) => agent.status === "succeeded" || agent.status === "cached")) {
+  if (
+    agents.length === 0 ||
+    agents.some(
+      (agent) =>
+        agent.status !== "failed" ||
+        (agent.class !== "environment" && agent.class !== "upstream") ||
+        !failureEvidenceAllowsUncharged(agent.failure_evidence),
+    )
+  ) {
     return undefined;
   }
   const failed = agents.filter((agent) => agent.status === "failed");
@@ -385,6 +394,13 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
       proof.run.class !== "environment" &&
       proof.run.class !== "upstream" &&
       proof.run.class !== "decision") ||
+    !Array.isArray(proof.agents) ||
+    proof.agents.some(
+      (agent) =>
+        !agent ||
+        typeof agent !== "object" ||
+        (agent.failure_evidence !== undefined && !isSpawnFailureEvidence(agent.failure_evidence)),
+    ) ||
     (proof.run.work_context !== undefined &&
       (!proof.run.work_item_id ||
         proof.run.work_context.id !== proof.run.work_item_id ||

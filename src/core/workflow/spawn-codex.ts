@@ -26,6 +26,7 @@ import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profil
 import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
 import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
+import { observeSpawnFailure } from "./failure-evidence.ts";
 import { resolveFullAccessArgv, resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
@@ -78,6 +79,18 @@ export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): Ad
 }
 
 export function normalizeCodexResult(raw: AdapterRawResult): SpawnResult {
+  const result = normalizeCodexTransportResult(raw);
+  if (result.ok) return result;
+  const finalText = raw.resultFileText?.trim();
+  const text = finalText || raw.stdout.trim();
+  return {
+    ...result,
+    text,
+    failureEvidence: observeSpawnFailure(raw, text, finalText ? "final_message" : "stdout"),
+  };
+}
+
+function normalizeCodexTransportResult(raw: AdapterRawResult): SpawnResult {
   if (raw.timedOut) {
     return {
       ok: false,

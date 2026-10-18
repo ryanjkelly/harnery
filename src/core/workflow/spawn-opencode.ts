@@ -22,6 +22,7 @@ import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profil
 import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
 import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
+import { observeSpawnFailure } from "./failure-evidence.ts";
 import { resolveFullAccessArgv, resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
@@ -88,6 +89,19 @@ export function buildOpenCodeInvocation(req: SpawnRequest): AdapterInvocation {
 }
 
 export function normalizeOpenCodeResult(raw: AdapterRawResult): SpawnResult {
+  const result = normalizeOpenCodeTransportResult(raw);
+  if (result.ok) return result;
+  const parsed = parseOpenCodeStream(raw.stdout);
+  const text = parsed.text || raw.stdout.trim();
+  return {
+    ...result,
+    text,
+    sessionId: parsed.sessionId,
+    failureEvidence: observeSpawnFailure(raw, text, parsed.text ? "vendor_envelope" : "stdout"),
+  };
+}
+
+function normalizeOpenCodeTransportResult(raw: AdapterRawResult): SpawnResult {
   if (raw.timedOut) {
     return {
       ok: false,

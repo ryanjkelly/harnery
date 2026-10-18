@@ -1,5 +1,30 @@
 import { describe, expect, test } from "bun:test";
-import { buildOpenCodeInvocation, parseOpenCodeStream } from "./spawn-opencode.ts";
+import {
+  buildOpenCodeInvocation,
+  normalizeOpenCodeResult,
+  parseOpenCodeStream,
+} from "./spawn-opencode.ts";
+
+test("a failed source-format stream retains text without asserting native effect or refusal", () => {
+  const result = normalizeOpenCodeResult({
+    stdout: JSON.stringify({
+      type: "text",
+      sessionID: "fixture-session",
+      part: { type: "text", text: "Partial result" },
+    }),
+    stderr: "HTTP 429 Too Many Requests",
+    exitCode: 1,
+    durationMs: 1,
+  });
+  expect(result.text).toBe("Partial result");
+  expect(result.sessionId).toBe("fixture-session");
+  expect(result.failureEvidence?.effect.state).toBe("unknown");
+  expect(result.failureEvidence?.refusal.state).toBe("unknown");
+  expect(result.failureEvidence?.partial_output).toMatchObject({
+    state: "present",
+    source: "vendor_envelope",
+  });
+});
 
 describe("parseOpenCodeStream", () => {
   test("joins text parts in order and takes the session id from any line", () => {

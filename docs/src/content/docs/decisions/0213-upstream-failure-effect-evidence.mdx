@@ -1,0 +1,77 @@
+---
+title: "ADR 0213: Evidence before retrying failed spawns"
+description: Preserve failed output and require positive observations before granting automatic retries or uncharged work attempts.
+sidebar:
+  order: 213
+---
+
+**Date:** 2026-10-18
+**Status:** Accepted
+
+## Context
+
+A child can change files or produce part of an answer before its provider
+returns a transport error. A 429 or 503 identifies a failure cause, but does not
+establish that the attempt did no work. Discarding failed output also loses
+information needed to decide whether retrying is safe.
+
+[ADR 0046](./0046-uninformative-attempts-go-uncharged.mdx) keeps positively
+uninformative attempts outside the work budget. That policy needs evidence
+across adapter normalization, retry decisions, workflow proof and durable work
+charging, rather than trust in a transport class alone.
+
+## Alternatives considered
+
+- Treat every provider error as free and retryable. This can repeat effects
+  and discard completed work.
+- Charge every failure. This loses the existing known-unstarted process path.
+- Infer no effects or refusal from status codes, empty output or prose. Those
+  observations do not carry that authority.
+- Introduce a separate event ledger. The existing spawn and workflow proof
+  contracts can carry the needed observations without a new ledger protocol.
+
+## Decision
+
+`SpawnFailureEvidence` records effects, refusal and partial output as separate
+observations. Unknown is explicit. Positive effects/refusal claims require a
+declared source and reference; persisted proof readers validate their structure.
+That validation does not establish the truth of an adapter's claim. Any custom
+adapter producer must document the observation behind its positive evidence.
+
+The registered subprocess adapters currently prove no effects only for a
+positively unstarted `ENOENT` result with no contradictory output or timeout.
+Their supported error envelopes do not prove native refusal or absence of
+effects. Those states remain unknown. Final-message, result-envelope and text
+stream output survive failure, with source, byte count and digest in proof.
+Text that sounds like a refusal is not promoted to native refusal authority.
+
+Automatic redispatch and uncharged transport failures require positive
+no-effect evidence, observed absent output, and no refusal. The known missing
+binary remains uncharged and stopped. A declared refusal, observed effects,
+partial output or uncertainty prevents automatic redispatch and free work.
+
+Every dispatched participant matters. A successful or cached sibling charges
+the attempt, as does an earlier informative spawn whose result failed schema
+validation. Empty participant sets cannot establish no effects. Durable work
+charging re-derives eligibility from the agents' proof instead of trusting
+`run.class`. Missing evidence has no legacy exemption. The script's existing
+explicit decision authority remains separate.
+
+This changes the workflow module's existing types and proof data. It adds no
+coordination-ledger event, schema migration, provider call or compatibility
+reader.
+
+## Verification and limits
+
+Regression coverage retains real fixture-file effects, partial output,
+unknown evidence, known-unstarted processes, refusal dominance, sibling work,
+persisted evidence validation and repeated-attempt charging. Vendor-format
+fixtures exercise the registered parsers; they are not attestations of live
+provider events. A provider-specific positive effect/refusal producer still
+needs its own documented native observation.
+
+## Scope and promotion
+
+This contract belongs to failed workflow spawns and their durable work
+consumers. It does not establish provider billing, native compaction outcomes
+or authority for unrelated coordination operations.

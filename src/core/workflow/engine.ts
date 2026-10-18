@@ -45,7 +45,16 @@ import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import { stableDigest } from "./durable-record.ts";
 import { evidencePreflightError } from "./evidence-preflight.ts";
-import { endWorkflowChildSessionV3, startWorkflowChildSessionV3 } from "./live-session-v3.ts";
+import {
+  canRetryFailedSpawn,
+  observeSpawnFailure,
+  resolveFailureEvidence,
+} from "./failure-evidence.ts";
+import {
+  endWorkflowChildSessionV3,
+  recordWorkflowChildTerminalFailureV3,
+  startWorkflowChildSessionV3,
+} from "./live-session-v3.ts";
 import {
   buildWorkflowProof,
   createEvidenceRecord,
@@ -612,6 +621,7 @@ async function executeWorkflow(
   let policySeq = 0;
   const billingProbed = new Map<AdapterName, BillingProbe>();
   const agentProofs = new Map<string, WorkflowAgentProof>();
+  let terminalRecordingError: Error | undefined;
   const evidenceRecords: WorkflowEvidenceRecord[] = [];
   const policyDecisions = new Map<string, PolicyDecision>(
     history?.policyDecisions.map((decision) => [decision.id, decision]),
@@ -1028,6 +1038,49 @@ async function executeWorkflow(
     });
     agentProof.access = access;
 
+    let childGenerationId: string | undefined;
+    let recordAgentEnd: (() => void) | undefined;
+    const finalizeChild = (): void => {
+      try {
+        if (childGenerationId)
+          endWorkflowChildSessionV3({
+            coordRoot: opts.coordRoot,
+            instanceId: childInstanceId(runId, id),
+            runId,
+            agentId: id,
+            adapter,
+            cleanExit: agentProof.status === "succeeded",
+            expectedGenerationId: childGenerationId,
+          });
+        // Result publication is the resume-cache boundary, after canonical custody.
+        recordAgentEnd?.();
+      } catch (error) {
+        let reason = `V3 terminal recording failed: ${(error as Error).message}`;
+        try {
+          if (childGenerationId)
+            recordWorkflowChildTerminalFailureV3({
+              coordRoot: opts.coordRoot,
+              instanceId: childInstanceId(runId, id),
+              runId,
+              agentId: id,
+              adapter,
+              expectedGenerationId: childGenerationId,
+              reason,
+            });
+        } catch (visibilityError) {
+          reason += `; blocked lifecycle recording failed: ${(visibilityError as Error).message}`;
+        }
+        const failure = new Error(agentProof.error ? `${agentProof.error}; ${reason}` : reason, {
+          cause: error,
+        });
+        terminalRecordingError ??= failure;
+        agentProof.status = "failed";
+        agentProof.error = failure.message;
+        transcript("agent.failed", { id, key, error: failure.message });
+        log(`[${name}] ${failure.message}`);
+        throw failure;
+      }
+    };
     await acquire();
     try {
       await ensureDiagnosticAdmissionObserved();
@@ -1049,7 +1102,7 @@ async function executeWorkflow(
       // Headless children do not reliably fire adapter hooks. The engine owns
       // their canonical V3 start so every dispatched child has an auditable
       // generation before it begins work.
-      startWorkflowChildSessionV3({
+      const child = startWorkflowChildSessionV3({
         coordRoot: opts.coordRoot,
         instanceId: childInstanceId(runId, id),
         runId,
@@ -1058,10 +1111,13 @@ async function executeWorkflow(
         label,
         model: agentOpts.model,
       });
+      if (!child.v3_generation_id) throw new Error("workflow_child_v3_generation_missing");
+      childGenerationId = child.v3_generation_id;
 
       let attemptPrompt = dispatchPrompt;
       let last: SpawnResult | null = null;
       let agentCostUsd = 0;
+      let informativeAttempt: ReturnType<typeof observeSpawnFailure> | undefined;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         last = await spawner({
           prompt: attemptPrompt,
@@ -1084,33 +1140,51 @@ async function executeWorkflow(
         costUsd += last.costUsd ?? 0;
 
         if (!last.ok) {
-          transcript("agent.attempt_failed", { id, attempt, error: last.error });
-          // ADR 0046: an environment failure (the binary was absent) cannot be
-          // helped by retrying an unchanged environment, so stop the in-agent
-          // retry too — not just the outer attempt/replan budget. An upstream
-          // refusal keeps retrying here: the vendor may recover mid-loop.
-          if (last.class === "environment") break;
-          continue; // spawn-level failure: retry with the original prompt
+          const observed =
+            last.failureEvidence === undefined
+              ? observeSpawnFailure({}, last.text, "final_message")
+              : resolveFailureEvidence(last.failureEvidence);
+          agentProof.failure_evidence = informativeAttempt
+            ? {
+                ...observed,
+                effect: { state: "unknown" },
+                partial_output: informativeAttempt.partial_output,
+              }
+            : observed;
+          transcript("agent.attempt_failed", {
+            id,
+            attempt,
+            error: last.error,
+            failure_evidence: observed,
+            result_digest: digestResult(last.text, "text"),
+            text: last.text,
+          });
+          if (!canRetryFailedSpawn({ ...last, failureEvidence: agentProof.failure_evidence }))
+            break;
+          continue;
         }
+        informativeAttempt = observeSpawnFailure({}, last.text, "final_message");
         if (!agentOpts.schema) {
           agentProof.status = "succeeded";
           agentProof.cost_usd =
             agentCostUsd > 0 || last.costUsd !== undefined ? agentCostUsd : undefined;
           agentProof.session_id = last.sessionId;
           agentProof.result = digestResult(last.text, "text");
-          transcriptAgentEnd(
-            {
-              id,
-              key,
-              attempts: attempt,
-              cost_usd: last.costUsd,
-              total_cost_usd: agentCostUsd,
-              duration_ms: last.durationMs,
-              session_id: last.sessionId,
-            },
-            "text",
-            last.text,
-          );
+          const completed = last;
+          recordAgentEnd = () =>
+            transcriptAgentEnd(
+              {
+                id,
+                key,
+                attempts: attempt,
+                cost_usd: completed.costUsd,
+                total_cost_usd: agentCostUsd,
+                duration_ms: completed.durationMs,
+                session_id: completed.sessionId,
+              },
+              "text",
+              completed.text,
+            );
           return last.text;
         }
 
@@ -1125,23 +1199,32 @@ async function executeWorkflow(
             agentCostUsd > 0 || last.costUsd !== undefined ? agentCostUsd : undefined;
           agentProof.session_id = last.sessionId;
           agentProof.result = digestResult(parsed.value, "json");
-          transcriptAgentEnd(
-            {
-              id,
-              key,
-              attempts: attempt,
-              cost_usd: last.costUsd,
-              total_cost_usd: agentCostUsd,
-              duration_ms: last.durationMs,
-              session_id: last.sessionId,
-            },
-            "json",
-            parsed.value,
-          );
+          const completed = last;
+          recordAgentEnd = () =>
+            transcriptAgentEnd(
+              {
+                id,
+                key,
+                attempts: attempt,
+                cost_usd: completed.costUsd,
+                total_cost_usd: agentCostUsd,
+                duration_ms: completed.durationMs,
+                session_id: completed.sessionId,
+              },
+              "json",
+              parsed.value,
+            );
           return parsed.value;
         }
 
-        transcript("agent.schema_retry", { id, attempt, problems });
+        agentProof.failure_evidence = informativeAttempt;
+        transcript("agent.schema_retry", {
+          id,
+          attempt,
+          problems,
+          rejected_text: last.text,
+          result_digest: digestResult(last.text, "text"),
+        });
         // Keep the original cache identity while making the actual output
         // contract explicit. A full bounded copy of the rejected value lets the
         // child repair omissions instead of reconstructing an unseen object.
@@ -1174,20 +1257,12 @@ async function executeWorkflow(
       throw error;
     } finally {
       reservedCostUsd = Math.max(0, reservedCostUsd - reservedForDispatch);
-      // Record the canonical terminal before removing the disposable cache.
       try {
-        endWorkflowChildSessionV3({
-          coordRoot: opts.coordRoot,
-          instanceId: childInstanceId(runId, id),
-          runId,
-          agentId: id,
-          adapter,
-          cleanExit: agentProof.status === "succeeded",
-        });
-      } catch (error) {
-        log(`[${name}] V3 terminal recording failed: ${(error as Error).message}`);
+        finalizeChild();
+      } finally {
+        // A slot is disposable; unresolved custody remains visible and failed.
+        release();
       }
-      release();
     }
   };
 
@@ -1292,6 +1367,7 @@ async function executeWorkflow(
     if (initializationError) throw initializationError;
     if (!workflow) throw new Error("workflow module initialization did not produce an executable");
     const result = await workflow(ctx);
+    if (terminalRecordingError) throw terminalRecordingError;
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - t0;
     const workspaceAttestation = workspaceBinding

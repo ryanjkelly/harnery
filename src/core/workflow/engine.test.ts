@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
+import * as filesystem from "node:fs";
 import {
   existsSync,
   mkdirSync,
@@ -401,9 +402,13 @@ describe("runWorkflow", () => {
   test("parallel() bounds real concurrency to the shared pool", async () => {
     // Child ledger IO is covered by live-session-v3.test.ts. This test measures
     // the pool with real asynchronous spawners, independent of disk latency.
-    const start = spyOn(childSessions, "startWorkflowChildSessionV3").mockReturnValue(
-      {} as ReturnType<typeof childSessions.startWorkflowChildSessionV3>,
-    );
+    const start = spyOn(childSessions, "startWorkflowChildSessionV3").mockReturnValue({
+      instance_id: "concurrency-fixture",
+      session_id: "concurrency-fixture",
+      last_heartbeat: "2026-01-01T00:00:00Z",
+      files_touched: [],
+      v3_generation_id: "gen_test",
+    } as ReturnType<typeof childSessions.startWorkflowChildSessionV3>);
     const end = spyOn(childSessions, "endWorkflowChildSessionV3").mockImplementation(() => {});
     try {
       let inFlight = 0;
@@ -632,11 +637,25 @@ describe("runWorkflow", () => {
     ).rejects.toThrow(/specialist "missing" is not configured/);
   });
 
-  test("spawn-level failure retries, then surfaces the spawn error", async () => {
+  test("positively unstarted spawn failure retries, then surfaces the spawn error", async () => {
     let calls = 0;
     const spawner: Spawner = async () => {
       calls++;
-      return { ok: false, text: "", durationMs: 1, error: "claude exited 1: boom" };
+      return {
+        ok: false,
+        text: "",
+        durationMs: 1,
+        error: "claude exited 1: boom",
+        failureEvidence: {
+          effect: {
+            state: "none",
+            source: "adapter_evidence",
+            reference: "fixture:unstarted-retry",
+          },
+          refusal: { state: "unknown" },
+          partial_output: { state: "absent", source: "final_message" },
+        },
+      };
     };
     const script = writeScript(`export default async ({ agent }) => agent("x");`);
     await expect(
@@ -1411,9 +1430,8 @@ describe("workflow child terminal conformance", () => {
   }
 
   for (const cancelled of [false, true]) {
-    // Deferred: the engine swallows terminal append failure, and cancellation loses it.
-    // A repair must preserve custody visibly without mutating a replacement generation.
-    test.todo(`terminal append failure stays blocked after rebuild (${cancelled ? "cancelled" : "completed"} child)`, async () => {
+    // Terminal failure retains custody without mutating a replacement generation.
+    test(`terminal append failure stays blocked after rebuild (${cancelled ? "cancelled" : "completed"} child)`, async () => {
       const end = spyOn(childSessions, "endWorkflowChildSessionV3").mockImplementation(() => {
         throw new Error("injected terminal append failure");
       });
@@ -1466,8 +1484,10 @@ describe("workflow child terminal conformance", () => {
   }
 
   test("a crash after terminal append keeps the canonical result before cache release", async () => {
-    const clear = spyOn(heartbeatWriter, "clearCoordinationCache").mockImplementation(() => {
-      throw new Error("injected crash before cache release");
+    const actualRename = filesystem.renameSync;
+    const clear = spyOn(filesystem, "renameSync").mockImplementation((from, to) => {
+      if (String(to).includes(".terminal-")) throw new Error("injected crash before cache release");
+      return actualRename(from, to);
     });
     try {
       const script = writeScript(`export default ({ agent }) => agent("bounded task");`);
@@ -1481,7 +1501,6 @@ describe("workflow child terminal conformance", () => {
       } catch (error) {
         expect(proofAt(error).run.status).toBe("failed");
       }
-      expect(clear).toHaveBeenCalledTimes(1);
       expect(readdirSync(join(root, ".harnery", "active"))).toHaveLength(1);
       const view = rebuild();
       expect(view.source_complete).toBe(true);
@@ -1522,8 +1541,8 @@ describe("workflow child terminal conformance", () => {
     }
   });
 
-  // Deferred: a repeated cleanup currently throws generation_missing after the cache is removed.
-  test.todo("terminal cleanup is idempotent after cache release", () => {
+  // Canonical terminals remain joinable after disposable cache release.
+  test("terminal cleanup is idempotent after cache release", () => {
     const input = {
       coordRoot: root,
       instanceId: "released-child",
@@ -1531,13 +1550,14 @@ describe("workflow child terminal conformance", () => {
       agentId: "a1",
       adapter: "codex",
     };
-    actualStart(input);
-    actualEnd({ ...input, cleanExit: true });
-    expect(() => actualEnd({ ...input, cleanExit: true })).not.toThrow();
+    const child = actualStart(input);
+    const end = { ...input, cleanExit: true, expectedGenerationId: child.v3_generation_id! };
+    actualEnd(end);
+    expect(() => actualEnd(end)).not.toThrow();
   });
 
-  // Deferred: a replacement can arrive after the generation read but before an unchecked unlink.
-  test.todo("cache cleanup preserves a replacement published at the delete boundary", () => {
+  // Publication at the cache handoff cannot transfer the replacement's custody.
+  test("cache cleanup preserves a replacement published at the delete boundary", () => {
     const input = {
       coordRoot: root,
       instanceId: "cache-race-child",
@@ -1545,21 +1565,21 @@ describe("workflow child terminal conformance", () => {
       agentId: "a1",
       adapter: "codex",
     };
-    actualStart(input);
-    const actualClear = heartbeatWriter.clearCoordinationCache;
+    const child = actualStart(input);
+    const actualRename = filesystem.renameSync;
     let replacementGeneration: ReturnType<typeof actualStart>["v3_generation_id"];
-    const clear = spyOn(heartbeatWriter, "clearCoordinationCache").mockImplementation(
-      (coordRoot, owner) => {
+    const clear = spyOn(filesystem, "renameSync").mockImplementation((from, to) => {
+      if (String(to).includes(".terminal-")) {
         clear.mockRestore();
         replacementGeneration = actualStart({
           ...input,
           sessionId: "replacement-native",
         }).v3_generation_id;
-        return actualClear(coordRoot, owner);
-      },
-    );
+      }
+      return actualRename(from, to);
+    });
     try {
-      actualEnd({ ...input, cleanExit: true });
+      actualEnd({ ...input, cleanExit: true, expectedGenerationId: child.v3_generation_id! });
       expect(replacementGeneration).toBeString();
       expect(heartbeatWriter.readHeartbeat(root, input.instanceId)?.v3_generation_id).toBe(
         replacementGeneration!,
@@ -1569,9 +1589,8 @@ describe("workflow child terminal conformance", () => {
     }
   });
 
-  // Deferred: stale terminal-failure visibility currently rebinds to the replacement owner.
-  // The shared authority writer needs a generation precondition before any mutation or event.
-  test.todo("terminal failure visibility cannot block a replacement native generation", () => {
+  // Native-session authority must not rebind an old failure to its replacement.
+  test("terminal failure visibility cannot block a replacement native generation", () => {
     const input = {
       coordRoot: root,
       instanceId: "lifecycle-race-child",
@@ -1579,7 +1598,7 @@ describe("workflow child terminal conformance", () => {
       agentId: "a1",
       adapter: "codex",
     };
-    actualStart(input);
+    const child = actualStart(input);
     const staleFailure = () =>
       recordLiveLifecycleChangeV3({
         coordRoot: root,
@@ -1589,7 +1608,7 @@ describe("workflow child terminal conformance", () => {
         state: "blocked",
         reason: "old terminal failed",
       });
-    actualEnd({ ...input, cleanExit: false });
+    actualEnd({ ...input, cleanExit: false, expectedGenerationId: child.v3_generation_id! });
     const replacement = actualStart({ ...input, sessionId: "replacement-native" });
     try {
       staleFailure();
@@ -1604,8 +1623,8 @@ describe("workflow child terminal conformance", () => {
     );
   });
 
-  // Deferred: parallel() absorbs the child rejection and the early agent.end seeds resume caching.
-  test.todo("caught terminal failure cannot report success or seed the resume cache", async () => {
+  // Script-caught child errors still fail terminal custody and cannot seed resume.
+  test("caught terminal failure cannot report success or seed the resume cache", async () => {
     const end = spyOn(childSessions, "endWorkflowChildSessionV3").mockImplementation((input) => {
       if (input.agentId === "a1") throw new Error("injected terminal append failure");
       actualEnd(input);
@@ -1665,14 +1684,17 @@ describe("workflow child terminal conformance", () => {
     }
   });
 
-  // Deferred: the helper reads the current generation instead of the dispatch generation.
-  test.todo("stale completion cannot end or block a reassigned native generation", async () => {
+  // Completion remains bound to the generation captured at dispatch.
+  test("stale completion cannot end or block a reassigned native generation", async () => {
     let started: Parameters<typeof actualStart>[0] | undefined;
+    let startedGeneration: string | undefined;
     let replacementGeneration: ReturnType<typeof actualStart>["v3_generation_id"];
     const start = spyOn(childSessions, "startWorkflowChildSessionV3").mockImplementation(
       (input) => {
         started = input;
-        return actualStart(input);
+        const child = actualStart(input);
+        startedGeneration = child.v3_generation_id;
+        return child;
       },
     );
     try {
@@ -1684,7 +1706,11 @@ describe("workflow child terminal conformance", () => {
           spawners: {
             codex: async () => {
               expect(started).toBeDefined();
-              actualEnd({ ...started!, cleanExit: false });
+              actualEnd({
+                ...started!,
+                cleanExit: false,
+                expectedGenerationId: startedGeneration!,
+              });
               const replacement = actualStart({
                 ...started!,
                 sessionId: "replacement-native-session",
@@ -1711,5 +1737,155 @@ describe("workflow child terminal conformance", () => {
     } finally {
       start.mockRestore();
     }
+  });
+});
+
+describe("workflow upstream failure evidence consumer", () => {
+  // These injected spawners carry explicit fixture authority, not vendor observations.
+  const noEffect = {
+    effect: { state: "none", source: "adapter_evidence", reference: "fixture:unstarted-call" },
+    refusal: { state: "unknown" },
+    partial_output: { state: "absent", source: "final_message" },
+  } as const;
+
+  for (const [label, evidence] of [
+    ["unknown", undefined],
+    [
+      "observed effects",
+      {
+        ...noEffect,
+        effect: {
+          state: "observed",
+          source: "adapter_evidence",
+          reference: "fixture:observed-call",
+        },
+      },
+    ],
+    [
+      "native refusal",
+      {
+        ...noEffect,
+        refusal: { state: "refused", source: "vendor_envelope", reference: "fixture:refusal" },
+      },
+    ],
+  ] as const) {
+    test(`${label} stops blind retry and retains failed output`, async () => {
+      let calls = 0;
+      let failure: unknown;
+      try {
+        await runWorkflow(
+          writeScript(`export default ({ agent }) => agent("bounded task", { maxAttempts: 3 });`),
+          {
+            coordRoot: root,
+            defaultAdapter: "codex",
+            spawners: {
+              codex: async () => {
+                calls++;
+                return {
+                  ok: false,
+                  class: "upstream",
+                  text: "retained partial output",
+                  error: "provider failure",
+                  durationMs: 1,
+                  failureEvidence: evidence,
+                };
+              },
+            },
+            ...quiet,
+          },
+        );
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(calls).toBe(1);
+      const proof = JSON.parse(
+        readFileSync((failure as Error & { proofPath: string }).proofPath, "utf8"),
+      ) as WorkflowProof;
+      expect(proof.agents[0]?.failure_evidence?.effect.state).toBe(
+        evidence?.effect.state ?? "unknown",
+      );
+      const transcript = readFileSync(
+        join(root, ".harnery", "workflows", proof.run.id, "transcript.jsonl"),
+        "utf8",
+      );
+      expect(transcript).toContain("retained partial output");
+      expect(transcript).toContain("result_digest");
+    });
+  }
+
+  test("positively unstarted retry remains available", async () => {
+    let calls = 0;
+    const result = await runWorkflow(
+      writeScript(`export default ({ agent }) => agent("bounded task");`),
+      {
+        coordRoot: root,
+        defaultAdapter: "codex",
+        spawners: {
+          codex: async () =>
+            ++calls === 1
+              ? {
+                  ok: false,
+                  class: "upstream",
+                  text: "",
+                  error: "unstarted",
+                  durationMs: 1,
+                  failureEvidence: noEffect,
+                }
+              : okSpawn("confirmed"),
+        },
+        ...quiet,
+      },
+    );
+    expect(result.result).toBe("confirmed");
+    expect(calls).toBe(2);
+  });
+
+  test("schema-invalid work cannot become no-effect after a later missing binary", async () => {
+    let calls = 0;
+    let failure: unknown;
+    try {
+      await runWorkflow(
+        writeScript(
+          `export default ({ agent }) => agent("bounded task", { schema: { type: "object", required: ["ok"] }, maxAttempts: 3 });`,
+        ),
+        {
+          coordRoot: root,
+          defaultAdapter: "codex",
+          spawners: {
+            codex: async () =>
+              ++calls === 1
+                ? okSpawn("informative invalid output")
+                : {
+                    ok: false,
+                    class: "environment",
+                    text: "",
+                    error: "ENOENT",
+                    durationMs: 1,
+                    failureEvidence: {
+                      ...noEffect,
+                      effect: { state: "none", source: "spawn_errno", reference: "ENOENT" },
+                    },
+                  },
+          },
+          ...quiet,
+        },
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(calls).toBe(2);
+    expect(failure).toBeInstanceOf(Error);
+    const proof = JSON.parse(
+      readFileSync((failure as Error & { proofPath: string }).proofPath, "utf8"),
+    ) as WorkflowProof;
+    expect(proof.agents[0]?.failure_evidence?.effect.state).toBe("unknown");
+    expect(proof.agents[0]?.failure_evidence?.partial_output).toMatchObject({
+      state: "present",
+      bytes: 26,
+    });
+    expect(
+      readFileSync(join(root, ".harnery", "workflows", proof.run.id, "transcript.jsonl"), "utf8"),
+    ).toContain("informative invalid output");
   });
 });
