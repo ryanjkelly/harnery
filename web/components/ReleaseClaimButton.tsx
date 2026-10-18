@@ -3,7 +3,10 @@
 import { Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-
+import {
+  DashboardCommandRecovery,
+  useDashboardCommand,
+} from "@/components/DashboardCommandRecovery";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -28,6 +31,7 @@ export function ReleaseClaimButton({
   agentName: string;
 }) {
   const router = useRouter();
+  const command = useDashboardCommand("release-claim", { instance_id: instanceId, path });
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -36,17 +40,15 @@ export function ReleaseClaimButton({
     setFeedback(null);
     startTransition(async () => {
       try {
-        const res = await fetch(`/api/actions/release-claim`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ instance_id: instanceId, path }),
-        });
-        const data = (await res.json()) as
-          | { ok: true; removed: boolean; remaining: number }
-          | { error: string; stderr?: string };
+        const data = await command.run<{
+          ok: boolean;
+          removed?: boolean;
+          remaining?: number;
+          error?: string;
+        }>({ instance_id: instanceId, path });
 
-        if (!res.ok || !("ok" in data)) {
-          const msg = "error" in data ? data.error : `release failed (HTTP ${res.status})`;
+        if (!data.ok) {
+          const msg = data.error ?? "release failed";
           setFeedback({ ok: false, msg: `Release failed: ${msg}` });
           return;
         }
@@ -112,6 +114,7 @@ export function ReleaseClaimButton({
           {feedback.msg}
         </p>
       )}
+      <DashboardCommandRecovery command={command} />
     </>
   );
 }

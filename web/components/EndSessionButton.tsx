@@ -2,9 +2,14 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import {
+  DashboardCommandRecovery,
+  useDashboardCommand,
+} from "@/components/DashboardCommandRecovery";
 
 export function EndSessionButton({ instanceId, name }: { instanceId: string; name: string }) {
   const router = useRouter();
+  const command = useDashboardCommand("end-session", { instance_id: instanceId });
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -13,16 +18,11 @@ export function EndSessionButton({ instanceId, name }: { instanceId: string; nam
     setBusy(true);
     setFeedback(null);
     try {
-      const res = await fetch("/api/actions/end-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instance_id: instanceId }),
-      });
-      const json = (await res.json()) as {
+      const json = await command.run<{
         ok: boolean;
         terminal_event_queued?: boolean;
         error?: string;
-      };
+      }>({ instance_id: instanceId });
       if (json.ok) {
         setFeedback({ ok: true, msg: json.terminal_event_queued ? "end queued" : "ended" });
         setTimeout(() => router.push("/"), 600);
@@ -63,17 +63,24 @@ export function EndSessionButton({ instanceId, name }: { instanceId: string; nam
         {feedback && (
           <span className={feedback.ok ? "text-green-400" : "text-red-400"}>{feedback.msg}</span>
         )}
+        <DashboardCommandRecovery command={command} />
       </span>
     );
   }
 
   return (
-    <button
-      type="button"
-      onClick={() => setConfirming(true)}
-      className="text-xs px-2 py-1 rounded border border-red-900 hover:bg-destructive/15 text-red-300"
-    >
-      end session
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="text-xs px-2 py-1 rounded border border-red-900 hover:bg-destructive/15 text-red-300"
+      >
+        end session
+      </button>
+      <DashboardCommandRecovery command={command} />
+      {feedback && (
+        <span className={feedback.ok ? "text-green-400" : "text-red-400"}>{feedback.msg}</span>
+      )}
+    </>
   );
 }

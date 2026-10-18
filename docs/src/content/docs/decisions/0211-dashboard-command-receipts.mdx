@@ -1,0 +1,60 @@
+---
+title: "0211: Retain dashboard commands and their receipts"
+description: "Keep a dashboard action's identity through lost responses and worker restarts."
+---
+
+**Date:** 2026-10-18
+**Status:** Accepted
+
+## Context
+
+A dashboard request can complete its action while the browser loses the response.
+Repeating a ping then delivers it twice. Repeating a claim release or server stop
+can affect a replacement that now occupies the same path or server ID. Session
+finalization already has its own authority checks, but the dashboard should not
+call it again merely because a response was lost.
+
+## Decision
+
+Use one command contract for ping, session end, claim release and server stop.
+The browser retains the command ID, project root, action and complete arguments
+in local storage before sending. Every existing dashboard caller uses this
+contract. Storage failure prevents dispatch. A reconnect reads the original
+receipt and displays it without sending another action.
+
+Before calling the existing mutation helper, the server exclusively creates and
+flushes an intent file under `.harnery/dashboard-commands`. The command ID binds
+the exact project, action and arguments. A matching retry reads its receipt;
+reusing an ID for different arguments is refused. The original owner, finalizer
+and process-generation checks remain in the mutation helpers.
+
+Receipts distinguish pending, settled and unknown. Settled means that the server
+observed and durably recorded the helper's result, including a refusal. It does
+not establish that a message was noticed. If an effect throws, its result cannot
+be flushed, or a worker exits before recording the result, the retained claim
+prevents another dispatch. An unconfirmed result stays unknown. A different
+worker may conservatively report unknown while the original worker is still
+running; a later read can recover its settled receipt.
+
+A status read never dispatches a command. If the server has no claim, an explicit
+retry may send the retained original ID and arguments. Pending or unknown claims
+are never retried as new commands. Neither browser intents nor server receipts
+expire by age. There is no automatic cleanup or alternate request contract.
+
+## Alternatives
+
+An in-memory cache loses its protection after a worker restart. Disabling a
+button protects only the mounted component. A time limit on command IDs can
+repeat an action whose response was never confirmed. Recording only after the
+effect leaves the crash boundary unprotected. Wrapping every mutation in a new
+transaction system would duplicate the existing helpers and still could not
+atomically commit a filesystem receipt with an external process effect.
+
+## Verification
+
+Focused regressions cover the original five retry failures, concurrent requests,
+argument conflicts, replacement targets, browser storage refusal, lost transport,
+and fresh worker processes on both sides of the effect/result boundary. A rendered
+form test loses a real route response, reloads with retained browser storage and
+displays the original settled result without a second delivery. These fixtures
+use private temporary coordination roots and intercepted browser requests.

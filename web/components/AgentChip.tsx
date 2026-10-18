@@ -24,6 +24,10 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { AgentStateBadges } from "@/components/AgentStateBadges";
+import {
+  DashboardCommandRecovery,
+  useDashboardCommand,
+} from "@/components/DashboardCommandRecovery";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -82,6 +86,7 @@ export function AgentChip({
 }) {
   const router = useRouter();
   const summary = useAgentSummary(name);
+  const command = useDashboardCommand("end-session", { instance_id: summary?.instance_id ?? "" });
   const bare = name.startsWith("agent-") ? name.slice("agent-".length) : name;
   const display = `${prefix}${bare}`;
   const labelCls = className ?? "font-mono";
@@ -181,14 +186,11 @@ export function AgentChip({
     setEndError(null);
     startEndTransition(async () => {
       try {
-        const res = await fetch("/api/actions/end-session", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ instance_id: instanceId }),
+        const data = await command.run<{ ok: boolean; error?: string }>({
+          instance_id: instanceId,
         });
-        const data = (await res.json()) as { ok: true; action: string } | { error: string };
-        if (!res.ok || !("ok" in data)) {
-          setEndError("error" in data ? data.error : `HTTP ${res.status}`);
+        if (!data.ok) {
+          setEndError(data.error ?? "end failed");
           return;
         }
         setEndOpen(false);
@@ -224,6 +226,7 @@ export function AgentChip({
           </span>
         )}
       </span>
+      <DashboardCommandRecovery command={command} />
       {open &&
         pos &&
         typeof document !== "undefined" &&

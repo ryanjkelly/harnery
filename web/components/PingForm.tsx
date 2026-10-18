@@ -1,8 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import {
+  DashboardCommandRecovery,
+  useDashboardCommand,
+} from "@/components/DashboardCommandRecovery";
 
 export function PingForm({ instanceId }: { instanceId: string }) {
+  const command = useDashboardCommand("ping", { instance_id: instanceId });
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -17,12 +22,10 @@ export function PingForm({ instanceId }: { instanceId: string }) {
     setBusy(true);
     setFeedback(null);
     try {
-      const res = await fetch("/api/actions/ping", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instance_id: instanceId, message: trimmed }),
+      const json = await command.run<{ ok: boolean; error?: string; bytes?: number }>({
+        instance_id: instanceId,
+        message: trimmed,
       });
-      const json = (await res.json()) as { ok: boolean; error?: string; bytes?: number };
       if (json.ok) {
         setFeedback({ ok: true, msg: `pinged · journal now ${json.bytes ?? "?"} bytes` });
         setMessage("");
@@ -60,6 +63,7 @@ export function PingForm({ instanceId }: { instanceId: string }) {
           </span>
         )}
       </div>
+      <DashboardCommandRecovery command={command} />
     </form>
   );
 }

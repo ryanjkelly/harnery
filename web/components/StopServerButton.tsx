@@ -3,7 +3,12 @@
 import { Square } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
+import {
+  DashboardCommandRecovery,
+  useDashboardCommand,
+} from "@/components/DashboardCommandRecovery";
 import { Button } from "@/components/ui/button";
+import type { CommandArguments } from "@/lib/dashboard-command-protocol";
 
 /** Stop one registered server (by id) or one unregistered listener (by pid). */
 export function StopServerButton({
@@ -19,6 +24,8 @@ export function StopServerButton({
   confirmMessage?: string;
 }) {
   const router = useRouter();
+  const target: CommandArguments = id ? { id } : { pid: pid ?? 0 };
+  const command = useDashboardCommand("stop-server", target);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
@@ -27,14 +34,9 @@ export function StopServerButton({
     setError(null);
     startTransition(async () => {
       try {
-        const res = await fetch("/api/actions/stop-server", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(id ? { id } : { pid }),
-        });
-        const data = (await res.json()) as { ok?: boolean; message?: string; error?: string };
-        if (!res.ok || !data.ok) {
-          setError(data.message ?? data.error ?? `HTTP ${res.status}`);
+        const data = await command.run<{ ok?: boolean; message?: string; error?: string }>(target);
+        if (!data.ok) {
+          setError(data.message ?? data.error ?? "stop failed");
           return;
         }
         router.refresh();
@@ -57,6 +59,7 @@ export function StopServerButton({
         {pending ? "Stopping…" : "Stop"}
       </Button>
       {error ? <span className="text-xs text-destructive">{error}</span> : null}
+      <DashboardCommandRecovery command={command} />
     </span>
   );
 }
