@@ -9,11 +9,12 @@ import {
   openSync,
   readdirSync,
   readSync,
+  realpathSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { strFromU8, type Zippable, zipSync } from "fflate";
 
@@ -285,11 +286,39 @@ function statIfPresent(path: string) {
   }
 }
 
-/** Inspect every existing component, including a dangling link at the final path. */
-function assertNoLinks(path: string, leaf: "file" | "directory"): void {
+const outside = (rel: string): boolean =>
+  rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+
+/**
+ * Canonicalize the directory holding a caller-named path. The caller chose
+ * that location, so links among its ancestors (macOS /tmp and /var, a linked
+ * home directory) are resolved once here. The named path itself and everything
+ * below it stay subject to assertNoLinks, which is where a planted link could
+ * redirect a write. Missing directories are appended unresolved and checked
+ * again once they exist.
+ */
+function anchored(path: string): { anchor: string; path: string } {
+  const named = resolve(path);
+  const missing = [basename(named)];
+  let existing = dirname(named);
+  while (!statIfPresent(existing) && dirname(existing) !== existing) {
+    missing.unshift(basename(existing));
+    existing = dirname(existing);
+  }
+  const anchor = realpathSync(existing);
+  return { anchor, path: join(anchor, ...missing) };
+}
+
+/**
+ * Inspect every existing component from the path up to, not including, its
+ * anchor, including a dangling link at the final path.
+ */
+function assertNoLinks(path: string, leaf: "file" | "directory", anchor: string): void {
   let current = resolve(path);
+  if (outside(relative(anchor, current)))
+    throw new Error(`ZIP path is outside its anchored directory: ${current}`);
   let first = true;
-  while (true) {
+  while (current !== anchor) {
     const stat = statIfPresent(current);
     if (stat) {
       if (stat.isSymbolicLink())
@@ -299,18 +328,16 @@ function assertNoLinks(path: string, leaf: "file" | "directory"): void {
       if (first && leaf === "file" && !stat.isFile())
         throw new Error(`ZIP output is not a regular file: ${current}`);
     }
-    const parent = dirname(current);
-    if (parent === current) return;
-    current = parent;
+    current = dirname(current);
     first = false;
   }
 }
 
-function writeAtomic(path: string, bytes: Uint8Array, overwrite: boolean): void {
-  assertNoLinks(path, "file");
+function writeAtomic(path: string, bytes: Uint8Array, overwrite: boolean, anchor: string): void {
+  assertNoLinks(path, "file", anchor);
   if (!overwrite && statIfPresent(path)) throw new Error(`ZIP output already exists: ${path}`);
   mkdirSync(dirname(path), { recursive: true });
-  assertNoLinks(dirname(path), "directory");
+  assertNoLinks(dirname(path), "directory", anchor);
   const temp = join(dirname(path), `.zip-${randomUUID()}.tmp`);
   let fd: number | undefined;
   try {
@@ -322,7 +349,7 @@ function writeAtomic(path: string, bytes: Uint8Array, overwrite: boolean): void 
     writeFileSync(fd, bytes);
     closeSync(fd);
     fd = undefined;
-    assertNoLinks(path, "file");
+    assertNoLinks(path, "file", anchor);
     if (overwrite) renameSync(temp, path);
     else {
       linkSync(temp, path);
@@ -350,14 +377,15 @@ export function extractZip(
   const entries = inventory(bytes, limits).filter((entry) =>
     (options.filter ?? (() => true))(entry.name),
   );
-  assertNoLinks(dest, "directory");
+  const { anchor, path: root } = anchored(dest);
+  assertNoLinks(root, "directory", anchor);
   const targets = new Map<string, boolean>();
   for (const entry of entries) {
-    const target = safeEntryPath(dest, entry.name);
+    const target = safeEntryPath(root, entry.name);
     const key = target.toLowerCase();
     if (targets.has(key)) throw new Error(`Colliding ZIP entry: ${entry.name}`);
     targets.set(key, entry.directory);
-    assertNoLinks(target, entry.directory ? "directory" : "file");
+    assertNoLinks(target, entry.directory ? "directory" : "file", anchor);
     if (!entry.directory && !options.overwrite && statIfPresent(target))
       throw new Error(`ZIP output already exists: ${target}`);
   }
@@ -370,16 +398,16 @@ export function extractZip(
   }
   const selected = new Set(entries.filter((entry) => !entry.directory).map((entry) => entry.name));
   const files = readZipEntries(bytes, (name) => selected.has(name), options);
-  mkdirSync(dest, { recursive: true });
+  mkdirSync(root, { recursive: true });
   for (const entry of entries) {
     if (entry.directory) {
-      const path = safeEntryPath(dest, entry.name);
-      assertNoLinks(path, "directory");
+      const path = safeEntryPath(root, entry.name);
+      assertNoLinks(path, "directory", anchor);
       mkdirSync(path, { recursive: true });
     }
   }
   for (const [name, data] of files)
-    writeAtomic(safeEntryPath(dest, name), data, options.overwrite ?? false);
+    writeAtomic(safeEntryPath(root, name), data, options.overwrite ?? false, anchor);
   return [...files.keys()];
 }
 
@@ -394,22 +422,24 @@ export function buildZip(
   options: CreateOptions = {},
 ): { bytes: Uint8Array; entries: string[] } {
   const limits = limitsFor(options);
-  const base = resolve(options.base ?? ".");
-  assertNoLinks(base, "directory");
+  // Inputs are matched against the base as the caller spelled it; reads go
+  // through its anchored form.
+  const named = resolve(options.base ?? ".");
+  const { anchor, path: base } = anchored(named);
+  assertNoLinks(base, "directory", anchor);
   const tree: Zippable = Object.create(null);
   const entries: string[] = [];
   const names = new Set<string>();
   let total = 0;
   const add = (input: string): void => {
-    const path = resolve(base, input);
-    const rel = relative(base, path);
-    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
-      throw new Error(`ZIP input is outside its base directory: ${input}`);
+    const rel = relative(named, resolve(named, input));
+    if (!rel || outside(rel)) throw new Error(`ZIP input is outside its base directory: ${input}`);
+    const path = join(base, rel);
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) throw new Error(`Refusing ZIP input symbolic link: ${input}`);
-    assertNoLinks(path, stat.isDirectory() ? "directory" : "file");
+    assertNoLinks(path, stat.isDirectory() ? "directory" : "file", anchor);
     if (stat.isDirectory()) {
-      for (const name of readdirSync(path).sort()) add(join(path, name));
+      for (const name of readdirSync(path).sort()) add(join(named, rel, name));
       return;
     }
     if (!stat.isFile()) throw new Error(`ZIP input is not a regular file: ${input}`);
@@ -443,10 +473,11 @@ export function createZip(
   inputs: readonly string[],
   options: CreateOptions = {},
 ): string[] {
-  assertNoLinks(archive, "file");
-  if (!options.overwrite && statIfPresent(archive))
+  const { anchor, path } = anchored(archive);
+  assertNoLinks(path, "file", anchor);
+  if (!options.overwrite && statIfPresent(path))
     throw new Error(`ZIP output already exists: ${archive}`);
   const result = buildZip(inputs, options);
-  writeAtomic(resolve(archive), result.bytes, options.overwrite ?? false);
+  writeAtomic(path, result.bytes, options.overwrite ?? false, anchor);
   return result.entries;
 }

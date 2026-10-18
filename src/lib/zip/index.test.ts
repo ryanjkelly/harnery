@@ -193,6 +193,31 @@ test("local header names, sizes, methods and compressed ranges must match the di
   }
 });
 
+test("a linked ancestor of the named archive, base or destination is followed", () => {
+  // macOS reaches /tmp and /var through links like this one.
+  const root = fixture();
+  mkdirSync(join(root, "real", "work", "input"), { recursive: true });
+  writeFileSync(join(root, "real", "work", "input", "a.txt"), "first");
+  const alias = join(root, "alias");
+  symlinkSync(join(root, "real"), alias, "dir");
+  const base = join(alias, "work");
+  const zip = join(base, "result.zip");
+  expect(createZip(zip, [join(base, "input")], { base })).toEqual(["input/a.txt"]);
+  expect(extractZip(zip, join(alias, "out", "nested"))).toEqual(["input/a.txt"]);
+  expect(readFileSync(join(root, "real", "out", "nested", "input", "a.txt"), "utf8")).toBe("first");
+  // The named path itself, and anything below it, may still not be a link.
+  expect(() => createZip(join(root, "other.zip"), ["work"], { base: alias })).toThrow(
+    "symbolic link",
+  );
+  symlinkSync(join(root, "real", "work"), join(alias, "out", "nested", "planted"), "dir");
+  expect(() =>
+    extractZip(archive({ "planted/input/a.txt": "changed" }), join(alias, "out", "nested"), {
+      overwrite: true,
+    }),
+  ).toThrow("symbolic link");
+  expect(readFileSync(join(root, "real", "work", "input", "a.txt"), "utf8")).toBe("first");
+});
+
 test("creation refuses symlink inputs, symlink output and overwrite by default", () => {
   const root = fixture();
   writeFileSync(join(root, "file.txt"), "original");
