@@ -31,12 +31,14 @@ function fixture(): string {
   return root;
 }
 
-function canonicalGeneration(root: string, owner: string): string {
+function canonicalGeneration(root: string, owner: string): `gen_${string}` {
   const generation = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(root)).instances[
     liveInstanceIdV3(owner)
   ];
   if (!generation) throw new Error("fixture_generation_missing");
-  return generation.generation_id;
+  const generationId = generation.generation_id;
+  if (!generationId.startsWith("gen_")) throw new Error("fixture_generation_id_invalid");
+  return generationId as `gen_${string}`;
 }
 
 function makeStale(root: string, owner: string): { path: string; fresh: string } {
@@ -215,7 +217,7 @@ test("stale materialization cannot overwrite a replacement created during projec
   const generation = canonicalGeneration(root, owner);
   const path = heartbeatPath(root, owner);
   const originalProject = projection.projectHeartbeatV3;
-  let replacementBytes: Buffer | undefined;
+  let replacementBytes: Buffer<ArrayBuffer> | undefined;
   let injected = false;
   const project = spyOn(projection, "projectHeartbeatV3").mockImplementation((...args) => {
     const projected = originalProject(...args);
@@ -240,6 +242,7 @@ test("stale materialization cannot overwrite a replacement created during projec
   expect((failure as Error).message).toContain("authority_generation_changed");
   expect(canonicalGeneration(root, owner)).not.toBe(generation);
   expect(readHeartbeat(root, owner)?.v3_generation_id).toBe(canonicalGeneration(root, owner));
+  if (replacementBytes === undefined) throw new Error("fixture_replacement_bytes_missing");
   expect(readFileSync(path)).toEqual(replacementBytes);
 });
 
