@@ -789,7 +789,11 @@ describe("live V3 coordination", () => {
     const root = startedRoot();
     expect(
       recordLiveSweepObservationV3(
-        liveInput(root, { observation: "stale_heartbeat", ageMs: 600_000 }),
+        liveInput(root, {
+          expectedGenerationId: listHookProducerStateRecordsV3(root)[0]!.state.generation_id,
+          observation: "stale_heartbeat",
+          ageMs: 600_000,
+        }),
       ).state,
     ).toBe("recorded");
     expect(

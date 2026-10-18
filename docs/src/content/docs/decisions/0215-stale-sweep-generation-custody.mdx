@@ -1,0 +1,164 @@
+---
+title: "ADR 0215: Fence stale-sweep audits and cache cleanup"
+description: Bind provisional sweep evidence and local cache cleanup to the generation and file revision actually observed.
+---
+
+**Date:** 2026-10-18
+**Status:** Accepted
+
+## Context
+
+A stale sweep reads disposable heartbeat caches before removing old rows and
+their dependent pid-map and prompt-hash files. A writer can refresh the same
+generation, replace it, or publish an owner that the earlier scan missed.
+Reading the pathname again does not make a later unlink refer to those bytes.
+
+The audit recorder also joined whichever hook generation was current when it
+ran. Reusing a native session could therefore attach an old stale observation
+to a replacement generation. A later file check could preserve the new cache
+but could not retract that event.
+
+`lifecycle.sweep_observed` is provisional evidence. It does not end a session.
+This decision covers local stale sweeping and the writers sharing its cache.
+It reuses the generation custody helper from [ADR 0214](/decisions/0214-workflow-terminal-generation-custody/).
+That decision retains its separate workflow terminal and authority contracts.
+
+## Alternatives considered
+
+- Recheck bytes or modification time before unlink. A writer can still replace
+  the pathname after the final check.
+- Match only owner and native session. Both can survive a generation restart.
+- Pin the file without coordinating publishers. A writer could interpret the
+  temporarily missing heartbeat as permission to create another cache.
+- Hold a project-wide lock. Unrelated owners would block each other.
+- Reap uncertain recovery state by age. Time does not prove that its owner
+  died or that the retained bytes are obsolete.
+
+## Decision
+
+### Require the observed generation for provisional audit
+
+[`recordLiveSweepObservationV3`](../../../../../src/core/agents/live-lifecycle-v3.ts)
+requires `expectedGenerationId: gen_${string} | null`. The caller captures it
+from the state being observed. `null` means that no usable witness is available;
+it cannot authorize joining a generation discovered later.
+
+The recorder rejects unavailable or stale authority before preparing custody
+state. It checks again after acquiring custody and immediately before writing
+the event. The final check covers generation replacement through a nested
+synchronous call, which can reuse the same process's custody.
+
+The recorder keeps the existing epoch fence and provisional event semantics.
+`recordLiveResumeObservationV3` keeps its existing input contract.
+No event or transaction schema changes are required.
+
+### Share publication custody for the same owner
+
+[`withGenerationCustodyV3`](../../../../../src/core/events/v3/generation-custody.ts)
+serializes the sweep, generation transitions, heartbeat mutation, identity cache
+publication, materialization, repair, and pid-map healing for one instance.
+Unrelated instances retain independent progress.
+
+The existing no-clobber lease refuses a live or uncertain competing owner.
+Elapsed lease age alone cannot authorize taking it over. Nested synchronous
+work reuses custody, so publication still rechecks the captured generation.
+
+[`heartbeat-writer.ts`](../../../../../src/core/agents/state/heartbeat-writer.ts)
+requires a current generation witness before publishing a mutated cache.
+[`live-coordination-writer.ts`](../../../../../src/core/agents/state/live-coordination-writer.ts)
+checks again after projection and before its atomic rename. Missing witnesses
+require V3 materialization or repair before publication can proceed.
+
+### Delete the exact file and retain recoverable bytes
+
+[`unchanged-file.ts`](../../../../../src/core/agents/state/unchanged-file.ts)
+captures a stable regular-file revision: bytes, device, inode, size, and change
+and modification timestamps. It rejects unsafe paths and symlinks.
+
+Removal records an intent in an adjacent private directory, then atomically
+moves the live pathname there. The sweep validates that pinned file against
+the observed revision before auditing and rechecks it before private unlink.
+It never unlinks a newer file published at the original pathname.
+
+A changed file, refused audit, or deletion error triggers restoration through
+a hard link that cannot overwrite an existing live pathname. A collision or
+failed restore retains the pinned bytes and recovery location.
+
+Recovery requires the creator host, platform and PID namespace to match.
+A later authorized pass can then recover a retained operation or a pin whose
+active local process is proven dead. Foreign, live or unknown owners retain
+the pin and its source identity without granting cleanup authority.
+Malformed manifests and uncertain filesystem observations preserve evidence.
+An uncertain heartbeat also preserves its dependent pid-map and hash files.
+
+[`staleSweep`](../../../../../src/core/agents/state/stale-sweep.ts) rechecks an
+owner after pinning a dependent file. Its earlier directory scan is not proof
+that the owner remains absent. Removal counts include confirmed deletions only.
+
+### Keep callers and fallback evidence explicit
+
+`staleSweep` and
+[`reclaimAbandonedLocalConflict`](../../../../../src/lib/identities/assume.ts)
+pass their captured generation to the audit recorder. Neither caller can
+substitute the current generation when the captured one becomes unavailable.
+
+Terminal, missing, archived, or unwitnessed generations can still leave a
+`heartbeat_sweep_unrecorded` producer diagnostic without reopening a session.
+If neither canonical audit nor diagnostic persistence succeeds, the sweep
+retains the cache. Remote presence storage stays outside this local operation.
+An unknown result after an effect does not authorize replaying that effect.
+
+### Required file-custody interfaces
+
+```ts
+captureFileRevision(filePath: string): FileRevision | null;
+fileRevisionMatches(filePath: string, expected: FileRevision): boolean;
+deleteFileIfUnchanged(
+  filePath: string,
+  expected: FileRevision,
+  validate: (pinned: FileRevision) => boolean,
+): DeleteFileResult;
+recoverInterruptedFileDeletions(
+  directoryPath: string,
+  validate: (sourcePath: string) => boolean,
+): FileRecoveryResult[];
+```
+
+Both validation callbacks are required. A recovery result reports its source
+path when that identity is known, so retained heartbeat pins protect dependent
+maps and hashes. Unknown manifest identity protects the whole affected directory.
+
+## Verification and limits
+
+The seven original deterministic regressions in
+[`stale-sweep-conformance.test.ts`](../../../../../src/core/agents/state/stale-sweep-conformance.test.ts)
+are named exactly:
+
+1. `keeps a heartbeat refreshed immediately before unlink`
+2. `does not attribute a stale observation to a generation replaced during its audit`
+3. `keeps a heartbeat refreshed while the sweep audit is recorded`
+4. `keeps a same-generation heartbeat refreshed after the stale read`
+5. `keeps a replacement generation written after the stale read`
+6. `rechecks an owner absent from the earlier directory snapshot before pruning its pid map`
+7. `keeps a pid-map entry reassigned after its old owner was read`
+
+Additional focused controls cover same-owner publication refusal, independent
+progress, reentrant replacement, missing witnesses, dependent-file rechecks,
+restore failure, unknown owner liveness, and the remote storage boundary.
+Subprocess fixtures kill the actual pin owner and verify a later recovery.
+These fixtures use temporary local roots and deterministic hooks.
+
+The caller owns the state parent and keeps its directory topology stable.
+The storage contract requires atomic rename, stable descriptor and named-file
+identity, and same-filesystem hard links. No-follow opens are used where Node
+exposes them. The helper rechecks each private directory identity.
+
+POSIX private directories require owner-only permissions. Windows mode bits
+cannot establish ACLs, so Windows uses the caller-owned parent's inherited ACL.
+This does not exclude principals already allowed to modify that parent.
+Unsupported or uncertain operations retain evidence. Writers publish by atomic
+rename; writing through an old open descriptor is outside this contract.
+
+Process-death recovery does not establish recovery from power loss, filesystem
+corruption, hostile external writers, or shared storage across machines.
+The focused regressions do not establish a full-package or live-provider result.

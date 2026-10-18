@@ -24,6 +24,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  assertCurrentGenerationV3,
+  withGenerationCustodyV3,
+} from "../../events/v3/generation-custody.ts";
+import { liveInstanceIdV3 } from "../../events/v3/live-routing.ts";
 import { canonicalClaimPath } from "../claim-path.ts";
 import { type Heartbeat, heartbeatPath, readHeartbeat } from "./heartbeat-reader.ts";
 import type { TaskState } from "./session-state.ts";
@@ -63,12 +68,15 @@ function mutate(
   instanceId: string,
   fn: (hb: Heartbeat) => Heartbeat,
 ): Heartbeat | null {
-  const hb = readHeartbeat(coordRoot, instanceId);
-  if (!hb) return null;
-  const next = fn(hb);
-  next.last_heartbeat = nowIsoSeconds();
-  atomicWrite(heartbeatPath(coordRoot, instanceId), JSON.stringify(next, null, 2));
-  return next;
+  return withGenerationCustodyV3(coordRoot, [liveInstanceIdV3(instanceId)], () => {
+    const hb = readHeartbeat(coordRoot, instanceId);
+    if (!hb) return null;
+    const next = fn(hb);
+    next.last_heartbeat = nowIsoSeconds();
+    assertCurrentGenerationV3(coordRoot, liveInstanceIdV3(instanceId), hb.v3_generation_id);
+    atomicWrite(heartbeatPath(coordRoot, instanceId), JSON.stringify(next, null, 2));
+    return next;
+  });
 }
 
 export function setTask(coordRoot: string, instanceId: string, task: string): Heartbeat | null {
@@ -100,12 +108,15 @@ export function setIdentityCache(
   name: string,
   agentId: string,
 ): Heartbeat | null {
-  const heartbeat = readHeartbeat(coordRoot, instanceId);
-  if (!heartbeat) return null;
-  heartbeat.name = name;
-  heartbeat.agent_id = agentId;
-  atomicWrite(heartbeatPath(coordRoot, instanceId), JSON.stringify(heartbeat, null, 2));
-  return heartbeat;
+  return withGenerationCustodyV3(coordRoot, [liveInstanceIdV3(instanceId)], () => {
+    const heartbeat = readHeartbeat(coordRoot, instanceId);
+    if (!heartbeat) return null;
+    heartbeat.name = name;
+    heartbeat.agent_id = agentId;
+    assertCurrentGenerationV3(coordRoot, liveInstanceIdV3(instanceId), heartbeat.v3_generation_id);
+    atomicWrite(heartbeatPath(coordRoot, instanceId), JSON.stringify(heartbeat, null, 2));
+    return heartbeat;
+  });
 }
 
 /** Restore the pool-assigned display name on a generation that was
@@ -328,6 +339,12 @@ export function clearCoordinationCache(coordRoot: string, instanceId: string): b
 }
 
 export function healPidmap(coordRoot: string, instanceId: string, pid: number): void {
+  withGenerationCustodyV3(coordRoot, [liveInstanceIdV3(instanceId)], () =>
+    healPidmapUnderCustody(coordRoot, instanceId, pid),
+  );
+}
+
+function healPidmapUnderCustody(coordRoot: string, instanceId: string, pid: number): void {
   const dir = join(coordRoot, ".harnery", "pid-map");
   mkdirSync(dir, { recursive: true });
   const hb = readHeartbeat(coordRoot, instanceId);

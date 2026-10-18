@@ -5,6 +5,7 @@ import { normalizeNativeIdV3 } from "../events/v3/canonical.ts";
 import type { EventV3 } from "../events/v3/contract.ts";
 import { readEventV3ControlState } from "../events/v3/control.ts";
 import { fingerprintContextV3 } from "../events/v3/fingerprint-keys.ts";
+import { withGenerationCustodyV3 } from "../events/v3/generation-custody.ts";
 import {
   liveInstanceIdV3,
   livePlatformV3,
@@ -25,17 +26,34 @@ interface LiveLifecycleObservationBaseV3 {
   observedAt?: string;
 }
 
+interface LiveSweepObservationV3Input extends LiveLifecycleObservationBaseV3 {
+  expectedGenerationId: `gen_${string}` | null;
+  observation: "stale_heartbeat" | "killed" | "unparseable_heartbeat" | "missing_timestamp";
+  ageMs: number;
+}
+
 export function recordLiveSweepObservationV3(
-  input: LiveLifecycleObservationBaseV3 & {
-    observation: "stale_heartbeat" | "killed" | "unparseable_heartbeat" | "missing_timestamp";
-    ageMs: number;
-  },
+  input: LiveSweepObservationV3Input,
 ): LiveLifecycleObservationV3Result {
-  return recordObservation(input, "lifecycle.sweep_observed", {
-    subject_instance_id: liveInstanceIdV3(input.owner),
-    observation: input.observation,
-    provisional: true,
-    age_ms: Math.max(0, Math.floor(input.ageMs)),
+  input = { ...input };
+  // Reject stale observations before preparing durable custody state. The
+  // in-custody checks cover replacement while acquiring custody and reentry.
+  requireSweepHookState(input);
+  return withGenerationCustodyV3(input.coordRoot, [liveInstanceIdV3(input.owner)], () => {
+    requireSweepHookState(input);
+    return recordObservation(
+      input,
+      "lifecycle.sweep_observed",
+      {
+        subject_instance_id: liveInstanceIdV3(input.owner),
+        observation: input.observation,
+        provisional: true,
+        age_ms: Math.max(0, Math.floor(input.ageMs)),
+      },
+      () => {
+        requireSweepHookState(input);
+      },
+    );
   });
 }
 
@@ -44,11 +62,16 @@ export function recordLiveResumeObservationV3(
 ): LiveLifecycleObservationV3Result {
   const normalized = withAttestedAdapter(input);
   const hook = requireHookState(normalized);
-  return recordObservation(normalized, "session.resumed", {
-    prior_generation_id: hook.generation_id,
-    continuity: "native",
-    evidence_reference: "heartbeat_recreated",
-  });
+  return recordObservation(
+    normalized,
+    "session.resumed",
+    {
+      prior_generation_id: hook.generation_id,
+      continuity: "native",
+      evidence_reference: "heartbeat_recreated",
+    },
+    () => {},
+  );
 }
 
 function recordObservation<T extends "lifecycle.sweep_observed" | "session.resumed">(
@@ -66,6 +89,7 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
         continuity: "native";
         evidence_reference: string;
       },
+  beforeWrite: () => void,
 ): LiveLifecycleObservationV3Result {
   const route = resolveLiveEventLedgerRouteV3(input.coordRoot);
   if (route.state === "blocked") throw new LiveCoordinationAuthorityV3Error(route.reason);
@@ -121,6 +145,7 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
     monotonic_ns: process.hrtime.bigint().toString(),
   };
   const event = buildEventV3(eventType, { ...common, payload } as never) as EventV3;
+  beforeWrite();
   const durability = writeEventV3(input.coordRoot, event, {
     expectedGenesisId: control.genesis.event.payload.genesis_id as `gex_${string}`,
   });
@@ -128,6 +153,19 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
     throw new LiveCoordinationAuthorityV3Error("epoch_replaced");
   }
   return { state: "recorded", event };
+}
+
+function requireSweepHookState(input: LiveSweepObservationV3Input): void {
+  if (
+    typeof input.expectedGenerationId !== "string" ||
+    !/^gen_[a-zA-Z0-9._-]+$/.test(input.expectedGenerationId)
+  ) {
+    throw new LiveCoordinationAuthorityV3Error("hook_generation_not_joinable");
+  }
+  const hook = requireHookState(withAttestedAdapter(input));
+  if (hook.generation_id !== input.expectedGenerationId) {
+    throw new LiveCoordinationAuthorityV3Error("expected_generation_changed");
+  }
 }
 
 function withAttestedAdapter<T extends LiveLifecycleObservationBaseV3>(input: T): T {

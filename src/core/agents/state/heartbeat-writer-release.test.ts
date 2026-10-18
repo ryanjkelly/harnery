@@ -10,7 +10,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { acquireClaim, findGroupClaims, releaseClaim } from "./heartbeat-writer.ts";
+import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import { acquireClaim, findGroupClaims, readHeartbeat, releaseClaim } from "./heartbeat-writer.ts";
 
 let root: string;
 let activeDir: string;
@@ -22,6 +23,7 @@ beforeEach(() => {
   );
   activeDir = join(root, ".harnery", "active");
   mkdirSync(activeDir, { recursive: true });
+  initializeV3Fixture(root);
 });
 
 afterEach(() => {
@@ -33,10 +35,14 @@ afterEach(() => {
 });
 
 function seedSelf(files: string[]): void {
+  seedV3Session(root, "self", { sessionId: "self" });
+  const heartbeat = readHeartbeat(root, "self");
+  if (!heartbeat) throw new Error("expected V3 claim fixture cache");
   const ts = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   writeFileSync(
     join(activeDir, "self.json"),
     JSON.stringify({
+      ...heartbeat,
       schema_version: 2,
       instance_id: "self",
       session_id: "self",
