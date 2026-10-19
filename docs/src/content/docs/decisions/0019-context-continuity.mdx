@@ -130,19 +130,33 @@ does not transfer another task's checkpoint. Duplicate pre-compaction
 checkpoints follow the same ownership check.
 
 [prepareContextRecovery](../../../../../src/core/context/index.ts) now returns
-a required checkpoint token containing the session, task instance, generation,
-capsule ID and capsule digest. Every completion caller passes that exact
-token after its context channel accepts the briefing. Completion compares it
-with the current checkpoint under the same per-session reservation used by
-context-state writers. A missing, changed, foreign or superseded token returns
-null without writing. Repeating an already accepted matching token preserves
-the existing state and recovery timestamp byte for byte.
+a required checkpoint token containing the session, task instance, generation
+and capsule ID. Every completion caller passes that exact token after its
+context channel accepts the briefing. Completion compares it with the current
+checkpoint and writes with compare-and-write: the new state replaces the file
+only while it still holds the bytes completion read. A changed, foreign or
+superseded token returns null without writing, and so does a checkpoint that
+lands between the read and the write. Repeating an already accepted matching
+token preserves the existing state and recovery timestamp byte for byte.
 
 Accepting whichever checkpoint is latest would let an older briefing recover a
-newer checkpoint. Comparing before an unlocked write would leave that race
-open. The required token and shared reservation replace both behaviors; the
-API has no optional legacy acceptance path. The synchronous convenience API
-returns recovered=false and an empty briefing when completion refuses.
+newer checkpoint. The required token and the compare-and-write replace that
+behavior; the API has no optional legacy acceptance path. The synchronous
+convenience API returns recovered=false and an empty briefing when completion
+refuses.
+
+### Context writes without a lease (2026-10-19)
+
+The first version of the token took an fsync'd per-session lease around every
+context-state write, including the opportunistic context sample that hooks
+record on most events. That added a lease directory, owner file, hard link,
+four fsyncs and two unlinks to each sample: 48 file system calls for a changed
+sample and 42 for an unchanged one. Samples are best-effort telemetry; the
+last writer winning is acceptable. Only completion needs to refuse a race, and
+the compare-and-write above covers it. Without the lease a changed sample
+takes 11 calls and an unchanged one takes 5, with no fsync. Capsules are read
+back as written: Harnery wrote them atomically itself, so recovery no longer
+re-validates their shape or hashes them.
 
 These checks establish local checkpoint custody. They do not establish that a
 provider completed native compaction. Failed or cancelled provider outcomes
