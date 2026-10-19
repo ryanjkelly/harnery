@@ -39,9 +39,9 @@ export {
   rollupAcceptance,
   writeWorkflowProof,
 } from "./proof.ts";
+export { acquireWorkflowResumeLease } from "./resume-lock.ts";
 export type { WorkflowRunManifest } from "./run-state.ts";
 export {
-  acquireWorkflowResumeLease,
   assertWorkflowRunResumable,
   assertWorkflowScriptUnchanged,
   readWorkflowRunManifest,

@@ -53,8 +53,8 @@ import {
   normalizeWorkflowMeta,
   writeWorkflowProof,
 } from "./proof.ts";
+import { acquireWorkflowResumeLease } from "./resume-lock.ts";
 import {
-  acquireWorkflowResumeLease,
   assertWorkflowRunResumable,
   assertWorkflowScriptUnchanged,
   WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION,

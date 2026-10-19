@@ -10,7 +10,7 @@ import {
   writeScript,
 } from "../../../../tests/workspace-test-helpers.ts";
 import { runWorkflow } from "../engine.ts";
-import { acquireWorkflowResumeLease } from "../run-state.ts";
+import { acquireWorkflowResumeLease } from "../resume-lock.ts";
 import { acquireNoClobberLease } from "./leases.ts";
 import { createLocalGitWorktreeProvider } from "./local-git.ts";
 import { prepareReclaim, salvageBranch } from "./reclaim.ts";

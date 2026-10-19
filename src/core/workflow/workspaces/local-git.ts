@@ -14,7 +14,7 @@ import {
   acquireWorkflowResumeLease,
   readWorkflowResumeLock,
   workflowResumeLockPath,
-} from "../run-state.ts";
+} from "../resume-lock.ts";
 import { WorkspaceAttestationError } from "./attestation-error.ts";
 import { cleanupWorkspace } from "./cleanup.ts";
 import {

@@ -11,8 +11,8 @@ import {
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { processStartToken } from "../agents/state/proc-start.ts";
+import { acquireWorkflowResumeLease } from "./resume-lock.ts";
 import {
-  acquireWorkflowResumeLease,
   readWorkflowRunManifest,
   type WorkflowRunManifest,
   writeWorkflowRunManifest,
