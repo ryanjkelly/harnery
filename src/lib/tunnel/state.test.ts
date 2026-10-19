@@ -132,7 +132,12 @@ describe("isTunnelStateLive", () => {
   test("accepts a live Tailscale gate without a separate provider PID", () => {
     expect(
       isTunnelStateLive(
-        state({ provider: "tailscale", cloudflared_pid: undefined, gate_pid: 10 }),
+        state({
+          provider: "tailscale",
+          provider_state: "ready",
+          cloudflared_pid: undefined,
+          gate_pid: 10,
+        }),
         (pid) => pid === 10,
       ),
     ).toBe(true);
@@ -237,4 +242,15 @@ describe("ensureCloudflared with an explicit binary", () => {
       rmSync(onPath.dir, { recursive: true, force: true });
     }
   });
+});
+
+test("pending and unverified Tailscale provider state never produces a live delivery URL", () => {
+  for (const provider_state of [undefined, "pending"] as const) {
+    expect(
+      isTunnelStateLive(
+        state({ provider: "tailscale", provider_state, cloudflared_pid: undefined, gate_pid: 10 }),
+        () => true,
+      ),
+    ).toBe(false);
+  }
 });

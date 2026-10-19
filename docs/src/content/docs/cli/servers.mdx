@@ -71,19 +71,7 @@ Named ids stop immediately. A `--type` selection previews unless `--yes`.
 `--pid` accepts only a pid that the scan currently reports as an
 unregistered server inside the project.
 
-Stop uses generation-checked signals. Harnery checks the leader's recorded
-start token immediately before signaling its process group. It checks again
-before a direct-PID fallback and before escalating to SIGKILL after five
-seconds. Each recorded helper PID also needs its own matching start token.
-An unknown or different generation refuses the stop without signaling that
-process or deleting its registry record. Arbitrary recorded stop commands are
-not supported.
-
-JSON stop results include `id`, `stopped`, `method`, and an optional `detail`.
-`method` is `signal`, `not-running`, or `refused`; `generation` reports `same`,
-`different`, or `unknown` when a generation check was made. A refusal returns a
-nonzero exit status. A successful token check narrows the PID-reuse race but
-cannot remove the interval between the final read and the signal.
+Stop holds the exact registration receipt while signaling each process through a retained native handle. Missing or changed generation evidence refuses the effect and retains the record. Process groups and numeric PID fallbacks do not establish custody.
 
 ## Clean up
 
@@ -160,9 +148,9 @@ TypeScript hosts import the registry:
 import { createServerToucher, serverId, tryRegisterServer, unregisterServer } from "harnery/core/servers";
 
 const id = serverId("preview", sceneDir);
-tryRegisterServer({ id, kind: "session", type: "preview", url, port, scope: sceneDir, log });
+const receipt = tryRegisterServer({ id, kind: "session", type: "preview", url, port, scope: sceneDir, log });
 const touch = createServerToucher(id); // call on every request
-process.on("SIGTERM", () => unregisterServer(id, { pid: process.pid }));
+process.on("SIGTERM", () => { if (receipt) unregisterServer(receipt); });
 ```
 
 The calling agent session is recorded as the owner. `tryRegisterServer`
@@ -178,3 +166,19 @@ harn servers unregister review-run-1a2b3c --pid $PID
 
 `register` prints the record as JSON. Without `--pid` it records the
 calling process's parent.
+
+Records use schema version 2 and carry a unique `registration_id`. Keep the
+returned receipt for cleanup. A different live process, owner or unknown
+record cannot replace the same ID. Repeating the same process generation and
+ownership returns the original receipt without rewriting it.
+
+`withServerRegistrationCustody(receipt, options, effect)` validates that receipt
+and holds its mutation lease until the synchronous result or Promise settles.
+A failed custody check never invokes the callback. The callback cannot register
+or remove the same ID while the lease is held. Remove it afterward with the
+original receipt.
+
+Older schema and unreadable records remain on disk and report missing custody.
+They are never silently adopted, renewed or deleted. A cached PID or a matching
+port is not a registration receipt. Process signaling uses a retained native
+handle and refuses when exact generation evidence is unavailable.

@@ -96,6 +96,7 @@ describe("register, read, unregister", () => {
         provider: "cloudflare",
         url: "https://example.test",
         gate_pid: process.pid,
+        gate_start_token: processStartToken(process.pid)!,
         cloudflared_pid: process.pid + 1,
         provider_pid: process.pid + 2,
         started_at: new Date().toISOString(),
@@ -121,8 +122,8 @@ describe("register, read, unregister", () => {
     expect(record?.pid).toBe(process.pid);
     expect(existsSync(join(serversDir(root), `${record!.id}.json`))).toBe(true);
     expect(readServer(record!.id, { coordRoot: root })?.port).toBe(4999);
-    expect(unregisterServer(record!.id, { coordRoot: root, pid: process.pid + 1 })).toBe(false);
-    expect(unregisterServer(record!.id, { coordRoot: root, pid: process.pid })).toBe(true);
+    expect(unregisterServer({ ...record!, pid: process.pid + 1 }, { coordRoot: root })).toBe(false);
+    expect(unregisterServer(record!, { coordRoot: root })).toBe(true);
     expect(readServer(record!.id, { coordRoot: root })).toBeNull();
   });
 
@@ -175,7 +176,12 @@ describe("listing", () => {
     const signals: number[] = [];
     const result = await stopServer(record, {
       coordRoot: root,
-      signalDependencies: { kill: (pid) => signals.push(pid) },
+      signalDependencies: {
+        signalProcess: (pid) => {
+          signals.push(pid);
+          return { sent: true, verdict: "same" };
+        },
+      },
     });
     expect(result).toMatchObject({ method: "refused", generation: "unknown", stopped: false });
     expect(signals).toEqual([]);
@@ -325,14 +331,20 @@ describe("stopping", () => {
     expect(serverState(record, undefined, probePid)).toBe("unknown");
     const result = await stopServer(record, {
       coordRoot: root,
-      signalDependencies: { probePid, kill: (pid) => signals.push(pid) },
+      signalDependencies: {
+        probePid,
+        signalProcess: (pid) => {
+          signals.push(pid);
+          return { sent: true, verdict: "same" };
+        },
+      },
     });
     expect(result).toMatchObject({ method: "refused", generation: "unknown", stopped: false });
     expect(signals).toEqual([]);
     expect(readFileSync(path, "utf8")).toBe(before);
   });
 
-  test("signals the process group and removes the record", async () => {
+  test("signals the exact process handle and removes the record", async () => {
     const { pid } = await startChildServer(root);
     const record = registerServer(
       { id: "stop-me", kind: "session", type: "preview", pid, owner: null },
@@ -353,7 +365,12 @@ describe("stopping", () => {
       { ...record, start_token: "l0.0" },
       {
         coordRoot: root,
-        signalDependencies: { kill: (pid) => signals.push(pid) },
+        signalDependencies: {
+          signalProcess: (pid) => {
+            signals.push(pid);
+            return { sent: true, verdict: "same" };
+          },
+        },
       },
     );
     expect(result).toMatchObject({ method: "refused", generation: "different", stopped: false });
@@ -379,7 +396,10 @@ describe("stopping", () => {
                     throw new Error("probe failed");
                   }
                 : () => null,
-            kill: (pid) => signals.push(pid),
+            signalProcess: (pid) => {
+              signals.push(pid);
+              return { sent: true, verdict: "same" };
+            },
           },
         },
       );
@@ -400,7 +420,10 @@ describe("stopping", () => {
       coordRoot: root,
       signalDependencies: {
         readToken: () => (++reads === 1 ? record.start_token! : "different-generation"),
-        kill: (pid) => signals.push(pid),
+        signalProcess: (pid) => {
+          signals.push(pid);
+          return { sent: true, verdict: "same" };
+        },
       },
     });
     expect(result.generation).toBe("different");
@@ -421,19 +444,22 @@ describe("stopping", () => {
         graceMs: 0,
         signalDependencies: {
           readToken: () => (++reads < 4 ? record.start_token! : nextToken),
-          kill: (pid, name) => signals.push({ pid, name }),
+          signalProcess: (pid, _token, name) => {
+            signals.push({ pid, name });
+            return { sent: true, verdict: "same" };
+          },
         },
       });
       expect(result).toMatchObject({
         method: "refused",
         generation: nextToken ? "different" : "unknown",
       });
-      expect(signals).toEqual([{ pid: -record.pid, name: "SIGTERM" }]);
+      expect(signals).toEqual([{ pid: record.pid, name: "SIGTERM" }]);
       expect(readServer(record.id, { coordRoot: root })).toEqual(record);
     });
   }
 
-  test("rechecks the direct pid after a failed group signal", async () => {
+  test("a failed retained handle never falls back to numeric signaling", async () => {
     const record = registerServer(
       { id: "fallback", kind: "session", type: "preview", owner: null },
       { coordRoot: root },
@@ -444,15 +470,15 @@ describe("stopping", () => {
       coordRoot: root,
       signalDependencies: {
         readToken: () => (failed ? "different-generation" : record.start_token!),
-        kill: (pid) => {
+        signalProcess: (pid) => {
           signals.push(pid);
           failed = true;
-          throw new Error("no process group");
+          return { sent: false, verdict: "unknown" };
         },
       },
     });
-    expect(result.generation).toBe("different");
-    expect(signals).toEqual([-record.pid]);
+    expect(result.generation).toBe("unknown");
+    expect(signals).toEqual([record.pid]);
   });
 
   test("records auxiliary tokens and refuses any unverified live auxiliary", async () => {
@@ -468,7 +494,12 @@ describe("stopping", () => {
         { ...record, pids_start_tokens: token ? { [pid]: token } : undefined },
         {
           coordRoot: root,
-          signalDependencies: { kill: (target) => signals.push(target) },
+          signalDependencies: {
+            signalProcess: (target) => {
+              signals.push(target);
+              return { sent: true, verdict: "same" };
+            },
+          },
         },
       );
       expect(result).toMatchObject({
@@ -503,7 +534,8 @@ describe("stopping", () => {
 function view(partial: Partial<ServerView> & { kind?: "session" | "service" }): ServerView {
   return {
     record: {
-      schema_version: 1,
+      schema_version: 2,
+      registration_id: "00000000-0000-4000-8000-000000000000",
       id: "s",
       kind: partial.kind ?? "session",
       type: "preview",

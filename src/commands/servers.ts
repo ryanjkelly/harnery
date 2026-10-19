@@ -1,5 +1,4 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { hostname } from "node:os";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
@@ -111,23 +110,13 @@ export function registerServersCommand(
           const preview = Boolean(options.type) && !options.yes;
           const results: Array<StopResult | { id: string; would_stop: true }> = [];
           for (const stray of strays) {
-            results.push(
-              await stopServer(
-                {
-                  schema_version: 1,
-                  id: `pid-${stray.pid}`,
-                  kind: "session",
-                  type: "unregistered",
-                  label: stray.command,
-                  pid: stray.pid,
-                  ...(stray.start_token ? { start_token: stray.start_token } : {}),
-                  host: hostname(),
-                  started_at: new Date().toISOString(),
-                  registered_at: new Date().toISOString(),
-                },
-                { coordRoot },
-              ),
-            );
+            const receipt = adoptServer(stray.pid, {
+              coordRoot,
+              type: "unregistered",
+              owner: "none",
+              dependencies: { listServers: () => report },
+            });
+            results.push(await stopServer(receipt, { coordRoot }));
           }
           for (const view of selected) {
             if (preview && !ids.includes(view.record.id))
@@ -408,14 +397,14 @@ export function registerServersCommand(
 
   cmd
     .command("unregister <id>")
-    .description("Remove a server's record (with --pid, only if the record still names that pid)")
+    .description("Remove the exact observed server registration (optionally require --pid)")
     .option("--pid <pid>", "Only remove when the record names this pid")
     .action((id: string, options: { pid?: string }) => {
       try {
-        const removed = unregisterServer(id, {
-          coordRoot: root(),
-          ...(options.pid ? { pid: integer(options.pid, "--pid") } : {}),
-        });
+        const coordRoot = root();
+        const record = readServer(id, { coordRoot });
+        const matchesPid = !options.pid || record?.pid === integer(options.pid, "--pid");
+        const removed = !!record && matchesPid && unregisterServer(record, { coordRoot });
         emit.config({ format: "json" });
         emit.data({ id, removed });
       } catch (error) {

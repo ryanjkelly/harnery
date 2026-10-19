@@ -1,0 +1,46 @@
+---
+title: "0220: Immutable local server registration custody"
+description: "Fence same-ID registration and cleanup with one immutable receipt."
+---
+
+**Date:** 2026-10-18
+**Status:** Accepted
+
+## Context
+
+A server ID names a local service or one preview scope. The registry currently overwrites an existing ID, and cleanup can remove a later registration by matching only its PID. A cached PID cannot prove that its process generation or registration still belongs to the caller.
+
+## Alternatives considered
+
+- Last writer wins preserves the existing overwrite and custody loss.
+- A PID and process token distinguish process generations, but the same process can unregister and register again under the same ID. They cannot distinguish those registrations.
+- A read followed by a write leaves concurrent callers able to pass the same check.
+- A schema compatibility reader would let records without a registration receipt participate in cleanup authority.
+
+## Decision
+
+Server records use schema version 2 and require a random `registration_id`. Registration, touch and removal hold the same per-ID no-clobber lease under `.harnery/servers/.custody/`. A lease whose owner is live or unknown refuses mutation; age alone never permits recovery.
+
+`registerServer(input, options)` refuses any existing malformed, older-schema, remote-host or unknown record. An exact repeat of the same local PID, process start token, owner instance, kind, type, scope and helper witnesses is idempotent: it returns the original record without rewriting timestamps or metadata. A different registration may replace a record only after every recorded process is proven absent.
+
+`unregisterServer(record, options)` accepts the observed schema-2 receipt, not an ID or PID guard. Under the lease it compares the registration ID and immutable process identity against the current record before removal. `withServerRegistrationCustody(record, options, effect)` holds that same lease through a synchronous result or a settled Promise, and rejects missing or forged receipts before invoking the callback. The callback receives no mutation bypass. Activity updates preserve the receipt. Stop completion and stale pruning use the receipt they observed, so they cannot remove a replacement registration.
+
+All direct callers cut over together. A caller preserves its returned receipt for later cleanup; a status lookup never manufactures custody for a cached PID. Existing schema-1 records remain on disk and refuse replacement. No compatibility alias or automatic migration is added. A separate explicit migration would need its own custody proof.
+
+## Verification
+
+Focused reproductions cover live duplicate registration, immutable idempotency, owner transfer, malformed and unknown records, simultaneous contenders, stale cleanup after replacement, and lease contention. Public callers and host integration tests use the same receipt API. Process signaling remains governed by ADR 0218.
+
+
+Tunnel launch, reload and stop also hold a per-instance lifecycle lease. A
+Tailscale route is identified by its HTTPS port and path, independent of the
+instance name or Serve/Funnel mode. Route leases use that same identity, and
+retained route inventory refuses a second named owner. Unknown inventory
+refuses provider effects.
+
+Canonical tunnel publication and deletion hold the exact server receipt as
+well. A refused launch writes its witnesses to a unique failure file instead
+of replacing a winner's state. Tailscale admission atomically publishes pending
+route intent before the provider mutation; only a successful effect publishes
+ready state. A lost provider outcome remains pending and cannot produce a live
+delivery URL. Provider cleanup failure retains the original intent.

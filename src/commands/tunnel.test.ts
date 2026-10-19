@@ -143,7 +143,7 @@ describe("downOne", () => {
       // An unreaped child still answers kill(pid, 0), so watch the exit events.
       expect(gate.exited).toBe(false);
       expect(provider.exited).toBe(false);
-      expect(readState("stale-old")).toBeNull();
+      expect(readState("stale-old")).not.toBeNull();
       expect(readState("live-owner")).not.toBeNull();
     } finally {
       gate.child.kill();
@@ -222,6 +222,7 @@ describe("reloadOne", () => {
       const result = await reloadOne(
         state({
           provider: "tailscale",
+          provider_state: "ready",
           cloudflared_pid: undefined,
           gate_pid: await deadPid(),
           gate_port: port,

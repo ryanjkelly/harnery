@@ -15,6 +15,8 @@ export function tunnelServerId(name: string): string {
 
 /** Register the new gate; saved helper PIDs have no generation witnesses. */
 export function tunnelServerInput(state: TunnelState, coordRoot: string): RegisterServerInput {
+  if (!state.gate_start_token)
+    throw new Error("tunnel gate generation witness is unavailable; explicit adoption is required");
   return {
     id: tunnelServerId(state.name),
     kind: "service",
@@ -23,6 +25,7 @@ export function tunnelServerInput(state: TunnelState, coordRoot: string): Regist
     url: state.url,
     port: state.gate_port,
     pid: state.gate_pid,
+    start_token: state.gate_start_token,
     log: resolve(coordRoot, ".cache", "tunnel", gateLogFile(state.name)),
     cwd: coordRoot,
     started_at: state.started_at,

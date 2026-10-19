@@ -2,6 +2,7 @@
 // <cwd>/.cache/tunnel/; gitignored, so the allowlist is per-machine.
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   accessSync,
   chmodSync,
@@ -10,6 +11,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -104,6 +106,11 @@ export interface TunnelState {
   provider: TunnelProvider;
   url: string;
   gate_pid: number;
+  gate_start_token?: string;
+  cloudflared_start_token?: string;
+  provider_start_token?: string;
+  registration_id?: string;
+  provider_state?: "pending" | "ready";
   /** Present for Cloudflare quick tunnels; absent for Tailscale Serve/Funnel. */
   cloudflared_pid?: number;
   /** Optional provider-side process when a provider owns one. */
@@ -168,7 +175,15 @@ export function readState(
 }
 
 export function writeState(state: TunnelState, root: string = process.cwd()): void {
-  writeFileSync(cachePath(stateFile(state.name), root), JSON.stringify(state, null, 2));
+  const path = cachePath(stateFile(state.name), root);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(state, null, 2), { flag: "wx", mode: 0o600 });
+    renameSync(temporary, path);
+  } catch (error) {
+    if (existsSync(temporary)) unlinkSync(temporary);
+    throw error;
+  }
 }
 
 export function clearState(name: string = DEFAULT_INSTANCE, root: string = process.cwd()): void {
@@ -210,7 +225,7 @@ export function isTunnelStateLive(
   processAlive: ProcessAliveCheck = isProcessAlive,
 ): boolean {
   if (!processAlive(state.gate_pid)) return false;
-  if (state.provider === "tailscale") return true;
+  if (state.provider === "tailscale") return state.provider_state === "ready";
   const providerPid = state.cloudflared_pid ?? state.provider_pid;
   return typeof providerPid === "number" && processAlive(providerPid);
 }
