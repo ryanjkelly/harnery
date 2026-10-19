@@ -48,7 +48,7 @@ test("run queries follow the execution root and discover newly started children"
   start(root, "local", "wf-query");
   start(foreign, "unrelated", "wf-other");
   expect(readEventQuery({ run: "wf-query", type: "session.started" }).rows).toEqual([]);
-  const firstChild = start(foreign, "first", "wf-query");
+  start(foreign, "first", "wf-query");
   const first = readEventQuery({ run: "wf-query", type: "session.started" });
   expect(first.rows).toHaveLength(1);
   expect(first.meta.path.startsWith(foreign)).toBe(true);
@@ -75,7 +75,6 @@ test("run queries follow the execution root and discover newly started children"
     sessionId: "native-first",
     adapter: "codex",
     cleanExit: true,
-    expectedGenerationId: firstChild.v3_generation_id!,
   });
   writeFileSync(
     join(runDir, "transcript.jsonl"),

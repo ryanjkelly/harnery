@@ -33,7 +33,6 @@ import { markObservedClockRegressionV3 } from "../clock-order.ts";
 import type { EventV3 } from "../contract.ts";
 import { type EventV3WriteMode, readEventV3ControlState } from "../control.ts";
 import { fingerprintContextV3 } from "../fingerprint-keys.ts";
-import { assertCurrentGenerationV3, withGenerationCustodyV3 } from "../generation-custody.ts";
 import { clockIdV3, spanIdV3 } from "../ids.ts";
 import { closeSpanStateV3, type OpenSpanStateV3, openSpanStateV3 } from "../span-state.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../writer.ts";
@@ -104,7 +103,6 @@ export interface RecordCoordinationAuthorityV3Input<
   bridge?: "codex-wsl";
   expected_prior_state_digest: `sha256:${string}`;
   desired_state_digest: `sha256:${string}`;
-  expected_generation_id?: `gen_${string}`;
   monotonic_ns?: string;
   observed_at?: string;
   reconciler: AuthorityReconcilerV3;
@@ -132,16 +130,6 @@ export type RecordCoordinationAuthorityV3Result =
 export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySignalV3>(
   input: RecordCoordinationAuthorityV3Input<S>,
 ): RecordCoordinationAuthorityV3Result {
-  return withGenerationCustodyV3(
-    input.coordRoot,
-    [input.actor_instance_id, input.subject_instance_id],
-    () => recordCoordinationAuthorityWithCustodyV3(input),
-  );
-}
-
-function recordCoordinationAuthorityWithCustodyV3<S extends CoordinationAuthoritySignalV3>(
-  input: RecordCoordinationAuthorityV3Input<S>,
-): RecordCoordinationAuthorityV3Result {
   const control = readEventV3ControlState(input.coordRoot);
   if (control.state !== input.mode) return { state: "gate_closed", reason: control.state };
   const hook = readJoinableHookProducerStateV3(
@@ -153,8 +141,6 @@ function recordCoordinationAuthorityWithCustodyV3<S extends CoordinationAuthorit
   if (
     !hook ||
     hook.terminal ||
-    (input.expected_generation_id !== undefined &&
-      hook.generation_id !== input.expected_generation_id) ||
     hook.instance_id !== input.actor_instance_id ||
     !hook.last_event_id
   ) {
@@ -342,7 +328,6 @@ function recordCoordinationAuthorityWithCustodyV3<S extends CoordinationAuthorit
       mutation: normalized.mutation,
       event: normalized.event,
     });
-    assertCurrentGenerationV3(input.coordRoot, state.actor_instance_id, state.generation_id);
     if (input.signal === "wait-ended" && waitId) delete state.open_waits[waitId];
     state.pending = { source_id: sourceId, transaction };
     publishCoordinationState(path, state);

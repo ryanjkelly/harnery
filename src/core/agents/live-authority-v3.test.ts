@@ -66,38 +66,6 @@ afterEach(() => {
 });
 
 describe("live V3 coordination", () => {
-  test("requires the caller's captured generation even when the requested lifecycle is unchanged", () => {
-    const root = candidateRoot("codex");
-    const created = bootstrapLiveCoordinationAuthorityV3({
-      coordRoot: root,
-      owner: "operator",
-      nativeSessionId: "native-session",
-      adapter: "codex",
-    });
-    const before = readFileSync(join(root, ".harnery/active/operator.json"), "utf8");
-    expect(() =>
-      recordLiveLifecycleChangeV3({
-        coordRoot: root,
-        owner: "operator",
-        nativeSessionId: "native-session",
-        adapter: "codex",
-        expectedGenerationId: "gen_00000000-0000-4000-8000-000000000000",
-        state: "active",
-      }),
-    ).toThrow("expected_generation_changed");
-    expect(readFileSync(join(root, ".harnery/active/operator.json"), "utf8")).toBe(before);
-    expect(
-      recordLiveLifecycleChangeV3({
-        coordRoot: root,
-        owner: "operator",
-        nativeSessionId: "native-session",
-        adapter: "codex",
-        expectedGenerationId: created.generation_id,
-        state: "active",
-      }).state,
-    ).toBe("unchanged");
-  });
-
   test("bootstraps one missing generation without synthesizing a turn", () => {
     const root = candidateRoot("codex");
 

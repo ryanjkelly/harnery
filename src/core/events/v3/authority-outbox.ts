@@ -16,7 +16,6 @@ import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
 import { liveGenesisIdV3 } from "./control.ts";
-import { assertCurrentGenerationV3, withGenerationCustodyV3 } from "./generation-custody.ts";
 import { assertEventV3 } from "./validate.ts";
 import { ensureEventV3Layout, eventV3Paths, writeEventV3 } from "./writer.ts";
 
@@ -156,31 +155,8 @@ export function publishAuthorityTransactionV3(
   transaction: AuthorityTransactionV3,
   fence: AuthorityEpochFenceV3 = {},
 ): AuthorityTransactionV3 {
-  return withGenerationCustodyV3(
-    coordRoot,
-    [transaction.actor_instance_id, transaction.subject_instance_id],
-    () => publishAuthorityTransactionWithCustodyV3(coordRoot, transaction, fence),
-  );
-}
-
-function publishAuthorityTransactionWithCustodyV3(
-  coordRoot: string,
-  transaction: AuthorityTransactionV3,
-  fence: AuthorityEpochFenceV3,
-): AuthorityTransactionV3 {
   validateTransaction(transaction);
   const paths = ensureEventV3Layout(coordRoot);
-  const committedPath = authorityCommittedPath(paths.authorityOutbox, transaction.transaction_id);
-  if (existsSync(committedPath)) {
-    if (
-      readAuthorityReceiptV3(committedPath).transaction_digest !==
-      sha256V3(`${canonicalJsonV3(transaction)}\n`)
-    ) {
-      throw new Error("authority committed transaction conflicts with this transaction");
-    }
-    return transaction;
-  }
-  assertTransactionGeneration(coordRoot, transaction);
   if (fence.expectedGenesisId && liveGenesisIdV3(coordRoot) !== fence.expectedGenesisId) {
     throw new Error("authority transaction epoch was replaced before publication");
   }
@@ -214,32 +190,10 @@ export function reconcileAuthorityTransactionV3(
   const paths = ensureEventV3Layout(coordRoot);
   const committedPath = authorityCommittedPath(paths.authorityOutbox, transactionId);
   if (existsSync(committedPath)) return readAuthorityReceiptV3(committedPath);
-  const transaction = readAuthorityTransactionV3(
-    authorityReadyPath(paths.authorityOutbox, transactionId),
-  );
-  return withGenerationCustodyV3(
-    coordRoot,
-    [transaction.actor_instance_id, transaction.subject_instance_id],
-    () => reconcileAuthorityTransactionWithCustodyV3(coordRoot, transactionId, reconciler, fence),
-  );
-}
-
-function reconcileAuthorityTransactionWithCustodyV3(
-  coordRoot: string,
-  transactionId: string,
-  reconciler: AuthorityReconcilerV3,
-  fence: AuthorityEpochFenceV3,
-): AuthorityReceiptV3 {
-  assertTransactionId(transactionId);
-  const paths = ensureEventV3Layout(coordRoot);
-  const committedPath = authorityCommittedPath(paths.authorityOutbox, transactionId);
-  if (existsSync(committedPath)) return readAuthorityReceiptV3(committedPath);
   const readyPath = authorityReadyPath(paths.authorityOutbox, transactionId);
   const transaction = readAuthorityTransactionV3(readyPath);
-  assertTransactionGeneration(coordRoot, transaction);
   const current = reconciler.readStateDigest();
   if (current === transaction.expected_prior_state_digest) {
-    assertTransactionGeneration(coordRoot, transaction);
     reconciler.apply(transaction.mutation, transaction.transaction_id);
   } else if (current !== transaction.desired_state_digest) {
     throw new Error("authority transaction prior state conflicts with current state");
@@ -247,7 +201,6 @@ function reconcileAuthorityTransactionWithCustodyV3(
   if (reconciler.readStateDigest() !== transaction.desired_state_digest) {
     throw new Error("authority transaction did not reach its declared desired state");
   }
-  assertTransactionGeneration(coordRoot, transaction);
   const event = JSON.parse(transaction.event_row) as unknown;
   assertEventV3(event);
   const durability = writeEventV3(coordRoot, event, {
@@ -275,15 +228,6 @@ function reconcileAuthorityTransactionWithCustodyV3(
   unlinkSync(readyPath);
   fsyncParentDirectory(readyPath);
   return receipt;
-}
-
-function assertTransactionGeneration(coordRoot: string, transaction: AuthorityTransactionV3): void {
-  const event = JSON.parse(transaction.event_row) as EventV3;
-  assertCurrentGenerationV3(
-    coordRoot,
-    transaction.actor_instance_id,
-    "generation_id" in event.scope ? event.scope.generation_id : undefined,
-  );
 }
 
 export function listPendingAuthorityTransactionsV3(coordRoot: string): AuthorityTransactionV3[] {

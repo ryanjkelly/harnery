@@ -45,11 +45,7 @@ import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import { stableDigest } from "./durable-record.ts";
 import { evidencePreflightError } from "./evidence-preflight.ts";
-import {
-  endWorkflowChildSessionV3,
-  recordWorkflowChildTerminalFailureV3,
-  startWorkflowChildSessionV3,
-} from "./live-session-v3.ts";
+import { endWorkflowChildSessionV3, startWorkflowChildSessionV3 } from "./live-session-v3.ts";
 import {
   buildWorkflowProof,
   createEvidenceRecord,
@@ -1033,49 +1029,7 @@ async function executeWorkflow(
     });
     agentProof.access = access;
 
-    let childGenerationId: string | undefined;
     let recordAgentEnd: (() => void) | undefined;
-    const finalizeChild = (): void => {
-      try {
-        if (childGenerationId)
-          endWorkflowChildSessionV3({
-            coordRoot: opts.coordRoot,
-            instanceId: childInstanceId(runId, id),
-            runId,
-            agentId: id,
-            adapter,
-            cleanExit: agentProof.status === "succeeded",
-            expectedGenerationId: childGenerationId,
-          });
-        // Result publication is the resume-cache boundary, after canonical custody.
-        recordAgentEnd?.();
-      } catch (error) {
-        let reason = `V3 terminal recording failed: ${(error as Error).message}`;
-        try {
-          if (childGenerationId)
-            recordWorkflowChildTerminalFailureV3({
-              coordRoot: opts.coordRoot,
-              instanceId: childInstanceId(runId, id),
-              runId,
-              agentId: id,
-              adapter,
-              expectedGenerationId: childGenerationId,
-              reason,
-            });
-        } catch (visibilityError) {
-          reason += `; blocked lifecycle recording failed: ${(visibilityError as Error).message}`;
-        }
-        const failure = new Error(agentProof.error ? `${agentProof.error}; ${reason}` : reason, {
-          cause: error,
-        });
-        terminalRecordingError ??= failure;
-        agentProof.status = "failed";
-        agentProof.error = failure.message;
-        transcript("agent.failed", { id, key, error: failure.message });
-        log(`[${name}] ${failure.message}`);
-        throw failure;
-      }
-    };
     await acquire();
     try {
       await ensureDiagnosticAdmissionObserved();
@@ -1097,7 +1051,7 @@ async function executeWorkflow(
       // Headless children do not reliably fire adapter hooks. The engine owns
       // their canonical V3 start so every dispatched child has an auditable
       // generation before it begins work.
-      const child = startWorkflowChildSessionV3({
+      startWorkflowChildSessionV3({
         coordRoot: opts.coordRoot,
         instanceId: childInstanceId(runId, id),
         runId,
@@ -1106,8 +1060,6 @@ async function executeWorkflow(
         label,
         model: agentOpts.model,
       });
-      if (!child.v3_generation_id) throw new Error("workflow_child_v3_generation_missing");
-      childGenerationId = child.v3_generation_id;
 
       let attemptPrompt = dispatchPrompt;
       let last: SpawnResult | null = null;
@@ -1229,9 +1181,29 @@ async function executeWorkflow(
     } finally {
       reservedCostUsd = Math.max(0, reservedCostUsd - reservedForDispatch);
       try {
-        finalizeChild();
+        // Record the canonical terminal first. agent.end is the resume-cache
+        // boundary, so a child whose end was not recorded never reports success.
+        endWorkflowChildSessionV3({
+          coordRoot: opts.coordRoot,
+          instanceId: childInstanceId(runId, id),
+          runId,
+          agentId: id,
+          adapter,
+          cleanExit: agentProof.status === "succeeded",
+        });
+        recordAgentEnd?.();
+      } catch (error) {
+        const reason = `V3 terminal recording failed: ${(error as Error).message}`;
+        const failure = new Error(agentProof.error ? `${agentProof.error}; ${reason}` : reason, {
+          cause: error,
+        });
+        terminalRecordingError ??= failure;
+        agentProof.status = "failed";
+        agentProof.error = failure.message;
+        transcript("agent.failed", { id, key, error: failure.message });
+        log(`[${name}] ${failure.message}`);
+        throw failure;
       } finally {
-        // A slot is disposable; unresolved custody remains visible and failed.
         release();
       }
     }

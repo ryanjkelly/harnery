@@ -11,10 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import {
-  type AuthorityReconcilerV3,
-  reconcileAuthorityTransactionV3,
-} from "../authority-outbox.ts";
+import type { AuthorityReconcilerV3 } from "../authority-outbox.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../capabilities.ts";
@@ -34,11 +31,7 @@ import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
 import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths } from "../writer.ts";
 import { recordCoordinationAuthorityV3 } from "./coordination-recorder.ts";
-import {
-  readHookProducerStateV3,
-  recordApprovedSessionEndV3,
-  recordHookSignalV3,
-} from "./recorder.ts";
+import { readHookProducerStateV3, recordHookSignalV3 } from "./recorder.ts";
 
 const roots: string[] = [];
 
@@ -47,101 +40,6 @@ afterEach(() => {
 });
 
 describe("event ledger V3 persistent coordination recorder", () => {
-  test("rejects a stale dispatch generation before preparing its replacement transaction", () => {
-    const root = startedRoot();
-    const input = lifecycleInput(root, "stale-dispatch", sha256V3("active"), sha256V3("blocked"), {
-      readStateDigest: () => sha256V3("active"),
-      apply: () => {
-        throw new Error("must not mutate");
-      },
-    });
-    const result = recordCoordinationAuthorityV3({
-      ...input,
-      expected_generation_id: "gen_00000000-0000-4000-8000-000000000000",
-    });
-    expect(result.state).toBe("generation_unavailable");
-    expect(readdirSync(eventV3Paths(root).authorityOutbox)).toHaveLength(0);
-    expect(
-      readLedgerV3(root).events.some(({ event }) => event.event_type === "coord.lifecycle_changed"),
-    ).toBe(false);
-  });
-
-  test("persisted generation fences mutation and pending replay after reassignment", () => {
-    const root = startedRoot();
-    const prior = sha256V3("active");
-    const desired = sha256V3("blocked");
-    let mutationCount = 0;
-    let replacementGeneration: `gen_${string}` | undefined;
-    const input = lifecycleInput(root, "replacement-before-apply", prior, desired, {
-      readStateDigest: () => {
-        if (!replacementGeneration) {
-          const old = readHookProducerStateV3(root, "claude-code", "native-session")!;
-          expect(
-            recordApprovedSessionEndV3({
-              coordRoot: root,
-              mode: "candidate",
-              instance_id: "inst_operator",
-              generation_id: old.generation_id,
-              build_id: "build_fixture",
-              platform: "linux",
-              reason: "approved_explicit_end",
-              outcome: "failed",
-              coordination_finalized: true,
-            }).state,
-          ).toBe("recorded");
-          const replacement = recordHookSignalV3({
-            coordRoot: root,
-            mode: "candidate",
-            signal: "session-start",
-            payload: parsed({ session_id: "replacement-session" }),
-            adapter: "claude-code",
-            instance_id: "inst_operator",
-            producer_id: "prd_hook",
-            build_id: "build_fixture",
-            platform: "linux",
-          });
-          expect(replacement.state).toBe("recorded");
-          replacementGeneration = readHookProducerStateV3(
-            root,
-            "claude-code",
-            "replacement-session",
-          )!.generation_id;
-        }
-        return prior;
-      },
-      apply: () => {
-        mutationCount++;
-      },
-    });
-    expect(() => recordCoordinationAuthorityV3(input)).toThrow("authority_generation_changed");
-    const transactionId = onlyPendingTransactionId(root);
-    expect(() =>
-      reconcileAuthorityTransactionV3(root, transactionId, {
-        readStateDigest: () => prior,
-        apply: () => {
-          mutationCount++;
-        },
-      }),
-    ).toThrow("authority_generation_changed");
-    expect(mutationCount).toBe(0);
-    expect(readHookProducerStateV3(root, "claude-code", "replacement-session")?.generation_id).toBe(
-      replacementGeneration!,
-    );
-    expect(
-      readLedgerV3(root).events.some(({ event }) => event.event_type === "coord.lifecycle_changed"),
-    ).toBe(false);
-    const recovered = quarantineConflictingCoordinationTransactionV3(root, {
-      transaction_id: transactionId,
-      actor_instance_id: "inst_operator",
-      observed_current_state_digest: sha256V3("replacement-state"),
-      approval_record_id: "fixture-quarantine-only",
-    });
-    expect(recovered.transaction_id).toBe(transactionId);
-    expect(readHookProducerStateV3(root, "claude-code", "replacement-session")?.generation_id).toBe(
-      replacementGeneration!,
-    );
-  });
-
   test("is inert until the exact control gate and actor generation are available", () => {
     const root = temporaryRoot();
     let state = sha256V3("active");

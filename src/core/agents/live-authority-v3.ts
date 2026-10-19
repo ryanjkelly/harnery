@@ -88,7 +88,6 @@ interface LiveAuthorityBaseV3 {
   nativeSessionId: string;
   adapter: Adapter;
   observationId?: string;
-  expectedGenerationId?: `gen_${string}`;
 }
 
 /**
@@ -649,13 +648,6 @@ function recordLiveAuthority<S extends CoordinationAuthoritySignalV3>(
     platform: livePlatformV3(),
     expected_prior_state_digest: coordinationAuthorityStateDigestV3(expected),
     desired_state_digest: coordinationAuthorityStateDigestV3(desired),
-    expected_generation_id:
-      input.expectedGenerationId ??
-      ((subject === input.owner
-        ? expected.v3_generation_id
-        : readLiveCoordinationRow(input.coordRoot, input.owner)?.v3_generation_id) as
-        | `gen_${string}`
-        | undefined),
     reconciler: {
       readStateDigest: () => {
         const heartbeat = readHeartbeat(input.coordRoot, subject);
@@ -689,12 +681,6 @@ export function liveCoordinationWriteModeV3(coordRoot: string): EventV3WriteMode
 }
 
 function requireHeartbeat(input: LiveAuthorityBaseV3, owner: string): Heartbeat {
-  if (
-    input.expectedGenerationId &&
-    readLiveCoordinationRow(input.coordRoot, owner)?.v3_generation_id !== input.expectedGenerationId
-  ) {
-    throw new LiveCoordinationAuthorityV3Error("expected_generation_changed");
-  }
   const heartbeat = ensureLiveCoordinationHeartbeat(
     input.coordRoot,
     owner,
@@ -702,9 +688,6 @@ function requireHeartbeat(input: LiveAuthorityBaseV3, owner: string): Heartbeat 
     input.adapter,
   );
   if (!heartbeat) throw new LiveCoordinationAuthorityV3Error(`heartbeat_missing:${owner}`);
-  if (input.expectedGenerationId && heartbeat.v3_generation_id !== input.expectedGenerationId) {
-    throw new LiveCoordinationAuthorityV3Error("expected_generation_changed");
-  }
   return heartbeat;
 }
 

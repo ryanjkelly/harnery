@@ -1,16 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { existsSync, linkSync, readdirSync, readFileSync, renameSync, unlinkSync } from "node:fs";
-import { basename, dirname } from "node:path";
 import { type Adapter, adapterFromPlatform } from "../adapter.ts";
-import {
-  recordLiveLifecycleChangeV3,
-  recordLiveTaskChangeV3,
-} from "../agents/live-authority-v3.ts";
+import { recordLiveTaskChangeV3 } from "../agents/live-authority-v3.ts";
 import { endSessionExplicitV3 } from "../agents/session-finalizer-v3.ts";
-import { heartbeatPath } from "../agents/state/heartbeat-reader.ts";
 import {
+  clearCoordinationCache,
   type Heartbeat,
-  readHeartbeat,
   setIdentityCache,
 } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
@@ -19,17 +12,9 @@ import { assignName } from "../agents/state/names.ts";
 import { coordFreshnessSeconds } from "../config.ts";
 import { ensureEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import {
-  readCoordinationViewV3,
-  requireAuthoritySafeCoordinationViewV3,
-} from "../events/v3/coordination-view.ts";
-import { withGenerationCustodyV3 } from "../events/v3/generation-custody.ts";
-import {
-  liveInstanceIdV3,
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
-import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
-import { fsyncParentDirectory } from "./durable-record.ts";
 import { stableScopeId } from "./scope-id.ts";
 
 export interface WorkflowChildSessionV3Input {
@@ -92,45 +77,16 @@ export function startWorkflowChildSessionV3(input: WorkflowChildSessionV3Input):
   }
   const projected = readLiveCoordinationRow(input.coordRoot, input.instanceId);
   if (!projected) throw new Error("workflow_child_v3_projection_missing");
-  const own = readHookProducerStateV3(input.coordRoot, adapter, sessionId);
-  if (!own || own.terminal || own.generation_id !== projected.v3_generation_id) {
-    throw new Error("workflow_child_v3_start_generation_changed");
-  }
   return projected;
 }
 
 /** Record the authoritative terminal before removing the disposable coordination cache. */
 export function endWorkflowChildSessionV3(
-  input: WorkflowChildSessionV3Input & { cleanExit: boolean; expectedGenerationId: string },
-): void {
-  withGenerationCustodyV3(input.coordRoot, [liveInstanceIdV3(input.instanceId)], () =>
-    endExpectedChild(input),
-  );
-}
-
-function endExpectedChild(
-  input: WorkflowChildSessionV3Input & { cleanExit: boolean; expectedGenerationId: string },
+  input: WorkflowChildSessionV3Input & { cleanExit: boolean },
 ): void {
   requireV3Route(input.coordRoot);
-  const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(input.coordRoot));
-  const instanceId = liveInstanceIdV3(input.instanceId);
-  const current = view.instances[instanceId];
-  const terminal = view.terminal_generations[input.expectedGenerationId];
-  if (terminal?.instance_id === instanceId) recoverHeldCaches(input);
-  if (current && current.generation_id !== input.expectedGenerationId) {
-    throw new Error("workflow_child_v3_generation_changed");
-  }
-  if (!current) {
-    if (!terminal || terminal.instance_id !== instanceId)
-      throw new Error("workflow_child_v3_generation_missing");
-    if (terminal.terminal?.outcome !== (input.cleanExit ? "succeeded" : "failed")) {
-      throw new Error("workflow_child_v3_terminal_outcome_changed");
-    }
-    clearExpectedCache(input);
-    return;
-  }
   const row = readLiveCoordinationRow(input.coordRoot, input.instanceId);
-  if (!row?.v3_instance_id || row.v3_generation_id !== input.expectedGenerationId) {
+  if (!row?.v3_instance_id || !row.v3_generation_id) {
     throw new Error("workflow_child_v3_generation_missing");
   }
   const result = endSessionExplicitV3({
@@ -145,104 +101,7 @@ function endExpectedChild(
       `workflow_child_v3_end_failed:${result.state}${"reason" in result ? `:${result.reason}` : ""}`,
     );
   }
-  clearExpectedCache(input);
-}
-
-/** Persist unresolved terminal custody only for the generation this dispatch owns. */
-export function recordWorkflowChildTerminalFailureV3(
-  input: WorkflowChildSessionV3Input & { expectedGenerationId: string; reason: string },
-): void {
-  withGenerationCustodyV3(input.coordRoot, [liveInstanceIdV3(input.instanceId)], () => {
-    const row = readLiveCoordinationRow(input.coordRoot, input.instanceId);
-    if (!row || row.v3_generation_id !== input.expectedGenerationId) return;
-    recordLiveLifecycleChangeV3({
-      coordRoot: input.coordRoot,
-      owner: input.instanceId,
-      nativeSessionId: input.sessionId ?? input.instanceId,
-      adapter: workflowAdapter(input.adapter),
-      expectedGenerationId: input.expectedGenerationId as `gen_${string}`,
-      state: "blocked",
-      reason: input.reason,
-    });
-  });
-}
-
-function heldPrefix(input: WorkflowChildSessionV3Input & { expectedGenerationId: string }): string {
-  if (!/^gen_[a-zA-Z0-9._-]{1,128}$/.test(input.expectedGenerationId))
-    throw new Error("workflow_child_v3_generation_invalid");
-  return `${basename(heartbeatPath(input.coordRoot, input.instanceId))}.terminal-${input.expectedGenerationId}-`;
-}
-
-function recoverHeldCaches(
-  input: WorkflowChildSessionV3Input & { expectedGenerationId: string },
-): void {
-  const path = heartbeatPath(input.coordRoot, input.instanceId);
-  if (!existsSync(dirname(path))) return;
-  const prefix = heldPrefix(input);
-  for (const name of readdirSync(dirname(path)).filter((value) => value.startsWith(prefix))) {
-    finishHeldCache(`${dirname(path)}/${name}`, path, input.expectedGenerationId);
-  }
-}
-
-function clearExpectedCache(
-  input: WorkflowChildSessionV3Input & { expectedGenerationId: string },
-): void {
-  recoverHeldCaches(input);
-  if (
-    readHeartbeat(input.coordRoot, input.instanceId)?.v3_generation_id !==
-    input.expectedGenerationId
-  )
-    return;
-  const path = heartbeatPath(input.coordRoot, input.instanceId);
-  const held = `${dirname(path)}/${heldPrefix(input)}${randomUUID()}`;
-  try {
-    // A unique held name pins the actual bytes atomically. Checking before
-    // unlink alone could consume a replacement published at this boundary.
-    renameSync(path, held);
-    fsyncParentDirectory(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  finishHeldCache(held, path, input.expectedGenerationId);
-}
-
-function finishHeldCache(held: string, path: string, expectedGenerationId: string): void {
-  let removed = false;
-  let cleanupFailed = false;
-  let cleanupError: unknown;
-  try {
-    const cache = JSON.parse(readFileSync(held, "utf8")) as Heartbeat;
-    if (cache.v3_generation_id === expectedGenerationId) {
-      unlinkSync(held);
-      fsyncParentDirectory(held);
-      removed = true;
-    }
-  } catch (error) {
-    cleanupFailed = true;
-    cleanupError = error;
-  }
-  if (!removed) {
-    try {
-      // Never overwrite a later publication. Keep the held evidence when
-      // another cache already owns the live name.
-      linkSync(held, path);
-      fsyncParentDirectory(path);
-      unlinkSync(held);
-      fsyncParentDirectory(held);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        if (cleanupFailed) {
-          throw new AggregateError(
-            [cleanupError, error],
-            `workflow_child_v3_cache_cleanup_and_restore_failed: ${String(cleanupError)}; restoration: ${String(error)}`,
-          );
-        }
-        throw error;
-      }
-    }
-  }
-  if (cleanupFailed) throw cleanupError;
+  clearCoordinationCache(input.coordRoot, input.instanceId);
 }
 
 function requireV3Route(coordRoot: string) {

@@ -43,7 +43,6 @@ import { markObservedClockRegressionV3 } from "../clock-order.ts";
 import type { EventV3 } from "../contract.ts";
 import { type EventV3WriteMode, readEventV3ControlState } from "../control.ts";
 import { fingerprintContextV3 } from "../fingerprint-keys.ts";
-import { withGenerationCustodyV3 } from "../generation-custody.ts";
 import {
   attestationIdV3,
   clockIdV3,
@@ -655,17 +654,6 @@ function sleepSync(milliseconds: number): void {
 
 /** The pre-spool body of the recorder: requires the session's state lease to be held. */
 function processHookSignalLocked(
-  control: OpenHookControlStateV3,
-  input: RecordHookSignalV3Input,
-  sessionHash: `hid_${string}`,
-  path: string,
-): RecordHookSignalV3Result {
-  return withGenerationCustodyV3(input.coordRoot, [input.instance_id], () =>
-    processHookSignalWithCustodyLocked(control, input, sessionHash, path),
-  );
-}
-
-function processHookSignalWithCustodyLocked(
   control: OpenHookControlStateV3,
   input: RecordHookSignalV3Input,
   sessionHash: `hid_${string}`,
@@ -3222,14 +3210,6 @@ function suppressClosedSpanSignal(
 export function recordApprovedSessionEndV3(
   input: RecordApprovedSessionEndV3Input,
 ): RecordApprovedSessionEndV3Result {
-  return withGenerationCustodyV3(input.coordRoot, [input.instance_id], () =>
-    recordApprovedSessionEndWithCustodyV3(input),
-  );
-}
-
-function recordApprovedSessionEndWithCustodyV3(
-  input: RecordApprovedSessionEndV3Input,
-): RecordApprovedSessionEndV3Result {
   const control = readEventV3ControlState(input.coordRoot);
   if (control.state !== input.mode) {
     return { state: "gate_closed", reason: control.state };
@@ -3576,81 +3556,77 @@ export function reanchorArchivedHookProducersV3(
   for (const archived of listArchivedHookProducerStatesV3(input.archivedEpoch)) {
     const previous = archived.state;
     if (previous.terminal || !previous.started_event_id) continue;
-    withGenerationCustodyV3(input.coordRoot, [previous.instance_id], () => {
-      const path = producerStatePath(input.coordRoot, previous.adapter, archived.sessionHash);
-      const lease = acquireStateLeaseWithRetry(input.coordRoot, path, 40);
-      if (!lease) {
-        throw new Error(`event_v3_rotation_reanchor_busy:${previous.instance_id}`);
+    const path = producerStatePath(input.coordRoot, previous.adapter, archived.sessionHash);
+    const lease = acquireStateLeaseWithRetry(input.coordRoot, path, 40);
+    if (!lease) {
+      throw new Error(`event_v3_rotation_reanchor_busy:${previous.instance_id}`);
+    }
+    try {
+      if (existsSync(path)) {
+        const current = readProducerState(path);
+        if (current.epoch_genesis_id === genesisId) continue;
       }
-      try {
-        if (existsSync(path)) {
-          const current = readProducerState(path);
-          if (current.epoch_genesis_id === genesisId) return;
-        }
-        const sourceEvent = `${previous.adapter}.epoch-rotation-reanchor`;
-        const rotationInput: RecordHookSignalV3Input = {
-          coordRoot: input.coordRoot,
-          mode: input.mode,
-          signal: "session-start",
-          payload: {
-            raw: {},
-            ...(previous.current_native_turn_id
-              ? { turn_id: previous.current_native_turn_id }
-              : {}),
-            ...(adapterBehavior(previous.adapter).tracksExecutionMode && previous.cursor_mode
-              ? { cursor_mode: previous.cursor_mode }
-              : {}),
-          },
-          adapter: previous.adapter,
-          instance_id: previous.instance_id,
-          producer_id: "prd_agent-hook",
-          build_id: input.build_id,
-          platform: input.platform,
-          observed_at: observedAt,
-          writerOptions: { expectedGenesisId: genesisId },
-        };
-        const state = newProducerState(
-          rotationInput,
-          previous.session_id,
-          epochId,
-          boundaryEventId as `evt_${string}`,
-          genesisId,
-        );
-        const sessionStart = buildMidFlightSessionStart(rotationInput, state, rootId);
-        if (sessionStart.event_type !== "session.started") {
-          throw new Error("rotation re-anchor session start could not be normalized");
-        }
-        sessionStart.provenance = {
-          ...sessionStart.provenance,
-          source_event: sourceEvent,
-          attestation: "derived",
-          confidence: "high",
-          attribution: {
-            method: "session_env",
-            state: "verified",
-            subject_instance_id: state.instance_id,
-          },
-        };
-        sessionStart.payload.resume = {
-          state: "unknown",
-          reason: "epoch_rotation_reanchor",
-        };
-        assertEventV3(sessionStart);
-        commitEventLocked(rotationInput, state, path, sessionStart);
-        sessions += 1;
+      const sourceEvent = `${previous.adapter}.epoch-rotation-reanchor`;
+      const rotationInput: RecordHookSignalV3Input = {
+        coordRoot: input.coordRoot,
+        mode: input.mode,
+        signal: "session-start",
+        payload: {
+          raw: {},
+          ...(previous.current_native_turn_id ? { turn_id: previous.current_native_turn_id } : {}),
+          ...(adapterBehavior(previous.adapter).tracksExecutionMode && previous.cursor_mode
+            ? { cursor_mode: previous.cursor_mode }
+            : {}),
+        },
+        adapter: previous.adapter,
+        instance_id: previous.instance_id,
+        producer_id: "prd_agent-hook",
+        build_id: input.build_id,
+        platform: input.platform,
+        observed_at: observedAt,
+        writerOptions: { expectedGenesisId: genesisId },
+      };
+      const state = newProducerState(
+        rotationInput,
+        previous.session_id,
+        epochId,
+        boundaryEventId as `evt_${string}`,
+        genesisId,
+      );
+      const sessionStart = buildMidFlightSessionStart(rotationInput, state, rootId);
+      if (sessionStart.event_type !== "session.started") {
+        throw new Error("rotation re-anchor session start could not be normalized");
+      }
+      sessionStart.provenance = {
+        ...sessionStart.provenance,
+        source_event: sourceEvent,
+        attestation: "derived",
+        confidence: "high",
+        attribution: {
+          method: "session_env",
+          state: "verified",
+          subject_instance_id: state.instance_id,
+        },
+      };
+      sessionStart.payload.resume = {
+        state: "unknown",
+        reason: "epoch_rotation_reanchor",
+      };
+      assertEventV3(sessionStart);
+      commitEventLocked(rotationInput, state, path, sessionStart);
+      sessions += 1;
 
-        if (previous.current_turn_id && previous.current_turn_span) {
-          commitMidFlightTurnStart(rotationInput, state, path, rootId, {
-            source_event: sourceEvent,
-            confidence: "high",
-            attribution_method: "session_env",
-          });
-          turns += 1;
-        }
-      } finally {
-        lease.release();
+      if (previous.current_turn_id && previous.current_turn_span) {
+        commitMidFlightTurnStart(rotationInput, state, path, rootId, {
+          source_event: sourceEvent,
+          confidence: "high",
+          attribution_method: "session_env",
+        });
+        turns += 1;
       }
-    });
+    } finally {
+      lease.release();
+    }
   }
   return { sessions, turns };
 }
@@ -3888,9 +3864,7 @@ export function readJoinableHookProducerStateV3(
   instanceId: `inst_${string}`,
 ): HookProducerStateV3 | undefined {
   const direct = readHookProducerStateV3(coordRoot, adapter, nativeSessionId);
-  // A terminal native session belonging to this actor is stale authority,
-  // not permission to adopt a replacement published under the same instance.
-  if (direct?.instance_id === instanceId) return direct.terminal ? undefined : direct;
+  if (direct?.instance_id === instanceId && !direct.terminal) return direct;
   const byInstance = readHookProducerStateByInstanceV3(coordRoot, instanceId);
   return byInstance?.adapter === adapter && !byInstance.terminal ? byInstance : undefined;
 }
