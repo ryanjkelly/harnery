@@ -887,42 +887,9 @@ describe("repository observation safety", () => {
     }
   });
 
-  test("legacy snapshots are unavailable and observation details stay bounded", () => {
-    const coordRoot = root();
-    const checkpoint = checkpointContext(coordRoot, {
-      sessionId: "session-a",
-      instanceId: "owner-a",
-      adapter: "claude-code",
-      cwd: coordRoot,
-      reason: "manual",
-    });
-    const persisted = JSON.parse(readFileSync(checkpoint.path, "utf8"));
-    delete persisted.repo.observation;
-    persisted.repo.observation_detail = "x".repeat(1_000);
-    writeFileSync(checkpoint.path, JSON.stringify(persisted));
-    const loaded = readLatestCapsule(coordRoot, "session-a")!;
-    expect(loaded.repo.observation).toBe("unavailable");
-    expect(loaded.repo.observation_detail).toHaveLength(500);
+  test("snapshots without an observation never establish a match", () => {
+    const { observation: _observation, ...legacy } = observedRepo;
     expect(observationsComparable({}, observedRepo)).toBe(false);
-    expectUnverified(renderRecoveryBriefing(loaded, observedRepo));
-  });
-
-  test("malformed capsule shapes degrade recovery without throwing", () => {
-    const coordRoot = root();
-    const checkpoint = checkpointContext(coordRoot, {
-      sessionId: "session-a",
-      instanceId: "owner-a",
-      adapter: "claude-code",
-      cwd: coordRoot,
-      reason: "manual",
-    });
-    for (const repo of [null, [], {}, { cwd: "/repo", dirty_paths: "not a list" }]) {
-      writeFileSync(checkpoint.path, JSON.stringify({ ...checkpoint.capsule, repo }));
-      expect(readLatestCapsule(coordRoot, "session-a")).toBeNull();
-      expect(
-        recoverContext(coordRoot, { sessionId: "session-a", instanceId: "owner-a", cwd: coordRoot })
-          .state.phase,
-      ).toBe("degraded");
-    }
+    expectUnverified(renderRecoveryBriefing(capsuleFor(legacy as RepoSnapshot), observedRepo));
   });
 });

@@ -17,7 +17,7 @@ import { peerInbox } from "../inbox/peer-messages.ts";
 import { project } from "../inbox/service.ts";
 import { stateFileMode } from "../storage/modes.ts";
 import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
-import type { RepoObservation, RepoSnapshot } from "./observation.ts";
+import type { RepoSnapshot } from "./observation.ts";
 import { observationsComparable } from "./observation.ts";
 
 export type { RepoObservation, RepoSnapshot } from "./observation.ts";
@@ -520,29 +520,8 @@ export function readContextState(
 
 export function readLatestCapsule(coordRoot: string, sessionId: string): ContinuityCapsule | null {
   const state = readContextState(coordRoot, sessionId);
-  if (typeof state?.latest_capsule !== "string" || !state.latest_capsule) return null;
-  const capsule = readJson<ContinuityCapsule>(join(coordRoot, ".harnery", state.latest_capsule));
-  if (
-    !capsule ||
-    !record(capsule.repo) ||
-    !record(capsule.work) ||
-    typeof capsule.repo.cwd !== "string" ||
-    !Array.isArray(capsule.repo.dirty_paths) ||
-    !capsule.repo.dirty_paths.every((path) => typeof path === "string") ||
-    !Array.isArray(capsule.work.files_held) ||
-    !capsule.work.files_held.every((path) => typeof path === "string")
-  ) {
-    return null;
-  }
-  capsule.repo.observation = repoObservation(capsule.repo.observation);
-  capsule.repo.observation_detail = clampString(
-    string(capsule.repo.observation_detail),
-    MAX_OBSERVATION_DETAIL_CHARS,
-  );
-  capsule.repo.branch = string(capsule.repo.branch)?.trim() || undefined;
-  capsule.repo.head = string(capsule.repo.head)?.trim() || undefined;
-  capsule.repo.root = string(capsule.repo.root)?.trim() || undefined;
-  return capsule;
+  if (!state?.latest_capsule) return null;
+  return readJson<ContinuityCapsule>(join(coordRoot, ".harnery", state.latest_capsule));
 }
 
 export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: RepoSnapshot): string {
@@ -564,10 +543,8 @@ export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: Rep
       ["current repository", liveRepo],
     ] as const) {
       if (repo.observation !== "ok") {
-        const detail = clampString(string(repo.observation_detail), MAX_OBSERVATION_DETAIL_CHARS);
-        unknown.push(
-          `${label}: ${repoObservation(repo.observation)}${detail ? ` (${detail})` : ""}`,
-        );
+        const detail = repo.observation_detail ? ` (${repo.observation_detail})` : "";
+        unknown.push(`${label}: ${repo.observation ?? "unavailable"}${detail}`);
       }
     }
   }
@@ -826,10 +803,6 @@ function git(cwd: string, args: string[]): GitReadResult {
   } catch {
     return { ok: false, reason: "spawn_error" };
   }
-}
-
-function repoObservation(value: unknown): RepoObservation {
-  return value === "ok" || value === "partial" ? value : "unavailable";
 }
 
 function sameMeasurement(a: ContextSample | undefined, b: ContextSample): boolean {
