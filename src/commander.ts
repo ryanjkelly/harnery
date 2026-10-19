@@ -799,7 +799,11 @@ function harneryCommandBundles({
       "turn-rollback",
       "Capture and review exact turn paths before restoring owned content.",
       async (program) =>
-        (await import("./commands/turn-rollback.ts")).registerTurnRollbackCommand(program, emit, context),
+        (await import("./commands/turn-rollback.ts")).registerTurnRollbackCommand(
+          program,
+          emit,
+          context,
+        ),
     ),
     lazy("work", "Track durable objectives across bounded workflow attempts.", async (program) =>
       (await import("./commands/work.ts")).registerWorkCommand(program, emit),
