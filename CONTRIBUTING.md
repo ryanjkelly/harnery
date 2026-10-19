@@ -55,7 +55,10 @@ Walk through the prompts to declare the bump type (patch/minor/major) and a one-
 
 The release PR is opened by the Actions bot, so branch-protection checks never run on it and it sits as `BLOCKED`. Admin-merge it (`gh pr merge <n> --squash --admin`) once CI is green on the `main` commit beneath it: the PR only touches version + changelog metadata, and the code it ships already passed CI on that commit.
 
-**Published-package CI only runs on `main`.** Commits to `next` do not run the root suite, so a green `next` is not release-verified; the full suite runs only once you push to `main`. Run it locally before releasing:
+The [CI workflow](.github/workflows/ci.yml) runs on pushes and pull requests to
+both `next` and `main`, so integration commits receive lint, typechecking, core
+tests, and published-package checks before a release. Run the complete local
+checks before releasing:
 
 ```bash
 bun run check:local
@@ -76,7 +79,10 @@ that publishing step. GitHub Actions email delivery is a separate account
 notification preference; passing local checks reduces avoidable failures but
 does not disable those emails.
 
-The `installers` job also runs only on `main`: it packs the tarball and exercises the `install.sh` / `uninstall.sh` one-liners plus a `scripts/setup.sh` → `scripts/teardown.sh` round-trip. Those shell scripts have no unit tests, so if you touch them, run that round-trip against a throwaway project yourself, or a regression stays hidden on `next` until release.
+The `installers` job runs on both branches too: it packs the tarball and
+exercises the `install.sh` / `uninstall.sh` one-liners plus a `scripts/setup.sh`
+→ `scripts/teardown.sh` round-trip. Those shell scripts have no unit tests, so
+run that round-trip against a throwaway project when changing them.
 
 The unpublished dashboard has a separate path-filtered workflow. Changes under
 `web/` run its Bun test suite and production build on pushes to `next` or `main`
