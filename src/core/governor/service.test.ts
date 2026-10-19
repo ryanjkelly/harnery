@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { processStartToken } from "../agents/state/proc-start.ts";
+import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import { normalizePolicy } from "../policy/index.ts";
 import { closeProcessLoggers } from "../storage/logger.ts";
 import { acceptWorkItem, createWorkItem, readWorkItem } from "../work/index.ts";
@@ -12,14 +13,12 @@ import {
   type GovernorServiceStatusRecord,
   governorServiceLogPath,
   readGovernorServiceConfig,
-  readGovernorServiceRuntime,
-  readGovernorServiceStatus,
   requestGovernorServiceStop,
   runGovernorServiceDaemon,
   runGovernorServiceSweep,
   spawnGovernorService,
 } from "./service.ts";
-import { currentGovernorServiceBuild } from "./service-read.ts";
+import { readGovernorServiceRuntime, readGovernorServiceStatus } from "./service-read.ts";
 import { createGovernor, readGovernor } from "./state.ts";
 
 const roots: string[] = [];
@@ -76,7 +75,7 @@ function serviceRecord(root: string, overrides: Partial<GovernorServiceStatusRec
     nonce: "service-fixture",
     state: "running",
     start_token: processStartToken(process.pid) ?? undefined,
-    running_build: currentGovernorServiceBuild(),
+    running_build: installedHarneryBuild(),
     started_at: now,
     heartbeat_at: now,
     config_created_at: now,
@@ -474,11 +473,11 @@ describe("governor background service", () => {
     });
     expect(status).toMatchObject({ state: "stopped", sweep_count: 1 });
     expect(status.start_token).toBe(processStartToken(process.pid) ?? undefined);
-    expect(status.running_build).toEqual(currentGovernorServiceBuild());
+    expect(status.running_build).toEqual(installedHarneryBuild());
     expect(lease).toMatchObject({
       pid: process.pid,
       start_token: processStartToken(process.pid) ?? undefined,
-      running_build: currentGovernorServiceBuild(),
+      running_build: installedHarneryBuild(),
     });
     expect(readGovernorServiceStatus(root)).toMatchObject({
       running: false,

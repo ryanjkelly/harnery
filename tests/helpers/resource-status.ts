@@ -8,6 +8,7 @@ import {
   type PressureHysteresisState,
   type PressureState,
 } from "../../src/core/diagnostics/contract";
+import { installedHarneryBuild } from "../../src/core/events/v3/runtime-build.ts";
 import {
   RESOURCE_SNAPSHOT_SCHEMA_VERSION,
   type ResourceSnapshot,
@@ -18,7 +19,6 @@ import {
   SUPERVISOR_PRESSURE_SCHEMA_VERSION,
   type SupervisorPressureRecord,
 } from "../../src/core/supervisor/contract";
-import { installedSupervisorBuild } from "../../src/core/supervisor/status.ts";
 import { supervisorPaths } from "../../src/core/supervisor/storage";
 
 export function resourceStatusFixture(root: string, nowMs = Date.now()): ResourceSnapshot {
@@ -96,7 +96,7 @@ export function resourceStatusFixture(root: string, nowMs = Date.now()): Resourc
     schema_version: 1,
     pid: process.pid,
     start_token: processStartToken(process.pid),
-    running_build: installedSupervisorBuild(),
+    running_build: installedHarneryBuild(),
     host: hostname(),
     nonce: "fixture",
     state: "running",

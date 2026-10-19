@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import type { ResourceSnapshot } from "../resources/contract.ts";
 import { resourcePaths } from "../resources/storage.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
@@ -25,7 +26,7 @@ import {
   registerSupervisorConsumer,
   unregisterSupervisorConsumer,
 } from "./services.ts";
-import { installedSupervisorBuild, readSupervisorStatus } from "./status.ts";
+import { readSupervisorStatus } from "./status.ts";
 import { supervisorPaths } from "./storage.ts";
 import { buildSupervisorTimeline } from "./timeline.ts";
 
@@ -287,7 +288,7 @@ describe("supervisor process identity", () => {
       restart_needed: true,
       build_status: "running build unknown; restart needed",
     });
-    const installed = installedSupervisorBuild();
+    const installed = installedHarneryBuild();
     writePrivateJsonAtomic(supervisorPaths(root).service, {
       ...statusRecord(),
       running_build: installed,
@@ -885,7 +886,7 @@ describe("local supervisor collectors", () => {
       },
     });
     expect(result.state).toBe("stopped");
-    expect(result.running_build).toEqual(installedSupervisorBuild());
+    expect(result.running_build).toEqual(installedHarneryBuild());
     expect(result.cycle_count).toBeGreaterThan(1);
     expect(Date.parse(result.stopped_at ?? "")).toBeGreaterThanOrEqual(
       Date.parse(result.started_at) + 5_000,

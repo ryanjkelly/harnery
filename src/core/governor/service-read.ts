@@ -1,21 +1,20 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
-import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { coordEnv } from "../../lib/env.ts";
+import type { ProcessGenerationVerdict } from "../agents/state/proc-start.ts";
 import {
-  type ProcessGenerationVerdict,
-  verifyProcessGeneration,
-} from "../agents/state/proc-start.ts";
-import { currentHarneryRuntimeBuild } from "../events/v3/runtime-build.ts";
+  observeServiceProcess,
+  type ServiceLiveness,
+  type ServiceProcessDependencies,
+} from "../agents/state/service-process.ts";
+import { serviceBuildStatus } from "../events/v3/runtime-build.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
 import type { HarneryLogRecordV1 } from "../storage/jsonl.ts";
 import { parseLogRecord } from "../storage/jsonl.ts";
 import { familyLogDirectory, readSegmentManifest } from "../storage/segments.ts";
 import type {
-  GovernorServiceBuild,
   GovernorServiceConfig,
-  GovernorServiceProcessDependencies,
   GovernorServiceRuntime,
   GovernorServiceStatus,
   GovernorServiceStatusRecord,
@@ -24,106 +23,6 @@ import type {
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LOG_RECORDS = 10_000;
 const MAX_GOALS = 100;
-
-export function currentGovernorServiceBuild(): GovernorServiceBuild {
-  let version = "unknown";
-  let revision = "unknown";
-  try {
-    const manifest = JSON.parse(
-      readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
-    ) as {
-      version?: unknown;
-    };
-    if (typeof manifest.version === "string" && manifest.version.length <= 100) {
-      version = manifest.version;
-    }
-  } catch {
-    // Missing package metadata cannot establish that the running build is current.
-  }
-  try {
-    revision = currentHarneryRuntimeBuild();
-  } catch {
-    // Status still reports the unavailable build instead of guessing a match.
-  }
-  return { version, revision };
-}
-
-export function governorServiceBuildStatus(
-  record: GovernorServiceStatusRecord | undefined,
-): Pick<
-  GovernorServiceStatus,
-  "running_build" | "installed_build" | "restart_needed" | "build_status"
-> {
-  const installed_build = currentGovernorServiceBuild();
-  const candidate = record?.running_build;
-  const running_build =
-    candidate &&
-    typeof candidate.version === "string" &&
-    candidate.version.length > 0 &&
-    candidate.version.length <= 100 &&
-    typeof candidate.revision === "string" &&
-    candidate.revision.length > 0 &&
-    candidate.revision.length <= 100 &&
-    candidate.version !== "unknown" &&
-    candidate.revision !== "unknown"
-      ? candidate
-      : null;
-  const restart_needed =
-    running_build === null ||
-    installed_build.version === "unknown" ||
-    installed_build.revision === "unknown" ||
-    running_build.version !== installed_build.version ||
-    running_build.revision !== installed_build.revision;
-  return {
-    running_build,
-    installed_build,
-    restart_needed,
-    build_status:
-      running_build === null
-        ? "running build unknown; restart needed"
-        : restart_needed
-          ? "restart needed"
-          : "current",
-  };
-}
-
-/** An unknown token or process probe cannot establish a running or stopped owner. */
-export function observeGovernorServiceProcess(
-  record: Pick<GovernorServiceStatusRecord, "pid" | "host" | "state" | "start_token"> | undefined,
-  dependencies: GovernorServiceProcessDependencies = {},
-): { generation: ProcessGenerationVerdict; liveness: GovernorServiceStatus["liveness"] } {
-  if (!record) return { generation: "unknown", liveness: "stopped" };
-  const generation =
-    record.host === hostname()
-      ? verifyProcessGeneration(record.pid, record.start_token, dependencies.readToken)
-      : "unknown";
-  if (record.host !== hostname()) return { generation, liveness: "unknown" };
-  try {
-    const present = (dependencies.probePid ?? probePid)(record.pid);
-    if (!present) return { generation, liveness: "stopped" };
-  } catch (error) {
-    return {
-      generation,
-      liveness: (error as NodeJS.ErrnoException).code === "ESRCH" ? "stopped" : "unknown",
-    };
-  }
-  return {
-    generation,
-    liveness:
-      generation === "same"
-        ? record.state === "stopped"
-          ? "stopped"
-          : "running"
-        : generation === "different"
-          ? "stopped"
-          : "unknown",
-  };
-}
-
-function probePid(pid: number): boolean {
-  process.kill(pid, 0);
-  return true;
-}
 
 export function readGovernorServiceConfig(coordRootRaw: string): GovernorServiceConfig {
   const coordRoot = resolve(coordRootRaw);
@@ -175,7 +74,7 @@ export function readGovernorServiceRuntime(
 
 export function readGovernorServiceStatus(
   coordRootRaw: string,
-  dependencies: GovernorServiceProcessDependencies = {},
+  dependencies: ServiceProcessDependencies = {},
 ): GovernorServiceStatus {
   const coordRoot = resolve(coordRootRaw);
   const record = readStatusRecord(coordRoot);
@@ -191,15 +90,17 @@ export function readGovernorServiceStatus(
   } catch {
     // Runtime is recoverable and must not make the dashboard unreadable.
   }
-  const observation = observeGovernorServiceProcess(record, dependencies);
-  if (!record && existsSync(join(serviceDir(coordRoot), "status.json"))) {
-    observation.liveness = "unknown";
-  }
+  const observation: { generation: ProcessGenerationVerdict; liveness: ServiceLiveness } = record
+    ? observeServiceProcess(record, dependencies)
+    : {
+        generation: "unknown",
+        liveness: existsSync(join(serviceDir(coordRoot), "status.json")) ? "unknown" : "stopped",
+      };
   return {
-    running: observation.liveness === "running" && record?.state !== "stopped",
+    running: observation.liveness === "running",
     stale: observation.liveness === "stopped" && record !== undefined && record.state !== "stopped",
     ...observation,
-    ...governorServiceBuildStatus(record),
+    ...serviceBuildStatus(record?.running_build),
     record,
     config,
     runtime,

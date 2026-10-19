@@ -6,13 +6,14 @@ import {
   type PressureAssessment,
   type PressureHysteresisState,
 } from "../diagnostics/contract.ts";
+import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import {
   SUPERVISOR_PRESSURE_SCHEMA_VERSION,
   type SupervisorCapability,
   type SupervisorPressureRecord,
   type SupervisorStatus,
 } from "../supervisor/contract.ts";
-import { installedSupervisorBuild, readSupervisorStatus } from "../supervisor/status.ts";
+import { readSupervisorStatus } from "../supervisor/status.ts";
 import { supervisorPaths } from "../supervisor/storage.ts";
 import {
   RESOURCE_SNAPSHOT_SCHEMA_VERSION,
@@ -465,7 +466,7 @@ function unknownWriterState(): ResourceStatus["writer"] {
     generation: "unknown",
     liveness: "unknown",
     running_build: null,
-    installed_build: installedSupervisorBuild(),
+    installed_build: installedHarneryBuild(),
     restart_needed: true,
     build_status: "running build unknown; restart needed",
   };

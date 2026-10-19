@@ -63,13 +63,12 @@ export {
   type RunGovernorServiceDaemonInput,
   type RunGovernorServiceSweepInput,
   readGovernorServiceConfig,
-  readGovernorServiceRuntime,
-  readGovernorServiceStatus,
   requestGovernorServiceStop,
   runGovernorServiceDaemon,
   runGovernorServiceSweep,
   spawnGovernorService,
 } from "./service.ts";
+export { readGovernorServiceRuntime, readGovernorServiceStatus } from "./service-read.ts";
 export {
   assertGovernorId,
   type CreateGovernorInput,

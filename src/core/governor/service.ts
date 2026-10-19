@@ -10,30 +10,28 @@ import {
   renameSync,
   rmSync,
   statSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
+import { type ProcessGenerationVerdict, processStartToken } from "../agents/state/proc-start.ts";
 import {
-  type ProcessGenerationSignalDependencies,
-  type ProcessGenerationVerdict,
-  processStartToken,
-  signalIfSameGeneration,
-} from "../agents/state/proc-start.ts";
+  acquireServiceLease,
+  requestServiceStop,
+  type ServiceLiveness,
+  type ServiceProcessDependencies,
+  serviceStartRefusal,
+} from "../agents/state/service-process.ts";
 import { resolveBinName } from "../config.ts";
+import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import { type NormalizedPolicy, normalizePolicy, type PolicyIsolation } from "../policy/index.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { RotatingTextSink } from "../storage/process-log.ts";
 import type { RunWorkItemInput } from "../work/index.ts";
 import { type GovernorRunReport, type GovernorStopReason, runGovernor } from "./runner.ts";
-import {
-  currentGovernorServiceBuild,
-  governorServiceBuildStatus,
-  observeGovernorServiceProcess,
-} from "./service-read.ts";
+import { readGovernorServiceRuntime, readGovernorServiceStatus } from "./service-read.ts";
 import { type GovernorRecord, readGovernor } from "./state.ts";
 
 export const GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION = 1 as const;
@@ -99,10 +97,6 @@ export type GovernorServiceProcessState = "starting" | "running" | "stopping" | 
 export interface GovernorServiceBuild {
   version: string;
   revision: string;
-}
-
-export interface GovernorServiceProcessDependencies extends ProcessGenerationSignalDependencies {
-  probePid?: (pid: number) => boolean;
 }
 
 export interface GovernorServiceStatusRecord {
@@ -173,27 +167,13 @@ export interface RunGovernorServiceDaemonInput {
   onLog?: (line: string) => void;
 }
 
-interface ServiceLease {
-  pid: number;
-  start_token?: string;
-  running_build?: GovernorServiceBuild;
-  host: string;
-  nonce: string;
-  created_at: string;
-}
-
 export function configureGovernorService(
   input: ConfigureGovernorServiceInput,
 ): GovernorServiceConfig {
   const coordRoot = resolve(input.coordRoot);
-  const active = readStatusRecord(coordRoot);
-  if (!active && existsSync(serviceStatusPath(coordRoot))) {
-    throw serviceStartRefusal(coordRoot, undefined, "unknown");
-  }
-  if (active) {
-    const liveness = statusOwnerIsLive(active);
-    if (liveness !== "stopped") throw serviceStartRefusal(coordRoot, active.pid, liveness);
-  }
+  const current = readGovernorServiceStatus(coordRoot);
+  if (current.liveness !== "stopped")
+    throw startRefusal(coordRoot, current.record?.pid, current.liveness);
   const goalIds = unique(input.goalIds.map((value) => value.trim()).filter(Boolean));
   if (goalIds.length < 1 || goalIds.length > MAX_GOALS) {
     throw new Error(`governor service requires from 1 to ${MAX_GOALS} unique goal ids`);
@@ -249,65 +229,12 @@ export function readGovernorServiceConfig(coordRootRaw: string): GovernorService
   return config;
 }
 
-export function readGovernorServiceRuntime(
-  coordRootRaw: string,
-): GovernorServiceRuntime | undefined {
-  const coordRoot = resolve(coordRootRaw);
-  if (!existsSync(serviceRuntimePath(coordRoot))) return undefined;
-  const runtime = readBoundedJson<GovernorServiceRuntime>(
-    serviceRuntimePath(coordRoot),
-    "governor service runtime",
-  );
-  if (
-    runtime.schema_version !== GOVERNOR_SERVICE_RUNTIME_SCHEMA_VERSION ||
-    !validTimestamp(runtime.config_created_at) ||
-    !validTimestamp(runtime.updated_at) ||
-    !runtime.goals ||
-    typeof runtime.goals !== "object" ||
-    Array.isArray(runtime.goals)
-  ) {
-    throw new Error("governor service runtime has an unsupported schema");
-  }
-  return runtime;
-}
-
-export function readGovernorServiceStatus(
-  coordRootRaw: string,
-  dependencies: GovernorServiceProcessDependencies = {},
-): GovernorServiceStatus {
-  const coordRoot = resolve(coordRootRaw);
-  const record = readStatusRecord(coordRoot);
-  let config: GovernorServiceConfig | undefined;
-  let runtime: GovernorServiceRuntime | undefined;
-  try {
-    config = readGovernorServiceConfig(coordRoot);
-  } catch {
-    // A service has no usable configuration until explicitly configured.
-  }
-  try {
-    runtime = readGovernorServiceRuntime(coordRoot);
-  } catch {
-    // Status remains readable when recoverable runtime state is corrupt.
-  }
-  const observation = observeGovernorServiceProcess(record, dependencies);
-  if (!record && existsSync(serviceStatusPath(coordRoot))) observation.liveness = "unknown";
-  return {
-    running: observation.liveness === "running" && record?.state !== "stopped",
-    stale: observation.liveness === "stopped" && record !== undefined && record.state !== "stopped",
-    ...observation,
-    ...governorServiceBuildStatus(record),
-    record,
-    config,
-    runtime,
-  };
-}
-
 export async function spawnGovernorService(coordRootRaw: string): Promise<GovernorServiceStatus> {
   const coordRoot = resolve(coordRootRaw);
   readGovernorServiceConfig(coordRoot);
   const current = readGovernorServiceStatus(coordRoot);
   if (current.liveness !== "stopped") {
-    throw serviceStartRefusal(coordRoot, current.record?.pid, current.liveness);
+    throw startRefusal(coordRoot, current.record?.pid, current.liveness);
   }
   mkdirSync(serviceDir(coordRoot), { recursive: true, mode: stateDirMode() });
   const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
@@ -347,31 +274,19 @@ export async function spawnGovernorService(coordRootRaw: string): Promise<Govern
 
 export function requestGovernorServiceStop(
   coordRootRaw: string,
-  dependencies: GovernorServiceProcessDependencies = {},
+  dependencies: ServiceProcessDependencies = {},
 ): GovernorServiceStatus {
   const coordRoot = resolve(coordRootRaw);
   const status = readGovernorServiceStatus(coordRoot, dependencies);
   if ((status.record?.state === "stopped" || !status.record) && status.liveness === "stopped") {
     return { ...status, signal_sent: false, signal_verdict: status.generation };
   }
-  writePrivateJsonAtomic(serviceStopPath(coordRoot), {
-    requested_at: new Date().toISOString(),
-    requested_by_pid: process.pid,
-  });
-  const signal =
-    status.record?.host === hostname() && status.record.state !== "stopped"
-      ? signalIfSameGeneration(
-          status.record.pid,
-          status.record.start_token,
-          "SIGTERM",
-          dependencies,
-        )
-      : { sent: false, verdict: status.generation };
-  return {
-    ...readGovernorServiceStatus(coordRoot, dependencies),
-    signal_sent: signal.sent,
-    signal_verdict: signal.verdict,
-  };
+  return requestServiceStop(
+    status,
+    () => readGovernorServiceStatus(coordRoot, dependencies),
+    serviceStopPath(coordRoot),
+    dependencies,
+  );
 }
 
 export async function runGovernorServiceSweep(
@@ -519,22 +434,21 @@ export async function runGovernorServiceDaemon(
 ): Promise<GovernorServiceStatusRecord> {
   const coordRoot = resolve(input.coordRoot);
   const config = readGovernorServiceConfig(coordRoot);
-  const existing = readStatusRecord(coordRoot);
-  if (!existing && existsSync(serviceStatusPath(coordRoot))) {
-    throw serviceStartRefusal(coordRoot, undefined, "unknown");
-  }
-  if (existing) {
-    const liveness = statusOwnerIsLive(existing);
-    if (liveness !== "stopped") throw serviceStartRefusal(coordRoot, existing.pid, liveness);
-  }
-  const release = acquireServiceLease(coordRoot);
+  const current = readGovernorServiceStatus(coordRoot);
+  if (current.liveness !== "stopped")
+    throw startRefusal(coordRoot, current.record?.pid, current.liveness);
+  const { release } = acquireServiceLease(
+    serviceLeasePath(coordRoot),
+    (pid, liveness) => startRefusal(coordRoot, pid, liveness),
+    { running_build: installedHarneryBuild() },
+  );
   rmSync(serviceStopPath(coordRoot), { force: true });
   const now = new Date().toISOString();
   const status: GovernorServiceStatusRecord = {
     schema_version: GOVERNOR_SERVICE_STATUS_SCHEMA_VERSION,
     pid: process.pid,
     start_token: processStartToken(process.pid) ?? undefined,
-    running_build: currentGovernorServiceBuild(),
+    running_build: installedHarneryBuild(),
     host: hostname(),
     nonce: randomUUID(),
     state: "starting",
@@ -781,114 +695,16 @@ function normalizeIsolation(value: unknown): PolicyIsolation | undefined {
   throw new Error("service isolation must be shared, worktree, sandbox, or remote");
 }
 
-function acquireServiceLease(coordRoot: string): () => void {
-  const path = serviceLeasePath(coordRoot);
-  mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
-  const owner: ServiceLease = {
-    pid: process.pid,
-    start_token: processStartToken(process.pid) ?? undefined,
-    running_build: currentGovernorServiceBuild(),
-    host: hostname(),
-    nonce: randomUUID(),
-    created_at: new Date().toISOString(),
-  };
-  const acquire = (): boolean => {
-    try {
-      const fd = openSync(path, "wx", stateFileMode());
-      try {
-        writeFileSync(fd, `${JSON.stringify(owner)}\n`, "utf8");
-      } finally {
-        closeSync(fd);
-      }
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      return false;
-    }
-  };
-  if (!acquire()) {
-    const existing = readLease(path);
-    const liveness = existing ? leaseOwnerIsLive(existing) : "unknown";
-    if (liveness !== "stopped") {
-      throw serviceStartRefusal(coordRoot, existing?.pid, liveness);
-    }
-    unlinkSync(path);
-    if (!acquire()) throw new Error("governor service lease raced with another process");
-  }
-  return () => {
-    try {
-      const existing = readLease(path);
-      if (existing?.nonce === owner.nonce) unlinkSync(path);
-    } catch {
-      // A stale lease is recoverable by the next explicit service start.
-    }
-  };
-}
-
-function readLease(path: string): ServiceLease | null {
-  try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<ServiceLease>;
-    return Number.isSafeInteger(value.pid) &&
-      (value.pid ?? 0) > 0 &&
-      typeof value.host === "string" &&
-      typeof value.nonce === "string" &&
-      typeof value.created_at === "string"
-      ? ({
-          ...value,
-          start_token: typeof value.start_token === "string" ? value.start_token : undefined,
-        } as ServiceLease)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function leaseOwnerIsLive(lease: ServiceLease): GovernorServiceStatus["liveness"] {
-  return observeGovernorServiceProcess({ ...lease, state: "running" }).liveness;
-}
-
-function readStatusRecord(coordRoot: string): GovernorServiceStatusRecord | undefined {
-  if (!existsSync(serviceStatusPath(coordRoot))) return undefined;
-  try {
-    const value = readBoundedJson<GovernorServiceStatusRecord>(
-      serviceStatusPath(coordRoot),
-      "governor service status",
-    );
-    if (
-      value.schema_version !== GOVERNOR_SERVICE_STATUS_SCHEMA_VERSION ||
-      !Number.isSafeInteger(value.pid) ||
-      value.pid < 1 ||
-      typeof value.host !== "string" ||
-      typeof value.nonce !== "string" ||
-      !validTimestamp(value.started_at) ||
-      !validTimestamp(value.heartbeat_at)
-    ) {
-      return undefined;
-    }
-    return {
-      ...value,
-      start_token: typeof value.start_token === "string" ? value.start_token : undefined,
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-function statusOwnerIsLive(record: GovernorServiceStatusRecord): GovernorServiceStatus["liveness"] {
-  return observeGovernorServiceProcess(record).liveness;
-}
-
-function serviceStartRefusal(
+function startRefusal(
   coordRoot: string,
   pid: number | undefined,
-  liveness: GovernorServiceStatus["liveness"],
+  liveness: ServiceLiveness,
 ): Error {
-  const reason =
-    liveness === "unknown"
-      ? `governor service process generation is unknown${pid ? ` for pid ${pid}` : ""}`
-      : `governor service process is still running under pid ${pid}`;
-  return new Error(
-    `${reason}; run \`${resolveBinName(coordRoot)} governor service stop\` to write a durable stop request before starting or reconfiguring it`,
+  return serviceStartRefusal(
+    "governor service",
+    `${resolveBinName(coordRoot)} governor service stop`,
+    pid,
+    liveness,
   );
 }
 

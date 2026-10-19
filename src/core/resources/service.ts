@@ -1,25 +1,17 @@
-import { randomUUID } from "node:crypto";
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  rmSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
+import { processStartToken } from "../agents/state/proc-start.ts";
 import {
-  type ProcessGenerationSignalDependencies,
-  type ProcessGenerationVerdict,
-  processStartToken,
-  signalIfSameGeneration,
-} from "../agents/state/proc-start.ts";
+  acquireServiceLease,
+  requestServiceStop,
+  type ServiceLiveness,
+  type ServiceProcessDependencies,
+  type ServiceStopFields,
+  serviceStartRefusal,
+} from "../agents/state/service-process.ts";
 import { resolveBinName } from "../config.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
-import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import {
   RESOURCE_SERVICE_STATUS_SCHEMA_VERSION,
   type ResourceSamplerState,
@@ -27,24 +19,12 @@ import {
   type ResourceServiceStatusRecord,
 } from "./contract.ts";
 import { sampleResources } from "./sampler.ts";
-import {
-  type ResourceProcessDependencies,
-  readResourceServiceStatus,
-  resourceProcessLiveness,
-} from "./service-status.ts";
+import { readResourceServiceStatus } from "./service-status.ts";
 import { resourcePaths, writePrivateJsonAtomic } from "./storage.ts";
 
 export const RESOURCE_SERVICE_DEFAULT_INTERVAL_MS = 2_000;
 const RESOURCE_SERVICE_MIN_INTERVAL_MS = 500;
 const RESOURCE_SERVICE_MAX_INTERVAL_MS = 60_000;
-
-interface ResourceServiceLease {
-  pid: number;
-  start_token?: string;
-  host: string;
-  nonce: string;
-  created_at: string;
-}
 
 export interface RunResourceServiceInput {
   coordRoot: string;
@@ -55,37 +35,15 @@ export interface RunResourceServiceInput {
   wait?: (milliseconds: number) => Promise<void>;
 }
 
-export interface ResourceServiceStopResult extends ResourceServiceStatus {
-  signal_sent: boolean;
-  signal_verdict: ProcessGenerationVerdict;
-}
+export type ResourceServiceStopResult = ResourceServiceStatus & ServiceStopFields;
 
 export function requestResourceServiceStop(
   coordRootRaw: string,
-  dependencies: ResourceProcessDependencies & ProcessGenerationSignalDependencies = {},
+  dependencies: ServiceProcessDependencies = {},
 ): ResourceServiceStopResult {
   const coordRoot = resolve(coordRootRaw);
-  const paths = resourcePaths(coordRoot);
-  const status = readResourceServiceStatus(coordRoot, Date.now(), dependencies);
-  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
-  writePrivateJsonAtomic(paths.stop, {
-    requested_at: new Date().toISOString(),
-    requested_by_pid: process.pid,
-  });
-  const signal =
-    status.liveness === "running" && status.record?.host === hostname()
-      ? signalIfSameGeneration(
-          status.record.pid,
-          status.record.start_token,
-          "SIGTERM",
-          dependencies,
-        )
-      : { sent: false, verdict: status.generation };
-  return {
-    ...readResourceServiceStatus(coordRoot, Date.now(), dependencies),
-    signal_sent: signal.sent,
-    signal_verdict: signal.verdict,
-  };
+  const read = () => readResourceServiceStatus(coordRoot, Date.now(), dependencies);
+  return requestServiceStop(read(), read, resourcePaths(coordRoot).stop, dependencies);
 }
 
 export async function runResourceService(
@@ -93,15 +51,13 @@ export async function runResourceService(
 ): Promise<ResourceServiceStatusRecord> {
   const coordRoot = resolve(input.coordRoot);
   const current = readResourceServiceStatus(coordRoot);
-  if (current.liveness === "unknown") throw unknownResourceOwnerError();
-  if (current.liveness === "running")
-    throw new Error(`resource observer is already running under pid ${current.record?.pid}`);
+  if (current.liveness !== "stopped") throw startRefusal(current.record?.pid, current.liveness);
   const paths = resourcePaths(coordRoot);
   const intervalMs = normalizeInterval(input.intervalMs);
   const now = input.now ?? (() => new Date());
   const sample = input.sample ?? sampleResources;
   const wait = input.wait ?? delay;
-  const lease = acquireLease(coordRoot, now());
+  const lease = acquireServiceLease(paths.lease, startRefusal);
   rmSync(paths.stop, { force: true });
   const startedAt = now().toISOString();
   const daemonStartToken = processStartToken(process.pid);
@@ -178,84 +134,18 @@ export async function runResourceService(
     try {
       await closeProcessLoggers();
     } finally {
-      releaseLease(paths.lease, lease.nonce);
+      lease.release();
     }
   }
   return status;
 }
 
-function acquireLease(coordRoot: string, now: Date): ResourceServiceLease {
-  const paths = resourcePaths(coordRoot);
-  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const daemonStartToken = processStartToken(process.pid);
-    const lease: ResourceServiceLease = {
-      pid: process.pid,
-      ...(daemonStartToken ? { start_token: daemonStartToken } : {}),
-      host: hostname(),
-      nonce: randomUUID(),
-      created_at: now.toISOString(),
-    };
-    try {
-      const fd = openSync(paths.lease, "wx", stateFileMode());
-      try {
-        writeFileSync(fd, `${JSON.stringify(lease)}\n`, "utf8");
-      } finally {
-        closeSync(fd);
-      }
-      return lease;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const existing = readLease(paths.lease);
-      const liveness = existing ? leaseIsLive(existing) : "unknown";
-      if (liveness === "unknown") throw unknownResourceOwnerError();
-      if (existing && liveness === "running") {
-        throw new Error(`resource observer lease is held by pid ${existing.pid}`);
-      }
-      try {
-        unlinkSync(paths.lease);
-      } catch {
-        // A concurrent starter may have replaced or removed the stale lease.
-      }
-    }
-  }
-  throw new Error("resource observer could not acquire its singleton lease");
-}
-
-function releaseLease(path: string, nonce: string): void {
-  const current = readLease(path);
-  if (current?.nonce !== nonce) return;
-  try {
-    unlinkSync(path);
-  } catch {
-    // A missing lease is already released.
-  }
-}
-
-function readLease(path: string): ResourceServiceLease | undefined {
-  try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as ResourceServiceLease;
-    return value &&
-      Number.isSafeInteger(value.pid) &&
-      value.pid > 0 &&
-      typeof value.host === "string" &&
-      value.host.length > 0 &&
-      typeof value.nonce === "string" &&
-      value.nonce.length > 0
-      ? value
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function leaseIsLive(lease: ResourceServiceLease): ResourceServiceStatus["liveness"] {
-  return resourceProcessLiveness(lease).liveness;
-}
-
-function unknownResourceOwnerError(): Error {
-  return new Error(
-    `resource observer process identity is unknown; run ${resolveBinName()} supervisor stop to write the durable stop request before starting again`,
+function startRefusal(pid: number | undefined, liveness: ServiceLiveness): Error {
+  return serviceStartRefusal(
+    "resource observer",
+    `${resolveBinName()} supervisor stop`,
+    pid,
+    liveness,
   );
 }
 

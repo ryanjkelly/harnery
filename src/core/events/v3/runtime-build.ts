@@ -40,3 +40,65 @@ export function currentHarneryRuntimeBuild(): string {
 export function harneryPackageRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 }
+
+export interface HarneryBuild {
+  version: string;
+  revision: string;
+}
+
+/** The installed package version and runtime revision; "unknown" when unreadable. */
+export function installedHarneryBuild(): HarneryBuild {
+  let version = "unknown";
+  let revision = "unknown";
+  try {
+    const manifest = JSON.parse(
+      readFileSync(resolve(harneryPackageRoot(), "package.json"), "utf8"),
+    ) as { version?: unknown };
+    if (typeof manifest.version === "string" && manifest.version.length <= 100)
+      version = manifest.version;
+  } catch {
+    // Missing package metadata cannot establish that a running build is current.
+  }
+  try {
+    revision = currentHarneryRuntimeBuild();
+  } catch {
+    // Status still reports the unavailable build instead of guessing a match.
+  }
+  return { version, revision };
+}
+
+export interface ServiceBuildStatus {
+  running_build: HarneryBuild | null;
+  installed_build: HarneryBuild;
+  restart_needed: boolean;
+  build_status: string;
+}
+
+/** A missing or unknown running build, or any difference, means restart. */
+export function serviceBuildStatus(recorded: unknown): ServiceBuildStatus {
+  const installed_build = installedHarneryBuild();
+  const candidate = recorded as Partial<HarneryBuild> | undefined;
+  const known = (value: unknown): value is string =>
+    typeof value === "string" && value.length > 0 && value.length <= 100 && value !== "unknown";
+  const running_build =
+    candidate && known(candidate.version) && known(candidate.revision)
+      ? { version: candidate.version, revision: candidate.revision }
+      : null;
+  const restart_needed =
+    running_build === null ||
+    installed_build.version === "unknown" ||
+    installed_build.revision === "unknown" ||
+    running_build.version !== installed_build.version ||
+    running_build.revision !== installed_build.revision;
+  return {
+    running_build,
+    installed_build,
+    restart_needed,
+    build_status:
+      running_build === null
+        ? "running build unknown; restart needed"
+        : restart_needed
+          ? "restart needed"
+          : "current",
+  };
+}

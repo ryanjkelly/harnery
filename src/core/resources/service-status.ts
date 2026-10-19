@@ -1,9 +1,8 @@
 import { existsSync } from "node:fs";
-import { hostname } from "node:os";
 import {
-  type ProcessGenerationVerdict,
-  verifyProcessGeneration,
-} from "../agents/state/proc-start.ts";
+  observeServiceProcess,
+  type ServiceProcessDependencies,
+} from "../agents/state/service-process.ts";
 import {
   RESOURCE_SERVICE_STATUS_SCHEMA_VERSION,
   type ResourceServiceStatus,
@@ -13,15 +12,10 @@ import { readResourceServiceRecord, resourcePaths } from "./storage.ts";
 
 const STALE_HEARTBEAT_MS = 15_000;
 
-export interface ResourceProcessDependencies {
-  readToken?: (pid: number) => string | null;
-  probePid?: (pid: number) => unknown;
-}
-
 export function readResourceServiceStatus(
   coordRoot: string,
   nowMs = Date.now(),
-  dependencies: ResourceProcessDependencies = {},
+  dependencies: ServiceProcessDependencies = {},
 ): ResourceServiceStatus {
   const paths = resourcePaths(coordRoot);
   const record = readResourceServiceRecord(coordRoot);
@@ -37,13 +31,11 @@ export function readResourceServiceStatus(
   }
   const heartbeatAt = Date.parse(record.heartbeat_at);
   const stale = !Number.isFinite(heartbeatAt) || nowMs - heartbeatAt > STALE_HEARTBEAT_MS;
-  const owner = resourceProcessLiveness(record, dependencies);
-  const liveness =
-    owner.generation === "same" && record.state === "stopped" ? "stopped" : owner.liveness;
+  const { generation, liveness } = observeServiceProcess(record, dependencies);
   return {
     running: liveness === "running" && !stale,
     stale,
-    generation: owner.generation,
+    generation,
     liveness,
     record,
     status_path: paths.service,
@@ -61,25 +53,4 @@ function validRecord(
     typeof value.host === "string" &&
     typeof value.heartbeat_at === "string"
   );
-}
-
-export function resourceProcessLiveness(
-  owner: { pid: number; host: string; start_token?: string },
-  dependencies: ResourceProcessDependencies = {},
-): { generation: ProcessGenerationVerdict; liveness: ResourceServiceStatus["liveness"] } {
-  if (owner.host !== hostname()) return { generation: "unknown", liveness: "unknown" };
-  try {
-    (dependencies.probePid ?? ((pid) => process.kill(pid, 0)))(owner.pid);
-  } catch (error) {
-    return {
-      generation: "unknown",
-      liveness: (error as NodeJS.ErrnoException).code === "ESRCH" ? "stopped" : "unknown",
-    };
-  }
-  const generation = verifyProcessGeneration(owner.pid, owner.start_token, dependencies.readToken);
-  return {
-    generation,
-    liveness:
-      generation === "same" ? "running" : generation === "different" ? "stopped" : "unknown",
-  };
 }

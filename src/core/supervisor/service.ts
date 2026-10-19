@@ -1,32 +1,26 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { collectCoordinationHealthSnapshot } from "../agents/health.ts";
+import { processStartToken } from "../agents/state/proc-start.ts";
 import {
-  type ProcessGenerationSignalDependencies,
-  type ProcessGenerationVerdict,
-  processStartToken,
-  signalIfSameGeneration,
-} from "../agents/state/proc-start.ts";
+  acquireServiceLease,
+  requestServiceStop,
+  type ServiceLiveness,
+  type ServiceProcessDependencies,
+  type ServiceStopFields,
+  serviceLeaseOwner,
+  serviceStartRefusal,
+} from "../agents/state/service-process.ts";
 import { resolveBinName } from "../config.ts";
 import { pressureHistoryFromSupervisor } from "../diagnostics/advice.ts";
 import { assessPressure } from "../diagnostics/pressure.ts";
 import { readEventV3ControlState } from "../events/v3/control.ts";
 import { janitorLiveDisplayV3 } from "../events/v3/live-feed.ts";
+import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import type { ResourceSamplerState } from "../resources/contract.ts";
 import { sampleResources } from "../resources/sampler.ts";
 import { requestResourceServiceStop } from "../resources/service.ts";
@@ -34,7 +28,7 @@ import { readResourceServiceStatus } from "../resources/service-status.ts";
 import { resourcePaths } from "../resources/storage.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
-import { stateDirMode, stateFileMode } from "../storage/modes.ts";
+import { stateDirMode } from "../storage/modes.ts";
 import { collectSupervisorActivitySnapshot } from "./activity.ts";
 import {
   SUPERVISOR_PRESSURE_SCHEMA_VERSION,
@@ -58,12 +52,7 @@ import type {
 } from "./ledger-state.ts";
 import { SupervisorLogCollector } from "./log-feed.ts";
 import { collectServiceHealth } from "./services.ts";
-import {
-  installedSupervisorBuild,
-  readSupervisorStatus,
-  type SupervisorProcessDependencies,
-  supervisorProcessLiveness,
-} from "./status.ts";
+import { readSupervisorStatus } from "./status.ts";
 import {
   readSupervisorFindings,
   readSupervisorHistory,
@@ -79,14 +68,6 @@ const SUPERVISOR_MAX_INTERVAL_MS = 60_000;
 const SUPERVISOR_MIN_IDLE_EXIT_MS = 5_000;
 const SUPERVISOR_MAX_IDLE_EXIT_MS = 24 * 60 * 60_000;
 const LIVE_DISPLAY_SWEEP_INTERVAL_MS = 5 * 60_000;
-
-interface SupervisorLease {
-  pid: number;
-  start_token?: string;
-  host: string;
-  nonce: string;
-  created_at: string;
-}
 
 export interface RunSupervisorInput {
   coordRoot: string;
@@ -108,12 +89,10 @@ export async function spawnSupervisor(
 ): Promise<SupervisorStatus> {
   const coordRoot = resolve(coordRootRaw);
   const current = readSupervisorStatus(coordRoot);
-  if (current.liveness === "unknown") throw unknownOwnerError();
-  if (current.liveness === "running") {
-    throw new Error(`local supervisor is already running under pid ${current.record?.pid}`);
-  }
+  if (current.liveness !== "stopped") throw startRefusal(current.record?.pid, current.liveness);
   const paths = supervisorPaths(coordRoot);
-  assertLeaseAvailable(paths.lease);
+  const lease = serviceLeaseOwner(paths.lease);
+  if (lease.liveness !== "stopped") throw startRefusal(lease.lease?.pid, lease.liveness);
   await stopLegacyResourceObserver(coordRoot);
   const intervalMs = normalizeInterval(options.intervalMs);
   const idleExitMs = normalizeIdleExit(options.idleExitMs);
@@ -179,44 +158,21 @@ export async function ensureSupervisorRunning(coordRoot: string): Promise<Ensure
   }
 }
 
-export interface SupervisorStopResult extends SupervisorStatus {
-  signal_sent: boolean;
-  signal_verdict: ProcessGenerationVerdict;
-}
+export type SupervisorStopResult = SupervisorStatus & ServiceStopFields;
 
+/** Windows has no graceful SIGTERM, so the durable request alone stops it there. */
 export function requestSupervisorStop(
   coordRootRaw: string,
-  dependencies: SupervisorProcessDependencies & ProcessGenerationSignalDependencies = {},
+  dependencies: ServiceProcessDependencies = {},
 ): SupervisorStopResult {
   const coordRoot = resolve(coordRootRaw);
-  const paths = supervisorPaths(coordRoot);
-  const status = readSupervisorStatus(coordRoot, Date.now(), dependencies);
-  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
-  writePrivateJsonAtomic(paths.stop, {
-    requested_at: new Date().toISOString(),
-    requested_by_pid: process.pid,
-  });
   const legacyPaths = resourcePaths(coordRoot);
   if (existsSync(legacyPaths.service) || existsSync(legacyPaths.lease))
     requestResourceServiceStop(coordRoot, dependencies);
-  let signal = { sent: false, verdict: status.generation };
-  if (
-    status.liveness === "running" &&
-    status.record?.host === hostname() &&
-    process.platform !== "win32"
-  ) {
-    signal = signalIfSameGeneration(
-      status.record.pid,
-      status.record.start_token,
-      "SIGTERM",
-      dependencies,
-    );
-  }
-  return {
-    ...readSupervisorStatus(coordRoot, Date.now(), dependencies),
-    signal_sent: signal.sent,
-    signal_verdict: signal.verdict,
-  };
+  const read = () => readSupervisorStatus(coordRoot, Date.now(), dependencies);
+  return requestServiceStop(read(), read, supervisorPaths(coordRoot).stop, dependencies, {
+    signal: process.platform !== "win32",
+  });
 }
 
 export async function runSupervisor(
@@ -224,17 +180,14 @@ export async function runSupervisor(
 ): Promise<SupervisorServiceStatusRecord> {
   const coordRoot = resolve(input.coordRoot);
   const current = readSupervisorStatus(coordRoot);
-  if (current.liveness === "unknown") throw unknownOwnerError();
-  if (current.liveness === "running") {
-    throw new Error(`local supervisor is already running under pid ${current.record?.pid}`);
-  }
+  if (current.liveness !== "stopped") throw startRefusal(current.record?.pid, current.liveness);
   const paths = supervisorPaths(coordRoot);
   const intervalMs = normalizeInterval(input.intervalMs);
   const idleExitMs = normalizeIdleExit(input.idleExitMs);
   const keepAlive = input.keepAlive ?? false;
   const now = input.now ?? (() => new Date());
   const wait = input.wait ?? delay;
-  const lease = acquireLease(coordRoot, now());
+  const lease = acquireServiceLease(paths.lease, startRefusal);
   rmSync(paths.stop, { force: true });
   const startedAt = now().toISOString();
   const startToken = processStartToken(process.pid);
@@ -242,7 +195,7 @@ export async function runSupervisor(
     schema_version: SUPERVISOR_STATUS_SCHEMA_VERSION,
     pid: process.pid,
     ...(startToken ? { start_token: startToken } : {}),
-    running_build: installedSupervisorBuild(),
+    running_build: installedHarneryBuild(),
     host: hostname(),
     nonce: lease.nonce,
     state: "starting",
@@ -488,7 +441,7 @@ export async function runSupervisor(
     try {
       await closeProcessLoggers();
     } finally {
-      releaseLease(paths.lease, lease.nonce);
+      lease.release();
     }
   }
   return status;
@@ -533,44 +486,6 @@ function observeLedgerControlState(
   }
 }
 
-function acquireLease(coordRoot: string, now: Date): SupervisorLease {
-  const paths = supervisorPaths(coordRoot);
-  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const startToken = processStartToken(process.pid);
-    const lease: SupervisorLease = {
-      pid: process.pid,
-      ...(startToken ? { start_token: startToken } : {}),
-      host: hostname(),
-      nonce: randomUUID(),
-      created_at: now.toISOString(),
-    };
-    try {
-      const fd = openSync(paths.lease, "wx", stateFileMode());
-      try {
-        writeFileSync(fd, `${JSON.stringify(lease)}\n`, "utf8");
-      } finally {
-        closeSync(fd);
-      }
-      return lease;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const existing = readLease(paths.lease);
-      const liveness = existing ? leaseIsLive(existing) : "unknown";
-      if (liveness === "unknown") throw unknownOwnerError();
-      if (existing && liveness === "running") {
-        throw new Error(`local supervisor lease is held by pid ${existing.pid}`);
-      }
-      try {
-        unlinkSync(paths.lease);
-      } catch {
-        // A concurrent starter may have replaced or removed the stale lease.
-      }
-    }
-  }
-  throw new Error("local supervisor could not acquire its singleton lease");
-}
-
 function pruneProjectionDirectory(
   directory: string,
   retainedFindingIds: ReadonlySet<string>,
@@ -582,49 +497,12 @@ function pruneProjectionDirectory(
   }
 }
 
-function releaseLease(path: string, nonce: string): void {
-  const current = readLease(path);
-  if (current?.nonce !== nonce) return;
-  try {
-    unlinkSync(path);
-  } catch {
-    // A missing lease is already released.
-  }
-}
-
-function readLease(path: string): SupervisorLease | undefined {
-  try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as SupervisorLease;
-    return value &&
-      Number.isSafeInteger(value.pid) &&
-      value.pid > 0 &&
-      typeof value.host === "string" &&
-      value.host.length > 0 &&
-      typeof value.nonce === "string" &&
-      value.nonce.length > 0
-      ? value
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function leaseIsLive(lease: SupervisorLease): SupervisorStatus["liveness"] {
-  return supervisorProcessLiveness(lease).liveness;
-}
-
-function assertLeaseAvailable(path: string): void {
-  if (!existsSync(path)) return;
-  const lease = readLease(path);
-  const liveness = lease ? leaseIsLive(lease) : "unknown";
-  if (liveness === "unknown") throw unknownOwnerError();
-  if (liveness === "running")
-    throw new Error(`local supervisor lease is held by pid ${lease?.pid}`);
-}
-
-function unknownOwnerError(): Error {
-  return new Error(
-    `local supervisor process identity is unknown; run ${resolveBinName()} supervisor stop to write the durable stop request before starting again`,
+function startRefusal(pid: number | undefined, liveness: ServiceLiveness): Error {
+  return serviceStartRefusal(
+    "local supervisor",
+    `${resolveBinName()} supervisor stop`,
+    pid,
+    liveness,
   );
 }
 

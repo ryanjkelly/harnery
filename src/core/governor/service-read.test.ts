@@ -3,16 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { processStartToken } from "../agents/state/proc-start.ts";
+import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
 import type { HarneryLogRecordV1 } from "../storage/jsonl.ts";
 import { encodeLogRecord } from "../storage/jsonl.ts";
 import { FileSegmentSink } from "../storage/segments.ts";
+import type { GovernorServiceStatusRecord } from "./service.ts";
 import {
-  type GovernorServiceStatusRecord,
-  readGovernorServiceStatus as readWriterStatus,
-} from "./service.ts";
-import {
-  currentGovernorServiceBuild,
   governorServiceLogPath,
   readGovernorServiceLogs,
   readGovernorServiceStatus,
@@ -28,7 +25,7 @@ afterEach(() => {
 });
 
 describe("governor service status reader", () => {
-  test("both readers report the same generation and running build", () => {
+  test("reports the generation and running build", () => {
     const root = fixture();
     const record = statusFixture(root);
     const status = readGovernorServiceStatus(root);
@@ -37,14 +34,13 @@ describe("governor service status reader", () => {
       liveness: "running",
       generation: "same",
       running_build: record.running_build,
-      installed_build: currentGovernorServiceBuild(),
+      installed_build: installedHarneryBuild(),
       restart_needed: false,
       build_status: "current",
     });
-    expect(readWriterStatus(root)).toEqual(status);
   });
 
-  test("a missing token or failed probe stays unknown in both readers", () => {
+  test("a missing token or failed probe stays unknown", () => {
     const root = fixture();
     statusFixture(root, { start_token: undefined, running_build: undefined });
     expect(readGovernorServiceStatus(root)).toMatchObject({
@@ -62,9 +58,6 @@ describe("governor service status reader", () => {
       generation: "unknown",
       liveness: "unknown",
     });
-    expect(readGovernorServiceStatus(root, dependencies)).toEqual(
-      readWriterStatus(root, dependencies),
-    );
   });
 
   test("a reused PID is stopped without claiming the replacement is owned", () => {
@@ -88,7 +81,7 @@ describe("governor service status reader", () => {
     };
     expect(readGovernorServiceStatus(root, permission)).toMatchObject({
       running: false,
-      generation: "same",
+      generation: "unknown",
       liveness: "unknown",
     });
     const gone = {
@@ -114,7 +107,7 @@ describe("governor service status reader", () => {
 
   test("both package and source revision changes need a restart", () => {
     const root = fixture();
-    const installed = currentGovernorServiceBuild();
+    const installed = installedHarneryBuild();
     statusFixture(root, { running_build: { ...installed, version: "older-version" } });
     expect(readGovernorServiceStatus(root)).toMatchObject({
       restart_needed: true,
@@ -135,7 +128,6 @@ describe("governor service status reader", () => {
       generation: "unknown",
       liveness: "unknown",
     });
-    expect(readWriterStatus(root)).toEqual(readGovernorServiceStatus(root));
   });
 });
 
@@ -229,7 +221,7 @@ function statusFixture(root: string, overrides: Partial<GovernorServiceStatusRec
     config_created_at: now,
     sweep_count: 0,
     start_token: processStartToken(process.pid) ?? undefined,
-    running_build: currentGovernorServiceBuild(),
+    running_build: installedHarneryBuild(),
     ...overrides,
   };
   write(join(root, ".harnery", "governor-service", "status.json"), JSON.stringify(record));
