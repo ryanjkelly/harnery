@@ -58,7 +58,14 @@ Reject any `.git` or `.harnery` path component, resolved Git administrative
 directory, rollback state/object directory, and nested repository boundary.
 The provider's control files and authority records are never source content.
 
-Content is held in a private bare Git object store under the binding's rollback
+Rollback state follows [ADR 0190](./0190-group-shared-project-state.mdx).
+The `stateFileMode()` and `stateDirMode()` policy controls the live Git index
+lock, temporary index and newly created rollback directories. New directories
+retain the configured setgid bit in group mode, even under a strict umask;
+existing ancestor directories are not chmodded. Restored source files keep
+their captured Git executable modes independently of state permissions.
+
+Content is held in a bare Git object store under the binding's rollback
 directory. Sparse index and worktree trees use private temporary indexes and
 retention refs, so capture never stages a file or changes the live Git index.
 Each snapshot is limited to 8 MiB of logical blob bytes, each binding to 64
@@ -143,3 +150,6 @@ reservation publication, malformed claims, symlinks, path escape, ignored files,
 unsupported entries and retention limits. A killed child after the first effect
 must leave inspection unknown and a retry without further writes. Guard-removal
 fixtures must fail their intended assertions before restored source passes.
+
+Project-state permission fixtures cover private and group settings under a strict
+umask, including setgid on new directories and the published Git index mode.

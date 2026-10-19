@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { fsyncParentDirectory, stableDigest } from "../workflow/durable-record.ts";
 import {
   assertSafeRelativeSegment,
@@ -378,7 +379,7 @@ export interface IndexLock {
 export function lockIndex(binding: WorkspaceBinding, state: string): IndexLock {
   const path = join(binding.repository!.gitdir.realpath, "index");
   const lock = `${path}.lock`;
-  const fd = openSync(lock, "wx", 0o600);
+  const fd = openSync(lock, "wx", stateFileMode());
   const identity = fstatSync(fd, { bigint: true });
   const privatePath = join(state, `live-${randomUUID()}.index`);
   let published = false;
@@ -388,7 +389,7 @@ export function lockIndex(binding: WorkspaceBinding, state: string): IndexLock {
       throw new Error("Git index lock changed");
   };
   try {
-    writeFileSync(privatePath, readFileSync(path), { flag: "wx", mode: 0o600 });
+    writeFileSync(privatePath, readFileSync(path), { flag: "wx", mode: stateFileMode() });
   } catch (error) {
     closeSync(fd);
     exact();
@@ -479,7 +480,14 @@ export function restoreFile(binding: WorkspaceBinding, store: string, entry: Con
 export function ensureDirectory(path: string): void {
   if (!existsSync(path)) {
     ensureDirectory(dirname(path));
-    mkdirSync(path, { mode: 0o700 });
+    mkdirSync(path, { mode: stateDirMode() });
+    const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      fchmodSync(fd, stateDirMode());
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     fsyncParentDirectory(path);
   }
   if (
