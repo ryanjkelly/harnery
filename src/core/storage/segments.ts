@@ -338,23 +338,20 @@ export async function withFamilyLease<T>(
   let owner: LeaseOwner | undefined;
   while (true) {
     try {
-      mkdirSync(lease, { mode: stateDirMode() });
-      const leaseIdentity = captureDirectoryIdentity(lease);
-      owner = {
-        owner_id: randomUUID(),
-        pid: process.pid,
-        acquired_at: new Date().toISOString(),
-      };
-      writeNewFile(join(lease, "owner.json"), Buffer.from(`${JSON.stringify(owner)}\n`));
-      assertDirectoryIdentity(leaseIdentity);
+      owner = claimLease(lease);
       break;
     } catch (error) {
-      if (pathExists(lease) && !safeLeaseDirectory(lease)) {
+      if (leaseHasWrongType(lease)) {
         throw new HarneryLogLeaseError("wrong_type", `log lease is not a directory: ${lease}`);
       }
       if (recoverStaleLease(lease, policy.lease_stale_ms)) continue;
       if (Date.now() - started >= policy.lease_timeout_ms) {
-        throw new HarneryLogLeaseError("timeout", `timed out acquiring log lease: ${lease}`);
+        throw new HarneryLogLeaseError(
+          "timeout",
+          leaseHasValidOwner(lease)
+            ? `timed out acquiring log lease: ${lease}`
+            : `timed out acquiring log lease with no valid owner; an interrupted writer left it, and it is never recovered automatically: ${lease}`,
+        );
       }
       await new Promise((resolve) => setTimeout(resolve, policy.lease_retry_ms));
       void error;
@@ -365,6 +362,41 @@ export async function withFamilyLease<T>(
   } finally {
     if (owner) releaseOwnedLease(lease, owner);
   }
+}
+
+/**
+ * Publish a complete lease in one rename. The owner record is written and synced
+ * in a private claim directory first, so a writer stopped at any point leaves
+ * either no lease or one with an owner. A held lease always has an owner record,
+ * here and in the earlier create-then-write protocol, so a rename that replaces
+ * an empty lease directory never takes a held lease. A lease with any entry makes
+ * the rename fail, and the caller waits or recovers as before.
+ */
+function claimLease(lease: string): LeaseOwner {
+  const owner: LeaseOwner = {
+    owner_id: randomUUID(),
+    pid: process.pid,
+    acquired_at: new Date().toISOString(),
+  };
+  const content = `${JSON.stringify(owner)}\n`;
+  const claim = `${lease}.claim-${process.pid}-${owner.owner_id}`;
+  try {
+    mkdirSync(claim, { mode: stateDirMode() });
+    writeNewFile(join(claim, "owner.json"), Buffer.from(content));
+    renameSync(claim, lease);
+  } finally {
+    rmSync(claim, { recursive: true, force: true });
+  }
+  try {
+    captureDirectoryIdentity(lease);
+    if (readRegularFile(join(lease, "owner.json"), 4_096).toString("utf8") !== content) {
+      throw new Error(`log lease owner changed during claim: ${lease}`);
+    }
+  } catch (error) {
+    releaseOwnedLease(lease, owner);
+    throw error;
+  }
+  return owner;
 }
 
 function shouldRotate(
@@ -476,6 +508,22 @@ interface LeaseOwner {
   acquired_at: string;
 }
 
+function leaseHasValidOwner(lease: string): boolean {
+  try {
+    const owner = JSON.parse(
+      readRegularFile(join(lease, "owner.json"), 4_096).toString("utf8"),
+    ) as LeaseOwner;
+    return (
+      typeof owner?.owner_id === "string" &&
+      owner.owner_id.length > 0 &&
+      Number.isSafeInteger(owner.pid) &&
+      Number.isFinite(Date.parse(owner.acquired_at))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function recoverStaleLease(lease: string, maximumAgeMs: number): boolean {
   let identity: DirectoryIdentity;
   let raw: string;
@@ -504,7 +552,7 @@ function recoverStaleLease(lease: string, maximumAgeMs: number): boolean {
   try {
     assertDirectoryIdentity(identity);
     if (readRegularFile(join(lease, "owner.json"), 4_096).toString("utf8") !== raw) return false;
-    rmSync(lease, { recursive: true, force: false });
+    retireLease(lease, randomUUID());
     return true;
   } catch {
     return false;
@@ -517,10 +565,21 @@ function releaseOwnedLease(lease: string, owner: LeaseOwner): void {
       readRegularFile(join(lease, "owner.json"), 4_096).toString("utf8"),
     ) as LeaseOwner;
     if (current.owner_id !== owner.owner_id) return;
-    rmSync(lease, { recursive: true, force: false });
+    retireLease(lease, owner.owner_id);
   } catch {
     // A missing or replaced lease does not belong to this operation.
   }
+}
+
+/**
+ * Move a lease aside before deleting it. Its path goes from held to absent in
+ * one rename and is never an empty directory that a concurrent claim could
+ * replace while a recursive removal is still running.
+ */
+function retireLease(lease: string, tag: string): void {
+  const retired = `${lease}.retired-${process.pid}-${tag}`;
+  renameSync(lease, retired);
+  rmSync(retired, { recursive: true, force: true });
 }
 
 function processIsAlive(pid: number): boolean {
@@ -699,11 +758,14 @@ function nativeWriteSync(fd: number, buffer: Buffer, offset: number, length: num
   return writeSync(fd, buffer, offset, length);
 }
 
-function safeLeaseDirectory(path: string): boolean {
+/** One lstat, so a lease released between checks reads as absent, not as a wrong type. */
+function leaseHasWrongType(path: string): boolean {
   try {
-    return !lstatSync(path).isSymbolicLink() && lstatSync(path).isDirectory();
-  } catch {
-    return false;
+    const stat = lstatSync(path);
+    return stat.isSymbolicLink() || !stat.isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 }
 

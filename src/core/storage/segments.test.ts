@@ -5,6 +5,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -146,6 +147,119 @@ describe("shared log segments and query", () => {
       HarneryLogLeaseError,
     );
   });
+
+  test("replaces an empty lease directory left by an interrupted claim", async () => {
+    const root = fixture("harnery-segment-empty-lease-");
+    const family = createStorageCatalog({ coord_root: root }).require("agent-hook-debug-log");
+    const directory = join(root, ".harnery", "logs", "agent-hook-debug");
+    const lease = join(directory, ".append-lease");
+    mkdirSync(lease, { recursive: true });
+    const sink = new FileSegmentSink({
+      directory,
+      family,
+      lease_stale_ms: 60_000,
+      lease_timeout_ms: 10,
+      lease_retry_ms: 1,
+    });
+    expect((await sink.append([record(family, 1, "after-empty")])).appended_records).toBe(1);
+    expect(existsSync(lease)).toBeFalse();
+    expect(readdirSync(directory).filter((name) => name.includes(".claim-"))).toEqual([]);
+  });
+
+  test("fails closed on an ownerless lease that has an entry and names it", async () => {
+    const root = fixture("harnery-segment-ownerless-");
+    const family = createStorageCatalog({ coord_root: root }).require("agent-hook-debug-log");
+    const directory = join(root, ".harnery", "logs", "agent-hook-debug");
+    const lease = join(directory, ".append-lease");
+    mkdirSync(lease, { recursive: true });
+    writeFileSync(join(lease, "owner.json"), "");
+    const sink = new FileSegmentSink({
+      directory,
+      family,
+      lease_stale_ms: 1,
+      lease_timeout_ms: 10,
+      lease_retry_ms: 1,
+    });
+    await expect(sink.append([record(family, 1, "blocked")])).rejects.toThrow("no valid owner");
+    expect(readFileSync(join(lease, "owner.json"), "utf8")).toBe("");
+  });
+
+  test("serializes concurrent appends through the claimed lease", async () => {
+    const root = fixture("harnery-segment-contention-");
+    const family = createStorageCatalog({ coord_root: root }).require("agent-hook-debug-log");
+    const directory = join(root, ".harnery", "logs", "agent-hook-debug");
+    const sinks = [0, 1, 2].map(
+      () => new FileSegmentSink({ directory, family, lease_timeout_ms: 5_000, lease_retry_ms: 1 }),
+    );
+    await Promise.all(
+      sinks.map(async (sink, writer) => {
+        for (let index = 0; index < 20; index += 1) {
+          await sink.append([record(family, writer * 100 + index + 1, `w${writer}-${index}`)]);
+        }
+      }),
+    );
+    const result = await queryLogs([family], { max_records: 100, max_bytes: 1_000_000 });
+    expect(result.records).toHaveLength(60);
+    expect(existsSync(join(directory, ".append-lease"))).toBeFalse();
+  });
+
+  test("never grants the lease to two processes at once", async () => {
+    const root = fixture("harnery-segment-exclusion-");
+    const directory = join(root, ".harnery", "logs", "agent-hook-debug");
+    mkdirSync(directory, { recursive: true });
+    const child = join(root, "exclusive-loop.ts");
+    const marker = join(root, "holder");
+    writeFileSync(
+      child,
+      `import { closeSync, openSync, unlinkSync } from "node:fs";
+import { withFamilyLease } from ${JSON.stringify(join(import.meta.dir, "segments.ts"))};
+const policy = { lease_timeout_ms: 20_000, lease_retry_ms: 0, lease_stale_ms: 60_000 };
+for (let index = 0; index < 300; index += 1) {
+  await withFamilyLease(${JSON.stringify(directory)}, policy, () => {
+    closeSync(openSync(${JSON.stringify(marker)}, "wx"));
+    unlinkSync(${JSON.stringify(marker)});
+  });
+}
+`,
+    );
+    const procs = [0, 1, 2, 3].map(() =>
+      Bun.spawn([process.execPath, child], { stdout: "ignore", stderr: "pipe" }),
+    );
+    const codes = await Promise.all(procs.map((proc) => proc.exited));
+    const errors = await Promise.all(procs.map((proc) => new Response(proc.stderr).text()));
+    expect({ codes, errors: errors.filter(Boolean) }).toEqual({ codes: [0, 0, 0, 0], errors: [] });
+    expect(existsSync(join(directory, ".append-lease"))).toBeFalse();
+  }, 60_000);
+
+  test("a writer killed during claims never leaves an ownerless lease", async () => {
+    const root = fixture("harnery-segment-kill-");
+    const directory = join(root, ".harnery", "logs", "agent-hook-debug");
+    mkdirSync(directory, { recursive: true });
+    const child = join(root, "claim-loop.ts");
+    writeFileSync(
+      child,
+      `import { withFamilyLease } from ${JSON.stringify(join(import.meta.dir, "segments.ts"))};
+const policy = { lease_timeout_ms: 60_000, lease_retry_ms: 1, lease_stale_ms: 60_000 };
+for (;;) await withFamilyLease(${JSON.stringify(directory)}, policy, () => 0);
+`,
+    );
+    const lease = join(directory, ".append-lease");
+    for (let round = 0; round < 12; round += 1) {
+      const proc = Bun.spawn([process.execPath, child], { stdout: "ignore", stderr: "ignore" });
+      await Bun.sleep(40 + round * 7);
+      proc.kill("SIGKILL");
+      await proc.exited;
+      if (existsSync(lease)) {
+        const owner = JSON.parse(readFileSync(join(lease, "owner.json"), "utf8")) as {
+          owner_id?: unknown;
+          pid?: unknown;
+        };
+        expect(typeof owner.owner_id).toBe("string");
+        expect(owner.pid).toBe(proc.pid);
+        rmSync(lease, { recursive: true });
+      }
+    }
+  }, 30_000);
 
   test("refuses partial and malformed active JSONL before sealing", async () => {
     for (const [name, content] of [

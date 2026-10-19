@@ -140,6 +140,23 @@ describe("durable history", () => {
       "lease busy",
     );
   });
+
+  test("replaces an empty lease directory and refuses an ownerless one with an entry", () => {
+    const root = fixture();
+    const lease = join(root, ".append.lease");
+    mkdirSync(lease);
+    expect(appendDurableHistoryRecord(root, { id: "after-empty" }, limits()).synced).toBeTrue();
+    expect(existsSync(lease)).toBeFalse();
+
+    const blocked = fixture();
+    const ownerless = join(blocked, ".append.lease");
+    mkdirSync(ownerless);
+    writeFileSync(join(ownerless, "owner.json"), "");
+    expect(() => appendDurableHistoryRecord(blocked, { id: "blocked" }, limits())).toThrow(
+      "lease busy",
+    );
+    expect(readFileSync(join(ownerless, "owner.json"), "utf8")).toBe("");
+  });
 });
 
 function limits() {

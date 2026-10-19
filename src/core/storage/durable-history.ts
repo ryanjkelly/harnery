@@ -521,28 +521,49 @@ function acquireLease(lease: string): LeaseOwner {
       pid: process.pid,
       acquired_at: new Date().toISOString(),
     };
-    let claimed: DirectoryIdentity | undefined;
-    try {
-      mkdirSync(lease, { mode: stateDirMode() });
-      assertDirectoryWithinParent(lease, parent);
-      claimed = captureDirectoryIdentity(lease);
-      writeOwner(join(lease, "owner.json"), owner);
-      syncDirectory(claimed);
-      return owner;
-    } catch {
-      if (claimed) {
-        try {
-          assertDirectoryIdentity(claimed);
-          rmSync(lease, { recursive: true, force: false });
-        } catch {
-          // Never remove a lease after its directory identity changes.
-        }
-      }
-      if (recoverStaleLease(lease, DURABLE_HISTORY_LEASE_STALE_MS)) continue;
-      throw new Error(`durable history lease busy: ${lease}`);
-    }
+    if (claimLease(lease, parent, owner)) return owner;
+    if (recoverStaleLease(lease, DURABLE_HISTORY_LEASE_STALE_MS)) continue;
+    throw new Error(`durable history lease busy: ${lease}`);
   }
   throw new Error(`durable history lease busy: ${lease}`);
+}
+
+/**
+ * Publish a complete lease in one rename. The owner record is written and synced
+ * in a private claim directory first, so a writer stopped at any point leaves
+ * either no lease or one with an owner. A held lease always has an owner record,
+ * here and in the earlier create-then-write protocol, so a rename that replaces
+ * an empty lease directory never takes a held lease. A lease with any entry makes
+ * the rename fail and the caller reports it busy.
+ */
+function claimLease(lease: string, parent: DirectoryIdentity, owner: LeaseOwner): boolean {
+  const claim = `${lease}.claim-${process.pid}-${owner.owner_id}`;
+  try {
+    mkdirSync(claim, { mode: stateDirMode() });
+    assertDirectoryWithinParent(claim, parent);
+    const claimed = captureDirectoryIdentity(claim);
+    writeOwner(join(claim, "owner.json"), owner);
+    syncDirectory(claimed);
+    renameSync(claim, lease);
+  } catch {
+    return false;
+  } finally {
+    try {
+      rmSync(claim, { recursive: true, force: true });
+    } catch {
+      // A leftover claim directory never blocks a lease.
+    }
+  }
+  try {
+    assertDirectoryWithinParent(lease, parent);
+    const current = JSON.parse(completeJsonl(join(lease, "owner.json"))) as LeaseOwner;
+    if (current.owner_id !== owner.owner_id) return false;
+    syncDirectory(parent);
+    return true;
+  } catch {
+    releaseOwnedLease(lease, owner);
+    return false;
+  }
 }
 
 function writeOwner(path: string, owner: LeaseOwner): void {
@@ -595,7 +616,7 @@ function recoverStaleLease(lease: string, staleMs: number): boolean {
   try {
     assertDirectoryIdentity(leaseIdentity);
     if (completeJsonl(ownerPath) !== raw) return false;
-    rmSync(lease, { recursive: true, force: false });
+    retireLease(lease, randomUUID());
     return true;
   } catch {
     return false;
@@ -606,10 +627,21 @@ function releaseOwnedLease(lease: string, owner: LeaseOwner): void {
   try {
     const current = JSON.parse(completeJsonl(join(lease, "owner.json"))) as LeaseOwner;
     if (current.owner_id !== owner.owner_id) return;
-    rmSync(lease, { recursive: true, force: false });
+    retireLease(lease, owner.owner_id);
   } catch {
     // A missing or replaced lease does not belong to this operation.
   }
+}
+
+/**
+ * Move a lease aside before deleting it. Its path goes from held to absent in
+ * one rename and is never an empty directory that a concurrent claim could
+ * replace while a recursive removal is still running.
+ */
+function retireLease(lease: string, tag: string): void {
+  const retired = `${lease}.retired-${process.pid}-${tag}`;
+  renameSync(lease, retired);
+  rmSync(retired, { recursive: true, force: true });
 }
 
 function processIsAlive(pid: number): boolean {
