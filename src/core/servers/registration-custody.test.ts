@@ -306,13 +306,20 @@ test("the PID stop command captures a registration receipt before stopping an un
     program,
     {
       config: () => {},
-      data: (value: unknown) => data.push(value),
+      data: (value: unknown) => {
+        data.push(value);
+      },
+      rows: () => {},
       text: () => {},
-      error: (error: unknown) => errors.push(error),
+      file: () => {},
+      error: (error: unknown) => {
+        errors.push(error);
+      },
+      log: () => {},
       setExitCode: (code: number) => {
         exitCode = code;
       },
-    } as EmitContext,
+    } satisfies EmitContext,
     { repoRoot: root, resolveCoordRoot: () => root },
   );
   await program.parseAsync(["servers", "stop", "--pid", String(child.pid), "--json"], {

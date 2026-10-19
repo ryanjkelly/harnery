@@ -417,12 +417,17 @@ test("a failed provider cleanup retains its original route intent and server rec
   await exited;
   const output: string[] = [];
   registerTunnelCommand(new Command(), {
-    text: (value: string) => output.push(value),
+    text: (value: string) => {
+      output.push(value);
+    },
     config: () => {},
     data: () => {},
+    rows: () => {},
+    file: () => {},
     error: () => {},
+    log: () => {},
     setExitCode: () => {},
-  } as EmitContext);
+  } satisfies EmitContext);
   const provider = spyOn(processLog, "runRotatingProcessSync").mockReturnValue(1);
   try {
     downOne("first", new Set());
