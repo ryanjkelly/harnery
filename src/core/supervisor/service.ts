@@ -17,6 +17,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { collectCoordinationHealthSnapshot } from "../agents/health.ts";
 import {
+  type ProcessGenerationSignalDependencies,
   type ProcessGenerationVerdict,
   processStartToken,
   signalIfSameGeneration,
@@ -185,9 +186,7 @@ export interface SupervisorStopResult extends SupervisorStatus {
 
 export function requestSupervisorStop(
   coordRootRaw: string,
-  dependencies: SupervisorProcessDependencies & {
-    kill?: (pid: number, signal: NodeJS.Signals | number) => unknown;
-  } = {},
+  dependencies: SupervisorProcessDependencies & ProcessGenerationSignalDependencies = {},
 ): SupervisorStopResult {
   const coordRoot = resolve(coordRootRaw);
   const paths = supervisorPaths(coordRoot);

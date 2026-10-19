@@ -225,19 +225,13 @@ export async function ensureSemanticServiceRunning(
 
 export function requestSemanticServiceStop(coordRootRaw: string): SemanticServiceStatus {
   const coordRoot = resolve(coordRootRaw);
-  const status = readSemanticServiceStatus(coordRoot);
   mkdirSync(semanticPaths(coordRoot).root, { recursive: true, mode: stateDirMode() });
   writePrivateJsonAtomic(semanticPaths(coordRoot).stop, {
     requested_at: new Date().toISOString(),
     requested_by_pid: process.pid,
   });
-  if (status.running && status.record?.host === hostname()) {
-    try {
-      process.kill(status.record.pid, "SIGTERM");
-    } catch {
-      // The durable stop request remains for a racing or restarted daemon.
-    }
-  }
+  // This record has no generation witness. The durable request is the stop
+  // authority; a numeric PID cannot authorize an additional signal.
   return readSemanticServiceStatus(coordRoot);
 }
 

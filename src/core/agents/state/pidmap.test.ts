@@ -154,7 +154,7 @@ describe("writePidmapRow", () => {
  * on either OS, so forcing the probe exercises it here rather than leaving it to
  * be discovered on somebody's laptop.
  */
-describe("the ps probe (a machine with no procfs)", () => {
+describe.skipIf(process.platform === "win32")("the ps probe (a machine with no procfs)", () => {
   let saved: string | undefined;
 
   beforeEach(() => {

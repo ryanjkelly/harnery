@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -10,9 +9,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { hostname, platform } from "node:os";
+import { hostname } from "node:os";
 import { resolve } from "node:path";
 import {
+  type ProcessGenerationSignalDependencies,
   type ProcessGenerationVerdict,
   processStartToken,
   signalIfSameGeneration,
@@ -55,80 +55,6 @@ export interface RunResourceServiceInput {
   wait?: (milliseconds: number) => Promise<void>;
 }
 
-export type EnsureResourceServiceResult =
-  | { state: "running" | "started"; status: ResourceServiceStatus }
-  | { state: "unsupported" | "unavailable"; status: ResourceServiceStatus; error: string };
-
-export async function spawnResourceService(
-  coordRootRaw: string,
-  options: { intervalMs?: number } = {},
-): Promise<ResourceServiceStatus> {
-  const coordRoot = resolve(coordRootRaw);
-  const current = readResourceServiceStatus(coordRoot);
-  if (current.liveness === "unknown") throw unknownResourceOwnerError();
-  if (current.liveness === "running") {
-    throw new Error(`resource observer is already running under pid ${current.record?.pid}`);
-  }
-  const intervalMs = normalizeInterval(options.intervalMs);
-  const paths = resourcePaths(coordRoot);
-  assertResourceLeaseAvailable(paths.lease);
-  mkdirSync(paths.root, { recursive: true, mode: stateDirMode() });
-  const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
-  if (!existsSync(harnBin)) throw new Error(`cannot find harn executable at ${harnBin}`);
-  let spawnError: Error | undefined;
-  const child = spawn(
-    harnBin,
-    ["resources", "service", "daemon", "--root", coordRoot, "--interval-ms", String(intervalMs)],
-    {
-      cwd: coordRoot,
-      detached: true,
-      stdio: ["ignore", "ignore", "ignore"],
-      env: {
-        ...process.env,
-        HARNERY_COORD_ROOT_OVERRIDE: coordRoot,
-        HARNERY_OUTPUT_SESSION_TEE: "0",
-      },
-    },
-  );
-  child.once("error", (error) => {
-    spawnError = error;
-  });
-  child.unref();
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    await delay(50);
-    if (spawnError) throw spawnError;
-    const status = readResourceServiceStatus(coordRoot);
-    if (status.running && status.record?.pid === child.pid) return status;
-    if (child.exitCode !== null) break;
-  }
-  throw new Error(`resource observer failed to start; inspect ${paths.service}`);
-}
-
-export async function ensureResourceServiceRunning(
-  coordRoot: string,
-): Promise<EnsureResourceServiceResult> {
-  const status = readResourceServiceStatus(coordRoot);
-  if (status.running) return { state: "running", status };
-  if (platform() !== "linux") {
-    return {
-      state: "unsupported",
-      status,
-      error: `resource observer does not yet support ${platform()}`,
-    };
-  }
-  try {
-    const started = await spawnResourceService(coordRoot);
-    return { state: "started", status: started };
-  } catch (error) {
-    return {
-      state: "unavailable",
-      status: readResourceServiceStatus(coordRoot),
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
 export interface ResourceServiceStopResult extends ResourceServiceStatus {
   signal_sent: boolean;
   signal_verdict: ProcessGenerationVerdict;
@@ -136,9 +62,7 @@ export interface ResourceServiceStopResult extends ResourceServiceStatus {
 
 export function requestResourceServiceStop(
   coordRootRaw: string,
-  dependencies: ResourceProcessDependencies & {
-    kill?: (pid: number, signal: NodeJS.Signals | number) => unknown;
-  } = {},
+  dependencies: ResourceProcessDependencies & ProcessGenerationSignalDependencies = {},
 ): ResourceServiceStopResult {
   const coordRoot = resolve(coordRootRaw);
   const paths = resourcePaths(coordRoot);
@@ -327,15 +251,6 @@ function readLease(path: string): ResourceServiceLease | undefined {
 
 function leaseIsLive(lease: ResourceServiceLease): ResourceServiceStatus["liveness"] {
   return resourceProcessLiveness(lease).liveness;
-}
-
-function assertResourceLeaseAvailable(path: string): void {
-  if (!existsSync(path)) return;
-  const lease = readLease(path);
-  const liveness = lease ? leaseIsLive(lease) : "unknown";
-  if (liveness === "unknown") throw unknownResourceOwnerError();
-  if (liveness === "running")
-    throw new Error(`resource observer lease is held by pid ${lease?.pid}`);
 }
 
 function unknownResourceOwnerError(): Error {

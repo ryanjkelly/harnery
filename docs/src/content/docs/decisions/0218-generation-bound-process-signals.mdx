@@ -1,0 +1,62 @@
+---
+title: "0218: Bind process signals to native handles"
+description: "ADR: retain a Linux pidfd or Windows process handle through identity verification and signaling."
+---
+
+**Status:** accepted (2026-10-18) · **Scope:** service and server signaling · **Amends:** [0207](/decisions/0207-fail-closed-on-unknown-state/)
+
+## Context
+
+A process can exit after its last start-token check and its numeric PID can be
+reused before a signal is sent. Repeating the observation narrows this interval
+without removing it. Node does not expose pidfd signaling or an OpenProcess
+handle for an arbitrary recorded process.
+
+## Alternatives considered
+
+- Repeat the PID probe. This still permits replacement between probe and signal.
+- Use process groups or a shell kill command. Both address reusable numbers.
+- Add a native Node extension. This requires platform builds and distribution
+  support before the package can safely use it.
+- Refuse every direct signal. This is safe but leaves supported local processes
+  without a direct stop path.
+
+## Decision
+
+`signalIfSameGeneration(pid, recordedToken, signal, dependencies)` keeps its
+`{ sent, verdict }` result. Its former `kill` dependency is replaced by
+`signalProcess(pid, recordedToken, signal)`. The implementation never falls
+back to numeric PID signaling. `readToken` remains an observation dependency;
+the signaling backend independently verifies identity while holding its handle.
+
+On Linux, an isolated Python 3 helper opens `os.pidfd_open`, reads the boot
+and process start token, and calls `signal.pidfd_send_signal` on that retained
+descriptor. On Windows, a PowerShell helper opens a process handle, reads its
+creation FILETIME with `GetProcessTimes`, and uses `TerminateProcess` on the
+same handle. Windows start tokens use `w<FILETIME>`; earlier unsupported tokens
+cannot authorize a signal. Windows supports the termination signals SIGTERM
+and SIGKILL. The supervisor keeps its durable stop-only behavior on Windows.
+
+The helper verifies the token before accepting a second input line that
+authorizes the effect. EOF closes the handle without signaling. The helper
+closes its handle on every exit. Missing runtimes, unsupported kernels or
+platforms, denied access, malformed output and timeouts all return unknown and
+send no signal. A failed effect after successful verification returns same
+with sent false. Service stop requests are durable before the optional signal.
+
+## Result and limits
+
+Deterministic tests pause the native helper after handle verification, reap
+the original child, launch another child, then resume. No signal can move to
+that replacement. Tests model numeric PID reuse at the old signal boundary;
+they do not claim to force kernel PID allocation. Native platform evidence is
+reported separately from injected backend tests.
+
+The helper runtimes are capability requirements rather than package
+dependencies. Systems without them retain the safe durable stop request.
+Handle-based termination on Windows does not deliver a graceful POSIX signal.
+Semantic service records lack generation evidence and use durable stop only.
+
+The native contracts are documented by [Python's pidfd API](https://docs.python.org/3/library/os.html#os.pidfd_open),
+[Python's pidfd signal API](https://docs.python.org/3/library/signal.html#signal.pidfd_send_signal),
+and [Windows process handles](https://learn.microsoft.com/en-us/windows/win32/procthread/process-handles-and-identifiers).

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartToken } from "../agents/state/proc-start.ts";
-import { requestResourceServiceStop, runResourceService, spawnResourceService } from "./service.ts";
+import { requestResourceServiceStop, runResourceService } from "./service.ts";
 import { readResourceServiceStatus } from "./service-status.ts";
 import { resourcePaths, writePrivateJsonAtomic } from "./storage.ts";
 
@@ -43,7 +43,10 @@ describe("legacy observer process identity", () => {
       const status = requestResourceServiceStop(root, {
         readToken: () => "replacement",
         probePid: () => true,
-        kill: (pid) => signals.push(pid),
+        signalProcess: (pid) => {
+          signals.push(pid);
+          return { sent: true, verdict: "same" };
+        },
       });
       expect(status.signal_sent).toBe(false);
       expect(status.signal_verdict).toBe(recorded ? "different" : "unknown");
@@ -60,7 +63,10 @@ describe("legacy observer process identity", () => {
         throw new Error("unreadable");
       },
       probePid: () => true,
-      kill: (pid) => signals.push(pid),
+      signalProcess: (pid) => {
+        signals.push(pid);
+        return { sent: true, verdict: "same" };
+      },
     });
     expect(status).toMatchObject({
       generation: "unknown",
@@ -82,7 +88,10 @@ describe("legacy observer process identity", () => {
         return reads === 1 ? "recorded" : "replacement";
       },
       probePid: () => true,
-      kill: (pid) => signals.push(pid),
+      signalProcess: (pid) => {
+        signals.push(pid);
+        return { sent: true, verdict: "same" };
+      },
     });
     expect(status.signal_sent).toBe(false);
     expect(status.signal_verdict).toBe("different");
@@ -95,9 +104,10 @@ describe("legacy observer process identity", () => {
     const status = requestResourceServiceStop(root, {
       readToken: () => "recorded",
       probePid: () => true,
-      kill: (pid) => {
+      signalProcess: (pid) => {
         expect(existsSync(resourcePaths(root).stop)).toBe(true);
         signals.push(pid);
+        return { sent: true, verdict: "same" };
       },
     });
     expect(status.signal_sent).toBe(true);
@@ -119,7 +129,6 @@ describe("legacy observer process identity", () => {
       generation: "unknown",
       liveness: "unknown",
     });
-    await expect(spawnResourceService(root)).rejects.toThrow("durable stop request");
     await expect(runResourceService({ coordRoot: root, maxSamples: 1 })).rejects.toThrow(
       "durable stop request",
     );
@@ -133,7 +142,6 @@ describe("legacy observer process identity", () => {
     writePrivateJsonAtomic(paths.stop, { retained: true });
     const lease = readFileSync(paths.lease, "utf8");
     const stop = readFileSync(paths.stop, "utf8");
-    await expect(spawnResourceService(root)).rejects.toThrow("durable stop request");
     await expect(runResourceService({ coordRoot: root, maxSamples: 1 })).rejects.toThrow(
       "durable stop request",
     );
@@ -157,7 +165,6 @@ describe("legacy observer process identity", () => {
       const paths = resourcePaths(root);
       writePrivateJsonAtomic(paths.lease, owner);
       const lease = readFileSync(paths.lease, "utf8");
-      await expect(spawnResourceService(root)).rejects.toThrow();
       await expect(runResourceService({ coordRoot: root, maxSamples: 1 })).rejects.toThrow();
       expect(readFileSync(paths.lease, "utf8")).toBe(lease);
     }

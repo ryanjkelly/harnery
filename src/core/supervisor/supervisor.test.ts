@@ -53,7 +53,10 @@ describe("supervisor process identity", () => {
     const result = requestSupervisorStop(root, {
       readToken: () => "another-generation",
       probePid: () => true,
-      kill: (pid) => signals.push(pid),
+      signalProcess: (pid) => {
+        signals.push(pid);
+        return { sent: true, verdict: "same" };
+      },
     });
     expect(result).toMatchObject({
       running: false,
@@ -71,7 +74,10 @@ describe("supervisor process identity", () => {
     const signals: number[] = [];
     const result = requestSupervisorStop(root, {
       readToken: () => "current",
-      kill: (pid) => signals.push(pid),
+      signalProcess: (pid) => {
+        signals.push(pid);
+        return { sent: true, verdict: "same" };
+      },
     });
     expect(result).toMatchObject({
       running: false,
@@ -97,7 +103,10 @@ describe("supervisor process identity", () => {
         throw new Error("probe unavailable");
       },
       probePid: () => true,
-      kill: (pid) => signals.push(pid),
+      signalProcess: (pid) => {
+        signals.push(pid);
+        return { sent: true, verdict: "same" };
+      },
     });
     expect(result).toMatchObject({
       generation: "unknown",
@@ -119,7 +128,10 @@ describe("supervisor process identity", () => {
         if (reads > 1) expect(existsSync(supervisorPaths(root).stop)).toBe(true);
         return reads === 1 ? "recorded" : "replacement";
       },
-      kill: (pid) => signals.push(pid),
+      signalProcess: (pid) => {
+        signals.push(pid);
+        return { sent: true, verdict: "same" };
+      },
     });
     expect(result.signal_sent).toBe(false);
     expect(result.signal_verdict).toBe(process.platform === "win32" ? "same" : "different");
@@ -133,9 +145,10 @@ describe("supervisor process identity", () => {
     const result = requestSupervisorStop(root, {
       probePid: () => true,
       readToken: () => "recorded",
-      kill: (pid, signal) => {
+      signalProcess: (pid, _token, signal) => {
         expect(existsSync(supervisorPaths(root).stop)).toBe(true);
         signals.push([pid, signal]);
+        return { sent: true, verdict: "same" };
       },
     });
     expect(result.signal_verdict).toBe("same");
@@ -156,7 +169,10 @@ describe("supervisor process identity", () => {
     const result = requestSupervisorStop(root, {
       readToken: () => null,
       probePid: () => true,
-      kill: (pid) => signals.push(pid),
+      signalProcess: (pid) => {
+        signals.push(pid);
+        return { sent: true, verdict: "same" };
+      },
     });
     expect(result.signal_sent).toBe(false);
     expect(existsSync(supervisorPaths(root).stop)).toBe(true);

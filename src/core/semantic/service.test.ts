@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { readLedgerV3Since } from "../events/v3/index.ts";
@@ -38,6 +38,43 @@ function fixture(): string {
 }
 
 describe("semantic service", () => {
+  test("a tokenless semantic record uses its durable stop without a PID signal", () => {
+    const root = fixture();
+    const paths = semanticPaths(root);
+    mkdirSync(paths.root, { recursive: true });
+    const now = new Date().toISOString();
+    writeFileSync(
+      paths.service,
+      JSON.stringify({
+        schema_version: 1,
+        pid: process.pid,
+        host: hostname(),
+        nonce: "no-token",
+        state: "running",
+        started_at: now,
+        heartbeat_at: now,
+        sweep_count: 0,
+        pass_count: 0,
+        model_calls: 0,
+        cache_hits: 0,
+      }),
+    );
+    const originalKill = process.kill;
+    let effects = 0;
+    process.kill = ((pid, signal) => {
+      if (signal === 0) return originalKill(pid, 0);
+      effects++;
+      return true;
+    }) as typeof process.kill;
+    try {
+      requestSemanticServiceStop(root);
+      expect(effects).toBe(0);
+      expect(existsSync(paths.stop)).toBe(true);
+    } finally {
+      process.kill = originalKill;
+    }
+  });
+
   test("starts for active V3 and leaves running, paused, and inactive roots alone", async () => {
     const stopped = { running: false, stale: false, pending_count: 0 };
     const running = { running: true, stale: false, pending_count: 0 };

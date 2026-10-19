@@ -58,7 +58,7 @@ describe("processStartToken", () => {
   });
 
   test("tags the token by probe, so two platforms are never compared", () => {
-    expect(processStartToken(process.pid)).toMatch(/^[lp]/);
+    expect(processStartToken(process.pid)).toMatch(/^[lpw]/);
   });
 
   test("declines to guess for a dead pid or a nonsense one", () => {
@@ -76,7 +76,9 @@ describe("startTokenProbe", () => {
 
   test("otherwise follows what the machine actually has", () => {
     withEnv({ HARNERY_PID_PROBE: undefined }, () => {
-      expect(startTokenProbe()).toBe(hasProcfs ? "procfs" : "ps");
+      expect(startTokenProbe()).toBe(
+        process.platform === "win32" ? "windows" : hasProcfs ? "procfs" : "ps",
+      );
     });
   });
 
@@ -107,44 +109,50 @@ describe("psStartToken", () => {
     ).toBeNull();
   });
 
-  test("reads a real process, so the branch runs on every platform with ps", () => {
-    // The BSD path is the same code wherever ps exists. Exercising it only on
-    // BSD hardware is how a branch rots between releases.
-    const token = psStartToken(process.pid);
-    expect(token).toMatch(/^p\S/);
-    expect(psStartToken(process.pid)).toBe(token as string);
-  });
+  test.skipIf(process.platform === "win32")(
+    "reads a real process, so the branch runs on every platform with ps",
+    () => {
+      // The BSD path is the same code wherever ps exists. Exercising it only on
+      // BSD hardware is how a branch rots between releases.
+      const token = psStartToken(process.pid);
+      expect(token).toMatch(/^p\S/);
+      expect(psStartToken(process.pid)).toBe(token as string);
+    },
+  );
 
-  test("renders the same instant no matter the caller's timezone", () => {
-    // `ps` formats lstart through TZ and LC_TIME, so an unpinned probe describes
-    // one live process differently depending on who asked: a git hook runs under
-    // LC_ALL=C, a login shell under the user's locale, and each then reads the
-    // other's row as a recycled pid.
-    //
-    // The hostile environment has to be one a child really inherits. Assigning
-    // `process.env.TZ` does not reach spawned children, so a test written that
-    // way passes whether or not the pin exists; these are two subprocesses
-    // reading one shared pid under environments they were actually launched
-    // with.
-    const script = join(tmpdir(), `harnery-tz-probe-${process.pid}.ts`);
-    writeFileSync(
-      script,
-      `import { psStartToken } from ${JSON.stringify(join(import.meta.dir, "proc-start.ts"))};\n` +
-        `process.stdout.write(String(psStartToken(Number(process.argv[2]))));\n`,
-    );
-    const readUnder = (tz: string) =>
-      spawnSync(process.execPath, ["run", script, String(process.pid)], {
-        encoding: "utf8",
-        env: { ...process.env, TZ: tz },
-      }).stdout.trim();
-    try {
-      const chicago = readUnder("America/Chicago");
-      expect(chicago).toMatch(/^p\S/);
-      expect(readUnder("Asia/Tokyo")).toBe(chicago);
-    } finally {
-      rmSync(script, { force: true });
-    }
-  });
+  test.skipIf(process.platform === "win32")(
+    "renders the same instant no matter the caller's timezone",
+    () => {
+      // `ps` formats lstart through TZ and LC_TIME, so an unpinned probe describes
+      // one live process differently depending on who asked: a git hook runs under
+      // LC_ALL=C, a login shell under the user's locale, and each then reads the
+      // other's row as a recycled pid.
+      //
+      // The hostile environment has to be one a child really inherits. Assigning
+      // `process.env.TZ` does not reach spawned children, so a test written that
+      // way passes whether or not the pin exists; these are two subprocesses
+      // reading one shared pid under environments they were actually launched
+      // with.
+      const script = join(tmpdir(), `harnery-tz-probe-${process.pid}.ts`);
+      writeFileSync(
+        script,
+        `import { psStartToken } from ${JSON.stringify(join(import.meta.dir, "proc-start.ts"))};\n` +
+          `process.stdout.write(String(psStartToken(Number(process.argv[2]))));\n`,
+      );
+      const readUnder = (tz: string) =>
+        spawnSync(process.execPath, ["run", script, String(process.pid)], {
+          encoding: "utf8",
+          env: { ...process.env, TZ: tz },
+        }).stdout.trim();
+      try {
+        const chicago = readUnder("America/Chicago");
+        expect(chicago).toMatch(/^p\S/);
+        expect(readUnder("Asia/Tokyo")).toBe(chicago);
+      } finally {
+        rmSync(script, { force: true });
+      }
+    },
+  );
 });
 
 describe("procfsStartToken", () => {
@@ -206,7 +214,7 @@ describe("checkPidToken", () => {
     expect(checkPidToken(deadPid(), "l12345")).toBe("unverified");
   });
 
-  test("works the same through the ps probe", () => {
+  test.skipIf(process.platform === "win32")("works the same through the ps probe", () => {
     withEnv({ HARNERY_PID_PROBE: "ps" }, () => {
       const token = processStartToken(process.pid) as string;
       expect(token).toMatch(/^p/);
@@ -268,14 +276,20 @@ describe("verifyProcessGeneration", () => {
       expect(
         signalIfSameGeneration(pid, "recorded", "SIGTERM", {
           readToken: () => "recorded",
-          kill: () => signals++,
+          signalProcess: () => {
+            signals++;
+            return { sent: true, verdict: "same" };
+          },
         }),
       ).toEqual({ sent: false, verdict: "unknown" });
     }
     expect(
       signalIfSameGeneration(123, "l5000", "SIGTERM", {
         readToken: () => "l5000",
-        kill: () => signals++,
+        signalProcess: () => {
+          signals++;
+          return { sent: true, verdict: "same" };
+        },
       }),
     ).toEqual({ sent: false, verdict: "unknown" });
     expect(signals).toBe(0);
@@ -295,10 +309,13 @@ describe("signalIfSameGeneration", () => {
         events.push(`read:${pid}`);
         return "recorded";
       },
-      kill: (pid, signal) => events.push(`kill:${pid}:${signal}`),
+      signalProcess: (pid, _token, signal) => {
+        events.push(`signal:${pid}:${signal}`);
+        return { sent: true, verdict: "same" };
+      },
     });
     expect(result).toEqual({ sent: true, verdict: "same" });
-    expect(events).toEqual(["read:123", "kill:123:SIGTERM"]);
+    expect(events).toEqual(["read:123", "signal:123:SIGTERM"]);
   });
 
   test("does not trust an earlier successful generation check", () => {
@@ -310,7 +327,10 @@ describe("signalIfSameGeneration", () => {
     expect(
       signalIfSameGeneration(123, "recorded", "SIGTERM", {
         readToken,
-        kill: () => signals++,
+        signalProcess: () => {
+          signals++;
+          return { sent: true, verdict: "same" };
+        },
       }),
     ).toEqual({ sent: false, verdict: "different" });
     expect(signals).toBe(0);
@@ -318,13 +338,16 @@ describe("signalIfSameGeneration", () => {
 
   test("never signals a missing, unreadable, or different generation", () => {
     let signals = 0;
-    const kill = () => signals++;
-    expect(signalIfSameGeneration(123, undefined, "SIGTERM", { kill })).toEqual({
+    const signalProcess = () => {
+      signals++;
+      return { sent: true, verdict: "same" as const };
+    };
+    expect(signalIfSameGeneration(123, undefined, "SIGTERM", { signalProcess })).toEqual({
       sent: false,
       verdict: "unknown",
     });
     expect(
-      signalIfSameGeneration(123, "recorded", "SIGTERM", { readToken: () => null, kill }),
+      signalIfSameGeneration(123, "recorded", "SIGTERM", { readToken: () => null, signalProcess }),
     ).toEqual({
       sent: false,
       verdict: "unknown",
@@ -334,11 +357,14 @@ describe("signalIfSameGeneration", () => {
         readToken: () => {
           throw new Error("probe failed");
         },
-        kill,
+        signalProcess,
       }),
     ).toEqual({ sent: false, verdict: "unknown" });
     expect(
-      signalIfSameGeneration(123, "recorded", "SIGTERM", { readToken: () => "replacement", kill }),
+      signalIfSameGeneration(123, "recorded", "SIGTERM", {
+        readToken: () => "replacement",
+        signalProcess,
+      }),
     ).toEqual({ sent: false, verdict: "different" });
     expect(signals).toBe(0);
   });
@@ -347,9 +373,7 @@ describe("signalIfSameGeneration", () => {
     expect(
       signalIfSameGeneration(123, "recorded", "SIGTERM", {
         readToken: () => "recorded",
-        kill: () => {
-          throw new Error("process exited");
-        },
+        signalProcess: () => ({ sent: false, verdict: "same" }),
       }),
     ).toEqual({ sent: false, verdict: "same" });
   });

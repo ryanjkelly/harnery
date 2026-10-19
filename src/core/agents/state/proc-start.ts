@@ -34,9 +34,10 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { coordEnv } from "../../../lib/env.ts";
+import { signalProcessWithHandle, windowsProcessStartToken } from "./process-handle.ts";
 
 /** Which probe answers "when did this process start?" on this machine. */
-export type StartTokenProbe = "procfs" | "ps";
+export type StartTokenProbe = "procfs" | "ps" | "windows";
 
 /**
  * The `ps` probe is text formatted by `strftime("%c", localtime(...))`, so its
@@ -60,6 +61,7 @@ let cachedBootId: string | null | undefined;
 export function startTokenProbe(): StartTokenProbe {
   const override = coordEnv("PID_PROBE");
   if (override === "procfs" || override === "ps") return override;
+  if (process.platform === "win32") return "windows";
   if (cachedProbe === undefined) {
     cachedProbe = existsSync("/proc/self/stat") ? "procfs" : "ps";
   }
@@ -157,7 +159,12 @@ function defaultPsRun(pid: number): { status: number | null; stdout: string } {
  */
 export function processStartToken(pid: number): string | null {
   if (!Number.isFinite(pid) || pid <= 0) return null;
-  return startTokenProbe() === "procfs" ? procfsStartToken(pid) : psStartToken(pid);
+  const probe = startTokenProbe();
+  return probe === "windows"
+    ? windowsProcessStartToken(pid)
+    : probe === "procfs"
+      ? procfsStartToken(pid)
+      : psStartToken(pid);
 }
 
 export type ProcessGenerationVerdict = "same" | "different" | "unknown";
@@ -191,14 +198,12 @@ export function verifyProcessGeneration(
 
 export interface ProcessGenerationSignalDependencies {
   readToken?: ReadProcessStartToken;
-  kill?: (pid: number, signal: NodeJS.Signals | number) => unknown;
+  signalProcess?: typeof signalProcessWithHandle;
 }
 
 /**
- * Recheck the process generation immediately before sending the signal.
- *
- * The process can still exit and its PID can be reused between the token read
- * and the signal. Eliminating that race requires a generation-bound OS handle.
+ * Observations may refuse a signal, but only the retained native process handle
+ * can authorize it. No numeric-PID effect follows the preliminary token read.
  */
 export function signalIfSameGeneration(
   pid: number,
@@ -206,14 +211,12 @@ export function signalIfSameGeneration(
   signal: NodeJS.Signals | number,
   dependencies: ProcessGenerationSignalDependencies = {},
 ): { sent: boolean; verdict: ProcessGenerationVerdict } {
-  const kill = dependencies.kill ?? process.kill;
   const verdict = verifyProcessGeneration(pid, recordedToken, dependencies.readToken);
   if (verdict !== "same") return { sent: false, verdict };
   try {
-    kill(pid, signal);
-    return { sent: true, verdict };
+    return (dependencies.signalProcess ?? signalProcessWithHandle)(pid, recordedToken!, signal);
   } catch {
-    return { sent: false, verdict };
+    return { sent: false, verdict: "unknown" };
   }
 }
 
