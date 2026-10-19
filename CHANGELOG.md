@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.45.2
+
+### Patch Changes
+
+- 87ade20: Read context continuity capsules without re-validating the shape Harnery wrote itself. Recovery still reports the repository as unverified whenever a Git read failed, timed out, or returned an empty result.
+- b499936: Context samples recorded by hooks no longer take an fsync'd per-session lease. A changed sample now costs 11 file system calls instead of 48, and an unchanged one 5 instead of 42. Recovery completion stays bound to its prepared checkpoint (session, task instance, generation and capsule ID) and uses compare-and-write, so a checkpoint that lands mid-completion is never overwritten. The checkpoint token no longer carries a capsule digest.
+- 944f67c: Workspace allocation no longer takes a provider-wide publication lease or scans the reservation directory before writing each claim, and reclaim and cleanup no longer hold a per-binding reclaim reservation. Reclaim still refuses before changing any file when a retained peer workspace overlaps the target, and rechecks that before each destructive step and before removing the worktree.
+- e153300: One process-identity check, `verifyProcessGeneration`, replaces `checkPidToken` and `tokensAgree`. A Linux start token written without a boot segment is compared on its tick count: a different count proves a recycled pid, and an equal count stays unknown, so such a token can no longer be read as proof of the same run, and a service whose recorded tick count differs is now reported as stopped instead of unknown.
+- fe4a2fe: Service and server stops signal processes on macOS again, and on Linux hosts without Python pidfd support. The start-token recheck before each signal stays, and the semantic service stop sends SIGTERM again after writing its durable stop request.
+- 0c43d7e: Context recovery and workflow proofs now decide whether two repository snapshots can be compared through one shared check, `repoComparisonProblems`, which replaces `observationsComparable`. A proof whose snapshots are truncated or lack a branch, HEAD or matching root now reports all repository drift as unknown, the same rule recovery briefings already follow.
+- 4c767ab: The governor service, local supervisor and legacy resource observer now share one owner check, one singleton lease, one stop request and one build-status comparison. A failed process probe now reports the governor's generation as unknown, the same as the other two services, and the start refusal wording is the same for all three.
+- 42d1123: Workspace reclaim checks liveness, ownership and retained peers once before taking its leases, relies on ordinary cleanup's checks under those leases, and checks liveness once more immediately before the destructive reset. The reclaim preview reads lease holders through the lease module's validated owner reader.
+- 68e5971: The workflow resume lock now lives in its own module, so the dashboard's read-only work and codec readers no longer load process-identity code that can spawn `ps`.
+- b1a0d2a: A resume lock left by a process on this host that has exited, or whose PID now belongs to a different process, no longer blocks `run resume` or `run reclaim`; it is retired automatically. `run unlock` and the digest-pinned `run reclaim --unknown-liveness --actor --reason` override are gone. To reclaim a run whose liveness evidence is missing or corrupt, pass `run reclaim --force --yes`; it still refuses active evidence and records one `reclaim_forced` event in the workspace ledger.
+
 ## 0.45.1
 
 ### Patch Changes
