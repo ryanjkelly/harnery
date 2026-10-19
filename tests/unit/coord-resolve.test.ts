@@ -683,13 +683,6 @@ describe("start-token parity between the two implementations", () => {
     }
   });
 
-  test("both read the native default token for one live process", () => {
-    delete process.env.HARNERY_PID_PROBE;
-    const canonical = processStartToken(process.pid);
-    expect(canonical).toBeTruthy();
-    expect(pidStartToken(process.pid)).toBe(canonical);
-  });
-
   test("both decline for a pid that is not running", () => {
     let dead = 30000;
     while (dead < 40000) {

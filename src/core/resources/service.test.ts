@@ -43,10 +43,7 @@ describe("legacy observer process identity", () => {
       const status = requestResourceServiceStop(root, {
         readToken: () => "replacement",
         probePid: () => true,
-        signalProcess: (pid) => {
-          signals.push(pid);
-          return { sent: true, verdict: "same" };
-        },
+        kill: (pid) => signals.push(pid),
       });
       expect(status.signal_sent).toBe(false);
       expect(status.signal_verdict).toBe(recorded ? "different" : "unknown");
@@ -63,10 +60,7 @@ describe("legacy observer process identity", () => {
         throw new Error("unreadable");
       },
       probePid: () => true,
-      signalProcess: (pid) => {
-        signals.push(pid);
-        return { sent: true, verdict: "same" };
-      },
+      kill: (pid) => signals.push(pid),
     });
     expect(status).toMatchObject({
       generation: "unknown",
@@ -88,10 +82,7 @@ describe("legacy observer process identity", () => {
         return reads === 1 ? "recorded" : "replacement";
       },
       probePid: () => true,
-      signalProcess: (pid) => {
-        signals.push(pid);
-        return { sent: true, verdict: "same" };
-      },
+      kill: (pid) => signals.push(pid),
     });
     expect(status.signal_sent).toBe(false);
     expect(status.signal_verdict).toBe("different");
@@ -104,10 +95,9 @@ describe("legacy observer process identity", () => {
     const status = requestResourceServiceStop(root, {
       readToken: () => "recorded",
       probePid: () => true,
-      signalProcess: (pid) => {
+      kill: (pid) => {
         expect(existsSync(resourcePaths(root).stop)).toBe(true);
         signals.push(pid);
-        return { sent: true, verdict: "same" };
       },
     });
     expect(status.signal_sent).toBe(true);

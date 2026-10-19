@@ -265,27 +265,7 @@ export function parsePidmapRowStartToken(row: string): string | undefined {
  * a test can hold this one against `processStartToken` and fail on drift.
  */
 export function pidStartToken(pid: number): string | null {
-  if (!Number.isInteger(pid) || pid <= 0) return null;
   const forced = process.env.HARNERY_PID_PROBE;
-  if (process.platform === "win32" && forced !== "procfs" && forced !== "ps") {
-    try {
-      const out = spawnSync(
-        "powershell.exe",
-        [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          `$process = [Diagnostics.Process]::GetProcessById(${pid}); try { 'w' + $process.StartTime.ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture) } finally { $process.Dispose() }`,
-        ],
-        { encoding: "utf8", timeout: 10_000, windowsHide: true },
-      );
-      const token = String(out.stdout ?? "").trim();
-      return out.status === 0 && /^w\d+$/.test(token) ? token : null;
-    } catch {
-      return null;
-    }
-  }
   const useProcfs = forced === "procfs" || (forced !== "ps" && existsSync("/proc/self/stat"));
   // One machine, one probe. Falling back to the other on a read failure would
   // answer in the wrong dialect and read as a recycled pid.

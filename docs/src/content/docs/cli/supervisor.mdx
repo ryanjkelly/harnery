@@ -90,12 +90,11 @@ Harnery refuses a second start while it cannot establish the existing
 supervisor's identity. Run `harn supervisor stop` to write the durable stop
 request, then check status before starting it again.
 
-`stop` writes the durable request before attempting a signal. Where signaling
-is available, the backend verifies the recorded generation while holding a
-native process handle. A capability or identity refusal before authorization
-sends nothing. The response includes `signal_sent` and `signal_verdict`; an unknown
-outcome after authorization does not prove that no signal occurred. The supervisor
-can still honor the durable request. See [ADR 0218](/decisions/0218-generation-bound-process-signals/).
+`stop` rechecks the start token immediately before signaling. It sends nothing
+when the verdict is `different` or `unknown`; its response includes
+`signal_sent` and `signal_verdict`. The supervisor can still honor the durable
+stop request. The token check narrows the PID-reuse race but does not eliminate
+the interval between the check and the signal.
 
 See [ADR 0207](/decisions/0207-fail-closed-on-unknown-state/) for the shared rule.
 

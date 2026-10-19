@@ -598,26 +598,6 @@ export interface StopResult {
 
 export interface ServerProcessDependencies extends ProcessGenerationSignalDependencies {
   probePid?: (pid: number) => boolean;
-  /** Numeric signal, used for the process group and in tests. */
-  kill?: (pid: number, signal: NodeJS.Signals) => void;
-}
-
-/** Recheck the generation, then signal. A supplied `kill` replaces the handle path. */
-function signalVerified(
-  pid: number,
-  token: string | undefined,
-  name: NodeJS.Signals,
-  dependencies: ServerProcessDependencies,
-): { sent: boolean; verdict: ProcessGenerationVerdict } {
-  if (!dependencies.kill) return signalIfSameGeneration(pid, token, name, dependencies);
-  const verdict = verifyProcessGeneration(pid, token, dependencies.readToken);
-  if (verdict !== "same") return { sent: false, verdict };
-  try {
-    dependencies.kill(pid, name);
-    return { sent: true, verdict };
-  } catch {
-    return { sent: false, verdict };
-  }
 }
 
 /**
@@ -680,7 +660,7 @@ export async function stopServer(
       const result =
         target.pid === record.pid
           ? signalServerLeader(target.pid, target.token, name, dependencies)
-          : signalVerified(target.pid, target.token, name, dependencies);
+          : signalIfSameGeneration(target.pid, target.token, name, dependencies);
       if (result.verdict !== "same") return refuse(target.pid, result.verdict);
     }
     const observed = await waitForExit(targets, name === "SIGTERM" ? graceMs : 2_000, dependencies);
@@ -706,13 +686,13 @@ function signalServerLeader(
   // The leader's generation authorizes its group. A failed group signal must
   // not reuse that observation for the direct-PID fallback.
   const kill = dependencies.kill ?? process.kill;
-  const group = signalVerified(pid, token, name, {
+  const group = signalIfSameGeneration(pid, token, name, {
     readToken: dependencies.readToken,
     kill: (leader, signal) => kill(-leader, signal),
   });
   return group.sent || group.verdict !== "same"
     ? group
-    : signalVerified(pid, token, name, dependencies);
+    : signalIfSameGeneration(pid, token, name, dependencies);
 }
 
 async function waitForExit(

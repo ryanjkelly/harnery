@@ -38,7 +38,7 @@ function fixture(): string {
 }
 
 describe("semantic service", () => {
-  test("a tokenless semantic record uses its durable stop without a PID signal", () => {
+  test("stop writes the durable request and also sends SIGTERM to a running daemon", () => {
     const root = fixture();
     const paths = semanticPaths(root);
     mkdirSync(paths.root, { recursive: true });
@@ -49,7 +49,7 @@ describe("semantic service", () => {
         schema_version: 1,
         pid: process.pid,
         host: hostname(),
-        nonce: "no-token",
+        nonce: "running",
         state: "running",
         started_at: now,
         heartbeat_at: now,
@@ -60,15 +60,15 @@ describe("semantic service", () => {
       }),
     );
     const originalKill = process.kill;
-    let effects = 0;
+    const signals: Array<string | number | undefined> = [];
     process.kill = ((pid, signal) => {
       if (signal === 0) return originalKill(pid, 0);
-      effects++;
+      signals.push(signal);
       return true;
     }) as typeof process.kill;
     try {
       requestSemanticServiceStop(root);
-      expect(effects).toBe(0);
+      expect(signals).toEqual(["SIGTERM"]);
       expect(existsSync(paths.stop)).toBe(true);
     } finally {
       process.kill = originalKill;

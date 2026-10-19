@@ -1,9 +1,11 @@
 ---
 title: "0218: Bind process signals to native handles"
-description: "ADR: retain a Linux pidfd or Windows process handle through identity verification and signaling."
+description: "ADR: retain a Linux pidfd or Windows process handle through identity verification and signaling. Withdrawn in part."
 ---
 
-**Status:** accepted (2026-10-18) · **Scope:** service and server signaling · **Amends:** [0207](/decisions/0207-fail-closed-on-unknown-state/)
+**Status:** withdrawn in part (2026-10-19) · **Scope:** service and server signaling · **Amends:** [0207](/decisions/0207-fail-closed-on-unknown-state/)
+
+The native-handle backend was withdrawn because it removed direct signals on macOS and on Linux without Python pidfd support, so `signalIfSameGeneration` again rechecks the start token and then calls `process.kill`, service stops still write their durable request first, and the semantic service again sends SIGTERM.
 
 ## Context
 

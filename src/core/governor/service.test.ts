@@ -93,12 +93,7 @@ describe("governor service process safety", () => {
     configureGovernorService({ coordRoot: root, goalIds: [goalId] });
     serviceRecord(root, { start_token: "replacement-generation" });
     let signals = 0;
-    const status = requestGovernorServiceStop(root, {
-      signalProcess: () => {
-        signals++;
-        return { sent: true, verdict: "same" };
-      },
-    });
+    const status = requestGovernorServiceStop(root, { kill: () => signals++ });
     expect(status).toMatchObject({
       running: false,
       stale: true,
@@ -135,14 +130,7 @@ describe("governor service process safety", () => {
       before,
     );
     let signals = 0;
-    expect(
-      requestGovernorServiceStop(root, {
-        signalProcess: () => {
-          signals++;
-          return { sent: true, verdict: "same" };
-        },
-      }),
-    ).toMatchObject({
+    expect(requestGovernorServiceStop(root, { kill: () => signals++ })).toMatchObject({
       signal_sent: false,
       signal_verdict: "unknown",
     });
@@ -160,10 +148,7 @@ describe("governor service process safety", () => {
         throw new Error("token probe failed");
       },
       probePid: () => true,
-      signalProcess: () => {
-        signals++;
-        return { sent: true, verdict: "same" };
-      },
+      kill: () => signals++,
     });
     expect(status).toMatchObject({
       generation: "unknown",
@@ -188,14 +173,7 @@ describe("governor service process safety", () => {
       runGovernorServiceDaemon({ coordRoot: root, engine: { spawners: {} }, maxSweeps: 1 }),
     ).rejects.toThrow("process generation is unknown");
     let signals = 0;
-    expect(
-      requestGovernorServiceStop(root, {
-        signalProcess: () => {
-          signals++;
-          return { sent: true, verdict: "same" };
-        },
-      }),
-    ).toMatchObject({
+    expect(requestGovernorServiceStop(root, { kill: () => signals++ })).toMatchObject({
       signal_sent: false,
       signal_verdict: "unknown",
     });
@@ -218,10 +196,7 @@ describe("governor service process safety", () => {
         return "replacement";
       },
       probePid: () => true,
-      signalProcess: () => {
-        signals++;
-        return { sent: true, verdict: "same" };
-      },
+      kill: () => signals++,
     });
     expect(reads).toBe(3);
     expect(status).toMatchObject({ signal_sent: false, signal_verdict: "different" });
@@ -235,18 +210,19 @@ describe("governor service process safety", () => {
     let signals = 0;
     expect(
       requestGovernorServiceStop(root, {
-        signalProcess: (pid, _token, signal) => {
+        kill: (pid, signal) => {
           expect(pid).toBe(record.pid);
           expect(signal).toBe("SIGTERM");
           signals++;
-          return { sent: true, verdict: "same" };
         },
       }),
     ).toMatchObject({ signal_sent: true, signal_verdict: "same" });
     expect(signals).toBe(1);
     expect(
       requestGovernorServiceStop(root, {
-        signalProcess: () => ({ sent: false, verdict: "same" }),
+        kill: () => {
+          throw new Error("signal refused");
+        },
       }),
     ).toMatchObject({
       signal_sent: false,
@@ -285,14 +261,7 @@ describe("governor service process safety", () => {
     });
     await expect(spawnGovernorService(root)).rejects.toThrow("process generation is unknown");
     let signals = 0;
-    expect(
-      requestGovernorServiceStop(root, {
-        signalProcess: () => {
-          signals++;
-          return { sent: true, verdict: "same" };
-        },
-      }),
-    ).toMatchObject({
+    expect(requestGovernorServiceStop(root, { kill: () => signals++ })).toMatchObject({
       signal_sent: false,
       signal_verdict: "unknown",
     });
