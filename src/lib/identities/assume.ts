@@ -140,7 +140,6 @@ export function reclaimAbandonedLocalConflict(
   let sessionId = conflict.instance_id;
   let ageSecs: number | undefined;
   const liveRow = readLiveCoordinationRow(coordRoot, conflict.instance_id);
-  let expectedGenerationId = liveRow?.v3_generation_id ?? null;
   if (liveRow) {
     adapter = adapterOf(liveRow.platform);
     sessionId = liveRow.session_id || conflict.instance_id;
@@ -154,9 +153,7 @@ export function reclaimAbandonedLocalConflict(
       // It is required to join the exact producer state when recording the sweep.
       adapter = adapterOf(hb.platform);
       sessionId = hb.session_id || conflict.instance_id;
-      expectedGenerationId = hb.v3_generation_id ?? null;
     } catch {
-      expectedGenerationId = null;
       /* content unreadable — still reclaim the file */
     }
     try {
@@ -171,7 +168,6 @@ export function reclaimAbandonedLocalConflict(
     owner: conflict.instance_id,
     nativeSessionId: sessionId,
     adapter,
-    expectedGenerationId,
     observation: "stale_heartbeat",
     ageMs: Math.max(0, (ageSecs ?? 0) * 1_000),
   });

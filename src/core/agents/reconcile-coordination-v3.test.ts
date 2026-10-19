@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../tests/helpers/event-v3-runtime.ts";
@@ -108,7 +108,6 @@ function writeStaleHeartbeat(
 ): string {
   const path = join(root, ".harnery", "active", `${instanceId}.json`);
   mkdirSync(dirname(path), { recursive: true });
-  const seeded = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
   writeFileSync(
     path,
     `${JSON.stringify({
@@ -119,7 +118,6 @@ function writeStaleHeartbeat(
       started_at: "2020-01-01T00:00:00.000Z",
       last_heartbeat: "2020-01-01T00:00:00.000Z",
       files_touched: [],
-      ...(seeded.v3_generation_id ? { v3_generation_id: seeded.v3_generation_id } : {}),
     })}\n`,
     "utf8",
   );

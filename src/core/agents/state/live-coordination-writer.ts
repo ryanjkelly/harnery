@@ -5,10 +5,6 @@ import {
   readCoordinationViewV3,
   requireAuthoritySafeCoordinationViewV3,
 } from "../../events/v3/coordination-view.ts";
-import {
-  assertCurrentGenerationV3,
-  withGenerationCustodyV3,
-} from "../../events/v3/generation-custody.ts";
 import { liveInstanceIdV3, resolveLiveEventLedgerRouteV3 } from "../../events/v3/live-routing.ts";
 import { type Heartbeat, readHeartbeat } from "./heartbeat-reader.ts";
 import {
@@ -62,26 +58,6 @@ export function repairLiveCoordinationHeartbeat(
 }
 
 function materializeLiveCoordinationHeartbeat(
-  coordRoot: string,
-  nativeInstanceId: string,
-  nativeSessionId: string,
-  _adapter: Adapter,
-  model: string | undefined,
-  force: boolean,
-): Heartbeat | null {
-  return withGenerationCustodyV3(coordRoot, [liveInstanceIdV3(nativeInstanceId)], () =>
-    materializeHeartbeatUnderCustody(
-      coordRoot,
-      nativeInstanceId,
-      nativeSessionId,
-      _adapter,
-      model,
-      force,
-    ),
-  );
-}
-
-function materializeHeartbeatUnderCustody(
   coordRoot: string,
   nativeInstanceId: string,
   nativeSessionId: string,
@@ -157,11 +133,6 @@ function materializeHeartbeatUnderCustody(
     v3_projection_event_id: generation.last_event_id,
     v3_task_state: generation.task_state === "set" ? "set" : "cleared",
   };
-  assertCurrentGenerationV3(
-    coordRoot,
-    liveInstanceIdV3(nativeInstanceId),
-    generation.generation_id,
-  );
   writeHeartbeatCache(coordRoot, nativeInstanceId, materialized);
   return materialized;
 }

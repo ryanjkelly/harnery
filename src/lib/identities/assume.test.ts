@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -10,7 +10,6 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import * as lifecycle from "../../core/agents/live-lifecycle-v3.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../core/agents/state/live-coordination-writer.ts";
 import { resolveName } from "../../core/agents/state/names.ts";
 import { initializeEventLedgerV3 } from "../../core/events/v3/bootstrap.ts";
@@ -98,9 +97,6 @@ describe("assumeIdentity", () => {
 
   test("reclaims a fresh namesake whose pid-map process is dead", () => {
     seedHeartbeat(root, "session-old", "Yann");
-    const generation = JSON.parse(
-      readFileSync(path.join(root, ".harnery", "active", "session-old.json"), "utf8"),
-    ).v3_generation_id;
     writeFileSync(path.join(root, ".harnery", "pid-map", "999999999"), "session-old\tcodex");
 
     const result = assumeIdentity(root, "session-new", "Yann");
@@ -110,50 +106,7 @@ describe("assumeIdentity", () => {
     expect(existsSync(path.join(root, ".harnery", "pid-map", "999999999"))).toBe(false);
 
     const events = readLedgerV3(root).events.map(({ event }) => event);
-    expect(events.filter((event) => event.event_type === "lifecycle.sweep_observed")).toEqual([
-      expect.objectContaining({ scope: expect.objectContaining({ generation_id: generation }) }),
-    ]);
-  });
-
-  test("keeps the observed generation when a namesake is replaced during its reclaim audit", () => {
-    seedHeartbeat(root, "session-old", "Yann");
-    const heartbeat = path.join(root, ".harnery", "active", "session-old.json");
-    const generation = JSON.parse(readFileSync(heartbeat, "utf8")).v3_generation_id;
-    const originalRecord = lifecycle.recordLiveSweepObservationV3;
-    let replaced = false;
-    const record = spyOn(lifecycle, "recordLiveSweepObservationV3").mockImplementation((input) => {
-      expect(input.expectedGenerationId).toBe(generation);
-      const route = resolveLiveEventLedgerRouteV3(root);
-      if (route.state !== "v3") throw new Error("expected V3 route");
-      expect(
-        recordLiveHookSignalV3({
-          coordRoot: root,
-          route,
-          eventName: "session-end",
-          adapter: "codex",
-          instanceId: "session-old",
-          payload: { session_id: "session-old", raw: {} },
-        }).state,
-      ).toBe("recorded");
-      seedHeartbeat(root, "session-old", "Yann");
-      replaced = true;
-      return originalRecord(input);
-    });
-    try {
-      expect(() => assumeIdentity(root, "session-new", "Yann")).toThrow(
-        "expected_generation_changed",
-      );
-    } finally {
-      record.mockRestore();
-    }
-    expect(replaced).toBeTrue();
-    expect(JSON.parse(readFileSync(heartbeat, "utf8")).v3_generation_id).not.toBe(generation);
-    expect(
-      readLedgerV3(root).events.filter(
-        ({ event }) => event.event_type === "lifecycle.sweep_observed",
-      ),
-    ).toEqual([]);
-    expect(resolveName(root, "session-new")?.name).toBe("Anna");
+    expect(events.some((event) => event.event_type === "lifecycle.sweep_observed")).toBe(true);
   });
 
   test("reclaims a fresh namesake with no pid-map rows at all", () => {

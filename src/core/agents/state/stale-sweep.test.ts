@@ -1,5 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import * as fs from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -7,7 +6,6 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,111 +57,6 @@ describe("staleSweep V3 audit fallback", () => {
     writeFileSync(hash, "fresh:normal::true");
     expect(staleSweep(root).resourceHashesRemoved).toBe(0);
     expect(existsSync(hash)).toBeTrue();
-  });
-
-  test("keeps pid maps and peer hashes for a fresh malformed owner heartbeat", () => {
-    const root = fixtureRoot();
-    const cache = join(root, ".harnery");
-    const heartbeat = join(cache, "active", "uncertain.json");
-    mkdirSync(dirname(heartbeat), { recursive: true });
-    writeFileSync(heartbeat, "{");
-    const pidmap = join(cache, "pid-map", "1234");
-    mkdirSync(dirname(pidmap), { recursive: true });
-    writeFileSync(pidmap, "uncertain\tcodex\n");
-    const peerHash = join(cache, ".last-peer-hash.uncertain");
-    writeFileSync(peerHash, "peer-hash");
-
-    expect(staleSweep(root)).toMatchObject({ pidmapsRemoved: 0, peerHashesRemoved: 0 });
-    expect(readFileSync(pidmap, "utf8")).toBe("uncertain\tcodex\n");
-    expect(readFileSync(peerHash, "utf8")).toBe("peer-hash");
-    expect(readSweepDiagnostics(root)).toEqual([]);
-  });
-
-  test("keeps dependent state when this pass retains a fresh heartbeat pin", () => {
-    const root = fixtureRoot();
-    seedV3Session(root, "retained", { sessionId: "retained-session" });
-    const heartbeat = writeStaleHeartbeat(root, "retained", "retained-session", "codex");
-    const fresh = {
-      ...JSON.parse(readFileSync(heartbeat, "utf8")),
-      last_heartbeat: new Date().toISOString(),
-    };
-    const pidmap = join(root, ".harnery", "pid-map", "1234");
-    mkdirSync(dirname(pidmap), { recursive: true });
-    writeFileSync(pidmap, "retained\tcodex\n");
-    const peer = join(root, ".harnery", ".last-peer-hash.retained");
-    const resource = join(root, ".harnery", ".last-resource-hash.retained");
-    writeFileSync(peer, "peer");
-    writeFileSync(resource, "resource");
-    const originalRename = fs.renameSync;
-    const originalLink = fs.linkSync;
-    let replaced = false;
-    const rename = spyOn(fs, "renameSync").mockImplementation((from, to) => {
-      if (!replaced && from === heartbeat) {
-        replaced = true;
-        writeFileSync(`${heartbeat}.new`, JSON.stringify(fresh));
-        originalRename(`${heartbeat}.new`, heartbeat);
-      }
-      return originalRename(from, to);
-    });
-    const link = spyOn(fs, "linkSync").mockImplementation((from, to) => {
-      if (to === heartbeat) {
-        throw Object.assign(new Error("restore_denied"), { code: "EACCES" });
-      }
-      return originalLink(from, to);
-    });
-    let result: ReturnType<typeof staleSweep>;
-    try {
-      result = staleSweep(root);
-    } finally {
-      link.mockRestore();
-      rename.mockRestore();
-    }
-
-    expect(replaced).toBeTrue();
-    expect(existsSync(heartbeat)).toBeFalse();
-    expect(
-      readdirSync(dirname(heartbeat)).some((name) => name.startsWith(".harnery-delete-")),
-    ).toBeTrue();
-    expect(result).toMatchObject({
-      pidmapsRemoved: 0,
-      peerHashesRemoved: 0,
-      resourceHashesRemoved: 0,
-    });
-    expect(readFileSync(pidmap, "utf8")).toBe("retained\tcodex\n");
-    expect(readFileSync(peer, "utf8")).toBe("peer");
-    expect(readFileSync(resource, "utf8")).toBe("resource");
-    expect(readSweepDiagnostics(root)).toContainEqual(
-      expect.objectContaining({
-        signal: "cache.cleanup",
-        state: "cache_cleanup_pending",
-        reason: expect.stringContaining("recovery-required:restore_denied"),
-      }),
-    );
-  });
-
-  test("keeps dependent state for a dangling heartbeat symlink", () => {
-    const root = fixtureRoot();
-    const heartbeat = join(root, ".harnery", "active", "uncertain.json");
-    mkdirSync(dirname(heartbeat), { recursive: true });
-    symlinkSync("missing-heartbeat-target", heartbeat);
-    const pidmap = join(root, ".harnery", "pid-map", "1234");
-    mkdirSync(dirname(pidmap), { recursive: true });
-    writeFileSync(pidmap, "uncertain\tcodex\n");
-    const peer = join(root, ".harnery", ".last-peer-hash.uncertain");
-    const resource = join(root, ".harnery", ".last-resource-hash.uncertain");
-    writeFileSync(peer, "peer");
-    writeFileSync(resource, "resource");
-
-    expect(staleSweep(root)).toMatchObject({
-      heartbeatsRemoved: [],
-      pidmapsRemoved: 0,
-      peerHashesRemoved: 0,
-      resourceHashesRemoved: 0,
-    });
-    expect(readFileSync(pidmap, "utf8")).toBe("uncertain\tcodex\n");
-    expect(readFileSync(peer, "utf8")).toBe("peer");
-    expect(readFileSync(resource, "utf8")).toBe("resource");
-    expect(readSweepDiagnostics(root)).toEqual([]);
   });
 
   test("removes a terminal generation cache without appending after its terminal", () => {
@@ -272,7 +165,6 @@ describe("staleSweep V3 audit fallback", () => {
     const root = fixtureRoot();
     seedV3Session(root, "live", { adapter: "claude-code", sessionId: "live-session" });
     const heartbeat = writeStaleHeartbeat(root, "live", "live-session", "claude-code");
-    const expectedGeneration = JSON.parse(readFileSync(heartbeat, "utf8")).v3_generation_id;
 
     expect(staleSweep(root).heartbeatsRemoved).toEqual(["live.json"]);
     expect(existsSync(heartbeat)).toBeFalse();
@@ -280,7 +172,6 @@ describe("staleSweep V3 audit fallback", () => {
       .events.map(({ event }) => event)
       .filter((event) => event.event_type === "lifecycle.sweep_observed");
     expect(swept).toHaveLength(1);
-    expect(swept[0]?.scope).toMatchObject({ generation_id: expectedGeneration });
     expect(swept[0]?.payload).toMatchObject({
       observation: "stale_heartbeat",
       provisional: true,
@@ -327,7 +218,6 @@ function writeStaleHeartbeat(
 ): string {
   const path = join(root, ".harnery", "active", `${instanceId}.json`);
   mkdirSync(dirname(path), { recursive: true });
-  const seeded = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
   writeFileSync(
     path,
     `${JSON.stringify({
@@ -338,7 +228,6 @@ function writeStaleHeartbeat(
       started_at: "2020-01-01T00:00:00.000Z",
       last_heartbeat: "2020-01-01T00:00:00.000Z",
       files_touched: [],
-      ...(seeded.v3_generation_id ? { v3_generation_id: seeded.v3_generation_id } : {}),
     })}\n`,
     "utf8",
   );

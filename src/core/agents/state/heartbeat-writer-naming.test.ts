@@ -9,10 +9,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
 import {
   buildSuggestedName,
-  type Heartbeat,
   readHeartbeat,
   setAssignedNameCache,
   setTask,
@@ -21,7 +19,6 @@ import {
 
 let root: string;
 let activeDir: string;
-let generationHeartbeat: Heartbeat;
 
 beforeEach(() => {
   root = join(
@@ -30,11 +27,6 @@ beforeEach(() => {
   );
   activeDir = join(root, ".harnery", "active");
   mkdirSync(activeDir, { recursive: true });
-  initializeV3Fixture(root);
-  seedV3Session(root, "self", { sessionId: "self" });
-  const heartbeat = readHeartbeat(root, "self");
-  if (!heartbeat) throw new Error("expected V3 naming fixture cache");
-  generationHeartbeat = heartbeat;
 });
 
 afterEach(() => {
@@ -50,7 +42,6 @@ function seed(extra: Record<string, unknown> = {}): void {
   writeFileSync(
     join(activeDir, "self.json"),
     JSON.stringify({
-      ...generationHeartbeat,
       schema_version: 2,
       instance_id: "self",
       name: "Maya",

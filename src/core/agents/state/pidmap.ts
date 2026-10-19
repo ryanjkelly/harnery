@@ -24,8 +24,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { withGenerationCustodyV3 } from "../../events/v3/generation-custody.ts";
-import { liveInstanceIdV3 } from "../../events/v3/live-routing.ts";
 import { checkPidToken, processStartToken } from "./proc-start.ts";
 
 /**
@@ -124,17 +122,6 @@ export function prunePidmapDeadRows(coordRoot: string): number {
 }
 
 export function writePidmapRow(
-  coordRoot: string,
-  pid: number,
-  instanceId: string,
-  platform: string,
-): void {
-  withGenerationCustodyV3(coordRoot, [liveInstanceIdV3(instanceId)], () =>
-    writePidmapRowUnderCustody(coordRoot, pid, instanceId, platform),
-  );
-}
-
-function writePidmapRowUnderCustody(
   coordRoot: string,
   pid: number,
   instanceId: string,

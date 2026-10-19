@@ -10,21 +10,12 @@
  * `coord.freshness_seconds` (see `coordFreshnessSeconds`).
  */
 
-import { existsSync, lstatSync, readdirSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
 import { type EventAdapterIdV3, eventAdapterIdV3FromPlatform } from "../../events/v3/adapter-id.ts";
-import { withGenerationCustodyV3 } from "../../events/v3/generation-custody.ts";
-import { liveInstanceIdV3 } from "../../events/v3/live-routing.ts";
 import { writeProducerDiagnosticV3 } from "../../events/v3/producers/intake.ts";
 import { recordLiveSweepObservationV3 } from "../live-lifecycle-v3.ts";
-import {
-  captureFileRevision,
-  type DeleteFileResult,
-  deleteFileIfUnchanged,
-  type FileRecoveryResult,
-  recoverInterruptedFileDeletions,
-} from "./unchanged-file.ts";
 
 /** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
 /**
@@ -41,7 +32,6 @@ function emitSwept(
   instanceId: string,
   adapter: EventAdapterIdV3,
   sessionId: string,
-  expectedGenerationId: `gen_${string}` | null,
   reason: "stale" | "unparseable" | "missing_ts",
   ageSecs?: number,
 ): boolean {
@@ -51,7 +41,6 @@ function emitSwept(
       owner: instanceId,
       nativeSessionId: sessionId,
       adapter,
-      expectedGenerationId,
       observation:
         reason === "stale"
           ? "stale_heartbeat"
@@ -76,73 +65,13 @@ function emitSwept(
   }
 }
 
-/** Any retained or unreadable owner row prevents dependent cache deletion. */
-function retainsHeartbeat(
-  coordRoot: string,
-  activeDir: string,
-  owner: string,
-  uncertainOwners: Set<string>,
-): boolean {
-  if (uncertainOwners.has("*") || uncertainOwners.has(owner)) return true;
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(owner)) return true;
-  const heartbeat = join(activeDir, `${owner}.json`);
+/** File mtime in epoch-seconds, or +Infinity if it can't be read (treat as fresh → don't reap). */
+function mtimeSecs(path: string): number {
   try {
-    lstatSync(heartbeat);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return true;
+    return Math.floor(statSync(path).mtimeMs / 1000);
+  } catch {
+    return Number.POSITIVE_INFINITY;
   }
-  try {
-    if (!lstatSync(activeDir).isDirectory()) return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ENOENT";
-  }
-  // Callers hold this owner's custody. A sweeper that died after the initial
-  // directory scan may have left its heartbeat hidden under a private pin.
-  for (const recovery of recoverInterruptedFileDeletions(
-    activeDir,
-    (source) => source === heartbeat,
-  )) {
-    if (recovery.sourcePath && recovery.sourcePath !== heartbeat) continue;
-    if (recovery.state !== "restored") {
-      uncertainOwners.add(recovery.sourcePath ? owner : "*");
-      recordCleanupFailure(coordRoot, recovery.sourcePath ?? activeDir, recovery);
-    }
-    return true;
-  }
-  return false;
-}
-
-function recordCleanupFailure(
-  coordRoot: string,
-  sourcePath: string,
-  result: DeleteFileResult | FileRecoveryResult,
-): void {
-  if (
-    result.state !== "error" &&
-    result.state !== "recovery-required" &&
-    result.state !== "retained"
-  ) {
-    return;
-  }
-  writeProducerDiagnosticV3(coordRoot, "heartbeat_sweep_unrecorded", {
-    signal: "cache.cleanup",
-    state: "cache_cleanup_pending",
-    reason: `${result.state}:${result.error ?? "file_cleanup_pending"}; source=${sourcePath}; recovery=${result.recoveryPath ?? "unavailable"}`,
-  });
-}
-
-function recordHeartbeatCleanupResult(
-  coordRoot: string,
-  sourcePath: string,
-  owner: string,
-  result: DeleteFileResult,
-  uncertainOwners: Set<string>,
-): void {
-  if (result.state === "recovery-required" || result.state === "error") {
-    uncertainOwners.add(owner);
-  }
-  recordCleanupFailure(coordRoot, sourcePath, result);
 }
 
 export function staleSweep(coordRoot: string): {
@@ -176,171 +105,98 @@ export function staleSweep(coordRoot: string): {
   // lifecycle.sweep_observed; a terminal or unavailable generation gets a
   // heartbeat_sweep_unrecorded producer diagnostic without being resurrected.
   const liveInstanceIds = new Set<string>();
-  const uncertainOwners = new Set<string>();
-  const d = resolve(coordRoot, ".harnery", "active");
-  for (const recovery of existsSync(d)
-    ? recoverInterruptedFileDeletions(
-        d,
-        (source) => dirname(source) === d && /^[A-Za-z0-9_-]{1,128}\.json$/.test(basename(source)),
-      )
-    : []) {
-    if (recovery.state !== "restored") {
-      uncertainOwners.add(recovery.sourcePath ? basename(recovery.sourcePath, ".json") : "*");
-      recordCleanupFailure(coordRoot, recovery.sourcePath ?? d, recovery);
-    }
-  }
+  const d = join(coordRoot, ".harnery", "active");
   if (existsSync(d)) {
     for (const f of readdirSync(d)) {
       if (!f.endsWith(".json")) continue;
       const path = join(d, f);
       const idFromFile = f.replace(/\.json$/, "");
-      if (!/^[A-Za-z0-9_-]{1,128}$/.test(idFromFile)) continue;
+      let parsed: {
+        instance_id?: string;
+        last_heartbeat?: string;
+        platform?: unknown;
+        session_id?: string;
+      } | null = null;
       try {
-        withGenerationCustodyV3(coordRoot, [liveInstanceIdV3(idFromFile)], () => {
-          const revision = captureFileRevision(path);
-          if (!revision) return;
-          const mtimeSecs = Number(revision.mtimeNs / 1_000_000_000n);
-          let parsed: {
-            instance_id?: string;
-            last_heartbeat?: string;
-            platform?: unknown;
-            session_id?: string;
-            v3_generation_id?: unknown;
-          } | null = null;
-          try {
-            const value = JSON.parse(revision.bytes.toString("utf8"));
-            if (value && typeof value === "object" && !Array.isArray(value)) parsed = value;
-          } catch {
-            parsed = null;
-          }
-
-          if (parsed === null) {
-            // Unparseable: only reap if the file itself is mtime-old.
-            if (mtimeSecs < cutoff) {
-              const result = deleteFileIfUnchanged(path, revision, () =>
-                emitSwept(
-                  coordRoot,
-                  idFromFile,
-                  "claude-code",
-                  idFromFile,
-                  null,
-                  "unparseable",
-                  nowSec - mtimeSecs,
-                ),
-              );
-              recordHeartbeatCleanupResult(coordRoot, path, idFromFile, result, uncertainOwners);
-              if (result.state === "deleted") {
-                heartbeatsRemoved.push(f);
-              }
-            }
-            return;
-          }
-
-          // The filename selects the writer's custody scope. A conflicting content
-          // identity cannot authorize an audit or deletion for a different owner.
-          if (parsed.instance_id !== undefined && parsed.instance_id !== idFromFile) return;
-          const instanceId = parsed.instance_id ?? idFromFile;
-          const adapter = eventAdapterIdV3FromPlatform(parsed.platform, { context: "stale-sweep" });
-          const sessionId = parsed.session_id ?? instanceId;
-          const generationId =
-            typeof parsed.v3_generation_id === "string" &&
-            /^gen_[A-Za-z0-9._-]+$/.test(parsed.v3_generation_id)
-              ? (parsed.v3_generation_id as `gen_${string}`)
-              : null;
-          const ts = parsed.last_heartbeat
-            ? Math.floor(Date.parse(parsed.last_heartbeat) / 1000)
-            : Number.NaN;
-
-          if (!parsed.last_heartbeat || !Number.isFinite(ts)) {
-            // No / NaN last_heartbeat: can't trust content; gate on mtime.
-            if (mtimeSecs < cutoff) {
-              const result = deleteFileIfUnchanged(path, revision, () =>
-                emitSwept(
-                  coordRoot,
-                  instanceId,
-                  adapter,
-                  sessionId,
-                  generationId,
-                  "missing_ts",
-                  nowSec - mtimeSecs,
-                ),
-              );
-              recordHeartbeatCleanupResult(coordRoot, path, idFromFile, result, uncertainOwners);
-              if (result.state === "deleted") {
-                heartbeatsRemoved.push(f);
-              }
-            } else if (parsed.instance_id) {
-              liveInstanceIds.add(parsed.instance_id);
-            }
-            return;
-          }
-
-          if (ts < cutoff) {
-            // Legitimate stale prune (valid timestamp, past the freshness cutoff).
-            const result = deleteFileIfUnchanged(path, revision, () =>
-              emitSwept(
-                coordRoot,
-                instanceId,
-                adapter,
-                sessionId,
-                generationId,
-                "stale",
-                nowSec - ts,
-              ),
-            );
-            recordHeartbeatCleanupResult(coordRoot, path, idFromFile, result, uncertainOwners);
-            if (result.state === "deleted") {
-              heartbeatsRemoved.push(f);
-            }
-            return;
-          }
-
-          if (parsed.instance_id) liveInstanceIds.add(parsed.instance_id);
-        });
+        parsed = JSON.parse(readFileSync(path, "utf8"));
       } catch {
-        // Busy or unknown custody retains the cache and its dependent files.
-        uncertainOwners.add(idFromFile);
+        parsed = null;
       }
+
+      if (parsed === null) {
+        // Unparseable: only reap if the file itself is mtime-old.
+        if (mtimeSecs(path) < cutoff) {
+          try {
+            const ageSecs = nowSec - mtimeSecs(path);
+            if (
+              !emitSwept(coordRoot, idFromFile, "claude-code", idFromFile, "unparseable", ageSecs)
+            ) {
+              continue;
+            }
+            unlinkSync(path);
+            heartbeatsRemoved.push(f);
+          } catch {
+            /* swallow */
+          }
+        }
+        continue;
+      }
+
+      const instanceId = parsed.instance_id ?? idFromFile;
+      const adapter = eventAdapterIdV3FromPlatform(parsed.platform, { context: "stale-sweep" });
+      const sessionId = parsed.session_id ?? instanceId;
+      const ts = parsed.last_heartbeat
+        ? Math.floor(Date.parse(parsed.last_heartbeat) / 1000)
+        : Number.NaN;
+
+      if (!parsed.last_heartbeat || !Number.isFinite(ts)) {
+        // No / NaN last_heartbeat: can't trust content; gate on mtime.
+        if (mtimeSecs(path) < cutoff) {
+          if (
+            !emitSwept(
+              coordRoot,
+              instanceId,
+              adapter,
+              sessionId,
+              "missing_ts",
+              nowSec - mtimeSecs(path),
+            )
+          ) {
+            continue;
+          }
+          unlinkSync(path);
+          heartbeatsRemoved.push(f);
+        } else if (parsed.instance_id) {
+          liveInstanceIds.add(parsed.instance_id);
+        }
+        continue;
+      }
+
+      if (ts < cutoff) {
+        // Legitimate stale prune (valid timestamp, past the freshness cutoff).
+        if (!emitSwept(coordRoot, instanceId, adapter, sessionId, "stale", nowSec - ts)) {
+          continue;
+        }
+        unlinkSync(path);
+        heartbeatsRemoved.push(f);
+        continue;
+      }
+
+      if (parsed.instance_id) liveInstanceIds.add(parsed.instance_id);
     }
   }
 
   // 2. Prune pid-map entries whose instance has no live heartbeat.
-  const pidmapDir = resolve(coordRoot, ".harnery", "pid-map");
-  for (const recovery of existsSync(pidmapDir)
-    ? recoverInterruptedFileDeletions(
-        pidmapDir,
-        (source) => dirname(source) === pidmapDir && /^\d+$/.test(basename(source)),
-      )
-    : [])
-    recordCleanupFailure(coordRoot, recovery.sourcePath ?? pidmapDir, recovery);
+  const pidmapDir = join(coordRoot, ".harnery", "pid-map");
   if (existsSync(pidmapDir)) {
     for (const f of readdirSync(pidmapDir)) {
-      if (f.startsWith(".harnery-delete-")) continue;
       const path = join(pidmapDir, f);
       try {
-        const revision = captureFileRevision(path);
-        if (!revision) continue;
-        const row = revision.bytes.toString("utf8").trim();
+        const row = readFileSync(path, "utf8").trim();
         const ownerId = row.split("\t")[0]?.trim() ?? "";
-        const prune = () => {
-          if (
-            !ownerId ||
-            (!liveInstanceIds.has(ownerId) &&
-              !retainsHeartbeat(coordRoot, d, ownerId, uncertainOwners))
-          ) {
-            const result = deleteFileIfUnchanged(
-              path,
-              revision,
-              () => !ownerId || !retainsHeartbeat(coordRoot, d, ownerId, uncertainOwners),
-            );
-            recordCleanupFailure(coordRoot, path, result);
-            if (result.state === "deleted") pidmapsRemoved += 1;
-          }
-        };
-        if (/^[A-Za-z0-9_-]{1,128}$/.test(ownerId)) {
-          withGenerationCustodyV3(coordRoot, [liveInstanceIdV3(ownerId)], prune);
-        } else if (!ownerId) {
-          prune();
+        if (!ownerId || !liveInstanceIds.has(ownerId)) {
+          unlinkSync(path);
+          pidmapsRemoved += 1;
         }
       } catch {
         /* swallow */
@@ -350,16 +206,7 @@ export function staleSweep(coordRoot: string): {
 
   // 3. Prune prompt hashes for dead owners. Resource hashes retain their own
   // count so existing peer-hash telemetry keeps its original meaning.
-  const agentsDir = resolve(coordRoot, ".harnery");
-  for (const recovery of existsSync(agentsDir)
-    ? recoverInterruptedFileDeletions(
-        agentsDir,
-        (source) =>
-          dirname(source) === agentsDir &&
-          /^\.last-(?:resource|peer)-hash\.[A-Za-z0-9_-]{1,128}$/.test(basename(source)),
-      )
-    : [])
-    recordCleanupFailure(coordRoot, recovery.sourcePath ?? agentsDir, recovery);
+  const agentsDir = join(coordRoot, ".harnery");
   if (existsSync(agentsDir)) {
     for (const f of readdirSync(agentsDir)) {
       const resourceHash = f.startsWith(".last-resource-hash.");
@@ -370,25 +217,13 @@ export function staleSweep(coordRoot: string): {
         // Ignore atomic-write temporary files and preserve hashes when a
         // retained heartbeat's liveness could not be determined safely.
         if (!/^[A-Za-z0-9_-]{1,128}$/.test(owner)) continue;
+        if (existsSync(join(d, `${owner}.json`))) continue;
       }
-      if (!liveInstanceIds.has(owner) && /^[A-Za-z0-9_-]{1,128}$/.test(owner)) {
+      if (!liveInstanceIds.has(owner)) {
         try {
-          withGenerationCustodyV3(coordRoot, [liveInstanceIdV3(owner)], () => {
-            if (retainsHeartbeat(coordRoot, d, owner, uncertainOwners)) return;
-            const path = join(agentsDir, f);
-            const revision = captureFileRevision(path);
-            if (!revision) return;
-            const result = deleteFileIfUnchanged(
-              path,
-              revision,
-              () => !retainsHeartbeat(coordRoot, d, owner, uncertainOwners),
-            );
-            recordCleanupFailure(coordRoot, path, result);
-            if (result.state === "deleted") {
-              if (resourceHash) resourceHashesRemoved += 1;
-              else peerHashesRemoved += 1;
-            }
-          });
+          unlinkSync(join(agentsDir, f));
+          if (resourceHash) resourceHashesRemoved += 1;
+          else peerHashesRemoved += 1;
         } catch {
           /* swallow */
         }
