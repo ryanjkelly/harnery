@@ -1,0 +1,66 @@
+---
+title: "0219: Audit narrowly targeted workflow recovery"
+description: "Recover unknown run evidence and abandoned resume locks without bypassing workspace authority or live owners."
+---
+
+**Status:** accepted (2026-10-18) · **Scope:** workflow recovery
+
+## Context
+
+Reclaim refuses when a transcript is missing or corrupt, even when matching
+terminal execution proof and workspace authority remain available. Resume and
+reclaim also refuse every existing resume lock. These defaults protect live
+work, but a dead owner can leave a run permanently blocked.
+
+## Alternatives considered
+
+A generic force flag would erase unrelated safety checks. Deleting locks by age
+would confuse an old live owner with an abandoned one. Recording intent after
+the mutation would leave an interrupted recovery unaudited. Reusing a corrupt
+transcript as the recovery ledger would make that audit unreadable.
+
+## Decision
+
+Keep both operations as previews unless `--yes` is present. Each confirmed
+recovery requires an actor, a bounded reason, and an exact digest returned by
+its preview. The run ID names one target. Write an immutable, fsynced intent in
+that run's recovery ledger before the first effect. It records who, why, the
+operation, exact target and observed evidence, with outcome `unknown`. Write a
+separate completion record only after the operation succeeds. Missing completion
+means unknown; a later process must inspect current state before retrying.
+
+`run reclaim --unknown-liveness <digest>` overrides only an unknown liveness
+classification. It never overrides positive active evidence, matching terminal
+proof, current ownership, path and ref authority, resume/binding/repository
+leases, or the reservation and retained-peer checks in
+[ADR 0212](/decisions/0212-workspace-reclaim-peer-reservations/). Its digest pins
+the binding, proof and transcript, including absence. Every destructive effect
+rechecks that evidence and the existing authority guards. Unknown evidence is
+still reported as unknown after recovery; confirmation does not establish
+historical inactivity.
+
+`run unlock --lock-sha256 <digest>` removes only the exact observed resume lock
+whose valid owner is on this host and whose PID is proven absent with `ESRCH`.
+Live owners, foreign hosts, malformed records and inconclusive probes refuse.
+The command never signals a process. Acquisition and unlock share a short
+per-run mutation lease. Unlock rechecks lock bytes and filesystem identity
+under that lease before unlinking. Owner release synchronously checks the exact
+acquired nonce, bytes and inode without taking that gate: acquisition never
+replaces a present lock, and unlock cannot retire a live releaser because it
+requires `ESRCH`. The closure has no asynchronous boundary or external release
+API. A stale release cannot remove a replacement lock, even one with identical
+bytes on a different inode. Existing locks need no format migration.
+
+Holding the mutation gate during owner release was rejected after a deterministic
+contention fixture proved that a competing acquisition could leave a live
+owner's lock stranded. Reporting the release failure would expose the problem
+but would still require a retry by a long-lived host. Exact live-owner custody
+allows release to proceed safely while that unrelated gate is held.
+
+## Result and verification
+
+Focused reproductions cover confirmed unknown-evidence reclaim and abandoned
+resume-lock recovery. Regression fixtures preserve refusal of active runs,
+unproven ownership, retained peers, held leases and unknown lock owners. Audit
+failure and target replacement must leave the target unchanged. Fault injection
+between intent and completion must leave an explicit unknown outcome.

@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
+import { beginWorkflowRecovery, validateWorkflowRecoveryAuthorization } from "../recovery-audit.ts";
 import { acquireWorkflowResumeLease } from "../run-state.ts";
 import { WorkspaceAttestationError } from "./attestation-error.ts";
 import { cleanupWorkspace } from "./cleanup.ts";
@@ -53,7 +54,7 @@ import {
   type WorkspaceReclaimPreview,
   type WorkspaceReclaimResult,
 } from "./reclaim.ts";
-import { readWorkflowLiveness } from "./recovery.ts";
+import { hasActiveWorkflowEvidence, readWorkflowLiveness } from "./recovery.ts";
 import {
   appendWorkspaceEvent,
   fileSha256,
@@ -820,6 +821,7 @@ function reclaimPreview(
     run_id: binding.run_id,
     mode,
     liveness: readWorkflowLiveness(coordRoot, binding.run_id),
+    evidence_sha256: reclaimEvidenceDigest(coordRoot, binding),
     ownership: "unproven",
     dirty_paths: null,
     lease_holder: reclaimLeaseHolders(coordRoot, binding),
@@ -839,14 +841,45 @@ function reclaimPreview(
   return preview;
 }
 
-function assertReclaimLiveness(coordRoot: string, binding: WorkspaceBinding): void {
+function reclaimEvidenceDigest(coordRoot: string, binding: WorkspaceBinding): string {
+  const evidence = (name: string): string | null => {
+    try {
+      return readFileSync(join(coordRoot, ".harnery", "workflows", binding.run_id, name), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  };
+  return stableDigest({
+    binding,
+    proof: evidence("proof.json"),
+    transcript: evidence("transcript.jsonl"),
+  });
+}
+
+function assertReclaimLiveness(
+  coordRoot: string,
+  binding: WorkspaceBinding,
+  recovery?: WorkspaceReclaimOptions["unknownLiveness"],
+): void {
   const liveness = readWorkflowLiveness(coordRoot, binding.run_id);
+  if (liveness === "active" || (recovery && hasActiveWorkflowEvidence(coordRoot, binding.run_id))) {
+    throw new WorkflowReclaimError(
+      "workflow_reclaim_run_live",
+      `run ${binding.run_id} has active evidence; its workspace was left untouched`,
+    );
+  }
+  if (recovery && reclaimEvidenceDigest(coordRoot, binding) !== recovery.evidenceSha256) {
+    throw new WorkflowReclaimError(
+      "workflow_reclaim_recovery_mismatch",
+      "workflow reclaim requires the exact current preview evidence digest",
+    );
+  }
   if (liveness === "inactive") return;
+  if (liveness === "unknown" && recovery) return;
   throw new WorkflowReclaimError(
-    liveness === "active" ? "workflow_reclaim_run_live" : "workflow_reclaim_liveness_unknown",
-    liveness === "active"
-      ? `run ${binding.run_id} is active; its workspace was left untouched`
-      : `run ${binding.run_id} has missing, corrupt, or ambiguous liveness evidence; its workspace was left untouched`,
+    "workflow_reclaim_liveness_unknown",
+    `run ${binding.run_id} has missing, corrupt, or ambiguous liveness evidence; its workspace was left untouched`,
   );
 }
 
@@ -892,10 +925,11 @@ function reclaimAuthorityGuard(
   binding: WorkspaceBinding,
   claim: WorkspaceClaim,
   reservation: WorkspaceReclaimReservation,
+  recovery?: WorkspaceReclaimOptions["unknownLiveness"],
 ): void {
   try {
     reservation.assertCurrent();
-    assertReclaimLiveness(coordRoot, binding);
+    assertReclaimLiveness(coordRoot, binding, recovery);
     assertReclaimOwnership(coordRoot, binding);
     assertPeerWorkspaceAuthority(coordRoot, claim);
   } catch (error) {
@@ -914,10 +948,11 @@ async function reclaim(
     throw new Error("unsupported workspace reclaim mode");
   }
   if (!options.yes) return reclaimPreview(coordRoot, binding, options.mode);
+  if (options.unknownLiveness) validateWorkflowRecoveryAuthorization(options.unknownLiveness);
 
   // Liveness comes before terminal-proof cleanup helpers. A live run may not
   // have a proof yet, and a missing proof must never be discovered after reset.
-  assertReclaimLiveness(coordRoot, binding);
+  assertReclaimLiveness(coordRoot, binding, options.unknownLiveness);
   const claim = assertReclaimOwnership(coordRoot, binding);
   let reservation: WorkspaceReclaimReservation;
   try {
@@ -926,7 +961,7 @@ async function reclaim(
     throw new WorkflowReclaimError("workflow_reclaim_lease_held", (error as Error).message);
   }
   try {
-    reclaimAuthorityGuard(coordRoot, binding, claim, reservation);
+    reclaimAuthorityGuard(coordRoot, binding, claim, reservation, options.unknownLiveness);
     let releaseResume: () => void;
     try {
       releaseResume = acquireWorkflowResumeLease(coordRoot, binding.run_id);
@@ -953,9 +988,24 @@ async function reclaim(
           throw new WorkflowReclaimError("workflow_reclaim_lease_held", (error as Error).message);
         }
         try {
-          assertReclaimLiveness(coordRoot, binding);
+          assertReclaimLiveness(coordRoot, binding, options.unknownLiveness);
           assertReclaimOwnership(coordRoot, binding);
           const preview = reclaimPreview(coordRoot, binding, options.mode);
+          const audit = options.unknownLiveness
+            ? beginWorkflowRecovery(coordRoot, {
+                run_id: binding.run_id,
+                action: "reclaim_unknown_liveness",
+                actor: options.unknownLiveness.actor,
+                reason: options.unknownLiveness.reason,
+                target_sha256: options.unknownLiveness.evidenceSha256,
+                target: {
+                  binding_id: binding.binding_id,
+                  workspace_root: binding.workspace_root,
+                  mode: options.mode,
+                  liveness: preview.liveness,
+                },
+              })
+            : undefined;
           let preparation: ReclaimPreparation | undefined;
           // Keep ordinary cleanup's terminal-evidence checks, intent and receipts.
           // Its provider callback uses the leases already held here instead of
@@ -967,12 +1017,28 @@ async function reclaim(
             provider: {
               ...provider,
               cleanup: async (candidate, intent) => {
-                assertReclaimLiveness(coordRoot, candidate);
+                assertReclaimLiveness(coordRoot, candidate, options.unknownLiveness);
                 assertReclaimOwnership(coordRoot, candidate);
                 return cleanupUnderLease(coordRoot, candidate, claim, intent, {
                   mode: options.mode,
-                  beforeEffect: () =>
-                    reclaimAuthorityGuard(coordRoot, candidate, claim, reservation),
+                  recovery: options.unknownLiveness,
+                  beforeEffect: () => {
+                    audit?.assertCurrent();
+                    reclaimAuthorityGuard(
+                      coordRoot,
+                      candidate,
+                      claim,
+                      reservation,
+                      options.unknownLiveness,
+                    );
+                  },
+                  beforeRefEffect: () => {
+                    audit?.assertCurrent();
+                    reservation.assertCurrent();
+                    assertReclaimLiveness(coordRoot, candidate, options.unknownLiveness);
+                    requiredClaim(coordRoot, candidate);
+                    assertPeerWorkspaceAuthority(coordRoot, claim);
+                  },
                   prepared: (value) => {
                     preparation = value;
                   },
@@ -991,6 +1057,8 @@ async function reclaim(
                 "workspace cleanup preconditions could not be proved",
             );
           }
+          if (cleanupResult.status === "released" || cleanupResult.status === "already_released")
+            audit?.complete();
           return {
             ...preview,
             action: "reclaimed",
@@ -1104,7 +1172,9 @@ function cleanupUnderLease(
   intent: WorkspaceCleanupIntent,
   reclaimRequest?: {
     mode: ReclaimMode;
+    recovery?: WorkspaceReclaimOptions["unknownLiveness"];
     beforeEffect: () => void;
+    beforeRefEffect: () => void;
     prepared: (value: ReclaimPreparation) => void;
   },
   beforeRemoval?: () => void,
@@ -1152,7 +1222,7 @@ function cleanupUnderLease(
     };
   }
   const liveness = readWorkflowLiveness(coordRoot, binding.run_id);
-  if (liveness !== "inactive") {
+  if (liveness !== "inactive" && !(liveness === "unknown" && reclaimRequest?.recovery)) {
     return {
       ...base,
       status: "blocked",
@@ -1245,7 +1315,7 @@ function cleanupUnderLease(
   }
 
   if (reclaimRequest) {
-    assertReclaimLiveness(coordRoot, binding);
+    assertReclaimLiveness(coordRoot, binding, reclaimRequest.recovery);
     assertReclaimOwnership(coordRoot, binding);
     revalidateClaimResources(claim, root);
     reclaimRequest.prepared(
@@ -1293,6 +1363,7 @@ function cleanupUnderLease(
       return { ...base, status: "blocked", reason: "workspace ref changed during cleanup" };
     }
     revalidateClaimResources(claim, root);
+    reclaimRequest?.beforeRefEffect();
     const deleted = gitMaybe(repository.source_root.realpath, [
       "update-ref",
       "-d",

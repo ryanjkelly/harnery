@@ -21,6 +21,7 @@ harn run integration prepare <run-id> --policy <file> [--reviewer <name>]
 harn run integration apply <run-id> --yes [--json]
 harn run cleanup <run-id> --yes [--json]
 harn run reclaim <run-id> [--discard] [--yes] [--json]
+harn run unlock <run-id> [--lock-sha256 <sha256>] [--actor <id>] [--reason <text>] [--yes] [--json]
 harn approval list [--status pending|approved|denied] [--json]
 harn approval show <approval-id> [--json]
 harn approval approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
@@ -575,7 +576,7 @@ harn run reclaim <run-id> --discard --yes   # throw the work away, then release
 
 Without `--yes`, the command reports the run ID, mode, liveness, ownership,
 lease holders, and dirty paths without changing workspace files. JSON previews
-have `action: "preview"`, `run_id`, `mode`, `liveness`, `ownership`,
+have `action: "preview"`, `run_id`, `mode`, `liveness`, `evidence_sha256`, `ownership`,
 `lease_holder`, and `dirty_paths`. An unreadable path list is `null`, not an
 empty list. `lease_holder` is an array of resume, binding, or repository lease
 holders.
@@ -585,17 +586,19 @@ attestation. The provider acquires the resume, binding, and repository leases
 before committing or discarding files, and holds them through ordinary cleanup.
 The resume lease prevents a parked run from restarting during reclaim.
 An existing resume lock blocks reclaim even when its timestamp is old or its
-owner cannot be read. Reclaim has no override for that missing evidence.
+owner cannot be read. The separate `unlock` command can retire an exact lock
+only after proving its same-host owner is dead.
 These refusals leave workspace files untouched:
 
 | Code | Reason |
 | --- | --- |
 | `workflow_reclaim_run_live` | The run is active |
 | `workflow_reclaim_liveness_unknown` | The run's inactivity cannot be established from its evidence |
+| `workflow_reclaim_recovery_mismatch` | The supplied recovery digest differs from the current evidence |
 | `workflow_reclaim_ownership_unproven` | Workspace ownership could not be attested |
 | `workflow_reclaim_lease_held` | A required resume, binding, or repository lease cannot be acquired |
 
-`--yes` confirms the selected mode; it does not bypass any of these checks.
+`--yes` confirms the selected mode. It grants no recovery exception by itself.
 See [ADR 0207](/decisions/0207-fail-closed-on-unknown-state/) for the reclaim
 gate and the rule for unknown evidence.
 
@@ -612,6 +615,46 @@ JSON results have `action: "reclaimed"`, the preview fields, `preparation`, and
 
 `harn run workspace <run-id>` lists the dirty paths, so the choice between
 salvaging and discarding can be made without leaving Harnery.
+
+### Audited recovery
+
+When a transcript is missing or corrupt, matching terminal proof and workspace
+authority may still be available. Preview reclaim, inspect its evidence, and
+pin that exact preview digest when confirming an unknown-liveness recovery:
+
+```bash
+harn run reclaim <run-id> --json
+harn run reclaim <run-id> --unknown-liveness <evidence_sha256> --actor <id> --reason "Why recovery is appropriate" --yes
+```
+
+The override admits only unknown liveness. A readable active marker still
+refuses, including one amid corrupt transcript lines. Terminal proof, exact
+ownership, retained peer reservations and every lease remain required. The
+evidence digest is rechecked before each effect. The result retains
+`liveness: "unknown"`; confirmation does not establish historical inactivity.
+Use `--discard` only when discarding the work is intended.
+
+An abandoned resume lock has its own preview and confirmation:
+
+```bash
+harn run unlock <run-id> --json
+harn run unlock <run-id> --lock-sha256 <lock_sha256> --actor <id> --reason "Owner exited before releasing the lock" --yes
+```
+
+Unlock requires a valid owner on this host and an `ESRCH` process probe. Live,
+foreign, malformed and inconclusive owners remain blocking. It sends no signal.
+The lock digest binds bytes and filesystem identity. Acquisition and unlock
+share a short mutation lease. Owner release checks its exact nonce, bytes and
+inode synchronously, so contention cannot strand its lock and stale releases
+leave replacements untouched.
+
+Both recovery operations write an immutable, fsynced intent before effects in
+`.harnery/workflows/<run-id>/recovery/<operation-id>/intent.json`. It records the
+actor, reason, exact target and evidence with `outcome: "unknown"`. A separate
+`completion.json` cites the intent only after success. A missing completion
+means unknown, including a crash after an effect. Inspect current state before
+retrying; an intent alone proves no completed action. See
+[ADR 0219](/decisions/0219-audited-workflow-recovery/).
 
 ## Resume
 

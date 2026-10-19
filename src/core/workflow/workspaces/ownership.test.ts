@@ -133,6 +133,35 @@ describe.skipIf(!descriptorPathsAvailable)("workspace reclaim reservations", () 
     expect(readWorkspaceClaim(outer.coord, peer.claim.provider_id, peer.claim.binding_id)).toEqual(
       peer.claim,
     );
+    const dirty = join(outer.binding.workspace_root, "README.md");
+    writeFileSync(dirty, "retained overlapping peer work\n");
+    const transcript = join(
+      outer.coord,
+      ".harnery",
+      "workflows",
+      outer.binding.run_id,
+      "transcript.jsonl",
+    );
+    writeFileSync(transcript, "corrupt retained transcript\n");
+    const preview = await outer.provider.reclaim(outer.binding, { mode: "discard" });
+    await expect(
+      outer.provider.reclaim(outer.binding, {
+        mode: "discard",
+        yes: true,
+        unknownLiveness: {
+          evidenceSha256: preview.evidence_sha256,
+          actor: "operator",
+          reason: "Recover terminal evidence.",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "workflow_reclaim_ownership_unproven" });
+    expect(readFileSync(dirty, "utf8")).toBe("retained overlapping peer work\n");
+    expect(
+      readWorkspaceClaim(outer.coord, outer.claim.provider_id, outer.claim.binding_id),
+    ).toEqual(outer.claim);
+    expect(readWorkspaceClaim(outer.coord, peer.claim.provider_id, peer.claim.binding_id)).toEqual(
+      peer.claim,
+    );
   });
 
   test("expired dead reservation recovery leaves claim and worktree intact and fences old release", async () => {
@@ -215,6 +244,29 @@ describe.skipIf(!descriptorPathsAvailable)("workspace reclaim reservations", () 
       outer.provider.reclaim(outer.binding, { mode: "discard", yes: true }),
     ).rejects.toMatchObject({ code: "workflow_reclaim_ownership_unproven" });
     expect(readFileSync(dirty, "utf8")).toBe("retained dirty work\n");
+    const transcript = join(
+      outer.coord,
+      ".harnery",
+      "workflows",
+      outer.binding.run_id,
+      "transcript.jsonl",
+    );
+    const original = readFileSync(transcript, "utf8");
+    writeFileSync(transcript, "corrupt retained transcript\n");
+    const preview = await outer.provider.reclaim(outer.binding, { mode: "discard" });
+    await expect(
+      outer.provider.reclaim(outer.binding, {
+        mode: "discard",
+        yes: true,
+        unknownLiveness: {
+          evidenceSha256: preview.evidence_sha256,
+          actor: "operator",
+          reason: "Recover unknown terminal evidence.",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "workflow_reclaim_ownership_unproven" });
+    expect(readFileSync(dirty, "utf8")).toBe("retained dirty work\n");
+    writeFileSync(transcript, original);
     rmSync(dirname(bad), { recursive: true });
     const result = await outer.provider.reclaim(outer.binding, { mode: "discard", yes: true });
     expect(result.action).toBe("reclaimed");

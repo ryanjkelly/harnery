@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as childProcess from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +11,7 @@ import {
   writeScript,
 } from "../../../../tests/workspace-test-helpers.ts";
 import { runWorkflow } from "../engine.ts";
+import * as recoveryAudit from "../recovery-audit.ts";
 import { acquireWorkflowResumeLease } from "../run-state.ts";
 import { acquireNoClobberLease } from "./leases.ts";
 import { createLocalGitWorktreeProvider } from "./local-git.ts";
@@ -176,6 +178,294 @@ async function withProviderWorkspace(
 }
 
 describe.skipIf(!descriptorPathsAvailable)("provider reclaim gate", () => {
+  test("confirmed exact unknown-evidence recovery discards and releases", async () => {
+    await withProviderWorkspace(async ({ provider, binding, transcriptPath }) => {
+      writeFileSync(transcriptPath, "corrupt transcript\n");
+      const preview = await provider.reclaim(binding, { mode: "discard" });
+      const result = await provider.reclaim(binding, {
+        mode: "discard",
+        yes: true,
+        unknownLiveness: {
+          evidenceSha256: Reflect.get(preview, "evidence_sha256"),
+          actor: "operator",
+          reason: "Terminal proof retained after transcript loss.",
+        },
+      });
+      expect(result).toMatchObject({ action: "reclaimed", liveness: "unknown" });
+      expect(existsSync(binding.workspace_root)).toBe(false);
+    });
+  });
+
+  test("unknown override preview leaves work and audit untouched", async () => {
+    await withProviderWorkspace(async ({ repo, provider, binding, transcriptPath, dirtyPath }) => {
+      writeFileSync(transcriptPath, "corrupt\n");
+      const preview = await provider.reclaim(binding, { mode: "discard" });
+      expect(
+        (
+          await provider.reclaim(binding, {
+            mode: "discard",
+            unknownLiveness: {
+              evidenceSha256: preview.evidence_sha256,
+              actor: "operator",
+              reason: "Preview.",
+            },
+          })
+        ).action,
+      ).toBe("preview");
+      expect(readFileSync(dirtyPath, "utf8")).toBe("valuable uncommitted work\n");
+      expect(recoveryAudit.readWorkflowRecoveryLedger(repo, binding.run_id)).toEqual([]);
+    });
+  });
+
+  for (const defect of [
+    "changed evidence",
+    "active corrupt transcript",
+    "missing proof",
+    "mismatched proof",
+    "foreign binding",
+    "held resume",
+    "audit failure",
+    "missing actor",
+  ] as const) {
+    test(`unknown recovery refuses ${defect} before destructive effects`, async () => {
+      await withProviderWorkspace(
+        async ({ repo, provider, binding, proofPath, transcriptPath, dirtyPath }) => {
+          writeFileSync(transcriptPath, "corrupt\n");
+          const preview = await provider.reclaim(binding, { mode: "discard" });
+          let release: (() => void) | undefined;
+          let candidate = binding;
+          if (defect === "changed evidence") writeFileSync(transcriptPath, "different corrupt\n");
+          if (defect === "active corrupt transcript")
+            writeFileSync(
+              transcriptPath,
+              `corrupt\n${JSON.stringify({ run_id: binding.run_id, event: "run.resume" })}\n`,
+            );
+          if (defect === "missing proof") rmSync(proofPath);
+          if (defect === "mismatched proof") {
+            const proof = JSON.parse(readFileSync(proofPath, "utf8"));
+            proof.execution.binding.recovery_token = "f".repeat(64);
+            writeFileSync(proofPath, JSON.stringify(proof));
+          }
+          if (defect === "foreign binding")
+            candidate = { ...binding, recovery_token: "0".repeat(64) };
+          if (defect === "held resume") release = acquireWorkflowResumeLease(repo, binding.run_id);
+          if (defect === "audit failure")
+            writeFileSync(
+              join(repo, ".harnery", "workflows", binding.run_id, "recovery"),
+              "not a directory",
+            );
+          // Pin the current broken evidence too: missing proof cannot be bypassed by a fresh preview.
+          const current = [
+            "missing proof",
+            "mismatched proof",
+            "active corrupt transcript",
+            "foreign binding",
+          ].includes(defect)
+            ? await provider.reclaim(candidate, { mode: "discard" })
+            : preview;
+          const head = run(binding.workspace_root, ["rev-parse", "HEAD"]);
+          try {
+            const attempt = provider.reclaim(candidate, {
+              mode: "discard",
+              yes: true,
+              unknownLiveness: {
+                evidenceSha256: current.evidence_sha256,
+                actor: defect === "missing actor" ? "" : "operator",
+                reason: "Recover retained terminal work.",
+              },
+            });
+            if (defect === "active corrupt transcript")
+              await expect(attempt).rejects.toMatchObject({ code: "workflow_reclaim_run_live" });
+            else if (defect === "foreign binding")
+              await expect(attempt).rejects.toMatchObject({
+                code: "workflow_reclaim_ownership_unproven",
+              });
+            else await expect(attempt).rejects.toThrow();
+            expect(readFileSync(dirtyPath, "utf8")).toBe("valuable uncommitted work\n");
+            expect(run(binding.workspace_root, ["rev-parse", "HEAD"])).toBe(head);
+          } finally {
+            release?.();
+          }
+        },
+      );
+    });
+  }
+
+  test("unknown recovery salvages missing transcript and records completed audit", async () => {
+    await withProviderWorkspace(async ({ repo, provider, binding, transcriptPath }) => {
+      rmSync(transcriptPath);
+      const preview = await provider.reclaim(binding, { mode: "salvage" });
+      const result = await provider.reclaim(binding, {
+        mode: "salvage",
+        yes: true,
+        unknownLiveness: {
+          evidenceSha256: preview.evidence_sha256,
+          actor: "operator",
+          reason: "Recover terminal work after transcript loss.",
+        },
+      });
+      expect(result).toMatchObject({
+        action: "reclaimed",
+        liveness: "unknown",
+        cleanup: { status: "released" },
+      });
+      expect(run(repo, ["show", `${salvageBranch(binding.run_id)}:README.md`])).toBe(
+        "valuable uncommitted work\n",
+      );
+      expect(recoveryAudit.readWorkflowRecoveryLedger(repo, binding.run_id)).toEqual([
+        expect.objectContaining({
+          outcome: "completed",
+          intent: expect.objectContaining({
+            actor: "operator",
+            target_sha256: preview.evidence_sha256,
+          }),
+        }),
+      ]);
+    });
+  });
+
+  test("changed audit after durable intent refuses preparation", async () => {
+    await withProviderWorkspace(async ({ repo, provider, binding, transcriptPath, dirtyPath }) => {
+      writeFileSync(transcriptPath, "corrupt\n");
+      const preview = await provider.reclaim(binding, { mode: "discard" });
+      const begin = recoveryAudit.beginWorkflowRecovery;
+      const interception = spyOn(recoveryAudit, "beginWorkflowRecovery").mockImplementation(
+        (coordRoot, input) => {
+          const audit = begin(coordRoot, input);
+          writeFileSync(
+            join(
+              repo,
+              ".harnery",
+              "workflows",
+              binding.run_id,
+              "recovery",
+              audit.intent.operation_id,
+              "intent.json",
+            ),
+            "corrupt audit\n",
+          );
+          return audit;
+        },
+      );
+      try {
+        await expect(
+          provider.reclaim(binding, {
+            mode: "discard",
+            yes: true,
+            unknownLiveness: {
+              evidenceSha256: preview.evidence_sha256,
+              actor: "operator",
+              reason: "Recover terminal work.",
+            },
+          }),
+        ).rejects.toThrow("recovery intent");
+        expect(existsSync(dirtyPath)).toBe(true);
+        expect(readFileSync(dirtyPath, "utf8")).toBe("valuable uncommitted work\n");
+      } finally {
+        interception.mockRestore();
+      }
+    });
+  });
+
+  test("failure after a confirmed effect preserves an unknown audit outcome", async () => {
+    await withProviderWorkspace(async ({ repo, provider, binding, transcriptPath }) => {
+      writeFileSync(transcriptPath, "corrupt\n");
+      const preview = await provider.reclaim(binding, { mode: "discard" });
+      const spawn = childProcess.spawnSync;
+      let effect = false;
+      const interception = spyOn(childProcess, "spawnSync").mockImplementation(((
+        ...args: Parameters<typeof childProcess.spawnSync>
+      ) => {
+        const [command, argv, options] = args;
+        if (command === "git" && options?.cwd === binding.workspace_root && argv?.[0] === "reset") {
+          spawn(...args);
+          effect = true;
+          throw new Error("interrupted after reset");
+        }
+        return spawn(...args);
+      }) as typeof childProcess.spawnSync);
+      try {
+        await expect(
+          provider.reclaim(binding, {
+            mode: "discard",
+            yes: true,
+            unknownLiveness: {
+              evidenceSha256: preview.evidence_sha256,
+              actor: "operator",
+              reason: "Recover terminal work.",
+            },
+          }),
+        ).rejects.toThrow("interrupted after reset");
+        expect(effect).toBe(true);
+        expect(recoveryAudit.readWorkflowRecoveryLedger(repo, binding.run_id)[0]?.outcome).toBe(
+          "unknown",
+        );
+        expect(existsSync(binding.workspace_root)).toBe(true);
+      } finally {
+        interception.mockRestore();
+      }
+    });
+  });
+
+  test("audit drift after worktree removal preserves its exact Git ref", async () => {
+    await withProviderWorkspace(async ({ repo, provider, binding, transcriptPath }) => {
+      writeFileSync(transcriptPath, "corrupt\n");
+      const preview = await provider.reclaim(binding, { mode: "discard" });
+      const spawn = childProcess.spawnSync;
+      let removed = false;
+      const interception = spyOn(childProcess, "spawnSync").mockImplementation(((
+        ...args: Parameters<typeof childProcess.spawnSync>
+      ) => {
+        const [command, argv] = args;
+        const result = spawn(...args);
+        if (
+          command === "git" &&
+          argv?.[0] === "worktree" &&
+          argv?.[1] === "remove" &&
+          result.status === 0
+        ) {
+          removed = true;
+          const record = recoveryAudit.readWorkflowRecoveryLedger(repo, binding.run_id)[0]!;
+          writeFileSync(
+            join(
+              repo,
+              ".harnery",
+              "workflows",
+              binding.run_id,
+              "recovery",
+              record.intent.operation_id,
+              "intent.json",
+            ),
+            JSON.stringify({ ...record.intent, actor: "replacement" }),
+          );
+        }
+        return result;
+      }) as typeof childProcess.spawnSync);
+      try {
+        await expect(
+          provider.reclaim(binding, {
+            mode: "discard",
+            yes: true,
+            unknownLiveness: {
+              evidenceSha256: preview.evidence_sha256,
+              actor: "operator",
+              reason: "Recover terminal work.",
+            },
+          }),
+        ).rejects.toThrow("audit authority changed");
+        expect(removed).toBe(true);
+        expect(
+          spawn("git", ["show-ref", "--verify", binding.repository!.workspace_ref], { cwd: repo })
+            .status,
+        ).toBe(0);
+        expect(recoveryAudit.readWorkflowRecoveryLedger(repo, binding.run_id)[0]?.outcome).toBe(
+          "unknown",
+        );
+      } finally {
+        interception.mockRestore();
+      }
+    });
+  });
   test("preview reports liveness and dirty paths without changing the workspace", async () => {
     await withProviderWorkspace(async ({ provider, binding, dirtyPath }) => {
       const before = run(binding.workspace_root, ["status", "--porcelain"]);

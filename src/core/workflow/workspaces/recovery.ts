@@ -4,6 +4,29 @@ import { readWorkflowProof } from "../proof.ts";
 
 export type WorkflowLiveness = "active" | "inactive" | "unknown";
 
+/** Corruption must not hide a readable active marker from an audited override. */
+export function hasActiveWorkflowEvidence(coordRoot: string, runId: string): boolean {
+  const path = join(resolve(coordRoot), ".harnery", "workflows", runId, "transcript.jsonl");
+  if (!existsSync(path)) return false;
+  let active = false;
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    try {
+      const event = JSON.parse(line);
+      if (event?.run_id !== runId) continue;
+      if (["run.start", "run.resume", "agent.start"].includes(event.event)) active = true;
+      if (
+        event.event === "run.parked" ||
+        (event.event === "run.end" && typeof event.ok === "boolean") ||
+        (event.event === "workspace.reattach.failed" && ["blocked", "lost"].includes(event.status))
+      )
+        active = false;
+    } catch {
+      /* Unreadable evidence cannot establish inactivity. */
+    }
+  }
+  return active;
+}
+
 export function readWorkflowLiveness(coordRoot: string, runId: string): WorkflowLiveness {
   const root = resolve(coordRoot);
   const transcriptPath = join(root, ".harnery", "workflows", runId, "transcript.jsonl");

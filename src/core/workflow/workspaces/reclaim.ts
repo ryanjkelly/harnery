@@ -16,6 +16,7 @@
  */
 
 import { existsSync } from "node:fs";
+import type { WorkflowRecoveryAuthorization } from "../recovery-audit.ts";
 import { git, gitMaybe } from "./git.ts";
 import type { WorkflowLiveness } from "./recovery.ts";
 import type { WorkspaceCleanupAttempt, WorkspaceCleanupReceipt } from "./types.ts";
@@ -25,6 +26,7 @@ export type ReclaimMode = "salvage" | "discard";
 export type WorkflowReclaimRefusalCode =
   | "workflow_reclaim_run_live"
   | "workflow_reclaim_liveness_unknown"
+  | "workflow_reclaim_recovery_mismatch"
   | "workflow_reclaim_ownership_unproven"
   | "workflow_reclaim_lease_held";
 
@@ -41,6 +43,7 @@ export class WorkflowReclaimError extends Error {
 export interface WorkspaceReclaimOptions {
   mode: ReclaimMode;
   yes?: boolean;
+  unknownLiveness?: WorkflowRecoveryAuthorization & { evidenceSha256: string };
 }
 
 export interface ReclaimLeaseHolder {
@@ -56,6 +59,7 @@ export interface WorkspaceReclaimPreview {
   run_id: string;
   mode: ReclaimMode;
   liveness: WorkflowLiveness;
+  evidence_sha256: string;
   ownership: "ok" | "unproven";
   ownership_detail?: string;
   dirty_paths: string[] | null;
