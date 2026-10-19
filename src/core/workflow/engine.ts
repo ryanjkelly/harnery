@@ -1030,6 +1030,32 @@ async function executeWorkflow(
     agentProof.access = access;
 
     let recordAgentEnd: (() => void) | undefined;
+    const finalizeChild = (): void => {
+      try {
+        // Record the canonical terminal first. agent.end is the resume-cache
+        // boundary, so a child whose end was not recorded never reports success.
+        endWorkflowChildSessionV3({
+          coordRoot: opts.coordRoot,
+          instanceId: childInstanceId(runId, id),
+          runId,
+          agentId: id,
+          adapter,
+          cleanExit: agentProof.status === "succeeded",
+        });
+        recordAgentEnd?.();
+      } catch (error) {
+        const reason = `V3 terminal recording failed: ${(error as Error).message}`;
+        const failure = new Error(agentProof.error ? `${agentProof.error}; ${reason}` : reason, {
+          cause: error,
+        });
+        terminalRecordingError ??= failure;
+        agentProof.status = "failed";
+        agentProof.error = failure.message;
+        transcript("agent.failed", { id, key, error: failure.message });
+        log(`[${name}] ${failure.message}`);
+        throw failure;
+      }
+    };
     await acquire();
     try {
       await ensureDiagnosticAdmissionObserved();
@@ -1181,28 +1207,7 @@ async function executeWorkflow(
     } finally {
       reservedCostUsd = Math.max(0, reservedCostUsd - reservedForDispatch);
       try {
-        // Record the canonical terminal first. agent.end is the resume-cache
-        // boundary, so a child whose end was not recorded never reports success.
-        endWorkflowChildSessionV3({
-          coordRoot: opts.coordRoot,
-          instanceId: childInstanceId(runId, id),
-          runId,
-          agentId: id,
-          adapter,
-          cleanExit: agentProof.status === "succeeded",
-        });
-        recordAgentEnd?.();
-      } catch (error) {
-        const reason = `V3 terminal recording failed: ${(error as Error).message}`;
-        const failure = new Error(agentProof.error ? `${agentProof.error}; ${reason}` : reason, {
-          cause: error,
-        });
-        terminalRecordingError ??= failure;
-        agentProof.status = "failed";
-        agentProof.error = failure.message;
-        transcript("agent.failed", { id, key, error: failure.message });
-        log(`[${name}] ${failure.message}`);
-        throw failure;
+        finalizeChild();
       } finally {
         release();
       }
