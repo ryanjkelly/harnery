@@ -45,22 +45,27 @@ describe("inbox command", () => {
       });
     send("first");
     const output = capture();
+    // The second message arrives as soon as the first is emitted, so it is
+    // waiting for the watcher's next poll (every 250 ms) with no timer race.
+    // The window leaves several polls of margin on a loaded machine.
+    const emitData = output.emit.data;
+    let sentSecond = false;
+    output.emit.data = (row) => {
+      emitData(row);
+      if (!sentSecond) {
+        sentSecond = true;
+        send("second");
+      }
+    };
     const program = new Command();
     registerInboxCommand(program, output.emit, service, () => "recipient");
-    const append = setTimeout(() => send("second"), 20);
-    try {
-      await program.parseAsync(["inbox", "watch", "--timeout", "0.4", "--json"], { from: "user" });
-      expect(output.data).toMatchObject([
-        { body: "first", state: "surfaced" },
-        { body: "second", state: "surfaced" },
-      ]);
-      expect(service.pending("recipient")).toEqual([]);
-      expect(service.records("recipient").filter(({ kind }) => kind === "surfaced")).toHaveLength(
-        2,
-      );
-    } finally {
-      clearTimeout(append);
-    }
+    await program.parseAsync(["inbox", "watch", "--timeout", "1.5", "--json"], { from: "user" });
+    expect(output.data).toMatchObject([
+      { body: "first", state: "surfaced" },
+      { body: "second", state: "surfaced" },
+    ]);
+    expect(service.pending("recipient")).toEqual([]);
+    expect(service.records("recipient").filter(({ kind }) => kind === "surfaced")).toHaveLength(2);
   });
 
   test("watch output failure leaves the message pending for a native prompt", async () => {
