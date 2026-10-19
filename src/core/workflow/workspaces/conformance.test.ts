@@ -126,6 +126,7 @@ describe.skipIf(!descriptorPathsAvailable)("exclusive workspace reclaim conforma
       await expect(provider.reclaim(binding, { mode: "discard", yes: true })).rejects.toMatchObject(
         { code: "workflow_reclaim_ownership_unproven" },
       );
+      expect(existsSync(dirtyPath)).toBe(true);
       expect(readFileSync(dirtyPath, "utf8")).toBe("owned uncommitted work\n");
       expect(readFileSync(peerFile, "utf8")).toBe("peer recovery work\n");
       expect(git(binding.workspace_root, "status", "--porcelain")).toBe(before);
