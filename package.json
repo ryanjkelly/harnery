@@ -67,6 +67,11 @@
       "types": "./dist/core/context/index.d.ts",
       "import": "./dist/core/context/index.js"
     },
+    "./core/turn-rollback": {
+      "bun": "./src/core/turn-rollback/index.ts",
+      "types": "./dist/core/turn-rollback/index.d.ts",
+      "import": "./dist/core/turn-rollback/index.js"
+    },
     "./core/workflow": {
       "bun": "./src/core/workflow/index.ts",
       "types": "./dist/core/workflow/index.d.ts",

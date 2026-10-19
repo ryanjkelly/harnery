@@ -1,0 +1,145 @@
+---
+title: "0216: Review exact paths before rolling back a turn"
+description: "Capture index and worktree content separately, then restore only a frozen turn in an exclusively owned workspace."
+---
+
+**Status:** accepted (2026-10-18) · **Scope:** local Git workspace content
+
+Design decision: `how-should-a-turn-restore-2026-10-19-cec6`.
+
+## Context
+
+Context capsules preserve coordination continuity. Host backups exclude source
+content. Neither can undo one turn while preserving the distinction between
+staged changes, unstaged changes and untracked files. A whole-checkout reset
+would erase unrelated work, and a preview alone cannot prevent ownership from
+changing before application.
+
+## Decision
+
+Provide an explicit product API and `turn-rollback` command. A caller captures
+the beginning and end of one turn, reviews its exact-path proposal and confirms
+that proposal before application. Hooks do not infer a writable scope: they do
+not possess an immutable workspace binding or an exact list of owned paths.
+Shared checkouts refuse capture and restore until they have equivalent exclusive
+provider ownership. No automatic rollback follows a failed turn.
+
+The frozen API lives at `core/turn-rollback`:
+
+```ts
+type TurnIdentity = { turn_id: string; generation: number };
+beginTurnRollback(coordRoot, { binding, turn, paths, onSnapshotStep? }): Promise<TurnCapture>;
+sealTurnRollback(coordRoot, { binding, capture_id, onSnapshotStep? }): Promise<TurnCapture>;
+prepareTurnRollback(coordRoot, { binding, capture_id }): Promise<TurnRollbackPlan>;
+applyTurnRollback(coordRoot, {
+  binding, plan, yes, actor, reason, onStep?,
+}): Promise<TurnRollbackResult>;
+inspectTurnRollback(coordRoot, { binding, capture_id }): TurnRollbackStatus;
+```
+
+`TurnCapture` binds the exact immutable provider binding digest and its generation,
+the caller's turn identity, the repository HEAD, and a sorted nonempty set of at
+most 100 literal relative file paths. A generation must exceed all earlier turn
+generations for that binding. An unsealed capture blocks another capture. Seal
+and apply require the latest capture, so an older turn cannot undo a later turn.
+The CLI resolves a persisted binding by provider and binding ID and passes that
+same required contract; it never fabricates ownership.
+
+The index tree contains only stage-zero entries for the selected paths, with
+their exact Git blob bytes and executable modes. Absence is explicit. The
+worktree tree contains the selected regular files' raw bytes and executable
+modes, independent of the index. A separate manifest marks paths absent from
+the index as untracked. Existing untracked files are captured only when named
+explicitly and not ignored. New files created during the turn can be removed
+only when that same path was explicitly captured as absent at the beginning.
+No recursive discovery, glob, `git clean`, symlink, submodule, conflict entry,
+intent-to-add entry, ignored file or hard-linked file is accepted.
+Reject any `.git` or `.harnery` path component, resolved Git administrative
+directory, rollback state/object directory, and nested repository boundary.
+The provider's control files and authority records are never source content.
+
+Content is held in a private bare Git object store under the binding's rollback
+directory. Sparse index and worktree trees use private temporary indexes and
+retention refs, so capture never stages a file or changes the live Git index.
+Each snapshot is limited to 8 MiB of logical blob bytes, each binding to 64
+captures and 64 MiB total captured bytes. Exceeding a cap refuses before object
+capture; nothing is silently evicted. Both trees and the untracked manifest are
+checked against their recorded digest before use. Byte counts include staged
+and worktree copies even when their bytes deduplicate in Git.
+Before creating any content objects or retention refs, write and fsync a pending
+capture or seal record with its binding, turn, exact paths and reserved bytes.
+Sync each newly created parent directory entry before content effects too.
+Pending without the completed snapshot blocks further capture/seal and reports
+unknown. A crash cannot hide retained content from the cap by omitting the final
+snapshot record. `onSnapshotStep` observes the boundary after content persistence
+and before metadata completion; it never supplies authority or skips a guard.
+`onStep` observes started, worktree-published and index-published application
+boundaries. Throwing from an observer records an incomplete/unknown result;
+observers never replace the subsequent authority or content checks.
+
+### Authority and application
+
+Capture, seal, prepare and apply take the existing binding lease. They also
+take the ADR 0212 workspace reservation, attest the immutable provider binding,
+and examine retained peer claims for lexical and physical overlap. Malformed
+inventory, nested or ancestor peers, aliases, archived retained workspaces and
+unknown ownership refuse. Reservation registration shares the provider's
+publication gate, so an overlapping claim cannot publish during application.
+The existing provider attestation supplies repository and root identities.
+
+Apply additionally requires workflow liveness to be inactive, the exact latest
+sealed capture and turn generation, unchanged HEAD, a matching proposal digest,
+and current index/worktree state equal to the sealed end manifest. The plan
+lists every path, its before/end index and worktree identities, and its effect.
+`yes` defaults to false; actor and reason must be nonempty to apply. Preview has
+no content effects. A stale proposal or a changed selected path refuses without
+touching any target. Unselected files remain outside the restore set.
+
+Hold the live Git index lock while comparing its selected entries and building
+an updated index privately. Preserve every unselected index entry, then publish
+the complete updated index through that lock. Import only the required staged
+blobs into the source object store. Worktree effects use pinned, no-follow
+parent-directory descriptors and atomic file replacement. Parents must exist
+at capture; every path component is checked again before each effect. Refuse
+platforms without descriptor-backed containment. These guards cover cooperating
+provider writers and Git index writers; arbitrary external file writes are not
+an isolation guarantee and must not be described as one.
+The private copy retains unselected assume-unchanged and skip-worktree flags;
+tests assert those semantics after publication. Selected paths with either flag,
+split indexes, sparse indexes, unmerged stages and unsupported entry modes
+refuse. Git may regenerate cache extensions; no cached index bytes are promised
+after an actual restore, while capture preserves the live index byte for byte.
+
+Append and fsync a provider event naming who, why, the exact paths, turn,
+generation, capture and proposal before the first content effect. Write a
+durable started record before mutation and a terminal receipt after verifying
+both restored trees. Errors after started yield `unknown`, preserve evidence,
+and never retry content writes automatically. A crash leaves started without
+receipt; inspection reports `unknown` and later apply refuses. An applied
+receipt permits a read-only `already_applied` response only after verifying the
+current before-state and authority. No global transaction or crash-atomic
+multi-file restore is claimed.
+The synchronous inspection API reads validated capture, pending, started and
+receipt evidence without taking mutation custody. A malformed receipt refuses;
+file presence alone never proves application. Its status describes durable
+evidence, without attesting current content or ownership.
+
+## Alternatives
+
+- A whole-worktree reset or index restore can consume unrelated changes.
+- One tree loses the staged versus unstaged boundary.
+- Capturing every untracked file can retain unrelated content and secrets.
+- A second ownership registry would disagree with provider claims.
+- Automatically resuming a partly applied restore can overwrite later work.
+- Hook-driven capture without a frozen path scope cannot establish ownership.
+
+## Verification
+
+Real Git fixtures cover staged A, unstaged B and explicit untracked C, binary
+bytes, executable modes, selected deletions, unchanged unrelated files and
+unchanged index bytes during capture. Refusals cover stale content and plans,
+old turns and generations, HEAD drift, live or unknown runs, retained peers,
+reservation publication, malformed claims, symlinks, path escape, ignored files,
+unsupported entries and retention limits. A killed child after the first effect
+must leave inspection unknown and a retry without further writes. Guard-removal
+fixtures must fail their intended assertions before restored source passes.

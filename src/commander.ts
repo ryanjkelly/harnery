@@ -795,6 +795,12 @@ function harneryCommandBundles({
       load: async (program) =>
         (await import("./commands/workflow.ts")).registerWorkflowCommand(program, emit),
     },
+    lazy(
+      "turn-rollback",
+      "Capture and review exact turn paths before restoring owned content.",
+      async (program) =>
+        (await import("./commands/turn-rollback.ts")).registerTurnRollbackCommand(program, emit, context),
+    ),
     lazy("work", "Track durable objectives across bounded workflow attempts.", async (program) =>
       (await import("./commands/work.ts")).registerWorkCommand(program, emit),
     ),
