@@ -8,7 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { resolveBinName } from "../config.ts";
@@ -18,10 +18,10 @@ import { project } from "../inbox/service.ts";
 import { stateFileMode } from "../storage/modes.ts";
 import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 import type { RepoSnapshot } from "./observation.ts";
-import { observationsComparable } from "./observation.ts";
+import { repoComparisonProblems } from "./observation.ts";
 
 export type { RepoObservation, RepoSnapshot } from "./observation.ts";
-export { observationsComparable } from "./observation.ts";
+export { repoComparisonProblems } from "./observation.ts";
 
 export const CONTEXT_SCHEMA_VERSION = 1 as const;
 export const MAX_CAPSULE_BYTES = 32 * 1024;
@@ -536,33 +536,10 @@ export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: Rep
     lines.push(`Files held: ${capsule.work.files_held.join(", ")}`);
   }
 
-  const unknown: string[] = [];
-  if (!observationsComparable(capsule.repo, liveRepo)) {
-    for (const [label, repo] of [
-      ["checkpoint", capsule.repo],
-      ["current repository", liveRepo],
-    ] as const) {
-      if (repo.observation !== "ok") {
-        const detail = repo.observation_detail ? ` (${repo.observation_detail})` : "";
-        unknown.push(`${label}: ${repo.observation ?? "unavailable"}${detail}`);
-      }
-    }
-  }
-  if (capsule.repo.dirty_paths_truncated || liveRepo.dirty_paths_truncated) {
-    unknown.push("dirty path list is truncated");
-  }
-  if (
-    !capsule.repo.root ||
-    !liveRepo.root ||
-    !isAbsolute(capsule.repo.root) ||
-    !isAbsolute(liveRepo.root)
-  ) {
-    unknown.push("repository root is unknown");
-  } else if (capsule.repo.root !== liveRepo.root) {
-    unknown.push("repository root differs from the checkpoint");
-  }
-  if (!capsule.repo.branch?.trim() || !liveRepo.branch?.trim()) unknown.push("branch is unknown");
-  if (!capsule.repo.head?.trim() || !liveRepo.head?.trim()) unknown.push("HEAD is unknown");
+  const unknown = repoComparisonProblems(capsule.repo, liveRepo, [
+    "checkpoint",
+    "current repository",
+  ]);
   if (unknown.length > 0) {
     lines.push(
       `Repository could not be verified against the checkpoint: ${unknown.join("; ")}. Re-check before editing.`,
@@ -571,11 +548,11 @@ export function renderRecoveryBriefing(capsule: ContinuityCapsule, liveRepo: Rep
   }
 
   const drift: string[] = [];
-  if (capsule.repo.branch && liveRepo.branch && capsule.repo.branch !== liveRepo.branch) {
+  if (capsule.repo.branch !== liveRepo.branch) {
     drift.push(`branch changed ${capsule.repo.branch} -> ${liveRepo.branch}`);
   }
-  if (capsule.repo.head && liveRepo.head && capsule.repo.head !== liveRepo.head) {
-    drift.push(`HEAD changed ${capsule.repo.head.slice(0, 8)} -> ${liveRepo.head.slice(0, 8)}`);
+  if (capsule.repo.head !== liveRepo.head) {
+    drift.push(`HEAD changed ${capsule.repo.head?.slice(0, 8)} -> ${liveRepo.head?.slice(0, 8)}`);
   }
   const beforeDirty = new Set(capsule.repo.dirty_paths);
   const afterDirty = new Set(liveRepo.dirty_paths);

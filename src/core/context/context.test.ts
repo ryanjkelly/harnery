@@ -21,7 +21,6 @@ import {
   completeContextRecovery,
   extractContextSample,
   markContextCompactionCompleted,
-  observationsComparable,
   prepareContextRecovery,
   type RepoSnapshot,
   readContextState,
@@ -29,6 +28,7 @@ import {
   recordContextSample,
   recoverContext,
   renderRecoveryBriefing,
+  repoComparisonProblems,
   snapshotRepo,
 } from "./index.ts";
 
@@ -889,7 +889,9 @@ describe("repository observation safety", () => {
 
   test("snapshots without an observation never establish a match", () => {
     const { observation: _observation, ...legacy } = observedRepo;
-    expect(observationsComparable({}, observedRepo)).toBe(false);
+    expect(repoComparisonProblems(legacy as RepoSnapshot, observedRepo, ["old", "new"])).toEqual([
+      "old snapshot is unavailable",
+    ]);
     expectUnverified(renderRecoveryBriefing(capsuleFor(legacy as RepoSnapshot), observedRepo));
   });
 });

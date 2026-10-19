@@ -241,7 +241,7 @@ describe("repository observation evidence", () => {
       ).toBeNull();
       expect(proof.repository.drift.incomplete).toBe(true);
       expect(proof.repository.drift.note).toContain(
-        `${field === "branch" ? "Branch" : "HEAD"} drift is unknown`,
+        `${field === "branch" ? "branch" : "HEAD"} is unknown`,
       );
       // Existing packets must not retain a false scalar comparison either.
       proof.repository.drift[field === "branch" ? "branch_changed" : "head_changed"] = false;
@@ -259,24 +259,23 @@ describe("repository observation evidence", () => {
         proof.repository.drift[field === "branch" ? "branch_changed" : "head_changed"],
       ).toBeNull();
       const rendered = renderWorkflowProof(proof);
-      expect(rendered).toContain(
-        field === "branch" ? "branch unknown -> main" : "HEAD unknown -> bbbbbbbb",
-      );
+      expect(rendered).toContain("repository: drift unknown");
+      expect(rendered).toContain(`${field === "branch" ? "branch" : "HEAD"} is unknown`);
     });
   }
 
   test("truncated lists cannot prove a checkpoint path was cleared", () => {
     const proof = build(before, { ...after, dirty_paths_truncated: true });
     expect(proof.repository.drift).toMatchObject({
-      branch_changed: false,
-      head_changed: true,
+      branch_changed: null,
+      head_changed: null,
       dirty_paths_added: null,
       dirty_paths_cleared: null,
       dirty_paths_retained: null,
       incomplete: true,
       note: expect.stringContaining("truncated"),
     });
-    expect(renderWorkflowProof(proof)).toContain("dirty-path drift unknown");
+    expect(renderWorkflowProof(proof)).toContain("repository: drift unknown");
     expect(renderWorkflowProof(proof)).not.toContain("1 cleared");
   });
 
@@ -305,7 +304,7 @@ describe("repository observation evidence", () => {
     const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
     writeFileSync(path, `${JSON.stringify(persisted)}\n`);
     expect(readWorkflowProof(root, "wf-test").repository.drift.dirty_paths_cleared).toBeNull();
-    expect(renderWorkflowProof(persisted)).toContain("dirty-path drift unknown");
+    expect(renderWorkflowProof(persisted)).toContain("repository: drift unknown");
   });
 });
 
