@@ -1,5 +1,5 @@
 /** End-to-end binary smoke tests for the universal V3 hook path. */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -20,6 +20,9 @@ import { eventV3Paths } from "../../src/core/events/v3/writer.ts";
 const HARNERY_DIR = resolve(import.meta.dir, "../..");
 const AGENT_HOOK = join(HARNERY_DIR, "bin", "agent-hook");
 const roots: string[] = [];
+
+// Each test drives several agent-hook processes in sequence.
+setDefaultTimeout(15_000);
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
