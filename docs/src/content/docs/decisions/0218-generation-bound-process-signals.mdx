@@ -40,9 +40,12 @@ and SIGKILL. The supervisor keeps its durable stop-only behavior on Windows.
 The helper verifies the token before accepting a second input line that
 authorizes the effect. EOF closes the handle without signaling. The helper
 closes its handle on every exit. Missing runtimes, unsupported kernels or
-platforms, denied access, malformed output and timeouts all return unknown and
-send no signal. A failed effect after successful verification returns same
-with sent false. Service stop requests are durable before the optional signal.
+platforms, and access denied before authorization return unknown without a
+signal. After authorization, malformed or lost final output and timeouts leave
+the outcome unknown; a signal may already have occurred. Neither case permits
+a numeric PID fallback. A failed effect after successful verification returns
+same with sent false. Service stop requests are durable before the optional
+signal.
 
 ## Result and limits
 
