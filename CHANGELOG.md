@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.44.0
+
+### Minor Changes
+
+- 4bd8654: Report unreadable repository observations as unknown in checkpoint recovery and workflow proof. Failed reads no longer claim a checkpoint match or cleared dirty paths.
+
+  Guard governor, supervisor, and server stop signals with a process-generation recheck. Missing or different start tokens send no signal. Service status reports generation, running and installed builds, and whether a restart is needed. Server records with unknown identity remain visible; arbitrary stop commands and automatic adoption from old tunnel state are removed. Registry stop controls a tunnel's recorded gate; saved provider-helper PIDs lack generation evidence and are left alone.
+
+  Preview `run reclaim` without `--yes`. Both salvage and discard now prove run inactivity and workspace ownership, and hold the resume, binding, and repository leases before changing files. Refusals leave workspace files untouched. The raw reclaim preparation helper is no longer a public export; callers use the guarded provider operation. See [ADR 0207](https://harnery.com/decisions/0207-fail-closed-on-unknown-state/).
+
+- bf87b5a: Add an explicit removal entry limit up to 100,000 for one verified
+  caller-owned managed artifact. Keep the 10,000-entry default and all existing
+  path, ownership and hold protections.
+- 3e5c1f0: Add a portable ZIP toolkit for embedding hosts, with bounded decoding, checksum validation, collision checks, and extraction that rejects existing symbolic links. Existing outputs require an explicit overwrite option, and atomic replacement preserves other hard links to an existing file.
+
+### Patch Changes
+
+- e1bc022: Keep governor runs moving after a planner returns an invalid dependency graph. Record the failed plan and charge the existing replan budget, then let the governor retry within its frozen limits. Workflow, storage, and persisted review-input failures keep their existing error behavior.
+- 4f21b48: Add guarded removal of clean repository copies inside an owned artifact. The command refuses unpublished HEAD, branch and tag commits, uncommitted work, and registered worktrees while preserving the surrounding artifact and evidence.
+- 1631d37: List pending and recently surfaced task messages in context recovery briefings. Recovery leaves inbox receipts and checkpoint history unchanged.
+- 232b5c4: Bind context recovery acceptance to the exact prepared checkpoint and task instance. Refuse stale or mismatched acceptance without changing newer state, and keep repeated completion idempotent.
+- 5ec2fac: `harn doctor` now reports the `node` executable on PATH. Under Bun it previously showed the Node version Bun emulates, which could hide an old or missing Node install. A missing Node under Bun is a warning, and Node older than 20 still fails.
+- 79dd3e2: Make session-name Stop remediation open a fresh verification boundary before requesting the exact display, so a previously rejected reply cannot keep recovery pending.
+- 2c09514: Stale workspace lease recovery no longer strands the winner. The winning claimant now moves its recovery directory to a private name before emptying it, so a contender's claim can no longer replace the emptied directory and fail the winner's cleanup after it already holds the lease.
+- 229f842: Keep literal inline-code contents when checking Markdown heading anchors. Angle-bracket text and underscores inside matching code spans now survive markup removal, while actual HTML tags outside code still disappear. Matching backtick runs and duplicate headings retain their heading-anchor behavior.
+- d67c8a6: `browse --login` under WSL now keeps browser-session cookies and reports where the sign-in ended. Before the Windows sign-in window opens, the dedicated profile is set to continue where it left off, so closing the window no longer deletes cookies that have no expiry date, and the headless read restores the last session so those cookies are copied into the store. The read also lists the pages left open on the sign-in site and prints the last one as `[--login] Last page: <url>`, plus a JSON `login` summary on stdout with `lastPage`, for sites whose landing address carries a per-session token. Closing the profile now fails loudly when a Chrome process survives, and both the sign-in and the read refuse to start while Chrome is still open on the profile instead of handing off to the open window.
+- f213979: Record mailbox drains as injection-unconfirmed instead of claiming delivery before hook output succeeds. Approval decisions remain separate from unread message notifications.
+- 340224a: Allow explicitly named copied Harnery state inside an authenticated caller's owned managed artifact while preserving live workspace, artifact record, peer claim, Git and path protections.
+- b9a3beb: Bind peer pings to known task instances, including stale and done recipients. Route CLI and web messages through the private instance inbox, surface them after native output succeeds, and provide a supported inbox watcher without changing presence or file claims.
+- df42f60: Keep private home-path owners distinct in diagnostic exports and preserve captured finding episodes and their evidence links during replay. Freeze the producer's output before redaction so replay checks the original result independently.
+- b754332: `harn section` now picks the header that exactly matches the query when other headers only contain it, so "Media" selects `## Media` beside `## Media recipes`.
+- 40865b3: Keep stale-sweep observations bound to the captured generation. Coordinate cache publication with exact-file cleanup, preserve refreshed and replacement state, and recover retained files after process death without overwriting newer publications.
+- 623b80e: Preserve partial output from failed spawns and carry explicit effect and refusal
+  uncertainty into retry decisions, workflow proof and work charging. Require
+  positive no-effect evidence and observed absent output before granting an
+  automatic retry or an uncharged attempt; keep genuinely unstarted processes
+  uncharged and stopped.
+- 623b80e: Keep workflow terminal writes and cache cleanup bound to the generation captured at dispatch. Fail the run when terminal confirmation fails, reject stale authority mutations and pending replay, and recover held cache cleanup after process death without consuming a replacement generation.
+- 987976f: Protect retained peer workspace authority before reclaim changes files. Claim
+  publication and cleanup now share recoverable path reservations, while
+  unrelated allocations can continue during reclaim preparation.
+- 43c6212: The ZIP toolkit now accepts an archive, base, or destination whose parent directories pass through a symbolic link, such as `/tmp` and `/var` on macOS. It still refuses a link at the named path itself or anywhere below it.
+
 ## 0.43.0
 
 ### Minor Changes
