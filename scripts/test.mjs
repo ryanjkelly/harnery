@@ -90,6 +90,13 @@ const workflowProcessFiles = new Set([
 // them separate from ordinary unit tests so the timing summary identifies the
 // source of a slowdown instead of reporting one opaque core bucket.
 const namedCorePartitions = [
+  // Hook routing repeatedly starts native adapter processes. Give its fixtures
+  // a fresh process without changing callback deadlines or assertions.
+  {
+    label: "hook CLI routing test partition",
+    matches: (file) => file === "src/core/hooks/cli.v3-routing.test.ts",
+    extraArgs: coreTestArgs,
+  },
   {
     label: "OpenClaw plugin test partition",
     matches: (file) => file.startsWith("openclaw-plugin/test/"),
