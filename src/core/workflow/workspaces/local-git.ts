@@ -25,11 +25,7 @@ import {
   worktreeInventory,
 } from "./git.ts";
 import { acquireNoClobberLease } from "./leases.ts";
-import {
-  claimOverlapsWorkspace,
-  reserveWorkspaceReclaim,
-  type WorkspaceReclaimReservation,
-} from "./ownership.ts";
+import { claimOverlapsWorkspace } from "./ownership.ts";
 import {
   assertContainedExisting,
   assertPathIdentity,
@@ -879,7 +875,7 @@ function assertPeerWorkspaceAuthority(coordRoot: string, claim: WorkspaceClaim):
         throw new Error("retained peer binding authority is missing");
       }
       if (!claimOverlapsWorkspace(peer, claim.workspace_root)) continue;
-      // Process termination, archival and an expired reservation do not release
+      // Process termination, archival and an expired lease do not release
       // a resource. Require the provider's release record AND current absence.
       if (binding && events.some((event) => event.event === "released")) {
         const current = attestSync(coordRoot, binding);
@@ -896,11 +892,9 @@ function reclaimAuthorityGuard(
   coordRoot: string,
   binding: WorkspaceBinding,
   claim: WorkspaceClaim,
-  reservation: WorkspaceReclaimReservation,
   force?: boolean,
 ): void {
   try {
-    reservation.assertCurrent();
     assertReclaimLiveness(coordRoot, binding, force);
     assertReclaimOwnership(coordRoot, binding);
     assertPeerWorkspaceAuthority(coordRoot, claim);
@@ -925,116 +919,105 @@ async function reclaim(
   // have a proof yet, and a missing proof must never be discovered after reset.
   assertReclaimLiveness(coordRoot, binding, options.force);
   const claim = assertReclaimOwnership(coordRoot, binding);
-  let reservation: WorkspaceReclaimReservation;
+  reclaimAuthorityGuard(coordRoot, binding, claim, options.force);
+  let releaseResume: () => void;
   try {
-    reservation = reserveWorkspaceReclaim(coordRoot, claim);
+    releaseResume = acquireWorkflowResumeLease(coordRoot, binding.run_id);
   } catch (error) {
     throw new WorkflowReclaimError("workflow_reclaim_lease_held", (error as Error).message);
   }
   try {
-    reclaimAuthorityGuard(coordRoot, binding, claim, reservation, options.force);
-    let releaseResume: () => void;
+    let releaseBinding: () => void;
     try {
-      releaseResume = acquireWorkflowResumeLease(coordRoot, binding.run_id);
+      releaseBinding = acquireLease(
+        coordRoot,
+        workspaceLockPath(coordRoot, PROVIDER_ID, binding.binding_id),
+        claim,
+        "binding",
+      );
     } catch (error) {
       throw new WorkflowReclaimError("workflow_reclaim_lease_held", (error as Error).message);
     }
     try {
-      let releaseBinding: () => void;
+      let releaseRepository: () => void;
       try {
-        releaseBinding = acquireLease(
-          coordRoot,
-          workspaceLockPath(coordRoot, PROVIDER_ID, binding.binding_id),
-          claim,
-          "binding",
-        );
+        releaseRepository = acquireRepositoryLease(coordRoot, claim);
       } catch (error) {
         throw new WorkflowReclaimError("workflow_reclaim_lease_held", (error as Error).message);
       }
       try {
-        let releaseRepository: () => void;
-        try {
-          releaseRepository = acquireRepositoryLease(coordRoot, claim);
-        } catch (error) {
-          throw new WorkflowReclaimError("workflow_reclaim_lease_held", (error as Error).message);
-        }
-        try {
-          assertReclaimLiveness(coordRoot, binding, options.force);
-          assertReclaimOwnership(coordRoot, binding);
-          const preview = reclaimPreview(coordRoot, binding, options.mode);
-          if (options.force && preview.liveness !== "inactive") {
-            appendWorkspaceEvent(coordRoot, claim, "reclaim_forced", {
-              run_id: binding.run_id,
-              mode: options.mode,
-              liveness: preview.liveness,
-              pid: process.pid,
-              host: hostname(),
-            });
-          }
-          let preparation: ReclaimPreparation | undefined;
-          // Keep ordinary cleanup's terminal-evidence checks, intent and receipts.
-          // Its provider callback uses the leases already held here instead of
-          // trying to acquire them again. Preparation occurs only after all of
-          // cleanup's path, ownership, ref and registration checks have succeeded.
-          const cleanupResult = await cleanupWorkspace({
-            coordRoot,
-            runId: binding.run_id,
-            provider: {
-              ...provider,
-              cleanup: async (candidate, intent) => {
-                assertReclaimLiveness(coordRoot, candidate, options.force);
-                assertReclaimOwnership(coordRoot, candidate);
-                return cleanupUnderLease(coordRoot, candidate, claim, intent, {
-                  mode: options.mode,
-                  force: options.force,
-                  beforeEffect: () => {
-                    reclaimAuthorityGuard(coordRoot, candidate, claim, reservation, options.force);
-                  },
-                  beforeRefEffect: () => {
-                    reservation.assertCurrent();
-                    assertReclaimLiveness(coordRoot, candidate, options.force);
-                    requiredClaim(coordRoot, candidate);
-                    assertPeerWorkspaceAuthority(coordRoot, claim);
-                  },
-                  prepared: (value) => {
-                    preparation = value;
-                  },
-                });
-              },
-            },
+        assertReclaimLiveness(coordRoot, binding, options.force);
+        assertReclaimOwnership(coordRoot, binding);
+        const preview = reclaimPreview(coordRoot, binding, options.mode);
+        if (options.force && preview.liveness !== "inactive") {
+          appendWorkspaceEvent(coordRoot, claim, "reclaim_forced", {
+            run_id: binding.run_id,
+            mode: options.mode,
+            liveness: preview.liveness,
+            pid: process.pid,
+            host: hostname(),
           });
-          if (
-            !preparation &&
-            cleanupResult.status !== "released" &&
-            cleanupResult.status !== "already_released"
-          ) {
-            throw new WorkflowReclaimError(
-              "workflow_reclaim_ownership_unproven",
-              ("reason" in cleanupResult ? cleanupResult.reason : undefined) ??
-                "workspace cleanup preconditions could not be proved",
-            );
-          }
-          return {
-            ...preview,
-            action: "reclaimed",
-            lease_holder: [],
-            preparation: preparation ?? {
-              action: "already_gone",
-              detail: "the workspace is already released",
-            },
-            cleanup: cleanupResult,
-          };
-        } finally {
-          releaseRepository();
         }
+        let preparation: ReclaimPreparation | undefined;
+        // Keep ordinary cleanup's terminal-evidence checks, intent and receipts.
+        // Its provider callback uses the leases already held here instead of
+        // trying to acquire them again. Preparation occurs only after all of
+        // cleanup's path, ownership, ref and registration checks have succeeded.
+        const cleanupResult = await cleanupWorkspace({
+          coordRoot,
+          runId: binding.run_id,
+          provider: {
+            ...provider,
+            cleanup: async (candidate, intent) => {
+              assertReclaimLiveness(coordRoot, candidate, options.force);
+              assertReclaimOwnership(coordRoot, candidate);
+              return cleanupUnderLease(coordRoot, candidate, claim, intent, {
+                mode: options.mode,
+                force: options.force,
+                beforeEffect: () => {
+                  reclaimAuthorityGuard(coordRoot, candidate, claim, options.force);
+                },
+                beforeRefEffect: () => {
+                  assertReclaimLiveness(coordRoot, candidate, options.force);
+                  requiredClaim(coordRoot, candidate);
+                  assertPeerWorkspaceAuthority(coordRoot, claim);
+                },
+                prepared: (value) => {
+                  preparation = value;
+                },
+              });
+            },
+          },
+        });
+        if (
+          !preparation &&
+          cleanupResult.status !== "released" &&
+          cleanupResult.status !== "already_released"
+        ) {
+          throw new WorkflowReclaimError(
+            "workflow_reclaim_ownership_unproven",
+            ("reason" in cleanupResult ? cleanupResult.reason : undefined) ??
+              "workspace cleanup preconditions could not be proved",
+          );
+        }
+        return {
+          ...preview,
+          action: "reclaimed",
+          lease_holder: [],
+          preparation: preparation ?? {
+            action: "already_gone",
+            detail: "the workspace is already released",
+          },
+          cleanup: cleanupResult,
+        };
       } finally {
-        releaseBinding();
+        releaseRepository();
       }
     } finally {
-      releaseResume();
+      releaseBinding();
     }
   } finally {
-    reservation.release();
+    releaseResume();
   }
 }
 
@@ -1101,17 +1084,9 @@ async function cleanup(
   try {
     const releaseRepository = acquireRepositoryLease(coordRoot, claim);
     try {
-      const reservation = reserveWorkspaceReclaim(coordRoot, claim);
-      try {
-        const authorityGuard = () => {
-          reservation.assertCurrent();
-          assertPeerWorkspaceAuthority(coordRoot, claim);
-        };
-        authorityGuard();
-        return cleanupUnderLease(coordRoot, binding, claim, intent, undefined, authorityGuard);
-      } finally {
-        reservation.release();
-      }
+      const authorityGuard = () => assertPeerWorkspaceAuthority(coordRoot, claim);
+      authorityGuard();
+      return cleanupUnderLease(coordRoot, binding, claim, intent, undefined, authorityGuard);
     } finally {
       releaseRepository();
     }

@@ -3,7 +3,9 @@ title: "0212: Reserve a workspace before reclaiming it"
 description: "Share path reservations between workspace claim publication and destructive reclaim while allowing unrelated allocations to progress."
 ---
 
-**Status:** accepted (2026-10-18) · **Scope:** local Git workspace provider
+**Status:** withdrawn in part (2026-10-19) · **Scope:** local Git workspace provider
+
+The publication lease and per-binding reclaim reservation were removed; the retained-peer overlap check before each destructive effect and before worktree removal remains, and it alone passes the publication-at-preparation-boundary fixture.
 
 ## Context
 

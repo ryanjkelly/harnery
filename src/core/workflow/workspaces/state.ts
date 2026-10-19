@@ -19,7 +19,7 @@ import {
   stableDigest,
   writeImmutableJson,
 } from "../durable-record.ts";
-import { assertClaimAuthority, publishWorkspaceClaim } from "./ownership.ts";
+import { assertClaimAuthority } from "./ownership.ts";
 
 export { appendWorkflowTranscriptEvent } from "../transcript.ts";
 
@@ -143,10 +143,6 @@ export function readWorkspaceRequest(
 }
 
 export function writeWorkspaceClaim(coordRoot: string, claim: WorkspaceClaim): boolean {
-  return publishWorkspaceClaim(coordRoot, claim, () => writeClaim(coordRoot, claim));
-}
-
-function writeClaim(coordRoot: string, claim: WorkspaceClaim): boolean {
   const path = workspaceClaimPath(coordRoot, claim.provider_id, claim.binding_id);
   try {
     return writeImmutableJson(path, claim);
