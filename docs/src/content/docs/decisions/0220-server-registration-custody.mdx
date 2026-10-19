@@ -44,3 +44,55 @@ of replacing a winner's state. Tailscale admission atomically publishes pending
 route intent before the provider mutation; only a successful effect publishes
 ready state. A lost provider outcome remains pending and cannot produce a live
 delivery URL. Provider cleanup failure retains the original intent.
+
+## Tunnel readiness
+
+Saved numeric PIDs do not establish that a tunnel still owns its URL. The
+toolkit now exposes `tunnelReadiness(state, verifier)`, returning `ready`,
+`dead` or `unknown`. The verifier is mandatory. There is no PID-only boolean
+alias or default verifier.
+
+The injected verifier observes each original PID and saved process token and
+holds the original registration through those observations. The product
+adapter `createTunnelReadinessVerifier(options)` matches the saved nonce,
+gate PID, token, port and URL to the local registry receipt before taking
+custody. A status read never adopts a newly observed token.
+
+Cloudflare state uses `cloudflared_pid` and `cloudflared_start_token` for its
+provider process. Tailscale has no provider child and requires a ready external
+route intent. Obsolete generic provider fields are removed from the public
+type. Raw records containing those fields remain on disk as unknown evidence;
+they cannot authorize reuse, replacement, reload or shutdown. No compatibility
+reader translates them into current authority.
+
+Ready requires the original registration and every required process generation
+to match. Dead requires positive ESRCH absence for every original process.
+Missing authority, changed generations, uncertain probes, partial absence and
+pending provider effects remain unknown. `up` refuses unknown state before
+cleanup or a new launch. Status labels it unknown, and file and artifact links
+select a tunnel only when readiness is ready. Existing destructive custody and
+lifecycle leases remain required.
+
+Pending Tailscale intent permits only its existing exact cleanup path. The
+original receipt and every saved process witness remain required; shutdown must
+prove process absence and provider cleanup success before clearing captured
+state. Pending intent never authorizes reuse or reload. Missing canonical
+Cloudflare process witnesses refuse effects even when the gate receipt matches.
+Cleanup requires the recorded Tailscale mode, path and HTTPS port without
+defaults. Tailscale ready publication keeps the original pending receipt after
+the provider effect; it never registers again to adopt a replacement nonce.
+
+Commands read the exact selected state filename and require its raw instance
+name to match the request. Unreadable, malformed or mismatched existing frames
+remain unknown; only ENOENT means absent. Enumeration uses the same admission
+rule. Publication and provider effects share the complete original receipt
+match, including local host, service type, saved URL and gate port.
+
+`findLiveTunnelForOrigin` and `tunnelFileUrl` also require the explicit verifier.
+The toolkit remains independent of coordination imports; commands and product
+readers supply the registry adapter. All callers cut over together.
+
+Focused counterexamples cover legacy fields, recycled PIDs, missing or replaced
+receipts, unknown retention before effects and delivery URL suppression. Effect
+and guard reversals must fail each new callback's intended assertion, then pass
+after exact restoration.

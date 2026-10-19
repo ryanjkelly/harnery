@@ -74,7 +74,7 @@ export {
   readProcessInfo,
   scanSupport,
 } from "./net.ts";
-export { tunnelServerId, tunnelServerInput } from "./tunnels.ts";
+export { createTunnelReadinessVerifier, tunnelServerId, tunnelServerInput } from "./tunnels.ts";
 
 export const SERVER_RECORD_SCHEMA_VERSION = 2;
 export const SERVER_DEFAULT_IDLE_HOURS = 2;

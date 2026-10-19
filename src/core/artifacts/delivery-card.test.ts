@@ -1,3 +1,21 @@
+import type { TunnelState } from "../../lib/tunnel/state.ts";
+import { processStartToken, registerServer, tunnelServerInput } from "../servers/index.ts";
+
+function registeredTunnel(
+  repoRoot: string,
+  values: Omit<TunnelState, "allow_paths"> & { allow_paths?: string[] },
+): TunnelState {
+  const originalToken = processStartToken(process.pid)!;
+  const state = {
+    ...values,
+    allow_paths: values.allow_paths ?? ["/"],
+    gate_start_token: originalToken,
+    cloudflared_start_token: originalToken,
+  };
+  const receipt = registerServer(tunnelServerInput(state, repoRoot), { coordRoot: repoRoot })!;
+  return { ...state, registration_id: receipt.registration_id };
+}
+
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +29,43 @@ import {
 import { createArtifact } from "./index.ts";
 
 describe("artifact delivery cards", () => {
+  test("unknown original provider authority cannot advertise a saved artifact URL", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "harnery-delivery-unknown-"));
+    Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });
+    try {
+      const created = createArtifact(repoRoot, {
+        slug: "unknown-card",
+        purpose: "Exercise unknown delivery authority",
+        retentionDays: 3,
+        id: "unknown-card-id",
+      });
+      writeFileSync(join(created.path, "video.mp4"), "video");
+      const dir = join(repoRoot, ".cache", "tunnel");
+      mkdirSync(dir, { recursive: true });
+      const state = registeredTunnel(repoRoot, {
+        name: "harnery-web",
+        provider: "cloudflare",
+        url: "https://unverified.example",
+        gate_pid: process.pid,
+        cloudflared_pid: process.pid,
+        started_at: "2026-10-19T00:00:00Z",
+        target: "127.0.0.1:4276",
+        vhost: "localhost:4276",
+        gate_port: 9001,
+        allow_paths: ["/browse", "/files"],
+      });
+      state.cloudflared_start_token = "another-generation";
+      writeFileSync(join(dir, "state-harnery-web.json"), JSON.stringify(state));
+      const card = renderArtifactDeliveryCard(repoRoot, created.manifest.artifact_id, undefined, {
+        platform: "linux",
+        webPort: 4276,
+      });
+      expect(card.markdown).not.toContain("unverified.example");
+      expect(card.markdown).toContain("http://localhost:4276");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
   test("needs no manifest and inventories safe visible root items", () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "harnery-delivery-card-auto-"));
     Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });
@@ -147,17 +202,19 @@ describe("artifact delivery cards", () => {
       mkdirSync(tunnelDir, { recursive: true });
       writeFileSync(
         join(tunnelDir, "state-harnery-files.json"),
-        JSON.stringify({
-          name: "harnery-files",
-          provider: "cloudflare",
-          url: "https://files.example/",
-          gate_pid: process.pid,
-          cloudflared_pid: process.pid,
-          started_at: "2026-09-06T20:00:00.000Z",
-          target: "127.0.0.1:4276",
-          vhost: "harnery-files.localhost",
-          gate_port: 9001,
-        }),
+        JSON.stringify(
+          registeredTunnel(repoRoot, {
+            name: "harnery-files",
+            provider: "cloudflare",
+            url: "https://files.example/",
+            gate_pid: process.pid,
+            cloudflared_pid: process.pid,
+            started_at: "2026-09-06T20:00:00.000Z",
+            target: "127.0.0.1:4276",
+            vhost: "harnery-files.localhost",
+            gate_port: 9001,
+          }),
+        ),
       );
 
       const card = renderArtifactDeliveryCard(repoRoot, created.manifest.artifact_id, undefined, {
@@ -188,18 +245,20 @@ describe("artifact delivery cards", () => {
       mkdirSync(tunnelDir, { recursive: true });
       writeFileSync(
         join(tunnelDir, "state-harnery-web.json"),
-        JSON.stringify({
-          name: "harnery-web",
-          provider: "cloudflare",
-          url: "https://public.example/",
-          gate_pid: process.pid,
-          cloudflared_pid: process.pid,
-          started_at: "2026-09-06T13:00:00.000Z",
-          target: "127.0.0.1:4276",
-          vhost: "localhost:4276",
-          gate_port: 9001,
-          allow_paths: ["/browse", "/files"],
-        }),
+        JSON.stringify(
+          registeredTunnel(repoRoot, {
+            name: "harnery-web",
+            provider: "cloudflare",
+            url: "https://public.example/",
+            gate_pid: process.pid,
+            cloudflared_pid: process.pid,
+            started_at: "2026-09-06T13:00:00.000Z",
+            target: "127.0.0.1:4276",
+            vhost: "localhost:4276",
+            gate_port: 9001,
+            allow_paths: ["/browse", "/files"],
+          }),
+        ),
       );
 
       const card = renderArtifactDeliveryCard(repoRoot, created.manifest.artifact_id, undefined, {
@@ -234,18 +293,20 @@ describe("artifact delivery cards", () => {
       mkdirSync(tunnelDir, { recursive: true });
       writeFileSync(
         join(tunnelDir, "state-harnery-web.json"),
-        JSON.stringify({
-          name: "harnery-web",
-          provider: "cloudflare",
-          url: "https://scoped.example/",
-          gate_pid: process.pid,
-          cloudflared_pid: process.pid,
-          started_at: "2026-09-06T13:00:00.000Z",
-          target: "127.0.0.1:4276",
-          vhost: "localhost:4276",
-          gate_port: 9001,
-          allow_paths: ["/decisions"],
-        }),
+        JSON.stringify(
+          registeredTunnel(repoRoot, {
+            name: "harnery-web",
+            provider: "cloudflare",
+            url: "https://scoped.example/",
+            gate_pid: process.pid,
+            cloudflared_pid: process.pid,
+            started_at: "2026-09-06T13:00:00.000Z",
+            target: "127.0.0.1:4276",
+            vhost: "localhost:4276",
+            gate_port: 9001,
+            allow_paths: ["/decisions"],
+          }),
+        ),
       );
 
       const card = renderArtifactDeliveryCard(repoRoot, created.manifest.artifact_id, undefined, {

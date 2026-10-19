@@ -236,6 +236,9 @@ function tunnelState(overrides: Partial<TunnelState>): TunnelState {
     provider: "cloudflare",
     url: "https://example.trycloudflare.com",
     gate_pid: 11,
+    gate_start_token: "gate-original",
+    cloudflared_start_token: "provider-original",
+    registration_id: "00000000-0000-4000-8000-000000000000",
     cloudflared_pid: 12,
     started_at: "2026-10-01T00:00:00Z",
     target: "127.0.0.1:4276",
@@ -246,9 +249,22 @@ function tunnelState(overrides: Partial<TunnelState>): TunnelState {
   };
 }
 
-const alive = () => true;
+const verified: Parameters<typeof tunnelFileUrl>[3] = {
+  observeProcess: () => "same",
+  withRegistration: (_state, inspect) => inspect(),
+};
 
 describe("tunnelFileUrl", () => {
+  test("unknown original tunnel authority cannot mint a file delivery URL", () => {
+    const local = mintLocalFileUrl("docs/page name.html", { coordRoot: fixture(), port: 4276 });
+    const evidence: Parameters<typeof tunnelFileUrl>[3] = {
+      ...verified,
+      observeProcess: () => "unknown",
+    };
+    expect(() =>
+      tunnelFileUrl(local, 4276, [tunnelState({ vhost: FILES_ORIGIN_HOST })], evidence),
+    ).toThrow(TunnelLinkError);
+  });
   test("routes HTML to a files-origin tunnel whose scope covers the page", () => {
     const root = fixture();
     const local = mintLocalFileUrl("docs/page name.html", { coordRoot: root, port: 4276 });
@@ -261,7 +277,7 @@ describe("tunnelFileUrl", () => {
         allow_paths: ["/docs"],
       }),
     ];
-    expect(tunnelFileUrl(local, 4276, states, alive)).toBe(
+    expect(tunnelFileUrl(local, 4276, states, verified)).toBe(
       "https://pages.example/docs/page%20name.html",
     );
   });
@@ -270,9 +286,9 @@ describe("tunnelFileUrl", () => {
     const root = fixture();
     const local = mintLocalFileUrl("docs/page name.html", { coordRoot: root, port: 4276 });
     const states = [tunnelState({ vhost: FILES_ORIGIN_HOST, allow_paths: ["/wiki/explainers"] })];
-    expect(() => tunnelFileUrl(local, 4276, states, alive)).toThrow(TunnelLinkError);
+    expect(() => tunnelFileUrl(local, 4276, states, verified)).toThrow(TunnelLinkError);
     try {
-      tunnelFileUrl(local, 4276, states, alive);
+      tunnelFileUrl(local, 4276, states, verified);
     } catch (error) {
       expect((error as TunnelLinkError).hint).toContain(
         `--vhost ${FILES_ORIGIN_HOST} --allow-path /docs`,
@@ -284,7 +300,7 @@ describe("tunnelFileUrl", () => {
     const root = fixture();
     const local = mintLocalFileUrl("docs/page name.html", { coordRoot: root, port: 4276 });
     expect(() =>
-      tunnelFileUrl(local, 4276, [tunnelState({ vhost: "dev.example.com" })], alive),
+      tunnelFileUrl(local, 4276, [tunnelState({ vhost: "dev.example.com" })], verified),
     ).toThrow(TunnelLinkError);
   });
 
@@ -305,7 +321,7 @@ describe("tunnelFileUrl", () => {
         allow_paths: ["/files", "/api/file", "/_next"],
       }),
     ];
-    expect(tunnelFileUrl(local, 4276, states, alive)).toBe(
+    expect(tunnelFileUrl(local, 4276, states, verified)).toBe(
       "https://viewer.example/files?path=docs%2Fnotes.md",
     );
   });
@@ -317,7 +333,12 @@ describe("tunnelFileUrl", () => {
       tunnelState({ vhost: FILES_ORIGIN_HOST, gate_pid: 99 }),
       tunnelState({ vhost: FILES_ORIGIN_HOST, target: "127.0.0.1:3000" }),
     ];
-    expect(() => tunnelFileUrl(local, 4276, states, (pid) => pid !== 99)).toThrow(TunnelLinkError);
+    expect(() =>
+      tunnelFileUrl(local, 4276, states, {
+        ...verified,
+        observeProcess: (pid) => (pid !== 99 ? "same" : "absent"),
+      }),
+    ).toThrow(TunnelLinkError);
   });
 
   test("prefers the newest matching tunnel", () => {
@@ -335,7 +356,7 @@ describe("tunnelFileUrl", () => {
         started_at: "2026-10-01T00:00:00Z",
       }),
     ];
-    expect(tunnelFileUrl(local, 4276, states, alive)).toBe(
+    expect(tunnelFileUrl(local, 4276, states, verified)).toBe(
       "https://new.example/docs/page%20name.html",
     );
   });

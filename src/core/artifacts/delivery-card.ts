@@ -14,6 +14,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { encodeLinkSafeComponent } from "../../lib/local-file-url.ts";
 import { findLiveTunnelForOrigin, tunnelServesPaths } from "../../lib/tunnel/state.ts";
 import { resolveWebPort } from "../config.ts";
+import { createTunnelReadinessVerifier } from "../servers/index.ts";
 import { stateFileMode } from "../storage/modes.ts";
 import { ARTIFACT_MANIFEST } from "./constants.ts";
 import { resolveArtifactRef, showArtifact } from "./index.ts";
@@ -330,7 +331,12 @@ function deliveryLinkBase(repoRoot: string, environment: DisplayEnvironment): st
   // route: its gate would refuse every link on the card.
   const tunnel =
     environment.tunnelUrl === undefined
-      ? findLiveTunnelForOrigin(webPort, `localhost:${webPort}`, repoRoot)
+      ? findLiveTunnelForOrigin(
+          webPort,
+          `localhost:${webPort}`,
+          repoRoot,
+          createTunnelReadinessVerifier({ coordRoot: repoRoot }),
+        )
       : null;
   const tunnelUrl =
     environment.tunnelUrl === undefined

@@ -89,6 +89,8 @@ test("the original tunnel receipt stops its owned child and removes state after 
       id: "tunnel-custody",
       kind: "service",
       type: "tunnel",
+      port: 49999,
+      url: "https://example.invalid",
       pid: child.pid!,
       start_token: token,
       owner: null,
@@ -131,6 +133,8 @@ test("a stale tunnel registration receipt cannot signal the current process", as
       id: "tunnel-custody",
       kind: "service",
       type: "tunnel",
+      port: 49999,
+      url: "https://example.invalid",
       pid: child.pid!,
       start_token: token,
       owner: null,
@@ -144,6 +148,8 @@ test("a stale tunnel registration receipt cannot signal the current process", as
     gate_pid: child.pid!,
     gate_start_token: token,
     registration_id: "stale-receipt",
+    cloudflared_pid: child.pid!,
+    cloudflared_start_token: token,
     target: "127.0.0.1:1",
     vhost: "localhost",
     gate_port: 49999,
@@ -284,6 +290,8 @@ test("an older registration cannot publish over the current tunnel winner", () =
     id: "tunnel-review",
     kind: "service" as const,
     type: "tunnel",
+    port: 49999,
+    url: "https://example.invalid",
     owner: null,
     pid: process.pid,
   };
@@ -295,6 +303,8 @@ test("an older registration cannot publish over the current tunnel winner", () =
     provider: "cloudflare" as const,
     gate_pid: process.pid,
     gate_start_token: winner.start_token,
+    cloudflared_pid: process.pid,
+    cloudflared_start_token: winner.start_token,
     registration_id: winner.registration_id,
   };
   publishTunnelState(state, winner);
@@ -316,6 +326,8 @@ test("canonical cleanup holds the original receipt against a replacement registr
       id: "tunnel-review",
       kind: "service",
       type: "tunnel",
+      port: 49999,
+      url: "https://example.invalid",
       owner: null,
       pid: child.pid!,
       start_token: token,
@@ -327,6 +339,8 @@ test("canonical cleanup holds the original receipt against a replacement registr
     provider: "cloudflare" as const,
     gate_pid: child.pid!,
     gate_start_token: token,
+    cloudflared_pid: child.pid!,
+    cloudflared_start_token: token,
     registration_id: receipt.registration_id,
   };
   writeState(state);
@@ -360,7 +374,15 @@ test("a provider effect cannot precede durable pending route intent", () => {
   process.env[TUNNEL_DIR_ENV] = root;
   process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
   const receipt = registerServer(
-    { id: "tunnel-first", kind: "service", type: "tunnel", owner: null, pid: process.pid },
+    {
+      id: "tunnel-first",
+      kind: "service",
+      type: "tunnel",
+      port: 49999,
+      url: "https://example.invalid",
+      owner: null,
+      pid: process.pid,
+    },
     { coordRoot: root },
   )!;
   const state = {
@@ -399,6 +421,8 @@ test("a failed provider cleanup retains its original route intent and server rec
       id: "tunnel-first",
       kind: "service",
       type: "tunnel",
+      port: 49999,
+      url: "https://example.invalid",
       owner: null,
       pid: child.pid!,
       start_token: token,

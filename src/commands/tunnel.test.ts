@@ -7,6 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, loadLazyCommand } from "../commander.ts";
 import {
+  processStartToken,
+  registerServer,
+  signalIfSameGeneration,
+  tunnelServerInput,
+} from "../core/servers/index.ts";
+import {
   readConfig,
   readState,
   TUNNEL_DIR_ENV,
@@ -215,24 +221,52 @@ describe("reloadOne", () => {
    * provider check let it through.
    */
   test("does not use the cloudflared-absent path to refuse a Tailscale instance", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tailscale-reload-receipt-"));
+    const priorRoot = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    const priorTunnel = process.env[TUNNEL_DIR_ENV];
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    process.env[TUNNEL_DIR_ENV] = join(root, ".cache", "tunnel");
     const server = createServer();
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const port = (server.address() as AddressInfo).port;
+    const child = Bun.spawn(
+      [process.execPath, "-e", "console.log('ready');setInterval(()=>{},100000)"],
+      { stdout: "pipe" },
+    );
+    const reader = child.stdout.getReader();
+    await reader.read();
+    reader.releaseLock();
+    const token = processStartToken(child.pid)!;
     try {
-      const result = await reloadOne(
-        state({
-          provider: "tailscale",
-          provider_state: "ready",
-          cloudflared_pid: undefined,
-          gate_pid: await deadPid(),
-          gate_port: port,
-        }),
-      );
+      const saved = state({
+        provider: "tailscale",
+        provider_state: "ready",
+        tailscale_mode: "serve",
+        tailscale_path: "/",
+        tailscale_https_port: 443,
+        cloudflared_pid: undefined,
+        gate_pid: child.pid,
+        gate_start_token: token,
+        gate_port: port,
+      });
+      saved.registration_id = registerServer(tunnelServerInput(saved, root), {
+        coordRoot: root,
+      })!.registration_id;
+      signalIfSameGeneration(child.pid, token, "SIGKILL");
+      await child.exited;
+      const result = await reloadOne(saved);
       expect(result.ok).toBe(false);
       expect(result.message).not.toContain("provider process is gone");
       expect(result.message).toContain("never released");
     } finally {
       server.close();
+      signalIfSameGeneration(child.pid, token, "SIGKILL");
+      await child.exited;
+      if (priorRoot === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+      else process.env.HARNERY_COORD_ROOT_OVERRIDE = priorRoot;
+      if (priorTunnel === undefined) delete process.env[TUNNEL_DIR_ENV];
+      else process.env[TUNNEL_DIR_ENV] = priorTunnel;
+      rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
 });

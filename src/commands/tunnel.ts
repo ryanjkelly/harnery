@@ -1,6 +1,7 @@
 import { type ChildProcess, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
@@ -9,6 +10,7 @@ import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
   acquireNoClobberLease,
+  createTunnelReadinessVerifier,
   pidAlive,
   processStartToken,
   readServer,
@@ -43,15 +45,13 @@ import {
   ensureCloudflared,
   gateLogFile,
   isProcessAlive,
-  isTunnelStateLive,
-  listStates,
   providerLogFile,
   readConfig,
-  readState,
   type TailscaleMode,
   type TunnelProvider,
   type TunnelState,
   tunnelDir,
+  tunnelReadiness,
   writeConfig,
   writeState,
 } from "../lib/tunnel/state.ts";
@@ -349,7 +349,7 @@ function sleep(ms: number): Promise<void> {
  */
 async function allocateGatePort(preferred: number | undefined): Promise<number> {
   const used = new Set<number>(
-    listStates()
+    listSelectedStates()
       .filter((s) => isProcessAlive(s.gate_pid))
       .map((s) => s.gate_port),
   );
@@ -482,13 +482,14 @@ function runTailscaleShare(
 }
 
 function stopTailscaleShare(state: TunnelState): boolean {
-  if (state.provider !== "tailscale" || !state.tailscale_mode) return true;
-  const cmd = tailscaleCommand(state.tailscale_mode);
+  if (state.provider !== "tailscale") return true;
+  if (!originalTailscaleRoute(state)) return false;
+  const cmd = tailscaleCommand(state.tailscale_mode!);
   const logPath = tunnelLogDestinations(state.name, "tailscale").provider;
   const args = [
     cmd,
-    `--https=${state.tailscale_https_port ?? 443}`,
-    `--set-path=${state.tailscale_path ?? "/"}`,
+    `--https=${state.tailscale_https_port}`,
+    `--set-path=${state.tailscale_path}`,
     "off",
   ];
   const status = runRotatingProcessSync({
@@ -501,9 +502,9 @@ function stopTailscaleShare(state: TunnelState): boolean {
     // surviving serve/funnel mapping could later re-expose whatever next binds
     // that port. Surface it loudly so the operator can clear it by hand.
     emit.text(
-      `\n  ⚠ Failed to remove the Tailscale ${cmd} mapping (path ${state.tailscale_path ?? "/"}).\n` +
+      `\n  ⚠ Failed to remove the Tailscale ${cmd} mapping (path ${state.tailscale_path}).\n` +
         `    It may still be exposing this machine. Clear it with:\n` +
-        `      tailscale ${cmd} --https=${state.tailscale_https_port ?? 443} --set-path=${state.tailscale_path ?? "/"} off\n` +
+        `      tailscale ${cmd} --https=${state.tailscale_https_port} --set-path=${state.tailscale_path} off\n` +
         `    Log: ${logPath}\n\n`,
     );
     return false;
@@ -519,14 +520,48 @@ function contextVhost(): string | null {
 }
 
 function providerIsAlive(state: TunnelState): boolean {
+  if (!canonicalProviderFields(state)) return false;
   if (state.provider === "tailscale") return state.provider_state === "ready";
-  const pid = state.cloudflared_pid ?? state.provider_pid;
+  const pid = state.cloudflared_pid;
   return typeof pid === "number" && isProcessAlive(pid);
 }
 
-function tunnelIsAlive(state: TunnelState): boolean {
-  if (state.provider === "tailscale" && state.provider_state !== "ready") return false;
-  return isTunnelStateLive(state);
+function canonicalProviderFields(state: TunnelState): boolean {
+  return (
+    !Object.hasOwn(state, "provider_pid") &&
+    !Object.hasOwn(state, "provider_start_token") &&
+    (state.provider !== "tailscale" ||
+      (state.cloudflared_pid === undefined && state.cloudflared_start_token === undefined))
+  );
+}
+
+function originalProcessWitnesses(state: TunnelState): boolean {
+  if (
+    !canonicalProviderFields(state) ||
+    !Number.isSafeInteger(state.gate_pid) ||
+    state.gate_pid < 1 ||
+    typeof state.gate_start_token !== "string" ||
+    !state.gate_start_token ||
+    typeof state.registration_id !== "string" ||
+    !state.registration_id
+  )
+    return false;
+  if (state.provider === "tailscale")
+    return (
+      originalTailscaleRoute(state) &&
+      (state.provider_state === "ready" || state.provider_state === "pending")
+    );
+  return (
+    state.provider === "cloudflare" &&
+    Number.isSafeInteger(state.cloudflared_pid) &&
+    state.cloudflared_pid! > 0 &&
+    typeof state.cloudflared_start_token === "string" &&
+    !!state.cloudflared_start_token
+  );
+}
+
+function readinessOf(state: TunnelState) {
+  return tunnelReadiness(state, createTunnelReadinessVerifier({ coordRoot: registryRoot() }));
 }
 
 interface GateSpawnOpts {
@@ -574,9 +609,19 @@ export interface TunnelRoute {
   path: string;
   httpsPort: number;
 }
+function originalTailscaleRoute(state: TunnelState): boolean {
+  return (
+    (state.tailscale_mode === "serve" || state.tailscale_mode === "funnel") &&
+    typeof state.tailscale_path === "string" &&
+    state.tailscale_path.startsWith("/") &&
+    Number.isSafeInteger(state.tailscale_https_port) &&
+    state.tailscale_https_port! > 0 &&
+    state.tailscale_https_port! <= 65535
+  );
+}
 function routeOf(state: TunnelState | null): TunnelRoute | null {
-  return state?.provider === "tailscale"
-    ? { path: state.tailscale_path ?? "/", httpsPort: state.tailscale_https_port ?? 443 }
+  return state?.provider === "tailscale" && originalTailscaleRoute(state)
+    ? { path: state.tailscale_path!, httpsPort: state.tailscale_https_port! }
     : null;
 }
 function routeKey(route: TunnelRoute): string {
@@ -622,37 +667,15 @@ export function withTunnelLifecycleCustody<T>(
   };
   try {
     acquire("instance", name.toLowerCase());
-    if (existsSync(tunnelDir()))
-      for (const file of readdirSync(tunnelDir())) {
-        if (!/^state(?:-[a-z0-9-]+)?\.json$/i.test(file)) continue;
-        try {
-          const raw = JSON.parse(
-            readFileSync(resolve(tunnelDir(), file), "utf8"),
-          ) as Partial<TunnelState>;
-          if (
-            !raw ||
-            !Number.isSafeInteger(raw.gate_pid) ||
-            raw.gate_pid! < 1 ||
-            !Number.isSafeInteger(raw.gate_port) ||
-            raw.gate_port! < 1 ||
-            raw.gate_port! > 65535 ||
-            (raw.provider !== undefined &&
-              raw.provider !== "cloudflare" &&
-              raw.provider !== "tailscale")
-          )
-            throw new Error("invalid state");
-        } catch {
-          throw new Error(`tunnel state ${file} is unreadable; lifecycle custody is unavailable`);
-        }
-      }
-    const existing = routeOf(readState(name));
+    const retained = listSelectedStates();
+    const existing = routeOf(retained.find((state) => state.name === name) ?? null);
     const routes = [
       ...new Set(
         [existing, requested].filter((route): route is TunnelRoute => !!route).map(routeKey),
       ),
     ].sort();
     for (const key of routes) acquire("route", key);
-    for (const other of listStates()) {
+    for (const other of retained) {
       if (other.name.toLowerCase() === name.toLowerCase()) {
         if (other.name !== name)
           throw new Error(
@@ -710,8 +733,17 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
     provider === "tailscale" ? resolveHttpsPort(opts.httpsPort) : undefined;
   const allowPaths = resolveAllowPaths(opts.allowPath);
 
-  const existing = readState(name);
-  if (existing && tunnelIsAlive(existing)) {
+  const existing = readSelectedState(name);
+  const readiness = existing ? readinessOf(existing) : null;
+  if (readiness === "unknown") {
+    emit.error({
+      code: "tunnel_custody_unknown",
+      message: `Tunnel [${name}] readiness is unknown; retained its state and refused cleanup or replacement.`,
+    });
+    process.exit(1);
+    return;
+  }
+  if (existing && readiness === "ready") {
     if (existing.provider !== provider) {
       emit.error({
         code: "tunnel_instance_in_use",
@@ -736,7 +768,7 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
   }
   if (existing) {
     downOneWithCustody(name, new Set());
-    if (readState(name)) {
+    if (readSelectedState(name)) {
       emit.error({
         code: "tunnel_custody_unknown",
         message: `Tunnel [${name}] has a live or unverifiable process; retained its state and refused a replacement.`,
@@ -814,6 +846,7 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
   let registered = true;
   let cloudflaredPid: number | undefined;
   let cloudflaredStartToken: string | undefined;
+  let pendingReceipt: ServerRecord | null = null;
 
   if (provider === "cloudflare") {
     // Force HTTP/2 transport. The default QUIC transport wedges at precheck on
@@ -867,7 +900,7 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
       tailscale_https_port: tailscaleHttpsPort,
       provider_state: "pending",
     };
-    const pendingReceipt = recordTunnelServer(pending);
+    pendingReceipt = recordTunnelServer(pending);
     if (!pendingReceipt) {
       const evidence = recordRefusedTunnelLaunch(pending);
       signalIfSameGeneration(pending.gate_pid, pending.gate_start_token, "SIGTERM");
@@ -904,7 +937,8 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
     tailscale_path: tailscalePath,
     tailscale_https_port: tailscaleHttpsPort,
   };
-  const receipt = recordTunnelServer(state);
+  const receipt = provider === "tailscale" ? pendingReceipt : recordTunnelServer(state);
+  if (receipt) state.registration_id = receipt.registration_id;
   try {
     if (!receipt) throw new Error("registration refused");
     publishTunnelState(state, receipt);
@@ -953,6 +987,95 @@ function registryRoot(): string {
   return resolveCoordRoot() ?? process.cwd();
 }
 
+function unknownTunnelFrame(name: string): Error {
+  return Object.assign(
+    new Error(
+      `Tunnel [${name}] state is unreadable or its custody is unknown; retained the frame.`,
+    ),
+    {
+      code: "tunnel_custody_unknown",
+    },
+  );
+}
+
+function readSelectedState(name: string): TunnelState | null {
+  const path = resolve(
+    tunnelDir(),
+    name === DEFAULT_INSTANCE ? "state.json" : `state-${name}.json`,
+  );
+  let bytes: string;
+  try {
+    bytes = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw unknownTunnelFrame(name);
+  }
+  try {
+    const raw = JSON.parse(bytes) as TunnelState;
+    if (
+      !raw ||
+      typeof raw !== "object" ||
+      Array.isArray(raw) ||
+      raw.name !== name ||
+      (raw.provider !== "cloudflare" && raw.provider !== "tailscale") ||
+      (raw.provider === "tailscale" && !originalTailscaleRoute(raw)) ||
+      typeof raw.url !== "string" ||
+      !raw.url ||
+      typeof raw.target !== "string" ||
+      !raw.target ||
+      typeof raw.vhost !== "string" ||
+      !Number.isSafeInteger(raw.gate_pid) ||
+      raw.gate_pid < 1 ||
+      !Number.isSafeInteger(raw.gate_port) ||
+      raw.gate_port < 1 ||
+      raw.gate_port > 65535 ||
+      !Array.isArray(raw.allow_paths) ||
+      raw.allow_paths.some((path) => typeof path !== "string")
+    )
+      throw unknownTunnelFrame(name);
+    return raw;
+  } catch {
+    throw unknownTunnelFrame(name);
+  }
+}
+
+function listSelectedStates(): TunnelState[] {
+  let files: string[];
+  try {
+    files = readdirSync(tunnelDir());
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw unknownTunnelFrame("inventory");
+  }
+  const states: TunnelState[] = [];
+  for (const file of files) {
+    const name = file === "state.json" ? DEFAULT_INSTANCE : /^state-(.+)\.json$/.exec(file)?.[1];
+    if (!name) continue;
+    const state = readSelectedState(name);
+    if (state) states.push(state);
+  }
+  return states.sort((a, b) =>
+    (typeof b.started_at === "string" ? b.started_at : "").localeCompare(
+      typeof a.started_at === "string" ? a.started_at : "",
+    ),
+  );
+}
+
+function matchesTunnelReceipt(state: TunnelState, receipt: ServerRecord): boolean {
+  return (
+    originalProcessWitnesses(state) &&
+    tunnelServerId(state.name) === receipt.id &&
+    receipt.host === hostname() &&
+    receipt.kind === "service" &&
+    receipt.type === "tunnel" &&
+    receipt.port === state.gate_port &&
+    receipt.url === state.url &&
+    receipt.registration_id === state.registration_id &&
+    receipt.pid === state.gate_pid &&
+    receipt.start_token === state.gate_start_token
+  );
+}
+
 /** Retain a refused launch without overwriting another launch's canonical state. */
 export function recordRefusedTunnelLaunch(state: TunnelState): string {
   const path = resolve(tunnelDir(), `failed-${state.name}-${randomUUID()}.json`);
@@ -962,12 +1085,7 @@ export function recordRefusedTunnelLaunch(state: TunnelState): string {
 
 /** A canonical state frame may be published only by its current registration. */
 export function publishTunnelState(state: TunnelState, receipt: ServerRecord): void {
-  if (
-    tunnelServerId(state.name) !== receipt.id ||
-    state.registration_id !== receipt.registration_id ||
-    state.gate_pid !== receipt.pid ||
-    state.gate_start_token !== receipt.start_token
-  )
+  if (!matchesTunnelReceipt(state, receipt))
     throw new Error("tunnel state registration custody does not match");
   withServerRegistrationCustody(receipt, { coordRoot: registryRoot() }, () => writeState(state));
 }
@@ -993,6 +1111,7 @@ function recordTunnelServer(state: TunnelState): ServerRecord | null {
 }
 
 function tunnelRegistration(state: TunnelState): { known: boolean; record: ServerRecord | null } {
+  if (!originalProcessWitnesses(state)) return { known: false, record: null };
   const coordRoot = registryRoot();
   const id = tunnelServerId(state.name);
   let record: ServerRecord | null;
@@ -1002,16 +1121,8 @@ function tunnelRegistration(state: TunnelState): { known: boolean; record: Serve
     return { known: false, record: null };
   }
   const present = existsSync(resolve(serversDir(coordRoot), `${id}.json`));
-  if (!present) return { known: true, record: null };
-  return {
-    known:
-      !!record &&
-      !!state.registration_id &&
-      record.registration_id === state.registration_id &&
-      record.pid === state.gate_pid &&
-      record.start_token === state.gate_start_token,
-    record,
-  };
+  if (!present) return { known: false, record: null };
+  return { known: !!record && matchesTunnelReceipt(state, record), record };
 }
 
 /** Unknown saved identities retain state and never authorize a signal. */
@@ -1025,14 +1136,13 @@ export function downOne(name: string, killed: Set<number>): number {
 
 function downOneWithCustody(name: string, killed: Set<number>): number {
   const before = killed.size;
-  const state = readState(name);
+  const state = readSelectedState(name);
   if (!state) return 0;
   const registration = tunnelRegistration(state);
   if (!registration.known) return 0;
   const targets = [
     { pid: state.gate_pid, token: state.gate_start_token },
     { pid: state.cloudflared_pid, token: state.cloudflared_start_token },
-    { pid: state.provider_pid, token: state.provider_start_token },
   ].filter(
     (target): target is { pid: number; token: string | undefined } =>
       typeof target.pid === "number",
@@ -1053,7 +1163,7 @@ function downOneWithCustody(name: string, killed: Set<number>): number {
       }
       // Observation and deletion share custody; an old stopper cannot clear a winner.
       if (targets.some((target) => pidAlive(target.pid))) return;
-      if (JSON.stringify(readState(name)) !== JSON.stringify(state)) return;
+      if (JSON.stringify(readSelectedState(name)) !== JSON.stringify(state)) return;
       if (state.provider === "tailscale" && !stopTailscaleShare(state)) return;
       clearState(name);
       cleared = true;
@@ -1069,13 +1179,13 @@ function down(opts: DownOpts): void {
   const killed = new Set<number>();
 
   if (opts.all) {
-    const states = listStates();
+    const states = listSelectedStates();
     if (states.length === 0) {
       emit.text("No tunnels up. Nothing to stop.\n");
       return;
     }
     for (const s of states) downOne(s.name, killed);
-    const retained = states.filter((state) => readState(state.name)).length;
+    const retained = states.filter((state) => readSelectedState(state.name)).length;
     emit.text(
       `Requested stop for ${states.length} tunnel(s); ${killed.size} process signal(s), ${retained} state record(s) retained pending verified exit.\n`,
     );
@@ -1085,8 +1195,8 @@ function down(opts: DownOpts): void {
   const name = resolveName(opts.name);
   // Bare `down` targets the default instance. If it's not up but named ones
   // are, don't silently no-op; point the operator at them.
-  if (name === DEFAULT_INSTANCE && !readState(DEFAULT_INSTANCE)) {
-    const others = listStates();
+  if (name === DEFAULT_INSTANCE && !readSelectedState(DEFAULT_INSTANCE)) {
+    const others = listSelectedStates();
     if (others.length > 0) {
       emit.text(
         `No default tunnel running. Other tunnels up: ${others.map((s) => s.name).join(", ")}.\nUse \`${resolveBinName()} tunnel down --name <name>\` or \`${resolveBinName()} tunnel down --all\`.\n`,
@@ -1097,7 +1207,7 @@ function down(opts: DownOpts): void {
 
   downOne(name, killed);
   emit.text(
-    readState(name)
+    readSelectedState(name)
       ? `Tunnel [${name}] state retained pending verified process exit or custody; ${killed.size} signal(s) sent.\n`
       : `Tunnel [${name}] has no remaining recorded processes.\n`,
   );
@@ -1152,6 +1262,12 @@ async function reloadOneWithCustody(state: TunnelState): Promise<{ ok: boolean; 
   const name = state.name;
   const gatePort = state.gate_port;
 
+  if (!canonicalProviderFields(state))
+    return {
+      ok: false,
+      message: `[${name}] obsolete or ambiguous provider authority is unknown; retained the tunnel.`,
+    };
+
   if (!providerIsAlive(state)) {
     return {
       ok: false,
@@ -1178,7 +1294,7 @@ async function reloadOneWithCustody(state: TunnelState): Promise<{ ok: boolean; 
   }
 
   const registration = tunnelRegistration(state);
-  if (!registration.known)
+  if (!registration.known || !registration.record)
     return { ok: false, message: `[${name}] registration custody changed; retained the tunnel.` };
   const stopGate = async (): Promise<{ ok: boolean; message: string }> => {
     if (
@@ -1212,13 +1328,11 @@ async function reloadOneWithCustody(state: TunnelState): Promise<{ ok: boolean; 
   };
   let released: { ok: boolean; message: string };
   try {
-    released = registration.record
-      ? await withServerRegistrationCustody(
-          registration.record,
-          { coordRoot: registryRoot() },
-          stopGate,
-        )
-      : await stopGate();
+    released = await withServerRegistrationCustody(
+      registration.record,
+      { coordRoot: registryRoot() },
+      stopGate,
+    );
   } catch {
     return {
       ok: false,
@@ -1286,7 +1400,7 @@ async function reload(opts: ReloadOpts): Promise<void> {
   const bin = resolveBinName();
 
   if (opts.all) {
-    const all = listStates();
+    const all = listSelectedStates();
     // Only live tunnels are reloadable, and a box commonly accumulates stale
     // state files from long-dead runs. Reporting those as failures would make
     // the common post-`allow add` path exit non-zero for no real reason.
@@ -1315,7 +1429,7 @@ async function reload(opts: ReloadOpts): Promise<void> {
   }
 
   const name = resolveName(opts.name);
-  const state = readState(name);
+  const state = readSelectedState(name);
   if (!state) {
     emit.error({
       code: "tunnel_not_found",
@@ -1329,8 +1443,9 @@ async function reload(opts: ReloadOpts): Promise<void> {
   if (!r.ok) process.exit(1);
 }
 
-function instanceState(state: TunnelState): "up" | "stale" {
-  return tunnelIsAlive(state) ? "up" : "stale";
+function instanceState(state: TunnelState): "up" | "stale" | "unknown" {
+  const readiness = readinessOf(state);
+  return readiness === "ready" ? "up" : readiness === "dead" ? "stale" : "unknown";
 }
 
 function fmtUptime(startedAt: string): string {
@@ -1345,9 +1460,9 @@ function fmtUptime(startedAt: string): string {
 function statusDetail(state: TunnelState): void {
   const gateAlive = isProcessAlive(state.gate_pid);
   const providerAlive = providerIsAlive(state);
-  const providerPid = state.cloudflared_pid ?? state.provider_pid;
+  const providerPid = state.cloudflared_pid;
   const cfg = readConfig();
-  emit.text(`${gateAlive && providerAlive ? "up" : "stale"} [${state.name}]\n`);
+  emit.text(`${instanceState(state)} [${state.name}]\n`);
   emit.text(
     `  Provider:    ${state.provider}${state.tailscale_mode ? ` (${state.tailscale_mode})` : ""}\n`,
   );
@@ -1370,7 +1485,7 @@ function statusDetail(state: TunnelState): void {
 function status(opts: StatusOpts): void {
   // Named → detailed single block.
   if (opts.name) {
-    const state = readState(resolveName(opts.name));
+    const state = readSelectedState(resolveName(opts.name));
     if (!state) {
       emit.text(`down [${resolveName(opts.name)}]\n`);
       return;
@@ -1380,7 +1495,7 @@ function status(opts: StatusOpts): void {
   }
 
   // No name → table of every instance.
-  const states = listStates();
+  const states = listSelectedStates();
   if (states.length === 0) {
     emit.text("down\n");
     return;
@@ -1423,7 +1538,7 @@ function status(opts: StatusOpts): void {
 
 function logs(opts: LogsOpts): void {
   const name = resolveName(opts.name);
-  const state = readState(name);
+  const state = readSelectedState(name);
   const provider = state?.provider ?? "cloudflare";
   const destinations = tunnelLogDestinations(name, provider);
   const path = opts.provider ? destinations.provider : destinations.gate;
@@ -1460,7 +1575,9 @@ const sameEntryIn = (list: readonly string[], entry: string) =>
  * restarts were owed.
  */
 function allowChangedHint(): void {
-  const live = listStates().filter((s) => s.provider === "cloudflare" && providerIsAlive(s));
+  const live = listSelectedStates().filter(
+    (s) => s.provider === "cloudflare" && providerIsAlive(s),
+  );
   if (live.length === 0) return;
   emit.text(
     `Each gate reads the allowlist once at start, so this applies on reload ` +
@@ -1602,7 +1719,9 @@ export async function refreshCurrentAddress(
   }
   if (!plan.changed || !options.reload) return result;
 
-  const live = listStates().filter((s) => s.provider === "cloudflare" && providerIsAlive(s));
+  const live = listSelectedStates().filter(
+    (s) => s.provider === "cloudflare" && providerIsAlive(s),
+  );
   for (const s of live) {
     const r = await reloadOne(s);
     emit.text(`${r.ok ? "ok  " : "FAIL"} ${r.message}\n`);

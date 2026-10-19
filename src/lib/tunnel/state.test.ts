@@ -6,11 +6,12 @@ import {
   CLOUDFLARED_ENV,
   ensureCloudflared,
   findLiveTunnelForOrigin,
-  isTunnelStateLive,
   readConfig,
   TUNNEL_DIR_ENV,
+  type TunnelReadinessVerifier,
   type TunnelState,
   tunnelDir,
+  tunnelReadiness,
   writeConfig,
 } from "./state.ts";
 
@@ -20,6 +21,9 @@ function state(overrides: Partial<TunnelState> = {}): TunnelState {
     provider: "cloudflare",
     url: "https://public.example",
     gate_pid: 10,
+    gate_start_token: "gate-original",
+    cloudflared_start_token: "provider-original",
+    registration_id: "00000000-0000-4000-8000-000000000000",
     cloudflared_pid: 20,
     started_at: "2026-09-06T12:00:00.000Z",
     target: "127.0.0.1:4276",
@@ -27,6 +31,13 @@ function state(overrides: Partial<TunnelState> = {}): TunnelState {
     gate_port: 9001,
     allow_paths: ["/"],
     ...overrides,
+  };
+}
+
+function verifier(alive: (pid: number) => boolean = () => true): TunnelReadinessVerifier {
+  return {
+    observeProcess: (pid) => (alive(pid) ? "same" : "absent"),
+    withRegistration: (_state, inspect) => inspect(),
   };
 }
 
@@ -56,10 +67,20 @@ describe("findLiveTunnelForOrigin", () => {
 
       const live = new Set([10, 20, 30, 40]);
       expect(
-        findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => live.has(pid))?.url,
+        findLiveTunnelForOrigin(
+          4276,
+          "localhost:4276",
+          root,
+          verifier((pid) => live.has(pid)),
+        )?.url,
       ).toBe("https://new.example");
       expect(
-        findLiveTunnelForOrigin(3000, "localhost:4276", root, (pid) => live.has(pid))?.name,
+        findLiveTunnelForOrigin(
+          3000,
+          "localhost:4276",
+          root,
+          verifier((pid) => live.has(pid)),
+        )?.name,
       ).toBe("other");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -100,13 +121,28 @@ describe("findLiveTunnelForOrigin", () => {
 
       const live = new Set([10, 20]);
       expect(
-        findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => live.has(pid))?.url,
+        findLiveTunnelForOrigin(
+          4276,
+          "localhost:4276",
+          root,
+          verifier((pid) => live.has(pid)),
+        )?.url,
       ).toBe("https://dashboard.example");
       expect(
-        findLiveTunnelForOrigin(4276, "harnery-files.localhost", root, (pid) => live.has(pid))?.url,
+        findLiveTunnelForOrigin(
+          4276,
+          "harnery-files.localhost",
+          root,
+          verifier((pid) => live.has(pid)),
+        )?.url,
       ).toBe("https://files.example");
       expect(
-        findLiveTunnelForOrigin(4276, "nothing.serves.this", root, (pid) => live.has(pid)),
+        findLiveTunnelForOrigin(
+          4276,
+          "nothing.serves.this",
+          root,
+          verifier((pid) => live.has(pid)),
+        ),
       ).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -120,36 +156,96 @@ describe("findLiveTunnelForOrigin", () => {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "state.json"), JSON.stringify(state()));
 
-      expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => pid === 10)).toBeNull();
-      expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => pid === 20)).toBeNull();
+      expect(
+        findLiveTunnelForOrigin(
+          4276,
+          "localhost:4276",
+          root,
+          verifier((pid) => pid === 10),
+        ),
+      ).toBeNull();
+      expect(
+        findLiveTunnelForOrigin(
+          4276,
+          "localhost:4276",
+          root,
+          verifier((pid) => pid === 20),
+        ),
+      ).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 });
 
-describe("isTunnelStateLive", () => {
+describe("tunnelReadiness", () => {
+  for (const field of ["registration_id", "gate_start_token", "cloudflared_start_token"] as const) {
+    test(`missing original ${field} remains unknown`, () => {
+      expect(tunnelReadiness(state({ [field]: undefined }), verifier())).toBe("unknown");
+    });
+  }
+
+  for (const field of ["provider_pid", "provider_start_token"] as const) {
+    test(`obsolete own field ${field} remains unknown`, () => {
+      const obsolete = JSON.parse(
+        JSON.stringify({ ...state(), [field]: field.endsWith("pid") ? 20 : "old" }),
+      ) as TunnelState;
+      expect(tunnelReadiness(obsolete, verifier())).toBe("unknown");
+    });
+  }
+
+  for (const observation of ["different", "unknown"] as const) {
+    test(`provider observation ${observation} never becomes ready or dead`, () => {
+      const evidence = verifier();
+      evidence.observeProcess = (pid) => (pid === 20 ? observation : "same");
+      expect(tunnelReadiness(state(), evidence)).toBe("unknown");
+    });
+  }
+
+  for (const absent of [10, 20]) {
+    test(`partial absence of original process ${absent} remains unknown`, () => {
+      expect(
+        tunnelReadiness(
+          state(),
+          verifier((pid) => pid !== absent),
+        ),
+      ).toBe("unknown");
+    });
+  }
+
+  for (const field of ["cloudflared_pid", "cloudflared_start_token"] as const) {
+    test(`Tailscale with unexpected ${field} remains unknown`, () => {
+      const original = state({
+        provider: "tailscale",
+        provider_state: "ready",
+        cloudflared_pid: undefined,
+        cloudflared_start_token: undefined,
+      });
+      const unexpected = { ...original, [field]: field.endsWith("pid") ? 20 : "another-child" };
+      expect(tunnelReadiness(unexpected, verifier())).toBe("unknown");
+    });
+  }
+
   test("accepts a live Tailscale gate without a separate provider PID", () => {
     expect(
-      isTunnelStateLive(
+      tunnelReadiness(
         state({
           provider: "tailscale",
           provider_state: "ready",
           cloudflared_pid: undefined,
+          cloudflared_start_token: undefined,
           gate_pid: 10,
         }),
-        (pid) => pid === 10,
+        verifier((pid) => pid === 10),
       ),
-    ).toBe(true);
+    ).toBe("ready");
   });
 
-  test("accepts the generic provider PID used by older Cloudflare state", () => {
-    expect(
-      isTunnelStateLive(
-        state({ cloudflared_pid: undefined, provider_pid: 20 }),
-        (pid) => pid === 10 || pid === 20,
-      ),
-    ).toBe(true);
+  test("obsolete provider fields remain unknown instead of becoming current authority", () => {
+    const obsolete = JSON.parse(
+      JSON.stringify({ ...state(), provider_pid: 20, provider_start_token: "old" }),
+    ) as TunnelState;
+    expect(tunnelReadiness(obsolete, verifier())).toBe("unknown");
   });
 });
 
@@ -247,10 +343,16 @@ describe("ensureCloudflared with an explicit binary", () => {
 test("pending and unverified Tailscale provider state never produces a live delivery URL", () => {
   for (const provider_state of [undefined, "pending"] as const) {
     expect(
-      isTunnelStateLive(
-        state({ provider: "tailscale", provider_state, cloudflared_pid: undefined, gate_pid: 10 }),
-        () => true,
+      tunnelReadiness(
+        state({
+          provider: "tailscale",
+          provider_state,
+          cloudflared_pid: undefined,
+          cloudflared_start_token: undefined,
+          gate_pid: 10,
+        }),
+        verifier(),
       ),
-    ).toBe(false);
+    ).toBe("unknown");
   }
 });

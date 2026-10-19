@@ -98,7 +98,6 @@ describe("register, read, unregister", () => {
         gate_pid: process.pid,
         gate_start_token: processStartToken(process.pid)!,
         cloudflared_pid: process.pid + 1,
-        provider_pid: process.pid + 2,
         started_at: new Date().toISOString(),
         target: "http://127.0.0.1:3000",
         vhost: "localhost",
