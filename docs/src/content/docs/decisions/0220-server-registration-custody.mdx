@@ -4,7 +4,7 @@ description: "Fence same-ID registration and cleanup with one immutable receipt.
 ---
 
 **Date:** 2026-10-18
-**Status:** Accepted
+**Status:** Withdrawn 2026-10-19. Reverted: the schema-2 cutover had no migration, so every older server record made `servers` list, stop, gc and port allocation throw, and every tunnel started before the change read as unknown. Server stop again signals the process group.
 
 ## Context
 

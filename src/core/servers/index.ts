@@ -20,7 +20,7 @@
  * automatically.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
@@ -41,7 +41,6 @@ import {
 import { liveInstanceIdV3 } from "../events/v3/live-route-observer.ts";
 import { resolveOwner } from "../hooks/resolve/owner.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
-import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 import {
   ancestry,
   establishedConnectionCounts,
@@ -53,6 +52,7 @@ import {
   scanSupport,
 } from "./net.ts";
 
+// Host supervisors verify and signal their own children with the same checks.
 export {
   processStartToken,
   signalIfSameGeneration,
@@ -74,9 +74,9 @@ export {
   readProcessInfo,
   scanSupport,
 } from "./net.ts";
-export { createTunnelReadinessVerifier, tunnelServerId, tunnelServerInput } from "./tunnels.ts";
+export { tunnelServerId, tunnelServerInput } from "./tunnels.ts";
 
-export const SERVER_RECORD_SCHEMA_VERSION = 2;
+export const SERVER_RECORD_SCHEMA_VERSION = 1;
 export const SERVER_DEFAULT_IDLE_HOURS = 2;
 export const SERVER_DEFAULT_OWNER_STALE_HOURS = 24;
 const TOUCH_INTERVAL_MS = 60_000;
@@ -86,7 +86,6 @@ export type ServerKind = "service" | "session";
 export interface ServerRecord {
   schema_version: typeof SERVER_RECORD_SCHEMA_VERSION;
   id: string;
-  registration_id: string;
   kind: ServerKind;
   /** Free-form family name: `preview`, `tunnel`, `dashboard`, ... */
   type: string;
@@ -217,57 +216,39 @@ export function registerServer(
   )
     throw new Error(`invalid server port: ${input.port}`);
   const id = input.id ?? serverId(input.type, input.scope);
-  return withServerMutation(coordRoot, id, () => {
-    const path = recordPath(coordRoot, id);
-    const now = new Date().toISOString();
-    const startToken = input.start_token ?? processStartToken(pid);
-    const pids = [...new Set(input.pids?.filter((p) => Number.isSafeInteger(p) && p > 0))];
-    const pidsStartTokens: Record<string, string> = {};
-    for (const auxiliaryPid of pids) {
-      const token = processStartToken(auxiliaryPid);
-      if (token) pidsStartTokens[auxiliaryPid] = token;
-    }
-    const owner = input.owner === undefined ? callingOwner(coordRoot) : (input.owner ?? undefined);
-    const record: ServerRecord = {
-      schema_version: SERVER_RECORD_SCHEMA_VERSION,
-      id,
-      registration_id: randomUUID(),
-      kind: input.kind,
-      type: input.type,
-      label: input.label ?? id,
-      ...(input.url ? { url: input.url } : {}),
-      ...(input.port ? { port: input.port } : {}),
-      pid,
-      ...(startToken ? { start_token: startToken } : {}),
-      ...(pids.length ? { pids, pids_start_tokens: pidsStartTokens } : {}),
-      host: hostname(),
-      ...(input.scope ? { scope: resolve(input.scope) } : {}),
-      ...(input.cwd ? { cwd: resolve(input.cwd) } : {}),
-      ...(input.log ? { log: resolve(input.log) } : {}),
-      ...(owner ? { owner } : {}),
-      started_at: input.started_at ?? now,
-      registered_at: now,
-      last_active_at: now,
-    };
-    if (
-      input.start_token !== undefined &&
-      verifyProcessGeneration(pid, input.start_token) !== "same"
-    )
-      throw new Error(`pid ${pid} generation could not be verified before registration`);
-    if (existsSync(path)) {
-      const existing = readRecord(path);
-      if (!existing)
-        throw new Error(
-          `registration ${id} custody is unknown: invalid or older server record retained`,
-        );
-      if (sameProcessCustody(existing, record) && serverState(existing) === "running")
-        return existing;
-      if (existing.host !== hostname() || !allProcessesAbsent(existing))
-        throw new Error(`registration ${id} custody is held by a live or unverifiable server`);
-    }
-    writePrivateJsonAtomic(path, record);
-    return record;
-  });
+  const now = new Date().toISOString();
+  const startToken = input.start_token ?? processStartToken(pid);
+  const pids = [...new Set(input.pids?.filter((p) => Number.isSafeInteger(p) && p > 0))];
+  const pidsStartTokens: Record<string, string> = {};
+  for (const auxiliaryPid of pids) {
+    const token = processStartToken(auxiliaryPid);
+    if (token) pidsStartTokens[auxiliaryPid] = token;
+  }
+  const owner = input.owner === undefined ? callingOwner(coordRoot) : (input.owner ?? undefined);
+  const record: ServerRecord = {
+    schema_version: SERVER_RECORD_SCHEMA_VERSION,
+    id,
+    kind: input.kind,
+    type: input.type,
+    label: input.label ?? id,
+    ...(input.url ? { url: input.url } : {}),
+    ...(input.port ? { port: input.port } : {}),
+    pid,
+    ...(startToken ? { start_token: startToken } : {}),
+    ...(pids.length ? { pids, pids_start_tokens: pidsStartTokens } : {}),
+    host: hostname(),
+    ...(input.scope ? { scope: resolve(input.scope) } : {}),
+    ...(input.cwd ? { cwd: resolve(input.cwd) } : {}),
+    ...(input.log ? { log: resolve(input.log) } : {}),
+    ...(owner ? { owner } : {}),
+    started_at: input.started_at ?? now,
+    registered_at: now,
+    last_active_at: now,
+  };
+  if (input.start_token !== undefined && verifyProcessGeneration(pid, input.start_token) !== "same")
+    throw new Error(`pid ${pid} generation could not be verified before registration`);
+  writePrivateJsonAtomic(recordPath(coordRoot, id), record);
+  return record;
 }
 
 /** Best-effort registration that never throws (for server start paths). */
@@ -293,132 +274,39 @@ function callingOwner(coordRoot: string): ServerRecord["owner"] {
   }
 }
 
-/** Remove only the exact registration receipt observed by the caller. */
-export function unregisterServer(record: ServerRecord, options?: ServerOptions): boolean {
+/**
+ * Remove a server's record. With `pid`, only a record still naming that pid
+ * is removed, so a replacement that re-registered the same id survives.
+ */
+export function unregisterServer(id: string, options?: ServerOptions & { pid?: number }): boolean {
   const coordRoot = rootOf(options);
-  if (!coordRoot || !record || !isValidServerId(record.id)) return false;
-  return withServerMutation(coordRoot, record.id, () => removeServerReceipt(coordRoot, record));
-}
-
-/** Hold the exact registration receipt until a synchronous or asynchronous effect settles. */
-export function withServerRegistrationCustody<T>(
-  record: ServerRecord,
-  options: ServerOptions,
-  effect: () => PromiseLike<T>,
-): Promise<T>;
-export function withServerRegistrationCustody<T>(
-  record: ServerRecord,
-  options: ServerOptions,
-  effect: () => T,
-): T;
-export function withServerRegistrationCustody<T>(
-  record: ServerRecord,
-  options: ServerOptions,
-  effect: () => T | PromiseLike<T>,
-): T | Promise<T> {
-  const coordRoot = rootOf(options);
-  if (!coordRoot) throw new Error("registration custody root is unavailable");
-  const lease = serverMutationLease(coordRoot, record.id);
-  try {
-    const current = readServer(record.id, { coordRoot });
-    if (
-      !current ||
-      current.registration_id !== record.registration_id ||
-      !sameProcessCustody(current, record)
-    )
-      throw new Error(`registration ${record.id} custody changed`);
-    const result = effect();
-    if (
-      result !== null &&
-      (typeof result === "object" || typeof result === "function") &&
-      typeof (result as PromiseLike<T>).then === "function"
-    )
-      return Promise.resolve(result).finally(() => lease.release());
-    lease.release();
-    return result as T;
-  } catch (error) {
-    lease.release();
-    throw error;
+  if (!coordRoot || !isValidServerId(id)) return false;
+  const path = recordPath(coordRoot, id);
+  if (options?.pid !== undefined) {
+    const record = readRecord(path);
+    if (record && record.pid !== options.pid) return false;
   }
-}
-
-function removeServerReceipt(coordRoot: string, record: ServerRecord): boolean {
-  const path = recordPath(coordRoot, record.id);
-  const current = readRecord(path);
-  if (
-    !current ||
-    current.registration_id !== record.registration_id ||
-    !sameProcessCustody(current, record)
-  )
-    return false;
-  rmSync(path);
+  if (!existsSync(path)) return false;
+  rmSync(path, { force: true });
   return true;
-}
-
-function serverMutationLease(coordRoot: string, id: string) {
-  recordPath(coordRoot, id);
-  const scope = `server-registration-${id}`;
-  return acquireNoClobberLease({
-    path: join(serversDir(coordRoot), ".custody", id),
-    scope,
-    authoritySha256: createHash("sha256").update(scope).digest("hex"),
-    staleAfterMs: 1,
-  });
-}
-
-function withServerMutation<T>(coordRoot: string, id: string, operation: () => T): T {
-  const lease = serverMutationLease(coordRoot, id);
-  try {
-    return operation();
-  } finally {
-    lease.release();
-  }
-}
-
-function sameProcessCustody(a: ServerRecord, b: ServerRecord): boolean {
-  const helpers = (record: ServerRecord) =>
-    [...new Set(record.pids ?? [])]
-      .sort((x, y) => x - y)
-      .map((pid) => [pid, record.pids_start_tokens?.[pid] ?? null]);
-  return (
-    a.schema_version === SERVER_RECORD_SCHEMA_VERSION &&
-    b.schema_version === SERVER_RECORD_SCHEMA_VERSION &&
-    a.id === b.id &&
-    a.pid === b.pid &&
-    a.start_token === b.start_token &&
-    a.host === b.host &&
-    a.kind === b.kind &&
-    a.type === b.type &&
-    a.scope === b.scope &&
-    a.owner?.instance_id === b.owner?.instance_id &&
-    JSON.stringify(helpers(a)) === JSON.stringify(helpers(b))
-  );
 }
 
 export function readServer(id: string, options?: ServerOptions): ServerRecord | null {
   const coordRoot = rootOf(options);
   if (!coordRoot || !isValidServerId(id)) return null;
-  const path = recordPath(coordRoot, id);
-  const record = readRecord(path);
-  if (!record && existsSync(path))
-    throw new Error(
-      `server record ${id} is invalid or uses an older schema; retained without custody`,
-    );
-  return record;
+  return readRecord(recordPath(coordRoot, id));
 }
 
 /** Mark a server as used now. */
 export function touchServer(id: string, options?: ServerOptions & { now?: Date }): void {
   const coordRoot = rootOf(options);
   if (!coordRoot || !isValidServerId(id)) return;
-  withServerMutation(coordRoot, id, () => {
-    const path = recordPath(coordRoot, id);
-    const record = readRecord(path);
-    if (!record) return;
-    writePrivateJsonAtomic(path, {
-      ...record,
-      last_active_at: (options?.now ?? new Date()).toISOString(),
-    });
+  const path = recordPath(coordRoot, id);
+  const record = readRecord(path);
+  if (!record) return;
+  writePrivateJsonAtomic(path, {
+    ...record,
+    last_active_at: (options?.now ?? new Date()).toISOString(),
   });
 }
 
@@ -447,8 +335,6 @@ function readRecord(path: string): ServerRecord | null {
     if (
       value?.schema_version !== SERVER_RECORD_SCHEMA_VERSION ||
       typeof value.id !== "string" ||
-      typeof value.registration_id !== "string" ||
-      !/^[0-9a-f-]{36}$/.test(value.registration_id) ||
       !Number.isSafeInteger(value.pid) ||
       (value.kind !== "service" && value.kind !== "session")
     )
@@ -466,14 +352,8 @@ export function readServerRecords(options?: ServerOptions): ServerRecord[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((name) => name.endsWith(".json"))
-    .map((name) => {
-      const record = readRecord(join(dir, name));
-      if (!record)
-        throw new Error(
-          `server record ${name} is invalid or uses an older schema; retained without custody`,
-        );
-      return record;
-    })
+    .map((name) => readRecord(join(dir, name)))
+    .filter((record): record is ServerRecord => record !== null)
     .sort(
       (a, b) =>
         a.kind.localeCompare(b.kind) || a.type.localeCompare(b.type) || a.id.localeCompare(b.id),
@@ -567,7 +447,7 @@ export function listServers(options?: ListServersOptions): ServersReport {
   records.forEach((record, i) => {
     const state = states[i]!;
     if (state === "dead" && allProcessesAbsent(record) && options?.prune !== false) {
-      unregisterServer(record, { coordRoot });
+      unregisterServer(record.id, { coordRoot, pid: record.pid });
       pruned.push(record.id);
       return;
     }
@@ -718,12 +598,32 @@ export interface StopResult {
 
 export interface ServerProcessDependencies extends ProcessGenerationSignalDependencies {
   probePid?: (pid: number) => boolean;
+  /** Numeric signal, used for the process group and in tests. */
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+}
+
+/** Recheck the generation, then signal. A supplied `kill` replaces the handle path. */
+function signalVerified(
+  pid: number,
+  token: string | undefined,
+  name: NodeJS.Signals,
+  dependencies: ServerProcessDependencies,
+): { sent: boolean; verdict: ProcessGenerationVerdict } {
+  if (!dependencies.kill) return signalIfSameGeneration(pid, token, name, dependencies);
+  const verdict = verifyProcessGeneration(pid, token, dependencies.readToken);
+  if (verdict !== "same") return { sent: false, verdict };
+  try {
+    dependencies.kill(pid, name);
+    return { sent: true, verdict };
+  } catch {
+    return { sent: false, verdict };
+  }
 }
 
 /**
  * Stop a verified server with SIGTERM, then SIGKILL after the grace period.
- * Every signal targets one retained process handle, including auxiliary processes.
- * Each target requires a fresh generation check. Unknown or different generations retain the record.
+ * Each signal, including the process group and auxiliary processes, requires
+ * a fresh generation check. Unknown or different generations retain the record.
  */
 export async function stopServer(
   record: ServerRecord,
@@ -733,47 +633,6 @@ export async function stopServer(
   },
 ): Promise<StopResult> {
   const coordRoot = rootOf(options);
-  if (!coordRoot)
-    return {
-      id: record.id,
-      stopped: false,
-      method: "refused",
-      generation: "unknown",
-      detail: "registration custody root is unavailable",
-    };
-  let lease: ReturnType<typeof serverMutationLease>;
-  try {
-    lease = serverMutationLease(coordRoot, record.id);
-  } catch {
-    return {
-      id: record.id,
-      stopped: false,
-      method: "refused",
-      generation: "unknown",
-      detail: "registration custody is unavailable",
-    };
-  }
-  try {
-    const current = readServer(record.id, { coordRoot });
-    if (!current || current.registration_id !== record.registration_id)
-      return {
-        id: record.id,
-        stopped: false,
-        method: "refused",
-        generation: "unknown",
-        detail: "registration custody changed; retained current server",
-      };
-    return await stopServerWithCustody(record, coordRoot, options);
-  } finally {
-    lease.release();
-  }
-}
-
-async function stopServerWithCustody(
-  record: ServerRecord,
-  coordRoot: string,
-  options?: ServerOptions & { graceMs?: number; signalDependencies?: ServerProcessDependencies },
-): Promise<StopResult> {
   const graceMs = options?.graceMs ?? 5_000;
   const dependencies = options?.signalDependencies ?? {};
   const targets = [
@@ -790,7 +649,8 @@ async function stopServerWithCustody(
     detail: `pid ${pid} generation is ${generation}; left the server record in place`,
   });
   const finish = (result: StopResult): StopResult => {
-    if (result.stopped || result.method === "not-running") removeServerReceipt(coordRoot, record);
+    if (result.stopped || result.method === "not-running")
+      unregisterServer(record.id, { coordRoot, pid: record.pid });
     return result;
   };
   if (record.host !== hostname())
@@ -812,16 +672,16 @@ async function stopServerWithCustody(
   if (targets.every((target) => processPresence(target.pid, dependencies.probePid) === "absent"))
     return finish({ id: record.id, stopped: false, method: "not-running" });
 
-  const current = readServer(record.id, { coordRoot });
-  if (!current || !sameProcessCustody(current, record)) return refuse(record.pid, "unknown");
   for (const name of ["SIGTERM", "SIGKILL"] as const) {
     for (const target of targets) {
       const presence = processPresence(target.pid, dependencies.probePid);
       if (presence === "absent") continue;
       if (presence === "unknown") return refuse(target.pid, "unknown");
-      const result = signalIfSameGeneration(target.pid, target.token, name, dependencies);
-      if (!result.sent || result.verdict !== "same")
-        return refuse(target.pid, result.verdict === "same" ? "unknown" : result.verdict);
+      const result =
+        target.pid === record.pid
+          ? signalServerLeader(target.pid, target.token, name, dependencies)
+          : signalVerified(target.pid, target.token, name, dependencies);
+      if (result.verdict !== "same") return refuse(target.pid, result.verdict);
     }
     const observed = await waitForExit(targets, name === "SIGTERM" ? graceMs : 2_000, dependencies);
     if (observed.refused) return refuse(observed.refused.pid, observed.refused.verdict);
@@ -835,6 +695,24 @@ async function stopServerWithCustody(
     generation: "same",
     detail: "process survived SIGKILL",
   };
+}
+
+function signalServerLeader(
+  pid: number,
+  token: string | undefined,
+  name: NodeJS.Signals,
+  dependencies: ServerProcessDependencies,
+): { sent: boolean; verdict: ProcessGenerationVerdict } {
+  // The leader's generation authorizes its group. A failed group signal must
+  // not reuse that observation for the direct-PID fallback.
+  const kill = dependencies.kill ?? process.kill;
+  const group = signalVerified(pid, token, name, {
+    readToken: dependencies.readToken,
+    kill: (leader, signal) => kill(-leader, signal),
+  });
+  return group.sent || group.verdict !== "same"
+    ? group
+    : signalVerified(pid, token, name, dependencies);
 }
 
 async function waitForExit(

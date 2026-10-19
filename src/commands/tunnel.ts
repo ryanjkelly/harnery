@@ -1,7 +1,5 @@
 import { type ChildProcess, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
@@ -9,22 +7,11 @@ import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
-  acquireNoClobberLease,
-  createTunnelReadinessVerifier,
-  pidAlive,
-  processStartToken,
-  readServer,
-  type ServerRecord,
-  serversDir,
-  signalIfSameGeneration,
   tryRegisterServer,
   tunnelServerId,
   tunnelServerInput,
   unregisterServer,
-  verifyProcessGeneration,
-  withServerRegistrationCustody,
 } from "../core/servers/index.ts";
-import { writePrivateJsonAtomic } from "../core/storage/atomic-json.ts";
 import {
   processLogDestination,
   runProcessLogWorker,
@@ -38,20 +25,26 @@ import {
   planCurrentAddresses,
 } from "../lib/tunnel/current-address.ts";
 import { ALLOW_PATHS_ENV, normalizeAllowPaths } from "../lib/tunnel/path-scope.ts";
-import { connectProbe, listeningPorts, portListening } from "../lib/tunnel/processes.ts";
+import {
+  connectProbe,
+  findPidsByCommandLine,
+  listeningPorts,
+  portListening,
+} from "../lib/tunnel/processes.ts";
 import {
   clearState,
   DEFAULT_INSTANCE,
   ensureCloudflared,
   gateLogFile,
   isProcessAlive,
+  isTunnelStateLive,
+  listStates,
   providerLogFile,
   readConfig,
+  readState,
   type TailscaleMode,
   type TunnelProvider,
   type TunnelState,
-  tunnelDir,
-  tunnelReadiness,
   writeConfig,
   writeState,
 } from "../lib/tunnel/state.ts";
@@ -343,13 +336,60 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Kill every process whose command line matches `pattern` (an extended regular
+ * expression), skipping our own PID and any already-killed. Returns the count
+ * killed. Used as a fallback so orphaned gate/cloudflared processes get cleaned
+ * even when the state file was lost (which otherwise left them squatting on the
+ * port).
+ */
+function killByPattern(pattern: string, alreadyKilled: Set<number>): number {
+  let killed = 0;
+  for (const pid of findPidsByCommandLine(pattern)) {
+    if (!pid || pid === process.pid || alreadyKilled.has(pid)) continue;
+    try {
+      process.kill(pid);
+      alreadyKilled.add(pid);
+      killed++;
+    } catch {
+      /* race: already gone */
+    }
+  }
+  return killed;
+}
+
+/**
+ * Command-line pattern for ONE instance's gate, identified by its port. Matches
+ * both launch forms: `bun run .../gate.ts --name N --port P` and a host CLI
+ * re-executing itself as `<cli> tunnel gate --name N --port P`. Port boundary is
+ * guarded with `( |$)` so port 9001 doesn't match 90011.
+ */
+function gatePattern(gatePort: number): string {
+  return `(gate\\.ts|tunnel gate) .*--port ${gatePort}( |$)`;
+}
+
+/**
+ * Sweep stray gate + cloudflared processes for ONE instance, identified by its
+ * gate port. Both signatures are port-scoped so tearing down one tunnel never
+ * touches another:
+ *   - gate:        see gatePattern (the port is on the gate's argv)
+ *   - cloudflared: `--url http://localhost:<port>` (order-independent, so it
+ *     matches regardless of the `--protocol http2` flag we also pass).
+ */
+function sweepStrays(gatePort: number, alreadyKilled: Set<number>): number {
+  return (
+    killByPattern(gatePattern(gatePort), alreadyKilled) +
+    killByPattern(`--url http://localhost:${gatePort}( |$)`, alreadyKilled)
+  );
+}
+
+/**
  * Pick a gate port for a new instance. An explicit `--gate-port` is honored
  * (and rejected if it's already taken); otherwise scan upward from 9001 for the
  * first port that's neither held by a live instance nor currently listening.
  */
 async function allocateGatePort(preferred: number | undefined): Promise<number> {
   const used = new Set<number>(
-    listSelectedStates()
+    listStates()
       .filter((s) => isProcessAlive(s.gate_pid))
       .map((s) => s.gate_port),
   );
@@ -482,14 +522,13 @@ function runTailscaleShare(
 }
 
 function stopTailscaleShare(state: TunnelState): boolean {
-  if (state.provider !== "tailscale") return true;
-  if (!originalTailscaleRoute(state)) return false;
-  const cmd = tailscaleCommand(state.tailscale_mode!);
+  if (state.provider !== "tailscale" || !state.tailscale_mode) return true;
+  const cmd = tailscaleCommand(state.tailscale_mode);
   const logPath = tunnelLogDestinations(state.name, "tailscale").provider;
   const args = [
     cmd,
-    `--https=${state.tailscale_https_port}`,
-    `--set-path=${state.tailscale_path}`,
+    `--https=${state.tailscale_https_port ?? 443}`,
+    `--set-path=${state.tailscale_path ?? "/"}`,
     "off",
   ];
   const status = runRotatingProcessSync({
@@ -502,9 +541,9 @@ function stopTailscaleShare(state: TunnelState): boolean {
     // surviving serve/funnel mapping could later re-expose whatever next binds
     // that port. Surface it loudly so the operator can clear it by hand.
     emit.text(
-      `\n  ⚠ Failed to remove the Tailscale ${cmd} mapping (path ${state.tailscale_path}).\n` +
+      `\n  ⚠ Failed to remove the Tailscale ${cmd} mapping (path ${state.tailscale_path ?? "/"}).\n` +
         `    It may still be exposing this machine. Clear it with:\n` +
-        `      tailscale ${cmd} --https=${state.tailscale_https_port} --set-path=${state.tailscale_path} off\n` +
+        `      tailscale ${cmd} --https=${state.tailscale_https_port ?? 443} --set-path=${state.tailscale_path ?? "/"} off\n` +
         `    Log: ${logPath}\n\n`,
     );
     return false;
@@ -520,48 +559,13 @@ function contextVhost(): string | null {
 }
 
 function providerIsAlive(state: TunnelState): boolean {
-  if (!canonicalProviderFields(state)) return false;
-  if (state.provider === "tailscale") return state.provider_state === "ready";
-  const pid = state.cloudflared_pid;
+  if (state.provider === "tailscale") return true;
+  const pid = state.cloudflared_pid ?? state.provider_pid;
   return typeof pid === "number" && isProcessAlive(pid);
 }
 
-function canonicalProviderFields(state: TunnelState): boolean {
-  return (
-    !Object.hasOwn(state, "provider_pid") &&
-    !Object.hasOwn(state, "provider_start_token") &&
-    (state.provider !== "tailscale" ||
-      (state.cloudflared_pid === undefined && state.cloudflared_start_token === undefined))
-  );
-}
-
-function originalProcessWitnesses(state: TunnelState): boolean {
-  if (
-    !canonicalProviderFields(state) ||
-    !Number.isSafeInteger(state.gate_pid) ||
-    state.gate_pid < 1 ||
-    typeof state.gate_start_token !== "string" ||
-    !state.gate_start_token ||
-    typeof state.registration_id !== "string" ||
-    !state.registration_id
-  )
-    return false;
-  if (state.provider === "tailscale")
-    return (
-      originalTailscaleRoute(state) &&
-      (state.provider_state === "ready" || state.provider_state === "pending")
-    );
-  return (
-    state.provider === "cloudflare" &&
-    Number.isSafeInteger(state.cloudflared_pid) &&
-    state.cloudflared_pid! > 0 &&
-    typeof state.cloudflared_start_token === "string" &&
-    !!state.cloudflared_start_token
-  );
-}
-
-function readinessOf(state: TunnelState) {
-  return tunnelReadiness(state, createTunnelReadinessVerifier({ coordRoot: registryRoot() }));
+function tunnelIsAlive(state: TunnelState): boolean {
+  return isTunnelStateLive(state);
 }
 
 interface GateSpawnOpts {
@@ -584,7 +588,8 @@ interface GateSpawnOpts {
  * re-reads — that snapshot is precisely why `reload` has to exist.
  */
 function spawnGate(o: GateSpawnOpts, launch: GateLaunch): ChildProcess {
-  // Keep the instance name and port visible in process diagnostics.
+  // `--name`/`--port` on argv mirror the env vars; they're what makes the gate
+  // process distinguishable per-instance in a command-line search (see sweepStrays).
   const gateProc = spawnRotatingProcess({
     path: o.gateLogPath,
     command: launch.command,
@@ -605,115 +610,7 @@ function spawnGate(o: GateSpawnOpts, launch: GateLaunch): ChildProcess {
   return gateProc;
 }
 
-export interface TunnelRoute {
-  path: string;
-  httpsPort: number;
-}
-function originalTailscaleRoute(state: TunnelState): boolean {
-  return (
-    (state.tailscale_mode === "serve" || state.tailscale_mode === "funnel") &&
-    typeof state.tailscale_path === "string" &&
-    state.tailscale_path.startsWith("/") &&
-    Number.isSafeInteger(state.tailscale_https_port) &&
-    state.tailscale_https_port! > 0 &&
-    state.tailscale_https_port! <= 65535
-  );
-}
-function routeOf(state: TunnelState | null): TunnelRoute | null {
-  return state?.provider === "tailscale" && originalTailscaleRoute(state)
-    ? { path: state.tailscale_path!, httpsPort: state.tailscale_https_port! }
-    : null;
-}
-function routeKey(route: TunnelRoute): string {
-  return `${route.httpsPort}:${route.path}`;
-}
-
-/** Serialize the instance and every shared provider route before any external effect. */
-export function withTunnelLifecycleCustody<T>(
-  name: string,
-  requested: TunnelRoute | null,
-  effect: () => PromiseLike<T>,
-): Promise<T>;
-export function withTunnelLifecycleCustody<T>(
-  name: string,
-  requested: TunnelRoute | null,
-  effect: () => T,
-): T;
-export function withTunnelLifecycleCustody<T>(
-  name: string,
-  requested: TunnelRoute | null,
-  effect: () => T | PromiseLike<T>,
-): T | Promise<T> {
-  if (!/^[a-z0-9][a-z0-9-]*$/i.test(name)) throw new Error("invalid tunnel lifecycle name");
-  const leases: Array<ReturnType<typeof acquireNoClobberLease>> = [];
-  const release = () => {
-    for (const lease of leases.splice(0).reverse()) lease.release();
-  };
-  const acquire = (category: string, key: string) => {
-    const scope = `tunnel-${category}-${createHash("sha256").update(key).digest("hex")}`;
-    leases.push(
-      acquireNoClobberLease({
-        path: resolve(
-          tunnelDir(),
-          ".custody",
-          category,
-          createHash("sha256").update(key).digest("hex"),
-        ),
-        scope,
-        authoritySha256: createHash("sha256").update(scope).digest("hex"),
-        staleAfterMs: 1,
-      }),
-    );
-  };
-  try {
-    acquire("instance", name.toLowerCase());
-    const retained = listSelectedStates();
-    const existing = routeOf(retained.find((state) => state.name === name) ?? null);
-    const routes = [
-      ...new Set(
-        [existing, requested].filter((route): route is TunnelRoute => !!route).map(routeKey),
-      ),
-    ].sort();
-    for (const key of routes) acquire("route", key);
-    for (const other of retained) {
-      if (other.name.toLowerCase() === name.toLowerCase()) {
-        if (other.name !== name)
-          throw new Error(
-            `tunnel instance ${name} aliases retained spelling ${other.name}; lifecycle custody is unavailable`,
-          );
-        continue;
-      }
-      const route = routeOf(other);
-      if (route && routes.includes(routeKey(route)))
-        throw new Error(
-          `Tailscale route ${routeKey(route)} is retained by tunnel ${other.name}; provider custody is unavailable`,
-        );
-    }
-    const result = effect();
-    if (
-      result !== null &&
-      (typeof result === "object" || typeof result === "function") &&
-      typeof (result as PromiseLike<T>).then === "function"
-    )
-      return Promise.resolve(result).finally(release);
-    release();
-    return result as T;
-  } catch (error) {
-    release();
-    throw error;
-  }
-}
-
 async function up(opts: UpOpts): Promise<void> {
-  const name = resolveName(opts.name);
-  const requested =
-    resolveProvider(opts.provider) === "tailscale"
-      ? { path: resolveTailscalePath(opts.path, name), httpsPort: resolveHttpsPort(opts.httpsPort) }
-      : null;
-  return withTunnelLifecycleCustody(name, requested, () => upWithCustody(opts));
-}
-
-async function upWithCustody(opts: UpOpts): Promise<void> {
   const launch = currentGateLaunch();
   if (!launch) {
     emit.error({ code: "tunnel_requires_bun", message: requiresBunMessage() });
@@ -733,17 +630,8 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
     provider === "tailscale" ? resolveHttpsPort(opts.httpsPort) : undefined;
   const allowPaths = resolveAllowPaths(opts.allowPath);
 
-  const existing = readSelectedState(name);
-  const readiness = existing ? readinessOf(existing) : null;
-  if (readiness === "unknown") {
-    emit.error({
-      code: "tunnel_custody_unknown",
-      message: `Tunnel [${name}] readiness is unknown; retained its state and refused cleanup or replacement.`,
-    });
-    process.exit(1);
-    return;
-  }
-  if (existing && readiness === "ready") {
+  const existing = readState(name);
+  if (existing && tunnelIsAlive(existing)) {
     if (existing.provider !== provider) {
       emit.error({
         code: "tunnel_instance_in_use",
@@ -766,20 +654,15 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
     emit.text(`  Paths:      ${formatPaths(existing.allow_paths)}\n`);
     return;
   }
-  if (existing) {
-    downOneWithCustody(name, new Set());
-    if (readSelectedState(name)) {
-      emit.error({
-        code: "tunnel_custody_unknown",
-        message: `Tunnel [${name}] has a live or unverifiable process; retained its state and refused a replacement.`,
-      });
-      process.exit(1);
-    }
-  }
+  if (existing) downOne(name, new Set());
 
   // Allocate the gate port (after clearing dead state so its old port frees up
   // for reuse). Explicit --gate-port is validated; otherwise auto-scan.
   const gatePort = await allocateGatePort(opts.gatePort ? Number(opts.gatePort) : undefined);
+
+  // Self-heal: clear any orphaned gate/cloudflared on THIS instance's port from
+  // a prior crashed or state-cleared run so the gate port is free before we bind.
+  if (sweepStrays(gatePort, new Set())) await sleep(500);
 
   const cfg = readConfig();
   if (provider === "cloudflare" && cfg.allowed_ips.length === 0) {
@@ -828,13 +711,17 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
     launch,
   );
 
-  const gateStartToken = processStartToken(gateProc.pid!);
   await sleep(800);
 
   // A host CLI that re-executes itself takes longer to load than a bare script,
   // so wait for the gate to actually listen before the provider forwards to it.
   if (!isProcessAlive(gateProc.pid!) || !(await waitForPortBound(gatePort, 15_000))) {
-    signalIfSameGeneration(gateProc.pid!, gateStartToken, "SIGTERM");
+    try {
+      process.kill(gateProc.pid!);
+    } catch {
+      /* already dead */
+    }
+    sweepStrays(gatePort, new Set());
     emit.error({
       code: "tunnel_gate_failed",
       message: `Gate failed to start. Check log: ${gateLogPath}`,
@@ -845,8 +732,6 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
   let url: string;
   let registered = true;
   let cloudflaredPid: number | undefined;
-  let cloudflaredStartToken: string | undefined;
-  let pendingReceipt: ServerRecord | null = null;
 
   if (provider === "cloudflare") {
     // Force HTTP/2 transport. The default QUIC transport wedges at precheck on
@@ -862,13 +747,20 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
     });
     cfdProc.unref();
     cloudflaredPid = cfdProc.pid!;
-    cloudflaredStartToken = processStartToken(cloudflaredPid) ?? undefined;
 
     const ready = await waitForReady(providerLogPath, 30_000);
     registered = ready.registered;
     if (!ready.url) {
-      signalIfSameGeneration(gateProc.pid!, gateStartToken, "SIGTERM");
-      signalIfSameGeneration(cloudflaredPid, cloudflaredStartToken, "SIGTERM");
+      try {
+        process.kill(gateProc.pid!);
+      } catch {
+        /* already dead */
+      }
+      try {
+        process.kill(cloudflaredPid);
+      } catch {
+        /* already dead */
+      }
       emit.error({
         code: "tunnel_url_timeout",
         message: `Failed to obtain tunnel URL within 30s. Check log: ${providerLogPath}`,
@@ -884,38 +776,12 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
     // `heal` would then be unable to see or clean up.
     url = tailscaleUrl(tailscalePath!, tailscaleHttpsPort!);
     const gateTarget = `http://127.0.0.1:${gatePort}`;
-    const pending: TunnelState = {
-      name,
-      provider,
-      url,
-      gate_pid: gateProc.pid!,
-      gate_start_token: gateStartToken ?? undefined,
-      started_at: new Date().toISOString(),
-      target,
-      vhost,
-      gate_port: gatePort,
-      allow_paths: allowPaths,
-      tailscale_mode: tailscaleMode,
-      tailscale_path: tailscalePath,
-      tailscale_https_port: tailscaleHttpsPort,
-      provider_state: "pending",
-    };
-    pendingReceipt = recordTunnelServer(pending);
-    if (!pendingReceipt) {
-      const evidence = recordRefusedTunnelLaunch(pending);
-      signalIfSameGeneration(pending.gate_pid, pending.gate_start_token, "SIGTERM");
-      throw new Error(
-        `Tailscale admission refused before provider effect; retained witnesses at ${evidence}`,
-      );
-    }
-    beginTailscaleRoute(pending, pendingReceipt, () =>
-      runTailscaleShare(
-        tailscaleMode!,
-        gateTarget,
-        tailscalePath!,
-        tailscaleHttpsPort!,
-        providerLogPath,
-      ),
+    runTailscaleShare(
+      tailscaleMode!,
+      gateTarget,
+      tailscalePath!,
+      tailscaleHttpsPort!,
+      providerLogPath,
     );
   }
 
@@ -923,10 +789,7 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
     name,
     provider,
     url,
-    ...(provider === "tailscale" ? { provider_state: "ready" as const } : {}),
     gate_pid: gateProc.pid!,
-    gate_start_token: gateStartToken ?? undefined,
-    cloudflared_start_token: cloudflaredStartToken,
     cloudflared_pid: cloudflaredPid,
     started_at: new Date().toISOString(),
     target,
@@ -937,22 +800,8 @@ async function upWithCustody(opts: UpOpts): Promise<void> {
     tailscale_path: tailscalePath,
     tailscale_https_port: tailscaleHttpsPort,
   };
-  const receipt = provider === "tailscale" ? pendingReceipt : recordTunnelServer(state);
-  if (receipt) state.registration_id = receipt.registration_id;
-  try {
-    if (!receipt) throw new Error("registration refused");
-    publishTunnelState(state, receipt);
-  } catch {
-    const evidence = recordRefusedTunnelLaunch(state);
-    signalIfSameGeneration(state.gate_pid, state.gate_start_token, "SIGTERM");
-    if (state.cloudflared_pid)
-      signalIfSameGeneration(state.cloudflared_pid, state.cloudflared_start_token, "SIGTERM");
-    emit.error({
-      code: "tunnel_registration_refused",
-      message: `Tunnel [${name}] registration custody was refused; saved process witnesses at ${evidence}.`,
-    });
-    process.exit(1);
-  }
+  writeState(state);
+  recordTunnelServer(state);
 
   const bin = resolveBinName();
   const stopHint =
@@ -987,191 +836,43 @@ function registryRoot(): string {
   return resolveCoordRoot() ?? process.cwd();
 }
 
-function unknownTunnelFrame(name: string): Error {
-  return Object.assign(
-    new Error(
-      `Tunnel [${name}] state is unreadable or its custody is unknown; retained the frame.`,
-    ),
-    {
-      code: "tunnel_custody_unknown",
-    },
-  );
-}
-
-function readSelectedState(name: string): TunnelState | null {
-  const path = resolve(
-    tunnelDir(),
-    name === DEFAULT_INSTANCE ? "state.json" : `state-${name}.json`,
-  );
-  let bytes: string;
-  try {
-    bytes = readFileSync(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw unknownTunnelFrame(name);
-  }
-  try {
-    const raw = JSON.parse(bytes) as TunnelState;
-    if (
-      !raw ||
-      typeof raw !== "object" ||
-      Array.isArray(raw) ||
-      raw.name !== name ||
-      (raw.provider !== "cloudflare" && raw.provider !== "tailscale") ||
-      (raw.provider === "tailscale" && !originalTailscaleRoute(raw)) ||
-      typeof raw.url !== "string" ||
-      !raw.url ||
-      typeof raw.target !== "string" ||
-      !raw.target ||
-      typeof raw.vhost !== "string" ||
-      !Number.isSafeInteger(raw.gate_pid) ||
-      raw.gate_pid < 1 ||
-      !Number.isSafeInteger(raw.gate_port) ||
-      raw.gate_port < 1 ||
-      raw.gate_port > 65535 ||
-      !Array.isArray(raw.allow_paths) ||
-      raw.allow_paths.some((path) => typeof path !== "string")
-    )
-      throw unknownTunnelFrame(name);
-    return raw;
-  } catch {
-    throw unknownTunnelFrame(name);
-  }
-}
-
-function listSelectedStates(): TunnelState[] {
-  let files: string[];
-  try {
-    files = readdirSync(tunnelDir());
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw unknownTunnelFrame("inventory");
-  }
-  const states: TunnelState[] = [];
-  for (const file of files) {
-    const name = file === "state.json" ? DEFAULT_INSTANCE : /^state-(.+)\.json$/.exec(file)?.[1];
-    if (!name) continue;
-    const state = readSelectedState(name);
-    if (state) states.push(state);
-  }
-  return states.sort((a, b) =>
-    (typeof b.started_at === "string" ? b.started_at : "").localeCompare(
-      typeof a.started_at === "string" ? a.started_at : "",
-    ),
-  );
-}
-
-function matchesTunnelReceipt(state: TunnelState, receipt: ServerRecord): boolean {
-  return (
-    originalProcessWitnesses(state) &&
-    tunnelServerId(state.name) === receipt.id &&
-    receipt.host === hostname() &&
-    receipt.kind === "service" &&
-    receipt.type === "tunnel" &&
-    receipt.port === state.gate_port &&
-    receipt.url === state.url &&
-    receipt.registration_id === state.registration_id &&
-    receipt.pid === state.gate_pid &&
-    receipt.start_token === state.gate_start_token
-  );
-}
-
-/** Retain a refused launch without overwriting another launch's canonical state. */
-export function recordRefusedTunnelLaunch(state: TunnelState): string {
-  const path = resolve(tunnelDir(), `failed-${state.name}-${randomUUID()}.json`);
-  writePrivateJsonAtomic(path, state);
-  return path;
-}
-
-/** A canonical state frame may be published only by its current registration. */
-export function publishTunnelState(state: TunnelState, receipt: ServerRecord): void {
-  if (!matchesTunnelReceipt(state, receipt))
-    throw new Error("tunnel state registration custody does not match");
-  withServerRegistrationCustody(receipt, { coordRoot: registryRoot() }, () => writeState(state));
-}
-
-/** Retain pending route intent before asking the provider to change external state. */
-export function beginTailscaleRoute<T>(
-  state: TunnelState,
-  receipt: ServerRecord,
-  effect: () => T,
-): T {
-  if (state.provider !== "tailscale" || state.provider_state !== "pending")
-    throw new Error("Tailscale route intent is not pending");
-  publishTunnelState(state, receipt);
-  return withServerRegistrationCustody(receipt, { coordRoot: registryRoot() }, effect);
-}
-
-function recordTunnelServer(state: TunnelState): ServerRecord | null {
-  if (!state.gate_start_token) return null;
+function recordTunnelServer(state: TunnelState): void {
   const coordRoot = registryRoot();
-  const record = tryRegisterServer(tunnelServerInput(state, coordRoot), { coordRoot });
-  if (record) state.registration_id = record.registration_id;
-  return record;
+  tryRegisterServer(tunnelServerInput(state, coordRoot), { coordRoot });
 }
 
-function tunnelRegistration(state: TunnelState): { known: boolean; record: ServerRecord | null } {
-  if (!originalProcessWitnesses(state)) return { known: false, record: null };
-  const coordRoot = registryRoot();
-  const id = tunnelServerId(state.name);
-  let record: ServerRecord | null;
-  try {
-    record = readServer(id, { coordRoot });
-  } catch {
-    return { known: false, record: null };
-  }
-  const present = existsSync(resolve(serversDir(coordRoot), `${id}.json`));
-  if (!present) return { known: false, record: null };
-  return { known: !!record && matchesTunnelReceipt(state, record), record };
+/** Tear down a single instance by name. Returns the number of processes killed. */
+function portHeldByOtherLiveInstance(port: number, name: string): boolean {
+  return listStates().some(
+    (s) => s.name !== name && s.gate_port === port && isProcessAlive(s.gate_pid),
+  );
 }
 
-/** Unknown saved identities retain state and never authorize a signal. */
 export function downOne(name: string, killed: Set<number>): number {
-  try {
-    return withTunnelLifecycleCustody(name, null, () => downOneWithCustody(name, killed));
-  } catch {
-    return 0;
-  }
-}
-
-function downOneWithCustody(name: string, killed: Set<number>): number {
   const before = killed.size;
-  const state = readSelectedState(name);
-  if (!state) return 0;
-  const registration = tunnelRegistration(state);
-  if (!registration.known) return 0;
-  const targets = [
-    { pid: state.gate_pid, token: state.gate_start_token },
-    { pid: state.cloudflared_pid, token: state.cloudflared_start_token },
-  ].filter(
-    (target): target is { pid: number; token: string | undefined } =>
-      typeof target.pid === "number",
-  );
-  for (const target of targets) {
-    if (pidAlive(target.pid) && verifyProcessGeneration(target.pid, target.token) !== "same")
-      return 0;
-  }
-  if (!registration.record) return 0;
-  let cleared = false;
-  try {
-    withServerRegistrationCustody(registration.record, { coordRoot: registryRoot() }, () => {
-      for (const target of targets) {
-        if (!pidAlive(target.pid) || killed.has(target.pid)) continue;
-        const result = signalIfSameGeneration(target.pid, target.token, "SIGTERM");
-        if (!result.sent) throw new Error("tunnel process custody is unknown");
-        killed.add(target.pid);
+  const state = readState(name);
+  if (state) {
+    if (state.provider === "tailscale") stopTailscaleShare(state);
+    for (const pid of [state.gate_pid, state.cloudflared_pid, state.provider_pid]) {
+      if (typeof pid !== "number") continue;
+      if (isProcessAlive(pid)) {
+        try {
+          process.kill(pid);
+          killed.add(pid);
+        } catch {
+          /* race: already gone */
+        }
       }
-      // Observation and deletion share custody; an old stopper cannot clear a winner.
-      if (targets.some((target) => pidAlive(target.pid))) return;
-      if (JSON.stringify(readSelectedState(name)) !== JSON.stringify(state)) return;
-      if (state.provider === "tailscale" && !stopTailscaleShare(state)) return;
-      clearState(name);
-      cleared = true;
-    });
-  } catch {
-    return killed.size - before;
+    }
   }
-  if (cleared) unregisterServer(registration.record, { coordRoot: registryRoot() });
+  // Fallback: sweep orphans on this instance's gate port, even when state was
+  // lost; they'd otherwise squat on the port and break the next `up`. Skip it
+  // when another live instance now owns that port: a stale record's port is
+  // reused after a reboot, and sweeping it would kill the live tunnel there.
+  const port = state?.gate_port ?? DEFAULT_GATE_PORT;
+  if (!portHeldByOtherLiveInstance(port, name)) sweepStrays(port, killed);
+  clearState(name);
+  unregisterServer(tunnelServerId(name), { coordRoot: registryRoot() });
   return killed.size - before;
 }
 
@@ -1179,15 +880,14 @@ function down(opts: DownOpts): void {
   const killed = new Set<number>();
 
   if (opts.all) {
-    const states = listSelectedStates();
+    const states = listStates();
     if (states.length === 0) {
       emit.text("No tunnels up. Nothing to stop.\n");
       return;
     }
     for (const s of states) downOne(s.name, killed);
-    const retained = states.filter((state) => readSelectedState(state.name)).length;
     emit.text(
-      `Requested stop for ${states.length} tunnel(s); ${killed.size} process signal(s), ${retained} state record(s) retained pending verified exit.\n`,
+      `Stopped ${states.length} tunnel(s) [${states.map((s) => s.name).join(", ")}], ${killed.size} process(es).\n`,
     );
     return;
   }
@@ -1195,8 +895,8 @@ function down(opts: DownOpts): void {
   const name = resolveName(opts.name);
   // Bare `down` targets the default instance. If it's not up but named ones
   // are, don't silently no-op; point the operator at them.
-  if (name === DEFAULT_INSTANCE && !readSelectedState(DEFAULT_INSTANCE)) {
-    const others = listSelectedStates();
+  if (name === DEFAULT_INSTANCE && !readState(DEFAULT_INSTANCE)) {
+    const others = listStates();
     if (others.length > 0) {
       emit.text(
         `No default tunnel running. Other tunnels up: ${others.map((s) => s.name).join(", ")}.\nUse \`${resolveBinName()} tunnel down --name <name>\` or \`${resolveBinName()} tunnel down --all\`.\n`,
@@ -1207,9 +907,9 @@ function down(opts: DownOpts): void {
 
   downOne(name, killed);
   emit.text(
-    readSelectedState(name)
-      ? `Tunnel [${name}] state retained pending verified process exit or custody; ${killed.size} signal(s) sent.\n`
-      : `Tunnel [${name}] has no remaining recorded processes.\n`,
+    killed.size === 0
+      ? `No tunnel processes found for [${name}]. Nothing to stop.\n`
+      : `Stopped ${killed.size} process(es). Tunnel [${name}] down.\n`,
   );
 }
 
@@ -1245,28 +945,9 @@ async function waitForPortBound(port: number, timeoutMs: number): Promise<boolea
  * edge reconnects without noticing.
  */
 export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; message: string }> {
-  try {
-    return await withTunnelLifecycleCustody(state.name, routeOf(state), () =>
-      reloadOneWithCustody(state),
-    );
-  } catch {
-    return {
-      ok: false,
-      message: `[${state.name}] lifecycle or provider route custody is unavailable; retained the tunnel.`,
-    };
-  }
-}
-
-async function reloadOneWithCustody(state: TunnelState): Promise<{ ok: boolean; message: string }> {
   const bin = resolveBinName();
   const name = state.name;
   const gatePort = state.gate_port;
-
-  if (!canonicalProviderFields(state))
-    return {
-      ok: false,
-      message: `[${name}] obsolete or ambiguous provider authority is unknown; retained the tunnel.`,
-    };
 
   if (!providerIsAlive(state)) {
     return {
@@ -1293,54 +974,28 @@ async function reloadOneWithCustody(state: TunnelState): Promise<{ ok: boolean; 
     };
   }
 
-  const registration = tunnelRegistration(state);
-  if (!registration.known || !registration.record)
-    return { ok: false, message: `[${name}] registration custody changed; retained the tunnel.` };
-  const stopGate = async (): Promise<{ ok: boolean; message: string }> => {
-    if (
-      state.provider === "cloudflare" &&
-      state.cloudflared_pid &&
-      verifyProcessGeneration(state.cloudflared_pid, state.cloudflared_start_token) !== "same"
-    )
-      return {
-        ok: false,
-        message: `[${name}] provider generation is unknown or changed; retained the tunnel.`,
-      };
-    if (pidAlive(state.gate_pid)) {
-      if (!registration.record)
-        return {
-          ok: false,
-          message: `[${name}] registration custody is unavailable; retained the tunnel.`,
-        };
-      const result = signalIfSameGeneration(state.gate_pid, state.gate_start_token, "SIGTERM");
-      if (!result.sent)
-        return {
-          ok: false,
-          message: `[${name}] gate generation is unknown or changed; retained the tunnel.`,
-        };
+  // Kill ONLY the gate. sweepStrays() is deliberately avoided here: it also
+  // matches `--url http://localhost:<port>`, which is the provider process we
+  // are going out of our way to keep alive.
+  const killed = new Set<number>();
+  if (isProcessAlive(state.gate_pid)) {
+    try {
+      process.kill(state.gate_pid);
+      killed.add(state.gate_pid);
+    } catch {
+      /* race: already gone */
     }
-    if (!(await waitForPortFree(gatePort, 5_000)))
-      return {
-        ok: false,
-        message: `[${name}] port ${gatePort} never released; retained the tunnel state.`,
-      };
-    return { ok: true, message: "gate released" };
-  };
-  let released: { ok: boolean; message: string };
-  try {
-    released = await withServerRegistrationCustody(
-      registration.record,
-      { coordRoot: registryRoot() },
-      stopGate,
-    );
-  } catch {
+  }
+  killByPattern(gatePattern(gatePort), killed);
+
+  if (!(await waitForPortFree(gatePort, 5_000))) {
     return {
       ok: false,
-      message: `[${name}] registration custody is unavailable; retained the tunnel.`,
+      message:
+        `[${name}] port ${gatePort} never released, so the old gate looks wedged. ` +
+        `Tunnel is down; check \`${bin} tunnel status\`.`,
     };
   }
-  if (!released.ok) return released;
-  if (registration.record) unregisterServer(registration.record, { coordRoot: registryRoot() });
 
   const cfg = readConfig();
   const gateProc = spawnGate(
@@ -1357,7 +1012,6 @@ async function reloadOneWithCustody(state: TunnelState): Promise<{ ok: boolean; 
     launch,
   );
 
-  const gateStartToken = processStartToken(gateProc.pid!);
   await sleep(800);
   const pid = gateProc.pid;
   if (
@@ -1373,24 +1027,8 @@ async function reloadOneWithCustody(state: TunnelState): Promise<{ ok: boolean; 
     };
   }
 
-  const next = {
-    ...state,
-    gate_pid: pid,
-    gate_start_token: gateStartToken ?? undefined,
-    registration_id: undefined,
-  };
-  const nextReceipt = recordTunnelServer(next);
-  try {
-    if (!nextReceipt) throw new Error("registration refused");
-    publishTunnelState(next, nextReceipt);
-  } catch {
-    const evidence = recordRefusedTunnelLaunch(next);
-    signalIfSameGeneration(pid, gateStartToken, "SIGTERM");
-    return {
-      ok: false,
-      message: `[${name}] new gate registration custody was refused; retained witnesses at ${evidence}.`,
-    };
-  }
+  writeState({ ...state, gate_pid: pid });
+  recordTunnelServer({ ...state, gate_pid: pid });
   const allowNote =
     state.provider === "cloudflare" ? ` Allowlist: ${cfg.allowed_ips.length} IP(s).` : "";
   return { ok: true, message: `[${name}] gate reloaded, URL unchanged: ${state.url}.${allowNote}` };
@@ -1400,7 +1038,7 @@ async function reload(opts: ReloadOpts): Promise<void> {
   const bin = resolveBinName();
 
   if (opts.all) {
-    const all = listSelectedStates();
+    const all = listStates();
     // Only live tunnels are reloadable, and a box commonly accumulates stale
     // state files from long-dead runs. Reporting those as failures would make
     // the common post-`allow add` path exit non-zero for no real reason.
@@ -1429,7 +1067,7 @@ async function reload(opts: ReloadOpts): Promise<void> {
   }
 
   const name = resolveName(opts.name);
-  const state = readSelectedState(name);
+  const state = readState(name);
   if (!state) {
     emit.error({
       code: "tunnel_not_found",
@@ -1443,9 +1081,8 @@ async function reload(opts: ReloadOpts): Promise<void> {
   if (!r.ok) process.exit(1);
 }
 
-function instanceState(state: TunnelState): "up" | "stale" | "unknown" {
-  const readiness = readinessOf(state);
-  return readiness === "ready" ? "up" : readiness === "dead" ? "stale" : "unknown";
+function instanceState(state: TunnelState): "up" | "stale" {
+  return tunnelIsAlive(state) ? "up" : "stale";
 }
 
 function fmtUptime(startedAt: string): string {
@@ -1460,9 +1097,9 @@ function fmtUptime(startedAt: string): string {
 function statusDetail(state: TunnelState): void {
   const gateAlive = isProcessAlive(state.gate_pid);
   const providerAlive = providerIsAlive(state);
-  const providerPid = state.cloudflared_pid;
+  const providerPid = state.cloudflared_pid ?? state.provider_pid;
   const cfg = readConfig();
-  emit.text(`${instanceState(state)} [${state.name}]\n`);
+  emit.text(`${gateAlive && providerAlive ? "up" : "stale"} [${state.name}]\n`);
   emit.text(
     `  Provider:    ${state.provider}${state.tailscale_mode ? ` (${state.tailscale_mode})` : ""}\n`,
   );
@@ -1485,7 +1122,7 @@ function statusDetail(state: TunnelState): void {
 function status(opts: StatusOpts): void {
   // Named → detailed single block.
   if (opts.name) {
-    const state = readSelectedState(resolveName(opts.name));
+    const state = readState(resolveName(opts.name));
     if (!state) {
       emit.text(`down [${resolveName(opts.name)}]\n`);
       return;
@@ -1495,7 +1132,7 @@ function status(opts: StatusOpts): void {
   }
 
   // No name → table of every instance.
-  const states = listSelectedStates();
+  const states = listStates();
   if (states.length === 0) {
     emit.text("down\n");
     return;
@@ -1538,7 +1175,7 @@ function status(opts: StatusOpts): void {
 
 function logs(opts: LogsOpts): void {
   const name = resolveName(opts.name);
-  const state = readSelectedState(name);
+  const state = readState(name);
   const provider = state?.provider ?? "cloudflare";
   const destinations = tunnelLogDestinations(name, provider);
   const path = opts.provider ? destinations.provider : destinations.gate;
@@ -1575,9 +1212,7 @@ const sameEntryIn = (list: readonly string[], entry: string) =>
  * restarts were owed.
  */
 function allowChangedHint(): void {
-  const live = listSelectedStates().filter(
-    (s) => s.provider === "cloudflare" && providerIsAlive(s),
-  );
+  const live = listStates().filter((s) => s.provider === "cloudflare" && providerIsAlive(s));
   if (live.length === 0) return;
   emit.text(
     `Each gate reads the allowlist once at start, so this applies on reload ` +
@@ -1719,9 +1354,7 @@ export async function refreshCurrentAddress(
   }
   if (!plan.changed || !options.reload) return result;
 
-  const live = listSelectedStates().filter(
-    (s) => s.provider === "cloudflare" && providerIsAlive(s),
-  );
+  const live = listStates().filter((s) => s.provider === "cloudflare" && providerIsAlive(s));
   for (const s of live) {
     const r = await reloadOne(s);
     emit.text(`${r.ok ? "ok  " : "FAIL"} ${r.message}\n`);

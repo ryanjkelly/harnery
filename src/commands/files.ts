@@ -4,7 +4,6 @@ import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
-import { createTunnelReadinessVerifier } from "../core/servers/index.ts";
 import { coordRootId, localCoordRootIdUrl } from "../lib/coord-root-id.ts";
 import {
   encodedRepoPath,
@@ -15,10 +14,10 @@ import {
 } from "../lib/local-file-url.ts";
 import { isPathAllowed } from "../lib/tunnel/path-scope.ts";
 import {
+  isTunnelStateLive,
   listStates,
-  type TunnelReadinessVerifier,
+  type ProcessAliveCheck,
   type TunnelState,
-  tunnelReadiness,
   tunnelTargetPort,
 } from "../lib/tunnel/state.ts";
 
@@ -209,10 +208,10 @@ export function tunnelFileUrl(
   local: LocalFileUrl,
   port: number,
   states: TunnelState[],
-  verifier: TunnelReadinessVerifier,
+  processAlive?: ProcessAliveCheck,
 ): string {
   const live = states.filter(
-    (state) => tunnelTargetPort(state) === port && tunnelReadiness(state, verifier) === "ready",
+    (state) => tunnelTargetPort(state) === port && isTunnelStateLive(state, processAlive),
   );
   if (local.mode === "raw") {
     const path = `/${encodedRepoPath(local.relPath)}`;
@@ -310,14 +309,7 @@ export function registerFilesCommand(
             mode: opts.raw ? "raw" : opts.viewer ? "viewer" : "auto",
           });
           if (opts.verify !== false) await verifyDashboardRoot(coordRoot, port);
-          const url = opts.tunnel
-            ? tunnelFileUrl(
-                result,
-                port,
-                listStates(coordRoot),
-                createTunnelReadinessVerifier({ coordRoot }),
-              )
-            : result.url;
+          const url = opts.tunnel ? tunnelFileUrl(result, port, listStates(coordRoot)) : result.url;
           emit.text(`${url}\n`);
         } catch (error) {
           if (error instanceof TunnelLinkError) {

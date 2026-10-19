@@ -2,7 +2,6 @@
 // <cwd>/.cache/tunnel/; gitignored, so the allowlist is per-machine.
 
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import {
   accessSync,
   chmodSync,
@@ -11,7 +10,6 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -106,12 +104,10 @@ export interface TunnelState {
   provider: TunnelProvider;
   url: string;
   gate_pid: number;
-  gate_start_token?: string;
-  cloudflared_start_token?: string;
-  registration_id?: string;
-  provider_state?: "pending" | "ready";
   /** Present for Cloudflare quick tunnels; absent for Tailscale Serve/Funnel. */
   cloudflared_pid?: number;
+  /** Optional provider-side process when a provider owns one. */
+  provider_pid?: number;
   started_at: string;
   target: string;
   vhost: string;
@@ -172,15 +168,7 @@ export function readState(
 }
 
 export function writeState(state: TunnelState, root: string = process.cwd()): void {
-  const path = cachePath(stateFile(state.name), root);
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(temporary, JSON.stringify(state, null, 2), { flag: "wx", mode: 0o600 });
-    renameSync(temporary, path);
-  } catch (error) {
-    if (existsSync(temporary)) unlinkSync(temporary);
-    throw error;
-  }
+  writeFileSync(cachePath(stateFile(state.name), root), JSON.stringify(state, null, 2));
 }
 
 export function clearState(name: string = DEFAULT_INSTANCE, root: string = process.cwd()): void {
@@ -214,60 +202,17 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-export type TunnelReadiness = "ready" | "dead" | "unknown";
-export type TunnelProcessObservation = "same" | "absent" | "different" | "unknown";
+export type ProcessAliveCheck = (pid: number) => boolean;
 
-export interface TunnelReadinessVerifier {
-  observeProcess(pid: number, originalToken: string): TunnelProcessObservation;
-  withRegistration(state: TunnelState, inspect: () => TunnelReadiness): TunnelReadiness;
-}
-
-/** Classify saved original witnesses under the verifier's registration custody. */
-export function tunnelReadiness(
+/** True when both the local gate and its provider-side process are live. */
+export function isTunnelStateLive(
   state: TunnelState,
-  verifier: TunnelReadinessVerifier,
-): TunnelReadiness {
-  if (
-    !state ||
-    typeof state !== "object" ||
-    Object.hasOwn(state, "provider_pid") ||
-    Object.hasOwn(state, "provider_start_token") ||
-    typeof state.registration_id !== "string" ||
-    !state.registration_id ||
-    !Number.isSafeInteger(state.gate_pid) ||
-    state.gate_pid < 1 ||
-    typeof state.gate_start_token !== "string" ||
-    !state.gate_start_token
-  )
-    return "unknown";
-  const targets = [{ pid: state.gate_pid, token: state.gate_start_token }];
-  if (state.provider === "tailscale") {
-    if (
-      state.provider_state !== "ready" ||
-      state.cloudflared_pid !== undefined ||
-      state.cloudflared_start_token !== undefined
-    )
-      return "unknown";
-  } else if (state.provider === "cloudflare") {
-    if (
-      !Number.isSafeInteger(state.cloudflared_pid) ||
-      state.cloudflared_pid! < 1 ||
-      typeof state.cloudflared_start_token !== "string" ||
-      !state.cloudflared_start_token
-    )
-      return "unknown";
-    targets.push({ pid: state.cloudflared_pid!, token: state.cloudflared_start_token });
-  } else return "unknown";
-  try {
-    return verifier.withRegistration(state, () => {
-      const observed = targets.map(({ pid, token }) => verifier.observeProcess(pid, token));
-      if (observed.every((value) => value === "absent")) return "dead";
-      if (observed.every((value) => value === "same")) return "ready";
-      return "unknown";
-    });
-  } catch {
-    return "unknown";
-  }
+  processAlive: ProcessAliveCheck = isProcessAlive,
+): boolean {
+  if (!processAlive(state.gate_pid)) return false;
+  if (state.provider === "tailscale") return true;
+  const providerPid = state.cloudflared_pid ?? state.provider_pid;
+  return typeof providerPid === "number" && processAlive(providerPid);
 }
 
 export function tunnelTargetPort(state: TunnelState): number | null {
@@ -297,15 +242,15 @@ export function tunnelTargetPort(state: TunnelState): number | null {
 export function findLiveTunnelForOrigin(
   port: number,
   vhost: string,
-  root: string,
-  verifier: TunnelReadinessVerifier,
+  root: string = process.cwd(),
+  processAlive: ProcessAliveCheck = isProcessAlive,
 ): TunnelState | null {
   return (
     listStates(root).find(
       (state) =>
         tunnelTargetPort(state) === port &&
         state.vhost === vhost &&
-        tunnelReadiness(state, verifier) === "ready",
+        isTunnelStateLive(state, processAlive),
     ) ?? null
   );
 }
