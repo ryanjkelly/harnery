@@ -417,7 +417,7 @@ function writeExclusive(path: string, bytes: string): void {
   }
 }
 
-function readOwner(path: string): { owner: NoClobberLeaseOwner; bytes: string } {
+export function readOwner(path: string): { owner: NoClobberLeaseOwner; bytes: string } {
   let size: number;
   try {
     const stat = lstatSync(path);
