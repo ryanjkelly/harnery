@@ -3,12 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cancelWorkItem, createWorkItem, readWorkItem, reopenWorkItem } from "../work/index.ts";
-import {
-  readWorkflowProof,
-  resolveWorkflowApproval,
-  type Spawner,
-  type SpawnRequest,
-} from "../workflow/index.ts";
+import { resolveWorkflowApproval, type Spawner, type SpawnRequest } from "../workflow/index.ts";
 import {
   approveGovernorPlan,
   createGovernor,
@@ -2807,21 +2802,6 @@ describe("durable goal governor", () => {
       });
     }
 
-    // These pure stubs invoke no provider and produce no plan content or
-    // external effect. Their declared no-work contract is synthetic fixture
-    // authority, not a native provider or process attestation.
-    function noWorkPlannerFixtureEvidence() {
-      return {
-        effect: {
-          state: "none",
-          source: "adapter_evidence",
-          reference: "fixture:governor-planner-no-work",
-        },
-        refusal: { state: "unknown" },
-        partial_output: { state: "absent", source: "final_message" },
-      } as const;
-    }
-
     test("an environment planner failure stops the goal and names the precondition", async () => {
       const { root } = fixture();
       replanGoal(root, "goal-plan-env");
@@ -2836,7 +2816,6 @@ describe("durable goal governor", () => {
               durationMs: 1,
               error: "codex not found on PATH",
               class: "environment" as const,
-              failureEvidence: noWorkPlannerFixtureEvidence(),
             };
           },
         },
@@ -2876,7 +2855,6 @@ describe("durable goal governor", () => {
             durationMs: 1,
             error: "503 service unavailable: circuit_open",
             class: "upstream" as const,
-            failureEvidence: noWorkPlannerFixtureEvidence(),
           }),
         },
         probeBilling,
@@ -2911,37 +2889,6 @@ describe("durable goal governor", () => {
       expect(halted.stop_reason).toBe("blocked");
       expect(readGovernor(root, "goal-plan-upstream").plans.length).toBe(3);
     });
-
-    for (const transportClass of ["environment", "upstream"] as const) {
-      test(`a status-only ${transportClass} planner failure stays unknown and charged`, async () => {
-        const { root } = fixture();
-        const goalId = `goal-plan-unattested-${transportClass}`;
-        replanGoal(root, goalId);
-        const engine = {
-          spawners: {
-            codex: async () => ({
-              ok: false as const,
-              text: "",
-              durationMs: 1,
-              error: "fixture transport failure without effect evidence",
-              class: transportClass,
-            }),
-          },
-          probeBilling,
-        };
-        await expect(runGovernor({ coordRoot: root, goalId, engine })).rejects.toThrow();
-        const charged = readGovernor(root, goalId);
-        const failedPlan = charged.plans.at(-1)!;
-        expect(failedPlan.class).toBeUndefined();
-        expect(charged.projection.replans_used).toBe(1);
-        expect(charged.projection.replans_remaining).toBe(
-          (charged.intent.replanning?.max_replans ?? 0) - 1,
-        );
-        const proof = readWorkflowProof(root, failedPlan.request.workflow_run_id);
-        expect(proof.run.class).toBeUndefined();
-        expect(proof.agents[0]?.failure_evidence?.effect.state).toBe("unknown");
-      });
-    }
 
     test("an unclassed planner failure still charges the replan, exactly as before", async () => {
       const { root } = fixture();

@@ -855,97 +855,15 @@ describe("durable work ledger", () => {
     });
   });
 
-  // Declared no-effect fixtures exercise the real engine → proof → projection
-  // path. Environment stops; an eligible upstream failure stays retryable.
+  // ADR 0046: an attempt is charged only when it produced information about the
+  // work. environment and upstream failures did not, and they need OPPOSITE
+  // handling — so these run through the real engine with a classed spawner,
+  // never a mock, to prove the class survives the whole per-agent → per-run →
+  // proof → projection thread.
   const agentWorkflow = `export default async ({ agent }) => agent("do the work");\n`;
   function classedSpawner(cls: "environment" | "upstream", error: string): Spawner {
-    // This synthetic spawner explicitly declares the observation. Native vendor
-    // statuses alone do not produce this positive no-effect evidence.
-    return async () => ({
-      ok: false,
-      text: "",
-      durationMs: 1,
-      error,
-      class: cls,
-      failureEvidence: {
-        effect:
-          cls === "environment"
-            ? { state: "none", source: "spawn_errno", reference: "ENOENT" }
-            : { state: "none", source: "adapter_evidence", reference: "fixture:pre-dispatch" },
-        refusal: { state: "unknown" },
-        partial_output: { state: "absent", source: "stdout" },
-      },
-    });
+    return async () => ({ ok: false, text: "", durationMs: 1, error, class: cls });
   }
-
-  test("unknown effects remain charged even if persisted run.class says upstream", async () => {
-    const { root, workflowPath } = fixture(agentWorkflow);
-    createWorkItem({
-      coordRoot: root,
-      id: "unknown-effects",
-      title: "Unknown effects",
-      objective: "Do not grant free work from a transport class",
-      workflowPath,
-      maxAttempts: 1,
-    });
-    await expect(
-      runWorkItem({
-        coordRoot: root,
-        workId: "unknown-effects",
-        engine: {
-          spawners: {
-            "claude-code": async () => ({
-              ok: false,
-              text: "",
-              durationMs: 1,
-              error: "HTTP 503",
-              class: "upstream",
-            }),
-          },
-        },
-      }),
-    ).rejects.toThrow();
-    const attempt = readWorkItem(root, "unknown-effects").projection.attempts[0]!;
-    const proofPath = join(root, ".harnery", "workflows", attempt.run_id, "proof.json");
-    const proof = JSON.parse(readFileSync(proofPath, "utf8"));
-    proof.run.class = "upstream";
-    writeFileSync(proofPath, `${JSON.stringify(proof)}\n`);
-    const projection = readWorkItem(root, "unknown-effects").projection;
-    expect(projection.charged_attempts).toBe(1);
-    expect(projection.attempts[0]?.uncharged).toBeUndefined();
-  });
-
-  test("a productive sibling cannot become free because the next child never started", async () => {
-    const { root, workflowPath } = fixture(
-      `export default async ({ agent }) => { await agent("productive"); return agent("missing"); };\n`,
-    );
-    createWorkItem({
-      coordRoot: root,
-      id: "productive-sibling",
-      title: "Productive sibling",
-      objective: "Preserve all-participant charging",
-      workflowPath,
-      maxAttempts: 1,
-    });
-    const absent = classedSpawner("environment", "not found");
-    await expect(
-      runWorkItem({
-        coordRoot: root,
-        workId: "productive-sibling",
-        engine: {
-          spawners: {
-            "claude-code": async (request) =>
-              request.prompt.includes("productive")
-                ? { ok: true, text: "work completed", durationMs: 1 }
-                : absent(request),
-          },
-        },
-      }),
-    ).rejects.toThrow();
-    const projection = readWorkItem(root, "productive-sibling").projection;
-    expect(projection.charged_attempts).toBe(1);
-    expect(projection.attempts[0]?.uncharged).toBeUndefined();
-  });
 
   test("an environment failure stops immediately and spends no attempt (ADR 0046)", async () => {
     const { root, workflowPath } = fixture(agentWorkflow);

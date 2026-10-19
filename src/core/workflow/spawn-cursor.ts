@@ -24,7 +24,6 @@ import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profil
 import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
 import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
-import { observeSpawnFailure } from "./failure-evidence.ts";
 import { resolveFullAccessArgv, resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
@@ -79,23 +78,6 @@ export function buildCursorInvocation(req: SpawnRequest): AdapterInvocation {
 }
 
 export function normalizeCursorResult(raw: AdapterRawResult): SpawnResult {
-  const result = normalizeCursorTransportResult(raw);
-  if (result.ok) return result;
-  let text = raw.stdout;
-  let source: "stdout" | "vendor_envelope" = "stdout";
-  try {
-    const envelope = JSON.parse(raw.stdout) as CursorEnvelope;
-    if (typeof envelope.result === "string" && envelope.result.length > 0) {
-      text = envelope.result;
-      source = "vendor_envelope";
-    }
-  } catch {
-    // Raw output remains evidence, not an inferred refusal or effect result.
-  }
-  return { ...result, text, failureEvidence: observeSpawnFailure(raw, text, source) };
-}
-
-function normalizeCursorTransportResult(raw: AdapterRawResult): SpawnResult {
   if (raw.timedOut) {
     return {
       ok: false,

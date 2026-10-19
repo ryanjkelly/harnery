@@ -1,0 +1,43 @@
+---
+title: "ADR 0221: Restore spawn retries and transport-class charging"
+description: Remove the failure-evidence gate from ADR 0213, which stopped every automatic retry and charged every provider outage.
+sidebar:
+  order: 221
+---
+
+**Date:** 2026-10-19
+**Status:** Accepted
+
+## Context
+
+[ADR 0213](./0213-upstream-failure-effect-evidence.mdx) allowed an automatic
+retry, or an uncharged attempt, only when a failed spawn carried positive
+no-effect evidence. No built-in adapter can produce that evidence: the only
+"none" observation is a missing binary (`ENOENT`), and a missing binary is the
+one class that is never retried. Retries therefore never fired. A 429 or 5xx
+ended the agent on its first attempt, and the failed attempt was charged
+against the work budget. Nothing in the adapters' vendor envelopes can supply
+the evidence, so the gate could not be satisfied.
+
+## Alternatives considered
+
+- Teach each adapter to emit no-effect evidence. Claude Code, Codex, Cursor
+  and OpenCode report no such signal, so any producer would be a heuristic,
+  which ADR 0213 itself rejects.
+- Keep the gate and accept no retries. That turns every rate limit into a
+  failed run and a spent attempt.
+
+## Decision
+
+Return to the [ADR 0046](./0046-uninformative-attempts-go-uncharged.mdx)
+rules. A failed spawn retries with the original prompt unless its class is
+`environment`. A failed run is uncharged when every participant failed with
+the `environment` or `upstream` class and no agent produced a result. The
+`SpawnFailureEvidence` types, adapter observations, proof field and
+`failure-evidence.ts` are removed.
+
+## Result
+
+Workflow runs retry rate limits and provider errors again, and an outage no
+longer spends the work item's attempt budget. Proofs written by 0.44.0 and
+0.45.0 still carry `failure_evidence`; readers ignore the field.

@@ -23,7 +23,6 @@ import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profil
 import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
 import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
-import { observeSpawnFailure } from "./failure-evidence.ts";
 import { resolveFullAccessArgv, resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
@@ -67,23 +66,6 @@ export function buildClaudeInvocation(req: SpawnRequest): AdapterInvocation {
 }
 
 export function normalizeClaudeResult(raw: AdapterRawResult): SpawnResult {
-  const result = normalizeClaudeTransportResult(raw);
-  if (result.ok) return result;
-  let text = raw.stdout.trim();
-  let source: "stdout" | "vendor_envelope" = "stdout";
-  try {
-    const envelope = JSON.parse(raw.stdout) as ClaudeEnvelope;
-    if (typeof envelope.result === "string" && envelope.result.length > 0) {
-      text = envelope.result;
-      source = "vendor_envelope";
-    }
-  } catch {
-    // Retain unstructured output without treating it as native authority.
-  }
-  return { ...result, text, failureEvidence: observeSpawnFailure(raw, text, source) };
-}
-
-function normalizeClaudeTransportResult(raw: AdapterRawResult): SpawnResult {
   if (raw.timedOut) {
     return {
       ok: false,

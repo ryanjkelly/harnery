@@ -46,11 +46,6 @@ import { type BillingProbe, probeBilling } from "./billing.ts";
 import { stableDigest } from "./durable-record.ts";
 import { evidencePreflightError } from "./evidence-preflight.ts";
 import {
-  canRetryFailedSpawn,
-  observeSpawnFailure,
-  resolveFailureEvidence,
-} from "./failure-evidence.ts";
-import {
   endWorkflowChildSessionV3,
   recordWorkflowChildTerminalFailureV3,
   startWorkflowChildSessionV3,
@@ -1117,7 +1112,6 @@ async function executeWorkflow(
       let attemptPrompt = dispatchPrompt;
       let last: SpawnResult | null = null;
       let agentCostUsd = 0;
-      let informativeAttempt: ReturnType<typeof observeSpawnFailure> | undefined;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         last = await spawner({
           prompt: attemptPrompt,
@@ -1140,30 +1134,14 @@ async function executeWorkflow(
         costUsd += last.costUsd ?? 0;
 
         if (!last.ok) {
-          const observed =
-            last.failureEvidence === undefined
-              ? observeSpawnFailure({}, last.text, "final_message")
-              : resolveFailureEvidence(last.failureEvidence);
-          agentProof.failure_evidence = informativeAttempt
-            ? {
-                ...observed,
-                effect: { state: "unknown" },
-                partial_output: informativeAttempt.partial_output,
-              }
-            : observed;
-          transcript("agent.attempt_failed", {
-            id,
-            attempt,
-            error: last.error,
-            failure_evidence: observed,
-            result_digest: digestResult(last.text, "text"),
-            text: last.text,
-          });
-          if (!canRetryFailedSpawn({ ...last, failureEvidence: agentProof.failure_evidence }))
-            break;
-          continue;
+          transcript("agent.attempt_failed", { id, attempt, error: last.error });
+          // ADR 0046: an environment failure (the binary was absent) cannot be
+          // helped by retrying an unchanged environment, so stop the in-agent
+          // retry too — not just the outer attempt/replan budget. An upstream
+          // refusal keeps retrying here: the vendor may recover mid-loop.
+          if (last.class === "environment") break;
+          continue; // spawn-level failure: retry with the original prompt
         }
-        informativeAttempt = observeSpawnFailure({}, last.text, "final_message");
         if (!agentOpts.schema) {
           agentProof.status = "succeeded";
           agentProof.cost_usd =
@@ -1217,14 +1195,7 @@ async function executeWorkflow(
           return parsed.value;
         }
 
-        agentProof.failure_evidence = informativeAttempt;
-        transcript("agent.schema_retry", {
-          id,
-          attempt,
-          problems,
-          rejected_text: last.text,
-          result_digest: digestResult(last.text, "text"),
-        });
+        transcript("agent.schema_retry", { id, attempt, problems });
         // Keep the original cache identity while making the actual output
         // contract explicit. A full bounded copy of the rejected value lets the
         // child repair omissions instead of reconstructing an unseen object.
