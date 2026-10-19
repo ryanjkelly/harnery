@@ -73,15 +73,7 @@ interface WorkflowConfirmedMutationOpts {
 
 interface WorkflowReclaimOpts extends WorkflowConfirmedMutationOpts {
   discard?: boolean;
-  unknownLiveness?: string;
-  actor?: string;
-  reason?: string;
-}
-
-interface WorkflowUnlockOpts extends WorkflowConfirmedMutationOpts {
-  lockSha256?: string;
-  actor?: string;
-  reason?: string;
+  force?: boolean;
 }
 
 export function registerWorkflowCommand(program: Command, emit: EmitContext): void {
@@ -632,11 +624,9 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option("--yes", "Confirm that this commits or discards uncommitted work, then releases")
     .option("--discard", "Throw the uncommitted work away instead of salvaging it")
     .option(
-      "--unknown-liveness <sha256>",
-      "Recover unknown evidence pinned by the preview digest; active evidence still refuses",
+      "--force",
+      "With --yes, admit missing or corrupt liveness evidence (active evidence still refuses) and record it",
     )
-    .option("--actor <id>", "Actor responsible for an audited recovery")
-    .option("--reason <text>", "Reason for an audited recovery")
     .option("--json", "Emit the reclaim preview or confirmed result as JSON")
     .action(async (runId: string, opts: WorkflowReclaimOpts) => {
       const coordRoot = resolveCoordRoot();
@@ -663,13 +653,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         const result = await provider.reclaim(binding, {
           mode: opts.discard ? "discard" : "salvage",
           yes: opts.yes,
-          unknownLiveness: opts.unknownLiveness
-            ? {
-                evidenceSha256: opts.unknownLiveness,
-                actor: opts.actor!,
-                reason: opts.reason!,
-              }
-            : undefined,
+          force: opts.force,
         });
         if (opts.json) {
           emit.config({ format: "json" });
@@ -684,11 +668,13 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           emit.text(
             `reclaim preview: ${result.run_id}\n` +
               `mode: ${result.mode}\nliveness: ${result.liveness}\nownership: ${result.ownership}\n` +
-              `evidence sha256: ${result.evidence_sha256}\n` +
               `lease holder: ${holders.length > 0 ? holders.join(", ") : "none observed"}\n` +
               `dirty paths: ${result.dirty_paths === null ? "unknown" : result.dirty_paths.length > 0 ? result.dirty_paths.join(", ") : "none"}\n` +
               (result.ownership_detail ? `ownership detail: ${result.ownership_detail}\n` : "") +
-              `Pass --yes to confirm ${result.mode} and release after all checks pass.\n`,
+              `Pass --yes to confirm ${result.mode} and release after all checks pass.\n` +
+              (result.liveness === "unknown"
+                ? "Liveness is unknown; add --force with --yes only if the run is known to be stopped.\n"
+                : ""),
           );
           return;
         }
@@ -702,42 +688,6 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
             error instanceof Error && "code" in error && typeof error.code === "string"
               ? error.code
               : "workflow_reclaim_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
-        process.exit(1);
-      }
-    });
-
-  workflow
-    .command("unlock <run-id>")
-    .description(
-      "Preview or explicitly retire one exact resume lock whose local owner is proven dead.",
-    )
-    .option("--lock-sha256 <sha256>", "Exact lock identity digest returned by the preview")
-    .option("--actor <id>", "Actor responsible for the recovery")
-    .option("--reason <text>", "Reason for the recovery")
-    .option("--yes", "Confirm removal after dead-owner and exact-lock checks")
-    .option("--json", "Emit the recovery preview or result as JSON")
-    .action(async (runId: string, opts: WorkflowUnlockOpts) => {
-      try {
-        const coordRoot = resolveCoordRoot();
-        if (!coordRoot) throw new Error("no .harnery/ coordination root found");
-        const { recoverWorkflowResumeLease } = await import("../core/workflow/index.ts");
-        const result = recoverWorkflowResumeLease(coordRoot, runId, opts);
-        if (opts.json) {
-          emit.config({ format: "json" });
-          emit.data(result);
-          return;
-        }
-        emit.text(
-          `resume lock ${result.action}: ${runId}\nowner: ${result.owner_state}\nlock sha256: ${result.lock_sha256 ?? "absent"}\n` +
-            (result.action === "preview"
-              ? "Pass --lock-sha256, --actor, --reason and --yes to confirm exact dead-owner recovery.\n"
-              : `recovery: ${result.recovery_id}\n`),
-        );
-      } catch (error) {
-        emit.error({
-          code: "workflow_resume_unlock_failed",
           message: error instanceof Error ? error.message : String(error),
         });
         process.exit(1);

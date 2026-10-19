@@ -4,7 +4,7 @@ import { readWorkflowProof } from "../proof.ts";
 
 export type WorkflowLiveness = "active" | "inactive" | "unknown";
 
-/** Corruption must not hide a readable active marker from an audited override. */
+/** Corruption must not hide a readable active marker from a forced reclaim. */
 export function hasActiveWorkflowEvidence(coordRoot: string, runId: string): boolean {
   const path = join(resolve(coordRoot), ".harnery", "workflows", runId, "transcript.jsonl");
   if (!existsSync(path)) return false;

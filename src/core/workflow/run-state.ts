@@ -3,17 +3,19 @@ import {
   chmodSync,
   closeSync,
   existsSync,
-  fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { processStartToken, verifyProcessGeneration } from "../agents/state/proc-start.ts";
 import type { RepoSnapshot } from "../context/index.ts";
 import {
   type NormalizedPolicy,
@@ -25,13 +27,7 @@ import {
 import { stateFileMode } from "../storage/modes.ts";
 import { assertWorkflowRunId, readWorkflowApproval } from "./approvals.ts";
 import { isCanonicalWorkflowAttemptContext } from "./attempt-context.ts";
-import {
-  fsyncParentDirectory,
-  readJsonRecord,
-  stableDigest,
-  writeImmutableJson,
-} from "./durable-record.ts";
-import { beginWorkflowRecovery, type WorkflowRecoveryAuthorization } from "./recovery-audit.ts";
+import { readJsonRecord, writeImmutableJson } from "./durable-record.ts";
 import { normalizeWorkflowSpecialists } from "./specialists.ts";
 import type {
   WorkflowAttemptContext,
@@ -46,7 +42,6 @@ import type {
   WorkspaceBinding,
   WorkspaceCompatibilityExecutionEvidence,
 } from "./workspaces/index.ts";
-import { acquireNoClobberLease } from "./workspaces/leases.ts";
 import {
   assertWorkspaceManifestAuthority,
   isWorkspaceBinding,
@@ -212,16 +207,26 @@ export function workflowRunManifestPath(coordRoot: string, runId: string): strin
   return join(coordRoot, ".harnery", "workflows", runId, "run.json");
 }
 
-/** Acquire an exclusive lease shared by resume and reclaim. Existing locks
- * always refuse; explicit audited recovery is a separate operation. */
+export type WorkflowResumeOwnerState = "dead" | "live" | "unknown";
+
+export interface WorkflowResumeLockOwner {
+  pid: number;
+  host: string;
+  created_at: string;
+  start_token?: string | null;
+}
+
+/** Acquire the exclusive lease shared by resume and reclaim. A lock whose
+ * same-host owner has exited, or whose PID now names a different process, is
+ * retired automatically. Every other existing lock refuses. */
 export function acquireWorkflowResumeLease(coordRoot: string, runId: string): () => void {
-  assertWorkflowRunId(runId);
-  const path = join(coordRoot, ".harnery", "workflows", runId, "resume.lock");
+  const path = workflowResumeLockPath(coordRoot, runId);
   const owner = {
     owner_id: randomUUID(),
     pid: process.pid,
     host: hostname(),
     created_at: new Date().toISOString(),
+    start_token: processStartToken(process.pid),
   };
   const ownerBytes = `${JSON.stringify(owner)}\n`;
   mkdirSync(dirname(path), { recursive: true });
@@ -231,12 +236,10 @@ export function acquireWorkflowResumeLease(coordRoot: string, runId: string): ()
       const fd = openSync(path, "wx", stateFileMode());
       try {
         writeFileSync(fd, ownerBytes, "utf8");
-        fsyncSync(fd);
       } finally {
         closeSync(fd);
       }
       chmodSync(path, stateFileMode());
-      fsyncParentDirectory(path);
       const identity = lstatSync(path);
       return { device: identity.dev, inode: identity.ino };
     } catch (error) {
@@ -245,22 +248,18 @@ export function acquireWorkflowResumeLease(coordRoot: string, runId: string): ()
     }
   };
 
-  const acquired = withResumeLeaseMutation(coordRoot, runId, acquire);
+  const acquired = acquire() || (retireDeadResumeLock(path) && acquire());
   if (!acquired) {
-    const existing = readResumeLease(path);
+    const existing = readWorkflowResumeLock(coordRoot, runId);
     const holder = existing
-      ? ` by pid ${existing.pid} on ${existing.host}; its liveness has not been verified`
-      : "; its owner could not be verified";
+      ? ` by pid ${existing.pid} on ${existing.host} (owner ${workflowResumeOwnerState(existing)})`
+      : "; its owner could not be read";
     throw new Error(`workflow run ${runId} resume lease is already held${holder}`);
   }
 
   return () => {
     try {
-      // Only this live process can release this nonce. Acquisition never
-      // replaces a present lock, and unlock requires ESRCH for its owner, so
-      // neither supported writer can replace this lock during synchronous
-      // release. Taking their mutation gate would strand a live owner's lock
-      // on ordinary contention. Pin both identity and bytes for stale closures.
+      // Pin identity and bytes, so a stale closure never removes a replacement.
       const identity = lstatSync(path);
       if (
         identity.isFile() &&
@@ -269,7 +268,6 @@ export function acquireWorkflowResumeLease(coordRoot: string, runId: string): ()
         readFileSync(path, "utf8") === ownerBytes
       ) {
         unlinkSync(path);
-        fsyncParentDirectory(path);
       }
     } catch {
       // Leave an unreadable or replaced lock untouched.
@@ -277,118 +275,87 @@ export function acquireWorkflowResumeLease(coordRoot: string, runId: string): ()
   };
 }
 
-export interface WorkflowResumeRecoveryOptions extends Partial<WorkflowRecoveryAuthorization> {
-  yes?: boolean;
-  lockSha256?: string;
+export function workflowResumeLockPath(coordRoot: string, runId: string): string {
+  assertWorkflowRunId(runId);
+  return join(coordRoot, ".harnery", "workflows", runId, "resume.lock");
 }
 
-export interface WorkflowResumeRecoveryResult {
-  action: "preview" | "unlocked";
-  run_id: string;
-  lock_sha256: string | null;
-  owner_state: "dead" | "live" | "unknown" | "absent";
-  owner: { pid: number; host: string; created_at: string } | null;
-  recovery_id?: string;
+/** Only a same-host owner can be proven gone: by ESRCH, or by a recorded start
+ * token that no longer matches its PID. Foreign and unreadable owners stay live. */
+export function workflowResumeOwnerState(owner: WorkflowResumeLockOwner): WorkflowResumeOwnerState {
+  if (owner.host !== hostname()) return "unknown";
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return "dead";
+    if (code !== "EPERM") return "unknown";
+  }
+  return verifyProcessGeneration(owner.pid, owner.start_token) === "different" ? "dead" : "live";
 }
 
-export function recoverWorkflowResumeLease(
+/** Move a dead owner's exact lock aside before deleting it. If a contender
+ * replaced it in between, the moved bytes (a fresh owner_id) differ, and that
+ * live lock is linked back. */
+function retireDeadResumeLock(path: string): boolean {
+  let bytes: string;
+  try {
+    bytes = readFileSync(path, "utf8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+  const owner = parseResumeLock(bytes);
+  if (!owner || workflowResumeOwnerState(owner) !== "dead") return false;
+  const aside = `${path}.dead-${randomUUID()}`;
+  try {
+    renameSync(path, aside);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+  const exact = readFileSync(aside, "utf8") === bytes;
+  if (!exact) {
+    try {
+      linkSync(aside, path);
+    } catch {
+      // A third contender already holds the path; the moved owner's release
+      // finds a different inode and leaves that lock alone.
+    }
+  }
+  unlinkSync(aside);
+  return exact;
+}
+
+export function readWorkflowResumeLock(
   coordRoot: string,
   runId: string,
-  options: WorkflowResumeRecoveryOptions,
-): WorkflowResumeRecoveryResult {
-  assertWorkflowRunId(runId);
-  const path = join(coordRoot, ".harnery", "workflows", runId, "resume.lock");
-  const inspect = (): WorkflowResumeRecoveryResult => {
-    let lockSha256: string;
-    try {
-      const stat = lstatSync(path);
-      if (!stat.isFile() || stat.size > 8 * 1024)
-        throw new Error("resume lock is not a bounded regular file");
-      lockSha256 = stableDigest({
-        bytes: readFileSync(path, "utf8"),
-        device: stat.dev,
-        inode: stat.ino,
-      });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      return {
-        action: "preview",
-        run_id: runId,
-        lock_sha256: null,
-        owner_state: "absent",
-        owner: null,
-      };
-    }
-    const owner = readResumeLease(path);
-    let ownerState: WorkflowResumeRecoveryResult["owner_state"] = "unknown";
-    if (owner?.host === hostname()) {
-      try {
-        process.kill(owner.pid, 0);
-        ownerState = "live";
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") ownerState = "dead";
-      }
-    }
-    return {
-      action: "preview",
-      run_id: runId,
-      lock_sha256: lockSha256,
-      owner_state: ownerState,
-      owner,
-    };
-  };
-  if (!options.yes) return inspect();
-  return withResumeLeaseMutation(coordRoot, runId, () => {
-    const observed = inspect();
-    if (observed.owner_state !== "dead")
-      throw new Error(`workflow resume unlock refused: owner is ${observed.owner_state}`);
-    if (!options.lockSha256 || options.lockSha256 !== observed.lock_sha256)
-      throw new Error("workflow resume unlock requires the exact current preview digest");
-    const audit = beginWorkflowRecovery(coordRoot, {
-      run_id: runId,
-      action: "unlock_resume",
-      target_sha256: options.lockSha256,
-      target: { lock: "resume.lock", owner: observed.owner },
-      actor: options.actor!,
-      reason: options.reason!,
-    });
-    const current = inspect();
-    if (current.lock_sha256 !== observed.lock_sha256 || current.owner_state !== "dead")
-      throw new Error("workflow resume lock authority changed before unlock");
-    audit.assertCurrent();
-    unlinkSync(path);
-    fsyncParentDirectory(path);
-    audit.complete();
-    return { ...observed, action: "unlocked", recovery_id: audit.intent.operation_id };
-  });
+): WorkflowResumeLockOwner | null {
+  return readResumeLease(workflowResumeLockPath(coordRoot, runId));
 }
 
-function withResumeLeaseMutation<T>(coordRoot: string, runId: string, action: () => T): T {
-  const authority = stableDigest({ run_id: runId, lock: "resume.lock" });
-  const lease = acquireNoClobberLease({
-    path: join(coordRoot, ".harnery", "workflows", runId, "resume-mutation.lease"),
-    scope: "workflow-resume-mutation",
-    authoritySha256: authority,
-    staleAfterMs: 300_000,
-    validateStaleOwner: (owner) => owner.authority_sha256 === authority,
-  });
+function readResumeLease(path: string): WorkflowResumeLockOwner | null {
   try {
-    return action();
-  } finally {
-    lease.release();
+    return parseResumeLock(readFileSync(path, "utf8"));
+  } catch {
+    return null;
   }
 }
 
-function readResumeLease(path: string): { pid: number; host: string; created_at: string } | null {
+function parseResumeLock(bytes: string): WorkflowResumeLockOwner | null {
   try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    const value = JSON.parse(bytes) as Record<string, unknown>;
     return typeof value.pid === "number" &&
       Number.isSafeInteger(value.pid) &&
       value.pid > 0 &&
       typeof value.host === "string" &&
       value.host.length > 0 &&
       validTimestamp(value.created_at)
-      ? { pid: value.pid, host: value.host, created_at: value.created_at }
+      ? {
+          pid: value.pid,
+          host: value.host,
+          created_at: value.created_at,
+          start_token: typeof value.start_token === "string" ? value.start_token : null,
+        }
       : null;
   } catch {
     return null;

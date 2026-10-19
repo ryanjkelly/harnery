@@ -1,14 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Command } from "commander";
 import { registerWorkflowCommand } from "../../src/commands/workflow.ts";
-import {
-  createLocalGitWorktreeProvider,
-  readWorkflowRecoveryLedger,
-  runWorkflow,
-} from "../../src/core/workflow/index.ts";
+import { createLocalGitWorktreeProvider, runWorkflow } from "../../src/core/workflow/index.ts";
+import { readWorkspaceEvents } from "../../src/core/workflow/workspaces/state.ts";
 import {
   descriptorPathsAvailable,
   git,
@@ -47,46 +43,9 @@ async function command(args: string[]) {
   return { values, text: text.join("") };
 }
 
-describe("audited workflow recovery CLI", () => {
-  test("unlock previews then confirms exactly one abandoned lock", async () => {
-    const path = join(repo, ".harnery", "workflows", "wf-abandoned", "resume.lock");
-    mkdirSync(join(path, ".."), { recursive: true });
-    writeFileSync(
-      path,
-      JSON.stringify({ pid: 2_147_483_647, host: hostname(), created_at: "2000-01-01T00:00:00Z" }),
-    );
-    const preview = (await command(["run", "unlock", "wf-abandoned", "--json"])).values[0] as {
-      lock_sha256: string;
-    };
-    expect(existsSync(path)).toBe(true);
-    const result = await command([
-      "run",
-      "unlock",
-      "wf-abandoned",
-      "--lock-sha256",
-      preview.lock_sha256,
-      "--actor",
-      "operator",
-      "--reason",
-      "Owner exited.",
-      "--yes",
-      "--json",
-    ]);
-    expect(result.values[0]).toMatchObject({
-      action: "unlocked",
-      run_id: "wf-abandoned",
-      owner_state: "dead",
-    });
-    expect(existsSync(path)).toBe(false);
-    expect(readWorkflowRecoveryLedger(repo, "wf-abandoned")[0]?.outcome).toBe("completed");
-  });
-  test("unlock reports refusal when confirmation omits the exact digest", async () => {
-    await expect(command(["run", "unlock", "wf-absent", "--yes"])).rejects.toMatchObject({
-      code: "workflow_resume_unlock_failed",
-    });
-  });
+describe("workflow reclaim --force CLI", () => {
   test.skipIf(!descriptorPathsAvailable)(
-    "reclaim maps exact unknown recovery authority and retains unknown liveness",
+    "previews unknown liveness, then force reclaims and records one ledger line",
     async () => {
       const script = writeScript(repo, "export default async () => 'done';\n");
       git(repo, "add", "scripts");
@@ -100,23 +59,22 @@ describe("audited workflow recovery CLI", () => {
         workspace: { provider, writableRoots: [host] },
         ...quiet,
       });
-      const dirty = join(report.workspaceBinding!.workspace_root, "README.md");
+      const binding = report.workspaceBinding!;
+      const dirty = join(binding.workspace_root, "README.md");
       writeFileSync(dirty, "retained work\n");
       writeFileSync(report.transcriptPath, "corrupt\n");
-      const preview = (await command(["run", "reclaim", report.runId, "--discard", "--json"]))
-        .values[0] as { evidence_sha256: string };
+      const preview = await command(["run", "reclaim", report.runId, "--discard", "--force"]);
+      expect(preview.text).toContain("add --force with --yes");
       expect(readFileSync(dirty, "utf8")).toBe("retained work\n");
+      await expect(
+        command(["run", "reclaim", report.runId, "--discard", "--yes"]),
+      ).rejects.toMatchObject({ code: "workflow_reclaim_liveness_unknown" });
       const result = await command([
         "run",
         "reclaim",
         report.runId,
         "--discard",
-        "--unknown-liveness",
-        preview.evidence_sha256,
-        "--actor",
-        "operator",
-        "--reason",
-        "Terminal proof retained after evidence loss.",
+        "--force",
         "--yes",
         "--json",
       ]);
@@ -125,7 +83,11 @@ describe("audited workflow recovery CLI", () => {
         liveness: "unknown",
         cleanup: { status: "released" },
       });
-      expect(readWorkflowRecoveryLedger(repo, report.runId)[0]?.outcome).toBe("completed");
+      expect(
+        readWorkspaceEvents(repo, binding.provider.id, binding.binding_id).filter(
+          (event) => event.event === "reclaim_forced",
+        ),
+      ).toHaveLength(1);
     },
   );
 });

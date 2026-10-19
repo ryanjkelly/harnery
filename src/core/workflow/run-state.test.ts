@@ -1,18 +1,22 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { stableDigest } from "./durable-record.ts";
-import * as recoveryAudit from "./recovery-audit.ts";
-import * as runState from "./run-state.ts";
+import { processStartToken } from "../agents/state/proc-start.ts";
 import {
   acquireWorkflowResumeLease,
   readWorkflowRunManifest,
-  recoverWorkflowResumeLease,
   type WorkflowRunManifest,
   writeWorkflowRunManifest,
 } from "./run-state.ts";
-import { acquireNoClobberLease } from "./workspaces/leases.ts";
 
 let root: string;
 
@@ -23,30 +27,14 @@ beforeEach(() => {
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-function abandonedLock(runId = "wf-abandoned") {
+function writeLock(runId: string, owner: Record<string, unknown> | string) {
   const path = join(root, ".harnery", "workflows", runId, "resume.lock");
   mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(
-    path,
-    JSON.stringify({
-      owner_id: "dead-owner",
-      pid: 2_147_483_647,
-      host: hostname(),
-      created_at: "2000-01-01T00:00:00.000Z",
-    }),
-  );
-  const preview = recoverWorkflowResumeLease(root, runId, {});
-  return {
-    path,
-    runId,
-    options: {
-      yes: true,
-      lockSha256: preview.lock_sha256!,
-      actor: "operator",
-      reason: "Owner exited.",
-    },
-  };
+  writeFileSync(path, typeof owner === "string" ? owner : JSON.stringify(owner));
+  return path;
 }
+
+const DEAD = { pid: 2_147_483_647, host: hostname(), created_at: "2000-01-01T00:00:00.000Z" };
 
 describe("workflow run state", () => {
   function fixtureManifest(): WorkflowRunManifest {
@@ -118,24 +106,6 @@ describe("workflow run state", () => {
     releaseAgain();
   });
 
-  test("a live owner releases its exact lock despite a competing mutation gate", () => {
-    const release = acquireWorkflowResumeLease(root, "wf-release");
-    const directory = join(root, ".harnery", "workflows", "wf-release");
-    const gate = acquireNoClobberLease({
-      path: join(directory, "resume-mutation.lease"),
-      scope: "workflow-resume-mutation",
-      authoritySha256: stableDigest({ run_id: "wf-release", lock: "resume.lock" }),
-      staleAfterMs: 300_000,
-    });
-    try {
-      release();
-      expect(existsSync(join(directory, "resume.lock"))).toBe(false);
-    } finally {
-      gate.release();
-    }
-    acquireWorkflowResumeLease(root, "wf-release")();
-  });
-
   test("release preserves a replacement inode even with identical owner bytes", () => {
     const release = acquireWorkflowResumeLease(root, "wf-replaced-inode");
     const path = join(root, ".harnery", "workflows", "wf-replaced-inode", "resume.lock");
@@ -147,209 +117,58 @@ describe("workflow run state", () => {
     expect(readFileSync(path, "utf8")).toBe(bytes);
   });
 
-  test("confirmed recovery retires an exact abandoned resume lock", () => {
-    const path = join(root, ".harnery", "workflows", "wf-abandoned", "resume.lock");
-    mkdirSync(join(root, ".harnery", "workflows", "wf-abandoned"), { recursive: true });
-    writeFileSync(
-      path,
-      JSON.stringify({
-        owner_id: "dead-owner",
-        pid: 2_147_483_647,
-        host: hostname(),
-        created_at: "2000-01-01T00:00:00.000Z",
-      }),
-    );
-    const recover = Reflect.get(runState, "recoverWorkflowResumeLease");
-    expect(typeof recover).toBe("function");
-    const preview = recover(root, "wf-abandoned", {});
-    expect(preview).toMatchObject({ action: "preview", owner_state: "dead" });
-    expect(existsSync(path)).toBe(true);
-    expect(
-      recover(root, "wf-abandoned", {
-        yes: true,
-        lockSha256: preview.lock_sha256!,
-        actor: "operator",
-        reason: "Owner exited before release.",
-      }).action,
-    ).toBe("unlocked");
+  test("a dead same-host owner's lock is retired automatically", () => {
+    const path = writeLock("wf-dead", DEAD);
+    const release = acquireWorkflowResumeLease(root, "wf-dead");
+    expect(JSON.parse(readFileSync(path, "utf8")).pid).toBe(process.pid);
+    release();
     expect(existsSync(path)).toBe(false);
-    acquireWorkflowResumeLease(root, "wf-abandoned")();
   });
 
-  for (const owner of [
-    "corrupt",
-    JSON.stringify({ pid: process.pid, host: hostname(), created_at: new Date().toISOString() }),
-    JSON.stringify({
-      pid: 2_147_483_647,
-      host: "foreign-host",
-      created_at: new Date().toISOString(),
-    }),
-  ]) {
-    test(`audited recovery preserves a live or unproven owner ${owner}`, () => {
-      const { path, runId, options } = abandonedLock();
-      writeFileSync(path, owner);
-      const preview = recoverWorkflowResumeLease(root, runId, {});
-      expect(() =>
-        recoverWorkflowResumeLease(root, runId, { ...options, lockSha256: preview.lock_sha256! }),
-      ).toThrow("unlock refused");
-      expect(readFileSync(path, "utf8")).toBe(owner);
-      expect(recoveryAudit.readWorkflowRecoveryLedger(root, runId)).toEqual([]);
-    });
-  }
+  const token = processStartToken(process.pid);
+  test.skipIf(!token || /^l\d+$/.test(token))(
+    "a reused PID with a different start token is retired automatically",
+    () => {
+      writeLock("wf-reused", { ...DEAD, pid: process.pid, start_token: `${token}-earlier` });
+      acquireWorkflowResumeLease(root, "wf-reused")();
+    },
+  );
 
-  test("preview ignores confirmation metadata and leaves the lock and audit unchanged", () => {
-    const { path, runId } = abandonedLock();
-    const before = readFileSync(path, "utf8");
-    expect(
-      recoverWorkflowResumeLease(root, runId, { actor: "operator", reason: "Preview only." })
-        .action,
-    ).toBe("preview");
-    expect(readFileSync(path, "utf8")).toBe(before);
-    expect(recoveryAudit.readWorkflowRecoveryLedger(root, runId)).toEqual([]);
-  });
-
-  test("absent lock and missing confirmation authority cannot produce unlock success", () => {
-    expect(recoverWorkflowResumeLease(root, "wf-absent", {})).toMatchObject({
-      action: "preview",
-      owner_state: "absent",
-      lock_sha256: null,
-    });
-    expect(() => recoverWorkflowResumeLease(root, "wf-absent", { yes: true })).toThrow(
-      "owner is absent",
-    );
-    const { path, runId, options } = abandonedLock();
-    expect(() => recoverWorkflowResumeLease(root, runId, { ...options, actor: "" })).toThrow(
-      "nonempty actor",
-    );
-    expect(() =>
-      recoverWorkflowResumeLease(root, runId, { ...options, lockSha256: undefined }),
-    ).toThrow("exact current preview digest");
-    expect(existsSync(path)).toBe(true);
-    expect(recoveryAudit.readWorkflowRecoveryLedger(root, runId)).toEqual([]);
-  });
-
-  test("a changed lock and a held mutation lease both refuse exact unlock", () => {
-    const { path, runId, options } = abandonedLock();
-    const lease = acquireNoClobberLease({
-      path: join(path, "..", "resume-mutation.lease"),
-      scope: "workflow-resume-mutation",
-      authoritySha256: stableDigest({ run_id: runId, lock: "resume.lock" }),
-      staleAfterMs: 300_000,
-    });
+  test("a contender's lock that replaces the dead one mid-recovery is put back", () => {
+    const path = writeLock("wf-race", DEAD);
+    const live = JSON.stringify({ ...DEAD, pid: process.pid, owner_id: "contender" });
+    const kill = process.kill;
+    const probe = spyOn(process, "kill").mockImplementation(((pid: number, signal?: number) => {
+      if (pid !== DEAD.pid) return kill(pid, signal);
+      // The contender retires the dead lock and takes the path first.
+      unlinkSync(path);
+      writeFileSync(path, live);
+      throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    }) as typeof process.kill);
     try {
-      expect(() => recoverWorkflowResumeLease(root, runId, options)).toThrow(
-        "lease workflow-resume-mutation",
-      );
+      expect(() => acquireWorkflowResumeLease(root, "wf-race")).toThrow(/already held/);
     } finally {
-      lease.release();
+      probe.mockRestore();
     }
-    writeFileSync(path, `${readFileSync(path, "utf8")} `);
-    expect(() => recoverWorkflowResumeLease(root, runId, options)).toThrow(
-      "exact current preview digest",
-    );
-    expect(existsSync(path)).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(live);
   });
 
-  test("unlock refuses an identical-byte replacement inode from its preview", () => {
-    const { path, runId, options } = abandonedLock();
-    const bytes = readFileSync(path, "utf8");
-    renameSync(path, `${path}.retained`);
-    writeFileSync(path, bytes);
-    expect(() => recoverWorkflowResumeLease(root, runId, options)).toThrow(
-      "exact current preview digest",
-    );
-    expect(readFileSync(path, "utf8")).toBe(bytes);
-  });
-
-  test("mismatched stale mutation authority cannot retire the resume lock", () => {
-    const { path, runId, options } = abandonedLock();
-    const bytes = readFileSync(path, "utf8");
-    const old = acquireNoClobberLease({
-      path: join(path, "..", "resume-mutation.lease"),
-      scope: "workflow-resume-mutation",
-      authoritySha256: "0".repeat(64),
-      staleAfterMs: 300_000,
-      now: () => 1_000,
-      pid: 2_147_483_647,
-    });
-    expect(() => recoverWorkflowResumeLease(root, runId, options)).toThrow("mismatched authority");
-    expect(readFileSync(path, "utf8")).toBe(bytes);
-    old.release();
-  });
-
-  test("audit write failure leaves the abandoned lock unchanged", () => {
-    const { path, runId, options } = abandonedLock();
-    writeFileSync(join(path, "..", "recovery"), "not a directory");
-    const before = readFileSync(path, "utf8");
-    expect(() => recoverWorkflowResumeLease(root, runId, options)).toThrow();
-    expect(readFileSync(path, "utf8")).toBe(before);
-  });
-
-  test("replacement after durable intent survives and leaves recovery unknown", () => {
-    const { path, runId, options } = abandonedLock();
-    const begin = recoveryAudit.beginWorkflowRecovery;
-    const replacement = JSON.stringify({
-      pid: process.pid,
-      host: hostname(),
-      created_at: new Date().toISOString(),
-    });
-    const interception = spyOn(recoveryAudit, "beginWorkflowRecovery").mockImplementation(
-      (coordRoot, input) => {
-        const audit = begin(coordRoot, input);
-        writeFileSync(path, replacement);
-        return audit;
-      },
-    );
-    try {
-      expect(() => recoverWorkflowResumeLease(root, runId, options)).toThrow("authority changed");
-      expect(readFileSync(path, "utf8")).toBe(replacement);
-      expect(recoveryAudit.readWorkflowRecoveryLedger(root, runId)[0]?.outcome).toBe("unknown");
-    } finally {
-      interception.mockRestore();
-    }
-  });
-
-  test("failure after unlink cannot claim completed recovery", () => {
-    const { path, runId, options } = abandonedLock();
-    const begin = recoveryAudit.beginWorkflowRecovery;
-    const interception = spyOn(recoveryAudit, "beginWorkflowRecovery").mockImplementation(
-      (coordRoot, input) => {
-        const audit = begin(coordRoot, input);
-        return {
-          ...audit,
-          complete() {
-            throw new Error("interrupted after effect");
-          },
-        };
-      },
-    );
-    try {
-      expect(() => recoverWorkflowResumeLease(root, runId, options)).toThrow(
-        "interrupted after effect",
-      );
-      expect(existsSync(path)).toBe(false);
-      expect(recoveryAudit.readWorkflowRecoveryLedger(root, runId)[0]?.outcome).toBe("unknown");
-    } finally {
-      interception.mockRestore();
-    }
-  });
-
-  test("an inconclusive owner probe refuses recovery without recording an action", () => {
-    const { path, runId, options } = abandonedLock();
+  test("an inconclusive owner probe keeps the lock", () => {
+    const path = writeLock("wf-eperm", DEAD);
     const probe = spyOn(process, "kill").mockImplementation(() => {
       throw Object.assign(new Error("denied"), { code: "EPERM" });
     });
     try {
-      expect(() => recoverWorkflowResumeLease(root, runId, options)).toThrow("owner is unknown");
-      expect(existsSync(path)).toBe(true);
-      expect(recoveryAudit.readWorkflowRecoveryLedger(root, runId)).toEqual([]);
+      expect(() => acquireWorkflowResumeLease(root, "wf-eperm")).toThrow(/already held/);
     } finally {
       probe.mockRestore();
     }
+    expect(existsSync(path)).toBe(true);
   });
 
   for (const owner of [
     "{invalid-json",
+    JSON.stringify({ pid: process.pid, host: hostname(), created_at: new Date().toISOString() }),
     JSON.stringify({
       pid: 2_147_483_647,
       host: "remote-host",

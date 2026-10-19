@@ -39,23 +39,12 @@ export {
   rollupAcceptance,
   writeWorkflowProof,
 } from "./proof.ts";
-export type {
-  WorkflowRecoveryAuthorization,
-  WorkflowRecoveryIntent,
-  WorkflowRecoveryRecord,
-} from "./recovery-audit.ts";
-export { beginWorkflowRecovery, readWorkflowRecoveryLedger } from "./recovery-audit.ts";
-export type {
-  WorkflowResumeRecoveryOptions,
-  WorkflowResumeRecoveryResult,
-  WorkflowRunManifest,
-} from "./run-state.ts";
+export type { WorkflowRunManifest } from "./run-state.ts";
 export {
   acquireWorkflowResumeLease,
   assertWorkflowRunResumable,
   assertWorkflowScriptUnchanged,
   readWorkflowRunManifest,
-  recoverWorkflowResumeLease,
   WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION,
   workflowRunManifestPath,
   workflowScriptDigest,

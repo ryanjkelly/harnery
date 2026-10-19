@@ -3,7 +3,9 @@ title: "0219: Audit narrowly targeted workflow recovery"
 description: "Recover unknown run evidence and abandoned resume locks without bypassing workspace authority or live owners."
 ---
 
-**Status:** accepted (2026-10-18) · **Scope:** workflow recovery
+**Status:** withdrawn in part (2026-10-19) · **Scope:** workflow recovery
+
+The digest-pinned audit ledger and `run unlock` were removed: dead same-host resume locks are now retired automatically, and `run reclaim --force --yes` admits unknown liveness with one provider ledger event.
 
 ## Context
 

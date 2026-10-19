@@ -143,17 +143,8 @@ describe.skipIf(!descriptorPathsAvailable)("workspace reclaim reservations", () 
       "transcript.jsonl",
     );
     writeFileSync(transcript, "corrupt retained transcript\n");
-    const preview = await outer.provider.reclaim(outer.binding, { mode: "discard" });
     await expect(
-      outer.provider.reclaim(outer.binding, {
-        mode: "discard",
-        yes: true,
-        unknownLiveness: {
-          evidenceSha256: preview.evidence_sha256,
-          actor: "operator",
-          reason: "Recover terminal evidence.",
-        },
-      }),
+      outer.provider.reclaim(outer.binding, { mode: "discard", yes: true, force: true }),
     ).rejects.toMatchObject({ code: "workflow_reclaim_ownership_unproven" });
     expect(readFileSync(dirty, "utf8")).toBe("retained overlapping peer work\n");
     expect(
@@ -253,17 +244,8 @@ describe.skipIf(!descriptorPathsAvailable)("workspace reclaim reservations", () 
     );
     const original = readFileSync(transcript, "utf8");
     writeFileSync(transcript, "corrupt retained transcript\n");
-    const preview = await outer.provider.reclaim(outer.binding, { mode: "discard" });
     await expect(
-      outer.provider.reclaim(outer.binding, {
-        mode: "discard",
-        yes: true,
-        unknownLiveness: {
-          evidenceSha256: preview.evidence_sha256,
-          actor: "operator",
-          reason: "Recover unknown terminal evidence.",
-        },
-      }),
+      outer.provider.reclaim(outer.binding, { mode: "discard", yes: true, force: true }),
     ).rejects.toMatchObject({ code: "workflow_reclaim_ownership_unproven" });
     expect(readFileSync(dirty, "utf8")).toBe("retained dirty work\n");
     writeFileSync(transcript, original);
