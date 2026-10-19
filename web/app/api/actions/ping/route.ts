@@ -1,6 +1,4 @@
-import { coordRoot } from "@/lib/coord-reader";
 import { pingAgent, safeOwnerId } from "@/lib/coord-writer";
-import { dashboardActionResponse } from "@/lib/dashboard-command-store";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +13,7 @@ export async function POST(req: Request): Promise<Response> {
     instance_id?: string;
     message?: string;
   };
-  if (typeof instance_id !== "string" || typeof message !== "string" || !message.trim()) {
+  if (!instance_id || !message) {
     return Response.json(
       { error: "missing_fields", required: ["instance_id", "message"] },
       {
@@ -26,7 +24,5 @@ export async function POST(req: Request): Promise<Response> {
   if (!safeOwnerId(instance_id)) {
     return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }
-  return dashboardActionResponse(coordRoot(), "ping", body, { instance_id, message }, () => ({
-    ...pingAgent(instance_id, message),
-  }));
+  return Response.json(pingAgent(instance_id, message));
 }

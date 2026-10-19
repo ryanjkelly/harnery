@@ -1,10 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import {
-  DashboardCommandRecovery,
-  useDashboardCommand,
-} from "@/components/DashboardCommandRecovery";
+
 import { useHostInfo } from "@/components/HostInfoProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -18,7 +15,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
  */
 export function NudgeBox({ instanceId, agentName }: { instanceId: string; agentName: string }) {
   const { binName } = useHostInfo();
-  const command = useDashboardCommand("ping", { instance_id: instanceId });
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<
@@ -45,14 +41,19 @@ export function NudgeBox({ instanceId, agentName }: { instanceId: string; agentN
     setPending(true);
     setStatus({ kind: "idle" });
     try {
-      const data = await command.run<{ ok: boolean; error?: string }>({
-        instance_id: instanceId,
-        message: text,
+      const res = await fetch(`/api/actions/ping`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ instance_id: instanceId, message: text }),
       });
-      if (!data.ok) {
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          stderr?: string;
+        };
         setStatus({
           kind: "error",
-          reason: data.error ?? "send failed",
+          reason: data.error ?? data.stderr ?? `HTTP ${res.status}`,
         });
         return;
       }
@@ -122,7 +123,6 @@ export function NudgeBox({ instanceId, agentName }: { instanceId: string; agentN
         {status.kind === "error" && (
           <p className="text-xs text-rose-600 dark:text-rose-400 font-mono">✗ {status.reason}</p>
         )}
-        <DashboardCommandRecovery command={command} />
       </CardContent>
     </Card>
   );
