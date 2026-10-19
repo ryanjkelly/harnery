@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.45.0
+
+### Minor Changes
+
+- 3a5521a: Add preview-pinned, audited recovery for unknown workflow liveness and abandoned resume locks. Confirmed recovery requires an actor and reason, writes durable intent before effects, and preserves unknown outcomes after interruption. Keep active owners, workspace authority, retained peer reservations, and existing lease checks protected.
+- 6c978aa: Tunnel readiness now requires the original registration receipt and saved process generations. Commands retain unknown state instead of reusing or replacing it, and file links use only verified ready tunnels.
+
+  The toolkit replaces `isTunnelStateLive` with `tunnelReadiness` and a mandatory verifier. Embedding hosts can use `createTunnelReadinessVerifier` from `harnery/core/servers`. Cloudflare state uses only `cloudflared_pid` and `cloudflared_start_token`; obsolete provider fields remain unknown and cannot authorize actions.
+
+- 3832b99: Add explicit per-turn content capture and reviewed exact-path rollback in owned
+  local Git workspaces. Preserve separate staged, unstaged and untracked content,
+  refuse stale or overlapping authority, and retain unknown outcomes after an
+  interrupted capture or restore.
+
+### Patch Changes
+
+- 223e20c: Give local server registrations immutable receipts and serialize registration, activity, stop and cleanup by ID. Export the existing no-clobber lease primitive for host launch custody. Preserve exact receipt custody through asynchronous host effects. Refuse live duplicate registrations, stale cleanup and older records without custody. Tunnel lifecycle commands preserve launch witnesses, use retained process handles and keep uncertain state instead of terminating processes by PID, command line or port.
+
+  Serialize tunnel lifecycle and actual Tailscale routes across provider effects. Atomically retain pending provider intent before effects, publish ready state only after success, and preserve route custody when cleanup fails.
+
+- cae43d9: Honor configured project-state permissions for rollback indexes and newly created state directories.
+- 18f4d4b: Bind service and server signals to retained Linux pidfds or Windows process handles. Refuse direct signals when native handle support is unavailable, preserve durable service stop requests, and keep Windows process creation tokens consistent across native and standalone readers. Remove the unreachable legacy resource service launcher.
+
 ## 0.44.0
 
 ### Minor Changes
