@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.45.1
+
+### Patch Changes
+
+- 137efc5: Claim log and durable-history leases atomically. The owner record is written and synced in a private claim directory, then renamed into place, so a writer stopped mid-claim no longer leaves an ownerless lease that blocks every later append until someone removes it by hand. An empty lease directory left by the earlier protocol is replaced on the next claim. A lease whose owner record is empty or malformed still fails closed, and the timeout now says it has no valid owner. Release and stale recovery rename the lease aside before deleting it. A writer that found the lease released between two checks no longer reports it as the wrong type.
+- 863a760: Session start no longer waits for storage maintenance. The journal and image janitors, the artifact sweep, V3 archive cleanup and the automatic maintenance pass now run in a detached worker, so an adapter that stops a slow hook still receives the session context. Artifact inventory sizes each workspace and finds its newest change in one walk instead of two. The cleanup time budget now covers deletions rather than the inventory that precedes them, so a slice can delete more than one entry. A sweep that deleted nothing waits a full interval before retrying instead of one minute.
+- d92359d: Failed agent launches retry again. Since 0.44.0 a rate limit or provider error ended the agent on its first attempt and charged the work budget, because retries required no-effect evidence that no adapter can produce. A failed spawn now retries unless the binary is missing, and a run that failed only on missing binaries or provider errors is uncharged (ADR 0221, superseding ADR 0213).
+- 0efe61c: Dashboard action buttons go back to plain requests. The per-command receipt store, the command status route and the browser recovery panel added in 0.44.0 are removed (ADR 0211, now withdrawn).
+- 2d4426a: Server and tunnel commands work again. Since 0.45.0, a server record written by an earlier version made `servers` listing, stop, gc, unregister and port allocation fail, and every tunnel started before the upgrade showed `unknown`, so tunnel file links, `tunnel down` and `tunnel reload` refused. Server records are back to schema 1, tunnel readiness uses the live state check, and stopping a server signals its process group again so child processes stop with it. This reverts ADR 0220, now withdrawn.
+- f7b26fd: Session start does less work. The stale sweep and cache cleanup no longer take a generation-custody lock per instance or run a crash-recoverable delete protocol for heartbeat and pid-map cache files; those files are disposable copies of the coordination ledger. This reverts the 0.44.0 change recorded in ADR 0215, which is now withdrawn.
+- a3a15d0: Removes two 0.45.0 additions that nothing needed. The per-turn content rollback command and its `./core/turn-rollback` export are gone; no hook, command or workflow called it (ADR 0216, withdrawn). Dashboard tabs alert on their own again instead of electing one recipient through `/api/attention`, which wrote a file per tab every 2 seconds and silenced every tab when the request failed (ADR 0217, withdrawn).
+- b958987: Hook signals and authority writes are cheaper. Each hook signal no longer takes a second generation-custody lease, and each authority write no longer rereads every producer state file to confirm the writer's generation. A workflow child still publishes `agent.end`, the resume-cache boundary, only after its terminal is recorded, and a terminal recording failure now fails the run instead of being logged. This reverts the generation-custody part of 0.44.0 (ADR 0214, now withdrawn).
+
 ## 0.45.0
 
 ### Minor Changes
