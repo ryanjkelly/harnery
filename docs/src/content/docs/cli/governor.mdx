@@ -428,12 +428,12 @@ Harnery refuses another start or configuration change while the existing
 service's identity is unknown. Run `harn governor service stop` to write its
 durable stop request, then check status before starting it again.
 
-`service stop` writes that request before attempting a signal. It rechecks the
-start token immediately before signaling and sends nothing if the verdict is
-`different` or `unknown`. The result includes `signal_sent` and `signal_verdict`;
-the durable request remains available to the daemon when no signal was sent.
-The final check narrows the PID-reuse race but cannot eliminate the interval
-between the token read and the operating system's signal.
+`service stop` writes that request before attempting a signal. Where signaling
+is available, the backend verifies the recorded generation while holding a
+native process handle. A capability or identity refusal before authorization
+sends nothing. The result includes `signal_sent` and `signal_verdict`; an unknown
+outcome after authorization does not prove that no signal occurred. The durable
+request remains available to the daemon. See [ADR 0218](/decisions/0218-generation-bound-process-signals/).
 
 Stopping is graceful: an active bounded tick finishes before the daemon
 exits, avoiding orphaned child processes. After a process or host restart, run
