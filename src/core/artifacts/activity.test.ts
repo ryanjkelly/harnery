@@ -101,6 +101,52 @@ function touchMetadata(path: string, at: Date) {
   utimesSync(path, at, at);
 }
 
+function independentUsage(path: string, seen = new Set<string>()) {
+  const stat = originalLstat(path);
+  const disk = (s: fs.Stats) => (process.platform !== "win32" ? s.blocks * 512 : s.size);
+  if (!stat.isDirectory()) {
+    if (stat.nlink > 1 && seen.has(`${stat.dev}:${stat.ino}`))
+      return { disk: 0, apparent: stat.size };
+    if (stat.nlink > 1) seen.add(`${stat.dev}:${stat.ino}`);
+    return { disk: disk(stat), apparent: stat.size };
+  }
+  const total = { disk: disk(stat), apparent: stat.size };
+  for (const name of readdirSync(path)) {
+    const child = independentUsage(join(path, name), seen);
+    total.disk += child.disk;
+    total.apparent += child.apparent;
+  }
+  return total;
+}
+
+test("inventory sizes and dates each workspace entry in one walk", () => {
+  const { root, unit } = fixture();
+  mkdirSync(join(unit.path, "nested", "deeper"), { recursive: true });
+  writeFileSync(join(unit.path, "nested", "a.txt"), "a".repeat(5_000));
+  writeFileSync(join(unit.path, "nested", "deeper", "b.txt"), "b".repeat(9_000));
+  fs.linkSync(join(unit.path, "nested", "a.txt"), join(unit.path, "hard.txt"));
+  symlinkSync("nested/a.txt", join(unit.path, "link.txt"));
+  const deep = join(unit.path, "nested", "deeper", "b.txt");
+  let deepReads = 0;
+  const spy = spyOn(fs, "lstatSync").mockImplementation(((
+    ...args: Parameters<typeof fs.lstatSync>
+  ) => {
+    if (String(args[0]) === deep) deepReads += 1;
+    return Reflect.apply(originalLstat, fs, args);
+  }) as typeof fs.lstatSync);
+  let row: ReturnType<typeof inventoryArtifacts>[number] | undefined;
+  try {
+    row = inventoryArtifacts(root).find((entry) => entry.path === unit.path);
+  } finally {
+    spy.mockRestore();
+  }
+  const expected = independentUsage(unit.path);
+  expect(row?.bytes).toBe(expected.disk);
+  expect(row?.apparent_bytes).toBe(expected.apparent);
+  expect(row?.last_modified_at).not.toBeNull();
+  expect(deepReads).toBe(1);
+});
+
 test("release, holds, and their removal preserve expiry even when metadata timestamps advance", () => {
   const { root, at, unit } = fixture();
   const before = inventoryArtifacts(root)[0]!;

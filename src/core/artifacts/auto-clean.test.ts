@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -125,6 +126,31 @@ describe("autoCleanArtifacts", () => {
     expect(
       autoCleanArtifacts(root, { now: new Date(T0_PLUS_3D.getTime() + 60_001) }),
     ).toMatchObject({ reason: "swept", deleted: 2 });
+  });
+
+  test("a slice that deletes nothing waits a full interval before retrying", () => {
+    const root = makeRoot();
+    const path = seedExpired(root, T0);
+    const locked = join(path, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "pinned.txt"), "cannot be removed\n");
+    chmodSync(locked, 0o500);
+    try {
+      expect(autoCleanArtifacts(root, { now: T0_PLUS_3D })).toMatchObject({
+        reason: "failed",
+        deleted: 0,
+      });
+      const stamp = JSON.parse(
+        readFileSync(join(root, ".harnery/artifacts-auto-clean.json"), "utf8"),
+      );
+      expect(stamp.status).toBe("failed");
+      expect(Date.parse(stamp.retry_after)).toBe(T0_PLUS_3D.getTime() + 60 * 60 * 1000);
+      expect(
+        autoCleanArtifacts(root, { now: new Date(T0_PLUS_3D.getTime() + 60_001) }).reason,
+      ).toBe("fresh");
+    } finally {
+      chmodSync(locked, 0o700);
+    }
   });
 
   test("a time-limited slice always makes one unit of progress", () => {

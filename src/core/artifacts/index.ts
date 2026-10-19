@@ -794,11 +794,13 @@ function cleanArtifactsUnlocked(
     timeBudgetMs?: number;
   },
 ): ArtifactInventoryEntry[] {
-  const started = performance.now();
   const now = opts.now ?? new Date();
   const freshnessSeconds = opts.freshnessSeconds ?? 600;
   const rows = inventoryArtifacts(repoRoot, { now, freshnessSeconds });
   if (!opts.yes) return rows;
+  // The budget bounds deletion work. Inventory cost scales with the store, so
+  // counting it here would leave room for only the one guaranteed deletion.
+  const started = performance.now();
 
   let attempted = 0;
   return rows.map((entry) => {
@@ -1276,7 +1278,13 @@ function autoCleanArtifactsUnlocked(
       failures,
       ...(status === "completed"
         ? { last_completed_at: now.toISOString() }
-        : { retry_after: new Date(now.getTime() + 60_000).toISOString() }),
+        : {
+            // A slice that deleted something continues soon. One that made no
+            // progress would only repeat the same walk, so it waits a full interval.
+            retry_after: new Date(
+              now.getTime() + (deleted > 0 ? 60_000 : intervalMs),
+            ).toISOString(),
+          }),
     });
     return { ran: true, reason: status === "completed" ? "swept" : status, deleted, bytes };
   } catch (error) {
@@ -1340,8 +1348,7 @@ function classifyArtifactPath(
     return rowFor(path, name, repoRoot, classification, parsed.reason);
   }
   const manifest = parsed.manifest;
-  const usage = safeTreeUsage(path);
-  const lastModifiedMs = safeTreeLastModified(path, now, manifest.activity);
+  const { usage, lastModifiedMs } = scanManagedTree(path, now, manifest.activity);
   const retentionAnchorMs = Date.parse(manifest.retention.renewed_at ?? manifest.created_at);
   const retentionWindowMs = Date.parse(manifest.retention.expires_at) - retentionAnchorMs;
   const effectiveLastModifiedMs = Math.max(retentionAnchorMs, lastModifiedMs ?? 0);
@@ -2033,21 +2040,47 @@ function safeTreeUsage(path: string, seen = new Set<string>()): TreeUsage | null
   }
 }
 
-function safeTreeSize(path: string): number | null {
-  return safeTreeUsage(path)?.disk ?? null;
+function addEntryUsage(total: TreeUsage, st: Stats, seen: Set<string>): void {
+  if (st.isDirectory()) {
+    total.disk += allocatedBytes(st);
+    total.apparent += st.size;
+    return;
+  }
+  if (!st.isFile() && !st.isSymbolicLink()) return;
+  const key = `${st.dev}:${st.ino}`;
+  if (st.nlink > 1 && seen.has(key)) {
+    total.apparent += st.size;
+    return;
+  }
+  if (st.nlink > 1) seen.add(key);
+  total.disk += allocatedBytes(st);
+  total.apparent += st.size;
 }
 
 /**
- * Return the newest filesystem change in a managed tree without following
- * symlinks. A small future tolerance protects a write racing the inventory
- * scan; timestamps farther ahead are ignored as clock-skewed metadata.
+ * Size a managed tree and find its newest change in one walk, so inventory
+ * reads each entry's metadata once instead of once per question. If the
+ * activity scan fails, usage is measured on its own, as before.
  */
-function safeTreeLastModified(path: string, now: Date, activity?: ArtifactActivity): number | null {
+function scanManagedTree(
+  path: string,
+  now: Date,
+  activity?: ArtifactActivity,
+): { usage: TreeUsage | null; lastModifiedMs: number | null } {
+  const usage: TreeUsage = { disk: 0, apparent: 0 };
+  const seen = new Set<string>();
   try {
-    return Date.parse(readArtifactActivity(path, now, activity).last_changed_at);
+    const result = readArtifactActivity(path, now, activity, (_entry, st) =>
+      addEntryUsage(usage, st, seen),
+    );
+    return { usage, lastModifiedMs: Date.parse(result.last_changed_at) };
   } catch {
-    return null;
+    return { usage: safeTreeUsage(path), lastModifiedMs: null };
   }
+}
+
+function safeTreeSize(path: string): number | null {
+  return safeTreeUsage(path)?.disk ?? null;
 }
 
 function rowFor(

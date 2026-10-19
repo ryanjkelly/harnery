@@ -844,6 +844,9 @@ async function main(): Promise<number> {
   if (eventName === "runtime-context-retry") {
     return runRuntimeContextRetryWorker(coordRoot, adapter, extra);
   }
+  if (eventName === SESSION_MAINTENANCE_EVENT) {
+    return runSessionMaintenanceWorker(coordRoot, adapter);
+  }
   const ledgerRoute = resolveLiveEventLedgerRouteV3(coordRoot);
 
   // Always log a breadcrumb, useful when an event_type maps to null or owner
@@ -1274,7 +1277,7 @@ function recordContextTelemetry(run: HookRun): void {
 }
 
 async function handleSessionStarted(run: HookRun): Promise<void> {
-  const { coordRoot, adapter, behavior, payload, owner, sessionId, data } = run;
+  const { coordRoot, adapter, payload, owner, sessionId, data } = run;
   // A configured backup runs out of process and is freshness-gated per host.
   // Startup never waits for restic or a remote provider; the child owns no
   // hook stdio, so the harness is not held open until it finishes. A failed
@@ -1285,52 +1288,10 @@ async function handleSessionStarted(run: HookRun): Promise<void> {
   } catch (err) {
     logError(coordRoot, err, { phase: "backup-schedule" });
   }
-  // Effect (journal-maintaining adapters): prune stale journal archives +
-  // sweep orphans. The recovery-cue is merged into the session-start
-  // additionalContext inside emitSessionStartSystemMessage.
-  if (behavior.journalMaintenance) journalJanitor(coordRoot);
-  imageJanitor(coordRoot);
-  // Session start is the only caller of the artifact janitor and the storage
-  // maintenance pass, so both load here instead of on every tool call.
-  const { autoCleanArtifacts } = await import("../artifacts/index.ts");
-  const { autoCleanEventV3Archives } = await import("../events/v3/archive-retention.ts");
-  const { createAutomaticMaintenanceComposition, runAutomaticMaintenancePass } = await import(
-    "../storage/maintenance-providers.ts"
-  );
-  // Effect: throttled hourly artifact sweep (see autoCleanArtifacts). It
-  // deletes expired workspaces, plus unheld workspaces over the per-bundle
-  // ceiling or repository budget once they have been idle past
-  // artifacts.idle_grace_hours. Each deletion is rechecked first and recorded
-  // in .harnery/artifact-deletions.jsonl. Best-effort like every janitor
-  // here: a failure logs and never blocks session start.
-  try {
-    autoCleanArtifacts(coordRoot);
-  } catch (err) {
-    logError(coordRoot, err, { phase: "artifact-auto-clean" });
-  }
-  // Effect: apply the same daily throttle to closed V3 epochs. The newest
-  // recovery epochs remain protected by the archive retention policy.
-  try {
-    autoCleanEventV3Archives(coordRoot);
-  } catch (err) {
-    logError(coordRoot, err, { phase: "event-v3-archive-auto-clean" });
-  }
-  // Plan one bounded, claim-first global slice from cached pressure only.
-  // Existing owner janitors above remain the only active executors until
-  // each provider receives a separate production activation.
-  try {
-    await runAutomaticMaintenancePass(
-      createAutomaticMaintenanceComposition(coordRoot, {
-        journal: () => {
-          if (behavior.journalMaintenance) journalJanitor(coordRoot);
-        },
-        images: () => imageJanitor(coordRoot),
-        artifacts: () => autoCleanArtifacts(coordRoot),
-      }),
-    );
-  } catch (err) {
-    logError(coordRoot, err, { phase: "storage-maintenance-auto" });
-  }
+  // Storage maintenance can walk large stores. It runs in a detached worker so
+  // session start emits its context without waiting for it; an adapter that
+  // stops a slow hook would otherwise drop that context entirely.
+  scheduleSessionMaintenance(coordRoot, adapter);
   let recovery: PreparedContextRecovery | null = null;
   if (payload?.source === "compact") {
     try {
@@ -1811,6 +1772,83 @@ async function handleCompletedResponse(run: CompletedResponseRun): Promise<numbe
         }
       : {}),
   });
+  return 0;
+}
+
+const SESSION_MAINTENANCE_EVENT = "session-maintenance";
+
+function scheduleSessionMaintenance(coordRoot: string, adapter: Adapter): void {
+  const modulePath = process.argv[1];
+  if (!modulePath) return;
+  try {
+    const child = spawn(
+      process.execPath,
+      [modulePath, SESSION_MAINTENANCE_EVENT, "--adapter", adapter],
+      {
+        cwd: coordRoot,
+        detached: true,
+        stdio: "ignore",
+        env: childEnv(coordRoot),
+      },
+    );
+    child.unref();
+  } catch (err) {
+    logError(coordRoot, err, { phase: "session-maintenance-spawn" });
+  }
+}
+
+/**
+ * Session-start storage maintenance, run out of the hook's process. Every step
+ * is best-effort and throttled by its own stamp: a failure logs and never
+ * reaches the session.
+ */
+async function runSessionMaintenanceWorker(
+  coordRoot: string,
+  adapter: Adapter | null,
+): Promise<number> {
+  const journalMaintenance = adapter ? adapterBehavior(adapter).journalMaintenance : false;
+  // Effect (journal-maintaining adapters): prune stale journal archives +
+  // sweep orphans. The recovery cue is read separately at session start.
+  if (journalMaintenance) journalJanitor(coordRoot);
+  imageJanitor(coordRoot);
+  const { autoCleanArtifacts } = await import("../artifacts/index.ts");
+  const { autoCleanEventV3Archives } = await import("../events/v3/archive-retention.ts");
+  const { createAutomaticMaintenanceComposition, runAutomaticMaintenancePass } = await import(
+    "../storage/maintenance-providers.ts"
+  );
+  // Effect: throttled hourly artifact sweep (see autoCleanArtifacts). It
+  // deletes expired workspaces, plus unheld workspaces over the per-bundle
+  // ceiling or repository budget once they have been idle past
+  // artifacts.idle_grace_hours. Each deletion is rechecked first and recorded
+  // in .harnery/artifact-deletions.jsonl.
+  try {
+    autoCleanArtifacts(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "artifact-auto-clean" });
+  }
+  // Effect: apply the same daily throttle to closed V3 epochs. The newest
+  // recovery epochs remain protected by the archive retention policy.
+  try {
+    autoCleanEventV3Archives(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "event-v3-archive-auto-clean" });
+  }
+  // Plan one bounded, claim-first global slice from cached pressure only.
+  // Existing owner janitors above remain the only active executors until
+  // each provider receives a separate production activation.
+  try {
+    await runAutomaticMaintenancePass(
+      createAutomaticMaintenanceComposition(coordRoot, {
+        journal: () => {
+          if (journalMaintenance) journalJanitor(coordRoot);
+        },
+        images: () => imageJanitor(coordRoot),
+        artifacts: () => autoCleanArtifacts(coordRoot),
+      }),
+    );
+  } catch (err) {
+    logError(coordRoot, err, { phase: "storage-maintenance-auto" });
+  }
   return 0;
 }
 

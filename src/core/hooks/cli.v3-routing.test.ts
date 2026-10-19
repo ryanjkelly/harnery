@@ -98,6 +98,32 @@ describe("agent-hook V3 hard cut", () => {
     }
   });
 
+  test("session start returns before storage maintenance, which a worker still runs", async () => {
+    const root = candidateRoot();
+    const binDir = join(root, "probe-bin");
+    const probe = join(root, "janitor.log");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      join(binDir, "harn"),
+      '#!/bin/sh\ncase "$*" in *janitor*) sleep 4; printf "%s\\n" "$*" >> "$HARNERY_JANITOR_PROBE";; esac\n',
+      "utf8",
+    );
+    chmodSync(join(binDir, "harn"), 0o755);
+    const result = run(
+      AGENT_HOOK,
+      ["session-start", "--adapter", "claude-code"],
+      { session_id: "maintenance-detach-owner", cwd: root, source: "startup" },
+      root,
+      { HARNERY_BIN_DIR: binDir, HARNERY_JANITOR_PROBE: probe },
+    );
+    expect(result.status).toBe(0);
+    // A synchronous janitor would have written the probe before the hook exited.
+    expect(existsSync(probe)).toBeFalse();
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(probe) && Date.now() < deadline) await Bun.sleep(100);
+    expect(readFileSync(probe, "utf8")).toContain("journal janitor --quiet");
+  }, 40_000);
+
   test("runs coordination effects in-process without spawning agent-coord", () => {
     const root = candidateRoot();
     const owner = "in-process-hook-owner";

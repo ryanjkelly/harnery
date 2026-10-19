@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readdirSync } from "node:fs";
+import { lstatSync, readdirSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { ARTIFACT_MANIFEST } from "./constants.ts";
 
@@ -36,11 +36,14 @@ export function artifactRootEntries(path: string): string {
  * Keep the prior root activity while its payload entries match the checkpoint.
  * A root deletion or rename changes that fingerprint; nested changes retain
  * their ordinary filesystem timestamps. Symlinks are inspected, never followed.
+ * `visit` sees every entry's lstat exactly once, including a root manifest the
+ * activity rules skip, so a caller can size the tree in the same walk.
  */
 export function readArtifactActivity(
   path: string,
   now: Date,
   previous?: ArtifactActivity,
+  visit?: (entry: string, stat: Stats) => void,
 ): ArtifactActivity {
   const entries = artifactRootEntries(path);
   const nowMs = now.getTime();
@@ -50,6 +53,7 @@ export function readArtifactActivity(
       : 0;
   const walk = (entry: string, root = false): number => {
     const stat = lstatSync(entry);
+    visit?.(entry, stat);
     let latest =
       root && previous?.root_entries_sha256 === entries
         ? accept(Date.parse(previous.last_changed_at))
@@ -58,7 +62,10 @@ export function readArtifactActivity(
       for (const name of readdirSync(entry)) {
         // Only this unit's own control manifest is metadata. Nested artifact
         // manifests are payload from the containing workspace's point of view.
-        if (root && previous && name === ARTIFACT_MANIFEST) continue;
+        if (root && previous && name === ARTIFACT_MANIFEST) {
+          if (visit) visit(join(entry, name), lstatSync(join(entry, name)));
+          continue;
+        }
         latest = Math.max(latest, walk(join(entry, name)));
       }
     }
