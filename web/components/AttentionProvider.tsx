@@ -7,7 +7,6 @@ import {
   type AttentionRequest,
   ensureAudioUnlocked,
   isAcked,
-  isEngaged,
   LAST_REQUEST_STORAGE_KEY,
   markAcked,
   parseStoredRequest,
@@ -15,6 +14,7 @@ import {
   startFaviconDot,
   startTitleFlash,
 } from "@/lib/attention";
+import { ATTENTION_POLL_MS, createAttentionClient } from "@/lib/attention-client";
 
 /**
  * Root provider for the operator-attention system (mounted once in the app
@@ -39,10 +39,10 @@ import {
  * this app renders at most one actionable next-step, so a registry would be
  * speculative. Revisit if a page ever needs two concurrent alerts.
  *
- * If the operator is "engaged" (tab visible + focused + interacted < 8s ago)
- * when a request arrives, the out-of-band channels (title/favicon/chime) are
- * skipped, since the state change happened in front of them; the in-page edge
- * pulse + flow lines still render and auto-ack on their next interaction.
+ * The server selects one fresh client and grants a short recipient lease.
+ * Every tab keeps its in-page event; only the selected client starts automatic
+ * title/favicon/chime channels. The grant carries server-observed engagement,
+ * so a focused tab with stale interaction cannot suppress another client.
  */
 
 type AttentionState = {
@@ -92,7 +92,9 @@ export function AttentionProvider({ children }: { children: React.ReactNode }) {
   const [alert, setAlert] = useState<AttentionRequest | null>(null);
   const [lastRequest, setLastRequest] = useState<AttentionRequest | null>(null);
   const lastRequestRef = useRef<AttentionRequest | null>(null);
-  const lastInteraction = useRef(0);
+  const interaction = useRef(0);
+  const clientRef = useRef<ReturnType<typeof createAttentionClient> | null>(null);
+  const observeRef = useRef<() => void>(noop);
   /** Stops the out-of-band channels of whatever alert is currently live. */
   const stopRef = useRef<() => void>(noop);
   const ackRef = useRef<() => void>(noop);
@@ -110,46 +112,103 @@ export function AttentionProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const startAlert = useCallback((request: AttentionRequest, opts: { force?: boolean } = {}) => {
-    stopRef.current(); // restore title/favicon from any prior alert first
+  const startAlert = useCallback(
+    (request: AttentionRequest, opts: { disruptive?: boolean; force?: boolean } = {}) => {
+      stopRef.current(); // restore title/favicon from any prior alert first
 
-    const channels = {
-      title: true,
-      favicon: true,
-      audio: true,
-      edge: true,
-      flow: true,
-      ...request.channels,
+      const channels = {
+        title: true,
+        favicon: true,
+        audio: true,
+        edge: true,
+        flow: true,
+        ...request.channels,
+      };
+      const stops: Array<() => void> = [];
+      if (opts.force || opts.disruptive) {
+        if (channels.title) stops.push(startTitleFlash(request.label));
+        if (channels.favicon) stops.push(startFaviconDot());
+        if (channels.audio) stops.push(startChime(request.audioRepeat));
+      }
+      const stopAll = () => {
+        for (const stop of stops) stop();
+        stopRef.current = noop;
+      };
+      stopRef.current = stopAll;
+      ackRef.current = () => {
+        markAcked(request.key);
+        void clientRef.current?.acknowledge();
+        stopAll();
+        setAlert(null);
+        ackRef.current = noop;
+      };
+      setAlert(request);
+      lastRequestRef.current = request;
+      setLastRequest(request);
+      try {
+        sessionStorage.setItem(
+          LAST_REQUEST_STORAGE_KEY,
+          JSON.stringify({ key: request.key, label: request.label }),
+        );
+      } catch {
+        /* best-effort persistence */
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const client = createAttentionClient({
+      clientId: crypto.randomUUID(),
+      onGrant: (grant) => {
+        const request = slotRef.current;
+        if (request?.key !== grant.eventKey) return;
+        if (isAcked(request.key)) {
+          void client.acknowledge();
+          return;
+        }
+        startAlert(request, { disruptive: !grant.engaged });
+      },
+      onStop: () => stopRef.current(),
+      onAcknowledged: (eventKey) => {
+        const request = slotRef.current;
+        if (request?.key !== eventKey) return;
+        markAcked(request.key);
+        stopRef.current();
+        ackRef.current = noop;
+        setAlert(null);
+      },
+    });
+    clientRef.current = client;
+    const observe = () => {
+      const key = slotRef.current?.key;
+      void client
+        .observe({
+          eventKey: slotRef.current?.key ?? null,
+          visible: document.visibilityState === "visible",
+          focused: document.hasFocus(),
+          interaction: interaction.current,
+        })
+        .then(() => {
+          if (key && slotRef.current?.key === key && isAcked(key)) void client.acknowledge();
+        });
     };
-    const stops: Array<() => void> = [];
-    if (opts.force || !isEngaged(lastInteraction.current)) {
-      if (channels.title) stops.push(startTitleFlash(request.label));
-      if (channels.favicon) stops.push(startFaviconDot());
-      if (channels.audio) stops.push(startChime(request.audioRepeat));
-    }
-    const stopAll = () => {
-      for (const stop of stops) stop();
-      stopRef.current = noop;
+    observeRef.current = observe;
+    const interval = setInterval(observe, ATTENTION_POLL_MS);
+    window.addEventListener("focus", observe);
+    window.addEventListener("blur", observe);
+    document.addEventListener("visibilitychange", observe);
+    observe();
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", observe);
+      window.removeEventListener("blur", observe);
+      document.removeEventListener("visibilitychange", observe);
+      observeRef.current = noop;
+      clientRef.current = null;
+      client.dispose();
     };
-    stopRef.current = stopAll;
-    ackRef.current = () => {
-      markAcked(request.key);
-      stopAll();
-      setAlert(null);
-      ackRef.current = noop;
-    };
-    setAlert(request);
-    lastRequestRef.current = request;
-    setLastRequest(request);
-    try {
-      sessionStorage.setItem(
-        LAST_REQUEST_STORAGE_KEY,
-        JSON.stringify({ key: request.key, label: request.label }),
-      );
-    } catch {
-      /* best-effort persistence */
-    }
-  }, []);
+  }, [startAlert]);
 
   const replay = useCallback(() => {
     const request = lastRequestRef.current ?? slotRef.current;
@@ -176,7 +235,8 @@ export function AttentionProvider({ children }: { children: React.ReactNode }) {
       ensureAudioUnlocked();
       const target = e.target as Element | null;
       if (target?.closest?.("[data-attention-replay]")) return;
-      lastInteraction.current = Date.now();
+      interaction.current++;
+      observeRef.current();
       if (e.type === "wheel" || e.type === "touchstart") return;
       if (e.type === "keydown" && !isFormTarget(document.activeElement)) return;
       ackRef.current();
@@ -199,8 +259,10 @@ export function AttentionProvider({ children }: { children: React.ReactNode }) {
   // every few seconds, and that must not restart channels.
   const slotKey = slot?.key ?? null;
   useEffect(() => {
-    if (!slot || !slotKey || isAcked(slotKey)) return;
-    startAlert(slot);
+    observeRef.current();
+    const request = slotRef.current;
+    if (!request || request.key !== slotKey || isAcked(request.key)) return;
+    startAlert(request);
     return () => {
       stopRef.current();
       ackRef.current = noop;

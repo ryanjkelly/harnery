@@ -1,0 +1,137 @@
+---
+title: "0217: Select one fresh client for each attention event"
+description: "Coordinate browser alerts without treating presence as acknowledgment or authority."
+---
+
+**Date:** 2026-10-18
+**Status:** Accepted
+
+## Context
+
+Before this change, each dashboard tab started its own title flash, favicon and chime for
+the same actionable event. A browser's focus flag can survive after its user
+leaves. Local engagement suppression helps that tab, but cannot choose between
+tabs or devices viewing the same dashboard server.
+
+## Decision
+
+Keep the existing semantic `AttentionRequest.key` as the event identity, scoped
+to the dashboard's configured project root. Every mounted page continues to
+show its in-page attention state. Only a server grant starts automatic title,
+favicon or audio channels. The CLI and agent coordination need no browser or
+presence service. Browser clients on different devices coordinate when they
+reach the same dashboard server; independent dashboard servers do not share
+browser presence in this change.
+
+Each provider mount creates a random client ID in memory. It observes its
+current event every two seconds and on visibility, focus and interaction
+changes, with at most one observation request in flight. The server assigns
+`observedAt` from its own clock. A client is fresh for six seconds, exclusive, only while
+its current event key matches. Nonfinite, negative and future stored server
+timestamps are ineligible. Clients send a monotonically increasing interaction
+counter, never their wall clock. Only a greater counter establishes a new
+interaction time on the server; unchanged polls cannot renew engagement.
+Interaction must be within eight seconds to establish engagement. A stale focus
+flag cannot suppress another client's alert.
+
+The pure selector ranks fresh visible, focused and recently engaged clients
+first, then visible clients, then other fresh clients. Within a rank, the most
+recent server observation wins, with ascending client ID as the final tie
+breaker. Presence is an observation, never a delivery receipt or an approval.
+An engaged winner receives the existing in-page channels and suppresses its
+disruptive channels for that event. Other clients cannot use their own stale
+focus flag to absorb it.
+
+Observation and claim are separate operations. An event keeps its selected
+recipient while that recipient is fresh and its lease remains valid. This
+prevents ordinary heartbeat ordering from moving the alert between tabs.
+Otherwise the server selects one fresh successor or returns no recipient when
+none exists. The event key survives reassignment; a random generation identifies
+each selected recipient episode. A selected client requests a claim for that
+exact generation. Only its first successful claim returns `granted: true`.
+Retries return `claimed` without another grant. The claim's server engagement
+value controls suppression; the client does not substitute its own stale flag.
+
+Event selection and claim changes append numbered immutable revisions under
+`.harnery/attention/events/<sha256(key)>/`. The writer flushes a temporary file,
+then publishes it through an exclusive hard link to the next revision. Competing
+workers retry after an existing revision without polling sleeps or stale locks.
+A crash before publication leaves no revision, and a crash after
+publication leaves a complete record. Every read validates the original event
+key, client ID, generation and revision. Unreadable records fail closed.
+Presence rows use atomic replacement under `.harnery/attention/clients`.
+Storage errors grant no channels.
+
+The selection lease lasts six seconds. A claimed client renews it by observing
+with its current generation only after receiving the grant. An unconfirmed grant
+therefore cannot retain a recipient forever. The client starts channels only
+if the response still names its mounted event, client and generation. It stops
+at the lease deadline, on acknowledgment, event replacement or disposal. It
+subtracts the full monotonic request round trip from the server's remaining
+lease duration, so a delayed response cannot extend the lease. Renewals retain
+the generation and never replay its initial chime. A heartbeat cannot revive
+an expired generation. A lost grant response can leave that episode silent
+until its lease expires; the next observation then
+selects a fresh recipient even if it is the same client.
+
+If the recipient disappears, a fresh successor can claim a new generation for
+the same event after expiry. No fresh client means no disruptive alert; the
+inline event remains visible and a later observation selects a fresh client.
+The claim proves authorization only, not display, sound or human receipt.
+There is one current recipient and one grant per generation. A crash or blocked
+browser thread can leave an old effect's outcome unknown; a successor generation
+may therefore repeat an alert. Exactly-once physical delivery and guaranteed
+successor availability cannot both be established across that boundary. Fresh
+successor availability takes precedence, while event and attempt identities
+make the distinction explicit.
+
+Deliberate interaction acknowledges the current event separately through the
+server and the existing tab store. The acknowledgment is an immutable,
+exclusively created event marker. It suppresses future channels and stops active
+channels on the next observation. Neither selection nor acknowledgment changes
+an approval, task or workflow record. Acknowledgment can precede a claim and
+then prevents it. An acknowledgment racing a claim can leave a granted alert
+briefly active until its next observation; it never creates a second recipient.
+Manual replay remains an explicit local user action and creates no automatic
+claim or approval transition.
+
+Acknowledgments do not expire automatically. Presence and recipient leases
+expire for selection after restart using the same server clock checks. Claim
+history remains inspectable across generations. No cross-host transport is
+introduced.
+
+## Interfaces
+
+`selectAttentionClient(clients, eventKey, now)` is pure and returns one client
+or `null`. `observeAttention(root, observation, now)` atomically publishes
+presence and returns `{ recipientId, state, granted: false }`.
+The response also carries `generation`, `expiresAt`, `serverNow` and `engaged`.
+`claimAttention(root, eventKey, clientId, generation, now)` revalidates presence
+and returns the same shape with `granted: true` only for the exclusive claim
+creator in that generation.
+`acknowledgeAttention(root, eventKey, clientId, now)` records only attention
+acknowledgment. `POST /api/attention` validates and dispatches these three
+operations. Client orchestration takes an injected transport and clock and
+discards responses for a replaced or unmounted event. Grant and acknowledgment
+callbacks carry the exact event key; the provider checks its synchronous slot
+reference as well as the client's committed event, including during a pending
+React transition.
+
+## Alternatives
+
+Session storage cannot coordinate tabs. BroadcastChannel and browser locks do
+not coordinate devices. A permanent grant cannot satisfy successor availability
+after client death. Reassignment cannot distinguish a missing alert from a lost
+response after the alert began, so it is recorded as another attempt rather
+than exactly-once delivery. Recording delivery only after starting channels
+leaves the same crash window. A global presence relay is unnecessary for clients
+sharing one dashboard.
+
+## Verification
+
+Fake-clock tests cover stale focus, future values, two tabs and a phone, ties,
+missing presence, pre-claim disappearance, and event replacement. Durable store
+tests cover competing workers, a lost response, a restarted reader, partial
+claims, acknowledgment separation and storage refusal. A rendered two-tab test
+requires one automatic title alert while both retain their in-page event.
+Private guard-removal runs must fail the relevant invariant.

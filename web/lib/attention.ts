@@ -73,11 +73,6 @@ export function parseStoredRequest(raw: string | null): AttentionRequest | null 
   }
 }
 
-/** Operator counts as "engaged" if they interacted this recently while the
- * tab is visible + focused: engaged operators get only the in-page channels
- * (edge/ring), not the chime/title (the state change is in front of them). */
-export const ENGAGED_WINDOW_MS = 8_000;
-
 // ---------------------------------------------------------------------------
 // Acked-key store (sessionStorage; injectable for tests)
 
@@ -314,22 +309,4 @@ export function startChime(
     played += 1;
   }, repeat.intervalMs);
   return () => clearInterval(iv);
-}
-
-// ---------------------------------------------------------------------------
-// Engagement
-
-/**
- * True when the operator is demonstrably looking at the page right now:
- * visible + focused + interacted within ENGAGED_WINDOW_MS. Engaged operators
- * skip the out-of-band channels (title/favicon/chime); the in-page edge/ring
- * still render and auto-ack on their next interaction.
- */
-export function isEngaged(lastInteractionTs: number, now: number = Date.now()): boolean {
-  if (typeof document === "undefined") return false;
-  return (
-    document.visibilityState === "visible" &&
-    document.hasFocus() &&
-    now - lastInteractionTs < ENGAGED_WINDOW_MS
-  );
 }
