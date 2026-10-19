@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
 import { resolveOwnerBySessionEnv } from "../../agents/coord-client.ts";
 import { readLiveCoordinationRow } from "../../agents/state/live-coordination-view.ts";
-import { checkPidToken } from "../../agents/state/proc-start.ts";
+import { verifyProcessGeneration } from "../../agents/state/proc-start.ts";
 
 /**
  * Resolve the canonical `instance_id` for the current hook invocation.
@@ -98,7 +98,7 @@ export function resolveOwner(opts: {
           // A row whose start token disagrees with the process now holding this
           // pid is about a different, earlier process. Believing it hands this
           // session another agent's identity, so walk past it.
-          const recycled = checkPidToken(pid, startToken || undefined) === "mismatch";
+          const recycled = verifyProcessGeneration(pid, startToken) === "different";
           if (owner && owner.length > 0 && !recycled) {
             return {
               instance_id: owner,

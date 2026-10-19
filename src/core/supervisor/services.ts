@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { checkPidToken, processStartToken } from "../agents/state/proc-start.ts";
+import { processStartToken, verifyProcessGeneration } from "../agents/state/proc-start.ts";
 import { readGovernorServiceStatus } from "../governor/service-read.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import {
@@ -105,7 +105,7 @@ function consumerAlive(record: SupervisorConsumerRecord): boolean {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
   }
-  return checkPidToken(record.pid, record.start_token) !== "mismatch";
+  return verifyProcessGeneration(record.pid, record.start_token) !== "different";
 }
 
 interface DetachedServiceRecord {

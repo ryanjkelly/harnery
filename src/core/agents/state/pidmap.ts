@@ -24,7 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { checkPidToken, processStartToken } from "./proc-start.ts";
+import { processStartToken, verifyProcessGeneration } from "./proc-start.ts";
 
 /**
  * Row count that triggers a dead-row sweep on the next write.
@@ -59,7 +59,7 @@ export function parsePidmapRow(row: string): {
  */
 function rowStillNamesItsProcess(pid: number, startToken: string | undefined): boolean {
   if (!pidIsAlive(pid)) return false;
-  return checkPidToken(pid, startToken) !== "mismatch";
+  return verifyProcessGeneration(pid, startToken) !== "different";
 }
 
 function atomicWrite(path: string, content: string): void {

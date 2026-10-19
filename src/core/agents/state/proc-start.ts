@@ -102,7 +102,7 @@ export function resetStartTokenCaches(): void {
  * than by splitting the whole line, because comm is the executable name in
  * parentheses and may itself contain spaces and parens. The boot segment is
  * dropped rather than faked when the kernel will not name its boot, which
- * yields the pre-boot-id shape that `tokensAgree` still accepts.
+ * yields the pre-boot-id shape that `verifyProcessGeneration` compares by ticks.
  */
 export function procfsStartToken(pid: number): string | null {
   let stat: string;
@@ -164,7 +164,19 @@ export type ProcessGenerationVerdict = "same" | "different" | "unknown";
 
 type ReadProcessStartToken = (pid: number) => string | null;
 
-/** A missing or unreadable token never establishes process identity. */
+/**
+ * Does `pid` still name the run that wrote `recordedToken`?
+ *
+ * - `"same"`: both tokens present and equal.
+ * - `"different"`: the pid was recycled. A liveness check cannot see this,
+ *   because a recycled pid is alive.
+ * - `"unknown"`: a token is missing, malformed, or unreadable. Never treat
+ *   this as proof of identity.
+ *
+ * A Linux token written without a boot segment cannot identify a run across
+ * reboots, so it is compared on its tick count: a different count proves a
+ * different run, and an equal count stays unknown.
+ */
 export function verifyProcessGeneration(
   pid: number,
   recordedToken: string | null | undefined,
@@ -177,16 +189,26 @@ export function verifyProcessGeneration(
     !recordedToken.trim()
   )
     return "unknown";
-  // A bootless Linux token cannot identify a process across machine boots.
-  if (/^l\d+$/.test(recordedToken)) return "unknown";
+  let currentToken: string | null;
   try {
-    const currentToken = readToken(pid);
-    if (typeof currentToken !== "string" || !currentToken.trim()) return "unknown";
-    if (/^l\d+$/.test(currentToken)) return "unknown";
-    return currentToken === recordedToken ? "same" : "different";
+    currentToken = readToken(pid);
   } catch {
     return "unknown";
   }
+  if (typeof currentToken !== "string" || !currentToken.trim()) return "unknown";
+  const bootless = (token: string) => /^l\d+$/.test(token);
+  if (
+    recordedToken[0] === "l" &&
+    currentToken[0] === "l" &&
+    (bootless(recordedToken) || bootless(currentToken))
+  )
+    return ticksOf(recordedToken) === ticksOf(currentToken) ? "unknown" : "different";
+  return currentToken === recordedToken ? "same" : "different";
+}
+
+function ticksOf(token: string): string {
+  const dot = token.indexOf(".");
+  return dot === -1 ? token.slice(1) : token.slice(dot + 1);
 }
 
 export interface ProcessGenerationSignalDependencies {
@@ -215,51 +237,4 @@ export function signalIfSameGeneration(
   } catch {
     return { sent: false, verdict };
   }
-}
-
-/**
- * Do two tokens describe the same run?
- *
- * Equality, plus one concession: a row written before tokens carried a boot
- * segment recorded the tick count alone, so it is compared on the part it
- * actually recorded. Refusing that would call every pre-upgrade row a recycled
- * pid and prune a working machine's live rows the first time the new code ran.
- * Such a row loses its reboot protection until the next write rewrites it,
- * which is a strictly better position than the one it came from.
- */
-export function tokensAgree(recorded: string, current: string): boolean {
-  if (recorded === current) return true;
-  // Only the Linux form has a boot segment to disagree about, and only when
-  // exactly one side carries one is this a shape difference rather than two
-  // genuinely different start instants.
-  if (recorded[0] !== "l" || current[0] !== "l") return false;
-  if (recorded.includes(".") === current.includes(".")) return false;
-  return ticksOf(recorded) === ticksOf(current);
-}
-
-function ticksOf(token: string): string {
-  const dot = token.indexOf(".");
-  return dot === -1 ? token.slice(1) : token.slice(dot + 1);
-}
-
-/**
- * Does `pid` still name the process a row recorded?
- *
- * Three answers, and the difference between the last two matters:
- *
- * - `"match"` — recorded token, current token, same run. The row is trustworthy.
- * - `"mismatch"` — both present and different. The pid was recycled. This is
- *   the case a liveness check cannot see, because a recycled pid is alive.
- * - `"unverified"` — no recorded token (a row written before tokens existed) or
- *   no current one (an unsupported platform). Callers treat this the way they
- *   treated every row previously: trust it if the pid is alive.
- */
-export function checkPidToken(
-  pid: number,
-  recorded: string | undefined,
-): "match" | "mismatch" | "unverified" {
-  if (!recorded) return "unverified";
-  const current = processStartToken(pid);
-  if (!current) return "unverified";
-  return tokensAgree(recorded, current) ? "match" : "mismatch";
 }

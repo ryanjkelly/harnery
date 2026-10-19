@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 import { parsePidmapRow } from "../agents/state/pidmap.ts";
-import { checkPidToken } from "../agents/state/proc-start.ts";
+import { verifyProcessGeneration } from "../agents/state/proc-start.ts";
 import {
   RESOURCE_SNAPSHOT_SCHEMA_VERSION,
   type ResourceProcessGroup,
@@ -386,7 +386,8 @@ function readOwnershipAnchors(
       if (!byPid.has(pid)) continue;
       try {
         const row = parsePidmapRow(readFileSync(join(directory, entry), "utf8"));
-        if (!row.instanceId || checkPidToken(pid, row.startToken) === "mismatch") continue;
+        if (!row.instanceId || verifyProcessGeneration(pid, row.startToken) === "different")
+          continue;
         anchors.set(pid, { kind: "agent", id: row.instanceId, source: "pid-map" });
       } catch {
         // An unreadable or racing row cannot prove ownership.

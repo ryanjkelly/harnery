@@ -4,14 +4,12 @@ import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  checkPidToken,
   processStartToken,
   procfsStartToken,
   psStartToken,
   resetStartTokenCaches,
   signalIfSameGeneration,
   startTokenProbe,
-  tokensAgree,
   verifyProcessGeneration,
 } from "./proc-start.ts";
 
@@ -159,72 +157,53 @@ describe("procfsStartToken", () => {
   });
 });
 
-describe("tokensAgree", () => {
+describe("verifyProcessGeneration", () => {
+  const against = (recorded: string, current: string) =>
+    verifyProcessGeneration(123, recorded, () => current);
+
   test("accepts a token against itself and refuses a different instant", () => {
-    expect(tokensAgree("labcd1234.5000", "labcd1234.5000")).toBe(true);
-    expect(tokensAgree("labcd1234.5000", "labcd1234.5001")).toBe(false);
-    expect(tokensAgree("pSat Jul 26 02:54:33 2026", "pSat Jul 26 02:54:33 2026")).toBe(true);
-    expect(tokensAgree("pSat Jul 26 02:54:33 2026", "pSat Jul 26 02:54:34 2026")).toBe(false);
+    expect(against("labcd1234.5000", "labcd1234.5000")).toBe("same");
+    expect(against("labcd1234.5000", "labcd1234.5001")).toBe("different");
+    expect(against("pSat Jul 26 02:54:33 2026", "pSat Jul 26 02:54:33 2026")).toBe("same");
+    expect(against("pSat Jul 26 02:54:33 2026", "pSat Jul 26 02:54:34 2026")).toBe("different");
   });
 
   test("catches the same ticks under a different boot", () => {
     // The reboot collision the boot segment exists for: a stale row whose pid is
     // re-issued at the same moment of a later boot.
-    expect(tokensAgree("labcd1234.5000", "ldeadbeef.5000")).toBe(false);
+    expect(against("labcd1234.5000", "ldeadbeef.5000")).toBe("different");
   });
 
-  test("compares a pre-boot-id row on the part it recorded", () => {
-    // Refusing these would call every row written before the upgrade a recycled
-    // pid and prune a working machine's live rows on first run.
-    expect(tokensAgree("l5000", "labcd1234.5000")).toBe(true);
-    expect(tokensAgree("labcd1234.5000", "l5000")).toBe(true);
-    expect(tokensAgree("l5001", "labcd1234.5000")).toBe(false);
+  test("compares a bootless token on its ticks but never proves it the same run", () => {
+    // Calling these different would prune every row written before the boot
+    // segment existed; calling them the same would let one authorize a signal
+    // after a reboot.
+    expect(against("l5000", "labcd1234.5000")).toBe("unknown");
+    expect(against("labcd1234.5000", "l5000")).toBe("unknown");
+    expect(against("l5000", "l5000")).toBe("unknown");
+    expect(against("l5001", "labcd1234.5000")).toBe("different");
+    expect(against("labcd1234.5000", "l5001")).toBe("different");
   });
 
   test("never lets the two probes' dialects agree", () => {
-    expect(tokensAgree("l5000", "pSat Jul 26 02:54:33 2026")).toBe(false);
-    expect(tokensAgree("pSat Jul 26 02:54:33 2026", "l5000")).toBe(false);
+    expect(against("l5000", "pSat Jul 26 02:54:33 2026")).toBe("different");
+    expect(against("pSat Jul 26 02:54:33 2026", "l5000")).toBe("different");
   });
-});
 
-describe("checkPidToken", () => {
-  test("matches the token it just read", () => {
+  test("matches the token it just read and calls a re-issued pid different", () => {
     const token = processStartToken(process.pid) as string;
-    expect(checkPidToken(process.pid, token)).toBe("match");
-  });
-
-  test("calls a re-issued pid a mismatch, not a live row", () => {
-    // The distinction this whole module exists for: the pid is alive, and the
-    // row is still wrong.
-    expect(checkPidToken(process.pid, "l1")).toBe("mismatch");
-  });
-
-  test("says unverified rather than mismatch when either side is missing", () => {
-    expect(checkPidToken(process.pid, undefined)).toBe("unverified");
-    expect(checkPidToken(process.pid, "")).toBe("unverified");
-    // Nothing to read for a dead pid, so the recorded token cannot be refuted.
-    expect(checkPidToken(deadPid(), "l12345")).toBe("unverified");
+    expect(verifyProcessGeneration(process.pid, token)).toBe("same");
+    // The pid is alive, and the row is still wrong.
+    expect(verifyProcessGeneration(process.pid, "l1")).toBe("different");
   });
 
   test("works the same through the ps probe", () => {
     withEnv({ HARNERY_PID_PROBE: "ps" }, () => {
       const token = processStartToken(process.pid) as string;
       expect(token).toMatch(/^p/);
-      expect(checkPidToken(process.pid, token)).toBe("match");
-      expect(checkPidToken(process.pid, "pWed Jan  1 00:00:00 2020")).toBe("mismatch");
+      expect(verifyProcessGeneration(process.pid, token)).toBe("same");
+      expect(verifyProcessGeneration(process.pid, "pWed Jan  1 00:00:00 2020")).toBe("different");
     });
-  });
-});
-
-describe("verifyProcessGeneration", () => {
-  test("requires an exact recorded and current token match", () => {
-    expect(verifyProcessGeneration(123, "labcd1234.5000", () => "labcd1234.5000")).toBe("same");
-    expect(verifyProcessGeneration(123, "labcd1234.5000", () => "labcd1234.5001")).toBe(
-      "different",
-    );
-    expect(verifyProcessGeneration(123, "l5000", () => "labcd1234.5000")).toBe("unknown");
-    expect(verifyProcessGeneration(123, "l5000", () => "l5000")).toBe("unknown");
-    expect(verifyProcessGeneration(123, "labcd1234.5000", () => "l5000")).toBe("unknown");
   });
 
   test("reports unknown when either token is missing or the probe fails", () => {
@@ -238,6 +217,8 @@ describe("verifyProcessGeneration", () => {
     }
     expect(probes).toBe(0);
     expect(verifyProcessGeneration(123, "recorded", () => null)).toBe("unknown");
+    // Nothing to read for a dead pid, so the recorded token cannot be refuted.
+    expect(verifyProcessGeneration(deadPid(), "l12345")).toBe("unknown");
     expect(
       verifyProcessGeneration(123, "recorded", () => {
         throw new Error("probe unavailable");
