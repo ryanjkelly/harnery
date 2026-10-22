@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -23,6 +23,7 @@ import {
   logManifestFingerprint,
   pruneSealedLogSegment,
   readSegmentManifest,
+  withFamilyLease,
 } from "./segments.ts";
 
 const roots: string[] = [];
@@ -31,6 +32,54 @@ afterEach(() => {
 });
 
 describe("shared log segments and query", () => {
+  test("default seal timestamps follow lease admission while request and explicit times stay intact", async () => {
+    const root = fixture("harnery-segment-seal-time-");
+    const family = createStorageCatalog({ coord_root: root }).require("agent-hook-debug-log");
+    const directory = join(root, ".harnery", "logs", "agent-hook-debug");
+    const policy = { lease_timeout_ms: 2_000, lease_retry_ms: 1, lease_stale_ms: 60_000 };
+    const sink = new FileSegmentSink({ directory, family, max_segment_bytes: 1, ...policy });
+    const earlier = new Date("2026-08-29T12:00:01.000Z");
+    const admitted = new Date("2026-08-29T12:00:02.000Z");
+    const explicit = new Date("2026-08-29T12:00:03.000Z");
+    let waiting: Promise<unknown> | undefined;
+    try {
+      setSystemTime(earlier);
+      await sink.append([record(family, 1, "first")]);
+      await withFamilyLease(directory, policy, () => {
+        waiting = sink.append([record(family, 2, "waiting")]);
+        setSystemTime(admitted);
+      });
+      // The waiting writer yielded to its lease retry timer. This writer takes
+      // the released lease synchronously before that timer can run.
+      await sink.append([record(family, 3, "admitted-first")]);
+      await waiting;
+      const raw = JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8"));
+      expect(raw.segments.map((segment: { sealed_at: string }) => segment.sealed_at)).toEqual([
+        admitted.toISOString(),
+        admitted.toISOString(),
+      ]);
+      expect(readSegmentManifest(directory, family).segments.map(({ sequence }) => sequence)).toEqual([
+        1, 2,
+      ]);
+      expect(JSON.parse(readFileSync(join(directory, "metrics.json"), "utf8")).last_merge_at).toBe(
+        earlier.toISOString(),
+      );
+
+      setSystemTime(new Date("2026-08-29T12:00:04.000Z"));
+      await sink.append([record(family, 4, "explicit")], {}, false, explicit);
+      expect(readSegmentManifest(directory, family).segments.at(-1)?.sealed_at).toBe(
+        explicit.toISOString(),
+      );
+      const records = await queryLogs([family], { max_records: 10, max_bytes: 100_000 });
+      expect(records.records.map(({ emitted_at }) => emitted_at)).toEqual(
+        [1, 3, 2, 4].map((sequence) => new Date(sequence * 1_000).toISOString()),
+      );
+    } finally {
+      await waiting?.catch(() => undefined);
+      setSystemTime();
+    }
+  });
+
   test("reads only the newest bounded records from the active segment", async () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-recent-logs-"));
     roots.push(root);

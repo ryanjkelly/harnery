@@ -150,16 +150,17 @@ export class FileSegmentSink {
     records: readonly Buffer[],
     metrics: HarneryLogMetricsDelta = {},
     durable = false,
-    now = new Date(),
+    now?: Date,
   ): Promise<SegmentAppendResult> {
+    const requestedAt = now ?? new Date();
     if (records.length === 0)
       return { appended_records: 0, appended_bytes: 0, rotated: false, synced: false };
     return withFamilyLease(this.#options.directory, this.#options, async () => {
       const directory = ensurePrivateDirectory(this.#options.directory);
       const active = join(this.#options.directory, "active.jsonl");
       let rotated = false;
-      if (existsSync(active) && shouldRotate(active, records, this.#options, now)) {
-        sealActive(active, this.#options, now);
+      if (existsSync(active) && shouldRotate(active, records, this.#options, requestedAt)) {
+        sealActive(active, this.#options, now ?? new Date());
         rotated = true;
       }
       rejectExistingSymlink(active);
@@ -190,7 +191,7 @@ export class FileSegmentSink {
           rotations: (metrics.rotations ?? 0) + (rotated ? 1 : 0),
           synced: (metrics.synced ?? 0) + (durable ? records.length : 0),
         },
-        now,
+        requestedAt,
       );
       return { appended_records: records.length, appended_bytes: bytes, rotated, synced: durable };
     });
