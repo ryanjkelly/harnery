@@ -22,6 +22,8 @@ export interface HarneryInboxMessageRecordV1 {
   /** A required null identifies an operator; strings identify real agent instances. */
   sender_instance_id: string | null;
   sender_display_name: string;
+  /** Set only on a message imported from another machine (ADR 0222). */
+  sender_machine?: string;
   recipient_instance_id: string;
   recipient_display_name: string;
   created_at: string;

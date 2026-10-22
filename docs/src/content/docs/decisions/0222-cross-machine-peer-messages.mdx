@@ -1,0 +1,75 @@
+---
+title: "ADR 0222: Cross-machine peer messages over mail refs"
+description: Carry agents ping between machines as per-machine mail refs on the shared origin, imported into the ordinary inbox and acknowledged back.
+sidebar:
+  order: 222
+---
+
+**Date:** 2026-10-21
+**Status:** Accepted
+
+## Context
+
+[ADR 0016](./0016-cross-machine-presence.mdx) made sessions on other machines
+visible: every prompt lists them, labeled by machine. `agents ping` could not
+reach them. It resolves a recipient only from this machine's event ledger, so a
+name visible in the peer table was refused as unknown. The instructions told
+agents that only a never-used name is refused, which led them to try the ping
+and then report a message as undeliverable.
+
+## Alternatives considered
+
+- **Carry messages on the relay.** The relay keeps only the latest frame per
+  sender for warm joins, it is optional, and a machine can be offline for
+  days. Queued messages need durable storage that outlives both.
+- **One shared mail ref that every machine appends to.** Concurrent writers
+  would race on every push and need retry and merge logic on a ref that is
+  force-pushed by design.
+- **Commit messages to a branch.** Branches show up in every tool that lists
+  them and accumulate history; presence moved off branches for that reason.
+- **Leave the limit and correct the instructions.** Cheaper, but two machines
+  working the same repo have no other way to hand an agent a note.
+
+## Decision
+
+Each machine owns one mail ref, `refs/harnery/mail/<machine>`, next to its
+presence ref and fetched in the same round trip. The ref is a parentless commit
+whose message is a JSON blob with two lists: an **outbox** of messages this
+machine sent and nobody has acknowledged, and **acks**, the ids of messages it
+imported from other machines.
+
+- **Addressing.** Local resolution runs first and is unchanged. A name or
+  instance the local ledger has never seen is matched against other machines'
+  presence, live or stale, and against the senders of mail this machine
+  received, so a reply works after the sender's machine goes quiet. The same
+  name on two machines is ambiguous and needs `--instance-id`.
+- **Sending.** The sender appends the envelope to its local mail log and pushes
+  its mail ref synchronously. A failed push leaves the message queued; the Stop
+  hook re-publishes while anything is unacknowledged, at least every ten minutes.
+- **Receiving.** On session start and on prompts (at most every 30 seconds),
+  the hook reads the locally fetched mail refs and imports each envelope
+  addressed to this machine into the recipient instance's inbox, keeping the
+  sender's message id. The inbox refuses a duplicate id under its lease, so
+  delivery is at-least-once into a deduplicating inbox. Surfacing, capacity, and
+  instance binding are the same as for a local ping. An envelope is accepted
+  only from the ref of the machine it names as its sender.
+- **Acknowledging and pruning.** The recipient lists imported ids in its acks.
+  The sender drops a message once its recipient machine acknowledges it; the
+  recipient retires the acknowledgement once a newer sender ref no longer lists
+  the message. A full recipient inbox leaves the message unacknowledged so the
+  sender keeps offering it. Unacknowledged messages expire after 14 days.
+- **State.** Each machine keeps one append-only log, `.harnery/mail/log.jsonl`,
+  written under the durable-history lease. A machine that never uses
+  cross-machine mail creates no log, no ref, and no extra git work on Stop.
+
+## Result and gotchas
+
+- Latency is the presence fetch cadence: a live recipient usually sees the
+  message on a prompt one to two minutes after it was sent.
+- The trust boundary is repo access, as for presence. Mail bodies are readable
+  by anyone who can fetch the repo, and anyone who can push can publish a mail
+  ref under any machine name. The importer checks that an envelope's sender
+  machine matches the ref it came from, which stops accidental cross-talk, not
+  a determined writer with push access.
+- The mail log grows with every send and import. Compaction is deferred; the
+  log is bounded by the durable-history record limit.

@@ -11,6 +11,8 @@ import {
   nativeInstanceIdV3,
   observeLiveEventLedgerRouteV3,
 } from "../events/v3/live-route-observer.ts";
+import { readRemoteMachines } from "../presence/index.ts";
+import { knownRemoteSenders } from "../presence/mail.ts";
 
 export interface MessageTargetInput {
   name?: string;
@@ -22,7 +24,13 @@ export interface MessageTargetInput {
 export type MessageTargetResult =
   | {
       ok: true;
-      target: { instance_id: string; name: string; delivery: "written-live" | "queued" };
+      target: {
+        instance_id: string;
+        name: string;
+        delivery: "written-live" | "queued" | "remote";
+        /** Set when the recipient lives on another machine (ADR 0222). */
+        machine?: string;
+      };
     }
   | {
       ok: false;
@@ -121,6 +129,74 @@ export function resolveMessageTarget(
       instance_id: target.instanceId,
       name: target.name,
       delivery: target.fresh ? "written-live" : "queued",
+    },
+  };
+}
+
+/**
+ * Resolve a recipient on another machine, for a name or instance this
+ * machine's ledger has never seen. Candidates come from peer presence (live
+ * or stale) and from senders this machine has received mail from. Returns
+ * null when nothing matches, so the caller can report the local miss.
+ */
+export function resolveRemoteMessageTarget(
+  coordRoot: string,
+  input: MessageTargetInput,
+): MessageTargetResult | null {
+  const requestedName = normalizeName(input.name);
+  const requestedInstance = input.instanceId?.trim();
+  if (!requestedName && !requestedInstance) return null;
+  const live = new Set(
+    readRemoteMachines(coordRoot).flatMap(({ agents }) => agents.map((a) => a.instance_id)),
+  );
+  const known = new Map<string, { instanceId: string; name: string; machine: string }>();
+  for (const { machine, agents } of readRemoteMachines(coordRoot, { includeStale: true })) {
+    for (const agent of agents) {
+      if (agent.name)
+        known.set(agent.instance_id, { instanceId: agent.instance_id, name: agent.name, machine });
+    }
+  }
+  for (const sender of knownRemoteSenders(coordRoot)) {
+    if (!known.has(sender.instance_id)) {
+      known.set(sender.instance_id, {
+        instanceId: sender.instance_id,
+        name: sender.name,
+        machine: sender.machine,
+      });
+    }
+  }
+  const candidates = [...known.values()]
+    .filter(({ instanceId }) => !requestedInstance || instanceId === requestedInstance)
+    .filter(({ name }) => !requestedName || normalizeName(name) === requestedName)
+    .map((candidate) => ({ ...candidate, fresh: live.has(candidate.instanceId) }));
+  if (candidates.length === 0) return null;
+  const fresh = candidates.filter(({ fresh }) => fresh);
+  const selected = requestedInstance ? candidates : fresh.length > 0 ? fresh : candidates;
+  if (selected.length !== 1) {
+    return {
+      ok: false,
+      code: "ambiguous_peer",
+      message:
+        "Several agent instances on other machines hold that exact name; specify --instance-id.",
+      candidates: selected.map(({ instanceId, machine }) => `${instanceId} (${machine})`).sort(),
+    };
+  }
+  const target = selected[0]!;
+  if (input.requireLive && !target.fresh) {
+    return {
+      ok: false,
+      code: "not_live",
+      message:
+        "That agent is on another machine and outside live presence; omit --require-live to queue its message.",
+    };
+  }
+  return {
+    ok: true,
+    target: {
+      instance_id: target.instanceId,
+      name: target.name,
+      delivery: "remote",
+      machine: target.machine,
     },
   };
 }

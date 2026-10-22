@@ -8,6 +8,7 @@ import {
   resolveOwner,
 } from "../core/agents/index.ts";
 import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
+import { peerInbox } from "../core/inbox/peer-messages.ts";
 import {
   fetchPresence,
   publishPresence,
@@ -15,6 +16,7 @@ import {
   relayDaemonStatus,
   runRelayDaemon,
 } from "../core/presence/index.ts";
+import { importMail, mailStatus, publishMail } from "../core/presence/mail.ts";
 import {
   ageSeconds,
   applyDetection,
@@ -132,6 +134,53 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
       emit.data(r);
+    });
+
+  cmd
+    .command("mail")
+    .description(
+      "Show cross-machine peer messages (ADR 0222): this machine's unacknowledged outbox, " +
+        "acknowledgements it is publishing, and delivered/expired counts. --sync fetches, " +
+        "imports, and publishes first (synchronous; errors report).",
+    )
+    .option(
+      "--sync",
+      "Fetch peers' refs, import mail addressed here, and publish this machine's ref",
+    )
+    .option("--json", "JSON output")
+    .action((opts: { sync?: boolean; json?: boolean }) => {
+      const root = requireRoot(emit);
+      let sync: Record<string, unknown> | undefined;
+      if (opts.sync) {
+        const fetched = fetchPresence(root, { force: true, sync: true });
+        if (fetched.status === "error") {
+          emit.error({ code: "fetch_failed", message: fetched.error });
+          process.exit(1);
+        }
+        const imported = importMail(root, peerInbox(root), { publish: false });
+        const published = publishMail(root, { sync: true });
+        if (published.status === "error") {
+          emit.error({ code: "publish_failed", message: published.error });
+          process.exit(1);
+        }
+        sync = { imported, published };
+      }
+      const status = mailStatus(root);
+      if (opts.json) emit.config({ format: "json" });
+      if (opts.json || !process.stdout.isTTY) {
+        emit.data({ ...status, ...(sync ? { sync } : {}) });
+        return;
+      }
+      emit.text(
+        `${status.machine}: ${status.outbox.length} waiting for acknowledgement, ` +
+          `${status.acks} acknowledgements published, ${status.delivered} delivered, ` +
+          `${status.expired} expired\n`,
+      );
+      for (const m of status.outbox) {
+        emit.text(
+          `  ${m.message_id} to agent-${m.recipient} on ${m.to_machine} (queued ${m.queued_at})\n`,
+        );
+      }
     });
 
   cmd

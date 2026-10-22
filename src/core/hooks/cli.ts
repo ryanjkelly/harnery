@@ -92,6 +92,7 @@ import {
 import type { TurnRitualEvidenceV3 } from "../events/v3/producers/hook-base.ts";
 import { captureSpanClockV3 } from "../events/v3/span-state.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
+import { importMail, publishMail } from "../presence/mail.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
 import { type AdapterBehavior, adapterBehavior } from "./adapter/behaviors/index.ts";
@@ -1276,8 +1277,23 @@ function recordContextTelemetry(run: HookRun): void {
   }
 }
 
+/** Cross-machine peer messages (ADR 0222) ride the presence fetch: import
+ * whatever mail refs are already local. Reads local refs only, at most once
+ * per import interval; never blocks on the network. */
+async function receiveRemoteMail(coordRoot: string): Promise<void> {
+  const { peerInbox } = await import("../inbox/peer-messages.ts");
+  importMail(coordRoot, peerInbox(coordRoot), { throttle: true });
+}
+
 async function handleSessionStarted(run: HookRun): Promise<void> {
   const { coordRoot, adapter, payload, owner, sessionId, data } = run;
+  // Import mail from refs fetched earlier, so a message sent from another
+  // machine while this task was away is in the inbox this context renders.
+  try {
+    await receiveRemoteMail(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "session-start-mail" });
+  }
   // A configured backup runs out of process and is freshness-gated per host.
   // Startup never waits for restic or a remote provider; the child owns no
   // hook stdio, so the harness is not held open until it finishes. A failed
@@ -1402,6 +1418,7 @@ async function handleTurnStarted(run: HookRun): Promise<void> {
   // interval; the systemMessage below reads whatever is locally known).
   try {
     fetchPresence(coordRoot);
+    await receiveRemoteMail(coordRoot);
   } catch (err) {
     logError(coordRoot, err, { phase: "user-prompt-submit-presence" });
   }
@@ -1472,6 +1489,7 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
   // its daemon intentionally exits when a machine has no live sessions.
   try {
     publishPresence(coordRoot);
+    publishMail(coordRoot);
     ensureRelayDaemon(coordRoot);
   } catch (err) {
     logError(coordRoot, err, { phase: "stop-presence" });

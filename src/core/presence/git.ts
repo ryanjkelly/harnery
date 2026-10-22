@@ -1,5 +1,6 @@
 /**
- * Git plumbing for the cross-machine presence transport (ADR 0016).
+ * Git plumbing for the cross-machine presence transport (ADR 0016) and the
+ * mail refs that ride on it (ADR 0222).
  *
  * Presence blobs travel as parentless commits (empty tree, JSON message)
  * force-pushed to `refs/harnery/presence/<machine>` on the host repo's own
@@ -15,9 +16,12 @@
 
 import { spawn, spawnSync } from "node:child_process";
 
-/** The ref namespace. Hardcoded — never interpolated from config — so the
- * publisher is structurally unable to touch refs/heads/* (ADR 0016). */
+/** The ref namespaces. Hardcoded — never interpolated from config — so the
+ * publisher is structurally unable to touch refs/heads/* (ADR 0016). Mail
+ * refs carry cross-machine peer messages on the same transport (ADR 0222). */
 export const PRESENCE_REF_PREFIX = "refs/harnery/presence/";
+export const MAIL_REF_PREFIX = "refs/harnery/mail/";
+type HarneryRefPrefix = typeof PRESENCE_REF_PREFIX | typeof MAIL_REF_PREFIX;
 
 /** Well-known SHA of git's empty tree; `git mktree` below guarantees the
  * object exists in the local odb before we build a commit on it. */
@@ -112,44 +116,46 @@ export function writePresenceCommit(root: string, message: string): string | nul
 }
 
 /**
- * Force-push a presence commit to `refs/harnery/presence/<machine>`.
- * `sync: true` (CLI/tests) waits and reports; default is detached fire-and-
- * forget (hook path — a slow or credential-less push must not block a turn).
+ * Force-push a commit to `<prefix><machine>` (presence or mail). `sync: true`
+ * (CLI/tests) waits and reports; default is detached fire-and-forget (hook
+ * path — a slow or credential-less push must not block a turn).
  */
-export function pushPresenceRef(
+export function pushMachineRef(
   root: string,
+  prefix: HarneryRefPrefix,
   machine: string,
   sha: string,
   opts: { sync?: boolean } = {},
 ): { ok: boolean; error?: string } {
-  const refspec = `+${sha}:${PRESENCE_REF_PREFIX}${sanitizeRefComponent(machine)}`;
-  const args = ["-C", root, "push", "--quiet", "--no-verify", "origin", refspec];
-  if (opts.sync) {
-    const r = runGit(root, args.slice(2));
-    return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim().slice(0, 300) };
-  }
-  try {
-    const child = spawn("git", args, { detached: true, stdio: "ignore", env: gitEnv() });
-    child.unref();
-    return { ok: true };
-  } catch {
-    return { ok: false, error: "spawn failed" };
-  }
+  const refspec = `+${sha}:${prefix}${sanitizeRefComponent(machine)}`;
+  return runNetworkGit(root, ["push", "--quiet", "--no-verify", "origin", refspec], opts);
 }
 
-/** Fetch every peer presence ref from origin into the local ref namespace. */
-export function fetchPresenceRefs(
+/** Fetch every peer presence and mail ref from origin into the local ref
+ * namespace, in one round trip. A namespace with no refs is not an error. */
+export function fetchMachineRefs(
   root: string,
   opts: { sync?: boolean } = {},
 ): { ok: boolean; error?: string } {
-  const refspec = `+${PRESENCE_REF_PREFIX}*:${PRESENCE_REF_PREFIX}*`;
-  const args = ["-C", root, "fetch", "--quiet", "--no-tags", "origin", refspec];
+  const refspecs = [PRESENCE_REF_PREFIX, MAIL_REF_PREFIX].map((p) => `+${p}*:${p}*`);
+  return runNetworkGit(root, ["fetch", "--quiet", "--no-tags", "origin", ...refspecs], opts);
+}
+
+function runNetworkGit(
+  root: string,
+  args: string[],
+  opts: { sync?: boolean },
+): { ok: boolean; error?: string } {
   if (opts.sync) {
-    const r = runGit(root, args.slice(2));
+    const r = runGit(root, args);
     return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim().slice(0, 300) };
   }
   try {
-    const child = spawn("git", args, { detached: true, stdio: "ignore", env: gitEnv() });
+    const child = spawn("git", ["-C", root, ...args], {
+      detached: true,
+      stdio: "ignore",
+      env: gitEnv(),
+    });
     child.unref();
     return { ok: true };
   } catch {
@@ -157,15 +163,14 @@ export function fetchPresenceRefs(
   }
 }
 
-/** Read every locally-known presence ref → [{ref, machine, message}]. */
-export function readPresenceRefs(root: string): Array<{ machine: string; message: string }> {
-  const r = runGit(root, [
-    "for-each-ref",
-    "--format=%(refname)%00%(contents)%01",
-    `${PRESENCE_REF_PREFIX}*`,
-  ]);
+/** Read every locally-known ref under `prefix` → [{machine, message}]. */
+export function readMachineRefs(
+  root: string,
+  prefix: HarneryRefPrefix = PRESENCE_REF_PREFIX,
+): Array<{ machine: string; message: string }> {
+  const r = runGit(root, ["for-each-ref", "--format=%(refname)%00%(contents)%01", `${prefix}*`]);
   if (!r.ok) return [];
-  return parseForEachRefOutput(r.stdout);
+  return parseForEachRefOutput(r.stdout, prefix);
 }
 
 /**
@@ -173,7 +178,10 @@ export function readPresenceRefs(root: string): Array<{ machine: string; message
  * Records are %01-terminated (contents may contain newlines); refname and
  * contents are %00-separated. Exported for unit tests.
  */
-export function parseForEachRefOutput(out: string): Array<{ machine: string; message: string }> {
+export function parseForEachRefOutput(
+  out: string,
+  prefix: HarneryRefPrefix = PRESENCE_REF_PREFIX,
+): Array<{ machine: string; message: string }> {
   const rows: Array<{ machine: string; message: string }> = [];
   for (const rec of out.split("\u0001")) {
     const trimmed = rec.replace(/^\n+/, "");
@@ -181,9 +189,9 @@ export function parseForEachRefOutput(out: string): Array<{ machine: string; mes
     const sep = trimmed.indexOf("\u0000");
     if (sep === -1) continue;
     const refname = trimmed.slice(0, sep).trim();
-    if (!refname.startsWith(PRESENCE_REF_PREFIX)) continue;
+    if (!refname.startsWith(prefix)) continue;
     rows.push({
-      machine: refname.slice(PRESENCE_REF_PREFIX.length),
+      machine: refname.slice(prefix.length),
       message: trimmed.slice(sep + 1).trim(),
     });
   }

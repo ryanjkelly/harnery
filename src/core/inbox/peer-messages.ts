@@ -1,7 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { resolveBinName } from "../config.ts";
+import { publishMail, queueMail } from "../presence/mail.ts";
 import type { HarneryInboxLimits, HarneryInboxMessageRecordV1 } from "./contract.ts";
 import { HarneryInboxService } from "./service.ts";
-import { type MessageTargetInput, resolveMessageTarget } from "./targets.ts";
+import {
+  type MessageTargetInput,
+  resolveMessageTarget,
+  resolveRemoteMessageTarget,
+} from "./targets.ts";
 
 const DAY = 24 * 60 * 60_000;
 
@@ -34,8 +40,44 @@ export function sendPeerMessage(input: {
   senderName: string;
   body: string;
 }) {
-  const target = resolveMessageTarget(input.coordRoot, input.target);
+  let target = resolveMessageTarget(input.coordRoot, input.target);
+  if (!target.ok && target.code === "no_peer") {
+    const remote = resolveRemoteMessageTarget(input.coordRoot, input.target);
+    if (!remote) {
+      return {
+        ...target,
+        message:
+          "No known agent on this machine or another machine matches that exact name and instance.",
+      };
+    }
+    target = remote;
+  }
   if (!target.ok) return target;
+  if (target.target.machine) {
+    // Cross-machine (ADR 0222): queue in this machine's mail ref and push it
+    // now. A failed push keeps the message queued for the next hook publish.
+    const envelope = queueMail(input.coordRoot, {
+      messageId: `msg_${randomUUID()}`,
+      toMachine: target.target.machine,
+      senderInstanceId: input.senderInstanceId,
+      senderName: input.senderName,
+      recipientInstanceId: target.target.instance_id,
+      recipientName: target.target.name,
+      body: input.body.trim(),
+      maxBodyBytes: PEER_INBOX_LIMITS.max_message_body_bytes,
+    });
+    const published = publishMail(input.coordRoot, { sync: true, force: true });
+    return {
+      ok: true as const,
+      target: target.target,
+      state: "remote" as const,
+      message_id: envelope.message_id,
+      body_bytes: envelope.body_bytes,
+      synced: true as const,
+      published: published.status === "published",
+      ...(published.status === "error" ? { publish_error: published.error } : {}),
+    };
+  }
   const receipt = peerInbox(input.coordRoot).send({
     sender_instance_id: input.senderInstanceId,
     sender_display_name: input.senderName,
@@ -62,7 +104,8 @@ export function formatPeerInbox(
   const body = messages
     .map(
       (message) =>
-        `  ${message.message_id} from ${message.sender_instance_id === null ? "Operator" : `agent-${message.sender_display_name}`} (${message.created_at}):\n` +
+        `  ${message.message_id} from ${message.sender_instance_id === null ? "Operator" : `agent-${message.sender_display_name}`}` +
+        `${message.sender_machine ? ` on ${message.sender_machine}` : ""} (${message.created_at}):\n` +
         message.body
           .split("\n")
           .map((line) => `    ${line}`)

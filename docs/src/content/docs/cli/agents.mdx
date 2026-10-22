@@ -384,6 +384,10 @@ The coordination-in-motion commands.
 - **`ping <name> <message...>`** stores a durable message for the task instance
   resolved when the command runs. A fresh exact name takes precedence;
   otherwise a unique known stale or done task can receive queued feedback.
+  A name this machine has never seen is looked up in other machines' presence
+  and in the senders of mail this machine received; a match there is queued in
+  this machine's mail ref and delivered when the recipient's machine next
+  fetches (see [presence](/cli/presence/#cross-machine-messages)).
   Unknown or ambiguous names are refused. Use `--instance-id <id>` to select
   an exact known instance, or `--require-live` when fresh presence is required.
   A later task assigned the same display name cannot receive the old message.

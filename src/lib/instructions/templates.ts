@@ -133,10 +133,10 @@ carries a reason instead of \`(no intent)\`; the [tool-intent
 guide](https://harnery.com/guides/tool-intent/) owns the details.
 
 **Messaging another agent.** \`${b} agents ping <name> "<message>"\` reaches an
-agent by name whether or not they are running: a live agent sees it on their next
-prompt, and a dormant name holds it until a session of that name next starts.
-Send it as your first and only step. Do not check who is live first, and do not
-hunt for somewhere else to leave it. Only a never-used name is refused.
+agent by name, running or not, here or on another machine sharing this origin:
+a live agent sees it on their next prompt (after a fetch, if remote), and a
+dormant name holds it until that session next starts. Send it as your only step;
+do not check who is live first or hunt elsewhere. Only an unused name is refused.
 
 **Journal.** \`${b} journal add <category> "<text>"\` (category = ${journalCats})
 leaves breadcrumbs that survive context compaction;

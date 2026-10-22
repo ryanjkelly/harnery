@@ -532,7 +532,8 @@ export function registerAgentsCommand(
     .command("ping <name> <message...>")
     .description(
       "Queue a durable message for one known task instance by name. Stale or " +
-        "done tasks receive it when that same task resumes. Ambiguous names " +
+        "done tasks receive it when that same task resumes. A recipient on " +
+        "another machine is reached through the shared origin. Ambiguous names " +
         "require an exact instance; receipts do not confirm attention.",
     )
     .option("--instance-id <id>", "Select the exact known recipient instance")
@@ -4947,14 +4948,22 @@ function runPing(
     },
   });
 
+  const remote = "published" in sent ? sent : null;
   const data = {
     peer: sent.target.name,
     peer_instance_id: sent.target.instance_id,
+    ...(sent.target.machine ? { peer_machine: sent.target.machine } : {}),
     state: sent.state,
     message_id: sent.message_id,
     synced: sent.synced,
     body_bytes: sent.body_bytes,
     from: fromName,
+    ...(remote
+      ? {
+          published: remote.published,
+          ...(remote.publish_error ? { publish_error: remote.publish_error } : {}),
+        }
+      : {}),
   };
 
   if (opts.json) {
@@ -4963,6 +4972,16 @@ function runPing(
     return;
   }
   emit.data(data);
+  if (remote) {
+    emit.text(
+      `queued for agent-${data.peer} on ${data.peer_machine} (${data.peer_instance_id}); ` +
+        `stored as ${data.message_id}. ` +
+        (remote.published
+          ? "Published to origin; it reaches that task after its machine next fetches.\n"
+          : `Not published yet (${remote.publish_error ?? "push skipped"}); the next hook retries.\n`),
+    );
+    return;
+  }
   emit.text(
     `${data.state} for agent-${data.peer} (${data.peer_instance_id}); ` +
       `stored as ${data.message_id}, pending until surfaced to that task.\n`,

@@ -92,6 +92,46 @@ export class HarneryInboxService {
     );
   }
 
+  /** Append a message created on another machine, keeping its id. Importers
+   * on one machine can race, so the duplicate check runs under the lease. */
+  receive(record: HarneryInboxMessageRecordV1): "received" | "duplicate" {
+    const recipient = opaqueId(record.recipient_instance_id, "recipient instance");
+    const limits = this.#options.limits;
+    if (record.body_bytes === 0 || record.body_bytes > limits.max_message_body_bytes) {
+      throw new HarneryInboxCapacityError(
+        "message_body_limit",
+        record.body_bytes,
+        limits.max_message_body_bytes,
+      );
+    }
+    const incoming: HarneryInboxMessageRecordV1 = {
+      schema: HARNERY_INBOX_RECORD_SCHEMA,
+      kind: "message",
+      message_id: opaqueId(record.message_id, "message"),
+      sender_instance_id: senderId(record.sender_instance_id),
+      sender_display_name: boundedDisplay(record.sender_display_name),
+      ...(record.sender_machine ? { sender_machine: boundedDisplay(record.sender_machine) } : {}),
+      recipient_instance_id: recipient,
+      recipient_display_name: boundedDisplay(record.recipient_display_name),
+      created_at: record.created_at,
+      body: record.body,
+      body_bytes: record.body_bytes,
+    };
+    validateRecord(incoming);
+    const path = inboxPath(this.#options.coord_root, recipient);
+    return updateInboxHistory<HarneryInboxRecordV1, "received" | "duplicate">(
+      path,
+      readOptions(limits),
+      (records) => {
+        if (records.some((r) => r.kind === "message" && r.message_id === incoming.message_id)) {
+          return { result: "duplicate" };
+        }
+        capacityCheck(project(records), incoming, path, limits);
+        return { append: [incoming], result: "received" };
+      },
+    );
+  }
+
   records(recipientInstanceId: string): HarneryInboxRecordV1[] {
     const records = readCrashSafeJsonlFile<HarneryInboxRecordV1>(
       inboxPath(this.#options.coord_root, opaqueId(recipientInstanceId, "recipient instance")),

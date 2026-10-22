@@ -108,6 +108,7 @@ throttled to ~60s). The subcommands exist for inspection and force-runs:
 harn presence publish [--force]   # publish this machine's sessions now (synchronous, errors report)
 harn presence fetch [--force]     # pull peer machines' refs now
 harn presence peers [--json]      # sessions on other machines (refs + relay cache merged) + daemon status
+harn presence mail [--sync]       # cross-machine messages: outbox awaiting acknowledgement, counts
 harn presence relay-daemon        # run the relay client daemon in the foreground (hooks spawn it detached)
 ```
 
@@ -131,6 +132,31 @@ sessions. The daemon exits when the machine goes idle and reconnects with
 backoff; if the relay is unreachable, presence silently rides the git-refs
 floor. Self-hosting: [`harn relay serve`](/cli/relay/) or deploy
 `relay/worker/` to your own Cloudflare account.
+
+### Cross-machine messages
+
+`agents ping` reaches an agent on another machine through the same origin
+([ADR 0222](/decisions/0222-cross-machine-peer-messages/)). When the name is
+not known locally but appears in another machine's presence, the message is
+queued in this machine's own mail ref, `refs/harnery/mail/<machine>`, and
+pushed immediately. The recipient machine imports it into the ordinary inbox
+on its next prompt after a presence fetch, so a live agent typically sees it
+within one to two minutes and a dormant one when that task resumes. The
+recipient acknowledges it in its own mail ref; the sender then drops it, and
+the acknowledgement is retired once the sender's ref stops listing it. Message
+ids survive the trip, so a repeated import never duplicates a message. A
+message nobody acknowledges expires after 14 days.
+
+Each machine writes only its own mail ref, so force-pushes never race. A
+machine that has never sent or received cross-machine mail never creates one.
+`presence mail` lists messages still waiting for acknowledgement; `--sync`
+fetches, imports, and publishes in one synchronous step. The relay does not
+carry mail: its per-sender cache keeps only the latest frame, which suits
+presence but would lose queued messages.
+
+Mail bodies sit in the repo's refs in plain text. Anyone who can read the repo
+can read them, and anyone who can push to it can publish a mail ref, the same
+trust boundary as presence and as the code itself. Keep secrets out of pings.
 
 Machine identity comes from the standard label resolution (`HARNERY_MACHINE`
 env → `~/.config/harnery/machine` file → hostname). A blob older than ~15

@@ -31,17 +31,23 @@ import { resolveMachineLabel } from "../../lib/machine.ts";
 import { presenceEnabled } from "../config.ts";
 import { buildPresenceBlob, type PresenceAgent, type PresenceBlob } from "./blob.ts";
 import {
-  fetchPresenceRefs,
+  fetchMachineRefs,
   hasOrigin,
-  pushPresenceRef,
-  readPresenceRefs,
+  PRESENCE_REF_PREFIX,
+  pushMachineRef,
+  readMachineRefs,
   sanitizeRefComponent,
   writePresenceCommit,
 } from "./git.ts";
 
 export type { PresenceAgent, PresenceBlob } from "./blob.ts";
 export { buildPresenceBlob } from "./blob.ts";
-export { PRESENCE_REF_PREFIX, parseForEachRefOutput, sanitizeRefComponent } from "./git.ts";
+export {
+  MAIL_REF_PREFIX,
+  PRESENCE_REF_PREFIX,
+  parseForEachRefOutput,
+  sanitizeRefComponent,
+} from "./git.ts";
 export { ensureRelayDaemon, relayDaemonStatus, runRelayDaemon } from "./relay-client.ts";
 
 /** Re-push at least this often while sessions are live, so peers can treat a
@@ -139,7 +145,9 @@ export function publishPresence(
     const sha = writePresenceCommit(coordRoot, json);
     if (!sha) return { status: "error", error: "commit-tree failed" };
 
-    const push = pushPresenceRef(coordRoot, blob.machine, sha, { sync: opts.sync });
+    const push = pushMachineRef(coordRoot, PRESENCE_REF_PREFIX, blob.machine, sha, {
+      sync: opts.sync,
+    });
     if (!push.ok) return { status: "error", error: push.error ?? "push failed" };
 
     // Optimistic on the detached path: a failed background push self-heals at
@@ -155,7 +163,7 @@ export function publishPresence(
   }
 }
 
-/** Throttled fetch of peer presence refs from origin. */
+/** Throttled fetch of peer presence and mail refs from origin. */
 export function fetchPresence(
   coordRoot: string,
   opts: { force?: boolean; sync?: boolean } = {},
@@ -191,7 +199,7 @@ export function fetchPresence(
       /* best-effort */
     }
 
-    const r = fetchPresenceRefs(coordRoot, { sync: opts.sync });
+    const r = fetchMachineRefs(coordRoot, { sync: opts.sync });
     if (!r.ok) return { status: "error", error: r.error ?? "fetch failed" };
     return { status: "fetched" };
   } catch (e) {
@@ -231,7 +239,7 @@ export function readRemoteMachines(
       if (prev && Date.parse(prev.published_at) >= publishedMs) return;
       byMachine.set(machine, blob);
     };
-    for (const { machine, message } of readPresenceRefs(coordRoot)) {
+    for (const { machine, message } of readMachineRefs(coordRoot, PRESENCE_REF_PREFIX)) {
       try {
         consider(machine, JSON.parse(message) as PresenceBlob);
       } catch {
