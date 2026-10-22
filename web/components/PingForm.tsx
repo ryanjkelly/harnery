@@ -1,6 +1,21 @@
 "use client";
 
 import { useState } from "react";
+import type { PingResult } from "@/lib/coord-writer";
+
+export function pingOutcomeFeedback(result: PingResult): { ok: boolean; msg: string } {
+  const child = result.child;
+  const parent = result.parent_copy;
+  if (!child) return { ok: false, msg: result.error ?? "Delivery result unavailable." };
+  if (!child.ok) return { ok: false, msg: parent && "ok" in parent && parent.ok
+    ? `Parent copy recorded; task delivery failed: ${child.message}` : child.message };
+  if (parent && "ok" in parent && !parent.ok) return { ok: false,
+    msg: `Message recorded for the task; parent copy failed: ${parent.message}` };
+  if (!result.complete) return { ok: false, msg: "The complete delivery result is unavailable." };
+  return { ok: true, msg: parent && "ok" in parent && parent.ok ? "Message recorded for the task and its parent." :
+    parent && "reason" in parent ? `Message recorded for the task; parent copy skipped: ${parent.reason}` :
+      "Message recorded for the task." };
+}
 
 export function PingForm({ instanceId }: { instanceId: string }) {
   const [message, setMessage] = useState("");
@@ -22,13 +37,10 @@ export function PingForm({ instanceId }: { instanceId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ instance_id: instanceId, message: trimmed }),
       });
-      const json = (await res.json()) as { ok: boolean; error?: string; bytes?: number };
-      if (json.ok) {
-        setFeedback({ ok: true, msg: `pinged · journal now ${json.bytes ?? "?"} bytes` });
-        setMessage("");
-      } else {
-        setFeedback({ ok: false, msg: json.error ?? "failed" });
-      }
+      const json = (await res.json()) as PingResult;
+      const outcome = pingOutcomeFeedback(json);
+      setFeedback(outcome);
+      if (json.child?.ok) setMessage("");
     } catch (err) {
       setFeedback({ ok: false, msg: (err as Error).message });
     } finally {
@@ -41,7 +53,7 @@ export function PingForm({ instanceId }: { instanceId: string }) {
       <textarea
         value={message}
         onChange={(e) => setMessage(e.target.value)}
-        placeholder="message to append to their journal (prefixed with `from web-ui:`)"
+        placeholder="Message for this exact task instance"
         rows={3}
         disabled={busy}
         className="w-full bg-background border border-border rounded p-2 text-sm font-mono disabled:opacity-50"

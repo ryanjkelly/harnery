@@ -37,7 +37,12 @@ import { join } from "node:path";
 import { resolveMachineLabel } from "../../lib/machine.ts";
 import { presenceEnabled } from "../config.ts";
 import type { HarneryInboxMessageRecordV1 } from "../inbox/contract.ts";
-import { HARNERY_INBOX_RECORD_SCHEMA, HarneryInboxCapacityError } from "../inbox/contract.ts";
+import {
+  HARNERY_INBOX_RECORD_SCHEMA,
+  HarneryInboxCapacityError,
+  HarneryInboxMessageConflictError,
+  HarneryInboxMessageHistoryMissingError,
+} from "../inbox/contract.ts";
 import type { HarneryInboxService } from "../inbox/service.ts";
 import { readCrashSafeJsonlFile, updateCrashSafeJsonlFile } from "../storage/durable-history.ts";
 import {
@@ -106,6 +111,11 @@ type MailLogRecord =
   | { schema: typeof MAIL_LOG_SCHEMA; kind: "released"; at: string; message_id: string };
 
 interface MailProjection {
+  /** Retained outbound identities, including acknowledged and expired mail. */
+  sent: Map<
+    string,
+    { envelope: HarneryMailEnvelopeV1; delivery_state: HarneryMailQueueReceipt["delivery_state"] }
+  >;
   /** Sent, neither acknowledged nor expired, oldest first. */
   outbox: Array<{ at: string; envelope: HarneryMailEnvelopeV1 }>;
   /** Imported and still acknowledged, keyed by message id. */
@@ -138,6 +148,7 @@ function stamp(now: Date): string {
 }
 
 function projectMail(records: readonly MailLogRecord[]): MailProjection {
+  const sent: MailProjection["sent"] = new Map();
   const outbound = new Map<string, { at: string; envelope: HarneryMailEnvelopeV1 }>();
   const acks = new Map<string, { at: string; from_machine: string }>();
   const imported = new Set<string>();
@@ -149,12 +160,18 @@ function projectMail(records: readonly MailLogRecord[]): MailProjection {
     switch (record.kind) {
       case "outbound":
         outbound.set(record.envelope.message_id, { at: record.at, envelope: record.envelope });
+        sent.set(record.envelope.message_id, {
+          envelope: record.envelope,
+          delivery_state: "pending",
+        });
         break;
       case "delivered":
         if (outbound.delete(record.message_id)) delivered++;
+        if (sent.has(record.message_id)) sent.get(record.message_id)!.delivery_state = "delivered";
         break;
       case "expired":
         if (outbound.delete(record.message_id)) expired++;
+        if (sent.has(record.message_id)) sent.get(record.message_id)!.delivery_state = "expired";
         break;
       case "imported":
         imported.add(record.message_id);
@@ -172,7 +189,7 @@ function projectMail(records: readonly MailLogRecord[]): MailProjection {
         break;
     }
   }
-  return { outbox: [...outbound.values()], acks, imported, senders, delivered, expired };
+  return { sent, outbox: [...outbound.values()], acks, imported, senders, delivered, expired };
 }
 
 function readMailLog(coordRoot: string): MailLogRecord[] {
@@ -195,6 +212,7 @@ function updateMailLog<R>(
 
 export interface QueueMailInput {
   messageId: string;
+  replayOnly?: boolean;
   toMachine: string;
   senderInstanceId: string | null;
   senderName: string;
@@ -205,8 +223,24 @@ export interface QueueMailInput {
   now?: Date;
 }
 
+export interface HarneryMailQueueReceipt {
+  envelope: HarneryMailEnvelopeV1;
+  state: "queued" | "duplicate";
+  delivery_state: "pending" | "delivered" | "expired";
+  synced: true;
+}
+
 /** Queue one message for another machine. The caller publishes afterwards. */
-export function queueMail(coordRoot: string, input: QueueMailInput): HarneryMailEnvelopeV1 {
+export function queueMail(coordRoot: string, input: QueueMailInput): HarneryMailQueueReceipt {
+  if (input.replayOnly !== undefined && typeof input.replayOnly !== "boolean") {
+    throw new Error("invalid replayOnly flag");
+  }
+  if (
+    typeof input.messageId !== "string" ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(input.messageId)
+  ) {
+    throw new Error("invalid message id");
+  }
   const bodyBytes = Buffer.byteLength(input.body);
   if (bodyBytes === 0 || bodyBytes > input.maxBodyBytes) {
     throw new HarneryInboxCapacityError("message_body_limit", bodyBytes, input.maxBodyBytes);
@@ -225,7 +259,34 @@ export function queueMail(coordRoot: string, input: QueueMailInput): HarneryMail
     body: input.body,
     body_bytes: bodyBytes,
   };
-  return updateMailLog(coordRoot, (projection) => {
+  return updateMailLog<HarneryMailQueueReceipt>(coordRoot, (projection) => {
+    const existing = projection.sent.get(envelope.message_id);
+    if (existing) {
+      const fields = [
+        "from_machine",
+        "to_machine",
+        "sender_instance_id",
+        "sender_display_name",
+        "recipient_instance_id",
+        "recipient_display_name",
+        "body",
+        "body_bytes",
+      ] as const;
+      if (fields.some((field) => existing.envelope[field] !== envelope[field])) {
+        throw new HarneryInboxMessageConflictError(envelope.message_id);
+      }
+      return {
+        result: {
+          envelope: existing.envelope,
+          state: "duplicate",
+          delivery_state: existing.delivery_state,
+          synced: true,
+        },
+      };
+    }
+    if (input.replayOnly) {
+      throw new HarneryInboxMessageHistoryMissingError(envelope.message_id);
+    }
     if (projection.outbox.length >= MAX_OUTBOX) {
       throw new HarneryInboxCapacityError(
         "pending_count_limit",
@@ -235,7 +296,7 @@ export function queueMail(coordRoot: string, input: QueueMailInput): HarneryMail
     }
     return {
       append: [{ schema: MAIL_LOG_SCHEMA, kind: "outbound", at: stamp(now), envelope }],
-      result: envelope,
+      result: { envelope, state: "queued", delivery_state: "pending", synced: true },
     };
   });
 }

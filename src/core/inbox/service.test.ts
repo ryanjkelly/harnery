@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HarneryInboxLimits } from "./contract.ts";
+import {
+  type HarneryInboxLimits,
+  HarneryInboxMessageConflictError,
+  HarneryInboxMessageHistoryMissingError,
+} from "./contract.ts";
 import { planInboxCompaction } from "./lifecycle.ts";
-import { type HarneryInboxSendInput, HarneryInboxService, inboxPath } from "./service.ts";
+import {
+  type HarneryInboxSendInput,
+  HarneryInboxService,
+  inboxPath,
+  stableInboxMessageId,
+} from "./service.ts";
 import { watchInbox } from "./watcher.ts";
 
 const roots: string[] = [];
@@ -13,6 +22,192 @@ afterEach(() => {
 });
 
 describe("coordination inbox", () => {
+  test("replay refuses crash-before-append and pruned history, but recovers a lost receipt", async () => {
+    const root = fixture();
+    const service = new HarneryInboxService({ coord_root: root, limits: limits() });
+    const input = {
+      ...message("frozen crash body"),
+      message_id: stableInboxMessageId("crash-operation", "recipient"),
+    };
+    // The caller's persisted attempt precedes dispatch, which may never append.
+    writeFileSync(join(root, "dispatch-started"), input.message_id);
+    const before = Bun.spawn([process.execPath, "--eval", "process.exit(17)"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await before.exited).toBe(17);
+    expect(() => service.send({ ...input, replay_only: true })).toThrow(
+      HarneryInboxMessageHistoryMissingError,
+    );
+    expect(service.records("recipient")).toEqual([]);
+    expect(() => service.send({ ...message("body"), replay_only: true })).toThrow(
+      "replay requires explicit message id",
+    );
+    expect(() => service.send({ ...input, replay_only: "true" as unknown as boolean })).toThrow(
+      "invalid replay_only flag",
+    );
+    const source = new URL("./service.ts", import.meta.url).href;
+    const code = `import { HarneryInboxService } from ${JSON.stringify(source)}; new HarneryInboxService({coord_root:${JSON.stringify(root)},limits:${JSON.stringify(limits())}}).send(${JSON.stringify(input)}); process.exit(17);`;
+    const after = Bun.spawn([process.execPath, "--eval", code], { stdout: "pipe", stderr: "pipe" });
+    expect(await after.exited).toBe(17);
+    expect(await new Response(after.stdout).text()).toBe("");
+    expect(await new Response(after.stderr).text()).toBe("");
+    const history = readFileSync(inboxPath(root, "recipient"), "utf8");
+    expect(service.send({ ...input, replay_only: true }).state).toBe("duplicate");
+    expect(readFileSync(inboxPath(root, "recipient"), "utf8")).toBe(history);
+    expect(() => service.send({ ...input, body: "changed crash body", replay_only: true })).toThrow(
+      HarneryInboxMessageConflictError,
+    );
+    writeFileSync(inboxPath(root, "recipient"), "");
+    expect(() => service.send({ ...input, replay_only: true })).toThrow(
+      HarneryInboxMessageHistoryMissingError,
+    );
+    expect(readFileSync(inboxPath(root, "recipient"), "utf8")).toBe("");
+  });
+
+  test("operation IDs are stable per recipient and reject malformed identities", () => {
+    const id = stableInboxMessageId("operation-1", "recipient");
+    expect(id).toBe("msg_op_dd262f0abc79da240e6ed58368ba5963eb6ff55a21f0546bd69b098a6951f9d4");
+    expect(stableInboxMessageId("operation-1", "recipient")).toBe(id);
+    expect(stableInboxMessageId("operation-1", "parent")).not.toBe(id);
+    expect(stableInboxMessageId("operation-2", "recipient")).not.toBe(id);
+    for (const value of ["", "../operation", "x".repeat(129), ["operation"], null]) {
+      expect(() => stableInboxMessageId(value as string, "recipient")).toThrow(
+        "invalid operation id",
+      );
+      expect(() => stableInboxMessageId("operation", value as string)).toThrow(
+        "invalid recipient instance id",
+      );
+    }
+  });
+
+  test("retries preserve the first message even at capacity and after surfacing", () => {
+    const root = fixture();
+    const service = new HarneryInboxService({
+      coord_root: root,
+      limits: limits({ max_pending_count: 1 }),
+    });
+    const input = {
+      ...message("frozen body"),
+      message_id: stableInboxMessageId("operation", "recipient"),
+    };
+    expect(service.send(input).state).toBe("queued");
+    const original = readFileSync(inboxPath(root, "recipient"), "utf8");
+    const replay = new HarneryInboxService({
+      coord_root: root,
+      limits: limits({ max_pending_count: 1 }),
+      now: () => new Date("2030-01-01T00:00:00Z"),
+    });
+    expect(replay.send(input)).toMatchObject({
+      state: "duplicate",
+      message_id: input.message_id,
+      body_bytes: 11,
+      synced: true,
+    });
+    expect(readFileSync(inboxPath(root, "recipient"), "utf8")).toBe(original);
+    service.acknowledgeSurface("recipient", [input.message_id]);
+    const surfaced = readFileSync(inboxPath(root, "recipient"), "utf8");
+    expect(replay.send(input).state).toBe("duplicate");
+    expect(replay.pending("recipient")).toEqual([]);
+    expect(readFileSync(inboxPath(root, "recipient"), "utf8")).toBe(surfaced);
+  });
+
+  test("same identity refuses changed payload or sender without modifying history", () => {
+    const root = fixture();
+    const service = new HarneryInboxService({ coord_root: root, limits: limits() });
+    const input = {
+      ...message("frozen body"),
+      message_id: stableInboxMessageId("operation", "recipient"),
+    };
+    service.send(input);
+    const original = readFileSync(inboxPath(root, "recipient"), "utf8");
+    for (const delta of [
+      { body: "changed body" },
+      { sender_instance_id: "other-sender" },
+      { sender_instance_id: null },
+      { sender_display_name: "Other" },
+      { recipient_display_name: "Other" },
+    ]) {
+      let refusal: unknown;
+      try {
+        service.send({ ...input, ...delta });
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(HarneryInboxMessageConflictError);
+      expect(refusal).toMatchObject({
+        reason_code: "message_identity_conflict",
+        message_id: input.message_id,
+      });
+      expect(String(refusal)).not.toContain("frozen body");
+      expect(readFileSync(inboxPath(root, "recipient"), "utf8")).toBe(original);
+    }
+    expect(() => service.send({ ...input, message_id: "../bad" })).toThrow("invalid message id");
+  });
+
+  test("received retries validate immutable payload and sender machine", () => {
+    const service = inbox();
+    service.send(message("source"));
+    const record = service.records("recipient")[0];
+    if (record.kind !== "message") throw new Error("expected message");
+    const incoming = { ...record, message_id: "remote-id", sender_machine: "machine-a" };
+    expect(service.receive(incoming)).toBe("received");
+    expect(service.receive({ ...incoming, created_at: "2030-01-01T00:00:00Z" })).toBe("duplicate");
+    for (const delta of [
+      { body: "change" },
+      { sender_machine: "machine-b" },
+      { sender_instance_id: "other" },
+    ]) {
+      expect(() => service.receive({ ...incoming, ...delta })).toThrow(
+        HarneryInboxMessageConflictError,
+      );
+    }
+    expect(service.pending("recipient")).toHaveLength(2);
+  });
+
+  test("ordinary sends retain fresh UUIDs and the configured byte limit", () => {
+    const service = new HarneryInboxService({
+      coord_root: fixture(),
+      limits: limits({ max_message_body_bytes: 4_000, max_pending_bytes: 10_000 }),
+    });
+    const first = service.send(message("same body"));
+    const second = service.send(message("same body"));
+    expect(first.message_id).toMatch(/^msg_[0-9a-f-]{36}$/);
+    expect(second.message_id).not.toBe(first.message_id);
+    expect(service.send(message("é".repeat(2_000))).body_bytes).toBe(4_000);
+    expect(() => service.send(message("é".repeat(2_000) + "x"))).toThrow("message_body_limit");
+  });
+
+  test("concurrent process retries append one retained message", async () => {
+    const root = fixture();
+    const source = new URL("./service.ts", import.meta.url).href;
+    const input = {
+      ...message("concurrent frozen body"),
+      message_id: stableInboxMessageId("concurrent-operation", "recipient"),
+    };
+    const code = `import { HarneryInboxService } from ${JSON.stringify(source)}; const service = new HarneryInboxService({coord_root:${JSON.stringify(root)},limits:${JSON.stringify(limits())}}); console.log(JSON.stringify(service.send(${JSON.stringify(input)})));`;
+    const children = Array.from({ length: 2 }, () =>
+      Bun.spawn([process.execPath, "--eval", code], { stdout: "pipe", stderr: "pipe" }),
+    );
+    const results = await Promise.all(
+      children.map(async (child) => ({
+        exit: await child.exited,
+        stdout: await new Response(child.stdout).text(),
+        stderr: await new Response(child.stderr).text(),
+      })),
+    );
+    expect(results.map(({ exit, stderr }) => ({ exit, stderr }))).toEqual([
+      { exit: 0, stderr: "" },
+      { exit: 0, stderr: "" },
+    ]);
+    expect(results.map(({ stdout }) => JSON.parse(stdout).state).sort()).toEqual([
+      "duplicate",
+      "queued",
+    ]);
+    const service = new HarneryInboxService({ coord_root: root, limits: limits() });
+    expect(service.records("recipient")).toHaveLength(1);
+  });
+
   test("operator null and actual agent IDs survive durable read, replay and acknowledgement", async () => {
     const root = fixture();
     const service = new HarneryInboxService({ coord_root: root, limits: limits() });

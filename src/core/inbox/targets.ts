@@ -17,6 +17,8 @@ import { knownRemoteSenders } from "../presence/mail.ts";
 export interface MessageTargetInput {
   name?: string;
   instanceId?: string;
+  /** Refuse a later generation of the same immutable instance. */
+  generationId?: string;
   requireLive?: boolean;
   now?: Date;
 }
@@ -34,7 +36,7 @@ export type MessageTargetResult =
     }
   | {
       ok: false;
-      code: "no_peer" | "ambiguous_peer" | "not_live" | "authority_unsafe";
+      code: "no_peer" | "ambiguous_peer" | "not_live" | "authority_unsafe" | "generation_mismatch";
       message: string;
       candidates?: string[];
     };
@@ -43,6 +45,7 @@ export type MessageTargetResult =
 export function resolveMessageTarget(
   coordRoot: string,
   input: MessageTargetInput,
+  options: { view?: CoordinationViewV3 } = {},
 ): MessageTargetResult {
   const requestedName = normalizeName(input.name);
   const requestedInstance = input.instanceId?.trim();
@@ -57,7 +60,9 @@ export function resolveMessageTarget(
     if (observeLiveEventLedgerRouteV3(coordRoot).state === "blocked") {
       return unsafe("The event ledger cannot establish message recipient authority.");
     }
-    view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
+    view = requireAuthoritySafeCoordinationViewV3(
+      options.view ?? readCoordinationViewV3(coordRoot),
+    );
     if (!view.source_complete) return unsafe("The event ledger read is incomplete.");
   } catch {
     return unsafe("The event ledger cannot establish message recipient authority.");
@@ -87,6 +92,7 @@ export function resolveMessageTarget(
       {
         instanceId,
         name,
+        generationId: generation.generation_id,
         safe: !diagnostics.some((diagnostic) => diagnostic.authority_blocking),
         fresh:
           generation.phase === "live" && Number.isFinite(age) && age >= 0 && age <= freshnessMs,
@@ -115,6 +121,13 @@ export function resolveMessageTarget(
     };
   }
   const target = selected[0]!;
+  if (input.generationId && input.generationId !== target.generationId) {
+    return {
+      ok: false,
+      code: "generation_mismatch",
+      message: "The recipient generation differs from the exact requested generation.",
+    };
+  }
   if (input.requireLive && !target.fresh) {
     return {
       ok: false,
@@ -146,6 +159,8 @@ export function resolveRemoteMessageTarget(
   const requestedName = normalizeName(input.name);
   const requestedInstance = input.instanceId?.trim();
   if (!requestedName && !requestedInstance) return null;
+  // Presence/mail names do not prove an exact V3 generation.
+  if (input.generationId) return null;
   const live = new Set(
     readRemoteMachines(coordRoot).flatMap(({ agents }) => agents.map((a) => a.instance_id)),
   );

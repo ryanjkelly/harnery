@@ -79,6 +79,10 @@ import {
 } from "../core/agents/state/live-coordination-view.ts";
 import { forkRelationLabels, resolveForkAncestry } from "../core/agents/state/names.ts";
 import {
+  type AgentParentReference,
+  resolveAgentParentReference,
+} from "../core/agents/state/parent-reference.ts";
+import {
   type AgentActivity,
   foldSessionState,
   type TaskState,
@@ -124,7 +128,11 @@ import {
   readRuntimeContextUsage,
 } from "../core/hooks/adapter/runtime-telemetry.ts";
 import { HarneryInboxCapacityError } from "../core/inbox/contract.ts";
-import { peerInbox, sendPeerMessage } from "../core/inbox/peer-messages.ts";
+import {
+  type PeerRecipientResult,
+  peerInbox,
+  sendPeerMessage,
+} from "../core/inbox/peer-messages.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { formatResourceSummary, readResourceStatus } from "../core/resources/status.ts";
 import { registerContextCommand } from "./context.ts";
@@ -537,13 +545,26 @@ export function registerAgentsCommand(
         "require an exact instance; receipts do not confirm attention.",
     )
     .option("--instance-id <id>", "Select the exact known recipient instance")
+    .option("--generation-id <id>", "Require the exact recipient generation")
+    .option("--operation-id <id>", "Reuse a frozen delivery operation after a caller retry")
+    .option(
+      "--operation-replay-only",
+      "Require an existing plan after an ambiguous caller dispatch",
+    )
     .option("--require-live", "Refuse a recipient outside live presence")
     .option("--json", "JSON output")
     .action(
       (
         name: string,
         message: string[],
-        opts: { json?: boolean; instanceId?: string; requireLive?: boolean },
+        opts: {
+          json?: boolean;
+          instanceId?: string;
+          generationId?: string;
+          operationId?: string;
+          operationReplayOnly?: boolean;
+          requireLive?: boolean;
+        },
       ) => {
         runPing(name, message.join(" "), opts);
       },
@@ -1755,6 +1776,7 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     tool_counts: report?.tool_counts ?? [],
     total_events: report?.total_events ?? 0,
     bq_error: bqError,
+    parent_reference: resolveAgentParentReference(root, hb),
   };
 
   if (opts.json) {
@@ -1775,6 +1797,7 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     `  session  ${formatAge(ageSecs)} old · kind=${data.kind} · session_id=${data.session_id.slice(0, 8)}…`,
   );
   lines.push(`  last heartbeat: ${formatAge(heartbeatAgeSecs)} ago`);
+  lines.push(`  parent:         ${describeParentReference(data.parent_reference)}`);
   lines.push(`  activity:       ${data.activity}`);
   lines.push(
     `  lifecycle:      ${data.task_state}${data.task_state === "blocked" && data.task_state_reason ? `: ${data.task_state_reason}` : ""}`,
@@ -2543,6 +2566,7 @@ function runStatus(opts: {
     name: displayName,
     instance_id: hb.instance_id,
     kind: normalizeKind(hb.kind),
+    parent_reference: resolveAgentParentReference(root, hb),
     session_age_secs: ageSecs,
     turn_elapsed_secs: turnElapsed ? turnElapsed.elapsed.secs : null,
     turn_complete: turnElapsed ? turnElapsed.elapsed.complete : null,
@@ -2597,6 +2621,7 @@ function runStatus(opts: {
     ["changes", turnChanges.value],
     ["activity", activityOf(hb)],
     ["lifecycle", lifecycleLabel(hb)],
+    ["parent", describeParentReference(data.parent_reference)],
     ["context", ctxStr],
     ["resources", formatResourceSummary(resources)],
     ["files", filesStr],
@@ -4879,10 +4904,42 @@ function formatDuration(ms: number): string {
   return h > 0 ? `${d}d${h}h` : `${d}d`;
 }
 
+export function describeParentReference(reference: AgentParentReference): string {
+  return reference.state === "verified"
+    ? `${reference.parent_name ?? "unnamed"} (${reference.parent_instance_id}; ${reference.source}; ${reference.addressable ? "addressable" : "not addressable"})`
+    : `${reference.state}: ${reference.reason}`;
+}
+
+export function formatPeerRecipientReceipt(recipient: PeerRecipientResult): string {
+  if (!recipient.ok) return `${recipient.code}: ${recipient.message}`;
+  const address = `agent-${recipient.target.name} (${recipient.target.instance_id})`;
+  if (recipient.delivery_state === "delivered")
+    return `Previously acknowledged by the recipient machine for ${address}; task attention is not confirmed.`;
+  if (recipient.delivery_state === "expired")
+    return `The prior remote message for ${address} expired; no new delivery is established.`;
+  if (recipient.target.machine)
+    return (
+      `Stored for ${address} on ${recipient.target.machine} as ${recipient.message_id}. ` +
+      (recipient.published
+        ? "Published to origin; recipient-machine import is not confirmed."
+        : `Publication is not confirmed${recipient.publish_error ? ` (${recipient.publish_error})` : ""}.`)
+    );
+  return recipient.state === "duplicate"
+    ? `Previously stored for ${address} as ${recipient.message_id}; current surface state is not established by this receipt.`
+    : `Stored for ${address} as ${recipient.message_id}; task attention is not confirmed.`;
+}
+
 function runPing(
   name: string,
   message: string,
-  opts: { json?: boolean; instanceId?: string; requireLive?: boolean },
+  opts: {
+    json?: boolean;
+    instanceId?: string;
+    generationId?: string;
+    operationId?: string;
+    operationReplayOnly?: boolean;
+    requireLive?: boolean;
+  },
 ): void {
   if (!message || message.trim().length === 0) {
     emit.error({ code: "empty_message", message: "message is required (and non-empty)" });
@@ -4911,10 +4968,17 @@ function runPing(
   try {
     sent = sendPeerMessage({
       coordRoot,
-      target: { name, instanceId: opts.instanceId, requireLive: opts.requireLive },
+      target: {
+        name,
+        instanceId: opts.instanceId,
+        generationId: opts.generationId,
+        requireLive: opts.requireLive,
+      },
+      operationId: opts.operationId,
+      operationReplayOnly: opts.operationReplayOnly,
       senderName: fromName,
       senderInstanceId: myOwner,
-      body: message.trim(),
+      body: message,
     });
   } catch (error) {
     if (error instanceof HarneryInboxCapacityError) {
@@ -4923,33 +4987,49 @@ function runPing(
     }
     throw error;
   }
+  if (opts.json) emit.config({ format: "json" });
+  const routing = {
+    operation_id: sent.operation_id,
+    child: sent.child,
+    parent_reference: sent.parent_reference,
+    parent_copy: sent.parent_copy,
+    complete: sent.complete,
+  };
+  // Keep both actual recipient writes visible, including parent-only success.
+  for (const recipient of [sent.child, sent.parent_copy]) {
+    if (!("ok" in recipient) || !recipient.ok) continue;
+    emitEventV3({
+      owner: myOwner,
+      session: nativeSessionIdentity(myHb, myOwner),
+      adapter: normalizeAdapter(myHb?.platform),
+      observation: {
+        event_type: "coord.message_observed",
+        direction: "sent",
+        subject: recipient.target.instance_id,
+        message_id: recipient.message_id,
+        body:
+          recipient === sent.child
+            ? message
+            : `[Parent copy for agent-${sent.child.target?.name} (${sent.child.target?.instance_id})]\n${message}`,
+      },
+    });
+  }
   if (!sent.ok) {
-    emit.error({
+    emit.data({
+      ...routing,
+      ok: false,
       code: sent.code,
       message: sent.message,
+      from: fromName,
       ...(sent.candidates ? { candidates: sent.candidates } : {}),
     });
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
-
-  // Canonical delivery record: sender is the envelope owner, recipient rides
-  // in data, so read-only observers can render the communication without
-  // joining journal files.
-  emitEventV3({
-    owner: myOwner,
-    session: nativeSessionIdentity(myHb, myOwner),
-    adapter: normalizeAdapter(myHb?.platform),
-    observation: {
-      event_type: "coord.message_observed",
-      direction: "sent",
-      subject: sent.target.instance_id,
-      message_id: sent.message_id,
-      body: message.trim(),
-    },
-  });
 
   const remote = "published" in sent ? sent : null;
   const data = {
+    ...routing,
     peer: sent.target.name,
     peer_instance_id: sent.target.instance_id,
     ...(sent.target.machine ? { peer_machine: sent.target.machine } : {}),
@@ -4961,6 +5041,7 @@ function runPing(
     ...(remote
       ? {
           published: remote.published,
+          ...(remote.delivery_state ? { delivery_state: remote.delivery_state } : {}),
           ...(remote.publish_error ? { publish_error: remote.publish_error } : {}),
         }
       : {}),
@@ -4969,23 +5050,21 @@ function runPing(
   if (opts.json) {
     emit.config({ format: "json" });
     emit.data(data);
+    if (!sent.complete) process.exitCode = 1;
     return;
   }
   emit.data(data);
-  if (remote) {
-    emit.text(
-      `queued for agent-${data.peer} on ${data.peer_machine} (${data.peer_instance_id}); ` +
-        `stored as ${data.message_id}. ` +
-        (remote.published
-          ? "Published to origin; it reaches that task after its machine next fetches.\n"
-          : `Not published yet (${remote.publish_error ?? "push skipped"}); the next hook retries.\n`),
-    );
-    return;
-  }
+  if (!sent.complete) process.exitCode = 1;
   emit.text(
-    `${data.state} for agent-${data.peer} (${data.peer_instance_id}); ` +
-      `stored as ${data.message_id}, pending until surfaced to that task.\n`,
+    `parent copy: ${
+      "ok" in sent.parent_copy
+        ? sent.parent_copy.ok
+          ? formatPeerRecipientReceipt(sent.parent_copy)
+          : `${sent.parent_copy.code}: ${sent.parent_copy.message}`
+        : `skipped (${sent.parent_copy.reason})`
+    }\n`,
   );
+  emit.text(`${formatPeerRecipientReceipt(sent.child)}\n`);
 }
 
 async function runWait(

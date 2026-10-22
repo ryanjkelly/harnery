@@ -11,7 +11,11 @@ import {
 import { repairEventV3ControlPair } from "../core/events/v3/control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../core/events/v3/fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
-import { readAgentDiagnosticEventsInWindow, traceInstanceIdsForEventSource } from "./agents.ts";
+import {
+  formatPeerRecipientReceipt,
+  readAgentDiagnosticEventsInWindow,
+  traceInstanceIdsForEventSource,
+} from "./agents.ts";
 
 const roots: string[] = [];
 
@@ -20,6 +24,34 @@ afterEach(() => {
 });
 
 describe("agents command V3 diagnostic routing", () => {
+  test("receipt text preserves duplicate and remote disposition without promising pending or retry", () => {
+    const receipt = {
+      ok: true as const,
+      target: { instance_id: "recipient", name: "Recipient", delivery: "queued" as const },
+      state: "duplicate" as const,
+      message_id: "msg_original",
+      body_bytes: 4,
+      synced: true as const,
+    };
+    const duplicate = formatPeerRecipientReceipt(receipt);
+    expect(duplicate).toContain("Previously stored");
+    expect(duplicate).toContain("surface state is not established");
+    expect(duplicate).not.toContain("pending until");
+    const remote = {
+      ...receipt,
+      target: { ...receipt.target, machine: "remote" },
+      delivery_state: "delivered" as const,
+      published: false,
+    };
+    expect(formatPeerRecipientReceipt(remote)).toContain(
+      "Previously acknowledged by the recipient machine",
+    );
+    expect(formatPeerRecipientReceipt(remote)).not.toContain("Publication is not confirmed");
+    expect(formatPeerRecipientReceipt(remote)).not.toContain("retries");
+    expect(formatPeerRecipientReceipt({ ...remote, delivery_state: "pending" })).toContain(
+      "Publication is not confirmed",
+    );
+  });
   test("name-history native IDs map to the prefixed V3 scope identity", () => {
     expect(traceInstanceIdsForEventSource(["native-session-id"], "v3")).toEqual([
       "inst_native-session-id",

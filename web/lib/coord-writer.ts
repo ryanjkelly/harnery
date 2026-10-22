@@ -344,17 +344,24 @@ export async function releaseClaim(
 
 export interface PingResult {
   ok: boolean;
+  complete?: boolean;
   target_instance: string;
   bytes: number;
   error?: string;
-  state?: "written-live" | "queued" | "remote";
+  state?: "written-live" | "queued" | "remote" | "duplicate";
   message_id?: string;
+  operation_id?: string;
+  child?: ReturnType<typeof sendPeerMessage>["child"];
+  parent_reference?: ReturnType<typeof sendPeerMessage>["parent_reference"];
+  parent_copy?: ReturnType<typeof sendPeerMessage>["parent_copy"];
+  partial_reason?: string;
 }
 
 export function pingAgent(targetInstanceId: string, message: string): PingResult {
   if (!safeOwnerId(targetInstanceId)) {
     return {
       ok: false,
+      complete: false,
       target_instance: targetInstanceId,
       bytes: 0,
       error: "invalid instance_id",
@@ -363,7 +370,7 @@ export function pingAgent(targetInstanceId: string, message: string): PingResult
   ensureCoordRootEnv();
   const trimmed = message.trim();
   if (!trimmed) {
-    return { ok: false, target_instance: targetInstanceId, bytes: 0, error: "empty message" };
+    return { ok: false, complete: false, target_instance: targetInstanceId, bytes: 0, error: "empty message" };
   }
   try {
     const sent = sendPeerMessage({
@@ -371,13 +378,17 @@ export function pingAgent(targetInstanceId: string, message: string): PingResult
       target: { instanceId: resolveOperatorMutationOwner(targetInstanceId, coordRoot()) },
       senderInstanceId: null,
       senderName: "Operator",
-      body: trimmed,
+      body: message,
     });
-    if (!sent.ok) return { ok: false, target_instance: targetInstanceId, bytes: 0, error: sent.message };
-    return { ok: true, target_instance: sent.target.instance_id, bytes: sent.body_bytes, state: sent.state, message_id: sent.message_id };
+    const routing = { complete: sent.complete, operation_id: sent.operation_id, child: sent.child,
+      parent_reference: sent.parent_reference, parent_copy: sent.parent_copy,
+      ...("ok" in sent.parent_copy && !sent.parent_copy.ok ? { partial_reason: sent.parent_copy.message } : {}) };
+    if (!sent.ok) return { ...routing, ok: false, target_instance: targetInstanceId, bytes: 0, error: sent.message };
+    return { ...routing, ok: true, target_instance: sent.target.instance_id, bytes: sent.body_bytes, state: sent.state, message_id: sent.message_id };
   } catch (err) {
     return {
       ok: false,
+      complete: false,
       target_instance: targetInstanceId,
       bytes: 0,
       error: (err as Error).message,

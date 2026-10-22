@@ -27,6 +27,17 @@ export interface V3HeartbeatMaterialization extends Heartbeat {
   v3_task_state: "set" | "cleared";
 }
 
+/** Index exact generations; a current replacement never erases its terminal predecessor. */
+export function indexCoordinationGenerationsV3(
+  view: CoordinationViewV3,
+): ReadonlyMap<string, CoordinationGenerationViewV3> {
+  return new Map(
+    [...Object.values(view.terminal_generations), ...Object.values(view.instances)].map(
+      (generation) => [generation.generation_id, generation],
+    ),
+  );
+}
+
 /** Read the live coordination rows through the hard-cut ledger route. */
 export function readLiveCoordinationRows(coordRoot: string): V3HeartbeatMaterialization[] {
   const route = observeLiveEventLedgerRouteV3(coordRoot);
@@ -38,9 +49,7 @@ export function readLiveCoordinationRows(coordRoot: string): V3HeartbeatMaterial
     return [];
   }
   const caches = readV3Caches(coordRoot);
-  const byGeneration = new Map(
-    Object.values(view.instances).map((generation) => [generation.generation_id, generation]),
-  );
+  const byGeneration = indexCoordinationGenerationsV3(view);
   return Object.values(view.instances)
     .filter((generation) => generation.authority_eligible)
     .map((generation) => {
@@ -70,9 +79,7 @@ export function readLiveCoordinationRow(
     if (!generation?.authority_eligible) return null;
     const cache = readHeartbeat(coordRoot, nativeInstanceId);
     const parent = generation.parent_generation_id
-      ? Object.values(view.instances).find(
-          (candidate) => candidate.generation_id === generation.parent_generation_id,
-        )
+      ? indexCoordinationGenerationsV3(view).get(generation.parent_generation_id)
       : undefined;
     return projectHeartbeatV3(
       coordRoot,

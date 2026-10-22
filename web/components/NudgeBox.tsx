@@ -1,24 +1,22 @@
 "use client";
 
 import { useState } from "react";
+import type { PingResult } from "@/lib/coord-writer";
+import { pingOutcomeFeedback } from "@/components/PingForm";
 
 import { useHostInfo } from "@/components/HostInfoProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
- * Operator nudge: appends a `handoff`-category entry to an agent's
- * journal. The receiving agent reads its journal at session start
- * and on `harn journal read`, so a nudge surfaces in the next turn's recovery
- * cue or whenever the agent checks in. Mirrors the upstream app's NudgeBox; reuses
- * the existing /api/actions/ping route which goes through harnery's
- * appendEntry into .harnery/journal/<owner>.md.
+ * Operator nudge through the ordinary exact-instance peer inbox route.
+ * A recorded result does not establish that the task noticed the message.
  */
 export function NudgeBox({ instanceId, agentName }: { instanceId: string; agentName: string }) {
   const { binName } = useHostInfo();
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<
-    { kind: "idle" } | { kind: "ok" } | { kind: "error"; reason: string }
+    { kind: "idle" } | { kind: "ok"; reason: string } | { kind: "error"; reason: string }
   >({ kind: "idle" });
 
   const presets = [
@@ -57,8 +55,10 @@ export function NudgeBox({ instanceId, agentName }: { instanceId: string; agentN
         });
         return;
       }
-      setStatus({ kind: "ok" });
-      setMessage("");
+      const data = await res.json() as PingResult;
+      const outcome = pingOutcomeFeedback(data);
+      setStatus({ kind: outcome.ok ? "ok" : "error", reason: outcome.msg });
+      if (data.child?.ok) setMessage("");
     } catch (err) {
       setStatus({
         kind: "error",
@@ -76,8 +76,8 @@ export function NudgeBox({ instanceId, agentName }: { instanceId: string; agentN
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">
-          Appends a <code>handoff</code> entry to {agentName}&apos;s journal. Visible to the agent
-          on next <code>{`${binName} journal read`}</code> or SessionStart recovery cue.
+          Queues a message for this exact task and copies its verified direct parent when safely addressable.
+          A delivery receipt does not confirm attention. Agents can reply with <code>{`${binName} agents ping`}</code>.
         </p>
 
         <div className="flex flex-wrap gap-2">
@@ -118,7 +118,7 @@ export function NudgeBox({ instanceId, agentName }: { instanceId: string; agentN
         </div>
 
         {status.kind === "ok" && (
-          <p className="text-xs text-emerald-600 dark:text-emerald-400">✓ nudge sent.</p>
+          <p className="text-xs text-emerald-600 dark:text-emerald-400">{status.reason}</p>
         )}
         {status.kind === "error" && (
           <p className="text-xs text-rose-600 dark:text-rose-400 font-mono">✗ {status.reason}</p>

@@ -6,7 +6,7 @@ import * as React from "react";
 import * as writer from "@/lib/coord-writer";
 import * as servers from "@/lib/servers";
 import { __resetCoordRootCache } from "@/lib/coord-reader";
-import { PingForm } from "@/components/PingForm";
+import { PingForm, pingOutcomeFeedback } from "@/components/PingForm";
 import { POST as ping } from "./ping/route";
 import { POST as endSession } from "./end-session/route";
 import { POST as releaseClaim } from "./release-claim/route";
@@ -40,6 +40,25 @@ function request(action: string, body: Record<string, unknown>): Request {
 }
 
 describe("dashboard command retries", () => {
+  test("ping feedback keeps per-recipient partial failure and unknown parent reasons visible", () => {
+    const child = { ok: true as const, target: { instance_id: "child", name: "Child", delivery: "queued" as const },
+      state: "queued" as const, message_id: "msg_child", body_bytes: 5, synced: true as const };
+    const base = { ok: true, target_instance: "child", bytes: 5, child };
+    expect(pingOutcomeFeedback({ ...base, complete: false,
+      parent_copy: { ok: false, code: "full", message: "parent inbox full" } }))
+      .toEqual({ ok: false, msg: "Message recorded for the task; parent copy failed: parent inbox full" });
+    expect(pingOutcomeFeedback({ ...base, ok: false, complete: false,
+      child: { ok: false, code: "full", message: "child inbox full" }, parent_copy: child }))
+      .toEqual({ ok: false, msg: "Parent copy recorded; task delivery failed: child inbox full" });
+    expect(pingOutcomeFeedback({ ...base, complete: true,
+      parent_copy: { state: "skipped", reason: "parent evidence unavailable" } }))
+      .toEqual({ ok: true, msg: "Message recorded for the task; parent copy skipped: parent evidence unavailable" });
+    expect(pingOutcomeFeedback({ ...base, complete: true,
+      child: { ...child, state: "duplicate", delivery_state: "delivered" }, parent_copy: { state: "skipped", reason: "none" } }).msg)
+      .not.toContain("queued");
+    expect(pingOutcomeFeedback({ ok: false, complete: false, target_instance: "child", bytes: 0, error: "delivery failed" }))
+      .toEqual({ ok: false, msg: "delivery failed" });
+  });
   // Pristine c0625d0a: expected one delivery call, received two after the response was lost.
   test.todo("a retried ping delivers only once after its response is lost", async () => {
     const deliver = spyOn(writer, "pingAgent").mockReturnValue({

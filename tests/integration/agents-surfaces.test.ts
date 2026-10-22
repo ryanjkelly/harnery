@@ -300,7 +300,13 @@ describe("codex-wsl bridge ping attribution", () => {
 
   test("an unknown ping target exits with no_peer before creating an inbox", () => {
     const root = makeSandbox();
-    const result = harn(root, ["agents", "ping", "NeverAssignedTask", "must not deliver", "--json"]);
+    const result = harn(root, [
+      "agents",
+      "ping",
+      "NeverAssignedTask",
+      "must not deliver",
+      "--json",
+    ]);
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain("no_peer");
     expect(existsSync(path.join(root, ".harnery", "inbox"))).toBe(false);
@@ -329,11 +335,15 @@ describe("codex-wsl bridge ping attribution", () => {
     ]);
     expect(existsSync(path.join(root, ".harnery", "journal", `${TARGET}.md`))).toBe(false);
     const ledger = readLedgerV3(root);
-    const observation = ledger.events.find(({ event }) =>
-      event.event_type === "coord.message_observed" && event.payload.message_id === delivered.message_id,
+    const observation = ledger.events.find(
+      ({ event }) =>
+        event.event_type === "coord.message_observed" &&
+        event.payload.message_id === delivered.message_id,
     );
     expect(observation?.event.payload).toMatchObject({
-      message_id: delivered.message_id, direction: "sent", body_length: Buffer.byteLength("bridge verdict"),
+      message_id: delivered.message_id,
+      direction: "sent",
+      body_length: Buffer.byteLength("bridge verdict"),
       body_fingerprint: expect.any(Object),
     });
     expect(JSON.stringify(ledger.events)).not.toContain("bridge verdict");
@@ -455,5 +465,78 @@ describe("codex-wsl bridge ping attribution", () => {
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain("event_v3_control_unavailable");
     expect(`${result.stdout}\n${result.stderr}`).not.toContain("no_pidmap_entry");
+  });
+
+  test("CLI operation replay preserves one child message and exposes unknown parent evidence", () => {
+    const root = makeSandbox();
+    addTarget(root);
+    const args = [
+      "agents",
+      "ping",
+      "Target",
+      "same exact intent",
+      "--operation-id",
+      "cli-frozen-operation",
+      "--json",
+    ];
+    const first = harn(root, args);
+    const second = harn(root, args);
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    const data = JSON.parse(first.stdout);
+    expect(data).toMatchObject({
+      operation_id: "cli-frozen-operation",
+      complete: true,
+      child: { ok: true, target: { instance_id: TARGET } },
+      parent_reference: { state: "unknown" },
+      parent_copy: { state: "skipped" },
+    });
+    expect(JSON.parse(second.stdout).child.message_id).toBe(data.child.message_id);
+    expect(peerInbox(root).pending(TARGET)).toHaveLength(1);
+    const conflict = harn(root, [
+      "agents",
+      "ping",
+      "Target",
+      "changed intent",
+      "--operation-id",
+      "cli-frozen-operation",
+      "--json",
+    ]);
+    expect(conflict.status).toBe(1);
+    expect(JSON.parse(conflict.stdout)).toMatchObject({
+      ok: false,
+      code: "operation_conflict",
+      complete: false,
+    });
+  });
+
+  test("CLI refuses a different exact generation and prints parent truth in show/status", () => {
+    const root = makeSandbox();
+    addTarget(root);
+    const refused = harn(root, [
+      "agents",
+      "ping",
+      "Target",
+      "must not deliver",
+      "--generation-id",
+      "gen_not-current",
+      "--json",
+    ]);
+    expect(refused.status).toBe(1);
+    expect(JSON.parse(refused.stdout)).toMatchObject({
+      code: "generation_mismatch",
+      complete: false,
+    });
+    expect(peerInbox(root).pending(TARGET)).toHaveLength(0);
+    for (const args of [
+      ["agents", "show", "Target", "--json"],
+      ["agents", "status", "--json"],
+    ]) {
+      const result = harn(root, args);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        parent_reference: { state: "unknown", reason: expect.any(String) },
+      });
+    }
   });
 });

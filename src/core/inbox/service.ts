@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -12,6 +12,8 @@ import {
   HARNERY_INBOX_STATUS_SCHEMA,
   HarneryInboxCapacityError,
   type HarneryInboxLimits,
+  HarneryInboxMessageConflictError,
+  HarneryInboxMessageHistoryMissingError,
   type HarneryInboxMessageRecordV1,
   type HarneryInboxRecordV1,
   type HarneryInboxStatusV1,
@@ -27,6 +29,8 @@ export interface HarneryInboxServiceOptions {
 }
 
 export interface HarneryInboxSendInput {
+  message_id?: string;
+  replay_only?: boolean;
   sender_instance_id: string | null;
   sender_display_name: string;
   recipient_instance_id: string;
@@ -35,10 +39,20 @@ export interface HarneryInboxSendInput {
 }
 
 export interface HarneryInboxSendReceipt {
-  state: "queued";
+  state: "queued" | "duplicate";
   message_id: string;
   body_bytes: number;
   synced: true;
+}
+
+/** A caller freezes the operation and recipient before its first attempt. */
+export function stableInboxMessageId(operationId: string, recipientInstanceId: string): string {
+  const identity = JSON.stringify([
+    "harnery.inbox-operation/v1",
+    opaqueId(operationId, "operation"),
+    opaqueId(recipientInstanceId, "recipient instance"),
+  ]);
+  return `msg_op_${createHash("sha256").update(identity).digest("hex")}`;
 }
 
 export class HarneryInboxService {
@@ -50,6 +64,12 @@ export class HarneryInboxService {
   }
 
   send(input: HarneryInboxSendInput): HarneryInboxSendReceipt {
+    if (input.replay_only !== undefined && typeof input.replay_only !== "boolean") {
+      throw new Error("invalid replay_only flag");
+    }
+    if (input.replay_only && input.message_id === undefined) {
+      throw new Error("replay requires explicit message id");
+    }
     const recipient = opaqueId(input.recipient_instance_id, "recipient instance");
     const bodyBytes = Buffer.byteLength(input.body);
     const limits = this.#options.limits;
@@ -63,7 +83,10 @@ export class HarneryInboxService {
     const record: HarneryInboxMessageRecordV1 = {
       schema: HARNERY_INBOX_RECORD_SCHEMA,
       kind: "message",
-      message_id: `msg_${this.#options.id?.() ?? randomUUID()}`,
+      message_id:
+        input.message_id === undefined
+          ? `msg_${this.#options.id?.() ?? randomUUID()}`
+          : opaqueId(input.message_id, "message"),
       sender_instance_id: senderId(input.sender_instance_id),
       sender_display_name: boundedDisplay(input.sender_display_name),
       recipient_instance_id: recipient,
@@ -78,6 +101,24 @@ export class HarneryInboxService {
       readOptions(limits),
       (records) => {
         const projection = project(records);
+        const existing = records.find(
+          (item): item is HarneryInboxMessageRecordV1 =>
+            item.kind === "message" && item.message_id === record.message_id,
+        );
+        if (existing) {
+          assertSameMessage(existing, record);
+          return {
+            result: {
+              state: "duplicate",
+              message_id: existing.message_id,
+              body_bytes: existing.body_bytes,
+              synced: true,
+            },
+          };
+        }
+        if (input.replay_only) {
+          throw new HarneryInboxMessageHistoryMissingError(record.message_id);
+        }
         capacityCheck(projection, record, path, limits);
         return {
           append: [record],
@@ -123,10 +164,16 @@ export class HarneryInboxService {
       path,
       readOptions(limits),
       (records) => {
-        if (records.some((r) => r.kind === "message" && r.message_id === incoming.message_id)) {
+        const projection = project(records);
+        const existing = records.find(
+          (item): item is HarneryInboxMessageRecordV1 =>
+            item.kind === "message" && item.message_id === incoming.message_id,
+        );
+        if (existing) {
+          assertSameMessage(existing, incoming);
           return { result: "duplicate" };
         }
-        capacityCheck(project(records), incoming, path, limits);
+        capacityCheck(projection, incoming, path, limits);
         return { append: [incoming], result: "received" };
       },
     );
@@ -239,6 +286,24 @@ export class HarneryInboxService {
         },
       );
     }
+  }
+}
+
+function assertSameMessage(
+  existing: HarneryInboxMessageRecordV1,
+  incoming: HarneryInboxMessageRecordV1,
+): void {
+  const fields = [
+    "sender_instance_id",
+    "sender_display_name",
+    "sender_machine",
+    "recipient_instance_id",
+    "recipient_display_name",
+    "body",
+    "body_bytes",
+  ] as const;
+  if (fields.some((field) => existing[field] !== incoming[field])) {
+    throw new HarneryInboxMessageConflictError(incoming.message_id);
   }
 }
 

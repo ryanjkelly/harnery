@@ -70,6 +70,22 @@ export class HarneryInboxCapacityError extends Error {
   }
 }
 
+export class HarneryInboxMessageConflictError extends Error {
+  readonly reason_code = "message_identity_conflict";
+
+  constructor(readonly message_id: string) {
+    super(`inbox message identity conflict: ${message_id}`);
+  }
+}
+
+export class HarneryInboxMessageHistoryMissingError extends Error {
+  readonly reason_code = "message_history_unknown";
+
+  constructor(readonly message_id: string) {
+    super(`inbox message history unknown: ${message_id}`);
+  }
+}
+
 export interface HarneryInboxSurfaceBudget {
   max_count: number;
   max_bytes: number;

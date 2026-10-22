@@ -15,6 +15,7 @@ import { readLiveCoordinationRows } from "../agents/state/live-coordination-view
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
 import { EVENT_V3_GENESIS_MANIFEST } from "../events/v3/control.ts";
+import { readCoordinationViewV3 } from "../events/v3/coordination-view.ts";
 import { resolveLiveEventLedgerRouteV3 } from "../events/v3/live-routing.ts";
 import {
   readHookProducerStateV3,
@@ -93,6 +94,26 @@ function endSession(root: string, instanceId: string) {
 }
 
 describe("durable message targets", () => {
+  test("an exact generation expectation cannot select a later instance generation", () => {
+    const root = fixture();
+    session(root, "generation-bound", "Maya");
+    const view = readCoordinationViewV3(root);
+    const generation = view.instances["inst_generation-bound"]!.generation_id;
+    expect(
+      resolveMessageTarget(
+        root,
+        { instanceId: "generation-bound", generationId: generation, now: later },
+        { view },
+      ),
+    ).toMatchObject({ ok: true, target: { instance_id: "generation-bound" } });
+    expect(
+      resolveMessageTarget(
+        root,
+        { instanceId: "generation-bound", generationId: "gen_other", now: later },
+        { view },
+      ),
+    ).toMatchObject({ ok: false, code: "generation_mismatch" });
+  });
   test("a thirty-minute-stale active generation queues without changing presence", () => {
     const root = fixture();
     session(root, "stale-active", "Maya");

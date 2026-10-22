@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
+import {
+  HarneryInboxMessageConflictError,
+  HarneryInboxMessageHistoryMissingError,
+} from "../inbox/contract.ts";
 import { formatPeerInbox, peerInbox, sendPeerMessage } from "../inbox/peer-messages.ts";
+import { stableInboxMessageId } from "../inbox/service.ts";
 import { MAIL_REF_PREFIX, PRESENCE_REF_PREFIX, writePresenceCommit } from "./git.ts";
 import { fetchPresence } from "./index.ts";
 import { importMail, MAIL_TTL_MS, mailStatus, publishMail, queueMail } from "./mail.ts";
@@ -84,10 +89,12 @@ function seedRemotePresence(
   git(root, "update-ref", `${PRESENCE_REF_PREFIX}${machine}`, sha!);
 }
 
-function queueAtoB(body = "your pages shipped"): string {
-  on("machine-a");
-  return queueMail(cloneA, {
-    messageId: `msg_${Math.random().toString(16).slice(2)}`,
+function mailInput(
+  body = "your pages shipped",
+  messageId = `msg_${Math.random().toString(16).slice(2)}`,
+) {
+  return {
+    messageId,
     toMachine: "machine-b",
     senderInstanceId: "sender-a",
     senderName: "Klara",
@@ -95,10 +102,133 @@ function queueAtoB(body = "your pages shipped"): string {
     recipientName: "Dexter",
     body,
     maxBodyBytes: 4_000,
-  }).message_id;
+  };
+}
+
+function queueAtoB(body = "your pages shipped"): string {
+  on("machine-a");
+  return queueMail(cloneA, mailInput(body)).envelope.message_id;
 }
 
 describe("cross-machine mail", () => {
+  test("replay refuses absent or pruned mail and recovers append before a lost receipt", async () => {
+    on("machine-a");
+    const input = mailInput("frozen crash body", "msg_crash");
+    expect(() => queueMail(cloneA, { ...input, replayOnly: true })).toThrow(
+      HarneryInboxMessageHistoryMissingError,
+    );
+    expect(mailStatus(cloneA).outbox).toEqual([]);
+    expect(() =>
+      queueMail(cloneA, { ...input, messageId: undefined as unknown as string, replayOnly: true }),
+    ).toThrow("invalid message id");
+    expect(() => queueMail(cloneA, { ...input, replayOnly: "true" as unknown as boolean })).toThrow(
+      "invalid replayOnly flag",
+    );
+    const source = new URL("./mail.ts", import.meta.url).href;
+    const code = `import { queueMail } from ${JSON.stringify(source)}; queueMail(${JSON.stringify(cloneA)},${JSON.stringify(input)}); process.exit(17);`;
+    const child = Bun.spawn([process.execPath, "--eval", code], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, HARNERY_MACHINE: "machine-a" },
+    });
+    expect(await child.exited).toBe(17);
+    expect(await new Response(child.stdout).text()).toBe("");
+    expect(await new Response(child.stderr).text()).toBe("");
+    const path = join(cloneA, ".harnery", "mail", "log.jsonl");
+    const original = readFileSync(path, "utf8");
+    expect(queueMail(cloneA, { ...input, replayOnly: true })).toMatchObject({
+      state: "duplicate",
+      delivery_state: "pending",
+    });
+    expect(readFileSync(path, "utf8")).toBe(original);
+    expect(() =>
+      queueMail(cloneA, { ...input, body: "changed crash body", replayOnly: true }),
+    ).toThrow(HarneryInboxMessageConflictError);
+    writeFileSync(path, "");
+    expect(() => queueMail(cloneA, { ...input, replayOnly: true })).toThrow(
+      HarneryInboxMessageHistoryMissingError,
+    );
+    expect(readFileSync(path, "utf8")).toBe("");
+  });
+
+  test("same outbound identity returns its original pending receipt without append", () => {
+    on("machine-a");
+    const input = mailInput("frozen body", stableInboxMessageId("operation", "recipient-b"));
+    const queued = queueMail(cloneA, input);
+    expect(queued).toMatchObject({ state: "queued", delivery_state: "pending", synced: true });
+    const path = join(cloneA, ".harnery", "mail", "log.jsonl");
+    const original = readFileSync(path, "utf8");
+    const retry = queueMail(cloneA, { ...input, now: new Date("2030-01-01T00:00:00Z") });
+    expect(retry).toEqual({ ...queued, state: "duplicate" });
+    expect(readFileSync(path, "utf8")).toBe(original);
+    expect(mailStatus(cloneA).outbox).toHaveLength(1);
+  });
+
+  test("same outbound identity refuses changed sender, recipient, body or route", () => {
+    on("machine-a");
+    const input = mailInput("frozen body", "msg_frozen");
+    queueMail(cloneA, input);
+    const path = join(cloneA, ".harnery", "mail", "log.jsonl");
+    const original = readFileSync(path, "utf8");
+    for (const delta of [
+      { body: "different" },
+      { senderInstanceId: "other" },
+      { senderName: "Other" },
+      { recipientInstanceId: "other" },
+      { recipientName: "Other" },
+      { toMachine: "machine-c" },
+    ]) {
+      expect(() => queueMail(cloneA, { ...input, ...delta })).toThrow(
+        HarneryInboxMessageConflictError,
+      );
+      expect(readFileSync(path, "utf8")).toBe(original);
+    }
+    on("machine-b");
+    expect(() => queueMail(cloneA, input)).toThrow(HarneryInboxMessageConflictError);
+    expect(readFileSync(path, "utf8")).toBe(original);
+  });
+
+  test("concurrent queues never append the same identity twice", async () => {
+    on("machine-a");
+    const input = mailInput("concurrent frozen body", "msg_concurrent");
+    const source = new URL("./mail.ts", import.meta.url).href;
+    const code = `import { queueMail } from ${JSON.stringify(source)}; try { console.log(JSON.stringify(queueMail(${JSON.stringify(cloneA)},${JSON.stringify(input)}))); } catch (error) { if (!(error instanceof Error) || !error.message.startsWith('durable history lease busy:')) throw error; console.log(JSON.stringify({state:'lease_busy'})); }`;
+    const children = Array.from({ length: 2 }, () =>
+      Bun.spawn([process.execPath, "--eval", code], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, HARNERY_MACHINE: "machine-a" },
+      }),
+    );
+    const results = await Promise.all(
+      children.map(async (child) => ({
+        exit: await child.exited,
+        stdout: await new Response(child.stdout).text(),
+        stderr: await new Response(child.stderr).text(),
+      })),
+    );
+    expect(results.map(({ exit, stderr }) => ({ exit, stderr }))).toEqual([
+      { exit: 0, stderr: "" },
+      { exit: 0, stderr: "" },
+    ]);
+    const states = results.map(({ stdout }) => JSON.parse(stdout).state);
+    for (const { stdout } of results) {
+      const receipt = JSON.parse(stdout);
+      if (receipt.envelope) expect(receipt.envelope.from_machine).toBe("machine-a");
+    }
+    expect(states.filter((state) => state === "queued")).toHaveLength(1);
+    expect(states.every((state) => ["queued", "duplicate", "lease_busy"].includes(state))).toBe(
+      true,
+    );
+    const log = readFileSync(join(cloneA, ".harnery", "mail", "log.jsonl"), "utf8");
+    expect(log.trim().split("\n")).toHaveLength(1);
+    expect(queueMail(cloneA, input)).toMatchObject({
+      state: "duplicate",
+      delivery_state: "pending",
+    });
+    expect(readFileSync(join(cloneA, ".harnery", "mail", "log.jsonl"), "utf8")).toBe(log);
+  });
+
   test("a message reaches the other machine's inbox once, then both sides prune", () => {
     const id = queueAtoB();
     expect(publishMail(cloneA, { sync: true }).status).toBe("published");
@@ -118,6 +248,13 @@ describe("cross-machine mail", () => {
     sync(cloneA);
     expect(importMail(cloneA, peerInbox(cloneA), { publish: false }).delivered).toBe(1);
     expect(mailStatus(cloneA)).toMatchObject({ outbox: [], delivered: 1 });
+    const deliveredLog = readFileSync(join(cloneA, ".harnery", "mail", "log.jsonl"), "utf8");
+    expect(queueMail(cloneA, mailInput("your pages shipped", id))).toMatchObject({
+      state: "duplicate",
+      delivery_state: "delivered",
+    });
+    expect(readFileSync(join(cloneA, ".harnery", "mail", "log.jsonl"), "utf8")).toBe(deliveredLog);
+    expect(mailStatus(cloneA).outbox).toEqual([]);
     expect(publishMail(cloneA, { sync: true }).status).toBe("published");
 
     on("machine-b");
@@ -178,11 +315,18 @@ describe("cross-machine mail", () => {
   });
 
   test("an unacknowledged message expires after the TTL", () => {
-    queueAtoB();
+    const id = queueAtoB();
     on("machine-a");
     const later = new Date(Date.now() + MAIL_TTL_MS + 60_000);
     publishMail(cloneA, { sync: true, now: later });
     expect(mailStatus(cloneA)).toMatchObject({ outbox: [], expired: 1 });
+    const expiredLog = readFileSync(join(cloneA, ".harnery", "mail", "log.jsonl"), "utf8");
+    expect(queueMail(cloneA, mailInput("your pages shipped", id))).toMatchObject({
+      state: "duplicate",
+      delivery_state: "expired",
+    });
+    expect(readFileSync(join(cloneA, ".harnery", "mail", "log.jsonl"), "utf8")).toBe(expiredLog);
+    expect(mailStatus(cloneA).outbox).toEqual([]);
   });
 
   test("ping resolves a name from another machine's presence and queues it there", () => {

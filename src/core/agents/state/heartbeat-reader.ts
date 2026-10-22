@@ -2,6 +2,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
+import type { AgentParentReference } from "./parent-reference.ts";
 import type { AgentActivity, TaskState } from "./session-state.ts";
 
 export interface Heartbeat {
@@ -50,6 +51,8 @@ export interface Heartbeat {
   last_status_at?: string;
   current_turn_id?: string;
   parent_instance_id?: string;
+  /** Read-only display/recipient evidence; never a claim or lifecycle authority input. */
+  parent_reference?: AgentParentReference;
   workflow_run_id?: string;
   workflow_agent_id?: string;
   /** Disposable-cache bindings that prove a row belongs to the current V3 generation. */

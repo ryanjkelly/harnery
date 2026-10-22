@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as inbox from "harnery/core/inbox";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +17,29 @@ import { recordLiveHookSignalV3, resolveLiveEventLedgerRouteV3 } from "../../src
 import { peerInbox } from "../../src/core/inbox/peer-messages";
 
 describe("web coordination writer instance IDs", () => {
+  test("web preserves child success and explicit parent failure instead of whole success", () => {
+    const previousRoot = process.env.HARNERY_COORD_ROOT;
+    const root = mkdtempSync(path.join(tmpdir(), "harnery-web-partial-"));
+    const parent = { ok: false as const, code: "inbox_pending_count_limit", message: "parent inbox full" };
+    const child = { ok: true as const, target: { instance_id: "child", name: "Child", delivery: "queued" as const },
+      state: "queued" as const, message_id: "msg_child", body_bytes: 5, synced: true as const };
+    const deliver = spyOn(inbox, "sendPeerMessage").mockReturnValue({ ...child, child, complete: false,
+      operation_id: "web-operation", parent_reference: { state: "unknown", reason: "fixture" }, parent_copy: parent });
+    try {
+      process.env.HARNERY_COORD_ROOT = root; __resetCoordRootCache();
+      expect(pingAgent("child", "hello")).toMatchObject({ ok: true, complete: false, child,
+        parent_copy: parent, partial_reason: "parent inbox full", operation_id: "web-operation" });
+      const failedChild = { ok: false as const, code: "recipient_delivery_failed", message: "child inbox unavailable" };
+      deliver.mockReturnValue({ ...failedChild, child: failedChild, complete: false,
+        operation_id: "web-operation-2", parent_reference: { state: "unknown", reason: "fixture" }, parent_copy: child });
+      expect(pingAgent("child", "hello")).toMatchObject({ ok: false, complete: false,
+        child: failedChild, parent_copy: child, error: "child inbox unavailable" });
+    } finally {
+      deliver.mockRestore();
+      if (previousRoot === undefined) delete process.env.HARNERY_COORD_ROOT; else process.env.HARNERY_COORD_ROOT = previousRoot;
+      __resetCoordRootCache(); rmSync(root, { recursive: true, force: true });
+    }
+  });
   test("web pings use the same bound instance inbox and never append a peer journal", () => {
     const root = mkdtempSync(path.join(tmpdir(), "harnery-web-inbox-"));
     const previousRoot = process.env.HARNERY_COORD_ROOT;

@@ -1,0 +1,83 @@
+---
+title: "ADR 0223: Exact direct-parent message copies"
+description: Preserve exact task identity and truthful delivery results when a peer message also informs a child task's direct parent.
+sidebar:
+  order: 223
+---
+
+**Date:** 2026-10-22
+**Status:** Accepted
+
+## Context
+
+A message addressed to a child task can concern work coordinated by its parent.
+The parent needs the same notice, but a reused display name cannot establish
+which task should receive it. Native adapter metadata can preserve a parent
+relationship that the current coordination generation does not record. That
+relationship is evidence for display and messaging, not authority over claims
+or task lifecycle.
+
+A second problem appears when a caller loses its delivery receipt. Repeating
+the message with a new identifier can notify either recipient twice. Resolving
+the parent again can also select a different task after a generation changes.
+
+## Alternatives considered
+
+- Let each caller send a separate parent message. This gives callers different
+  identity rules and leaves partial delivery difficult to recover.
+- Follow parent names or copy every ancestor. A name can be reused, and recursive
+  copies widen the audience beyond the task's direct coordinator.
+- Treat a missing message identifier as proof that no append occurred. History
+  can be unavailable or pruned after a successful append.
+- Truncate the parent copy or increase the message limit. Either changes the
+  original message or expands the established inbox bounds.
+
+## Decision
+
+`resolveAgentParentReference` reports a verified relationship and its source,
+an explicit absence, uncertainty, or conflict. Canonical links and bounded
+native session metadata must agree when both provide positive evidence. A
+verified relationship is addressable only when its exact parent generation is
+the safe recipient generation. Native evidence never changes claim or lifecycle
+authority. `agents show` and `agents status` inspect the selected task only;
+listing peers does not scan every native transcript.
+
+`sendPeerMessage` first resolves the original recipient, then freezes one
+operation plan before writing a message. The plan retains the sender, original
+body, exact child and parent identities and generations, and relationship
+evidence. It attempts the child first and then at most one marked direct-parent
+copy. A child append failure does not prevent a safe parent attempt. Failed
+original addressing prevents parent discovery and delivery.
+If the child later loses safe addressing, the operation suppresses a new parent
+append too. Replay preserves any parent receipt already recorded.
+
+The marker and unchanged body must fit the existing 4000-byte limit. Overflow
+refuses the parent copy explicitly while preserving the child's actual result.
+Unknown, conflicting, or unaddressable parent evidence produces a stated skip.
+Ended parents follow the ordinary queue and `--require-live` rules.
+
+Callers can supply `--operation-id` and, after an ambiguous dispatch,
+`--operation-replay-only`. The latter requires an existing exact plan. Each
+recipient has a durable start marker and its own result. Completed recipients
+are not sent again. An interrupted recipient attempt uses a deterministic
+message ID with replay-only transport: retained matching history returns a
+duplicate receipt, changed intent refuses, and missing history remains unknown
+without appending. These paths use the existing storage leases. They do not
+schedule retries or wake a recipient.
+
+Results retain the child's outcome and expose both recipient results. A partial
+failure remains a failure even if the other recipient succeeds. Remote receipts
+distinguish pending, delivered, and expired history from publication performed
+by the current call. No receipt proves that a process noticed the message.
+Agent CLI sends record canonical observations for their actual successful
+recipients. Operator messages from the dashboard retain the durable recipient
+receipts without inventing an agent owner or session for a canonical event.
+
+## Result and limits
+
+Focused routing controls cover partial capacity failures, overflow, generation
+mismatch, frozen replay, missing plans and interrupted attempts with pruned
+history. An interrupted attempt can remain unknown even if it never appended;
+the caller must preserve that uncertainty rather than send a fresh message
+under the same operation. Full integration and publication remain separate
+checks.
