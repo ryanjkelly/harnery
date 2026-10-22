@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
-import type { AgentParentReference } from "./parent-reference.ts";
+import type { AgentParentReference } from "./parent-reference-contract.ts";
 import type { AgentActivity, TaskState } from "./session-state.ts";
 
 export interface Heartbeat {
