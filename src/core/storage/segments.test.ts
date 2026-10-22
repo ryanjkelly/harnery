@@ -58,9 +58,9 @@ describe("shared log segments and query", () => {
         admitted.toISOString(),
         admitted.toISOString(),
       ]);
-      expect(readSegmentManifest(directory, family).segments.map(({ sequence }) => sequence)).toEqual([
-        1, 2,
-      ]);
+      expect(
+        readSegmentManifest(directory, family).segments.map(({ sequence }) => sequence),
+      ).toEqual([1, 2]);
       expect(JSON.parse(readFileSync(join(directory, "metrics.json"), "utf8")).last_merge_at).toBe(
         earlier.toISOString(),
       );
