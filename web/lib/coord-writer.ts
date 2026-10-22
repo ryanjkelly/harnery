@@ -347,7 +347,7 @@ export interface PingResult {
   target_instance: string;
   bytes: number;
   error?: string;
-  state?: "written-live" | "queued";
+  state?: "written-live" | "queued" | "remote";
   message_id?: string;
 }
 
