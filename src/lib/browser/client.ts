@@ -1931,10 +1931,17 @@ export class Browser {
    * visual line. Word-count per line via per-word Range rects (the width
    * of the last line is deliberately NOT the signal; see runts.ts).
    */
-  async checkRunts(opts: { scope?: string | null; minChars?: number } = {}): Promise<RuntsResult> {
+  async checkRunts(
+    opts: { scope?: string | null; minChars?: number; maxFindings?: number } = {},
+  ): Promise<RuntsResult> {
+    const maxFindings = opts.maxFindings === undefined ? 50 : opts.maxFindings;
+    if (!Number.isInteger(maxFindings) || maxFindings < 1 || maxFindings > 5000) {
+      throw new Error("maxFindings must be an integer from 1 to 5000.");
+    }
     return await this.currentPage.evaluate(buildRuntsCheck(), {
       scope: opts.scope ?? null,
       minChars: opts.minChars ?? 40,
+      maxFindings,
     });
   }
 

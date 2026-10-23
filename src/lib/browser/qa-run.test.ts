@@ -633,7 +633,14 @@ describe("runQaMatrix", () => {
       }),
     });
     const result = await runQaMatrix({
-      job: job({ checks: [{ id: "runts", args: ["--check-runts", "--check-runts-fail"] }] }),
+      job: job({
+        checks: [
+          {
+            id: "runts",
+            args: ["--check-runts", "--check-runts-fail", "--check-runts-max-findings", "5000"],
+          },
+        ],
+      }),
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,
@@ -646,6 +653,9 @@ describe("runQaMatrix", () => {
     expect(gate?.argv).toContain("--check-truncation-fail");
     expect(gate?.argv).toContain("--check-placeholder-fail");
     expect(gate?.argv).toContain("--check-runts-fail");
+    const capIndex = gate?.argv.indexOf("--check-runts-max-findings") ?? -1;
+    expect(capIndex).toBeGreaterThanOrEqual(0);
+    expect(gate?.argv[capIndex + 1]).toBe("5000");
     expect(result.commands[1]?.check_id).toContain("manifest:console");
     expect(result.commands[1]?.check_id).toContain("runts");
   });

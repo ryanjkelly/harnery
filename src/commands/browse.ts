@@ -251,6 +251,7 @@ interface BrowseOpts {
   checkRunts?: boolean | string;
   checkScanNodeBudget?: string;
   checkRuntsMinChars?: string;
+  checkRuntsMaxFindings?: string;
   checkRuntsFail?: boolean;
   checkRuntsAnnotate?: boolean;
   // Horizontal-overflow check
@@ -621,6 +622,12 @@ export function registerBrowseCommand(
       "--check-runts-min-chars <n>",
       "Minimum block text length to scan (default 40; smaller labels can't meaningfully wrap).",
       "40",
+    )
+    .option(
+      "--check-runts-max-findings <n>",
+      "Maximum runt findings to retain (integer 1..5000, default 50). Reaching the limit " +
+        "still marks the sweep incomplete; the separate 5000-block scan cap is unchanged.",
+      "50",
     )
     .option(
       "--check-runts-fail",
@@ -1015,6 +1022,13 @@ async function runBrowse(
   ) {
     throw new Error("--check-scan-node-budget must be an integer from 1 to 100000.");
   }
+  const runtsMaxFindings = parsePositiveInt(
+    opts.checkRuntsMaxFindings ?? "50",
+    "--check-runts-max-findings",
+  );
+  if (runtsMaxFindings > 5000) {
+    throw new Error("--check-runts-max-findings must be an integer from 1 to 5000.");
+  }
   const hitProfile = parseTargetSizeProfile(opts.checkHitProfile ?? "wcag-aa");
 
   // Commander: `--no-cookies` turns `opts.cookies` into `false`. Default is `true`.
@@ -1200,6 +1214,7 @@ async function runBrowse(
         runts = await browser.checkRunts({
           scope: typeof opts.checkRunts === "string" ? opts.checkRunts : null,
           minChars: Number.parseInt(opts.checkRuntsMinChars ?? "40", 10),
+          maxFindings: runtsMaxFindings,
         });
       }
       const hasLayoutLint =

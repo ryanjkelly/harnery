@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Browser } from "../../src/lib/browser/client.ts";
+import { buildRuntsCheck } from "../../src/lib/browser/runts.ts";
 
 const fixtureUrl = pathToFileURL(
   resolve(import.meta.dir, "../fixtures/layout-lint/index.html"),
@@ -339,6 +340,111 @@ describe("browse layout lint", () => {
     }
   });
 
+  test("runt finding budgets retain the default cap and collect complete opt-in failures", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      await browser.evaluate(`(() => {
+        const root=document.createElement("section");root.id="runt-findings-control";
+        root.innerHTML='<p style="width:600px;font:16px/24px monospace">Several ordinary words make a complete first visual line<br>omega.</p>'.repeat(80);
+        document.body.append(root);
+      })()`);
+      const request = { scope: "#runt-findings-control" };
+      const bounded = await browser.checkRunts(request);
+      expect(bounded).toMatchObject({ outcome: "fail", scannedBlocks: 50, truncated: true });
+      expect(bounded.runts).toHaveLength(50);
+      const complete = await browser.checkRunts({ ...request, maxFindings: 5000 });
+      expect(complete).toMatchObject({ outcome: "fail", scannedBlocks: 80, truncated: false });
+      expect(complete.runts).toHaveLength(80);
+      expect(complete.runts.every((hit) => hit.word === "omega.")).toBe(true);
+      const one = await browser.checkRunts({ ...request, maxFindings: 1 });
+      expect(one).toMatchObject({ outcome: "fail", scannedBlocks: 1, truncated: true });
+      expect(one.runts).toHaveLength(1);
+      const exact = await browser.checkRunts({ ...request, maxFindings: 80 });
+      expect(exact).toMatchObject({ outcome: "fail", scannedBlocks: 80, truncated: true });
+      expect(exact.runts).toHaveLength(80);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test("runt finding budgets reject invalid API values without weakening the block cap", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      for (const maxFindings of [0, -1, 1.5, 5001, Number.NaN, Number.POSITIVE_INFINITY]) {
+        await expect(browser.checkRunts({ maxFindings })).rejects.toThrow("maxFindings");
+        expect(() => buildRuntsCheck()({ scope: null, minChars: 40, maxFindings })).toThrow(
+          "maxFindings",
+        );
+      }
+      await browser.evaluate(`(() => {
+        const root=document.createElement("section");root.id="runt-budget-block-cap";
+        root.innerHTML='<p style="width:600px">Ordinary complete line</p>'.repeat(5001);
+        document.body.append(root);
+      })()`);
+      expect(
+        await browser.checkRunts({
+          scope: "#runt-budget-block-cap",
+          minChars: 1,
+          maxFindings: 5000,
+        }),
+      ).toMatchObject({ outcome: "unknown", scannedBlocks: 5000, truncated: true, runts: [] });
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test(
+    "CLI runt finding budgets collect more failures and reject invalid bounds",
+    () => {
+      const fixture = join(profile(), "many-runts.html");
+      writeFileSync(
+        fixture,
+        '<!doctype html><p style="width:600px;font:16px/24px monospace">Several ordinary words make a complete first visual line<br>omega.</p>'.repeat(
+          80,
+        ),
+      );
+      const run = (value: string) =>
+        Bun.spawnSync({
+          cmd: [
+            resolve(import.meta.dir, "../../bin/harn"),
+            "browse",
+            pathToFileURL(fixture).href,
+            "--json",
+            "--no-cookies",
+            "--profile",
+            profile(),
+            "--no-screenshot",
+            "--check-runts-fail",
+            "--check-runts-max-findings",
+            value,
+          ],
+          cwd: resolve(import.meta.dir, "../.."),
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, NO_COLOR: "1" },
+        });
+      const complete = run("5000");
+      expect(complete.exitCode).toBe(2);
+      expect(JSON.parse(complete.stdout.toString()).runts).toMatchObject({
+        outcome: "fail",
+        truncated: false,
+        scannedBlocks: 80,
+      });
+      expect(JSON.parse(complete.stdout.toString()).runts.runts).toHaveLength(80);
+      for (const value of ["0", "-1", "1.5", "5001", "NaN", "Infinity", "1word"]) {
+        const invalid = run(value);
+        expect(invalid.exitCode).toBe(1);
+        expect(invalid.stderr.toString()).toContain("--check-runts-max-findings");
+        expect(invalid.stdout.toString()).toBe("");
+      }
+    },
+    { timeout: 30_000 },
+  );
+
   test("runt tokens preserve inline words and ignore punctuation-only line artifacts", async () => {
     const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
     try {
@@ -481,6 +587,8 @@ describe("browse layout lint", () => {
         "--check-runts",
         ".does-not-exist",
         "--check-runts-fail",
+        "--out",
+        join(profile(), "missing-scope"),
       ],
       cwd: resolve(import.meta.dir, "../.."),
       stdout: "pipe",

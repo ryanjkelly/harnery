@@ -39,7 +39,7 @@ export interface RuntsResult {
   outcome: "pass" | "fail" | "unknown";
   /** Text blocks scanned (post length/inline-children filters). */
   scannedBlocks: number;
-  /** True when the block sweep hit the internal cap (very large page). */
+  /** True when the sweep reached its findings limit or the internal block cap. */
   truncated: boolean;
   runts: RuntHit[];
 }
@@ -47,13 +47,20 @@ export interface RuntsResult {
 /**
  * Build the JS function passed to `page.evaluate`. `scope` narrows the sweep
  * to one container (null = whole body); `minChars` filters out tiny labels
- * that can't meaningfully wrap (default 40).
+ * that can't meaningfully wrap (default 40). `maxFindings` bounds the retained
+ * failure list (default 50; integer 1..5000), not the separate 5000-block cap.
  */
 export function buildRuntsCheck(): (args: {
   scope: string | null;
   minChars: number;
+  maxFindings?: number;
 }) => RuntsResult {
-  return ({ scope, minChars }) => {
+  return ({ scope, minChars, maxFindings = 50 }) => {
+    // page.evaluate has no module closure: validate this boundary too, even
+    // when a caller evaluates the built function without the Browser client.
+    if (!Number.isInteger(maxFindings) || maxFindings < 1 || maxFindings > 5000) {
+      throw new Error("maxFindings must be an integer from 1 to 5000.");
+    }
     const INLINE = new Set([
       "B",
       "I",
@@ -74,7 +81,7 @@ export function buildRuntsCheck(): (args: {
     ]);
     const ATOMIC = /@|https?:|\.(com|org|net|io|co)\b|\d-\d{3}/;
     const BLOCK_CAP = 5000;
-    const RUNT_CAP = 50;
+    const RUNT_CAP = maxFindings;
 
     const root = scope ? document.querySelector(scope) : document.body;
     if (!root) {
