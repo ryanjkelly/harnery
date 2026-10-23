@@ -1073,6 +1073,7 @@ async function runBrowse(
     env: process.env.HARNERY_BROWSER_UA,
     chromeMajor: launchedChromeMajor(channel),
   });
+  const cookieGuard = context?.cookieGuard?.();
   const browser = new Browser({
     profileDir: opts.profile ?? DEFAULT_PROFILE,
     headed,
@@ -1084,7 +1085,7 @@ async function runBrowse(
     waitUntil: opts.waitUntil as BrowseOpts["waitUntil"] as never,
     recordHarPath: opts.networkHar ? resolve(opts.networkHar) : undefined,
     extraHeaders: context?.extraHeaders,
-    ...(context?.cookieGuard ? { cookieGuard: context.cookieGuard } : {}),
+    ...(cookieGuard ? { cookieGuard } : {}),
     pace,
     launchArgs: resolveLaunchArgs(opts, Boolean(headed), Boolean(proxy)),
     ...(channel ? { channel } : {}),

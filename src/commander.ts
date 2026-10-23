@@ -137,10 +137,12 @@ export interface HarneryProgramContext {
    */
   clientRedirects?: () => boolean;
   /**
-   * Inspects the live cookies of a `browse` session before each request, after
-   * each response, and at close. Throwing stops the session and fails the run.
+   * Called once per `browse` run. Returns the guard that inspects that
+   * session's live cookies before each request, after each response, and at
+   * close (throwing stops the session and fails the run), or undefined for no
+   * guard.
    */
-  cookieGuard?: import("./lib/browser/client.ts").CookieGuard;
+  cookieGuard?: () => import("./lib/browser/client.ts").CookieGuard | undefined;
   /**
    * Host-injected vision-model call for `browse --check-critique`. harnery
    * ships no model client or API key; a consumer wires this to its own
