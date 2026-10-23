@@ -21,6 +21,68 @@ afterEach(() => {
 });
 
 describe("browse content checks", () => {
+  test("explicit budget reaches a late placeholder; default truncation never passes", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      await browser.evaluate(
+        `document.body.innerHTML='<main id="late">'+'<span>Ordinary text</span>'.repeat(6100)+'<span id="sentinel">{{unresolved}}</span></main>'`,
+      );
+      const request = {
+        placeholder: { scope: "#late" },
+        image: null,
+        truncation: null,
+        contrast: null,
+      };
+      expect((await browser.checkContent(request)).placeholder).toMatchObject({
+        outcome: "unknown",
+        truncated: true,
+        hits: [],
+      });
+      const complete = await browser.checkContent({ ...request, scanNodeBudget: 6200 });
+      expect(complete.placeholder).toMatchObject({ outcome: "fail", truncated: false });
+      expect(complete.placeholder?.hits.some((hit) => hit.token === "{{unresolved}}")).toBe(true);
+      await browser.evaluate('document.querySelector("#sentinel").textContent="Resolved"');
+      expect(
+        (await browser.checkContent({ ...request, scanNodeBudget: 6200 })).placeholder,
+      ).toMatchObject({ outcome: "pass", truncated: false });
+      await expect(
+        browser.checkContent({ ...request, scanNodeBudget: Number.POSITIVE_INFINITY }),
+      ).rejects.toThrow("scanNodeBudget");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test.each([
+    "0",
+    "-1",
+    "1.5",
+    "Infinity",
+    "100001",
+  ])("invalid scan budget %s refuses before browser work", (budget) => {
+    const result = Bun.spawnSync({
+      cmd: [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        fixtureUrl,
+        "--check-placeholder",
+        "main",
+        "--check-scan-node-budget",
+        budget,
+        "--json",
+      ],
+      cwd: resolve(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain("--check-scan-node-budget");
+    expect(result.stdout.toString()).toBe("");
+  });
+
   test("placeholder flags unrendered tells and is prose-safe", async () => {
     const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
     try {

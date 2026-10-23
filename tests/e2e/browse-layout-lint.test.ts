@@ -27,6 +27,163 @@ afterEach(() => {
 });
 
 describe("browse layout lint", () => {
+  test("explicit budget reaches late defects while default or low scans stay unknown", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      await browser.evaluate(`(() => {
+        for (const [id,count,fixture] of [["late-clip",1100,".clip-bad"],["late-crowd",2100,".crowd-bad"]]) {
+          const section=document.createElement("section");section.id=id;
+          section.innerHTML='<i style="display:block">safe</i>'.repeat(count);
+          section.append(document.querySelector(fixture).cloneNode(true));document.body.append(section);
+        }
+      })()`);
+      const request = {
+        align: [],
+        gap: [],
+        overlap: [],
+        clip: [{ selector: "#late-clip", tolerancePx: 0 }],
+        crowd: [{ selector: "#late-crowd", minGapPx: 6 }],
+      };
+      const bounded = await browser.checkLayoutLint(request);
+      expect(bounded.clip[0]).toMatchObject({ outcome: "unknown", truncated: true, issues: [] });
+      expect(bounded.crowd[0]).toMatchObject({ outcome: "unknown", truncated: true, issues: [] });
+      expect(
+        (await browser.checkLayoutLint({ ...request, scanNodeBudget: 10 })).clip[0],
+      ).toMatchObject({ outcome: "unknown", truncated: true });
+      const complete = await browser.checkLayoutLint({ ...request, scanNodeBudget: 2200 });
+      expect(complete.clip[0]?.outcome).toBe("fail");
+      expect(complete.clip[0]?.issues.length).toBeGreaterThan(0);
+      expect(complete.crowd[0]?.outcome).toBe("fail");
+      expect(complete.crowd[0]?.issues.length).toBeGreaterThan(0);
+      await expect(
+        browser.checkLayoutLint({ ...request, scanNodeBudget: Number.NaN }),
+      ).rejects.toThrow("scanNodeBudget");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test("panel-face overflow is unknown while the exact limit remains complete", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      await browser.evaluate(`(() => {
+        const root=document.createElement("section");root.id="face-cap";
+        const panel='<div style="width:100px;height:20px;border:1px solid black;margin-bottom:12px"></div>';
+        root.innerHTML='<div id="face-wrapper">'+panel.repeat(101)+'</div>'+panel;document.body.append(root);
+      })()`);
+      const request = {
+        align: [],
+        gap: [],
+        clip: [],
+        overlap: [],
+        crowd: [{ selector: "#face-cap", minGapPx: 6 }],
+      };
+      expect((await browser.checkLayoutLint(request)).crowd[0]).toMatchObject({
+        outcome: "unknown",
+        truncated: true,
+        issues: [],
+      });
+      await browser.evaluate('document.querySelector("#face-wrapper").lastElementChild.remove()');
+      expect((await browser.checkLayoutLint(request)).crowd[0]).toMatchObject({
+        outcome: "pass",
+        truncated: false,
+      });
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test("unit translations preserve geometry; other transforms and clip-path stay unknown", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      await browser.evaluate(`(() => {
+        for(const [id,fixture,transform,clipPath] of [
+          ["translated-good",".clip-good","translate(10px,3px)","none"],
+          ["translated-bad",".clip-bad","translate(10px,3px)","none"],
+          ["rotated",".clip-good","rotate(2deg)","none"],
+          ["scaled",".clip-good","scale(1.1)","none"],
+          ["shaped",".clip-good","none","inset(0)"]
+        ]) {
+          const outer=document.createElement("section");outer.id=id;outer.style.transform=transform;outer.style.clipPath=clipPath;
+          const inner=document.createElement("div");inner.style="display:inline-block;transform:translate(2px,1px)";
+          inner.append(document.querySelector(fixture).cloneNode(true));outer.append(inner);document.body.append(outer);
+        }
+        const leaf=document.createElement("section");leaf.id="rotated-leaf";
+        const child=document.createElement("span");child.textContent="Rotated leaf";child.style="display:inline-block;transform:rotate(2deg)";
+        leaf.append(child);document.body.append(leaf);
+      })()`);
+      const result = await browser.checkLayoutLint({
+        align: [],
+        gap: [],
+        overlap: [],
+        crowd: [],
+        clip: [
+          "translated-good",
+          "translated-bad",
+          "rotated",
+          "scaled",
+          "shaped",
+          "rotated-leaf",
+        ].map((id) => ({ selector: `#${id}`, tolerancePx: 0 })),
+      });
+      expect(result.clip.map((row) => row.outcome)).toEqual([
+        "pass",
+        "fail",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+      ]);
+      expect(result.clip[1]?.issues.length).toBeGreaterThan(0);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test("CLI forwards the explicit budget to both geometry and content", () => {
+    const result = Bun.spawnSync({
+      cmd: [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        fixtureUrl,
+        "--profile",
+        profile(),
+        "--no-cookies",
+        "--no-screenshot",
+        "--json",
+        "--evaluate",
+        `(() => {
+          const clip=document.createElement("section");clip.id="late-cli-clip";clip.innerHTML='<i style="display:block">safe</i>'.repeat(1100);
+          clip.append(document.querySelector(".clip-bad").cloneNode(true));document.body.append(clip);
+          const text=document.createElement("section");text.id="late-cli-text";
+          text.innerHTML="<span>Ordinary</span>".repeat(6100)+"<span>{{unresolved}}</span>";document.body.append(text);
+        })()`,
+        "--check-clip",
+        "#late-cli-clip",
+        "--check-clip-fail",
+        "--check-placeholder",
+        "#late-cli-text",
+        "--check-placeholder-fail",
+        "--check-scan-node-budget",
+        "8000",
+      ],
+      cwd: resolve(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    expect(result.exitCode).toBe(2);
+    const envelope = JSON.parse(result.stdout.toString());
+    expect(envelope.clip[0]).toMatchObject({ outcome: "fail", truncated: false });
+    expect(envelope.placeholder).toMatchObject({ outcome: "fail", truncated: false });
+  });
+
   test("classifies alignment, gap, clipping, and overlap from one page state", async () => {
     const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
     try {
@@ -124,9 +281,7 @@ describe("browse layout lint", () => {
         expect.arrayContaining([expect.objectContaining({ reason: "ellipsis-truncation" })]),
       );
       expect(result.clip[6]?.issues).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ clippedBy: "div.inner" }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ clippedBy: "div.inner" })]),
       );
       expect(result.clip[2]?.issues).toEqual(
         expect.arrayContaining([
@@ -494,12 +649,16 @@ describe("browse layout lint", () => {
     try {
       await browser.open();
       await browser.navigate(nonConvergentFixtureUrl);
-      await expect(
-        browser.screenshotWithEvaluation(
+      let captureError: unknown;
+      try {
+        await browser.screenshotWithEvaluation(
           join(profile(), "capture-evaluation-error.png"),
           '(() => { throw new Error("capture-finalizer-failed"); })()',
-        ),
-      ).rejects.toThrow("capture-finalizer-failed");
+        );
+      } catch (error) {
+        captureError = error;
+      }
+      expect(String(captureError)).toContain("capture-finalizer-failed");
       expect(browser.currentPage.viewportSize()).toEqual({ width: 800, height: 900 });
     } finally {
       await browser.close();

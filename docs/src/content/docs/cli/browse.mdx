@@ -212,6 +212,7 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-crowd-min <px>` | Minimum acceptable edge gap between adjacent panel faces. Default `6`. Negative separation (overlap) always flags. |
 | `--check-crowd-fail` | Exit 2 when a crowd target fails, is unknown, or is missing. |
 | `--no-check-crowd-annotate` | Skip crowd annotations. |
+| `--check-scan-node-budget <n>` | Explicit geometry/content traversal budget per scope, from `1` to `100000` nodes. Omit it to retain each rule's existing limit. Finding caps and geometric thresholds stay unchanged. |
 | `--check-hit [selector]` | Check interactive target size and spacing in the document or optional scope. Repeatable. |
 | `--check-hit-profile <profile>` | `wcag-aa` uses 24px; `comfortable` uses 44px as a product-quality policy. Default `wcag-aa`. |
 | `--check-hit-fail` | Exit 2 on target-size `fail`, `unknown`, or a missing scope. |
@@ -235,10 +236,16 @@ it. Content inside a collapsed `<details>` is treated as hidden rather than
 clipped. The check ignores sub-half-pixel rasterization noise and normal vertical glyph
 overhang; neither is visible clipping. Hanging indents remain valid when their
 paint stays inside the block border. The check uses the rectangular padding box
-for border radius. Arbitrary `clip-path`,
-non-axis-aligned transforms, closed shadow roots, and cross-origin frame content
+for border radius. Pure two-dimensional translations use the rendered coordinates.
+Scaling, rotation, skew, perspective, arbitrary `clip-path`, closed shadow roots, and cross-origin frame content
 are reported as `unknown`, not certified. Overlap covers sibling geometry;
 paint-order and sticky-layer obstruction remain `--check-visible` concerns.
+
+The default clipping traversal checks at most 1000 descendants and 1000 text nodes
+per matching container. Crowd checks at most 2000 parents, and content checks at
+most 6000 nodes. An explicit `--check-scan-node-budget` replaces those traversal
+limits for a larger page. A scan that reaches a limit before finishing remains
+`unknown`; increasing the budget does not dismiss findings or relax their thresholds.
 
 Crowd sits between overlap and gap: overlap needs a real 2D intersection and gap
 flags *uneven* spacing, so a stack of cards all sitting flush passes both. Crowd

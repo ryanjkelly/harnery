@@ -36,7 +36,7 @@ export interface PlaceholderHit {
 export interface PlaceholderResult {
   rule: "placeholder";
   found: boolean;
-  outcome: "pass" | "fail";
+  outcome: "pass" | "fail" | "unknown";
   scanned: number;
   truncated: boolean;
   hits: PlaceholderHit[];
@@ -100,6 +100,8 @@ export interface ContrastResult {
 }
 
 export interface ContentChecksRequest {
+  /** Explicit traversal budget; omission retains the existing node cap. */
+  scanNodeBudget?: number;
   placeholder: { scope: string | null } | null;
   image: { scope: string | null; tolerance: number } | null;
   truncation: { scope: string | null; tolerance: number } | null;
@@ -115,7 +117,15 @@ export interface ContentChecksResult {
 
 export function buildContentChecks(): (request: ContentChecksRequest) => ContentChecksResult {
   return (request) => {
-    const NODE_CAP = 6000;
+    if (
+      request.scanNodeBudget !== undefined &&
+      (!Number.isSafeInteger(request.scanNodeBudget) ||
+        request.scanNodeBudget < 1 ||
+        request.scanNodeBudget > 100_000)
+    ) {
+      throw new Error("scanNodeBudget must be an integer from 1 to 100000.");
+    }
+    const NODE_CAP = request.scanNodeBudget ?? 6000;
     const HIT_CAP = 100;
 
     const sx = window.scrollX;
@@ -234,6 +244,7 @@ export function buildContentChecks(): (request: ContentChecksRequest) => Content
         // when the trimmed text of a leaf element is exactly the tell).
         if (hits.length < HIT_CAP) {
           const leaves = root.querySelectorAll("*");
+          if (leaves.length > NODE_CAP) truncated = true;
           for (let i = 0; i < leaves.length && i < NODE_CAP; i++) {
             const el = leaves[i];
             if (!el || el.children.length > 0) continue;
@@ -258,7 +269,7 @@ export function buildContentChecks(): (request: ContentChecksRequest) => Content
       placeholder = {
         rule: "placeholder",
         found: root !== null,
-        outcome: root && hits.length === 0 ? "pass" : "fail",
+        outcome: !root || hits.length > 0 ? "fail" : truncated ? "unknown" : "pass",
         scanned,
         truncated,
         hits,

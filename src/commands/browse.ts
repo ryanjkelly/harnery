@@ -249,6 +249,7 @@ interface BrowseOpts {
   checkWidthAnnotate?: boolean;
   // `--check-runts [selector]`: true = whole body, string = scope selector.
   checkRunts?: boolean | string;
+  checkScanNodeBudget?: string;
   checkRuntsMinChars?: string;
   checkRuntsFail?: boolean;
   checkRuntsAnnotate?: boolean;
@@ -711,6 +712,10 @@ export function registerBrowseCommand(
     .option("--check-crowd-fail", "Exit 2 when a crowd target fails, is unknown, or is missing.")
     .option("--no-check-crowd-annotate", "Skip crowd screenshot annotations.")
     .option(
+      "--check-scan-node-budget <n>",
+      "Explicit geometry/content traversal budget per scope (1–100000 nodes). Omit to keep each rule's existing limit; incomplete scans remain unknown.",
+    )
+    .option(
       "--check-placeholder [selector]",
       "Scan rendered text for unrendered template tokens and bound-value tells: " +
         "JS template literals, `{{x}}` handlebars, `[object Object]`, `Invalid Date`, " +
@@ -1000,6 +1005,16 @@ async function runBrowse(
     "--check-overlap-threshold",
   );
   const crowdMin = parseNonNegativeNumber(opts.checkCrowdMin ?? "6", "--check-crowd-min");
+  const scanNodeBudget =
+    opts.checkScanNodeBudget === undefined
+      ? undefined
+      : parsePositiveInt(opts.checkScanNodeBudget, "--check-scan-node-budget");
+  if (
+    scanNodeBudget !== undefined &&
+    (!Number.isSafeInteger(scanNodeBudget) || scanNodeBudget > 100_000)
+  ) {
+    throw new Error("--check-scan-node-budget must be an integer from 1 to 100000.");
+  }
   const hitProfile = parseTargetSizeProfile(opts.checkHitProfile ?? "wcag-aa");
 
   // Commander: `--no-cookies` turns `opts.cookies` into `false`. Default is `true`.
@@ -1196,6 +1211,7 @@ async function runBrowse(
       let layoutLint: LayoutLintResult | undefined;
       if (hasLayoutLint) {
         layoutLint = await browser.checkLayoutLint({
+          scanNodeBudget,
           align: (opts.checkAlign ?? []).map((selector) => ({
             selector,
             axis: alignAxis,
@@ -1233,6 +1249,7 @@ async function runBrowse(
       let content: ContentChecksResult | undefined;
       if (hasContentChecks) {
         content = await browser.checkContent({
+          scanNodeBudget,
           placeholder:
             opts.checkPlaceholder !== undefined
               ? { scope: contentScope(opts.checkPlaceholder) }

@@ -151,6 +151,8 @@ export interface CrowdResult {
 }
 
 export interface LayoutLintRequest {
+  /** Explicit traversal budget; omission retains each rule's existing limit. */
+  scanNodeBudget?: number;
   align: Array<{ selector: string; axis: LayoutAxis; tolerancePx: number }>;
   gap: Array<{
     selector: string;
@@ -204,9 +206,26 @@ export function intersectRects(a: LayoutRect, b: LayoutRect): LayoutRect | null 
  */
 export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLintResult {
   return (request) => {
-    const CHILD_LIMIT = 1_000;
-    const TEXT_LIMIT = 1_000;
+    if (
+      request.scanNodeBudget !== undefined &&
+      (!Number.isSafeInteger(request.scanNodeBudget) ||
+        request.scanNodeBudget < 1 ||
+        request.scanNodeBudget > 100_000)
+    ) {
+      throw new Error("scanNodeBudget must be an integer from 1 to 100000.");
+    }
+    const CHILD_LIMIT = request.scanNodeBudget ?? 1_000;
+    const TEXT_LIMIT = request.scanNodeBudget ?? 1_000;
     const ISSUE_LIMIT = 100;
+    const translationOnly = (transform: string): boolean => {
+      if (!transform || transform === "none") return true;
+      try {
+        const matrix = new DOMMatrixReadOnly(transform);
+        return matrix.is2D && matrix.a === 1 && matrix.b === 0 && matrix.c === 0 && matrix.d === 1;
+      } catch {
+        return false;
+      }
+    };
     // Chromium geometry is fractional even when authored CSS is integral.
     // Differences below half a CSS pixel are rasterization noise, not clipping.
     const SUBPIXEL_EPSILON = 0.5;
@@ -673,17 +692,22 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         container: Element,
         seed: LayoutRect,
         seedLabel: string,
-      ): { allowed: LayoutRect; clippedBy: { x: string; y: string } } => {
+      ): { allowed: LayoutRect; clippedBy: { x: string; y: string }; supported: boolean } => {
         let allowed = { ...seed };
+        let supported = true;
         const clippedBy = { x: seedLabel, y: seedLabel };
         const free = { x: false, y: false };
         let current: Element | null = start;
         while (current && container.contains(current)) {
           const style = getComputedStyle(current);
-          if (style.clipPath && style.clipPath !== "none")
+          if (style.clipPath && style.clipPath !== "none") {
             unsupported.add(`${labelOf(current)}:clip-path`);
-          if (style.transform && style.transform !== "none")
+            supported = false;
+          }
+          if (!translationOnly(style.transform)) {
             unsupported.add(`${labelOf(current)}:transform`);
+            supported = false;
+          }
           // The container bounds by default even when it does not CSS-clip,
           // since it is the scope the caller asked about -- but a scroller
           // hands its axis back whether it is the scope or an ancestor.
@@ -727,7 +751,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           if (scope) break;
           current = current.parentElement;
         }
-        return { allowed, clippedBy };
+        return { allowed, clippedBy, supported };
       };
 
       const nearestBlockOwner = (node: Node, scope: Element): Element | null => {
@@ -753,6 +777,15 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           }
           if (hasVisuallyHiddenAncestor(element, container)) {
             excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "visually-hidden" });
+            return;
+          }
+          const ownStyle = getComputedStyle(element);
+          if (!translationOnly(ownStyle.transform)) {
+            unsupported.add(`${labelOf(element)}:transform`);
+            return;
+          }
+          if (ownStyle.clipPath && ownStyle.clipPath !== "none") {
+            unsupported.add(`${labelOf(element)}:clip-path`);
             return;
           }
           const rect = element.getBoundingClientRect();
@@ -783,7 +816,8 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
             seedLabel = labelOf(owner);
           }
           const chain = clipChain(element.parentElement, container, seed, seedLabel);
-          recordIssue(measure(element, index, false), chain.allowed, chain.clippedBy);
+          if (chain.supported)
+            recordIssue(measure(element, index, false), chain.allowed, chain.clippedBy);
         });
 
         const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
@@ -825,7 +859,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           let current: Element | null = owner;
           while (current && container.contains(current)) {
             const transform = getComputedStyle(current).transform;
-            if (transform && transform !== "none") {
+            if (!translationOnly(transform)) {
               unsupported.add(`${labelOf(current)}:transform`);
               transformed = true;
               break;
@@ -851,6 +885,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
             seed.width = Math.max(0, seed.right - seed.left);
           }
           const chain = clipChain(owner, container, seed, labelOf(owner));
+          if (!chain.supported) continue;
           const allowed = chain.allowed;
           const clippedBy = chain.clippedBy;
           const range = document.createRange();
@@ -877,7 +912,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       // Border radius keeps the rectangular padding-box contract; only shapes
       // the rectangle cannot certify contribute to unsupported geometry.
       const outcome: LayoutOutcome =
-        issues.length > 0 ? "fail" : unsupported.size > 0 ? "unknown" : "pass";
+        issues.length > 0 ? "fail" : unsupported.size > 0 || truncated ? "unknown" : "pass";
       return {
         rule: "clip" as const,
         selector,
@@ -966,7 +1001,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
     // and badges (radius ≥ half their smaller side) are inline controls, not
     // layout cards, and are excluded too. Plain blocks with no panel chrome
     // and no panel descendants stay out of the peer list.
-    const PARENT_LIMIT = 2000;
+    const PARENT_LIMIT = request.scanNodeBudget ?? 2000;
     const PANEL_DESCENDANT_LIMIT = 100;
     const OVERLAP_EPS = 1;
     const STRUCTURAL_TAGS = new Set([
@@ -1036,13 +1071,18 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
     const collectPanelFaces = (
       element: Element,
       selfIsPanel: boolean,
+      onTruncated: () => void,
     ): LayoutElementMeasurement[] => {
       if (selfIsPanel) return [measure(element, 0, false)];
       const faces: LayoutElementMeasurement[] = [];
       const descendants = element.querySelectorAll("*");
-      for (let i = 0; i < descendants.length && faces.length < PANEL_DESCENDANT_LIMIT; i++) {
+      for (let i = 0; i < descendants.length; i++) {
         const child = descendants[i];
         if (!child || !isInFlowBox(child) || !isPanel(child)) continue;
+        if (faces.length >= PANEL_DESCENDANT_LIMIT) {
+          onTruncated();
+          break;
+        }
         faces.push(measure(child, faces.length, false));
       }
       return faces;
@@ -1054,6 +1094,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
     // panels separated only by chrome still get a face-to-face check.
     const collectCrowdPeers = (
       parent: Element,
+      onTruncated: () => void,
     ): Array<{
       kind: "panel" | "composite";
       faces: LayoutElementMeasurement[];
@@ -1063,11 +1104,12 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         faces: LayoutElementMeasurement[];
       }> = [];
       const children = [...parent.children];
+      if (children.length > CHILD_LIMIT) onTruncated();
       for (let index = 0; index < children.length && index < CHILD_LIMIT; index++) {
         const element = children[index];
         if (!element || !isInFlowBox(element)) continue;
         const selfIsPanel = isPanel(element);
-        const faces = collectPanelFaces(element, selfIsPanel);
+        const faces = collectPanelFaces(element, selfIsPanel, onTruncated);
         if (faces.length === 0) continue;
         out.push({
           kind: selfIsPanel ? "panel" : "composite",
@@ -1149,7 +1191,9 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       const limit = Math.min(parents.length, PARENT_LIMIT);
       for (let p = 0; p < limit; p++) {
         const parent = parents[p]!;
-        const peers = collectCrowdPeers(parent);
+        const peers = collectCrowdPeers(parent, () => {
+          truncated = true;
+        });
         for (let i = 1; i < peers.length; i++) {
           const beforePeer = peers[i - 1]!;
           const afterPeer = peers[i]!;
@@ -1178,7 +1222,12 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         rule: "crowd" as const,
         selector,
         found: true,
-        outcome: issues.length > 0 ? ("fail" as const) : ("pass" as const),
+        outcome:
+          issues.length > 0
+            ? ("fail" as const)
+            : truncated
+              ? ("unknown" as const)
+              : ("pass" as const),
         minGapPx,
         issues,
         truncated,
