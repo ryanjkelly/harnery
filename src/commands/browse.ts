@@ -1084,6 +1084,7 @@ async function runBrowse(
     waitUntil: opts.waitUntil as BrowseOpts["waitUntil"] as never,
     recordHarPath: opts.networkHar ? resolve(opts.networkHar) : undefined,
     extraHeaders: context?.extraHeaders,
+    ...(context?.cookieGuard ? { cookieGuard: context.cookieGuard } : {}),
     pace,
     launchArgs: resolveLaunchArgs(opts, Boolean(headed), Boolean(proxy)),
     ...(channel ? { channel } : {}),
@@ -1792,6 +1793,9 @@ async function runBrowse(
       }
       if (failed.length > 0) process.exitCode = 2;
     }
+  } catch (error) {
+    // A cookie guard that stopped the session is the real failure, not the closed-page errors it caused.
+    throw browser.cookieGuardFault ?? error;
   } finally {
     process.removeListener("SIGINT", handleSigint);
     process.removeListener("SIGTERM", handleSigterm);
@@ -1799,6 +1803,7 @@ async function runBrowse(
     await browser.close();
     if (receivedSignal) process.exitCode = receivedSignal === "SIGINT" ? 130 : 143;
   }
+  if (browser.cookieGuardFault) throw browser.cookieGuardFault;
 }
 
 // ---------------------------------------------------------------------------

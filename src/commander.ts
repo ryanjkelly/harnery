@@ -131,6 +131,17 @@ export interface HarneryProgramContext {
    */
   extraCookies?: import("./lib/cookies/index.ts").ExtraCookies;
   /**
+   * When it returns true for a run, `fetch` follows redirects itself so the
+   * cookie header, `extraHeaders`, and Set-Cookie persistence apply to every
+   * hop instead of only the first request.
+   */
+  clientRedirects?: () => boolean;
+  /**
+   * Inspects the live cookies of a `browse` session before each request, after
+   * each response, and at close. Throwing stops the session and fails the run.
+   */
+  cookieGuard?: import("./lib/browser/client.ts").CookieGuard;
+  /**
    * Host-injected vision-model call for `browse --check-critique`. harnery
    * ships no model client or API key; a consumer wires this to its own
    * multimodal provider (OpenAI/Anthropic/etc). Given one page tile + the

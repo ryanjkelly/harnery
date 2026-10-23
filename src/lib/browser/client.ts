@@ -170,7 +170,21 @@ export interface BrowserOptions {
   userAgent?: string;
   /** Authenticated browser proxy passed directly to Playwright. */
   proxy?: { server: string; username?: string; password?: string };
+  /**
+   * Inspect the live cookies of the browser context. Runs before each request
+   * is sent, after each response, and once more at close. If it throws, the
+   * request is cancelled, the context closes without saving cookies to the
+   * jar, and the error is kept as `cookieGuardFault` for the caller to report.
+   */
+  cookieGuard?: CookieGuard;
 }
+
+export type CookieGuardPhase = "request" | "response" | "close";
+
+export type CookieGuard = (
+  cookies: readonly PWCookie[],
+  event: { phase: CookieGuardPhase; url: string | null },
+) => void | Promise<void>;
 
 export interface NavigateResult {
   url: string;
@@ -430,8 +444,22 @@ export class Browser {
     // and the first request of a popup. Method-level waits miss those loads.
     // Redirect hops are part of the original load, not additional reservations.
     const headersCb = this.opts.extraHeaders;
-    if (this.getPaceGate()?.policy.enabled || headersCb || this.opts.userAgent) {
+    const cookieGuard = this.opts.cookieGuard;
+    if (cookieGuard) {
+      this.context.on("response", (response) => {
+        void this.guardCookies("response", response.url()).catch(() => undefined);
+      });
+    }
+    if (this.getPaceGate()?.policy.enabled || headersCb || this.opts.userAgent || cookieGuard) {
       await this.context.route("**/*", async (route, request) => {
+        if (cookieGuard) {
+          try {
+            await this.guardCookies("request", request.url());
+          } catch {
+            await route.abort("failed").catch(() => undefined);
+            return;
+          }
+        }
         let mainDocument = false;
         if (request.isNavigationRequest() && !request.redirectedFrom()) {
           try {
@@ -1973,6 +2001,30 @@ export class Browser {
     await this.context.addInitScript(script);
   }
 
+  /** The error a `cookieGuard` threw, once it has stopped the session. */
+  get cookieGuardFault(): unknown {
+    return this.cookieFault;
+  }
+
+  private cookieFault: unknown;
+
+  /** Run the cookie guard; on a throw, record it, tear the context down, and rethrow. */
+  private async guardCookies(phase: CookieGuardPhase, url: string | null): Promise<void> {
+    const guard = this.opts.cookieGuard;
+    const context = this.context;
+    if (!guard || !context || this.cookieFault) {
+      if (this.cookieFault) throw this.cookieFault;
+      return;
+    }
+    try {
+      await guard(await context.cookies(), { phase, url });
+    } catch (error) {
+      this.cookieFault ??= error;
+      await this.close();
+      throw error;
+    }
+  }
+
   /** Snapshot all cookies in the live persistent context. */
   async cookies(): Promise<PWCookie[]> {
     if (!this.context) throw new Error("Browser not opened. Call open() first.");
@@ -1985,7 +2037,14 @@ export class Browser {
    */
   async close(): Promise<void> {
     if (!this.context) return;
-    if (this.opts.jar) {
+    if (this.opts.cookieGuard && !this.cookieFault) {
+      try {
+        await this.guardCookies("close", null);
+      } catch {
+        return;
+      }
+    }
+    if (this.opts.jar && !this.cookieFault) {
       try {
         const live = await this.context.cookies();
         this.opts.jar.merge(live.map(toJarCookie));

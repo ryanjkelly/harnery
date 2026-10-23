@@ -177,3 +177,106 @@ describe("fetchWithJar extraCookies", () => {
     expect(called).toBe(false);
   });
 });
+
+describe("fetchWithJar clientRedirects", () => {
+  test("runs the header callback and cookie persistence for every hop", async () => {
+    const seen: { path: string; cookie: string | null }[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        seen.push({ path, cookie: request.headers.get("cookie") });
+        if (path === "/a") {
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "/b", "Set-Cookie": "hop=a; Path=/" },
+          });
+        }
+        if (path === "/b") {
+          return new Response(null, {
+            status: 307,
+            headers: { Location: "/c", "Set-Cookie": "hop=b; Path=/" },
+          });
+        }
+        return new Response("done");
+      },
+    });
+    const root = mkdtempSync(join(tmpdir(), "harnery-client-redirects-"));
+    roots.push(root);
+    try {
+      const jar = new CookieJar({ path: join(root, "cookies.json") });
+      const hops: string[] = [];
+      const result = await fetchWithJar(`http://127.0.0.1:${server.port}/a`, {
+        jar,
+        clientRedirects: true,
+        extraHeaders: (url) => {
+          hops.push(new URL(url).pathname);
+          return {};
+        },
+      });
+      expect(result).toMatchObject({ status: 200, body: "done", cookiesSaved: 2 });
+      expect(new URL(result.url).pathname).toBe("/c");
+      expect(hops).toEqual(["/a", "/b", "/c"]);
+      expect(seen.map((s) => s.cookie)).toEqual([null, "hop=a", "hop=b"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a hop callback can stop the chain before the next request", async () => {
+    const paths: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        paths.push(path);
+        return path === "/a"
+          ? new Response(null, { status: 302, headers: { Location: "/stop" } })
+          : new Response("reached");
+      },
+    });
+    try {
+      await expect(
+        fetchWithJar(`http://127.0.0.1:${server.port}/a`, {
+          clientRedirects: true,
+          extraHeaders: (url) => {
+            if (new URL(url).pathname === "/stop") throw new Error("blocked hop");
+            return {};
+          },
+        }),
+      ).rejects.toThrow("blocked hop");
+      expect(paths).toEqual(["/a"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("303 switches to GET and a cross-origin hop drops credential headers", async () => {
+    const a = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: (r) =>
+        new Response(JSON.stringify({ method: r.method, auth: r.headers.get("authorization") })),
+    });
+    const b = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        new Response(null, { status: 303, headers: { Location: `http://127.0.0.1:${a.port}/x` } }),
+    });
+    try {
+      const result = await fetchWithJar(`http://127.0.0.1:${b.port}/p`, {
+        method: "POST",
+        body: "x",
+        headers: { Authorization: "Bearer secret" },
+        clientRedirects: true,
+      });
+      expect(JSON.parse(result.body)).toEqual({ method: "GET", auth: null });
+    } finally {
+      a.stop(true);
+      b.stop(true);
+    }
+  });
+});

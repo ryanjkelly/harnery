@@ -52,6 +52,13 @@ export interface FetchOptions<TResponseType extends FetchResponseType = "text"> 
   extraCookies?: ExtraCookies;
   /** Response body representation. Default `text`; use `bytes` for lossless file output. */
   responseType?: TResponseType;
+  /**
+   * With `redirect: "follow"`, follow redirects in this client instead of the
+   * runtime's fetch. Every hop then gets its own cookie header, `extraHeaders`
+   * call, and Set-Cookie persistence, so a caller that inspects those can stop
+   * a chain between hops. Credential headers are dropped on a cross-origin hop.
+   */
+  clientRedirects?: boolean;
 }
 
 type FetchBody<TResponseType extends FetchResponseType> = TResponseType extends "bytes"
@@ -76,7 +83,49 @@ export interface FetchResult<TBody = string> {
  * Streams aren't supported; this is a CLI helper, not a streaming HTTP
  * client. Use Bun's `fetch` directly for streaming workloads.
  */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_CLIENT_REDIRECTS = 20;
+
 export async function fetchWithJar<TResponseType extends FetchResponseType = "text">(
+  url: string,
+  opts: FetchOptions<TResponseType> = {},
+): Promise<FetchResult<FetchBody<TResponseType>>> {
+  if (!opts.clientRedirects || (opts.redirect ?? "follow") !== "follow")
+    return fetchOnce(url, opts);
+
+  let current = url;
+  let method = opts.method ?? "GET";
+  let body = opts.body;
+  let headers = opts.headers;
+  let cookiesSaved = 0;
+  for (let hop = 0; ; hop++) {
+    const result = await fetchOnce(current, { ...opts, method, body, headers, redirect: "manual" });
+    cookiesSaved += result.cookiesSaved;
+    const location = result.headers.location;
+    if (!REDIRECT_STATUSES.has(result.status) || !location) return { ...result, cookiesSaved };
+    if (hop >= MAX_CLIENT_REDIRECTS) {
+      throw new Error(`Too many redirects (more than ${MAX_CLIENT_REDIRECTS}) starting at ${url}`);
+    }
+    const next = new URL(location, current);
+    if (
+      result.status === 303 ||
+      ((result.status === 301 || result.status === 302) && method !== "GET" && method !== "HEAD")
+    ) {
+      method = "GET";
+      body = undefined;
+    }
+    if (next.origin !== new URL(current).origin && headers) {
+      headers = Object.fromEntries(
+        Object.entries(headers).filter(
+          ([name]) => !["authorization", "cookie"].includes(name.toLowerCase()),
+        ),
+      );
+    }
+    current = next.href;
+  }
+}
+
+async function fetchOnce<TResponseType extends FetchResponseType = "text">(
   url: string,
   opts: FetchOptions<TResponseType> = {},
 ): Promise<FetchResult<FetchBody<TResponseType>>> {
