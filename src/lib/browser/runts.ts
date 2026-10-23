@@ -128,34 +128,78 @@ export function buildRuntsCheck(): (args: {
       }
       scanned++;
 
-      // Map every word to its visual line by rounding the Range rect top.
-      const lines = new Map<number, { words: string[]; last: DOMRect; node: Node }>();
-      const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      // Inline markup does not create word boundaries. Keep offsets into the
+      // original text nodes so one Range can measure a word split by emphasis
+      // or followed by punctuation in a separate node. BR still separates words.
+      const segments: Array<{ node: Text; start: number; end: number }> = [];
+      let content = "";
+      const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
       for (let n = tw.nextNode(); n; n = tw.nextNode()) {
+        if (n instanceof Element && n.tagName === "BR") content += "\n";
+        if (n.nodeType !== Node.TEXT_NODE) continue;
         const value = n.nodeValue ?? "";
-        for (const m of value.matchAll(/\S+/g)) {
-          const r = document.createRange();
-          r.setStart(n, m.index);
-          r.setEnd(n, m.index + m[0].length);
-          const rect = r.getBoundingClientRect();
-          if (!rect.width) continue;
-          const top = Math.round(rect.top);
-          const entry = lines.get(top);
-          if (entry) {
-            entry.words.push(m[0]);
-            entry.last = rect;
-            entry.node = n;
-          } else {
-            lines.set(top, { words: [m[0]], last: rect, node: n });
+        segments.push({
+          node: n as Text,
+          start: content.length,
+          end: content.length + value.length,
+        });
+        content += value;
+      }
+      type Word = { value: string; rect: DOMRect; node: Node };
+      const lines: Array<{ top: number; bottom: number; words: Map<number, Word> }> = [];
+      let segmentIndex = 0;
+      for (const m of content.matchAll(/\S+/g)) {
+        const lexical = /[\p{L}\p{N}]/u.exec(m[0]);
+        if (!lexical) continue; // punctuation alone is not an orphan word
+        const end = m.index + m[0].length;
+        while (segments[segmentIndex] && segments[segmentIndex]!.end <= m.index) segmentIndex++;
+        const first = segments[segmentIndex];
+        if (!first) continue;
+        let endIndex = segmentIndex;
+        while (segments[endIndex] && segments[endIndex]!.end < end) endIndex++;
+        const final = segments[endIndex];
+        if (!final) continue;
+        let wordIndex = segmentIndex;
+        while (segments[wordIndex]!.end <= m.index + lexical.index) wordIndex++;
+        const wordNode = segments[wordIndex]!.node;
+        const range = document.createRange();
+        range.setStart(first.node, m.index - first.start);
+        range.setEnd(final.node, end - final.start);
+        for (const rect of range.getClientRects()) {
+          if (!rect.width || !rect.height) continue;
+          // Different inline fonts have different glyph tops on the same line.
+          // Require substantial vertical overlap rather than exact rounded tops.
+          let line = lines.find(
+            (candidate) =>
+              Math.min(candidate.bottom, rect.bottom) - Math.max(candidate.top, rect.top) >
+              Math.min(candidate.bottom - candidate.top, rect.height) / 2,
+          );
+          if (!line) {
+            line = { top: rect.top, bottom: rect.bottom, words: new Map() };
+            lines.push(line);
           }
+          line.top = Math.min(line.top, rect.top);
+          line.bottom = Math.max(line.bottom, rect.bottom);
+          const previous = line.words.get(m.index)?.rect;
+          const box = previous
+            ? new DOMRect(
+                Math.min(previous.left, rect.left),
+                Math.min(previous.top, rect.top),
+                Math.max(previous.right, rect.right) - Math.min(previous.left, rect.left),
+                Math.max(previous.bottom, rect.bottom) - Math.min(previous.top, rect.top),
+              )
+            : rect;
+          line.words.set(m.index, { value: m[0], rect: box, node: wordNode });
         }
       }
-      const tops = [...lines.keys()].sort((a, b) => a - b);
-      if (tops.length < 2) continue; // single line, no runt risk
-      const lastTop = tops[tops.length - 1];
-      const last = lastTop === undefined ? undefined : lines.get(lastTop);
-      if (last?.words.length !== 1) continue;
-      const word = last.words[0] ?? "";
+      lines.sort((a, b) => a.top - b.top);
+      if (lines.length < 2) continue; // single line, no runt risk
+      const lastLine = lines[lines.length - 1];
+      if (lastLine?.words.size !== 1) continue;
+      const [wordOffset, last] = [...lastLine.words.entries()][0]!;
+      // A word split across visual lines is not a separate final orphan word.
+      if (lines.slice(0, -1).some((line) => line.words.has(wordOffset))) continue;
+      const word = last.value;
       if (ATOMIC.test(word)) continue;
       // A chip is not prose. A lone token whose glyphs live inside a padded,
       // boxed inline element (a <code> chip, pill, or badge) is a UI control:
@@ -165,11 +209,7 @@ export function buildRuntsCheck(): (args: {
       // inline ancestry (tag-based, since flex/grid parents blockify computed
       // display) and skip the finding when a chip hosts it.
       const chipHosted = (() => {
-        for (
-          let e = last.node.parentElement;
-          e && e !== el && INLINE.has(e.tagName);
-          e = e.parentElement
-        ) {
+        for (let e = last.node.parentElement; e && INLINE.has(e.tagName); e = e.parentElement) {
           const cs = getComputedStyle(e);
           const padX =
             (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
@@ -177,6 +217,7 @@ export function buildRuntsCheck(): (args: {
             (cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent") ||
             (Number.parseFloat(cs.borderTopWidth) || 0) > 0;
           if (padX > 0 && boxed) return true;
+          if (e === el) break;
         }
         return false;
       })();
@@ -187,12 +228,12 @@ export function buildRuntsCheck(): (args: {
         word,
         snippet: text.replace(/\s+/g, " ").trim().slice(0, 80),
         rect: {
-          x: Math.round(last.last.x + sx),
-          y: Math.round(last.last.y + sy),
-          width: Math.round(last.last.width),
-          height: Math.round(last.last.height),
+          x: Math.round(last.rect.x + sx),
+          y: Math.round(last.rect.y + sy),
+          width: Math.round(last.rect.width),
+          height: Math.round(last.rect.height),
         },
-        lines: tops.length,
+        lines: lines.length,
       });
       if (runts.length >= RUNT_CAP) {
         truncated = true;

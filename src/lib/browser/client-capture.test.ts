@@ -48,6 +48,11 @@ for (const dpr of [1, 2])
       }
       expect(await browser.currentPage.evaluate(() => scrollY)).toBe(prior.y);
       expect(
+        await browser.currentPage.evaluate(() =>
+          document.querySelector("header")!.getAttribute("style"),
+        ),
+      ).toBe(prior.style);
+      expect(
         await browser.currentPage.evaluate(() => document.querySelector("header")!.style.opacity),
       ).toBe("");
       expect(
@@ -60,6 +65,11 @@ for (const dpr of [1, 2])
       ).rejects.toThrow("not reachable");
       expect(await browser.currentPage.evaluate(() => scrollY)).toBe(prior.y);
       expect(
+        await browser.currentPage.evaluate(() =>
+          document.querySelector("header")!.getAttribute("style"),
+        ),
+      ).toBe(prior.style);
+      expect(
         await browser.currentPage.evaluate(
           () => getComputedStyle(document.querySelector("header")!).opacity,
         ),
@@ -68,6 +78,77 @@ for (const dpr of [1, 2])
       await browser.close();
     }
   }, 30000);
+
+test("native capture restores exact source after deferred scroll effects finish", async () => {
+  const profile = mkdtempSync(join(tmpdir(), "native-source-restore-"));
+  profiles.push(profile);
+  const browser = new Browser({
+    profileDir: profile,
+    viewport: { width: 320, height: 240 },
+    jar: null,
+  });
+  try {
+    await browser.open();
+    await browser.currentPage.setContent(`<!doctype html>
+      <style>html,body{margin:0}body{height:960px}header{position:fixed;top:0}</style>
+      <header><span data-position="top">Top</span></header>
+      <script>addEventListener("scroll",()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{
+        const status=document.querySelector("span");
+        status.dataset.position=scrollY===0?"top":"away";
+        status.textContent=scrollY===0?"Top":"Away";
+      })));</script>`);
+    await browser.waitForReviewReady();
+    const before = await browser.qaSignature();
+    await browser.captureRegionsByScroll([
+      { x: 0, y: 0, width: 320, height: 480 },
+      { x: 0, y: 480, width: 320, height: 480 },
+    ]);
+    expect(await browser.currentPage.evaluate(() => scrollY)).toBe(0);
+    expect(await browser.qaSignature()).toEqual(before);
+  } finally {
+    await browser.close();
+  }
+}, 15000);
+
+test("native capture preserves a concurrent page style mutation for source refusal", async () => {
+  const profile = mkdtempSync(join(tmpdir(), "native-source-mutation-"));
+  profiles.push(profile);
+  const browser = new Browser({
+    profileDir: profile,
+    viewport: { width: 320, height: 240 },
+    jar: null,
+  });
+  try {
+    await browser.open();
+    await browser.currentPage.setContent(
+      '<style>html,body{margin:0}body{height:960px}header{position:fixed;top:0}</style><header style="color: red">Pinned</header>',
+    );
+    await browser.waitForReviewReady();
+    const before = await browser.qaSignature();
+    const page = browser.currentPage;
+    const screenshot = page.screenshot.bind(page);
+    let changed = false;
+    page.screenshot = async (options) => {
+      if (!changed && (await page.evaluate(() => scrollY)) > 0) {
+        changed = true;
+        await page.evaluate(() => {
+          document.querySelector("header")!.style.setProperty("color", "blue", "important");
+        });
+      }
+      return screenshot(options);
+    };
+    await expect(
+      browser.captureRegionByScroll({ x: 0, y: 240, width: 320, height: 480 }),
+    ).rejects.toThrow("Pinned styles changed");
+    expect(changed).toBe(true);
+    expect(await page.evaluate(() => scrollY)).toBe(0);
+    expect(await page.evaluate(() => document.querySelector("header")!.style.color)).toBe("blue");
+    expect(await page.evaluate(() => document.querySelector("header")!.style.opacity)).toBe("");
+    expect(await browser.qaSignature()).not.toEqual(before);
+  } finally {
+    await browser.close();
+  }
+}, 15000);
 
 test("page-review readiness accepts finite late head initialization within the deadline", async () => {
   const profile = mkdtempSync(join(tmpdir(), "native-readiness-finite-"));

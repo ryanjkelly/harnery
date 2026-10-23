@@ -339,6 +339,87 @@ describe("browse layout lint", () => {
     }
   });
 
+  test("runt tokens preserve inline words and ignore punctuation-only line artifacts", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      await browser.evaluate(`(() => {
+        const root=document.createElement("section");root.id="runt-token-controls";
+        root.innerHTML='<style>#runt-token-controls p{width:600px;font:16px/24px monospace}#runt-punctuation code{font-size:14px;vertical-align:4px}</style>'+
+          '<p id="runt-punctuation">Several ordinary words first<br><code>alpha beta</code>.</p>'+
+          '<p id="runt-split-word">Several ordinary words first<br>ome<strong>ga</strong>.</p>'+
+          '<p id="runt-plain-word">Several ordinary words first<br>omega.</p>'+
+          '<p id="runt-two-words">Several ordinary words first<br>al<strong>pha</strong> beta.</p>';
+        document.body.append(root);
+      })()`);
+      for (const scope of ["#runt-punctuation", "#runt-two-words"]) {
+        expect(await browser.checkRunts({ scope, minChars: 1 })).toMatchObject({
+          outcome: "pass",
+          truncated: false,
+          runts: [],
+        });
+      }
+      for (const scope of ["#runt-split-word", "#runt-plain-word"]) {
+        const result = await browser.checkRunts({ scope, minChars: 1 });
+        expect(result.outcome).toBe("fail");
+        expect(result.runts).toHaveLength(1);
+        expect(result.runts[0]?.word).toBe("omega.");
+        expect(result.runts[0]?.lines).toBe(2);
+      }
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test("runt tokens exempt a boxed code root without excluding ordinary code", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      await browser.evaluate(`(() => {
+        const root=document.createElement("section");root.id="runt-code-controls";
+        root.innerHTML='<style>#runt-code-controls code{display:inline-block;font:16px/24px monospace}#runt-boxed-root{background:#eef;border:1px solid #99c;padding:1px 4px}</style>'+
+          '<code id="runt-boxed-root">Several ordinary words first<br>omega</code>'+
+          '<code id="runt-unboxed-root">Several ordinary words first<br>omega</code>';
+        document.body.append(root);
+      })()`);
+      expect(await browser.checkRunts({ scope: "#runt-boxed-root", minChars: 1 })).toMatchObject({
+        outcome: "pass",
+        truncated: false,
+        runts: [],
+      });
+      const plain = await browser.checkRunts({ scope: "#runt-unboxed-root", minChars: 1 });
+      expect(plain.outcome).toBe("fail");
+      expect(plain.runts).toHaveLength(1);
+      expect(plain.runts[0]?.word).toBe("omega");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test("runt tokens retain an unknown result when the block cap is reached", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      await browser.evaluate(`(() => {
+        const root=document.createElement("section");root.id="runt-cap-control";
+        root.innerHTML='<p style="width:600px">Ordinary complete line</p>'.repeat(5001);
+        document.body.append(root);
+      })()`);
+      expect(await browser.checkRunts({ scope: "#runt-cap-control", minChars: 1 })).toMatchObject({
+        found: true,
+        outcome: "unknown",
+        scannedBlocks: 5000,
+        truncated: true,
+        runts: [],
+      });
+    } finally {
+      await browser.close();
+    }
+  });
+
   test(
     "CLI fail flags cannot silently skip their checks",
     () => {

@@ -876,24 +876,31 @@ export class Browser {
           `captureRegionByScroll: rect must have a positive size (got ${rect.width}×${rect.height})`,
         );
       }
-    const settle = (top: number) =>
-      page.evaluate(async (target: number) => {
-        window.scrollTo({ left: window.scrollX, top: target, behavior: "instant" });
-        const frame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
-        let last = Number.NaN;
-        for (let i = 0; i < 8; i++) {
-          await frame();
-          const now = window.scrollY;
-          if (now === last) break;
-          last = now;
-        }
-        return {
-          scrollX: window.scrollX,
-          scrollY: window.scrollY,
-          innerWidth: window.innerWidth,
-          innerHeight: window.innerHeight,
-        };
-      }, top);
+    const settle = (top: number, left?: number) =>
+      page.evaluate(
+        async (target: { top: number; left?: number }) => {
+          window.scrollTo({
+            left: target.left ?? window.scrollX,
+            top: target.top,
+            behavior: "instant",
+          });
+          const frame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+          let last = Number.NaN;
+          for (let i = 0; i < 8; i++) {
+            await frame();
+            const now = window.scrollY;
+            if (now === last) break;
+            last = now;
+          }
+          return {
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+          };
+        },
+        { top, left },
+      );
     const original = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
     const captures: Buffer[] = [];
     // Viewport-pinned candidates, measured at scroll 0 so each later capture
@@ -912,6 +919,8 @@ export class Browser {
         priorOpacityPriority: string;
         priorTransition: string;
         priorTransitionPriority: string;
+        priorStyle: string | null;
+        appliedStyle?: string;
       }> = [];
       // Fixed controls can live inside a static shadow host. Walk open roots
       // without hiding their ordinary content or exceeding the total node cap.
@@ -935,6 +944,7 @@ export class Browser {
           priorOpacityPriority: el.style.getPropertyPriority("opacity"),
           priorTransition: el.style.getPropertyValue("transition"),
           priorTransitionPriority: el.style.getPropertyPriority("transition"),
+          priorStyle: el.getAttribute("style"),
         });
       }
       return out;
@@ -944,16 +954,36 @@ export class Browser {
         async ([entries, action]) => {
           for (const entry of entries) {
             const restore = () => {
+              if (entry.appliedStyle === undefined) return;
+              const unchanged = entry.el.getAttribute("style") === entry.appliedStyle;
               // Restore opacity while transitions are still disabled. Restoring both
               // declarations in one style flush starts a new fade from zero.
-              entry.el.style.setProperty("transition", "none", "important");
-              entry.el.style.setProperty("opacity", entry.priorOpacity, entry.priorOpacityPriority);
+              if (
+                entry.el.style.getPropertyValue("opacity") === "0" &&
+                entry.el.style.getPropertyPriority("opacity") === "important"
+              )
+                entry.el.style.setProperty(
+                  "opacity",
+                  entry.priorOpacity,
+                  entry.priorOpacityPriority,
+                );
               void getComputedStyle(entry.el).opacity;
-              entry.el.style.setProperty(
-                "transition",
-                entry.priorTransition,
-                entry.priorTransitionPriority,
-              );
+              if (
+                entry.el.style.getPropertyValue("transition") === "none" &&
+                entry.el.style.getPropertyPriority("transition") === "important"
+              )
+                entry.el.style.setProperty(
+                  "transition",
+                  entry.priorTransition,
+                  entry.priorTransitionPriority,
+                );
+              // Preserve the exact original attribute, including its absence. Do
+              // not replace styles changed by the page while our override was active.
+              if (unchanged) {
+                if (entry.priorStyle === null) entry.el.removeAttribute("style");
+                else entry.el.setAttribute("style", entry.priorStyle);
+              }
+              entry.appliedStyle = undefined;
             };
             if (action === "restore") {
               restore();
@@ -961,8 +991,21 @@ export class Browser {
             }
             const now = entry.el.getBoundingClientRect().top + window.scrollY;
             if (Math.abs(now - entry.top) > 1) {
+              if (entry.appliedStyle !== undefined) {
+                if (entry.el.getAttribute("style") !== entry.appliedStyle)
+                  throw new Error(
+                    "Pinned styles changed during native capture; source is unstable.",
+                  );
+                continue;
+              }
+              entry.priorStyle = entry.el.getAttribute("style");
+              entry.priorOpacity = entry.el.style.getPropertyValue("opacity");
+              entry.priorOpacityPriority = entry.el.style.getPropertyPriority("opacity");
+              entry.priorTransition = entry.el.style.getPropertyValue("transition");
+              entry.priorTransitionPriority = entry.el.style.getPropertyPriority("transition");
               entry.el.style.setProperty("transition", "none", "important");
               entry.el.style.setProperty("opacity", "0", "important");
+              entry.appliedStyle = entry.el.getAttribute("style")!;
             } else {
               restore();
             }
@@ -1018,11 +1061,8 @@ export class Browser {
         await syncPinned("restore");
       } finally {
         await pinned.dispose();
-        await page.evaluate(
-          ({ x, y }: { x: number; y: number }) =>
-            window.scrollTo({ left: x, top: y, behavior: "instant" }),
-          original,
-        );
+        await settle(original.y, original.x);
+        await this.waitForReviewReady();
       }
     }
     return captures;
