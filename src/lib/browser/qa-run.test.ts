@@ -434,6 +434,52 @@ function makeFakeExec(config: FakeExecConfig): {
 }
 
 describe("runQaMatrix", () => {
+  test.each([
+    { budget: 2576, args: ["--check-critique-band", "2000"], expected: "2000" },
+    { budget: 1568, args: ["--check-critique-band", "2000"], expected: "1568" },
+    { budget: undefined, args: ["--check-critique-band", "2000"], expected: "1400" },
+    { budget: Number.NaN, args: ["--check-critique-band", "2000"], expected: "1400" },
+    { budget: 2576, args: [], expected: "1400" },
+    { budget: 2576, args: ["--check-critique-band=1800"], expected: "1800" },
+  ])("planner and capture share the explicit band bounded by route metadata: %j", async ({
+    budget,
+    args,
+    expected,
+  }) => {
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts: [{ viewport: "desktop", theme: "light", state: "default" }],
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+    });
+    fake.provider!.tileBudgetPx = budget;
+    const result = await runQaMatrix({
+      job: job({
+        contexts: [
+          {
+            id: "desktop-light-default",
+            viewport: "desktop",
+            theme: "light",
+            state: "default",
+            args: [...args],
+          },
+        ],
+      }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.verdict).toBe("passed");
+    const renders = fake.calls.filter((call) => call.argv.includes("--review-pack-plan"));
+    expect(renders).toHaveLength(2);
+    expect(renders.some((call) => call.argv.includes("--review-pack"))).toBe(true);
+    for (const { argv } of renders) {
+      expect(argv[argv.lastIndexOf("--check-critique-band") + 1]).toBe(expected);
+    }
+  });
+
   test("fresh source replaces preliminary identity only with repeated checks and bound capture", async () => {
     const fake = makeFakeExec({
       planManifest: manifest({

@@ -911,10 +911,29 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       log(`critique provider failed to load: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  const bandArgs =
-    provider?.tileBudgetPx !== undefined
-      ? ["--check-critique-band", String(Math.max(200, Math.min(1400, provider.tileBudgetPx)))]
-      : [];
+  const bandArgs = (ctx: QaRunContext): string[] => {
+    const args = [
+      ...contextRenderArgs(ctx),
+      ...(job.checks ?? [])
+        .filter((check) => check.contexts === undefined || check.contexts.includes(ctx.id))
+        .flatMap((check) => check.args),
+    ];
+    let requested = "1400";
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "--check-critique-band") requested = args[i + 1] ?? "";
+      else if (args[i]?.startsWith("--check-critique-band=")) {
+        requested = args[i]!.slice("--check-critique-band=".length);
+      }
+    }
+    // A larger explicit request needs a declared route budget. Missing or
+    // invalid metadata must not turn capture planning into an unbounded path.
+    const budget = provider?.tileBudgetPx;
+    const cap = budget !== undefined && Number.isFinite(budget) && budget >= 200 ? budget : 1400;
+    return [
+      "--check-critique-band",
+      String(Math.max(200, Math.min(Number.parseInt(requested, 10), cap))),
+    ];
+  };
   const scopeArgs =
     visual === "full-page"
       ? []
@@ -961,7 +980,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
             "--qa-state",
             ctx.state,
             ...scopeArgs,
-            ...bandArgs,
+            ...bandArgs(ctx),
             ...critiqueMaxTilesArgs,
           ]
         : []),
@@ -1263,7 +1282,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
           .flatMap((check) => check.args),
         ...scopeArgs,
         ...critiqueMaxTilesArgs,
-        ...bandArgs,
+        ...bandArgs(ctx),
       ];
       log(
         `capture ${ctx.id}${scopeArgs.length > 0 ? ` [${manifest.scopes.map((s) => s.selector).join(",")}]` : ""}`,
