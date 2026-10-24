@@ -11,6 +11,21 @@ afterEach(() => {
   for (const p of profiles.splice(0)) rmSync(p, { recursive: true, force: true });
 });
 
+/**
+ * Settle a browser call before asserting on its rejection. Bun's
+ * `expect(pending).rejects` waits on the promise from a nested event loop that
+ * services the Playwright connection slowly: a refused capture took about 8 s
+ * that way and 0.26 s when awaited first, enough to time these tests out under load.
+ */
+async function rejectionOf(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+  } catch (error) {
+    return String(error);
+  }
+  throw new Error("Expected the browser call to reject.");
+}
+
 for (const dpr of [1, 2])
   test(`grouped native scroll capture preserves seams and restores pinned styles at DPR ${dpr}`, async () => {
     const profile = mkdtempSync(join(tmpdir(), "native-capture-"));
@@ -60,9 +75,11 @@ for (const dpr of [1, 2])
           () => getComputedStyle(document.querySelector("header")!).opacity,
         ),
       ).toBe("0.8");
-      await expect(
-        browser.captureRegionsByScroll([{ x: 0, y: 4000, width: 320, height: 100 }]),
-      ).rejects.toThrow("not reachable");
+      expect(
+        await rejectionOf(
+          browser.captureRegionsByScroll([{ x: 0, y: 4000, width: 320, height: 100 }]),
+        ),
+      ).toContain("not reachable");
       expect(await browser.currentPage.evaluate(() => scrollY)).toBe(prior.y);
       expect(
         await browser.currentPage.evaluate(() =>
@@ -137,9 +154,9 @@ test("native capture preserves a concurrent page style mutation for source refus
       }
       return screenshot(options);
     };
-    await expect(
-      browser.captureRegionByScroll({ x: 0, y: 240, width: 320, height: 480 }),
-    ).rejects.toThrow("Pinned styles changed");
+    expect(
+      await rejectionOf(browser.captureRegionByScroll({ x: 0, y: 240, width: 320, height: 480 })),
+    ).toContain("Pinned styles changed");
     expect(changed).toBe(true);
     expect(await page.evaluate(() => scrollY)).toBe(0);
     expect(await page.evaluate(() => document.querySelector("header")!.style.color)).toBe("blue");
@@ -182,9 +199,9 @@ test("page-review readiness refuses a continuously changing DOM", async () => {
     await browser.currentPage.setContent(
       '<p>Loading</p><script>let frame=0;function change(){document.querySelector("p").setAttribute("data-frame",String(frame++));requestAnimationFrame(change);}requestAnimationFrame(change);</script>',
     );
-    await expect(browser.waitForReviewReady(250)).rejects.toThrow("did not settle");
-    await expect(browser.waitForReviewReady(0)).rejects.toThrow("timeoutMs");
-    await expect(browser.waitForReviewReady(60_001)).rejects.toThrow("timeoutMs");
+    expect(await rejectionOf(browser.waitForReviewReady(250))).toContain("did not settle");
+    expect(await rejectionOf(browser.waitForReviewReady(0))).toContain("timeoutMs");
+    expect(await rejectionOf(browser.waitForReviewReady(60_001))).toContain("timeoutMs");
   } finally {
     await browser.close();
   }
@@ -207,13 +224,11 @@ for (const dpr of [1, 2])
       );
       await browser.waitForReviewReady();
       expect((await browser.pageMetrics()).scrollHeight).toBe(8375);
-      let failure: unknown;
-      try {
-        await browser.captureRegionByScroll({ x: 0, y: 6889, width: 390, height: 1486 });
-      } catch (error) {
-        failure = error;
-      }
-      expect(String(failure)).toContain("document y 8374 is not reachable");
+      expect(
+        await rejectionOf(
+          browser.captureRegionByScroll({ x: 0, y: 6889, width: 390, height: 1486 }),
+        ),
+      ).toContain("document y 8374 is not reachable");
       expect((await browser.pageMetrics()).scrollHeight).toBe(8374);
       expect(await browser.currentPage.evaluate(() => scrollY)).toBe(0);
       const image = PNG.sync.read(
@@ -225,9 +240,9 @@ for (const dpr of [1, 2])
       });
       const lastPixel = ((image.height - 1) * image.width + 30 * dpr) * 4;
       expect([...image.data.subarray(lastPixel, lastPixel + 4)]).toEqual([255, 0, 0, 255]);
-      await expect(
-        browser.captureRegionByScroll({ x: 0, y: 8374, width: 390, height: 1 }),
-      ).rejects.toThrow("not reachable");
+      expect(
+        await rejectionOf(browser.captureRegionByScroll({ x: 0, y: 8374, width: 390, height: 1 })),
+      ).toContain("not reachable");
       expect(await browser.currentPage.evaluate(() => scrollY)).toBe(0);
     } finally {
       await browser.close();
@@ -286,13 +301,9 @@ test("stitched captures suppress nested shadow fixed controls without hiding sta
     expect(colorCount(first, [0, 0, 255, 255])).toBe(900);
     expect(colorCount(PNG.sync.read(shots[1]), [255, 0, 0, 255])).toBe(0);
     expect(await state()).toEqual(before);
-    let failure: unknown;
-    try {
-      await browser.captureRegionByScroll({ x: 0, y: 2000, width: 320, height: 100 });
-    } catch (error) {
-      failure = error;
-    }
-    expect(String(failure)).toContain("not reachable");
+    expect(
+      await rejectionOf(browser.captureRegionByScroll({ x: 0, y: 2000, width: 320, height: 100 })),
+    ).toContain("not reachable");
     expect(await state()).toEqual(before);
   } finally {
     await browser.close();
