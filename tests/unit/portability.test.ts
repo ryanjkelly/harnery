@@ -34,6 +34,29 @@ describe("portability", () => {
     }
   });
 
+  test("worktree mode skips gitignored runtime files but scans untracked ones", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-portability-ignored-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+    try {
+      git("init", "-q");
+      writeFileSync(join(root, ".gitignore"), ".cache/\ndocs/local-notes.md\n");
+      const custody = join(root, "web", ".cache", "managed-build-custody", "abc123");
+      mkdirSync(custody, { recursive: true });
+      writeFileSync(join(custody, "owner-1.json"), '{ "repo": "bp-company" }\n');
+      mkdirSync(join(root, "docs"));
+      writeFileSync(join(root, "docs", "local-notes.md"), "merchant BARTN\n");
+      expect(scanPortability(root)).toEqual([]);
+
+      writeFileSync(join(root, "docs", "draft.md"), "merchant BARTN\n");
+      expect(scanPortability(root)).toEqual([
+        expect.objectContaining({ file: "docs/draft.md", line: 1 }),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("no host-specific tokens in committable source", () => {
     const root = join(import.meta.dir, "..", "..");
     const violations = scanPortability(root);

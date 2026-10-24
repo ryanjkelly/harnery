@@ -89,6 +89,7 @@ const SKIP_DIR = new Set([
   ".astro",
   ".turbo",
   ".vercel",
+  ".cache",
 ]);
 /** The guard + its test embed the patterns/examples by nature; never scan them. */
 const SELF = new Set(["scripts/check-portability.ts", "tests/unit/portability.test.ts"]);
@@ -113,6 +114,21 @@ function git(root: string, args: string[]): string {
     throw new Error((result.stderr || result.stdout || `git ${args[0]} failed`).trim());
   }
   return result.stdout;
+}
+
+/** Tracked and untracked-unignored paths relative to `root`, or null outside Git. */
+function gitWorktreeFiles(root: string): string[] | null {
+  const result = spawnSync(
+    "git",
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
+  if (result.status !== 0) return null;
+  return [...new Set(result.stdout.split("\0").filter(Boolean))];
 }
 
 function isScannableFile(path: string): boolean {
@@ -192,6 +208,24 @@ export function scanPortability(root: string, source: PortabilitySource = "workt
           maxBuffer: 16 * 1024 * 1024,
         });
         return content.status === 0 ? [{ path, content: content.stdout }] : [];
+      }),
+    );
+  }
+
+  // Inside a Git checkout, worktree mode scans tracked plus untracked-but-not-
+  // ignored files, so gitignored runtime output (a supervised dashboard's
+  // web/.cache build-custody records, say) never fails a local run that CI's
+  // clean checkout would pass. Outside Git, fall back to walking the roots.
+  const listed = gitWorktreeFiles(root);
+  if (listed) {
+    return scanFiles(
+      listed.flatMap((rel) => {
+        if (!isScannableFile(rel) || rel.split("/").some((part) => SKIP_DIR.has(part))) return [];
+        try {
+          return [{ path: rel, content: readFileSync(join(root, rel), "utf8") }];
+        } catch {
+          return []; // deleted from the worktree, or a submodule gitlink
+        }
       }),
     );
   }
