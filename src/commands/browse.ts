@@ -137,10 +137,19 @@ import {
   keepWindowsChromeSession,
   stopWindowsChromeProfile,
   windowsChromePath,
+  windowsChromeProfileProcesses,
   windowsLocalAppData,
+  windowsPathToWsl,
   windowsPlainProfile,
   wslPathToWindows,
 } from "../lib/browser/windows-chrome.ts";
+import {
+  type LoginSyncDeps,
+  type LoginSyncResult,
+  profileCookieDbMtimeMs,
+  recordLoginSync,
+  syncLoginCookies,
+} from "../lib/browser/windows-login-sync.ts";
 import { applyExtraCookies, CookieJar, mergeCookies } from "../lib/cookies/index.ts";
 import { commandPaceGate } from "../lib/pace/index.ts";
 
@@ -216,6 +225,7 @@ interface BrowseOpts {
   collectOut?: string;
   networkHar?: string;
   login?: boolean;
+  syncLogin?: boolean;
   attached?: boolean;
   loginCloseFile?: string;
   controlFile?: string;
@@ -352,6 +362,7 @@ const VIEWPORT_PRESETS: Record<string, { width: number; height: number }> = {
 // cookies/read: the many helper functions in this large file close over
 // `emit` so action callbacks stay concise.
 let emit: EmitContext;
+let browseBinName = "harn";
 
 export function registerBrowseCommand(
   program: Command,
@@ -360,6 +371,7 @@ export function registerBrowseCommand(
   binName = resolveBinName(),
 ): void {
   emit = emitParam;
+  browseBinName = binName;
   program
     .command("browse <url>")
     .description(
@@ -471,9 +483,17 @@ export function registerBrowseCommand(
     .option(
       "--login",
       "Open the URL in the installed Google Chrome with nothing attached (no DevTools protocol, no " +
-        "Playwright) so a person can sign in; under WSL this is the Windows host's Chrome. Sign in, then " +
-        "close the window or create the --login-close-file; later browse and browse-session runs reuse " +
-        "the cookies. Sites cannot tell this window from the person's own browser.",
+        "Playwright) so a person can sign in; under WSL this is the Windows host's Chrome on a dedicated " +
+        "sign-in profile. Sign in, then close the window or create the --login-close-file; later browse " +
+        "and browse-session runs reuse the cookies. Under WSL the profile can also stay in use as an " +
+        "ordinary browser: each headless browse copies the target site's cookies from it when it changed " +
+        "and is closed, and an open profile is left alone (see --sync-login). Sites cannot tell this " +
+        "window from the person's own browser.",
+    )
+    .option(
+      "--sync-login",
+      "WSL only: copy the URL's site cookies from the Windows sign-in profile into the cookie store " +
+        "now, then exit without loading the page. Refuses while Chrome is open on that profile.",
     )
     .option(
       "--attached",
@@ -1077,6 +1097,13 @@ async function runBrowse(
     );
   }
 
+  if (opts.syncLogin) {
+    if (opts.login) throw new Error("--sync-login cannot run with --login.");
+    if (!jar) throw new Error("--sync-login needs the cookie store; drop --no-cookies.");
+    runSyncLogin(url, jar.path);
+    return;
+  }
+
   const collectPlan = opts.collect ? buildCollectPlan(opts) : null;
 
   const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
@@ -1095,6 +1122,8 @@ async function runBrowse(
     await runPlainLogin(url, opts.profile ?? DEFAULT_PROFILE, loginCloseFile, plainUa, emit);
     return;
   }
+
+  if (jar && loginMode === "none") autoSyncLoginCookies(url, jar.path);
 
   const channel = resolveBrowserChannel(opts, Boolean(headed));
   const userAgent = resolveUserAgent({
@@ -3491,6 +3520,125 @@ async function runPlainLogin(
 }
 
 /**
+ * The WSL sign-in profile and the operations the cookie sync needs, or
+ * `undefined` when this machine has none (not WSL, no Windows Chrome, or
+ * `HARNERY_BROWSER_WSL_PLAIN=linux`).
+ */
+function windowsLoginProfile(): { profileWindows: string; deps: LoginSyncDeps } | undefined {
+  if (!useWindowsPlainLogin()) return undefined;
+  const chromeLinux = windowsChromePath();
+  const localAppData = windowsLocalAppData();
+  if (!chromeLinux || !localAppData) return undefined;
+  const chromeWindows = wslPathToWindows(chromeLinux);
+  const profileWindows = windowsPlainProfile(localAppData);
+  const profileLinux = windowsPathToWsl(profileWindows);
+  return {
+    profileWindows,
+    deps: {
+      cookieDbMtimeMs: () => profileCookieDbMtimeMs(profileLinux),
+      profileProcesses: () => windowsChromeProfileProcesses(profileWindows),
+      harvest: (domain) =>
+        harvestWindowsChromeCookies({
+          chromeWindows,
+          profileWindows,
+          domain,
+          pageTimeoutSeconds: 0,
+        }),
+    },
+  };
+}
+
+/** One-line summary of a sync that read cookies. Names only, never values. */
+function loginSyncSummary(result: LoginSyncResult, storePath: string): string {
+  if (result.status === "synced") {
+    return `Copied ${result.merged} ${result.domain} cookies (${result.sessionCookies} browser-session) from the sign-in profile into ${storePath}: ${result.names.join(", ")}.`;
+  }
+  return `The sign-in profile's ${result.domain} cookies (${result.cookies}) match the last copy; the cookie store was left as it is.`;
+}
+
+/**
+ * Before a headless run under WSL, copy the target site's cookies from the
+ * sign-in profile when the profile changed since the last copy and no
+ * Chrome is open on it. Failures are warnings; the run continues.
+ * `HARNERY_BROWSER_LOGIN_SYNC=off` turns it off.
+ */
+function autoSyncLoginCookies(url: string, storePath: string): void {
+  if ((process.env.HARNERY_BROWSER_LOGIN_SYNC ?? "").toLowerCase() === "off") return;
+  let profile: ReturnType<typeof windowsLoginProfile>;
+  let domain: string;
+  try {
+    profile = windowsLoginProfile();
+    domain = harvestDomain(url);
+  } catch {
+    return;
+  }
+  if (!profile) return;
+  try {
+    const result = syncLoginCookies({ domain, storePath, deps: profile.deps });
+    if (result.status === "open") {
+      emit.log(
+        `[login-sync] The shared sign-in window (Windows Chrome on ${profile.profileWindows}) is open and changed since ${domain} cookies were last copied; this run uses the cookie store as it is. Its ${domain} session reaches headless runs after you close that window, or run \`${browseBinName} browse --sync-login ${url}\` once it is closed.`,
+        "info",
+      );
+    } else if (result.status === "busy") {
+      emit.log(
+        "[login-sync] Another run is copying sign-in cookies; this run did not wait.",
+        "debug",
+      );
+    } else if (result.status === "synced" || result.status === "unchanged") {
+      emit.log(`[login-sync] ${loginSyncSummary(result, storePath)}`, "info");
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emit.log(
+      `[login-sync] Could not copy ${domain} cookies from the sign-in profile; continuing with the cookie store as it is. ${message}`,
+      "warn",
+    );
+  }
+}
+
+/** `--sync-login`: copy the URL's site cookies from the sign-in profile now. */
+function runSyncLogin(url: string, storePath: string): void {
+  const profile = windowsLoginProfile();
+  if (!profile) {
+    throw new Error(
+      "--sync-login needs WSL with the Windows Google Chrome; this machine has no Windows sign-in profile.",
+    );
+  }
+  const domain = harvestDomain(url);
+  const result = syncLoginCookies({ domain, storePath, deps: profile.deps, force: true });
+  if (result.status === "no-profile") {
+    throw new Error(
+      `The sign-in profile ${profile.profileWindows} has no cookies yet; sign in with \`${browseBinName} browse --login ${url}\` first.`,
+    );
+  }
+  if (result.status === "open") {
+    throw new Error(
+      `Chrome is open on the sign-in profile ${profile.profileWindows} (process ${result.processes.join(", ")}). Close that window, then run --sync-login again.`,
+    );
+  }
+  if (result.status === "busy") {
+    throw new Error("Another run is copying sign-in cookies right now; try again in a moment.");
+  }
+  if (result.cookies === 0) {
+    emit.log(`[--sync-login] No ${domain} cookies were found in the sign-in profile.`, "warn");
+  } else {
+    emit.log(`[--sync-login] ${loginSyncSummary(result, storePath)}`, "info");
+  }
+  emit.data({
+    loginSync: {
+      domain,
+      store: storePath,
+      status: result.status,
+      cookies: result.cookies,
+      merged: result.merged,
+      sessionCookies: result.sessionCookies,
+      names: result.names,
+    },
+  });
+}
+
+/**
  * Under WSL, `--login` opens the Windows host's Google Chrome when one
  * is installed. Some sign-in flows reject every browser running inside WSL,
  * even a plain Linux Chrome, while the Windows desktop Chrome signs in
@@ -3566,6 +3714,16 @@ async function runWindowsPlainLogin(
   await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
   const domain = harvestDomain(url);
   const { cookies, pages } = harvestWindowsChromeCookies({ chromeWindows, profileWindows, domain });
+  try {
+    recordLoginSync({
+      domain,
+      storePath,
+      cookies,
+      cookieDbMtimeMs: profileCookieDbMtimeMs(windowsPathToWsl(profileWindows)),
+    });
+  } catch {
+    // The record only saves the next headless run a repeat read.
+  }
   const lastPage = pages[0] ?? null;
   const names = [...new Set(cookies.map((cookie) => cookie.name))].sort();
   const sessionCookies = cookies.filter((cookie) => cookie.expires <= 0).length;

@@ -479,6 +479,56 @@ export function stopWindowsChromeProfile(
   return parseStopOutput(result.stdout, profileWindows);
 }
 
+/**
+ * PowerShell that lists the Chrome processes running on the profile matched
+ * by `$Pattern` and prints their ids as a JSON array. It never closes them.
+ */
+export function runningScript(): string {
+  return [
+    "param([string]$Pattern)",
+    "$ErrorActionPreference = 'Stop'",
+    PROFILE_PROCESS_FUNCTION,
+    "$ids = @(Get-ProfileChrome | ForEach-Object { [int]$_.ProcessId })",
+    "[Console]::Out.Write((ConvertTo-Json -Compress -InputObject $ids))",
+  ].join("\r\n");
+}
+
+/** Parse the running script's stdout into process ids. */
+export function parseRunningOutput(stdout: string): number[] {
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  const parsed = JSON.parse(trimmed) as number | number[] | null;
+  if (parsed === null) return [];
+  return (Array.isArray(parsed) ? parsed : [parsed]).map(Number);
+}
+
+/**
+ * Ids of the Chrome processes running on `profileWindows`, for callers that
+ * must leave an open profile alone. Throws when the check cannot run.
+ */
+export function windowsChromeProfileProcesses(profileWindows: string): number[] {
+  const result = runPowerShellScript(
+    "profile-running",
+    runningScript(),
+    ["-Pattern", profileCommandLinePattern(profileWindows)],
+    30_000,
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `Checking for Chrome on ${profileWindows} failed: ${(result.stderr || result.stdout || result.error?.message || "no output").trim().slice(0, 400)}`,
+    );
+  }
+  return parseRunningOutput(result.stdout);
+}
+
+/** Linux form of a drive-letter Windows path (`C:\x` becomes `/mnt/c/x`). */
+export function windowsPathToWsl(windowsPath: string): string {
+  const match = /^([A-Za-z]):\\(.*)$/.exec(windowsPath);
+  if (!match) throw new Error(`Not a drive-letter path: ${windowsPath}`);
+  const rest = (match[2] ?? "").replace(/\\+/g, "/").replace(/\/+$/, "");
+  return `/mnt/${(match[1] as string).toLowerCase()}${rest ? `/${rest}` : ""}`;
+}
+
 /** Windows form of a `/mnt/<drive>/...` path. */
 export function wslPathToWindows(linuxPath: string): string {
   const match = /^\/mnt\/([a-z])\/(.*)$/.exec(linuxPath);
