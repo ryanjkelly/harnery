@@ -280,3 +280,137 @@ describe("fetchWithJar clientRedirects", () => {
     }
   });
 });
+
+describe("fetchWithJar host-only cookies", () => {
+  function serve(handler: (request: Request) => Response) {
+    return Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: handler });
+  }
+
+  test("a host-only cookie is not sent to a subdomain on a redirect, with or without clientRedirects", async () => {
+    const seen: (string | null)[] = [];
+    const target = serve((request) => {
+      seen.push(request.headers.get("cookie"));
+      return new Response("target");
+    });
+    const origin = serve(
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://evil.app.localhost:${target.port}/x` },
+        }),
+    );
+    const root = mkdtempSync(join(tmpdir(), "harnery-host-only-"));
+    roots.push(root);
+    try {
+      for (const clientRedirects of [undefined, true, false]) {
+        seen.length = 0;
+        const jar = new CookieJar({ path: join(root, `cookies-${String(clientRedirects)}.json`) });
+        jar.set({
+          name: "__Host-session",
+          value: "secret",
+          domain: "app.localhost",
+          path: "/",
+          expires: -1,
+          httpOnly: true,
+          secure: true,
+        });
+        const result = await fetchWithJar(`http://app.localhost:${origin.port}/start`, {
+          jar,
+          ...(clientRedirects === undefined ? {} : { clientRedirects }),
+        });
+        expect(result.body).toBe("target");
+        expect(new URL(result.url).hostname).toBe("evil.app.localhost");
+        expect(seen).toEqual([null]);
+      }
+    } finally {
+      origin.stop(true);
+      target.stop(true);
+    }
+  });
+
+  test("a host-only cookie follows a redirect that stays on its host", async () => {
+    const seen: (string | null)[] = [];
+    const server = serve((request) => {
+      const path = new URL(request.url).pathname;
+      seen.push(request.headers.get("cookie"));
+      return path === "/a"
+        ? new Response(null, { status: 302, headers: { Location: "/b" } })
+        : new Response("b");
+    });
+    const root = mkdtempSync(join(tmpdir(), "harnery-host-only-same-"));
+    roots.push(root);
+    try {
+      const jar = new CookieJar({ path: join(root, "cookies.json") });
+      jar.set({
+        name: "__Host-session",
+        value: "secret",
+        domain: "127.0.0.1",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+      });
+      await fetchWithJar(`http://127.0.0.1:${server.port}/a`, { jar });
+      expect(seen).toEqual(["__Host-session=secret", "__Host-session=secret"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("Set-Cookie rules: foreign Domain and broken prefixes are dropped, host-only is kept host-only", async () => {
+    const server = serve(() => {
+      const headers = new Headers();
+      headers.append("Set-Cookie", "__Host-ok=1; Path=/; Secure; HttpOnly");
+      headers.append("Set-Cookie", "__Host-wide=1; Path=/; Secure; Domain=127.0.0.1");
+      headers.append("Set-Cookie", "__Host-insecure=1; Path=/");
+      headers.append("Set-Cookie", "__Secure-insecure=1; Path=/");
+      headers.append("Set-Cookie", "foreign=1; Path=/; Domain=other.test");
+      headers.append("Set-Cookie", "plain=1; Path=/");
+      return new Response("ok", { headers });
+    });
+    const root = mkdtempSync(join(tmpdir(), "harnery-set-cookie-rules-"));
+    roots.push(root);
+    try {
+      const jar = new CookieJar({ path: join(root, "cookies.json") });
+      const result = await fetchWithJar(`http://127.0.0.1:${server.port}/`, { jar });
+      expect(result.cookiesSaved).toBe(2);
+      expect(jar.list().map((c) => `${c.name}@${c.domain}`)).toEqual([
+        "__Host-ok@127.0.0.1",
+        "plain@127.0.0.1",
+      ]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a legacy Domain cookie clear on a redirect hop reaches the jar", async () => {
+    const server = serve((request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/a") {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "/b", "Set-Cookie": "old=; Path=/; Max-Age=0" },
+        });
+      }
+      return new Response("b");
+    });
+    const root = mkdtempSync(join(tmpdir(), "harnery-hop-clear-"));
+    roots.push(root);
+    try {
+      const jar = new CookieJar({ path: join(root, "cookies.json") });
+      jar.set({
+        name: "old",
+        value: "x",
+        domain: "127.0.0.1",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: false,
+      });
+      await fetchWithJar(`http://127.0.0.1:${server.port}/a`, { jar });
+      expect(jar.list().map((c) => c.name)).toEqual([]);
+    } finally {
+      server.stop(true);
+    }
+  });
+});

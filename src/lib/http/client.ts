@@ -2,7 +2,9 @@ import {
   applyExtraCookies,
   type Cookie,
   type CookieJar,
+  domainMatches,
   type ExtraCookies,
+  violatesCookiePrefix,
 } from "../cookies/index.ts";
 
 /**
@@ -57,6 +59,8 @@ export interface FetchOptions<TResponseType extends FetchResponseType = "text"> 
    * runtime's fetch. Every hop then gets its own cookie header, `extraHeaders`
    * call, and Set-Cookie persistence, so a caller that inspects those can stop
    * a chain between hops. Credential headers are dropped on a cross-origin hop.
+   * Default: on whenever a `jar` is passed (host-only cookies must follow the
+   * jar's exact-host rule on every hop), off without one.
    */
   clientRedirects?: boolean;
 }
@@ -90,8 +94,12 @@ export async function fetchWithJar<TResponseType extends FetchResponseType = "te
   url: string,
   opts: FetchOptions<TResponseType> = {},
 ): Promise<FetchResult<FetchBody<TResponseType>>> {
-  if (!opts.clientRedirects || (opts.redirect ?? "follow") !== "follow")
-    return fetchOnce(url, opts);
+  // With a jar, redirects are followed here so every hop gets its own Cookie
+  // header from the jar (exact-host for host-only cookies) and its own
+  // Set-Cookie persistence; the runtime would otherwise carry or drop the
+  // first hop's header on its own rules. Pass `clientRedirects: false` to opt out.
+  const clientRedirects = opts.clientRedirects ?? Boolean(opts.jar);
+  if (!clientRedirects || (opts.redirect ?? "follow") !== "follow") return fetchOnce(url, opts);
 
   let current = url;
   let method = opts.method ?? "GET";
@@ -278,7 +286,9 @@ function parseSetCookie(raw: string, defaultDomain: string): Cookie | null {
   for (const attr of parts.slice(1)) {
     const lower = attr.toLowerCase();
     if (lower.startsWith("domain=")) {
-      const d = attr.slice(7).trim();
+      const d = attr.slice(7).trim().toLowerCase();
+      // A server may only scope a cookie to its own host or a parent domain.
+      if (!d || !domainMatches(d, defaultDomain)) return null;
       cookie.domain = d.startsWith(".") ? d : `.${d}`;
     } else if (lower.startsWith("path=")) {
       cookie.path = attr.slice(5).trim() || "/";
@@ -303,6 +313,9 @@ function parseSetCookie(raw: string, defaultDomain: string): Cookie | null {
       cookie.sameSite = v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
     }
   }
+
+  // A cookie that breaks its name prefix is dropped, as a browser would.
+  if (violatesCookiePrefix(cookie)) return null;
 
   return cookie;
 }

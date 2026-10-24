@@ -284,9 +284,9 @@ export class CookieJar {
   }
 
   /**
-   * Read + filter helper. Drops expired cookies. Optional domain filter
-   * uses the same `domainMatches` logic Playwright/CDP do (leading dot
-   * means subdomain match).
+   * Read + filter helper. Drops expired cookies. The optional domain filter
+   * uses `domainMatches` (equal host or any subdomain); it is a query, not a
+   * delivery rule. `header(url)` uses the stricter `cookieSendsToHost`.
    */
   list(filter: { domain?: string } = {}): Cookie[] {
     const store = this.load();
@@ -451,12 +451,60 @@ export function mergeCookies(store: CookieStore, incoming: Cookie[]): CookieStor
   return { ...store, cookies: Array.from(map.values()) };
 }
 
-/** RFC 6265 domain match. Leading dot in cookie domain means subdomain match. */
+/**
+ * Filter-style domain match used by `list({ domain })` and `clear({ domain })`:
+ * a cookie domain "matches" a hostname when they are equal or the hostname is
+ * a subdomain of it, whether or not the cookie is host-only. Never use this to
+ * decide whether a cookie may be SENT to a host; use `cookieSendsToHost`.
+ */
 export function domainMatches(cookieDomain: string, hostname: string): boolean {
-  const cd = cookieDomain.startsWith(".") ? cookieDomain.slice(1) : cookieDomain;
-  if (hostname === cd) return true;
-  if (hostname.endsWith(`.${cd}`)) return true;
+  const cd = (cookieDomain.startsWith(".") ? cookieDomain.slice(1) : cookieDomain).toLowerCase();
+  const host = hostname.toLowerCase();
+  if (host === cd) return true;
+  if (host.endsWith(`.${cd}`)) return true;
   return false;
+}
+
+/**
+ * RFC 6265 delivery rule. A cookie domain with a leading dot is a domain
+ * cookie and goes to the domain and every subdomain. A cookie domain without
+ * one is host-only (how CDP, Playwright and `Set-Cookie` without `Domain`
+ * record it) and goes to that exact host and nowhere else.
+ */
+export function cookieSendsToHost(cookieDomain: string, hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (cookieDomain.startsWith(".")) return domainMatches(cookieDomain, host);
+  return cookieDomain.toLowerCase() === host;
+}
+
+/**
+ * Cookie-prefix rules (RFC 6265bis). `__Secure-` needs Secure; `__Host-` also
+ * needs Path=/ and no Domain attribute, which a jar records as a host-only
+ * domain (no leading dot). Browsers refuse a violating cookie, so the jar
+ * never stores one and the browser injector never hands one to Chromium.
+ */
+export function violatesCookiePrefix(
+  cookie: Pick<Cookie, "name" | "domain" | "path" | "secure">,
+): boolean {
+  if (cookie.name.startsWith("__Secure-") && !cookie.secure) return true;
+  if (
+    cookie.name.startsWith("__Host-") &&
+    (!cookie.secure || cookie.domain.startsWith(".") || cookie.path !== "/")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** True for hosts a browser treats as a secure context without TLS. */
+export function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "[::1]" ||
+    /^127(?:\.\d{1,3}){3}$/.test(host)
+  );
 }
 
 /** RFC 6265 path match. */
@@ -473,13 +521,17 @@ export function isExpired(cookie: Cookie): boolean {
   return cookie.expires < Date.now() / 1000;
 }
 
-/** Cookies that should be sent with a request to `url`. */
+/**
+ * Cookies that should be sent with a request to `url`: exact-host delivery for
+ * host-only cookies, domain delivery for dotted ones, then path and Secure.
+ * Secure cookies go over HTTPS and to loopback hosts, as in browsers.
+ */
 export function matchingCookies(store: CookieStore, url: string): Cookie[] {
   const parsed = new URL(url);
-  const isSecure = parsed.protocol === "https:";
+  const isSecure = parsed.protocol === "https:" || isLoopbackHost(parsed.hostname);
   return store.cookies.filter((c) => {
     if (isExpired(c)) return false;
-    if (!domainMatches(c.domain, parsed.hostname)) return false;
+    if (!cookieSendsToHost(c.domain, parsed.hostname)) return false;
     if (!pathMatches(c.path, parsed.pathname)) return false;
     if (c.secure && !isSecure) return false;
     return true;

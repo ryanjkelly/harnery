@@ -15,6 +15,7 @@ import {
   type CookieJar,
   CookieStoreParseError,
   type Cookie as JarCookie,
+  violatesCookiePrefix,
 } from "../cookies/index.ts";
 import { PaceGate, pacePolicyFromEnv } from "../pace/index.ts";
 import { type AssertResult, type AssertSpec, buildAssertCheck } from "./asserts.js";
@@ -436,8 +437,13 @@ export class Browser {
       : undefined;
     if (identity) await this.context.addInitScript(installDocumentIdentity, identity);
 
-    if (jarCookies.length > 0) {
-      await this.context.addCookies(jarCookies.map(toPWCookie));
+    // The jar's domain field is the delivery rule: a dotless domain is
+    // host-only, which Chromium honors for exactly that host. A cookie that
+    // breaks its name prefix would make Chromium reject the whole batch, so
+    // it is left out rather than aborting the session.
+    const injectable = jarCookies.filter((cookie) => !violatesCookiePrefix(cookie));
+    if (injectable.length > 0) {
+      await this.context.addCookies(injectable.map(toPWCookie));
     }
 
     // Gate actual document requests, including links, forms, script navigation,
