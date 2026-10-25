@@ -67,7 +67,7 @@ export function EntryCard({
         </Badge>
         <span className="text-xs text-muted-foreground">
           {entry.ts_iso ? (
-            <FormattedDateTime iso={entry.ts_iso} withWeekday withYear className="tabular-nums" />
+            <FormattedDateTime iso={entry.ts_iso} className="tabular-nums" />
           ) : (
             <span className="font-mono">{entry.ts_chicago}</span>
           )}

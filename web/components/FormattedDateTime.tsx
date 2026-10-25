@@ -1,7 +1,7 @@
 "use client";
 
 import { useDateTimeFormat } from "@/components/DateTimeFormatProvider";
-import { type FormatDateTimeOpts, formatDateTime } from "@/lib/format/datetime";
+import { formatDateTime } from "@/lib/format/datetime";
 import type { FormatKind } from "@/lib/format/prefs";
 import { formatTemplate } from "@/lib/format/template";
 
@@ -33,11 +33,6 @@ import { formatTemplate } from "@/lib/format/template";
  *   <FormattedDateTime iso={...} template="YYYY-MM-DD HH:mm:ss" />
  *   <FormattedDateTime iso={...} timeZone="UTC" />
  *
- * Legacy structured opts (`withYear`, `withSeconds`, `withZoneName`,
- * `hour12`, `monthFormat`, `withWeekday`) are accepted for back-compat with
- * pre-prefs callsites but **ignored at runtime**: the user's template now
- * controls every field. Do not add new uses.
- *
  * SSR-safe: server-side and the first client paint render with the canonical
  * defaults + UTC. A `useEffect` in the provider swaps to the user's stored
  * prefs once the page hydrates.
@@ -57,7 +52,7 @@ export function FormattedDateTime({
   /** Explicit IANA zone override; bypasses the user pref. */
   timeZone?: string;
   className?: string;
-} & DeprecatedLegacyOpts) {
+}) {
   const prefs = useDateTimeFormat();
   const effectiveTemplate = template ?? prefs[kind].template;
   const effectiveTz = timeZone ?? prefs.timezone;
@@ -75,15 +70,6 @@ export function FormattedDateTime({
     </time>
   );
 }
-
-/**
- * Pre-prefs API surface, kept on the prop type so existing callsites
- * compile during the migration. Runtime ignores these fields; remove the
- * usage at each callsite to clean up. See [`FormattedDateTime`](./FormattedDateTime.tsx) jsdoc.
- *
- * @deprecated The user's selected template controls these fields. Drop the prop.
- */
-type DeprecatedLegacyOpts = Partial<Omit<FormatDateTimeOpts, "timeZone">>;
 
 /**
  * Helper for code that needs to format a timestamp using the user's prefs

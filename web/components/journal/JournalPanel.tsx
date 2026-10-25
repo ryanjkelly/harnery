@@ -1027,13 +1027,7 @@ function ArchivesView({ instanceId }: { instanceId: string }) {
                   )}
                   <span className="text-xs truncate">
                     {a.archived_at ? (
-                      <FormattedDateTime
-                        iso={a.archived_at}
-                        withWeekday
-                        withYear
-                        withSeconds
-                        className="tabular-nums"
-                      />
+                      <FormattedDateTime iso={a.archived_at} className="tabular-nums" />
                     ) : (
                       <span className="font-mono">{a.filename}</span>
                     )}
