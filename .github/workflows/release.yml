@@ -27,7 +27,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.4
 
       # Trusted publishing needs npm 11.5.1 or later, which Node 24 ships. npm exchanges this job's
       # OIDC token for a short-lived publish token on its own; no npm token exists anywhere.

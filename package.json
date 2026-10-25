@@ -252,7 +252,7 @@
     "access": "public",
     "provenance": true
   },
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.4",
   "scripts": {
     "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/rewrite-dts-extensions.mjs",
     "build:openclaw-plugin": "mkdir -p openclaw-plugin/dist && bun build openclaw-plugin/src/index.ts openclaw-plugin/src/record-worker.ts --target=node --format=esm --external openclaw --outdir openclaw-plugin/dist --entry-naming '[name].js' && cp openclaw-plugin/package.json openclaw-plugin/openclaw.plugin.json openclaw-plugin/dist/",
