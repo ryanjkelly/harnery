@@ -45,8 +45,49 @@ interface RecoveryShape {
   elapsed_upper_bound_ms?: ObservationShape;
 }
 
+type EventVariantSchema = (typeof EventV3Schema.anyOf)[number];
+
+/**
+ * Every union member requires its own literal `event_type`, so only the member
+ * named by a value's `event_type` can accept it. Checking that one member gives
+ * the union's verdict without trying the other variants, which more than halves
+ * a full-ledger read. Returns null, falling back to the whole union, if a member
+ * ever stops carrying a required unique literal.
+ */
+let eventVariantsByType: Map<string, EventVariantSchema> | null | undefined;
+
+function eventVariantsByTypeV3(): Map<string, EventVariantSchema> | null {
+  if (eventVariantsByType !== undefined) return eventVariantsByType;
+  const variants = new Map<string, EventVariantSchema>();
+  for (const variant of EventV3Schema.anyOf) {
+    const literal = (variant.properties as Record<string, { const?: unknown }>).event_type?.const;
+    if (
+      typeof literal !== "string" ||
+      !(variant.required as readonly string[] | undefined)?.includes("event_type") ||
+      variants.has(literal)
+    ) {
+      eventVariantsByType = null;
+      return null;
+    }
+    variants.set(literal, variant);
+  }
+  eventVariantsByType = variants;
+  return variants;
+}
+
+function checkEventSchemaV3(value: unknown): boolean {
+  const variants = eventVariantsByTypeV3();
+  if (!variants) return Value.Check(EventV3Schema, value);
+  const eventType =
+    typeof value === "object" && value !== null
+      ? (value as { event_type?: unknown }).event_type
+      : undefined;
+  const variant = typeof eventType === "string" ? variants.get(eventType) : undefined;
+  return variant !== undefined && Value.Check(variant, value);
+}
+
 export function validateEventV3(value: unknown): EventV3ValidationResult {
-  if (!Value.Check(EventV3Schema, value)) {
+  if (!checkEventSchemaV3(value)) {
     return {
       ok: false,
       issues: [...Value.Errors(EventV3Schema, value)]

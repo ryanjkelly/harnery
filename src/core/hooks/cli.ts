@@ -344,8 +344,17 @@ function ensureSessionDisplayName(
   payload: ParsedPayload | null,
 ): void {
   if (coordEnv("WORKFLOW_CHILD") === "1") return;
-  const row =
-    readLiveCoordinationRow(coordRoot, instanceId) ?? readHeartbeat(coordRoot, instanceId);
+  // This runs on every tool call. The heartbeat cache is the surface this
+  // function stamps, so a cache that already carries a name, or marks a
+  // session that never takes one, means there is nothing to do. Only a cache
+  // that cannot answer pays for the authoritative read, which re-validates the
+  // whole active ledger and cost about half a second per call at 22 MB.
+  const cached = readHeartbeat(coordRoot, instanceId);
+  if (cached?.kind === "subagent" || cached?.kind === "transient" || cached?.workflow_run_id) {
+    return;
+  }
+  if (cached?.name?.trim()) return;
+  const row = readLiveCoordinationRow(coordRoot, instanceId) ?? cached;
   if (row?.kind === "subagent" || row?.kind === "transient" || row?.workflow_run_id) return;
   if (row?.name?.trim()) return;
   const assigned = assignSessionNameInProcess(coordRoot, instanceId, payload, adapter);
@@ -1664,9 +1673,16 @@ async function handlePostToolUse(run: HookRun): Promise<void> {
   // retry response already carries the full instruction and an end-turn
   // status is the wrong place to ask.
   try {
-    const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
     // A workflow child has no user-visible title to set.
-    const name = coordEnv("WORKFLOW_CHILD") === "1" ? undefined : sessionNameDisplayPending(row);
+    if (coordEnv("WORKFLOW_CHILD") === "1") return;
+    // The live row copies every name-display field from a current heartbeat
+    // cache and leaves them unset otherwise, so a raw cache with nothing
+    // pending proves the row has nothing pending either. That skips a full
+    // ledger read on almost every tool call; only a pending title pays for
+    // the authoritative check below.
+    if (!sessionNameDisplayPending(readHeartbeat(coordRoot, owner.instance_id))) return;
+    const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
+    const name = sessionNameDisplayPending(row);
     if (name && toolResponseMintedSessionName(payload?.tool_response, name)) {
       // Record the title before asking for it. The suggestion can still
       // change afterwards (an assigned-name rewrite, a lifecycle re-mint, a

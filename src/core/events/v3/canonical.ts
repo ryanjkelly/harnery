@@ -104,10 +104,19 @@ export function normalizeNativeIdV3(
   return `hid_${digest}`;
 }
 
+/**
+ * NFC leaves ASCII unchanged, so ASCII strings and key sets skip normalization
+ * and the collision map. Every reader re-serializes each ledger frame to prove
+ * it is canonical, which makes this the hottest function on a cold read.
+ */
+const NON_ASCII = /[\u0080-\uffff]/;
+
 function serialize(value: unknown, ancestors: Set<object>): string {
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "string") return JSON.stringify(value.normalize("NFC"));
+  if (typeof value === "string") {
+    return JSON.stringify(NON_ASCII.test(value) ? value.normalize("NFC") : value);
+  }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new Error("canonical JSON rejects non-finite numbers");
     return JSON.stringify(Object.is(value, -0) ? 0 : value);
@@ -119,27 +128,51 @@ function serialize(value: unknown, ancestors: Set<object>): string {
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      return `[${value.map((item) => serialize(item, ancestors)).join(",")}]`;
+      let out = "[";
+      for (let index = 0; index < value.length; index++) {
+        if (index > 0) out += ",";
+        out += serialize(value[index], ancestors);
+      }
+      return `${out}]`;
     }
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
       throw new Error("canonical JSON accepts only plain objects");
     }
-    const normalized = new Map<string, unknown>();
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      const normalizedKey = key.normalize("NFC");
-      if (normalized.has(normalizedKey)) {
-        throw new Error("canonical JSON key collision after Unicode normalization");
-      }
-      normalized.set(normalizedKey, item);
+    const object = value as Record<string, unknown>;
+    const keys = Object.keys(object);
+    if (keys.some((key) => NON_ASCII.test(key))) {
+      return serializeNormalizedObject(object, ancestors);
     }
-    const keys = [...normalized.keys()].sort(compareUtf16);
-    return `{${keys
-      .map((key) => `${JSON.stringify(key)}:${serialize(normalized.get(key), ancestors)}`)
-      .join(",")}}`;
+    keys.sort(compareUtf16);
+    let out = "{";
+    for (let index = 0; index < keys.length; index++) {
+      const key = keys[index] as string;
+      if (index > 0) out += ",";
+      out += `${JSON.stringify(key)}:${serialize(object[key], ancestors)}`;
+    }
+    return `${out}}`;
   } finally {
     ancestors.delete(value);
   }
+}
+
+function serializeNormalizedObject(
+  object: Record<string, unknown>,
+  ancestors: Set<object>,
+): string {
+  const normalized = new Map<string, unknown>();
+  for (const [key, item] of Object.entries(object)) {
+    const normalizedKey = key.normalize("NFC");
+    if (normalized.has(normalizedKey)) {
+      throw new Error("canonical JSON key collision after Unicode normalization");
+    }
+    normalized.set(normalizedKey, item);
+  }
+  const keys = [...normalized.keys()].sort(compareUtf16);
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${serialize(normalized.get(key), ancestors)}`)
+    .join(",")}}`;
 }
 
 function compareUtf16(left: string, right: string): number {
