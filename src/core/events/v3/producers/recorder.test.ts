@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { readCodexArchiveObservationsV3 } from "../../../agents/codex-archive-v3.ts";
 import { evaluateStopHook } from "../../../agents/rules/stop-hook.ts";
 import {
@@ -29,6 +29,7 @@ import {
 import { codexMidFlightDiagnosticContext } from "../../../hooks/adapter/behaviors/codex.ts";
 import { type ParsedPayload, parsePayload } from "../../../hooks/adapter/parse.ts";
 import { clearRuntimeTelemetryCachesForTest } from "../../../hooks/adapter/runtime-telemetry.ts";
+import { stableScopeId } from "../../../workflow/scope-id.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
@@ -48,14 +49,15 @@ import { projectLatencyV3 } from "../latency.ts";
 import { reduceSafetyProjectionV3 } from "../projection.ts";
 import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths, writeEventV3 } from "../writer.ts";
-import { stableScopeId } from "../../../workflow/scope-id.ts";
 import {
   drainHookIntakeSpoolV3,
   listHookProducerStateRecordsV3,
+  publishHookProducerStateForTestV3,
   readHookProducerStateV3,
   reconcilePendingRuntimeContextV3,
   recordApprovedSessionEndV3,
   recordHookSignalV3,
+  scanHookProducerStateRecordsV3,
 } from "./recorder.ts";
 
 const roots: string[] = [];
@@ -2328,6 +2330,83 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(pending).toHaveLength(1);
     expect(pending?.[0]).toMatchObject(workflow);
     expect(listHookProducerStateRecordsV3(root).length).toBeGreaterThan(0);
+  });
+
+  test("refuses to publish a state its own reader would reject and keeps the previous file", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-publish-validation";
+    expect(
+      recordHookSignalV3(
+        baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+      ).state,
+    ).toBe("recorded");
+    const [record] = listHookProducerStateRecordsV3(root);
+    expect(record).toBeDefined();
+    const before = readFileSync(record!.path, "utf8");
+    const invalid = { ...record!.state, generation_id: "gen_not-a-uuid" as const };
+
+    expect(() => publishHookProducerStateForTestV3(root, record!.path, invalid)).toThrow(
+      "V3 producer state is invalid; refusing to publish",
+    );
+    expect(readFileSync(record!.path, "utf8")).toBe(before);
+    expect(readdirSync(dirname(record!.path)).filter((name) => name.includes(".tmp-"))).toEqual([]);
+    expect(readHookProducerStateV3(root, "codex", nativeSession)?.generation_id).toBe(
+      record!.state.generation_id,
+    );
+  });
+
+  test("skips one invalid producer state in listings and records a diagnostic naming it", () => {
+    const root = candidateRoot("codex");
+    const badSession = "codex-listing-invalid";
+    const goodSession = "codex-listing-valid";
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: badSession }), "codex"),
+    );
+    const [badRecord] = listHookProducerStateRecordsV3(root);
+    expect(badRecord).toBeDefined();
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: goodSession }), "codex"),
+    );
+    expect(listHookProducerStateRecordsV3(root)).toHaveLength(2);
+    const good = readHookProducerStateV3(root, "codex", goodSession);
+    expect(good).toBeDefined();
+
+    // Make one file fail the reader's validator without touching its mode.
+    const corrupted = JSON.parse(readFileSync(badRecord!.path, "utf8")) as Record<string, unknown>;
+    corrupted.generation_id = "gen_not-a-uuid";
+    writeFileSync(badRecord!.path, `${JSON.stringify(corrupted)}\n`);
+
+    const listed = listHookProducerStateRecordsV3(root, { includeTerminal: true });
+    expect(listed.map(({ state }) => state.generation_id)).toEqual([good!.generation_id]);
+
+    const scan = scanHookProducerStateRecordsV3(root);
+    const sessionHash = basename(badRecord!.path, ".json") as `hid_${string}`;
+    expect(scan.invalid).toEqual([
+      {
+        path: badRecord!.path,
+        adapter: "codex",
+        session_hash: sessionHash,
+        reason: "V3 producer state is invalid",
+        instance_id: badRecord!.state.instance_id,
+      },
+    ]);
+
+    const diagnosticsDir = join(root, ".harnery/ledgers/v3/diagnostics");
+    const diagnostics = readdirSync(diagnosticsDir)
+      .filter((name) => name.startsWith("producer_state_invalid_skipped-"))
+      .map((name) => JSON.parse(readFileSync(join(diagnosticsDir, name), "utf8")));
+    expect(diagnostics.length).toBeGreaterThan(0);
+    expect(diagnostics[0]).toMatchObject({
+      category: "producer_state_invalid_skipped",
+      adapter: "codex",
+      session_hash: sessionHash,
+      reason: "V3 producer state is invalid",
+    });
+
+    // A reader that targets the invalid session still fails closed.
+    expect(() => readHookProducerStateV3(root, "codex", badSession)).toThrow(
+      "V3 producer state is invalid",
+    );
   });
 
   test("reconciles a Codex terminal written only after Stop returns", () => {

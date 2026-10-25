@@ -15,9 +15,9 @@ import {
   cleanEventV3Archives,
   initializeEventLedgerV3,
   inventoryEventV3Archives,
-  listHookProducerStateRecordsV3,
   readEventV3ControlState,
   recoverInvalidEventLedgerV3,
+  scanHookProducerStateRecordsV3,
   sha256V3,
 } from "../core/events/v3/index.ts";
 import type { EventV3SupportClassificationEvidence } from "../core/events/v3/support-storage/index.ts";
@@ -61,7 +61,8 @@ export function registerLedgerV3Command(
       try {
         const root = resolve(options.root ?? coordRoot(context));
         const control = readEventV3ControlState(root);
-        const producers = listHookProducerStateRecordsV3(root, { includeTerminal: true });
+        const scan = scanHookProducerStateRecordsV3(root, { includeTerminal: true });
+        const producers = scan.records;
         const counts = producers.reduce<Record<string, number>>((summary, record) => {
           summary[record.state.adapter] = (summary[record.state.adapter] ?? 0) + 1;
           return summary;
@@ -72,6 +73,11 @@ export function registerLedgerV3Command(
             adapters: Object.keys(counts).sort(),
             producer_states: producers.length,
             producer_states_by_adapter: counts,
+            invalid_producer_states: scan.invalid.map((file) => ({
+              adapter: file.adapter,
+              session_hash: file.session_hash,
+              reason: file.reason,
+            })),
           },
         });
       } catch (error) {

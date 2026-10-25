@@ -465,7 +465,18 @@ function sessionHashForSignal(
   // single live producer authority instead of hashing the instance into a
   // second state path. Ambiguous or absent matches keep the fail-closed fallback.
   if (adapterBehavior(input.adapter).sessionIdentityOnStartOnly) {
-    const matches = listHookProducerStateRecordsV3(input.coordRoot).filter(
+    const scan = scanHookProducerStateRecordsV3(input.coordRoot);
+    // This instance's own state is unreadable: fail closed rather than hash
+    // the instance into a second state path beside it.
+    if (
+      scan.invalid.some(
+        (file) => file.adapter === input.adapter && file.instance_id === input.instance_id,
+      )
+    ) {
+      throw new Error("V3 producer state is invalid");
+    }
+    for (const file of scan.invalid) recordInvalidProducerStateDiagnostic(input.coordRoot, file);
+    const matches = scan.records.filter(
       ({ state }) => state.adapter === input.adapter && state.instance_id === input.instance_id,
     );
     if (matches.length === 1) {
@@ -3476,15 +3487,44 @@ export function salvageOpenSpansV3(input: SalvageOpenSpansV3Input): SalvageOpenS
   }
 }
 
-export function listHookProducerStateRecordsV3(
+/** One producer-state file the validator refused during a listing scan. */
+export interface InvalidHookProducerStateFileV3 {
+  path: string;
+  adapter: EventAdapterIdV3;
+  session_hash: `hid_${string}`;
+  reason: string;
+  /**
+   * The file's raw `instance_id` when it parses as JSON and carries a
+   * well-formed one. Readers that target one instance use it to keep failing
+   * closed on that instance's own invalid state.
+   */
+  instance_id?: `inst_${string}`;
+}
+
+export interface HookProducerStateScanV3 {
+  records: HookProducerStateRecordV3[];
+  invalid: InvalidHookProducerStateFileV3[];
+}
+
+/**
+ * Scan every producer-state file of the active epoch. A file the validator
+ * refuses is reported in `invalid` instead of failing the scan, so one
+ * session's bad state cannot take coordination away from every other session
+ * in the checkout. An unsafe adapter directory still throws.
+ */
+export function scanHookProducerStateRecordsV3(
   coordRoot: string,
   options: { includeTerminal?: boolean } = {},
-): HookProducerStateRecordV3[] {
+): HookProducerStateScanV3 {
   const control = readEventV3ControlState(coordRoot);
-  if (control.state !== "candidate" && control.state !== "active") return [];
+  if (control.state !== "candidate" && control.state !== "active") {
+    return { records: [], invalid: [] };
+  }
+  const genesisId = control.genesis.event.payload.genesis_id;
   const producerRoot = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT, "private-producers");
-  if (!existsSync(producerRoot)) return [];
+  if (!existsSync(producerRoot)) return { records: [], invalid: [] };
   const records: HookProducerStateRecordV3[] = [];
+  const invalid: InvalidHookProducerStateFileV3[] = [];
   for (const adapter of EVENT_ADAPTER_IDS_V3) {
     const directory = join(producerRoot, adapter);
     if (!existsSync(directory)) continue;
@@ -3496,19 +3536,86 @@ export function listHookProducerStateRecordsV3(
       /^hid_[a-f0-9]{64}\.json$/.test(entry),
     )) {
       const path = join(directory, name);
-      const state = readProducerState(path);
+      let state: HookProducerStateV3;
+      try {
+        state = readProducerState(path);
+      } catch (error) {
+        const raw = rawProducerStateIdentity(path);
+        // A refused file from a replaced epoch would have been skipped anyway.
+        if (raw.epoch_genesis_id !== undefined && raw.epoch_genesis_id !== genesisId) continue;
+        invalid.push({
+          path,
+          adapter,
+          session_hash: name.slice(0, -".json".length) as `hid_${string}`,
+          reason: error instanceof Error ? error.message : String(error),
+          ...(raw.instance_id ? { instance_id: raw.instance_id } : {}),
+        });
+        continue;
+      }
       // Skip authorities left behind by a replaced epoch: their sequences and
       // causal links belong to the archived ledger, not this one.
-      if (state.epoch_genesis_id !== control.genesis.event.payload.genesis_id) continue;
+      if (state.epoch_genesis_id !== genesisId) continue;
       if (!options.includeTerminal && state.terminal) continue;
       records.push({ path, modified_at_ms: lstatSync(path).mtimeMs, state });
     }
   }
-  return records.sort(
+  records.sort(
     (left, right) =>
       left.state.generation_id.localeCompare(right.state.generation_id) ||
       left.path.localeCompare(right.path),
   );
+  invalid.sort((left, right) => left.path.localeCompare(right.path));
+  return { records, invalid };
+}
+
+/**
+ * List the valid producer states of the active epoch. An invalid file is
+ * skipped and recorded as a `producer_state_invalid_skipped` diagnostic that
+ * names its adapter and session hash; readers of that one session's state
+ * still fail closed through `readHookProducerStateV3`.
+ */
+export function listHookProducerStateRecordsV3(
+  coordRoot: string,
+  options: { includeTerminal?: boolean } = {},
+): HookProducerStateRecordV3[] {
+  const scan = scanHookProducerStateRecordsV3(coordRoot, options);
+  for (const file of scan.invalid) recordInvalidProducerStateDiagnostic(coordRoot, file);
+  return scan.records;
+}
+
+function recordInvalidProducerStateDiagnostic(
+  coordRoot: string,
+  file: InvalidHookProducerStateFileV3,
+): void {
+  writeProducerDiagnosticV3(coordRoot, "producer_state_invalid_skipped", {
+    adapter: file.adapter,
+    session_hash: file.session_hash,
+    reason: file.reason,
+    ...(file.instance_id ? { instance_id: file.instance_id } : {}),
+  });
+}
+
+function rawProducerStateIdentity(path: string): {
+  instance_id?: `inst_${string}`;
+  epoch_genesis_id?: string;
+} {
+  try {
+    const metadata = lstatSync(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return {};
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return {
+      ...(typeof parsed.instance_id === "string" &&
+      /^inst_[a-zA-Z0-9._-]{1,128}$/.test(parsed.instance_id)
+        ? { instance_id: parsed.instance_id as `inst_${string}` }
+        : {}),
+      ...(typeof parsed.epoch_genesis_id === "string"
+        ? { epoch_genesis_id: parsed.epoch_genesis_id }
+        : {}),
+    };
+  } catch {
+    return {};
+  }
 }
 
 export interface ReanchorArchivedHookProducersV3Input {
@@ -4277,6 +4384,15 @@ function acquireStateLease(coordRoot: string, statePath: string) {
   };
 }
 
+/** Test seam: publish a producer state through the real write-side validator. */
+export function publishHookProducerStateForTestV3(
+  coordRoot: string,
+  path: string,
+  state: HookProducerStateV3,
+): void {
+  publishProducerState(coordRoot, path, state);
+}
+
 function publishProducerState(coordRoot: string, path: string, state: HookProducerStateV3): void {
   const control = readEventV3ControlState(coordRoot);
   if (
@@ -4285,11 +4401,19 @@ function publishProducerState(coordRoot: string, path: string, state: HookProduc
   ) {
     return;
   }
+  const serialized = JSON.stringify(state);
+  // Validate the exact bytes about to land with the reader's own validator.
+  // The previous file stays in place when this refuses.
+  try {
+    validateProducerStateDocument(JSON.parse(serialized));
+  } catch {
+    throw new Error("V3 producer state is invalid; refusing to publish");
+  }
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
     fd = openSync(temporary, "wx", stateFileMode());
-    writeFileSync(fd, `${JSON.stringify(state)}\n`, "utf8");
+    writeFileSync(fd, `${serialized}\n`, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
@@ -4314,6 +4438,16 @@ function readProducerState(path: string): HookProducerStateV3 {
   } catch {
     throw new Error("V3 producer state is unreadable");
   }
+  return validateProducerStateDocument(parsed);
+}
+
+/**
+ * The single producer-state validator. Readers run it on every file they
+ * load, and `publishProducerState` runs it on the serialized document before
+ * the rename, so a state no reader would accept fails in the producing hook
+ * instead of in every later reader of the checkout.
+ */
+function validateProducerStateDocument(parsed: unknown): HookProducerStateV3 {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("V3 producer state is invalid");
   }
@@ -4608,9 +4742,11 @@ function validPendingRuntimeContext(value: unknown): value is PendingRuntimeCont
     (pending.runtime_version === undefined ||
       (typeof pending.runtime_version === "string" &&
         /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(pending.runtime_version))) &&
+    // Externally driven reconciles (`deferRetryLimit`) keep counting past
+    // RUNTIME_CONTEXT_RETRY_LIMIT until their own final attempt, and publish
+    // those counts, so the reader must accept them.
     Number.isSafeInteger(pending.attempts) &&
-    pending.attempts >= 0 &&
-    pending.attempts < RUNTIME_CONTEXT_RETRY_LIMIT
+    pending.attempts >= 0
   );
 }
 

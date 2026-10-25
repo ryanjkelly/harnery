@@ -25,10 +25,10 @@ import {
 } from "../events/v3/producers/coordination-recorder.ts";
 import {
   type HookProducerStateV3,
-  listHookProducerStateRecordsV3,
   readHookProducerStateV3,
   readTerminalHookProducerStateV3,
   recordHookSignalV3,
+  scanHookProducerStateRecordsV3,
 } from "../events/v3/producers/recorder.ts";
 import { canonicalClaimPath } from "./claim-path.ts";
 import {
@@ -259,13 +259,20 @@ function readInstanceProducerStatesForBootstrap(
   coordRoot: string,
   instanceId: `inst_${string}`,
 ): HookProducerStateV3[] {
+  let scan: ReturnType<typeof scanHookProducerStateRecordsV3>;
   try {
-    return listHookProducerStateRecordsV3(coordRoot, { includeTerminal: true })
-      .map((record) => record.state)
-      .filter((state) => state.instance_id === instanceId);
+    scan = scanHookProducerStateRecordsV3(coordRoot, { includeTerminal: true });
   } catch {
     throw new LiveCoordinationAuthorityV3Error("producer_state_unsafe");
   }
+  // Another session's invalid file does not block this one; this instance's
+  // own invalid file still fails closed.
+  if (scan.invalid.some((file) => file.instance_id === instanceId)) {
+    throw new LiveCoordinationAuthorityV3Error("producer_state_unsafe");
+  }
+  return scan.records
+    .map((record) => record.state)
+    .filter((state) => state.instance_id === instanceId);
 }
 
 function terminalGenerationForSession(

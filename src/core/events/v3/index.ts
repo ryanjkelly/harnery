@@ -247,7 +247,9 @@ export {
   type DrainHookIntakeSpoolV3Result,
   drainHookIntakeSpoolV3,
   type HookProducerStateRecordV3,
+  type HookProducerStateScanV3,
   type HookProducerStateV3,
+  type InvalidHookProducerStateFileV3,
   listHookProducerStateRecordsV3,
   type RecordApprovedSessionEndV3Input,
   type RecordApprovedSessionEndV3Result,
@@ -256,6 +258,7 @@ export {
   readHookProducerStateV3,
   recordApprovedSessionEndV3,
   recordHookSignalV3,
+  scanHookProducerStateRecordsV3,
 } from "./producers/recorder.ts";
 export {
   type ClaimProjectionV3,

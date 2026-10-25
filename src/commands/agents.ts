@@ -118,6 +118,7 @@ import {
 import {
   listHookProducerStateRecordsV3,
   readHookProducerStateV3,
+  scanHookProducerStateRecordsV3,
 } from "../core/events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../core/events/v3/reader.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../core/events/v3/writer.ts";
@@ -3325,7 +3326,13 @@ export function collectEventLedgerHealthV3(root: string, nowMs = Date.now()): Ev
     [];
   const spanPressure: Extract<EventLedgerHealthV3, { state: "live" }>["span_pressure"] = [];
   try {
-    for (const { state } of listHookProducerStateRecordsV3(root)) {
+    const scan = scanHookProducerStateRecordsV3(root);
+    for (const file of scan.invalid) {
+      collectionErrors.push(
+        `producer state skipped (${file.adapter}/${file.session_hash}.json): ${file.reason}`,
+      );
+    }
+    for (const { state } of scan.records) {
       if (state.spans.length >= SPAN_PRESSURE_SOFT_WATERMARK) {
         spanPressure.push({
           instance_id: state.instance_id,
