@@ -19,6 +19,7 @@ import {
   readEventV3SegmentManifest,
 } from "./catalog.ts";
 import type { EventV3 } from "./contract.ts";
+import { readAdvanceableControlWitnessV3 } from "./control-witness.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import {
   type EventV3RecoveryFailure,
@@ -442,7 +443,9 @@ export function readLedgerV3(
   }
 
   const discovered = discoverLedgerFramesV3(coordRoot);
-  const validated = validateLedgerFramesV3(discovered.frames, options);
+  const validated =
+    validateWitnessedFramesV3(coordRoot, storage, discovered, options) ??
+    validateLedgerFramesV3(discovered.frames, options);
   const recovery = discoverRecoveryReceiptsV3(coordRoot);
   const diagnostics = [
     ...discovered.diagnostics,
@@ -514,9 +517,40 @@ export function readLedgerFramesV3(
   return validateLedgerFramesV3(frames, options).result;
 }
 
+/**
+ * Cold-process fast path. Writers advance an authenticated validation
+ * checkpoint under the append lease after every drain, so when the witness
+ * names exactly the storage this read observed, each frame already passed the
+ * contract and canonical-byte checks that dominate a full read. Those two
+ * checks are skipped; every ledger-level rule still runs and rebuilds the
+ * validator state. The result is used only if that state reproduces the
+ * witnessed checkpoint byte for byte with no diagnostics and storage did not
+ * move during the read; anything else returns undefined and the caller runs
+ * the canonical full validation.
+ */
+function validateWitnessedFramesV3(
+  coordRoot: string,
+  storage: LedgerStorageVersionV3,
+  discovered: DiscoveredFramesV3,
+  options: ReadLedgerV3Options,
+): { result: ReadLedgerV3Result; state: LedgerValidationStateV3 } | undefined {
+  if (!discovered.active || discovered.diagnostics.length > 0) return undefined;
+  const witness = readAdvanceableControlWitnessV3(coordRoot);
+  if (!witness || witness.payload.storage.fingerprint !== sha256V3(storage.fingerprint)) {
+    return undefined;
+  }
+  const trusted = validateLedgerFramesV3(discovered.frames, options, true);
+  if (trusted.state.diagnostics.length > 0) return undefined;
+  const reproduced = checkpointFromValidationStateV3(trusted.state, discovered.active);
+  if (canonicalJsonV3(reproduced) !== canonicalJsonV3(witness.checkpoint)) return undefined;
+  if (ledgerStorageVersionV3(coordRoot).fingerprint !== storage.fingerprint) return undefined;
+  return trusted;
+}
+
 function validateLedgerFramesV3(
   frames: readonly LedgerFrameV3[],
   options: ReadLedgerV3Options,
+  witnessed = false,
 ): { result: ReadLedgerV3Result; state: LedgerValidationStateV3 } {
   const state: LedgerValidationStateV3 = {
     diagnostics: [],
@@ -530,13 +564,18 @@ function validateLedgerFramesV3(
     clocks: new Map(),
     event_count: 0,
   };
-  validateLedgerFramesIntoStateV3(frames, state);
+  validateLedgerFramesIntoStateV3(frames, state, witnessed);
   return { result: finishLedgerValidationV3(state, options, ledgerFramesBytesV3(frames)), state };
 }
 
+/**
+ * `witnessed` skips only the per-frame contract and canonical-byte checks, and
+ * only validateWitnessedFramesV3 may pass it, after authenticating the frames.
+ */
 function validateLedgerFramesIntoStateV3(
   frames: readonly LedgerFrameV3[],
   state: LedgerValidationStateV3,
+  witnessed = false,
 ): void {
   state.first_position ??= frames[0]?.position;
   const {
@@ -576,17 +615,22 @@ function validateLedgerFramesIntoStateV3(
       diagnostics.push(diagnostic("unsupported_major", frame));
       continue;
     }
-    const validation = validateEventV3(parsed);
-    if (!validation.ok || !validation.event) {
-      diagnostics.push(diagnostic("invalid_contract", frame));
-      continue;
+    let event: EventV3;
+    if (witnessed) {
+      event = parsed as EventV3;
+    } else {
+      const validation = validateEventV3(parsed);
+      if (!validation.ok || !validation.event) {
+        diagnostics.push(diagnostic("invalid_contract", frame));
+        continue;
+      }
+      event = validation.event;
+      if (canonicalJsonV3(event) !== frame.raw) {
+        diagnostics.push(diagnostic("noncanonical_frame", frame, event.event_id));
+        continue;
+      }
     }
-    const event = validation.event;
     const shape = event as unknown as EventShape;
-    if (canonicalJsonV3(event) !== frame.raw) {
-      diagnostics.push(diagnostic("noncanonical_frame", frame, shape.event_id));
-      continue;
-    }
     const priorFrame = seenIds.get(shape.event_id);
     if (priorFrame !== undefined) {
       if (priorFrame !== frame.raw) {

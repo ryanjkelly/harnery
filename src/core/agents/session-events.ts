@@ -89,9 +89,20 @@ function commandKey(fields: Record<string, unknown>): string | undefined {
     : undefined;
 }
 
-function flushCommandOutput(command: PendingCommand): void {
+/**
+ * `deferDrain` stages each summary durably in the spool without appending it,
+ * for a caller that writes the completion next: that write drains every staged
+ * row under one lease and one witness advance instead of one per row.
+ */
+function flushCommandOutput(command: PendingCommand, deferDrain = false): void {
   for (const summary of command.streams.values()) {
-    recordCommandObservation("command.output_observed", command.fields, command.coordRoot, summary);
+    recordCommandObservation(
+      "command.output_observed",
+      command.fields,
+      command.coordRoot,
+      summary,
+      deferDrain,
+    );
   }
   command.streams.clear();
 }
@@ -104,6 +115,7 @@ function recordCommandObservation(
   fields: Record<string, unknown>,
   coordRoot: string,
   summary?: OutputSummary,
+  deferDrain = false,
 ): boolean {
   const instanceId = typeof fields.instance_id === "string" ? fields.instance_id : undefined;
   if (!instanceId) return false;
@@ -134,6 +146,7 @@ function recordCommandObservation(
       platform: livePlatformV3(),
       ...(fields.bridge === "codex-wsl" ? { bridge: "codex-wsl" as const } : {}),
       monotonic_ns: process.hrtime.bigint().toString(),
+      ...(deferDrain ? { writerOptions: { deferDrain: true } } : {}),
     });
     if (result.state === "generation_unavailable") {
       const expectedLifecycleReopenGap =
@@ -276,7 +289,9 @@ export function writeSessionEvent(
     const coordRoot = command?.coordRoot ?? coordinationRootPath();
     if (type === "command.completed") {
       pendingCommands.delete(key);
-      if (command) flushCommandOutput(command);
+      // The completion below drains the staged summaries with itself. If it
+      // never writes, the rows stay durable in the spool for the next drain.
+      if (command) flushCommandOutput(command, true);
       recordCommandObservation(type, fields, coordRoot);
     } else if (recordCommandObservation(type, fields, coordRoot) && !command) {
       pendingCommands.set(key, {

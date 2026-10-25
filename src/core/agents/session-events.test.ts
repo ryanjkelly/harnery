@@ -193,6 +193,10 @@ describe("session event live ledger routing", () => {
     expect(events[2]!.payload).toMatchObject({ stream: "stderr", bytes: 700, lines: 100 });
     expect(events[3]!.payload).toMatchObject({ exit_code: 7, outcome: "failed" });
     expect(events.map((event) => event.producer.sequence)).toEqual([1, 2, 3, 4]);
+    // The output summaries were staged without draining; the completion write
+    // must have appended them, leaving nothing behind in the spool.
+    const spool = join(root, ".harnery", "ledgers", "v3", "spool");
+    expect(readdirSync(spool).filter((name) => name.endsWith(".ready"))).toEqual([]);
     expect(JSON.stringify(snapshot(root))).not.toContain(chunk);
     expect(JSON.stringify(snapshot(root))).not.toContain("private-é-output");
   });
