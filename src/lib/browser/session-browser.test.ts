@@ -9,6 +9,20 @@ let fixtureServer: Server;
 let fixtureOrigin: string;
 const browsers: Browser[] = [];
 
+/**
+ * Settle a browser call before asserting on its rejection. Bun's
+ * `expect(pending).rejects` waits from a nested event loop that services the
+ * Playwright connection slowly; awaiting the call first keeps these checks fast.
+ */
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("Expected the browser call to reject.");
+}
+
 beforeEach(async () => {
   fixtureServer = createServer((_request, response) => {
     response.setHeader("content-type", "text/html; charset=utf-8");
@@ -85,9 +99,9 @@ describe("Browser live session operations", () => {
     await browser.open();
     await browser.navigate(fixtureOrigin);
 
-    await expect(
-      browser.sessionClick({ kind: "text", value: "Duplicate", partial: false }),
-    ).rejects.toEqual(
+    expect(
+      await rejectionOf(browser.sessionClick({ kind: "text", value: "Duplicate", partial: false })),
+    ).toEqual(
       new BrowserSessionActionError(
         "locator_ambiguous",
         "Locator matched 2 elements; refine it before acting.",
@@ -171,7 +185,7 @@ describe("Browser live session operations", () => {
     expect(screenshot.width).toBeGreaterThan(0);
     expect(screenshot.height).toBeGreaterThan(0);
     expect(statSync(output).mode & 0o777).toBe(0o600);
-    await expect(browser.sessionScreenshot(output)).rejects.toMatchObject({
+    expect(await rejectionOf(browser.sessionScreenshot(output))).toMatchObject({
       code: "screenshot_exists",
     });
   });
@@ -214,7 +228,7 @@ describe("Browser live session operations", () => {
 
       await browser.sessionCloseTab(opened.index);
       expect(await browser.sessionStatus()).toMatchObject({ tab_count: 1, active_tab: 0 });
-      await expect(browser.sessionCloseTab(0)).rejects.toMatchObject({ code: "final_tab" });
+      expect(await rejectionOf(browser.sessionCloseTab(0))).toMatchObject({ code: "final_tab" });
     } finally {
       await new Promise<void>((resolve) => proxy.close(() => resolve()));
     }
