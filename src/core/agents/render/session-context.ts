@@ -8,7 +8,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
@@ -483,8 +483,3 @@ export function formatPendingCouncils(coordRoot: string, agentName: string): str
   return `Councils waiting on your input (${pending.length} open): ${list}. Run \`${bin} agents council list --mine\` to see all of them, then \`${bin} agents council show <id>\` for any brief.`;
 }
 
-/**
- * Suppress unused import warning when statSync isn't used in this file
- * (kept exported for future renderers, e.g. heartbeat-freshness coloring).
- */
-export const _ensureStatSyncImported = statSync;

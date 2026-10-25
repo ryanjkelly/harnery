@@ -144,29 +144,6 @@ function readPpid(pid: number): number | null {
   return null;
 }
 
-/**
- * Find the parent owner for a subagent invocation. The per-shell marker at
- * `.harnery/shells/<pid>` is set by `sub-agent-start` and removed by
- * `sub-agent-stop`.
- *
- * Phase 2 stub: the marker file isn't written yet, so we return null in most
- * cases. Phase 2 callers can pass through.
- */
-export function readShellMarker(coordRoot: string, pid: number): string | null {
-  const path = join(coordRoot, ".harnery", "shells", String(pid));
-  if (!existsSync(path)) return null;
-  try {
-    return readFileSync(path, "utf8").trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Read the V3-projected `agent_id` for an owner if it exists. */
-export function readAgentIdForOwner(coordRoot: string, instanceId: string): string | null {
-  return readLiveCoordinationRow(coordRoot, instanceId)?.agent_id ?? null;
-}
-
 /** Diagnostic: list of pid-map entries (for debugging). */
 export function listPidmap(coordRoot: string): Array<{ pid: number; owner: string }> {
   const dir = join(coordRoot, ".harnery", "pid-map");
