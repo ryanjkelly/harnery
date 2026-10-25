@@ -4589,8 +4589,10 @@ function validPendingRuntimeContext(value: unknown): value is PendingRuntimeCont
     Number.isFinite(Date.parse(pending.terminal_observed_at)) &&
     typeof pending.turn_id === "string" &&
     /^tid_[a-f0-9]{64}$/.test(pending.turn_id) &&
-    (pending.run_id === undefined || /^run_[0-9a-f-]{36}$/.test(pending.run_id)) &&
-    (pending.workflow_id === undefined || /^wf_[0-9a-f-]{36}$/.test(pending.workflow_id)) &&
+    // Same shapes the event contract accepts: workflow children carry
+    // stableScopeId hashes (run_<64 hex>), not UUIDs.
+    (pending.run_id === undefined || /^run_[a-zA-Z0-9._-]{1,128}$/.test(pending.run_id)) &&
+    (pending.workflow_id === undefined || /^wf_[a-zA-Z0-9._-]{1,128}$/.test(pending.workflow_id)) &&
     (pending.workflow_agent_id === undefined ||
       /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(pending.workflow_agent_id)) &&
     typeof pending.native_session_id === "string" &&

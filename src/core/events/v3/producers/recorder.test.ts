@@ -48,8 +48,10 @@ import { projectLatencyV3 } from "../latency.ts";
 import { reduceSafetyProjectionV3 } from "../projection.ts";
 import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths, writeEventV3 } from "../writer.ts";
+import { stableScopeId } from "../../../workflow/scope-id.ts";
 import {
   drainHookIntakeSpoolV3,
+  listHookProducerStateRecordsV3,
   readHookProducerStateV3,
   reconcilePendingRuntimeContextV3,
   recordApprovedSessionEndV3,
@@ -2277,6 +2279,55 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(durable).not.toContain(transcript);
     expect(durable).not.toContain(nativeSession);
     expect(durable).not.toContain(nativeTurn);
+  });
+
+  test("keeps a workflow child's pending context readable with hashed run ids", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-workflow-child-pending";
+    const nativeTurn = "codex-workflow-child-turn";
+    const transcript = join(root, `rollout-fixture-${nativeSession}.jsonl`);
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        timestamp: "2026-08-21T20:24:00.000Z",
+        ordinal: 1,
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: nativeTurn },
+      })}\n`,
+    );
+    const workflow = {
+      run_id: stableScopeId("run", "wf-run-fixture"),
+      workflow_id: stableScopeId("wf", "wf-run-fixture"),
+    };
+    recordHookSignalV3({
+      ...baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+      ...workflow,
+    });
+    recordHookSignalV3({
+      ...baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+        "codex",
+      ),
+      ...workflow,
+    });
+    const { result: stopped } = withRecorderWaits(() =>
+      recordHookSignalV3({
+        ...baseInput(
+          root,
+          "stop",
+          parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+          "codex",
+        ),
+        ...workflow,
+      }),
+    );
+    expect(stopped.state).toBe("recorded");
+    const pending = readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts;
+    expect(pending).toHaveLength(1);
+    expect(pending?.[0]).toMatchObject(workflow);
+    expect(listHookProducerStateRecordsV3(root).length).toBeGreaterThan(0);
   });
 
   test("reconciles a Codex terminal written only after Stop returns", () => {
