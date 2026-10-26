@@ -95,7 +95,7 @@ try {
   // --help: must boot and list commands (this crashed in 0.2.0).
   log("checking `--help` boots ...");
   const helpOut = run(["--help"]);
-  if (!/Usage:/.test(helpOut) || !/outline/.test(helpOut)) {
+  if (!/Usage:/.test(helpOut) || !/toc/.test(helpOut)) {
     fail("--help did not render the expected command listing");
   }
   log("--help OK");
@@ -239,16 +239,6 @@ try {
     fail("governor mission create did not produce an objective-first planning state");
   }
   log("durable governor CLI OK");
-
-  // outline on PHP: works without the `typescript` dep.
-  log("checking `outline` on a PHP file ...");
-  const phpFile = join(workdir, "sample.php");
-  writeFileSync(phpFile, "<?php\nfunction greet($n) { return $n; }\n");
-  const outlineOut = run(["outline", phpFile]);
-  if (!/greet/.test(outlineOut)) {
-    fail("outline did not list the PHP function");
-  }
-  log("outline (php) OK");
 
   // read: HTML -> markdown on plain Node (this was the jsdom ERR_REQUIRE_ESM
   // crash, fixed by the linkedom swap).

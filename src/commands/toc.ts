@@ -8,8 +8,7 @@ import { resolveBinName } from "../core/config.ts";
  * `harn toc <file.md>`: markdown header outline (level + text + line number).
  * `harn section <file.md> <header>`: extract one section by header substring.
  *
- * Companion to `harn outline` for code files. Both let you navigate long docs
- * without reading the whole thing.
+ * Both let you navigate a long document without reading the whole thing.
  */
 
 interface TocOpts {
