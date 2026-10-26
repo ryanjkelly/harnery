@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { PNG } from "pngjs";
 import {
+  addCritiqueUsage,
   type CritiqueProvider,
   type CritiqueTile,
+  formatCritiqueUsage,
   runCritique,
+  sumCritiqueUsage,
   tilesFromFullPage,
 } from "./critique.ts";
 
@@ -25,6 +28,63 @@ function blankPage(width: number, height: number): Buffer {
   img.data.fill(255);
   return PNG.sync.write(img);
 }
+
+describe("critique token usage", () => {
+  test("a retried tile adds both calls; cost survives only when every call had one", () => {
+    const once = addCritiqueUsage(undefined, {
+      input_tokens: 100,
+      output_tokens: 10,
+      cost_usd: 0.01,
+    });
+    const twice = addCritiqueUsage(once, {
+      input_tokens: 50,
+      output_tokens: 5,
+      cache_read_input_tokens: 40,
+      cost_usd: 0.02,
+    });
+    expect(twice).toEqual({
+      input_tokens: 150,
+      output_tokens: 15,
+      cache_read_input_tokens: 40,
+      cost_usd: 0.03,
+    });
+    expect(addCritiqueUsage(twice, { input_tokens: 1, output_tokens: 1 }).cost_usd).toBeUndefined();
+  });
+
+  test("unreported tiles are counted, never treated as zero", () => {
+    const totals = sumCritiqueUsage([
+      { input_tokens: 1000, output_tokens: 200, cache_write_input_tokens: 800, cost_usd: 0.5 },
+      undefined,
+      { input_tokens: 3000, output_tokens: 100, cache_read_input_tokens: 2000, cost_usd: 0.25 },
+    ]);
+    expect(totals).toEqual({
+      tiles_reported: 2,
+      tiles_unreported: 1,
+      input_tokens: 4000,
+      output_tokens: 300,
+      cache_read_input_tokens: 2000,
+      cache_write_input_tokens: 800,
+      cost_usd: 0.75,
+    });
+    expect(formatCritiqueUsage(totals)).toBe(
+      "4,300 tokens over 2 tile(s) (1 unreported), $0.75 at list price",
+    );
+  });
+
+  test("runCritique sums what the provider reports", async () => {
+    const provider: CritiqueProvider = async ({ tile, reportUsage }) => {
+      if (tile.index !== 1) reportUsage?.({ input_tokens: 500, output_tokens: 20 });
+      return [];
+    };
+    const result = await runCritique({ url: "x", rubric: "r", tiles: TILES.slice(0, 3), provider });
+    expect(result.usage).toMatchObject({
+      tiles_reported: 2,
+      tiles_unreported: 1,
+      input_tokens: 1000,
+      output_tokens: 40,
+    });
+  });
+});
 
 describe("per-invocation tile ceiling", () => {
   test("no maxTiles value or hit band list cuts more tiles than the ceiling", () => {

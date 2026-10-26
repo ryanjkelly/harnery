@@ -18,6 +18,7 @@
 // Toolkit tier: this module must not import src/core (layering check).
 
 import { createHash } from "node:crypto";
+import type { CritiqueUsage, CritiqueUsageTotals } from "./critique.js";
 import { PAGE_REVIEW_MAX_TILE_BUDGET } from "./page-review-contracts.js";
 import type { QaContext, QaManifest } from "./qa-plan.js";
 
@@ -153,6 +154,9 @@ export interface QaRunCritiqueTileTiming {
   tile_id: string;
   duration_ms: number;
   outcome: "passed" | "failed";
+  /** Tokens the provider reported for this tile, retries included. Absent
+   * when the backend reports none; that is unknown, not zero. */
+  usage?: CritiqueUsage;
 }
 
 /** What share of the page the critique tiles covered, lifted from the browse
@@ -205,6 +209,8 @@ export interface QaRunCritiquePool {
   latency_ms?: Record<string, QaRunCritiqueLatency>;
   /** One entry per attempted tile, in context and tile order. */
   tile_timings?: QaRunCritiqueTileTiming[];
+  /** Tokens summed over the attempted tiles. */
+  usage?: CritiqueUsageTotals;
 }
 
 /** Where the run's page review pack lives: the on-disk evidence an agent can

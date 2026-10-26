@@ -14,7 +14,7 @@ import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-
 import { artifactsRoot } from "../core/artifacts/index.ts";
 import { resolveBinName, reviewPackAutoCleanEnabled } from "../core/config.ts";
 import { createManagedQaOutParent, resolveQaRepoRoot } from "../core/qa-artifacts.ts";
-import { DEFAULT_CRITIQUE_RUBRIC } from "../lib/browser/critique.ts";
+import { DEFAULT_CRITIQUE_RUBRIC, formatCritiqueUsage } from "../lib/browser/critique.ts";
 import { PAGE_REVIEW_MAX_TILE_BUDGET } from "../lib/browser/page-review-contracts.ts";
 import { persistPackReviewDecisions } from "../lib/browser/page-review-evidence.ts";
 import { judgePageReviewPack, toCritiqueRecords } from "../lib/browser/page-review-judge.ts";
@@ -705,7 +705,9 @@ export function registerReviewPackCommand(
         );
       }
       emit.log(
-        `judge: ${result.outcome} · pool ${result.pool.concurrency} · ${result.tiles_reviewed} tile(s) in ${result.pool.wall_time_ms}ms · ${packPaths(packDir).review}`,
+        `judge: ${result.outcome} · pool ${result.pool.concurrency} · ${result.tiles_reviewed} tile(s) in ${result.pool.wall_time_ms}ms` +
+          (result.usage ? ` · ${formatCritiqueUsage(result.usage)}` : "") +
+          ` · ${packPaths(packDir).review}`,
         result.outcome === "pass" ? "info" : "warn",
       );
       if (opts.json) emit.data(result as unknown as Record<string, unknown>);

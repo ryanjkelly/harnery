@@ -38,15 +38,20 @@ export type {
   TruncationResult,
 } from "./content-checks.js";
 export {
+  addCritiqueUsage,
   bandRects,
   type CritiqueCoverage,
   type CritiqueFinding,
   type CritiqueProvider,
   type CritiqueResult,
   type CritiqueTile,
+  type CritiqueUsage,
+  type CritiqueUsageTotals,
   DEFAULT_CRITIQUE_RUBRIC,
+  formatCritiqueUsage,
   normalizeFindings,
   runCritique,
+  sumCritiqueUsage,
   tilesFromFullPage,
 } from "./critique.js";
 export {

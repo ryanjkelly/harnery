@@ -68,6 +68,39 @@ function pack(): string {
 }
 
 describe("judgePageReviewPack", () => {
+  test("per-tile usage lands in tile timings and the result totals", async () => {
+    const dir = pack();
+    writePackContext(dir, capture({ viewport: "desktop", theme: "light", state: "default" }, 3));
+    const provider: CritiqueProvider = async ({ tile, reportUsage }) => {
+      if (tile.index === 0) {
+        reportUsage?.({ input_tokens: 400, output_tokens: 10, cost_usd: 0.004 });
+        reportUsage?.({ input_tokens: 400, output_tokens: 10, cost_usd: 0.004 });
+      } else if (tile.index === 1) {
+        reportUsage?.({
+          input_tokens: 300,
+          output_tokens: 20,
+          cache_read_input_tokens: 250,
+          cost_usd: 0.002,
+        });
+      }
+      return [];
+    };
+    const result = await judgePageReviewPack({ packDir: dir, provider, rubric: RUBRIC });
+    const byTile = new Map(result.tile_timings.map((t) => [t.tile_id, t.usage]));
+    expect(byTile.get("T001")).toEqual({ input_tokens: 800, output_tokens: 20, cost_usd: 0.008 });
+    expect(byTile.get("T002")?.cache_read_input_tokens).toBe(250);
+    expect(byTile.get("T003")).toBeUndefined();
+    expect(result.usage).toEqual({
+      tiles_reported: 2,
+      tiles_unreported: 1,
+      input_tokens: 1100,
+      output_tokens: 40,
+      cache_read_input_tokens: 250,
+      cache_write_input_tokens: 0,
+      cost_usd: 0.01,
+    });
+  });
+
   test("a pack above the per-run ceiling is refused whole, with no provider call", async () => {
     const dir = pack();
     writePackContext(dir, capture({ viewport: "desktop", theme: "light", state: "default" }, 90));

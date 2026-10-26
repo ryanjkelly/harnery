@@ -77,6 +77,87 @@ export interface CritiqueResult {
   error?: string;
   /** Host-reported provider provenance (route, attempts, fallbacks, usage). */
   provider_meta?: Record<string, unknown>;
+  /** Tokens the provider reported across every tile it was called for. */
+  usage?: CritiqueUsageTotals;
+}
+
+/** Tokens one provider call spent, as the host's backend reported them.
+ * `input_tokens` counts every input token, cached or not. */
+export interface CritiqueUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number;
+  cache_write_input_tokens?: number;
+  /** Cost at the backend's list price, when the backend reports one. */
+  cost_usd?: number;
+}
+
+/** Usage summed over tiles. A tile whose provider reported nothing counts in
+ * `tiles_unreported`, never as zero tokens. */
+export interface CritiqueUsageTotals {
+  tiles_reported: number;
+  tiles_unreported: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_write_input_tokens: number;
+  /** Present only when every reported tile carried a cost. */
+  cost_usd?: number;
+}
+
+/** Add one call's usage to a tile's running usage (a retried tile reports twice). */
+export function addCritiqueUsage(
+  into: CritiqueUsage | undefined,
+  usage: CritiqueUsage,
+): CritiqueUsage {
+  const n = (v: number | undefined) => (Number.isFinite(v) ? (v as number) : 0);
+  const out: CritiqueUsage = {
+    input_tokens: n(into?.input_tokens) + n(usage.input_tokens),
+    output_tokens: n(into?.output_tokens) + n(usage.output_tokens),
+  };
+  const read = n(into?.cache_read_input_tokens) + n(usage.cache_read_input_tokens);
+  const write = n(into?.cache_write_input_tokens) + n(usage.cache_write_input_tokens);
+  if (read > 0) out.cache_read_input_tokens = read;
+  if (write > 0) out.cache_write_input_tokens = write;
+  const costKnown =
+    usage.cost_usd !== undefined && (into === undefined || into.cost_usd !== undefined);
+  if (costKnown) out.cost_usd = n(into?.cost_usd) + n(usage.cost_usd);
+  return out;
+}
+
+export function sumCritiqueUsage(
+  perTile: ReadonlyArray<CritiqueUsage | undefined>,
+): CritiqueUsageTotals {
+  const reported = perTile.filter((u): u is CritiqueUsage => u !== undefined);
+  const totals: CritiqueUsageTotals = {
+    tiles_reported: reported.length,
+    tiles_unreported: perTile.length - reported.length,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_write_input_tokens: 0,
+  };
+  for (const u of reported) {
+    totals.input_tokens += u.input_tokens;
+    totals.output_tokens += u.output_tokens;
+    totals.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
+    totals.cache_write_input_tokens += u.cache_write_input_tokens ?? 0;
+  }
+  if (reported.length > 0 && reported.every((u) => u.cost_usd !== undefined)) {
+    totals.cost_usd =
+      Math.round(reported.reduce((sum, u) => sum + (u.cost_usd ?? 0), 0) * 1e6) / 1e6;
+  }
+  return totals;
+}
+
+/** "1,234,567 tokens over 96 tiles (3 unreported), $1.23" for log lines. */
+export function formatCritiqueUsage(totals: CritiqueUsageTotals): string {
+  const tokens = (totals.input_tokens + totals.output_tokens).toLocaleString("en-US");
+  return (
+    `${tokens} tokens over ${totals.tiles_reported} tile(s)` +
+    (totals.tiles_unreported > 0 ? ` (${totals.tiles_unreported} unreported)` : "") +
+    (totals.cost_usd !== undefined ? `, $${totals.cost_usd.toFixed(2)} at list price` : "")
+  );
 }
 
 /**
@@ -94,6 +175,9 @@ export type CritiqueProvider = ((input: {
   url: string;
   rubric: string;
   tile: CritiqueTile;
+  /** Optional sink for the tokens this call spent. A provider that knows its
+   * usage calls it once per backend call; callers that omit it lose nothing. */
+  reportUsage?: (usage: CritiqueUsage) => void;
 }) => Promise<CritiqueFinding[]>) & {
   concurrency?: number;
   meta?: () => Record<string, unknown> | undefined;
@@ -344,6 +428,7 @@ export async function runCritique(args: {
   // reassemble findings in tile order so artifacts stay deterministic.
   const concurrency = Math.max(1, Math.min(provider.concurrency ?? 4, tiles.length || 1));
   const perTile: CritiqueFinding[][] = tiles.map(() => []);
+  const perTileUsage: Array<CritiqueUsage | undefined> = tiles.map(() => undefined);
   let cursor = 0;
   const worker = async (): Promise<void> => {
     while (true) {
@@ -351,7 +436,14 @@ export async function runCritique(args: {
       if (i >= tiles.length) return;
       const tile = tiles[i];
       try {
-        const tileFindings = await provider({ url, rubric, tile });
+        const tileFindings = await provider({
+          url,
+          rubric,
+          tile,
+          reportUsage: (usage) => {
+            perTileUsage[i] = addCritiqueUsage(perTileUsage[i], usage);
+          },
+        });
         perTile[i] = tileFindings.map((f) => ({ ...f, tile: tile.index }));
       } catch (err: unknown) {
         perTile[i] = [
@@ -376,5 +468,6 @@ export async function runCritique(args: {
     findings,
     outcome,
     ...(meta ? { provider_meta: meta } : {}),
+    usage: sumCritiqueUsage(perTileUsage),
   };
 }

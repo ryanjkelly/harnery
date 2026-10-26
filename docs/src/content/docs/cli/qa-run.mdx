@@ -51,7 +51,7 @@ Every child is a real `browse` invocation of the same host CLI (argv arrays only
    Each capture child writes native tile PNGs, a half-size full-page overview, a contact sheet, DOM, and signature, then closes its browser. Native scrolled probes check full-page capture fidelity; disagreement triggers scrolled tile capture. Missing probes or an incomplete fallback cannot establish a pass. Coverage lists selected rectangles, reviewed and uncovered intervals, and omitted gate hits or scopes. There is no extra tile path outside the allocation. A child that dies or writes no readable context creates a capture blocker; other allocated contexts can still finish.
 5. **Critique.** One pool of vision calls over every tile of every captured context, read from disk, in the runner's own process. No browser is open. Pool size is `policy.critique_pool` (default: the provider's own concurrency). Unless the job permits metered critique, the runner sets `HARNERY_CRITIQUE_HEADLESS_ONLY=1` on its own environment before loading the provider; an exhausted headless list becomes an `incomplete` blocker naming the policy, never a metered call. When a persisted baseline exists, band-diff reuse skips tiles whose pixels provably did not change and carried no baseline finding. In signoff mode a capped context is a `critique` blocker and the run is `incomplete`, unless the page is too long to review fully under the per-run ceiling (see [Tile ceiling and sampled signoff](#tile-ceiling-and-sampled-signoff)); in review mode the row keeps its outcome and carries the flag. Tiles the pool never reached before the run deadline leave their context `unknown` with a blocker, never a partial pass. The pack's `review.md`, inspection plan, and `evidence/critique.json` are refreshed with the machine findings.
 6. **Snapshot.** In signoff mode the runner saves the signature, DOM, and native tile evidence from the pack. Critique is attached only when every tile was judged or safely reused, coverage was complete, and the review was unscoped. A reused clean second run can therefore support reuse on the third. A manifest that requires no visual pass still gets a dedicated `browse --qa-snapshot` pass. Signoff can pass only when every required snapshot was saved. Snapshot writes preserve the independent reviewer-decision slot.
-7. **Result.** `page-qa-result.json` (schema version 4) in the run's own directory, in manifest order regardless of completion order: the run identity block, host samples, `last_completed_stage`, the manifest, merged contexts, every command's argv/exit/outcome/failures/artifacts/wall-time, critique outcomes per context (findings cite `<context-id>/<tile-id>`, plus the page `coverage` the tiles reached), the `critique_pool` block (concurrency, tiles total/reviewed/reused, wall time, provider, and the backends' p50/p95 `latency_ms` over the whole pool), the `review_pack` location with its `expires_at` and `size_bytes` (the pack is deleted at expiry; the result keeps every finding inline), the snapshot record, per-stage wall times (`capture` is browser time, `critique` is judge time), blockers, and the verdict.
+7. **Result.** `page-qa-result.json` (schema version 4) in the run's own directory, in manifest order regardless of completion order: the run identity block, host samples, `last_completed_stage`, the manifest, merged contexts, every command's argv/exit/outcome/failures/artifacts/wall-time, critique outcomes per context (findings cite `<context-id>/<tile-id>`, plus the page `coverage` the tiles reached), the `critique_pool` block (concurrency, tiles total/reviewed/reused, wall time, provider, the backends' p50/p95 `latency_ms` over the whole pool, one `tile_timings` entry per attempted tile with its own `usage`, and `usage` summed over the pool), the `review_pack` location with its `expires_at` and `size_bytes` (the pack is deleted at expiry; the result keeps every finding inline), the snapshot record, per-stage wall times (`capture` is browser time, `critique` is judge time), blockers, and the verdict.
 
 ## Queueing: machine-wide admission
 
@@ -183,6 +183,19 @@ finding record.
 Raising the budget toward 160 buys more sampled bands on a long page; it is
 never required for signoff there. Rerunning signoff to chase complete coverage
 cannot succeed and only spends model sessions.
+
+### Token usage
+
+A provider can pass each call's token counts to the optional `reportUsage`
+callback it receives with every tile. The judge stores them per tile in
+`critique_pool.tile_timings[].usage` (retries add up) and sums them in
+`critique_pool.usage`: `input_tokens` (every input token, cached or not),
+`output_tokens`, `cache_read_input_tokens`, `cache_write_input_tokens`, and
+`cost_usd` when every reporting tile carried a list-price cost.
+`tiles_unreported` counts tiles whose backend reported nothing; those are
+unknown, never zero. The judge's log line and `review-pack judge` print the
+same totals, so a run that is spending more than expected shows it in its own
+result.
 
 ## Verdict rules (fail-closed)
 

@@ -1423,6 +1423,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
       provider: judged.pool.provider,
       ...(latency ? { latency_ms: latency } : {}),
       tile_timings: judged.tile_timings,
+      ...(judged.usage ? { usage: judged.usage } : {}),
     };
     for (const row of judged.contexts) {
       judgedById.set(row.context_id, row);

@@ -9,7 +9,16 @@
 //
 // Toolkit tier: this module must not import src/core (layering check).
 
-import type { CritiqueFinding, CritiqueProvider, CritiqueTile } from "./critique.js";
+import {
+  addCritiqueUsage,
+  type CritiqueFinding,
+  type CritiqueProvider,
+  type CritiqueTile,
+  type CritiqueUsage,
+  type CritiqueUsageTotals,
+  formatCritiqueUsage,
+  sumCritiqueUsage,
+} from "./critique.js";
 import {
   PAGE_REVIEW_MAX_TILE_BUDGET,
   type PageReviewNativeEvidence,
@@ -72,6 +81,8 @@ export interface JudgePageReviewPackResult {
   tiles_reused: number;
   outcome: "pass" | "fail" | "skipped" | "incomplete";
   provider_meta?: Record<string, unknown>;
+  /** Tokens summed over the tiles sent to the provider; absent when none were. */
+  usage?: CritiqueUsageTotals;
 }
 
 interface WorkItem {
@@ -265,8 +276,14 @@ export async function judgePageReviewPack(
   });
 
   let meta: Record<string, unknown> | undefined;
+  let usage: CritiqueUsageTotals | undefined;
   let concurrency = 0;
   const tileTimings: Array<QaRunCritiqueTileTiming | undefined> = new Array(work.length);
+  // Filled, not sparse: filter() skips holes, which would drop unreported tiles.
+  const tileUsage: Array<CritiqueUsage | undefined> = Array.from(
+    { length: work.length },
+    () => undefined,
+  );
   // Every vision call is a separate model session. A pack above the ceiling
   // (an older pack, or one assembled by hand) is refused whole rather than
   // judged in part, so no flag or pack can turn one judge into hundreds of calls.
@@ -295,7 +312,14 @@ export async function judgePageReviewPack(
         const tileStarted = performance.now();
         let tileOutcome: QaRunCritiqueTileTiming["outcome"] = "passed";
         try {
-          const found = await provider({ url: item.url, rubric: item.rubric, tile: item.tile });
+          const found = await provider({
+            url: item.url,
+            rubric: item.rubric,
+            tile: item.tile,
+            reportUsage: (usage) => {
+              tileUsage[i] = addCritiqueUsage(tileUsage[i], usage);
+            },
+          });
           for (const finding of found) {
             entry.findings.push({ ...finding, tile: item.tile.index, tile_id: item.tile.id });
           }
@@ -314,12 +338,16 @@ export async function judgePageReviewPack(
             tile_id: item.tile.id,
             duration_ms: Math.max(0, Math.round(performance.now() - tileStarted)),
             outcome: tileOutcome,
+            ...(tileUsage[i] ? { usage: tileUsage[i] } : {}),
           };
         }
       }
     };
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
     meta = provider.meta?.();
+    // Only tiles the pool reached count; an unreached tile spent nothing.
+    usage = sumCritiqueUsage(tileUsage.filter((_, index) => tileTimings[index] !== undefined));
+    log(`judge: ${formatCritiqueUsage(usage)}`);
   } else if (provider) {
     meta = provider.meta?.();
   }
@@ -397,6 +425,7 @@ export async function judgePageReviewPack(
     tiles_reused: tilesReused,
     outcome,
     ...(meta ? { provider_meta: meta } : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 

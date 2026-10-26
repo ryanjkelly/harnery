@@ -1011,6 +1011,44 @@ describe("runQaMatrix", () => {
     expect(result.verdict).toBe("incomplete");
   });
 
+  test("the critique pool records the tokens the provider reported", async () => {
+    const contexts = [{ viewport: "mobile", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass" },
+      snapshotSaved: true,
+    });
+    const inner = fake.provider;
+    if (!inner) throw new Error("fixture provider missing");
+    const provider: CritiqueProvider = async (input) => {
+      input.reportUsage?.({ input_tokens: 2000, output_tokens: 100, cost_usd: 0.01 });
+      return inner(input);
+    };
+    const result = await runQaMatrix({
+      job: job({ mode: "review" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    const tiles = result.critique_pool?.tile_timings?.length ?? 0;
+    expect(tiles).toBeGreaterThan(0);
+    expect(result.critique_pool?.tile_timings?.every((t) => t.usage?.input_tokens === 2000)).toBe(
+      true,
+    );
+    expect(result.critique_pool?.usage).toMatchObject({
+      tiles_reported: tiles,
+      tiles_unreported: 0,
+      input_tokens: 2000 * tiles,
+      output_tokens: 100 * tiles,
+    });
+    expect(result.critique_pool?.usage?.cost_usd).toBeCloseTo(0.01 * tiles, 6);
+  });
+
   test("signoff on a page above the tile ceiling accepts a sampled critique", async () => {
     const contexts = [{ viewport: "mobile", theme: "light" as const, state: "default" }];
     const fake = makeFakeExec({
