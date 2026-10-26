@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -54,27 +54,38 @@ function harnBinary(root: string): string {
   return path.join(root, "bin", "harn");
 }
 
-function runSemanticReviewCommand(args: string[]): Promise<SemanticReviewCommandResult> {
-  const root = coordRoot();
+export function runSemanticReviewCommand(
+  args: string[],
+  options: { root?: string; timeoutMs?: number; maxBuffer?: number } = {},
+): Promise<SemanticReviewCommandResult> {
+  const root = options.root ?? coordRoot();
   return new Promise((resolve) => {
-    const process = spawn(harnBinary(root), args, {
-      cwd: root,
-      env: { ...globalThis.process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
-    });
-    let stdout = "";
-    let stderr = "";
-    process.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    process.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    process.on("close", (code) => {
-      resolve({ ok: code === 0, stdout, stderr, exitCode: code });
-    });
-    process.on("error", (error) => {
-      resolve({ ok: false, stdout, stderr: `${stderr}${error.message}`, exitCode: null });
-    });
+    const child = execFile(
+      harnBinary(root),
+      args,
+      {
+        cwd: root,
+        env: { ...globalThis.process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+        encoding: "utf8",
+        timeout: options.timeoutMs ?? 30_000,
+        maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024,
+        killSignal: "SIGKILL",
+      },
+      (error, stdout, stderr) => {
+        const failure = error
+          ? error.killed && error.signal === "SIGKILL"
+            ? "semantic review command timed out"
+            : error.message
+          : "";
+        resolve({
+          ok: !error,
+          stdout,
+          stderr: failure ? `${failure}\n${stderr}` : stderr,
+          exitCode: error ? (typeof error.code === "number" ? error.code : null) : 0,
+        });
+      },
+    );
+    child.stdin?.end();
   });
 }
 

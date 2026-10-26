@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 
@@ -185,7 +185,7 @@ function resolveLocal(spec: string, fromFile: string): string | null {
     path.join(base, "index.ts"),
     path.join(base, "index.tsx"),
   ]) {
-    if (existsSync(candidate) && !candidate.endsWith(path.sep)) return candidate;
+    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
   }
   return null;
 }
@@ -217,6 +217,14 @@ function collectImports(file: string, seen: Set<string>, violations: string[]): 
 }
 
 describe("codec dependency boundary", () => {
+  test("directory imports resolve to their index module instead of skipping its imports", () => {
+    const fromFile = path.resolve(WEB_ROOT, "../src/core/entry.ts");
+    expect(resolveLocal("./presence", fromFile)).toBe(
+      path.resolve(WEB_ROOT, "../src/core/presence/index.ts"),
+    );
+    expect(resolveLocal("./missing-directory", fromFile)).toBeNull();
+  });
+
   test("the root resolver exception rejects write commands, shell options, and process aliases", () => {
     const source = readFileSync(
       path.resolve(WEB_ROOT, "../src/core/hooks/resolve/coord-root.ts"),
