@@ -529,6 +529,29 @@ describe("projectScene", () => {
     }
   });
 
+  test("sanitized task changes without display text preserve the snapshot task", () => {
+    for (const taskUpdatedAt of ["2026-08-16T10:03:00.000Z", "2026-08-16T10:04:00.000Z"]) {
+      for (const ledgerState of [undefined, "live"] as const) {
+        const panel = projectScene({
+          snapshot: snapshot([
+            hb({
+              task: "Current snapshot task",
+              task_updated_at: taskUpdatedAt,
+              ledger_state: ledgerState,
+            }),
+          ]),
+          events: [ev({ event_type: "coord.task_changed", task_cleared: false })],
+          now: NOW,
+        }).panels[0];
+        expect(panel?.identity.task).toMatchObject({
+          value: "Current snapshot task",
+          provenance: "projection",
+          observed_at: taskUpdatedAt,
+        });
+      }
+    }
+  });
+
   test("an unstamped cached task cannot overwrite an explicit event declaration", () => {
     const panel = projectScene({
       snapshot: snapshot([hb({ task: "Cached task" })]),

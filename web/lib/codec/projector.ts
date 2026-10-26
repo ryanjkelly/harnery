@@ -512,8 +512,12 @@ function lifecycle(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<C
 function taskLabel(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<string> | undefined {
   const event = ev?.lastTaskChanged;
   if (event && (!hb.task_updated_at || ms(event.ts) >= ms(hb.task_updated_at))) {
-    if (!event.task?.trim() || event.task_cleared) return undefined;
-    return present(event.task.trim(), "event", "high", event.ts, [event.event_id]);
+    if (event.task_cleared) return undefined;
+    // Sanitized task-change events omit the label after the display overlay
+    // expires. Missing text does not clear the authoritative snapshot label.
+    if (event.task?.trim()) {
+      return present(event.task.trim(), "event", "high", event.ts, [event.event_id]);
+    }
   }
   // A stamped clear is newer evidence than the previous nonempty task label.
   if (hb.task_updated_at) {
