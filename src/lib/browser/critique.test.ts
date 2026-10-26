@@ -26,6 +26,45 @@ function blankPage(width: number, height: number): Buffer {
   return PNG.sync.write(img);
 }
 
+describe("per-invocation tile ceiling", () => {
+  test("no maxTiles value or hit band list cuts more tiles than the ceiling", () => {
+    // 200 bands of 100 px with no overlap; every band is a gate hit.
+    const page = blankPage(10, 20_000);
+    const { tiles } = tilesFromFullPage(page, {
+      bandHeight: 100,
+      overlap: 0,
+      maxTiles: 500,
+      hitRects: [{ x: 0, y: 0, width: 10, height: 20_000 }],
+    });
+    expect(tiles).toHaveLength(160);
+    const capped = tilesFromFullPage(page, {
+      bandHeight: 100,
+      overlap: 0,
+      maxTiles: 150,
+      hitRects: [{ x: 0, y: 0, width: 10, height: 20_000 }],
+    });
+    expect(capped.hitBands).toBe(10);
+    expect(capped.tiles).toHaveLength(160);
+  });
+
+  test("runCritique refuses a tile set above the ceiling without calling the provider", async () => {
+    let calls = 0;
+    const provider: CritiqueProvider = async () => {
+      calls += 1;
+      return [];
+    };
+    const result = await runCritique({
+      url: "x",
+      rubric: "r",
+      tiles: Array.from({ length: 161 }, (_, i) => tile(i)),
+      provider,
+    });
+    expect(calls).toBe(0);
+    expect(result.outcome).toBe("skipped");
+    expect(result.error).toContain("161 tiles exceed the per-invocation ceiling of 160");
+  });
+});
+
 describe("tilesFromFullPage coverage", () => {
   test("an uncapped page reports full coverage", () => {
     const { tiles, coverage } = tilesFromFullPage(blankPage(400, 5000), {

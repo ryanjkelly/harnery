@@ -15,6 +15,7 @@ import { artifactsRoot } from "../core/artifacts/index.ts";
 import { resolveBinName, reviewPackAutoCleanEnabled } from "../core/config.ts";
 import { createManagedQaOutParent, resolveQaRepoRoot } from "../core/qa-artifacts.ts";
 import { DEFAULT_CRITIQUE_RUBRIC } from "../lib/browser/critique.ts";
+import { PAGE_REVIEW_MAX_TILE_BUDGET } from "../lib/browser/page-review-contracts.ts";
 import { persistPackReviewDecisions } from "../lib/browser/page-review-evidence.ts";
 import { judgePageReviewPack, toCritiqueRecords } from "../lib/browser/page-review-judge.ts";
 import {
@@ -382,7 +383,9 @@ export function registerReviewPackCommand(
     )
     .option(
       "--max-tiles <n>",
-      "Native tile cap per context, including required top and bottom bands.",
+      "Native tile cap per context, including required top and bottom bands (default 24). " +
+        `The whole pack never exceeds ${PAGE_REVIEW_MAX_TILE_BUDGET} tiles, so the cap is ` +
+        "lowered when the contexts would need more.",
     )
     .option("--concurrency <n>", "Concurrent capture browsers (1-8; default 2).", "2")
     .option("--timeout <ms>", "Per-capture timeout in milliseconds (default 120000).", "120000")
@@ -410,6 +413,31 @@ export function registerReviewPackCommand(
         });
         process.exitCode = 1;
         return;
+      }
+      const requestedMaxTiles = Number(opts.maxTiles ?? "24");
+      if (
+        !Number.isInteger(requestedMaxTiles) ||
+        requestedMaxTiles < 1 ||
+        requestedMaxTiles > PAGE_REVIEW_MAX_TILE_BUDGET
+      ) {
+        emit.error({
+          code: "review_pack_invalid_max_tiles",
+          message: `--max-tiles must be an integer between 1 and ${PAGE_REVIEW_MAX_TILE_BUDGET}`,
+        });
+        process.exitCode = 1;
+        return;
+      }
+      // The judge refuses a pack above the ceiling, so share it across contexts here.
+      const perContextMaxTiles = Math.max(
+        2,
+        Math.min(requestedMaxTiles, Math.floor(PAGE_REVIEW_MAX_TILE_BUDGET / contexts.length)),
+      );
+      if (perContextMaxTiles < requestedMaxTiles) {
+        emit.log(
+          `review-pack: ${contexts.length} contexts share the ${PAGE_REVIEW_MAX_TILE_BUDGET}-tile ceiling; ` +
+            `capping each at ${perContextMaxTiles} tiles`,
+          "warn",
+        );
       }
       const concurrency = Math.max(
         1,
@@ -472,7 +500,8 @@ export function registerReviewPackCommand(
             "--qa-state",
             ctx.state,
             ...(opts.scope ?? []).flatMap((selector) => ["--review-pack-scope", selector]),
-            ...(opts.maxTiles !== undefined ? ["--check-critique-max-tiles", opts.maxTiles] : []),
+            "--check-critique-max-tiles",
+            String(perContextMaxTiles),
           ];
           emit.log(`capture ${ctx.id}`, "info");
           const res = await defaultQaRunExec(argv, { timeoutMs, env });
@@ -641,7 +670,12 @@ export function registerReviewPackCommand(
       else process.env[QA_RUN_HEADLESS_ONLY_ENV] = prior;
 
       const merged = new Map((manifest.critique ?? []).map((row) => [row.context_id, row]));
-      for (const row of toCritiqueRecords(result)) merged.set(row.context_id, row);
+      for (const row of toCritiqueRecords(result)) {
+        // Re-judging never changes the captured coverage, so a signoff's
+        // sampled acceptance (ADR 0224) still applies.
+        const prior = merged.get(row.context_id)?.coverage_mode;
+        merged.set(row.context_id, prior ? { ...row, coverage_mode: prior } : row);
+      }
       const judgedRecords = new Map(result.contexts.map((row) => [row.context_id, row.record]));
       finalizePageReviewPack({
         packDir,

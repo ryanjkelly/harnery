@@ -38,6 +38,7 @@ import {
   type PageReviewCritiqueRecord,
   type PageReviewFindingsDocument,
   type PageReviewInspectionPlan,
+  type PageReviewPackManifest,
   readPackContext,
   readPackDom,
   readPackFindings,
@@ -1143,6 +1144,32 @@ describe("findings and verdict", () => {
     expect(errors).toContain(`dispositions[2]: duplicate target "${CTX}/T002#0"`);
     expect(validateFindingsDocument("nope")).toEqual(["findings document must be a JSON object"]);
     expect(validateFindingsDocument({})).toContain('missing required key "schema"');
+  });
+
+  test("a capped context is incomplete unless its signoff recorded a sampled review", () => {
+    const cappedCoverage = {
+      page_height_px: 300_000,
+      reviewed_height_px: 120_000,
+      bands_total: 200,
+      bands_reviewed: 96,
+      capped: true,
+    };
+    const contexts = [
+      { id: CTX, capture_incomplete: false, coverage: cappedCoverage },
+    ] as unknown as PageReviewPackManifest["contexts"];
+    const clean = { outcome: "pass" as const, findings: [], coverage: cappedCoverage };
+    const capped = resolvePackVerdict(
+      { critique: [critiqueRow(clean)], contexts },
+      inspectionPlan(),
+      findingsDoc(),
+    );
+    expect(capped.reviewed_outcome).toBe("incomplete");
+    const sampled = resolvePackVerdict(
+      { critique: [critiqueRow({ ...clean, coverage_mode: "sampled" })], contexts },
+      inspectionPlan(),
+      findingsDoc(),
+    );
+    expect(sampled.reviewed_outcome).toBe("pass");
   });
 
   test("machineFindingTargets numbers a tile's findings in critique order across severities", () => {

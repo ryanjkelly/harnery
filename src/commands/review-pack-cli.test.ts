@@ -250,6 +250,23 @@ describe("review-pack findings add", () => {
     expect((doc.findings as Array<{ id: string }>).map((f) => f.id)).toEqual(["F001", "F002"]);
   });
 
+  test("create refuses --max-tiles above the per-run ceiling before any capture", async () => {
+    const out = mkdtempSync(join(tmpdir(), "review-pack-create-"));
+    const result = await run([
+      "create",
+      "http://localhost:4276/page",
+      "--max-tiles",
+      "161",
+      "--out",
+      out,
+    ]);
+    expect(result.errors[0]?.code).toBe("review_pack_invalid_max_tiles");
+    expect(result.errors[0]?.message).toContain("between 1 and 160");
+    expect(exitCode()).toBe(1);
+    expect(existsSync(join(out, "manifest.json"))).toBe(false);
+    resetExitCode();
+  });
+
   test("refuses a bad severity, an unknown tile, and an unknown context without writing", async () => {
     const dir = seedPack();
     const before = readFileSync(join(dir, "findings.json"), "utf8");

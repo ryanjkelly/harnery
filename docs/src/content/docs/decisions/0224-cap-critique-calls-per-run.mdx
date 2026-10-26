@@ -1,0 +1,79 @@
+---
+title: "ADR 0224: Cap critique calls per run and sample long pages"
+description: Bound every critique invocation at 160 vision calls, and let signoff on a page too long for that ceiling pass on a sampled review that kept every edge band, gate hit, and required scope.
+sidebar:
+  order: 224
+---
+
+**Date:** 2026-10-26
+**Status:** Accepted
+
+## Context
+
+Each tile in a page review is judged by a separate model session. A host
+usually routes those sessions to a subscription-backed headless harness, the
+same subscription its interactive agents work in. The tile count is therefore
+the cost of a run, and it scaled with page length times the number of
+rendering contexts.
+
+Two contracts let that grow without limit. The `qa-run` job accepted a tile
+budget of up to 400. Signoff required every band of every context, so on a long
+page the only way to reach a pass was to raise the budget to the maximum and
+rerun. A page 148,528 px tall on mobile needed 384 tiles in four contexts, and
+repeated signoff attempts launched hundreds of sessions in an hour, exhausting
+the subscription that the operator's own sessions depended on. Separately,
+`browse --check-critique-max-tiles` and `review-pack create --max-tiles` had no
+upper bound, `tilesFromFullPage` could add 50 gate-hit bands past any cap, and
+`review-pack judge` sent every tile in a pack to the provider.
+
+## Alternatives considered
+
+- **Lower the default budget only.** Rejected: the default was already 96. The
+  growth came from jobs that raised the budget because signoff demanded it.
+- **Keep full-coverage signoff and only lower the maximum.** Rejected: a page
+  above the maximum could then never sign off, and agents would loop on
+  reruns that cannot succeed.
+- **Let any capped signoff pass.** Rejected: a budget that silently skipped a
+  band with a gate hit, or a required scope, would pass the regions most
+  likely to be broken.
+- **Leave spend limits to the host.** Partly adopted: hosts can and should cap
+  sessions across runs, but every host would need to rediscover the per-run
+  bound, and the signoff contract is Harnery's.
+
+## Decision
+
+`PAGE_REVIEW_MAX_TILE_BUDGET` is 160 and is a hard per-invocation ceiling.
+`policy.critique_tile_budget`, `policy.critique_max_tiles`, and `qa-run
+--tile-budget` reject larger values. `browse --check-critique-max-tiles` is
+clamped to it, and gate-hit bands added past the cap never take the total
+above it. `review-pack create --max-tiles` accepts at most 160 and shares the
+ceiling across contexts. `runCritique` and `judgePageReviewPack` refuse a tile
+set above the ceiling without calling the provider; the judge reports every
+context `incomplete` with the reason.
+
+Signoff keeps its full-coverage requirement when the plans for all contexts
+fit under the ceiling. When they need more, complete coverage is unavailable
+by policy, and signoff accepts a capped critique as a sampled review if the
+allocation kept every context's top and bottom band, every band carrying a
+gate hit, and every required scope. The `qa-run` critique row records
+`coverage_mode` (`full`, `capped`, or `sampled`). The pack's critique record
+carries `coverage_mode: "sampled"` so `resolvePackVerdict` treats the context
+as covered, and re-judging the pack keeps the marker. A context without an
+allocation record cannot prove its required regions and stays a blocker. A
+sampled critique is never persisted as a baseline's finding record, and durable
+reviewer decisions still require complete coverage.
+
+## Result and limits
+
+Focused tests cover the validator bounds, the tiler clamp, the `runCritique`
+and judge refusals, a judge at exactly the ceiling, sampled signoff on a
+170-band page, refusal when a gate hit was left out, refusal without an
+allocation record, the pack verdict with and without the marker, and the
+`review-pack create` rejection.
+
+The ceiling bounds one invocation, not a sequence of them. Several runs, or
+several agents, can still each spend up to 160 calls. Bounding spend across
+runs belongs to the host's provider, which knows which subscription each call
+uses. On a long page, the uncovered intervals are reviewed only by the
+deterministic gates, so a visual defect that no gate detects can pass a
+sampled signoff.

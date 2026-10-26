@@ -78,8 +78,8 @@ function critiqueOutcome(
 }
 
 describe("validateQaRunJob", () => {
-  test("policy.critique_max_tiles must be an integer between 1 and 400", () => {
-    for (const bad of [0, 401, 2.5, "24"]) {
+  test("policy.critique_max_tiles must be an integer between 1 and the 160 ceiling", () => {
+    for (const bad of [0, 161, 400, 2.5, "24"]) {
       const result = validateQaRunJob(validJob({ policy: { critique_max_tiles: bad as number } }));
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -90,13 +90,13 @@ describe("validateQaRunJob", () => {
   });
 
   test("shared tile budget rejects impossible values before rendering", () => {
-    for (const bad of [0, 7, 401, 9.5, "96", null]) {
+    for (const bad of [0, 7, 161, 400, 9.5, "96", null]) {
       const result = validateQaRunJob(
         validJob({ policy: { critique_tile_budget: bad as number } }),
       );
       expect(result.ok).toBe(false);
     }
-    for (const value of [8, 96, 400]) {
+    for (const value of [8, 96, 160]) {
       expect(validateQaRunJob(validJob({ policy: { critique_tile_budget: value } })).ok).toBe(true);
     }
   });

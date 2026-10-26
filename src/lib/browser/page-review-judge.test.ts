@@ -68,6 +68,41 @@ function pack(): string {
 }
 
 describe("judgePageReviewPack", () => {
+  test("a pack above the per-run ceiling is refused whole, with no provider call", async () => {
+    const dir = pack();
+    writePackContext(dir, capture({ viewport: "desktop", theme: "light", state: "default" }, 90));
+    writePackContext(dir, capture({ viewport: "mobile", theme: "light", state: "default" }, 90));
+    let calls = 0;
+    const provider: CritiqueProvider = async () => {
+      calls += 1;
+      return [];
+    };
+    const result = await judgePageReviewPack({ packDir: dir, provider, rubric: RUBRIC });
+    expect(calls).toBe(0);
+    expect(result.outcome).toBe("incomplete");
+    for (const context of result.contexts) {
+      expect(context.outcome).toBe("incomplete");
+      expect(context.tiles_reviewed).toBe(0);
+      expect(context.error).toContain(
+        "pack needs 180 vision calls, above the per-run ceiling of 160",
+      );
+    }
+  });
+
+  test("a pack exactly at the ceiling is judged", async () => {
+    const dir = pack();
+    writePackContext(dir, capture({ viewport: "desktop", theme: "light", state: "default" }, 80));
+    writePackContext(dir, capture({ viewport: "mobile", theme: "light", state: "default" }, 80));
+    let calls = 0;
+    const provider: CritiqueProvider = async () => {
+      calls += 1;
+      return [];
+    };
+    const result = await judgePageReviewPack({ packDir: dir, provider, rubric: RUBRIC });
+    expect(calls).toBe(160);
+    expect(result.outcome).toBe("pass");
+  });
+
   test("separated selected bands are described as unreviewed gaps", () => {
     const dir = pack();
     const record = writePackContext(

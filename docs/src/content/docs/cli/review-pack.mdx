@@ -33,7 +33,7 @@ Renders each context once through child [`harn browse --review-pack`](/cli/brows
 | `--out <dir>` | Pack directory. Default: a managed workspace under `.harnery/artifacts/`. |
 | `--context <spec>` | Rendering context `<viewport>[:<theme>[:<state>]]`, repeatable. Default: desktop and mobile, light and dark. |
 | `--scope <selector>` | Also tile one screenshot per element matching the selector (repeatable). |
-| `--max-tiles <n>` | Tile ceiling per context (default 96), including scopes and gate-hit priorities. Page edges remain required. Use `qa-run --tile-budget` for one shared budget across the complete matrix. |
+| `--max-tiles <n>` | Tile ceiling per context (1–160, default 24), including scopes and gate-hit priorities. Page edges remain required. The whole pack never exceeds 160 tiles, so the per-context cap is lowered (with a warning) when the contexts would need more. Use `qa-run --tile-budget` for one shared budget across the complete matrix. |
 | `--concurrency <n>` | Concurrent capture browsers (1–8; default 2). |
 | `--timeout <ms>` | Per-capture timeout (default 120000). |
 | `--retain <minutes>` | Minutes until the pack expires and is deleted (default 90). |
@@ -58,6 +58,8 @@ Reads the pack's tiles back from disk and sends every tile of every context thro
 | `--json` | Print the judge result. |
 
 Exit 0 when every judged context passed; 2 on a high-severity finding; 4 when no provider judged (the host injected none, or the headless list was exhausted); 1 for usage errors.
+
+A pack that would need more than 160 vision calls (the per-run ceiling) is refused whole: no tile reaches the provider, every context reports `incomplete` with the reason, and the command exits 4. Recapture it with a smaller `--max-tiles`. Re-judging a pack that a signoff accepted as sampled keeps its `coverage_mode: "sampled"` marker, because judging never changes the captured coverage.
 
 harnery ships no model client. The judge uses the same host-injected `critiqueProvider` as `browse --check-critique`; without one every context reports `skipped`, never a pass. Each tile goes to the provider with the rubric plus a short position preamble (band N of M, document y range, page height, overlap with its neighbours, whether it touches the page top or bottom, and the capture source), so the model can tell a slice edge from a container edge.
 

@@ -24,6 +24,7 @@ import {
 } from "./page-review-budget.js";
 import {
   PAGE_REVIEW_DEFAULT_TILE_BUDGET,
+  PAGE_REVIEW_MAX_TILE_BUDGET,
   type PageReviewCapturePlan,
   type PageReviewContextAllocation,
 } from "./page-review-contracts.js";
@@ -1204,6 +1205,10 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
 
   enterStage("capture");
   const captureStart = Date.now();
+  // Candidate tiles a complete review of every context would need. Above the
+  // per-run ceiling, signoff accepts a sampled critique (ADR 0224).
+  let fullCoverageTiles = 0;
+  const sampledContexts = new Set<string>();
   if (runsVisual) {
     writeFileSync(
       join(outDir, "preliminary-gates.json"),
@@ -1224,6 +1229,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
           );
         return candidate;
       });
+      fullCoverageTiles = plans.reduce((sum, plan) => sum + plan.candidates.length, 0);
       const ceilings =
         job.policy?.critique_max_tiles === undefined
           ? undefined
@@ -1496,17 +1502,43 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         });
       }
       // Selected bands may leave gaps anywhere. Signoff needs complete
-      // coverage, while review mode reports what was actually captured.
+      // coverage when the whole page fits under the per-run ceiling. Past
+      // it, complete coverage is unavailable by policy, so signoff accepts a
+      // sampled critique that still reviewed every edge band, gate hit, and
+      // required scope; the deterministic gates covered the whole page.
+      let coverageMode: QaRunCritiqueOutcome["coverage_mode"] = row.coverage
+        ? row.coverage.capped
+          ? "capped"
+          : "full"
+        : undefined;
       if (job.mode === "signoff" && row.coverage.capped && contextOutcome !== "failed") {
-        contextOutcome = "unknown";
-        blockers.push({
-          stage: "critique",
-          context_id: row.context_id,
-          reason:
-            `critique coverage capped: ${row.coverage.bands_reviewed} of ${row.coverage.bands_total} bands ` +
-            `reviewed (${row.coverage.reviewed_height_px} of ${row.coverage.page_height_px} px); raise ` +
-            "policy.critique_tile_budget (and any explicit per-context ceiling) for full signoff coverage",
-        });
+        // Without the allocation record nothing proves the required regions
+        // were selected, so a sampled signoff is refused.
+        const allocated = row.record.allocation_coverage;
+        const requiredOmitted = allocated
+          ? [
+              ...allocated.omitted_gate_hits.map((id) => `gate hit ${id}`),
+              ...allocated.omitted_scopes.map((scope) => `scope ${scope}`),
+            ]
+          : ["its allocation record (recapture this context)"];
+        if (fullCoverageTiles > PAGE_REVIEW_MAX_TILE_BUDGET && requiredOmitted.length === 0) {
+          coverageMode = "sampled";
+          sampledContexts.add(row.context_id);
+        } else {
+          contextOutcome = "unknown";
+          blockers.push({
+            stage: "critique",
+            context_id: row.context_id,
+            reason:
+              `critique coverage capped: ${row.coverage.bands_reviewed} of ${row.coverage.bands_total} bands ` +
+              `reviewed (${row.coverage.reviewed_height_px} of ${row.coverage.page_height_px} px)` +
+              (requiredOmitted.length > 0
+                ? `; the budget left out ${requiredOmitted.join(", ")}. Raise ` +
+                  `policy.critique_tile_budget (at most ${PAGE_REVIEW_MAX_TILE_BUDGET}) so every gate hit and scope is reviewed`
+                : `; the full page needs ${fullCoverageTiles} tiles, so raise ` +
+                  `policy.critique_tile_budget (and any explicit per-context ceiling) to ${fullCoverageTiles}`),
+          });
+        }
       }
       const scopeById = new Map(row.record.tiles.map((tile) => [tile.id, tile.scope]));
       critique.push({
@@ -1516,6 +1548,7 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         tiles_reviewed: row.tiles_reviewed,
         tiles_reused: row.tiles_reused,
         outcome: contextOutcome,
+        ...(coverageMode ? { coverage_mode: coverageMode } : {}),
         ...(dismissed.length > 0 ? { dismissed } : {}),
         findings: row.findings.map((finding) => {
           const selector = scopeById.get(finding.tile_id);
@@ -1529,7 +1562,15 @@ export async function runQaMatrix(options: QaRunMatrixOptions): Promise<QaRunRes
         coverage: row.coverage,
       });
     }
-    finalizePack("critique", toCritiqueRecords(judged), judged.pool);
+    finalizePack(
+      "critique",
+      toCritiqueRecords(judged).map((record) =>
+        sampledContexts.has(record.context_id)
+          ? { ...record, coverage_mode: "sampled" as const }
+          : record,
+      ),
+      judged.pool,
+    );
   }
   if (runsVisual) restoreHeadlessOnly();
   wall.critique = Date.now() - critiqueStart;

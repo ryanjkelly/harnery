@@ -74,6 +74,7 @@ import {
 } from "../lib/browser/page-review-budget.ts";
 import {
   PAGE_REVIEW_CAPTURE_PLAN_SCHEMA,
+  PAGE_REVIEW_MAX_TILE_BUDGET,
   type PageReviewCapturePlan,
   type PageReviewContextAllocation,
   type PageReviewSourceEvidence,
@@ -818,7 +819,7 @@ export function registerBrowseCommand(
     )
     .option(
       "--check-critique-max-tiles <n>",
-      "Cap on tiles sent to the model, to bound cost (default 24).",
+      `Cap on tiles sent to the model, to bound cost (default 24, at most ${PAGE_REVIEW_MAX_TILE_BUDGET}).`,
       "24",
     )
     .option("--check-critique-rubric <text>", "Override the default critique rubric.")
@@ -2867,7 +2868,7 @@ async function runQaPlanning(
     );
     const band = Number.parseInt(opts.checkCritiqueBand ?? "1400", 10);
     const overlap = Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10);
-    const maxTiles = Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10);
+    const maxTiles = critiqueTilingKnobs(opts).maxTiles;
     const estimatedFullPageTiles = Math.min(
       maxTiles,
       Math.max(1, Math.ceil(pageHeight / Math.max(1, band - overlap))),
@@ -2900,7 +2901,12 @@ function critiqueTilingKnobs(
   opts: BrowseOpts,
   tileBudgetPx?: number,
 ): { maxTiles: number; band: number; overlap: number } {
-  const maxTiles = Math.max(1, Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10));
+  // No flag value can exceed the hard per-invocation ceiling.
+  const requested = Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10);
+  const maxTiles = Math.min(
+    PAGE_REVIEW_MAX_TILE_BUDGET,
+    Math.max(1, Number.isFinite(requested) ? requested : 24),
+  );
   const bandFlag = Math.max(200, Number.parseInt(opts.checkCritiqueBand ?? "1400", 10));
   const band = tileBudgetPx ? Math.max(200, Math.min(bandFlag, tileBudgetPx)) : bandFlag;
   const overlap = Math.max(0, Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10));

@@ -17,6 +17,7 @@ import {
   resolveQaRepoRoot,
 } from "../core/qa-artifacts.ts";
 import { acquireAdmission, admissionBaseDir, admissionStatus } from "../lib/admission.ts";
+import { PAGE_REVIEW_MAX_TILE_BUDGET } from "../lib/browser/page-review-contracts.ts";
 import {
   deleteExpiredPacks,
   PAGE_REVIEW_DEFAULT_RETENTION_MINUTES,
@@ -99,7 +100,7 @@ export function registerQaRunCommand(
     )
     .option(
       "--tile-budget <n>",
-      "Maximum native tiles across the complete review pack (8-400; default 96).",
+      `Maximum native tiles across the complete review pack (8-${PAGE_REVIEW_MAX_TILE_BUDGET}; default 96).`,
     )
     .option(
       "--accept-dispositions",
@@ -224,10 +225,10 @@ export function registerQaRunCommand(
       const policy = { ...validation.job.policy };
       if (opts.tileBudget !== undefined) {
         const n = Number(opts.tileBudget);
-        if (!Number.isInteger(n) || n < 8 || n > 400) {
+        if (!Number.isInteger(n) || n < 8 || n > PAGE_REVIEW_MAX_TILE_BUDGET) {
           emit.error({
             code: "qa_run_invalid_tile_budget",
-            message: "--tile-budget must be an integer between 8 and 400",
+            message: `--tile-budget must be an integer between 8 and ${PAGE_REVIEW_MAX_TILE_BUDGET}`,
           });
           process.exitCode = 1;
           return;

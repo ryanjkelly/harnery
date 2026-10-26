@@ -14,6 +14,7 @@ import { type CritiqueProvider, type CritiqueTile, DEFAULT_CRITIQUE_RUBRIC } fro
 import {
   PAGE_REVIEW_CAPTURE_PLAN_SCHEMA,
   PAGE_REVIEW_DECISIONS_SCHEMA,
+  PAGE_REVIEW_MAX_TILE_BUDGET,
   type PageReviewCapturePlan,
   type PageReviewContextAllocation,
 } from "./page-review-contracts.ts";
@@ -128,6 +129,8 @@ interface FakeExecConfig {
   captureError?: Record<string, string>;
   /** Full-page bands the fake capture writes per context (default 3). */
   captureTiles?: number;
+  /** Replaces the allocation coverage written into the pack record; `null` omits it. */
+  allocationCoverageOverride?: PageReviewContextAllocation["coverage"] | null;
   captureIncomplete?: boolean;
   /** Whether signoff snapshot envelopes (visual "none" path) report a persisted snapshot. */
   snapshotSaved?: boolean;
@@ -363,6 +366,13 @@ function makeFakeExec(config: FakeExecConfig): {
           },
           domHtml: "<html><body>fixture</body></html>",
           capturePlan: allocation?.plan,
+          ...(config.allocationCoverageOverride === null
+            ? {}
+            : config.allocationCoverageOverride
+              ? { allocationCoverage: config.allocationCoverageOverride }
+              : allocation?.coverage
+                ? { allocationCoverage: allocation.coverage }
+                : {}),
         });
         writeFileSync(
           `${outPrefix}.json`,
@@ -998,6 +1008,103 @@ describe("runQaMatrix", () => {
     expect(blocker?.context_id).toBe("mobile-light-default");
     expect(blocker?.reason).toContain("24 of 53 bands");
     expect(blocker?.reason).toContain("policy.critique_tile_budget");
+    expect(result.verdict).toBe("incomplete");
+  });
+
+  test("signoff on a page above the tile ceiling accepts a sampled critique", async () => {
+    const contexts = [{ viewport: "mobile", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass" },
+      captureTiles: PAGE_REVIEW_MAX_TILE_BUDGET + 10,
+      snapshotSaved: true,
+    });
+    const result = await runQaMatrix({
+      job: job({ mode: "signoff" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    // The default budget, not the whole page, reached the provider.
+    expect(fake.providerCalls).toHaveLength(96);
+    expect(result.critique[0]?.coverage?.capped).toBe(true);
+    expect(result.critique[0]?.coverage_mode).toBe("sampled");
+    expect(result.critique[0]?.outcome).toBe("passed");
+    expect(result.blockers.filter((b) => b.stage === "critique")).toEqual([]);
+    expect(result.verdict).toBe("passed");
+    const pack = JSON.parse(
+      readFileSync(join(result.review_pack?.dir ?? "", "manifest.json"), "utf8"),
+    );
+    expect(pack.critique[0].coverage_mode).toBe("sampled");
+  });
+
+  test("a sampled signoff still refuses a budget that left out a gate hit", async () => {
+    const contexts = [{ viewport: "mobile", theme: "light" as const, state: "default" }];
+    const omitted = {
+      page_height_px: 217_600,
+      reviewed_height_px: 122_880,
+      bands_total: PAGE_REVIEW_MAX_TILE_BUDGET + 10,
+      bands_reviewed: 96,
+      capped: true,
+      selected_rectangles: [],
+      reviewed_intervals: [],
+      uncovered_intervals: [{ start: 122_880, end: 217_600 }],
+      omitted_gate_hits: ["overflow"],
+      omitted_scopes: [],
+    };
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass" },
+      captureTiles: PAGE_REVIEW_MAX_TILE_BUDGET + 10,
+      allocationCoverageOverride: omitted,
+      snapshotSaved: true,
+    });
+    const result = await runQaMatrix({
+      job: job({ mode: "signoff" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.critique[0]?.coverage_mode).toBe("capped");
+    expect(result.critique[0]?.outcome).toBe("unknown");
+    const blocker = result.blockers.find((b) => b.reason.includes("critique coverage capped"));
+    expect(blocker?.reason).toContain("gate hit overflow");
+    expect(blocker?.reason).toContain(`at most ${PAGE_REVIEW_MAX_TILE_BUDGET}`);
+    expect(result.verdict).toBe("incomplete");
+  });
+
+  test("a sampled signoff fails closed without the allocation record", async () => {
+    const contexts = [{ viewport: "mobile", theme: "light" as const, state: "default" }];
+    const fake = makeFakeExec({
+      planManifest: manifest({
+        contexts,
+        checks: { deterministic: [], interaction: [], visual: "full-page" },
+      }),
+      critique: { outcome: "pass" },
+      captureTiles: PAGE_REVIEW_MAX_TILE_BUDGET + 10,
+      allocationCoverageOverride: null,
+      snapshotSaved: true,
+    });
+    const result = await runQaMatrix({
+      job: job({ mode: "signoff" }),
+      outParent: outDir(),
+      browseArgv: BROWSE_ARGV,
+      exec: fake.exec,
+      critiqueProvider: fake.provider,
+      snapshotStore: { root: fake.snapshotRoot },
+    });
+    expect(result.critique[0]?.outcome).toBe("unknown");
+    expect(result.blockers.find((b) => b.reason.includes("allocation record"))).toBeDefined();
     expect(result.verdict).toBe("incomplete");
   });
 

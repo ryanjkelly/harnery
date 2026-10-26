@@ -337,7 +337,7 @@ without tripping a named rule.
 | `--check-critique [selector]` | Send the page to a vision model, tile by tile. Default tiling cuts vertical bands whose seams snap into content gaps; a selector tiles one screenshot per matching element, banding any element taller than the band budget internally. |
 | `--check-critique-band <px>` | Band height budget for tiling. Seams may move up to 30% above the budget to land in a gap, never below it. Default `1400`. |
 | `--check-critique-overlap <px>` | Vertical overlap below a seam that had to cut through content, so a straddling finding stays visible. Clean seams (nothing straddles them) carry a 16px margin instead. Default `120`. |
-| `--check-critique-max-tiles <n>` | Cap on tiles sent to the model, to bound cost. Default `24`. |
+| `--check-critique-max-tiles <n>` | Cap on tiles sent to the model, to bound cost. Default `24`; values above `160`, the per-invocation ceiling, are clamped, and gate-hit bands cut past the cap never take the total above it. |
 | `--check-critique-rubric <text>` | Override the default rubric. |
 | `--check-critique-fail` | Run a whole-page critique when needed; exit 2 unless it conclusively passes. |
 

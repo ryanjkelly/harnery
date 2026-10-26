@@ -21,7 +21,7 @@ Every child is a real `browse` invocation of the same host CLI (argv arrays only
 | `--mode <mode>` | `signoff` persists a QA snapshot on a passing run; `review` never does. Default `signoff`. An explicit `--mode` overrides the job file's mode. |
 | `--concurrency <n>` | Concurrent deterministic gates and pack captures (1–8; default 2). Interactions always run serially. |
 | `--pool <n>` | Vision calls in flight during the critique stage, across every context (1–16; default: the provider's own concurrency). Sets `policy.critique_pool`. |
-| `--tile-budget <n>` | Shared native tile budget across the whole run (8–400; default 96). Sets `policy.critique_tile_budget`. |
+| `--tile-budget <n>` | Shared native tile budget across the whole run (8–160; default 96). Sets `policy.critique_tile_budget`. 160 is a hard per-run ceiling. |
 | `--accept-dispositions` | Permit exact matches to complete saved reviewer decisions. Off by default. Sets `policy.accept_dispositions`. |
 | `--allow-metered` | Permit the critique provider's metered-API fallback. Default: subscription-backed headless harnesses only. |
 | `--retain <minutes>` | Minutes the run's page review pack lives after the judge finishes before the whole pack is deleted (default 90). Sets `policy.review_pack_retention_minutes`. |
@@ -49,7 +49,7 @@ Every child is a real `browse` invocation of the same host CLI (argv arrays only
 4. **Capture.** A visual manifest requires a preliminary capture plan from every gate render, including failed gates. The runner allocates one shared tile budget, then reserves each context's assigned tile count. Each capture child repeats its context setup and all applicable gates, plans the current page, and allocates within that reservation. Full source identity must remain unchanged during gates and native capture. One source change permits one complete gate and allocation retry on the same page; a second change or insufficient native coverage makes the run incomplete. Preliminary outcomes remain in `preliminary-gates.json`; final outcomes reference the fresh capture envelope and its source identity. Failed gates still produce diagnostic tiles and retain failed command outcomes. Partial writes remain outside the final context until the complete context is published atomically. Browser concurrency stays within the existing command pool, and every browser closes before vision starts.
 
    Each capture child writes native tile PNGs, a half-size full-page overview, a contact sheet, DOM, and signature, then closes its browser. Native scrolled probes check full-page capture fidelity; disagreement triggers scrolled tile capture. Missing probes or an incomplete fallback cannot establish a pass. Coverage lists selected rectangles, reviewed and uncovered intervals, and omitted gate hits or scopes. There is no extra tile path outside the allocation. A child that dies or writes no readable context creates a capture blocker; other allocated contexts can still finish.
-5. **Critique.** One pool of vision calls over every tile of every captured context, read from disk, in the runner's own process. No browser is open. Pool size is `policy.critique_pool` (default: the provider's own concurrency). Unless the job permits metered critique, the runner sets `HARNERY_CRITIQUE_HEADLESS_ONLY=1` on its own environment before loading the provider; an exhausted headless list becomes an `incomplete` blocker naming the policy, never a metered call. When a persisted baseline exists, band-diff reuse skips tiles whose pixels provably did not change and carried no baseline finding. In signoff mode a capped context is a `critique` blocker and the run is `incomplete`; in review mode the row keeps its outcome and carries the flag. Tiles the pool never reached before the run deadline leave their context `unknown` with a blocker, never a partial pass. The pack's `review.md`, inspection plan, and `evidence/critique.json` are refreshed with the machine findings.
+5. **Critique.** One pool of vision calls over every tile of every captured context, read from disk, in the runner's own process. No browser is open. Pool size is `policy.critique_pool` (default: the provider's own concurrency). Unless the job permits metered critique, the runner sets `HARNERY_CRITIQUE_HEADLESS_ONLY=1` on its own environment before loading the provider; an exhausted headless list becomes an `incomplete` blocker naming the policy, never a metered call. When a persisted baseline exists, band-diff reuse skips tiles whose pixels provably did not change and carried no baseline finding. In signoff mode a capped context is a `critique` blocker and the run is `incomplete`, unless the page is too long to review fully under the per-run ceiling (see [Tile ceiling and sampled signoff](#tile-ceiling-and-sampled-signoff)); in review mode the row keeps its outcome and carries the flag. Tiles the pool never reached before the run deadline leave their context `unknown` with a blocker, never a partial pass. The pack's `review.md`, inspection plan, and `evidence/critique.json` are refreshed with the machine findings.
 6. **Snapshot.** In signoff mode the runner saves the signature, DOM, and native tile evidence from the pack. Critique is attached only when every tile was judged or safely reused, coverage was complete, and the review was unscoped. A reused clean second run can therefore support reuse on the third. A manifest that requires no visual pass still gets a dedicated `browse --qa-snapshot` pass. Signoff can pass only when every required snapshot was saved. Snapshot writes preserve the independent reviewer-decision slot.
 7. **Result.** `page-qa-result.json` (schema version 4) in the run's own directory, in manifest order regardless of completion order: the run identity block, host samples, `last_completed_stage`, the manifest, merged contexts, every command's argv/exit/outcome/failures/artifacts/wall-time, critique outcomes per context (findings cite `<context-id>/<tile-id>`, plus the page `coverage` the tiles reached), the `critique_pool` block (concurrency, tiles total/reviewed/reused, wall time, provider, and the backends' p50/p95 `latency_ms` over the whole pool), the `review_pack` location with its `expires_at` and `size_bytes` (the pack is deleted at expiry; the result keeps every finding inline), the snapshot record, per-stage wall times (`capture` is browser time, `critique` is judge time), blockers, and the verdict.
 
@@ -152,12 +152,37 @@ A job (`--job`) widens or parameterizes the run. It is validated before anything
 - `contexts` append to the planner's matrix (union, never narrowing). Derived context IDs are `<viewport>-<theme>-<state>`.
 - `checks[].args` are argument arrays appended to the context's capture command, never shell strings. A check without `contexts` applies to every context. The runner always adds the planner's deterministic checks. Job checks can add coverage but cannot omit the manifest floor.
 - Each interaction needs at least one outcome assertion: a click without a proven outcome is not a gate.
-- `policy.critique_tile_budget` (default 96, integer 8 to 400), also `--tile-budget`, limits the total selected tiles across the run. A budget too small to include every context's page edges refuses capture. Signoff stays incomplete when required coverage remains outside the budget.
-- `policy.critique_max_tiles` (integer 1 to 400) optionally limits each context within the shared budget. When omitted, a context can use any remaining shared slots. The gate and capture use the same geometry settings. These execution limits stay out of the job digest; coverage records the actual selection.
+- `policy.critique_tile_budget` (default 96, integer 8 to 160), also `--tile-budget`, limits the total selected tiles across the run. A budget too small to include every context's page edges refuses capture. Signoff stays incomplete when required coverage remains outside the budget.
+- `policy.critique_max_tiles` (integer 1 to 160) optionally limits each context within the shared budget. When omitted, a context can use any remaining shared slots. The gate and capture use the same geometry settings. These execution limits stay out of the job digest; coverage records the actual selection.
 - `policy.accept_dispositions`, also `--accept-dispositions`, defaults to false. When enabled, a saved `artifact` or `not-a-defect` decision can dismiss only the identical current finding on an identical native tile with matching context, capture recipe, rubric, and critique version. New or reworded findings remain open. Machine findings stay in the result, and `dismissed` lists the decisions applied. Enabling this policy changes the job digest. Gate failures, provider errors, and incomplete capture or judging cannot be dismissed.
 - `policy.critique_pool` (1 to 16; default the provider's own concurrency, 4 for headless harnesses) is how many vision calls run at once during the critique stage, across every context. Every browser has closed by then, so a wider pool costs model-call parallelism, not browser memory. Also settable with `--pool`.
 - `policy.run_deadline_ms` (default 900000, minimum 10000) is the overall runner deadline. A run that exceeds it skips its remaining commands, records a `deadline` blocker, finalizes as `incomplete`, and releases its admission slot — the deadline clock starts after admission, so queue wait never counts against it. The per-command cap still bounds each child: SIGTERM goes to the child's whole process group at `command_timeout_ms`, SIGKILL follows five seconds later, and a command that ran past its cap is reported as an error even if it then exited 0.
 - **Jobs must not carry credentials.** Secret-bearing field names (`token`, `password`, `cookie`, …) and credential-shaped values (`Bearer …`) are refused; authentication is referenced through existing browser profiles and cookie stores.
+
+## Tile ceiling and sampled signoff
+
+Every vision call is a separate model session, so the number of tiles is the
+cost of a run. No single critique invocation makes more than 160 calls: the
+`qa-run` tile budget, `review-pack create --max-tiles`, and `browse
+--check-critique-max-tiles` all stop at 160, and `review-pack judge` refuses a
+pack above it without calling the provider.
+
+Signoff still requires every band of every context when the whole page fits
+under the ceiling. When the plans for all contexts together need more than 160
+tiles, complete coverage is unavailable by policy. Signoff then accepts the
+capped critique as a sampled review, provided the allocation kept every
+context's top and bottom band, every band with a gate hit, and every required
+scope. The row records `coverage_mode: "sampled"`, the pack's critique record
+carries the same marker so the delegated-review verdict agrees, and
+`coverage.uncovered_intervals` lists what no tile reviewed. The deterministic
+gates still run over the whole page in every context. If the budget left out a
+gate hit or a scope, or the capture has no allocation record, the context
+stays a blocker. A sampled critique is never persisted as the next baseline's
+finding record.
+
+Raising the budget toward 160 buys more sampled bands on a long page; it is
+never required for signoff there. Rerunning signoff to chase complete coverage
+cannot succeed and only spends model sessions.
 
 ## Verdict rules (fail-closed)
 

@@ -10,7 +10,10 @@
 // Toolkit tier: this module must not import src/core (layering check).
 
 import type { CritiqueFinding, CritiqueProvider, CritiqueTile } from "./critique.js";
-import type { PageReviewNativeEvidence } from "./page-review-contracts.js";
+import {
+  PAGE_REVIEW_MAX_TILE_BUDGET,
+  type PageReviewNativeEvidence,
+} from "./page-review-contracts.js";
 import {
   buildPackNativeEvidence,
   PAGE_REVIEW_CRITIQUE_SCHEMA,
@@ -264,7 +267,16 @@ export async function judgePageReviewPack(
   let meta: Record<string, unknown> | undefined;
   let concurrency = 0;
   const tileTimings: Array<QaRunCritiqueTileTiming | undefined> = new Array(work.length);
-  if (provider && work.length > 0) {
+  // Every vision call is a separate model session. A pack above the ceiling
+  // (an older pack, or one assembled by hand) is refused whole rather than
+  // judged in part, so no flag or pack can turn one judge into hundreds of calls.
+  const overCeiling =
+    work.length > PAGE_REVIEW_MAX_TILE_BUDGET
+      ? `pack needs ${work.length} vision calls, above the per-run ceiling of ` +
+        `${PAGE_REVIEW_MAX_TILE_BUDGET}; recapture it with a smaller tile budget`
+      : undefined;
+  if (overCeiling) log(`judge: refused — ${overCeiling}`);
+  if (provider && work.length > 0 && !overCeiling) {
     concurrency = Math.max(
       1,
       Math.min(options.concurrency ?? provider.concurrency ?? 4, work.length),
@@ -319,11 +331,13 @@ export async function judgePageReviewPack(
     const unjudged = entry.review.filter((tile) => !entry.judged.has(tile.id)).length;
     const outcome: JudgedContext["outcome"] = !provider
       ? "skipped"
-      : findings.some((f) => f.severity === "high")
-        ? "fail"
-        : unjudged > 0 || entry.record.capture_incomplete
-          ? "incomplete"
-          : "pass";
+      : overCeiling
+        ? "incomplete"
+        : findings.some((f) => f.severity === "high")
+          ? "fail"
+          : unjudged > 0 || entry.record.capture_incomplete
+            ? "incomplete"
+            : "pass";
     return {
       context_id: entry.record.id,
       provider: provider ? label : "none",
@@ -334,12 +348,14 @@ export async function judgePageReviewPack(
       outcome,
       findings,
       coverage: entry.record.coverage,
-      ...(provider
-        ? {}
-        : {
+      ...(!provider
+        ? {
             error:
               "no critiqueProvider injected by the host (see HarneryProgramContext.critiqueProvider)",
-          }),
+          }
+        : overCeiling
+          ? { error: overCeiling }
+          : {}),
       record: entry.record,
       evidence: {
         schema: PAGE_REVIEW_CRITIQUE_SCHEMA,

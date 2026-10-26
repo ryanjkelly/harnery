@@ -18,6 +18,7 @@
 //      orchestration live here; the model call lives in the host.
 
 import { PNG } from "pngjs";
+import { PAGE_REVIEW_MAX_TILE_BUDGET } from "./page-review-contracts.js";
 import {
   bandOversizedRect,
   bandsCoveringRects,
@@ -242,12 +243,16 @@ export function tilesFromFullPage(
       pngBase64: PNG.sync.write(dst).toString("base64"),
     };
   };
-  const kept = rects.slice(0, opts.maxTiles);
+  const kept = rects.slice(0, Math.min(opts.maxTiles, PAGE_REVIEW_MAX_TILE_BUDGET));
   const tiles: CritiqueTile[] = kept.map(cutTile);
+  const hitBandCap = Math.min(
+    opts.maxHitBands ?? 50,
+    Math.max(0, PAGE_REVIEW_MAX_TILE_BUDGET - kept.length),
+  );
   let hitBands = 0;
   const banding = !(opts.elementRects && opts.elementRects.length > 0);
   if (banding && opts.hitRects && opts.hitRects.length > 0) {
-    for (const index of bandsCoveringRects(rects, kept.length, opts.hitRects, opts.maxHitBands)) {
+    for (const index of bandsCoveringRects(rects, kept.length, opts.hitRects, hitBandCap)) {
       const band = rects[index];
       if (!band) continue;
       tiles.push(cutTile({ ...band, label: `hit band ${index + 1}` }));
@@ -321,6 +326,18 @@ export async function runCritique(args: {
       outcome: "skipped",
       error:
         "no critiqueProvider injected by the host (see HarneryProgramContext.critiqueProvider)",
+    };
+  }
+  if (tiles.length > PAGE_REVIEW_MAX_TILE_BUDGET) {
+    return {
+      rule: "critique",
+      tiles: tiles.length,
+      provider: true,
+      findings: [],
+      outcome: "skipped",
+      error:
+        `${tiles.length} tiles exceed the per-invocation ceiling of ${PAGE_REVIEW_MAX_TILE_BUDGET} ` +
+        "vision calls; lower the tile cap",
     };
   }
   // Tiles are judged independently, so run them concurrently (bounded) and

@@ -18,6 +18,7 @@
 // Toolkit tier: this module must not import src/core (layering check).
 
 import { createHash } from "node:crypto";
+import { PAGE_REVIEW_MAX_TILE_BUDGET } from "./page-review-contracts.js";
 import type { QaContext, QaManifest } from "./qa-plan.js";
 
 export const QA_RUN_JOB_SCHEMA_VERSION = 1 as const;
@@ -184,6 +185,11 @@ export interface QaRunCritiqueOutcome {
   dismissed?: Array<{ finding_key: string; target: string; disposition: string }>;
   /** Tile coverage of the page. Absent when the capture died or reported none. */
   coverage?: QaRunCritiqueCoverage;
+  /** `full`: every band reviewed. `capped`: bands left out; a signoff blocker.
+   * `sampled`: signoff on a page whose complete review would exceed the
+   * per-run tile ceiling; every edge band, gate hit, and required scope was
+   * reviewed and the uncovered intervals are listed in `coverage` (ADR 0224). */
+  coverage_mode?: "full" | "capped" | "sampled";
 }
 
 /** The judge stage as one unit: every context's tiles through one bounded
@@ -518,8 +524,15 @@ export function validateQaRunJob(value: unknown): QaRunJobValidation {
     }
     if (p?.critique_tile_budget !== undefined) {
       const n = p.critique_tile_budget;
-      if (typeof n !== "number" || !Number.isInteger(n) || n < 8 || n > 400) {
-        errors.push("policy.critique_tile_budget must be an integer between 8 and 400");
+      if (
+        typeof n !== "number" ||
+        !Number.isInteger(n) ||
+        n < 8 ||
+        n > PAGE_REVIEW_MAX_TILE_BUDGET
+      ) {
+        errors.push(
+          `policy.critique_tile_budget must be an integer between 8 and ${PAGE_REVIEW_MAX_TILE_BUDGET}`,
+        );
       }
     }
     if (p?.command_concurrency !== undefined) {
@@ -542,8 +555,15 @@ export function validateQaRunJob(value: unknown): QaRunJobValidation {
     }
     if (p?.critique_max_tiles !== undefined) {
       const n = p.critique_max_tiles;
-      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 400) {
-        errors.push("policy.critique_max_tiles must be an integer between 1 and 400");
+      if (
+        typeof n !== "number" ||
+        !Number.isInteger(n) ||
+        n < 1 ||
+        n > PAGE_REVIEW_MAX_TILE_BUDGET
+      ) {
+        errors.push(
+          `policy.critique_max_tiles must be an integer between 1 and ${PAGE_REVIEW_MAX_TILE_BUDGET}`,
+        );
       }
     }
     if (p?.critique_pool !== undefined) {

@@ -328,6 +328,9 @@ export interface PageReviewCritiqueRecord {
   outcome: "pass" | "fail" | "skipped" | "incomplete";
   findings: Array<CritiqueFinding & { tile_id: string }>;
   coverage: CritiqueCoverage;
+  /** Set by a signoff whose complete review would exceed the per-run tile
+   * ceiling: the capped coverage is the accepted, sampled review (ADR 0224). */
+  coverage_mode?: "sampled";
   error?: string;
   evidence?: {
     schema: string;
@@ -1364,7 +1367,12 @@ export function resolvePackVerdict(
         (row.outcome === "skipped" && machine_outcome !== "skipped"),
     ) ??
       false) ||
-    manifest.contexts?.some((c) => c.capture_incomplete || c.coverage.capped) ||
+    manifest.contexts?.some(
+      (c) =>
+        c.capture_incomplete ||
+        (c.coverage.capped &&
+          !critique?.some((row) => row.context_id === c.id && row.coverage_mode === "sampled")),
+    ) ||
     false;
   const reviewed_outcome: PageReviewVerdict["reviewed_outcome"] =
     blocking > 0
@@ -2067,8 +2075,11 @@ export function renderReviewMarkdown(
   );
   lines.push("|---|---|---|---|---|---|---|---|---|");
   for (const ctx of contexts) {
+    const sampled = manifest.critique?.some(
+      (row) => row.context_id === ctx.id && row.coverage_mode === "sampled",
+    );
     const cov = ctx.coverage.capped
-      ? `${ctx.coverage.bands_reviewed}/${ctx.coverage.bands_total} bands, capped`
+      ? `${ctx.coverage.bands_reviewed}/${ctx.coverage.bands_total} bands, ${sampled ? "sampled" : "capped"}`
       : "complete";
     const contacts = ctx.contact_sheet
       ? `[${CONTACT_SHEET_FILENAME}](${ctx.contact_sheet.file})`

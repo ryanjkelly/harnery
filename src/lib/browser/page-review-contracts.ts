@@ -6,7 +6,12 @@ export const PAGE_REVIEW_CAPTURE_PLAN_SCHEMA = "harnery-page-review-capture-plan
 export const PAGE_REVIEW_NATIVE_EVIDENCE_SCHEMA = "harnery-page-review-native-evidence/v2";
 export const PAGE_REVIEW_DECISIONS_SCHEMA = "harnery-page-review-decisions/v1";
 export const PAGE_REVIEW_DEFAULT_TILE_BUDGET = 96;
-export const PAGE_REVIEW_MAX_TILE_BUDGET = 400;
+/** Hard ceiling on vision calls in one critique invocation (a qa-run pack,
+ * a review-pack judge, or a browse --check-critique). Each call is a separate
+ * model session, so the ceiling bounds what one run can spend whatever the
+ * job asks for. Pages that need more bands than this get a sampled review
+ * (ADR 0224). */
+export const PAGE_REVIEW_MAX_TILE_BUDGET = 160;
 
 /** Rectangles are native image pixels, never CSS pixels or overview pixels. */
 export interface PageReviewRect {
