@@ -416,6 +416,13 @@ function harneryCommandBundles({
       { hasOptions: true },
     ),
     lazy(
+      "outline <file>",
+      `Print the structural skeleton of a code file (imports + top-level decls + line numbers). Supports TS/JS/TSX/JSX (AST), PHP/Python (regex). Use \`${binName} toc\` for markdown.`,
+      async (program) =>
+        (await import("./commands/outline.ts")).registerOutlineCommand(program, emit, binName),
+      { hasOptions: true },
+    ),
+    lazy(
       "toc <file>",
       "Print the markdown header outline (level + text + line number).",
       async (program) => (await import("./commands/toc.ts")).registerTocCommand(program, emit),
@@ -425,6 +432,13 @@ function harneryCommandBundles({
       "section <file> <header...>",
       "Extract one section from a markdown file by header substring (case-insensitive by default). Joins multi-word args into one query string.",
       async (program) => (await import("./commands/toc.ts")).registerSectionCommand(program, emit),
+      { hasOptions: true },
+    ),
+    lazy(
+      "callers <symbol>",
+      "Find references to a symbol across the monorepo with kind classification (call / import / type / decl / ref). Heuristic: filters out declarations + single-line comments by default; opt back in with --include-decl / --include-comments.",
+      async (program) =>
+        (await import("./commands/callers.ts")).registerCallersCommand(program, emit, context),
       { hasOptions: true },
     ),
     lazy(

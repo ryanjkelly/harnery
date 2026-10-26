@@ -28,6 +28,7 @@ describe("createHarneryProgram", () => {
     await loadLazyCommand(program, "agents");
     const command = (name: string) => program.commands.find((entry) => entry.name() === name);
 
+    expect(command("outline")?.description()).toContain("`acme toc`");
     expect(command("read")?.description()).toContain("`acme fetch`");
     expect(
       command("browse")?.options.find((option) => option.long === "--html")?.description,
