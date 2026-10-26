@@ -118,6 +118,33 @@ function addDays(value: string, days: number): string {
   return date.toISOString().replace(".000Z", "Z");
 }
 
+/** Allowance for clock skew between machines before a timestamp counts as future. */
+const FUTURE_SKEW_MS = 10 * 60 * 1000;
+
+/** Lifecycle timestamps record events that already happened, so none may be later than now. */
+const PAST_TIMESTAMP_FIELDS = [
+  "created_at",
+  "updated_at",
+  "status_changed_at",
+  "resolved_at",
+  "reviewed_at",
+] as const;
+
+function inFuture(value: unknown, now: string): boolean {
+  if (typeof value !== "string") return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time > Date.parse(now) + FUTURE_SKEW_MS;
+}
+
+/**
+ * While a status is unchanged its status_changed_at is pinned to the committed
+ * value. A committed value later than now cannot be true, so a correction to a
+ * time that has already passed is accepted instead of being reverted.
+ */
+function correctsFutureStatusTime(committed: unknown, current: unknown, now: string): boolean {
+  return inFuture(committed, now) && typeof current === "string" && !inFuture(current, now);
+}
+
 export async function runDocsMetadataSync(
   opts: DocsMetadataSyncOpts,
 ): Promise<DocsMetadataSyncRow[]> {
@@ -171,7 +198,8 @@ export async function runDocsMetadataSync(
       if (
         !statusChanged &&
         beforeV2 &&
-        current.data.status_changed_at !== beforeV2.status_changed_at
+        current.data.status_changed_at !== beforeV2.status_changed_at &&
+        !correctsFutureStatusTime(beforeV2.status_changed_at, current.data.status_changed_at, now)
       ) {
         expected.status_changed_at = beforeV2.status_changed_at;
         fields.push("status_changed_at");
@@ -203,6 +231,19 @@ export async function runDocsMetadataSync(
         continue;
       }
       if (opts.check) {
+        const future = PAST_TIMESTAMP_FIELDS.filter((field) => inFuture(current.data[field], now));
+        if (future.length > 0) {
+          rows.push({
+            repo: target.name,
+            path,
+            status: "invalid",
+            fields: [...future],
+            message: future
+              .map((field) => `${field}: cannot be later than the current time`)
+              .join("; "),
+          });
+          continue;
+        }
         const validation = validateDocsMetadataV2(current.data);
         if (!validation.valid) {
           rows.push({
@@ -238,7 +279,8 @@ export async function runDocsMetadataSync(
         if (
           beforeV2 &&
           !statusChanged &&
-          current.data.status_changed_at !== beforeV2.status_changed_at
+          current.data.status_changed_at !== beforeV2.status_changed_at &&
+          !correctsFutureStatusTime(beforeV2.status_changed_at, current.data.status_changed_at, now)
         ) {
           drift.push("status_changed_at");
         }

@@ -86,6 +86,64 @@ describe("runDocsMetadataSync", () => {
     expect(data.created_at).toBe(OLD);
   });
 
+  test("check rejects a timestamp later than the current time", async () => {
+    const { root, file } = repo();
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8")
+        .replace(`updated_at: ${OLD}`, "updated_at: 2026-08-25T12:00:00Z")
+        .replace("Original.", "Edited."),
+    );
+    spawnSync("git", ["add", "plan.md"], { cwd: root });
+
+    const [row] = await runDocsMetadataSync({ check: true, now: NOW });
+    expect(row?.status).toBe("invalid");
+    expect(row?.fields).toEqual(["updated_at"]);
+    expect(row?.message).toContain("cannot be later than the current time");
+  });
+
+  test("accepts a correction to a committed future status_changed_at", async () => {
+    const { root, file } = repo();
+    const FUTURE = "2026-08-25T12:00:00Z";
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8")
+        .replace(`updated_at: ${OLD}`, `updated_at: ${FUTURE}`)
+        .replace(`status_changed_at: ${OLD}`, `status_changed_at: ${FUTURE}`),
+    );
+    spawnSync("git", ["commit", "-qam", "future timestamp"], { cwd: root });
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8")
+        .replace(`status_changed_at: ${FUTURE}`, `status_changed_at: ${OLD}`)
+        .replace("Original.", "Edited."),
+    );
+    spawnSync("git", ["add", "plan.md"], { cwd: root });
+
+    await runDocsMetadataSync({ now: NOW });
+    const data = parseFrontmatter(readFileSync(file, "utf8")).data;
+    expect(data.status_changed_at).toBe(OLD);
+    expect(data.updated_at).toBe(NOW);
+    spawnSync("git", ["add", "plan.md"], { cwd: root });
+    const [row] = await runDocsMetadataSync({ check: true, now: NOW });
+    expect(row?.status).toBe("unchanged");
+  });
+
+  test("still pins a past status_changed_at while the status is unchanged", async () => {
+    const { root, file } = repo();
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8")
+        .replace(`status_changed_at: ${OLD}`, "status_changed_at: 2026-08-17T12:00:00Z")
+        .replace("Original.", "Edited."),
+    );
+    spawnSync("git", ["add", "plan.md"], { cwd: root });
+
+    await runDocsMetadataSync({ now: NOW });
+    const data = parseFrontmatter(readFileSync(file, "utf8")).data;
+    expect(data.status_changed_at).toBe(OLD);
+  });
+
   test("does not bump timestamps for frontmatter formatting only", async () => {
     const { root, file } = repo();
     writeFileSync(
