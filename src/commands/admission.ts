@@ -26,6 +26,14 @@ import {
   listAdmissionResources,
 } from "../lib/admission.ts";
 import {
+  type AdmissionHistoryGroup,
+  type AdmissionHistoryRecord,
+  type AdmissionReleaseResult,
+  readAdmissionHistory,
+  resolveAdmissionHistoryDir,
+  summarizeAdmissionHistory,
+} from "../lib/admission-history.ts";
+import {
   classifyJob,
   createJobDir,
   DURABLE_JOB_HEARTBEAT_MS,
@@ -67,6 +75,15 @@ interface AdmissionWaitOpts {
   json?: boolean;
 }
 
+interface AdmissionHistoryOpts {
+  resource?: string;
+  since?: string;
+  label?: string;
+  list?: boolean;
+  limit?: string;
+  json?: boolean;
+}
+
 interface AdmissionJobsOpts {
   json?: boolean;
   limit?: string;
@@ -84,6 +101,47 @@ const DEFAULT_JOBS_LIMIT = 20;
  */
 export function jobsBaseDir(): string {
   return coordEnv("JOBS_DIR") ?? `${admissionBaseDir()}-jobs`;
+}
+
+/** Parse "30m", "24h", or "7d" into milliseconds; undefined means invalid. */
+function parseLookback(raw: string): number | undefined {
+  const match = /^(\d+)([mhd])$/.exec(raw.trim());
+  if (!match) return undefined;
+  const amount = Number(match[1]);
+  const unitMs = match[2] === "m" ? 60_000 : match[2] === "h" ? 3_600_000 : 86_400_000;
+  return amount > 0 ? amount * unitMs : undefined;
+}
+
+function describeHistoryGroup(group: AdmissionHistoryGroup): string {
+  const outcomes = Object.entries(group.outcomes)
+    .filter(([outcome]) => outcome !== "released")
+    .map(([outcome, count]) => `${count} ${outcome}`);
+  const hold =
+    group.hold_ms !== null
+      ? `held p50 ${formatJobAge(group.hold_ms.p50)}, p90 ${formatJobAge(group.hold_ms.p90)}`
+      : "no completed holds";
+  return (
+    `  ${group.label || "(no label)"}: ${group.count} run(s), ${group.queued} queued; ` +
+    `waited p50 ${formatJobAge(group.wait_ms.p50)}, p90 ${formatJobAge(group.wait_ms.p90)}, ` +
+    `max ${formatJobAge(group.wait_ms.max)}, total ${formatJobAge(group.wait_ms.total)}; ${hold}` +
+    (outcomes.length > 0 ? `; ${outcomes.join(", ")}` : "")
+  );
+}
+
+function describeHistoryRecord(record: AdmissionHistoryRecord): string {
+  const bits = [
+    record.outcome,
+    `waited ${formatJobAge(record.wait_ms)}`,
+    ...(record.hold_ms !== undefined ? [`held ${formatJobAge(record.hold_ms)}`] : []),
+    ...(record.exit_code !== undefined && record.exit_code !== null
+      ? [`exit ${record.exit_code}`]
+      : []),
+    ...(record.signal ? [`signal ${record.signal}`] : []),
+  ];
+  const behind = record.waited_behind?.length
+    ? ` (behind: ${record.waited_behind.join(", ")})`
+    : "";
+  return `  ${record.ended_at} ${record.resource} ${record.label || "(no label)"}: ${bits.join(", ")}${behind}`;
 }
 
 /** Parse an integer flag with a bounded range; undefined means invalid. */
@@ -318,6 +376,7 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
       }
 
       const [executable, ...childArgs] = commandArgs;
+      const result: AdmissionReleaseResult = {};
       try {
         const outcome = await new Promise<{
           code: number | null;
@@ -330,6 +389,8 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
           child.on("error", rejectPromise);
           child.on("exit", (code, signal) => resolvePromise({ code, signal }));
         });
+        result.exitCode = outcome.code;
+        result.signal = outcome.signal;
         if (outcome.signal !== null) {
           emit.error({
             code: "admission_child_signal",
@@ -344,9 +405,97 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
           code: "admission_spawn_error",
           message: `cannot run ${executable}: ${describeError(err)}`,
         });
+        result.exitCode = 1;
         process.exitCode = 1;
       } finally {
-        handle.release();
+        handle.release(result);
+      }
+    });
+
+  // ----------------------------------------------------------------- history
+  admission
+    .command("history")
+    .description(
+      "Report finished slot use: how long work queued for each resource, what it " +
+        "waited behind, how long holders kept their slots, and which tickets timed " +
+        "out or were abandoned by a process that died. Grouped by resource and " +
+        "label, most total wait first; --list shows individual records.",
+    )
+    .option("--resource <name>", "Report one resource instead of all of them.")
+    .option("--since <window>", "Look back this far: 30m, 24h, 7d (default 24h).")
+    .option("--label <text>", "Keep records whose label contains this text.")
+    .option("--list", "List individual records, newest first, after the summary.")
+    .option("--limit <n>", "With --list, how many records to show (1-500; default 20).")
+    .option("--json", "Emit { history_dir, since, groups: [...], records: [...] } as JSON.")
+    .addHelpText(
+      "after",
+      "\nHistory is written to $XDG_STATE_HOME/harnery/admission-history (default " +
+        "~/.local/state/harnery/admission-history); HARNERY_ADMISSION_HISTORY_DIR " +
+        "moves it and HARNERY_ADMISSION_HISTORY=off stops recording." +
+        "\nExit codes: 0 always (reporting only) · 1 usage error.",
+    )
+    .action((opts: AdmissionHistoryOpts) => {
+      const lookbackMs = parseLookback(opts.since ?? "24h");
+      if (lookbackMs === undefined) {
+        emit.error({
+          code: "admission_usage",
+          message: "--since must look like 30m, 24h, or 7d",
+        });
+        process.exitCode = 1;
+        return;
+      }
+      const limit = parseBoundedInt(opts.limit, 20, 1, 500);
+      if (limit === undefined) {
+        emit.error({
+          code: "admission_usage",
+          message: "--limit must be an integer between 1 and 500",
+        });
+        process.exitCode = 1;
+        return;
+      }
+      const historyDir = resolveAdmissionHistoryDir(admissionBaseDir());
+      const sinceMs = Date.now() - lookbackMs;
+      const records = readAdmissionHistory(historyDir, {
+        ...(opts.resource !== undefined ? { resource: opts.resource } : {}),
+        ...(opts.label !== undefined ? { labelContains: opts.label } : {}),
+        sinceMs,
+      });
+      const groups = summarizeAdmissionHistory(records);
+      const newest = [...records].reverse().slice(0, limit);
+      if (opts.json) {
+        emit.data({
+          history_dir: historyDir,
+          since: new Date(sinceMs).toISOString(),
+          groups,
+          records: opts.list ? newest : [],
+        });
+        return;
+      }
+      if (historyDir === null) {
+        emit.log("admission history recording is off (HARNERY_ADMISSION_HISTORY=off)", "info");
+        return;
+      }
+      if (records.length === 0) {
+        emit.log(`no admission history since ${new Date(sinceMs).toISOString()}`, "info");
+        return;
+      }
+      let resource = "";
+      for (const group of groups.sort((a, b) => a.resource.localeCompare(b.resource))) {
+        if (group.resource !== resource) {
+          resource = group.resource;
+          const inResource = groups.filter((candidate) => candidate.resource === resource);
+          const total = inResource.reduce((sum, candidate) => sum + candidate.wait_ms.total, 0);
+          emit.log(
+            `${resource}: ${inResource.reduce((sum, candidate) => sum + candidate.count, 0)} ` +
+              `run(s), ${formatJobAge(total)} total queue wait`,
+            "info",
+          );
+        }
+        emit.log(describeHistoryGroup(group), "info");
+      }
+      if (opts.list) {
+        emit.log(`latest ${newest.length} record(s):`, "info");
+        for (const record of newest) emit.log(describeHistoryRecord(record), "info");
       }
     });
 
@@ -668,6 +817,7 @@ export async function superviseJob(emit: EmitContext, opts: AdmissionSuperviseOp
   heartbeat.unref?.();
 
   const [executable, ...childArgs] = document.argv;
+  const result: AdmissionReleaseResult = {};
   let logFd: number | undefined;
   try {
     logFd = openSync(join(jobDir, DURABLE_JOB_LOG_FILENAME), "a");
@@ -682,6 +832,8 @@ export async function superviseJob(emit: EmitContext, opts: AdmissionSuperviseOp
         child.on("exit", (code, signal) => resolvePromise({ code, signal }));
       },
     );
+    result.exitCode = outcome.code;
+    result.signal = outcome.signal;
     finish({ exitCode: outcome.code, signal: outcome.signal });
     process.exitCode = outcome.signal !== null ? 1 : (outcome.code ?? 1);
   } catch (err: unknown) {
@@ -690,10 +842,11 @@ export async function superviseJob(emit: EmitContext, opts: AdmissionSuperviseOp
       message: `cannot run ${executable}: ${describeError(err)}`,
     });
     finish({ exitCode: 1, signal: null });
+    result.exitCode = 1;
     process.exitCode = 1;
   } finally {
     clearInterval(heartbeat);
     if (logFd !== undefined) closeSync(logFd);
-    handle.release();
+    handle.release(result);
   }
 }

@@ -12,11 +12,19 @@ import {
   listAdmissionResources,
   pidAlive,
 } from "./admission.ts";
+import {
+  readAdmissionHistory,
+  resolveAdmissionHistoryDir,
+  summarizeAdmissionHistory,
+} from "./admission-history.ts";
 
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(`${root}-history`, { recursive: true, force: true });
+  }
 });
 
 function fixture(): string {
@@ -173,6 +181,125 @@ describe("acquireAdmission", () => {
     const handle = await acquireAdmission(config(dir), { label: "twice" });
     handle.release();
     expect(() => handle.release()).not.toThrow();
+  });
+});
+
+describe("admission history", () => {
+  test("a released slot records wait, hold, exit code, and who it waited behind", async () => {
+    const dir = fixture();
+    const first = await acquireAdmission(config(dir), { label: "first" });
+    const second = acquireAdmission(config(dir), { label: "second" });
+    await sleep(120);
+    first.release({ exitCode: 0 });
+    const handle = await second;
+    handle.release({ exitCode: 2, signal: null });
+    const records = readAdmissionHistory(`${dir}-history`, { resource: "res" });
+    expect(records.map((record) => record.label)).toEqual(["first", "second"]);
+    const waited = records[1];
+    expect(waited?.outcome).toBe("released");
+    expect(waited?.exit_code).toBe(2);
+    expect(waited?.waited_behind).toEqual(["first"]);
+    expect(waited?.wait_ms ?? 0).toBeGreaterThanOrEqual(100);
+    expect(typeof waited?.hold_ms).toBe("number");
+    expect(waited?.cwd).toBe(process.cwd());
+  });
+
+  test("a second release call records nothing more", async () => {
+    const dir = fixture();
+    const handle = await acquireAdmission(config(dir), { label: "once" });
+    handle.release();
+    handle.release();
+    expect(readAdmissionHistory(`${dir}-history`)).toHaveLength(1);
+  });
+
+  test("a timeout records the wait and the holder", async () => {
+    const dir = fixture();
+    const holder = await acquireAdmission(config(dir), { label: "holder" });
+    await expect(
+      acquireAdmission(config(dir), { label: "late", timeoutMs: 80 }),
+    ).rejects.toBeInstanceOf(AdmissionTimeoutError);
+    holder.release();
+    const late = readAdmissionHistory(`${dir}-history`, { labelContains: "LATE" });
+    expect(late).toHaveLength(1);
+    expect(late[0]?.outcome).toBe("timeout");
+    expect(late[0]?.waited_behind).toEqual(["holder"]);
+  });
+
+  test("a dead holder pruned by a peer is recorded once as abandoned", async () => {
+    const dir = fixture();
+    const pid = spawnSync("/bin/true").pid as number;
+    const created = new Date(Date.now() - 5_000).toISOString();
+    const acquired = new Date(Date.now() - 4_000).toISOString();
+    seedEntry(dir, "held", {
+      pid,
+      label: "killed",
+      createdAt: created,
+      raw: JSON.stringify({ pid, label: "killed", created_at: created, acquired_at: acquired }),
+    });
+    admissionStatus({ dir, resource: "res" });
+    admissionStatus({ dir, resource: "res" });
+    const records = readAdmissionHistory(`${dir}-history`);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ outcome: "abandoned", label: "killed" });
+    expect(records[0]?.wait_ms).toBe(1_000);
+    expect(records[0]?.hold_ms ?? 0).toBeGreaterThanOrEqual(4_000);
+  });
+
+  test("historyDir null records nothing", async () => {
+    const dir = fixture();
+    const handle = await acquireAdmission(config(dir, 1, { historyDir: null }), { label: "quiet" });
+    handle.release();
+    expect(existsSync(`${dir}-history`)).toBe(false);
+  });
+
+  test("summary groups by resource and label, most total wait first", () => {
+    const base = {
+      v: 1 as const,
+      resource: "build",
+      pid: 1,
+      enqueued_at: "2026-01-01T00:00:00.000Z",
+      ended_at: "2026-01-01T00:01:00.000Z",
+    };
+    const groups = summarizeAdmissionHistory([
+      { ...base, label: "fast", outcome: "released", wait_ms: 0, hold_ms: 1_000 },
+      { ...base, label: "slow", outcome: "released", wait_ms: 90_000, hold_ms: 5_000 },
+      { ...base, label: "slow", outcome: "timeout", wait_ms: 120_000 },
+    ]);
+    expect(groups.map((group) => group.label)).toEqual(["slow", "fast"]);
+    expect(groups[0]).toMatchObject({ count: 2, queued: 2, outcomes: { released: 1, timeout: 1 } });
+    expect(groups[0]?.hold_ms).toEqual({ p50: 5_000, p90: 5_000, max: 5_000 });
+  });
+
+  test("history location: shared queue roots are persistent, others record beside themselves", () => {
+    const saved = {
+      toggle: process.env.HARNERY_ADMISSION_HISTORY,
+      dir: process.env.HARNERY_ADMISSION_HISTORY_DIR,
+      state: process.env.XDG_STATE_HOME,
+    };
+    try {
+      delete process.env.HARNERY_ADMISSION_HISTORY;
+      delete process.env.HARNERY_ADMISSION_HISTORY_DIR;
+      process.env.XDG_STATE_HOME = "/state";
+      for (const shared of ["/tmp/harnery-admission", "/tmp/user-1000/harnery-admission"]) {
+        expect(resolveAdmissionHistoryDir(shared)).toBe("/state/harnery/admission-history");
+      }
+      expect(resolveAdmissionHistoryDir("/tmp/harnery-admission-x1")).toBe(
+        "/tmp/harnery-admission-x1-history",
+      );
+      process.env.HARNERY_ADMISSION_HISTORY_DIR = "/elsewhere";
+      expect(resolveAdmissionHistoryDir("/tmp/harnery-admission")).toBe("/elsewhere");
+      process.env.HARNERY_ADMISSION_HISTORY = "off";
+      expect(resolveAdmissionHistoryDir("/tmp/harnery-admission")).toBeNull();
+    } finally {
+      for (const [key, name] of [
+        ["toggle", "HARNERY_ADMISSION_HISTORY"],
+        ["dir", "HARNERY_ADMISSION_HISTORY_DIR"],
+        ["state", "XDG_STATE_HOME"],
+      ] as const) {
+        if (saved[key] === undefined) delete process.env[name];
+        else process.env[name] = saved[key];
+      }
+    }
   });
 });
 

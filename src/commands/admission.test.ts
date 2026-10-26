@@ -62,12 +62,14 @@ function buildProgram(emit: EmitContext): Command {
 const roots: string[] = [];
 let savedAdmissionDir: string | undefined;
 let savedJobsDir: string | undefined;
+let savedHistoryDir: string | undefined;
 let savedExitCode: typeof process.exitCode;
 let savedArgv1: string | undefined;
 
 beforeEach(() => {
   savedAdmissionDir = process.env.HARNERY_ADMISSION_DIR;
   savedJobsDir = process.env.HARNERY_JOBS_DIR;
+  savedHistoryDir = process.env.HARNERY_ADMISSION_HISTORY_DIR;
   savedExitCode = process.exitCode;
   savedArgv1 = process.argv[1];
 });
@@ -77,6 +79,8 @@ afterEach(() => {
   else process.env.HARNERY_ADMISSION_DIR = savedAdmissionDir;
   if (savedJobsDir === undefined) delete process.env.HARNERY_JOBS_DIR;
   else process.env.HARNERY_JOBS_DIR = savedJobsDir;
+  if (savedHistoryDir === undefined) delete process.env.HARNERY_ADMISSION_HISTORY_DIR;
+  else process.env.HARNERY_ADMISSION_HISTORY_DIR = savedHistoryDir;
   if (savedArgv1 !== undefined) process.argv[1] = savedArgv1;
   process.exitCode = savedExitCode;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -87,6 +91,7 @@ function fixtureBaseDir(): string {
   roots.push(base);
   process.env.HARNERY_ADMISSION_DIR = base;
   process.env.HARNERY_JOBS_DIR = join(base, "jobs-root");
+  process.env.HARNERY_ADMISSION_HISTORY_DIR = join(base, "history-root");
   return base;
 }
 
@@ -180,6 +185,41 @@ describe("admission run", () => {
       { from: "user" },
     );
     expect(process.exitCode ?? 0).toBe(1);
+  });
+});
+
+describe("admission history", () => {
+  test("records a finished run with its exit code and reports it", async () => {
+    fixtureBaseDir();
+    process.exitCode = undefined;
+    await buildProgram(captureEmit().emit).parseAsync(
+      ["admission", "run", "--resource", "cmd-test", "--label", "check one", "--", "/bin/false"],
+      { from: "user" },
+    );
+    process.exitCode = undefined;
+    const { emit, data, errors } = captureEmit();
+    await buildProgram(emit).parseAsync(["admission", "history", "--list", "--json"], {
+      from: "user",
+    });
+    expect(errors).toEqual([]);
+    const report = data[0] as {
+      groups: { resource: string; label: string; count: number; outcomes: object }[];
+      records: { outcome: string; exit_code: number; label: string }[];
+    };
+    expect(report.groups).toHaveLength(1);
+    expect(report.groups[0]).toMatchObject({ resource: "cmd-test", label: "check one", count: 1 });
+    expect(report.records[0]).toMatchObject({ outcome: "released", exit_code: 1 });
+  });
+
+  test("rejects a malformed --since", async () => {
+    fixtureBaseDir();
+    process.exitCode = undefined;
+    const { emit, errors } = captureEmit();
+    await buildProgram(emit).parseAsync(["admission", "history", "--since", "yesterday"], {
+      from: "user",
+    });
+    expect(errors).toHaveLength(1);
+    expect(process.exitCode as number | undefined).toBe(1);
   });
 });
 

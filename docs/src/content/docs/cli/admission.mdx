@@ -11,6 +11,7 @@ harn admission run --detach --resource <name> -- <command...>
 harn admission wait <job-dir> [options]
 harn admission jobs [options]
 harn admission status [options]
+harn admission history [options]
 ```
 
 Machine-wide admission control for heavy jobs: a crash-safe FIFO slot queue with no daemon. Two production builds, two browser-QA matrices, or a build and a matrix started at the same moment slow each other down more than they would running back to back. `admission run` wraps any command so that at most a fixed number of holders per named resource run at once on one machine; everyone else waits their turn.
@@ -102,6 +103,23 @@ harn admission status
 
 Lists each resource present in the admission state directory with its current slot holders and FIFO waiters: label, PID, and since when each has been holding or waiting. Dead entries are pruned as a side effect of being listed. Detached jobs still in flight are listed underneath. `--resource <name>` narrows to one resource; `--json` emits a machine-readable snapshot.
 
+## admission history
+
+`status` shows only the present: a ticket vanishes the moment it is admitted, released, or pruned. Every ticket that ends also appends one record to an admission history, and `history` reports on it: how long work queued for each resource, which holders it waited behind, how long holders kept their slots, and which tickets timed out or were abandoned by a process that died.
+
+| Flag | Meaning |
+|---|---|
+| `--resource <name>` | Report one resource instead of all of them. |
+| `--since <window>` | Look back `30m`, `24h`, or `7d`. Default `24h`. |
+| `--label <text>` | Keep records whose label contains this text (case-insensitive). |
+| `--list` | Also list individual records, newest first. |
+| `--limit <n>` | With `--list`, how many records to show (1–500, default 20). |
+| `--json` | Emit `{ history_dir, since, groups, records }`. |
+
+The summary groups records by resource and label, most total queue wait first, so the work that spends longest waiting leads. Each record carries `outcome` (`released`, `timeout`, `abandoned`, or `expired`), `enqueued_at`, `acquired_at`, `ended_at`, `wait_ms`, `hold_ms`, `waited_behind`, the queueing process's `cwd`, and, for `admission run`, the command's `exit_code` or `signal`. For an entry a peer pruned after its process died, `ended_at` is the prune time, so its wait or hold is an upper bound.
+
+Records live in `$XDG_STATE_HOME/harnery/admission-history/<resource>.jsonl` (default `~/.local/state/harnery/admission-history/`), outside the temp directory, so they survive the reboot that correctly clears the queues. A file past 8 MiB rotates to `<resource>.1.jsonl`, and one rotated file is kept. A queue root not named `harnery-admission`, such as an isolated test queue, records beside itself as `<root>-history` instead. `HARNERY_ADMISSION_HISTORY_DIR` moves the history and `HARNERY_ADMISSION_HISTORY=off` stops recording. Embedding hosts get the same records through `acquireAdmission`; pass a result to `release({ exitCode })` to record the outcome, or `historyDir: null` to opt one queue out.
+
 ## Reading a job record
 
 Classification is fail-closed, the same rule [`harn qa-status`](/cli/qa-status/) applies to a detached QA run. Liveness is proven by the supervisor's PID, never assumed from the status document:
@@ -132,6 +150,9 @@ harn admission run --resource build -- npm run build
 
 # Let two documentation renders overlap, but never a third
 harn admission run --resource docs-render --capacity 2 -- npm run docs:build
+
+# What queued longest for build slots this week, and behind what?
+harn admission history --resource build --since 7d --list
 
 # Who is holding what right now?
 harn admission status

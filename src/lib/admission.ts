@@ -18,6 +18,9 @@
 // file; process death leaves a dead-PID file for the next participant to
 // prune.
 //
+// Every ticket that ends (released, timed out, or pruned after its process
+// died) appends one record to the admission history (admission-history.ts).
+//
 // Toolkit tier: this module must not import src/core (layering check).
 
 import { randomUUID } from "node:crypto";
@@ -31,7 +34,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  ADMISSION_HISTORY_SCHEMA_VERSION,
+  type AdmissionHistoryOutcome,
+  type AdmissionReleaseResult,
+  appendAdmissionHistory,
+  resolveAdmissionHistoryDir,
+} from "./admission-history.ts";
 import { coordEnv } from "./env.ts";
+
+export type { AdmissionReleaseResult } from "./admission-history.ts";
 
 export interface AdmissionConfig {
   /** Base directory holding one subdirectory per resource. */
@@ -44,6 +56,11 @@ export interface AdmissionConfig {
   pollMs?: number;
   /** Entries older than this are pruned regardless of PID (default 6h). */
   ttlMs?: number;
+  /**
+   * Directory for the slot-use history. Omitted: resolved from the queue
+   * directory (see resolveAdmissionHistoryDir). null: record nothing.
+   */
+  historyDir?: string | null;
 }
 
 export interface AdmissionEntry {
@@ -52,6 +69,12 @@ export interface AdmissionEntry {
   created_at: string;
   /** Set on holders once admitted. */
   acquired_at?: string;
+  /** Working directory of the queueing process. */
+  cwd?: string;
+  /** Capacity the queueing process asked for. */
+  capacity?: number;
+  /** Set on holders that had to wait: the holder labels they first waited behind. */
+  waited_behind?: string[];
 }
 
 export interface AdmissionWaitInfo {
@@ -74,8 +97,11 @@ export interface AdmissionHandle {
   entry: string;
   /** Milliseconds spent waiting in the queue. */
   waitedMs: number;
-  /** Give the slot back. Safe to call more than once. */
-  release: () => void;
+  /**
+   * Give the slot back and record the slot use in the history. Safe to call
+   * more than once; only the first call records.
+   */
+  release: (result?: AdmissionReleaseResult) => void;
 }
 
 export class AdmissionTimeoutError extends Error {
@@ -143,7 +169,13 @@ interface LiveEntry {
 /** List live entries in lexical (= enqueue) order, pruning dead-PID, expired,
  * and torn files as a side effect. Every participant prunes, so a crashed
  * holder's slot frees as soon as anyone else looks. */
-function listLive(dir: string, ttlMs: number): LiveEntry[] {
+type PruneReason = Extract<AdmissionHistoryOutcome, "abandoned" | "expired">;
+
+function listLive(
+  dir: string,
+  ttlMs: number,
+  onPrune?: (entry: AdmissionEntry, reason: PruneReason) => void,
+): LiveEntry[] {
   let names: string[];
   try {
     names = readdirSync(dir)
@@ -167,6 +199,15 @@ function listLive(dir: string, ttlMs: number): LiveEntry[] {
             label: typeof record.label === "string" ? record.label : "",
             created_at: record.created_at,
             ...(typeof record.acquired_at === "string" ? { acquired_at: record.acquired_at } : {}),
+            ...(typeof record.cwd === "string" ? { cwd: record.cwd } : {}),
+            ...(typeof record.capacity === "number" ? { capacity: record.capacity } : {}),
+            ...(Array.isArray(record.waited_behind)
+              ? {
+                  waited_behind: record.waited_behind.filter(
+                    (label): label is string => typeof label === "string",
+                  ),
+                }
+              : {}),
           };
         }
       }
@@ -188,17 +229,57 @@ function listLive(dir: string, ttlMs: number): LiveEntry[] {
       continue;
     }
     const age = now - Date.parse(entry.created_at);
-    if (!pidAlive(entry.pid) || Number.isNaN(age) || age > ttlMs) {
+    const dead = !pidAlive(entry.pid);
+    if (dead || Number.isNaN(age) || age > ttlMs) {
+      let pruned = false;
       try {
         unlinkSync(path);
+        pruned = true;
       } catch {
-        // a peer pruned it first
+        // a peer pruned it first, and records it
       }
+      if (pruned) onPrune?.(entry, dead ? "abandoned" : "expired");
       continue;
     }
     live.push({ name, entry });
   }
   return live;
+}
+
+function historyDirFor(config: Pick<AdmissionConfig, "dir" | "historyDir">): string | null {
+  return config.historyDir !== undefined
+    ? config.historyDir
+    : resolveAdmissionHistoryDir(config.dir);
+}
+
+/** Record an entry a participant pruned because its process died or it expired. */
+function recordPruned(
+  historyDir: string | null,
+  resource: string,
+  entry: AdmissionEntry,
+  reason: PruneReason,
+): void {
+  if (!historyDir) return;
+  const now = Date.now();
+  const enqueuedMs = Date.parse(entry.created_at);
+  const acquiredMs = entry.acquired_at ? Date.parse(entry.acquired_at) : Number.NaN;
+  appendAdmissionHistory(historyDir, {
+    v: ADMISSION_HISTORY_SCHEMA_VERSION,
+    resource,
+    label: entry.label,
+    pid: entry.pid,
+    ...(entry.cwd ? { cwd: entry.cwd } : {}),
+    ...(entry.capacity !== undefined ? { capacity: entry.capacity } : {}),
+    outcome: reason,
+    enqueued_at: entry.created_at,
+    ...(entry.acquired_at ? { acquired_at: entry.acquired_at } : {}),
+    ended_at: new Date(now).toISOString(),
+    wait_ms: Number.isNaN(enqueuedMs)
+      ? 0
+      : Math.max(0, (Number.isNaN(acquiredMs) ? now : acquiredMs) - enqueuedMs),
+    ...(Number.isNaN(acquiredMs) ? {} : { hold_ms: Math.max(0, now - acquiredMs) }),
+    ...(entry.waited_behind?.length ? { waited_behind: entry.waited_behind } : {}),
+  });
 }
 
 function sleep(ms: number): Promise<void> {
@@ -224,11 +305,17 @@ export async function acquireAdmission(
   const tickets = ticketsDir(config);
   const held = heldDir(config);
 
+  const historyDir = historyDirFor(config);
+  const onPrune = (entry: AdmissionEntry, reason: PruneReason): void =>
+    recordPruned(historyDir, config.resource, entry, reason);
   const myEntry: AdmissionEntry = {
     pid: process.pid,
     label: options.label,
     created_at: new Date().toISOString(),
+    cwd: process.cwd(),
+    capacity: config.capacity,
   };
+  let waitedBehind: string[] | undefined;
   const myName = `${String(Date.now()).padStart(13, "0")}-${process.pid}-${randomUUID().slice(0, 8)}.json`;
   writeEntry(tickets, myName, myEntry);
 
@@ -236,8 +323,8 @@ export async function acquireAdmission(
   const deadline = startedWaiting + timeoutMs;
   try {
     while (true) {
-      const liveHeld = listLive(held, ttlMs);
-      const liveTickets = listLive(tickets, ttlMs);
+      const liveHeld = listLive(held, ttlMs, onPrune);
+      const liveTickets = listLive(tickets, ttlMs, onPrune);
       const myIndex = liveTickets.findIndex((ticket) => ticket.name === myName);
       if (myIndex === -1) {
         // Pruned by a peer (should not happen while we are alive) or lost to
@@ -253,7 +340,7 @@ export async function acquireAdmission(
         // between two waiters' listings. Lexical order (= enqueue order)
         // decides who stays; the loser rejoins the queue with its original
         // priority because the filename keeps its enqueue timestamp.
-        const heldNow = listLive(held, ttlMs);
+        const heldNow = listLive(held, ttlMs, onPrune);
         if (heldNow.length > config.capacity) {
           const keepers = new Set(
             heldNow.slice(0, config.capacity).map((holderEntry) => holderEntry.name),
@@ -264,12 +351,14 @@ export async function acquireAdmission(
             continue;
           }
         }
-        writeEntry(held, myName, { ...myEntry, acquired_at: new Date().toISOString() });
+        const acquiredAt = new Date();
+        writeEntry(held, myName, { ...myEntry, acquired_at: acquiredAt.toISOString() });
+        const waitedMs = acquiredAt.getTime() - startedWaiting;
         let released = false;
         return {
           entry: myName,
-          waitedMs: Date.now() - startedWaiting,
-          release: () => {
+          waitedMs,
+          release: (result?: AdmissionReleaseResult) => {
             if (released) return;
             released = true;
             try {
@@ -277,14 +366,53 @@ export async function acquireAdmission(
             } catch {
               // already pruned
             }
+            const endedAt = new Date();
+            appendAdmissionHistory(historyDir, {
+              v: ADMISSION_HISTORY_SCHEMA_VERSION,
+              resource: config.resource,
+              label: myEntry.label,
+              pid: myEntry.pid,
+              ...(myEntry.cwd ? { cwd: myEntry.cwd } : {}),
+              capacity: config.capacity,
+              outcome: "released",
+              enqueued_at: myEntry.created_at,
+              acquired_at: acquiredAt.toISOString(),
+              ended_at: endedAt.toISOString(),
+              wait_ms: waitedMs,
+              hold_ms: endedAt.getTime() - acquiredAt.getTime(),
+              ...(waitedBehind?.length ? { waited_behind: waitedBehind } : {}),
+              ...(result?.exitCode !== undefined ? { exit_code: result.exitCode } : {}),
+              ...(result?.signal !== undefined ? { signal: result.signal } : {}),
+            });
           },
         };
+      }
+      if (waitedBehind === undefined) {
+        // Persist who this ticket waits behind, so the record survives even
+        // if this process dies in the queue and a peer prunes the ticket.
+        waitedBehind = liveHeld.map((holderEntry) => holderEntry.entry.label);
+        myEntry.waited_behind = waitedBehind;
+        writeEntry(tickets, myName, myEntry);
       }
       options.onWait?.({
         position: myIndex + 1,
         holders: liveHeld.map((holderEntry) => holderEntry.entry),
       });
       if (Date.now() >= deadline) {
+        const endedAt = new Date();
+        appendAdmissionHistory(historyDir, {
+          v: ADMISSION_HISTORY_SCHEMA_VERSION,
+          resource: config.resource,
+          label: myEntry.label,
+          pid: myEntry.pid,
+          ...(myEntry.cwd ? { cwd: myEntry.cwd } : {}),
+          capacity: config.capacity,
+          outcome: "timeout",
+          enqueued_at: myEntry.created_at,
+          ended_at: endedAt.toISOString(),
+          wait_ms: endedAt.getTime() - startedWaiting,
+          ...(waitedBehind?.length ? { waited_behind: waitedBehind } : {}),
+        });
         throw new AdmissionTimeoutError(
           config.resource,
           timeoutMs,
@@ -313,14 +441,17 @@ export interface AdmissionStatus {
 
 /** Snapshot the queue for one resource, pruning dead entries on the way. */
 export function admissionStatus(
-  config: Pick<AdmissionConfig, "dir" | "resource" | "ttlMs">,
+  config: Pick<AdmissionConfig, "dir" | "resource" | "ttlMs" | "historyDir">,
 ): AdmissionStatus {
   const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
   const full: AdmissionConfig = { ...config, capacity: 1 };
+  const historyDir = historyDirFor(config);
+  const onPrune = (entry: AdmissionEntry, reason: PruneReason): void =>
+    recordPruned(historyDir, config.resource, entry, reason);
   return {
     resource: config.resource,
-    holders: listLive(heldDir(full), ttlMs).map((holderEntry) => holderEntry.entry),
-    waiters: listLive(ticketsDir(full), ttlMs).map((ticket) => ticket.entry),
+    holders: listLive(heldDir(full), ttlMs, onPrune).map((holderEntry) => holderEntry.entry),
+    waiters: listLive(ticketsDir(full), ttlMs, onPrune).map((ticket) => ticket.entry),
   };
 }
 
