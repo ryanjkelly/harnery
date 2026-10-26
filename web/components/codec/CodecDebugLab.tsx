@@ -5,6 +5,7 @@ import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import type { CodecScene } from "@/lib/codec/contracts";
 import {
   buildCodecDebugScene,
+  canPreviewCodecDebugEffect,
   type CodecDebugAgent,
   type CodecDebugCardState,
   createDefaultCodecDebugState,
@@ -93,10 +94,16 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
   const [layoutPresetId, setLayoutPresetId] = useState<CodecLayoutPresetId>("live");
   const [layoutSnapshot, setLayoutSnapshot] = useState<CodecLayout | null>(null);
 
-  const visibleAgents = agents.slice(0, count);
+  const visibleAgents = useMemo(() => agents.slice(0, count), [agents, count]);
   const visibleIds = useMemo(
     () => new Set(visibleAgents.map((agent) => agent.id)),
     [visibleAgents],
+  );
+  const effectDisabled = !canPreviewCodecDebugEffect(
+    effectKind,
+    visibleIds,
+    effectFrom,
+    effectTarget,
   );
   const selectedState = states[selectedId];
   const layoutPreset =
@@ -121,10 +128,10 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
   }, [effectFrom, effectKind, effectTarget, selectedId, visibleAgents, visibleIds]);
 
   useEffect(() => {
-    if (!autoEffect || visibleAgents.length === 0) return;
+    if (!autoEffect || effectDisabled) return;
     const timer = window.setInterval(() => setEffectSequence((value) => value + 1), 6_500);
     return () => window.clearInterval(timer);
-  }, [autoEffect, visibleAgents.length]);
+  }, [autoEffect, effectDisabled]);
 
   useEffect(() => {
     const mobileQuery = window.matchMedia("(max-width: 820px)");
@@ -147,7 +154,7 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
   );
 
   const effectPreview: CodecEffectPreview | undefined =
-    effectSequence > 0 && effectTarget
+    effectSequence > 0 && !effectDisabled
       ? {
           sequence: effectSequence,
           kind: effectKind,
@@ -205,12 +212,6 @@ export function CodecDebugLab({ agents }: CodecDebugLabProps) {
       return next;
     });
   }
-
-  const effectDisabled =
-    visibleAgents.length === 0 ||
-    !effectTarget ||
-    (effectKind === "ping" &&
-      (visibleAgents.length < 2 || !effectFrom || effectFrom === effectTarget));
 
   return (
     <div className={styles.debugShell} data-codec-debug-shell>

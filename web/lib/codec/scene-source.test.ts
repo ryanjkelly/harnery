@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { buildEventV3 } from "../../../src/core/events/v3/builder";
 import { attestationIdV3, eventIdV3, generationIdV3 } from "../../../src/core/events/v3/ids";
 import { type LiveDisplayRowV3, writeLiveDisplayV3 } from "../../../src/core/events/v3/live-feed";
-import { eventV3Fixture } from "../../../tests/helpers/event-v3";
+import { assertEventV3 } from "../../../src/core/events/v3/validate";
+import { eventV3Fixture, fixtureObject } from "../../../tests/helpers/event-v3";
 import { __resetCoordRootCache } from "../coord-reader";
 import {
   CODEC_SCHEMA_VERSION,
@@ -160,6 +161,81 @@ describe("Codec V3 ledger tail", () => {
 
     const rows = await readIncrementalSanitizedTail(v3Path, 1);
     expect(rows.map((row) => row.event_id)).toEqual([started.eventId, progress.eventId]);
+  });
+
+  test.each(["é", "界", "🧭"])(
+    "preserves split %s UTF-8 bytes and the exact tail byte budget",
+    async (character) => {
+      const root = mkdtempSync(join(tmpdir(), "codec-v3-utf8-tail-"));
+      roots.push(root);
+      const first = fixtureLine("progress.observed", 2);
+      const last = fixtureLine("progress.observed", 4);
+      const event = eventV3Fixture("coord.claim_changed", 3);
+      const payload = fixtureObject(event.payload);
+      fixtureObject(payload.target).display = character;
+      fixtureObject(payload.authority).transaction_id = "txn_00000000-0000-7000-8000-000000000003";
+      assertEventV3(JSON.parse(first.line));
+      assertEventV3(event);
+      assertEventV3(JSON.parse(last.line));
+      const middle = Buffer.from(`${JSON.stringify(event)}\n`, "utf8");
+      const marker = Buffer.from(character, "utf8");
+      const characterAt = middle.indexOf(marker);
+      expect(characterAt).toBeGreaterThan(0);
+      const byteLimit = Buffer.byteLength(first.line + last.line, "utf8") + middle.length;
+
+      for (const cachedBeforeSplit of [false, true]) {
+        const v3Path = join(root, `${cachedBeforeSplit ? "cached" : "initial"}.ndjson`);
+        writeFileSync(v3Path, first.line);
+        if (cachedBeforeSplit) await readIncrementalSanitizedTail(v3Path, byteLimit);
+        appendFileSync(v3Path, middle.subarray(0, characterAt + 1));
+        expect(
+          (await readIncrementalSanitizedTail(v3Path, byteLimit)).map((row) => row.event_id),
+        ).toEqual([first.eventId]);
+
+        // Observe every remaining character byte separately, before the row
+        // has its newline. Neither initial reads nor appends may decode it.
+        for (let byte = 1; byte < marker.length; byte += 1) {
+          appendFileSync(v3Path, middle.subarray(characterAt + byte, characterAt + byte + 1));
+          expect(
+            (await readIncrementalSanitizedTail(v3Path, byteLimit)).map((row) => row.event_id),
+          ).toEqual([first.eventId]);
+        }
+        appendFileSync(v3Path, middle.subarray(characterAt + marker.length));
+        appendFileSync(v3Path, last.line);
+
+        const rows = await readIncrementalSanitizedTail(v3Path, byteLimit);
+        expect(rows.map((row) => row.event_id)).toEqual([
+          first.eventId,
+          String(event.event_id),
+          last.eventId,
+        ]);
+      }
+    },
+  );
+
+  test("drops oversized unfinished rows until a newline across initial and cached reads", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codec-v3-oversized-partial-"));
+    roots.push(root);
+    const started = fixtureLine("session.started", 1);
+    const progress = fixtureLine("progress.observed", 2);
+    const byteLimit = Buffer.byteLength(progress.line, "utf8");
+    const oversized = " ".repeat(byteLimit + 1);
+
+    for (const cachedBeforeSplit of [false, true]) {
+      const v3Path = join(root, `${cachedBeforeSplit ? "cached" : "initial"}.ndjson`);
+      writeFileSync(v3Path, "");
+      if (cachedBeforeSplit) await readIncrementalSanitizedTail(v3Path, byteLimit);
+      for (let append = 0; append < 3; append += 1) {
+        appendFileSync(v3Path, oversized);
+        expect(await readIncrementalSanitizedTail(v3Path, byteLimit)).toEqual([]);
+      }
+
+      // Without a preceding newline this valid JSON still belongs to the
+      // discarded oversized row. Only the following complete row is new.
+      appendFileSync(v3Path, started.line + progress.line);
+      const rows = await readIncrementalSanitizedTail(v3Path, byteLimit);
+      expect(rows.map((row) => row.event_id)).toEqual([progress.eventId]);
+    }
   });
 
   test("keeps terminal session, turn, and wait rows with the earlier boundary", async () => {

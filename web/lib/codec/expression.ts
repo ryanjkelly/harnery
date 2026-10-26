@@ -261,7 +261,7 @@ export function deriveExpressiveChannels(
     }
 
     // recovering: a failed action followed by a newer action in the same turn.
-    if (inOpenTurn && lastError) {
+    if (inOpenTurn && lastError && turnActions.includes(lastError)) {
       const errTs = ms(lastError.ts);
       const retry = turnActions.find((a) => ms(a.ts) > errTs && a.outcome !== "error");
       if (retry && age(ms(retry.ts)) <= RECOVERING_MS) {

@@ -31,7 +31,7 @@ export interface PortraitFailure {
 /** The portrait URL for a bound pack, or null when the panel has no usable pack. */
 export function portraitSource(panel: CodecPanelScene): string | null {
   if (panel.character.pack_id === "fallback-neutral") return null;
-  return `/api/codec-pack/${panel.character.pack_id}/${panel.expression.value}?v=${panel.character.pack_version}`;
+  return `/api/codec-pack/${encodeURIComponent(panel.character.pack_id)}/${encodeURIComponent(panel.expression.value)}?v=${encodeURIComponent(panel.character.pack_version)}`;
 }
 
 /** Record one more failed request for `source`; unrelated history is dropped. */

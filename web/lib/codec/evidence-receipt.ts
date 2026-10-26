@@ -151,14 +151,18 @@ function displayDetail(value: unknown): string | undefined {
 function duration(value: number): string {
   if (value < 1_000) return `${Math.max(0, Math.round(value))}ms`;
   if (value < 60_000) return `${Math.round(value / 1_000)}s`;
-  const minutes = Math.floor(value / 60_000);
-  const seconds = Math.round((value % 60_000) / 1_000);
+  const roundedSeconds = Math.round(value / 1_000);
+  const minutes = Math.floor(roundedSeconds / 60);
+  const seconds = roundedSeconds % 60;
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
 function displayValue(value: unknown): string {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.filter((part): part is string => typeof part === "string").join(" · ") || "none";
   }
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;

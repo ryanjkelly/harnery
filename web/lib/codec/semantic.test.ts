@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +7,7 @@ import type {
   SemanticAcceptedReadModelV2,
   SemanticAgentReadModelV2,
 } from "../../../src/core/semantic/contract";
-import { writeSemanticAgentDocument } from "../../../src/core/semantic/storage";
+import { semanticPaths, writeSemanticAgentDocument } from "../../../src/core/semantic/storage";
 import {
   CODEC_SCHEMA_VERSION,
   type CodecPanelScene,
@@ -15,11 +15,12 @@ import {
   type CodecSourceEvidence,
 } from "./contracts";
 import { codecEvidenceReceiptRows } from "./evidence-receipt";
-import { applySemanticReadModel, codecSemantic } from "./semantic";
+import { applySemanticReadModel, codecSemantic, readCodecSemanticDocuments } from "./semantic";
 
 const NOW = "2026-08-22T20:00:00.000Z";
 const EVENT = "evt_01922e33-7abc-7def-8abc-0123456789ab";
 const GENERATION = "gen_01922e33-7abc-7def-8abc-0123456789ab";
+const OTHER_GENERATION = "gen_01922e33-7abd-7def-8abc-0123456789ab";
 const roots: string[] = [];
 
 afterEach(() => {
@@ -182,6 +183,98 @@ function unavailable(): SemanticAgentReadModelV2 {
 }
 
 describe("Codec semantic read model", () => {
+  test("reads only requested generations without scanning historical documents", () => {
+    const root = fixtureRoot();
+    const current = accepted();
+    const historical = {
+      ...accepted(),
+      generation_id: "gen_01922e33-7abd-7def-8abc-0123456789ab",
+    };
+    writeSemanticAgentDocument(root, current);
+    writeSemanticAgentDocument(root, historical);
+
+    expect(readCodecSemanticDocuments(root, new Set([GENERATION]))).toEqual([current]);
+    expect(readCodecSemanticDocuments(root, new Set())).toEqual([]);
+    expect(readCodecSemanticDocuments(root)).toHaveLength(2);
+  });
+
+  test("isolates malformed selected documents and reads replacements on the next scene", () => {
+    const root = fixtureRoot();
+    writeSemanticAgentDocument(root, accepted());
+    const brokenGeneration = "gen_01922e33-7abd-7def-8abc-0123456789ab";
+    writeFileSync(join(semanticPaths(root).agents, `${brokenGeneration}.json`), "{");
+    const requested = new Set([brokenGeneration, GENERATION, "../invalid"]);
+
+    expect(readCodecSemanticDocuments(root, requested)).toEqual([accepted()]);
+    writeSemanticAgentDocument(root, unavailable());
+    expect(readCodecSemanticDocuments(root, requested)).toEqual([unavailable()]);
+  });
+
+  test("rejects a selected document whose generation differs from its filename", () => {
+    const root = fixtureRoot();
+    const current = accepted();
+    writeSemanticAgentDocument(root, current);
+    writeFileSync(
+      join(semanticPaths(root).agents, `${OTHER_GENERATION}.json`),
+      JSON.stringify(current),
+    );
+
+    expect(readCodecSemanticDocuments(root, new Set([GENERATION, OTHER_GENERATION]))).toEqual([
+      current,
+    ]);
+    expect(readCodecSemanticDocuments(root, new Set([OTHER_GENERATION]))).toEqual([]);
+  });
+
+  test.each([
+    ["source", "2026-99-22T19:59:00.000Z"],
+    ["source", "2026-02-30T19:59:00.000Z"],
+    ["generated", "2026-99-22T19:59:05.000Z"],
+    ["generated", "2026-02-30T19:59:05.000Z"],
+    ["source", "2026-08-22T20:00:00.001Z"],
+    ["generated", "2026-08-22T20:00:00.001Z"],
+  ])("isolates an unusable %s timestamp (%s) from healthy panels", (field, timestamp) => {
+    const root = fixtureRoot();
+    writeSemanticAgentDocument(root, accepted());
+    const broken = {
+      ...accepted(),
+      instance_id: "inst_broken",
+      generation_id: OTHER_GENERATION,
+    };
+    if (field === "source") broken.source.observed_through_ts = timestamp;
+    else broken.generated_at = timestamp;
+    writeFileSync(
+      join(semanticPaths(root).agents, `${OTHER_GENERATION}.json`),
+      JSON.stringify(broken),
+    );
+    const projected = scene(panel({ instance_id: "inst_broken" }));
+    projected.panels.push(panel());
+    const events = [
+      {
+        ...source(OTHER_GENERATION)[0]!,
+        event_id: "evt_01922e33-7abd-7def-8abc-0123456789ab",
+        instance_id: "inst_broken",
+      },
+      ...source(),
+    ];
+
+    expect(applySemanticReadModel(projected, events, root, new Date(NOW))).toBe(1);
+    expect(codecSemantic(projected.panels[0]!)).toBeUndefined();
+    expect(projected.panels[0]?.focus_bubble).toBeUndefined();
+    expect(projected.panels[0]?.expression.value).toBe("neutral");
+    expect(codecSemantic(projected.panels[1]!)?.state).toBe("current");
+    expect(projected.panels[1]?.focus_bubble?.value.text).toBe("Building the semantic reader");
+  });
+
+  test("ignores semantic meaning when the scene clock is invalid", () => {
+    const root = fixtureRoot();
+    writeSemanticAgentDocument(root, accepted());
+    const projected = scene(panel());
+
+    expect(applySemanticReadModel(projected, source(), root, new Date(Number.NaN))).toBe(0);
+    expect(codecSemantic(projected.panels[0]!)).toBeUndefined();
+    expect(projected.panels[0]?.focus_bubble).toBeUndefined();
+  });
+
   test("fills only low-information presentation channels and exposes provenance", () => {
     const root = fixtureRoot();
     writeSemanticAgentDocument(root, accepted());
@@ -283,6 +376,40 @@ describe("Codec semantic read model", () => {
     expect(projected.panels[0]?.expression.value).toBe("neutral");
     expect(codecSemantic(projected.panels[0]!)).toMatchObject({ state: "stale" });
     expect(codecSemantic(projected.panels[0]!)?.headline).toBeUndefined();
+  });
+
+  test("expires live meaning at its exact boundary", () => {
+    const root = fixtureRoot();
+    writeSemanticAgentDocument(root, accepted("2026-08-22T19:55:00.000Z"));
+    const projected = scene(panel());
+
+    expect(applySemanticReadModel(projected, source(), root, new Date(NOW))).toBe(1);
+    expect(codecSemantic(projected.panels[0]!)?.state).toBe("stale");
+    expect(projected.panels[0]?.focus_bubble).toBeUndefined();
+  });
+
+  test("retains terminal meaning for its longer window and expires at the boundary", () => {
+    const root = fixtureRoot();
+    writeSemanticAgentDocument(root, accepted("2026-08-22T19:30:00.000Z"));
+    const terminal = () =>
+      scene(
+        panel({
+          ledger_state: {
+            value: "terminal",
+            provenance: "event",
+            confidence: "high",
+            observed_at: NOW,
+          },
+        }),
+      );
+    const before = terminal();
+    applySemanticReadModel(before, source(), root, new Date(Date.parse(NOW) - 1));
+    expect(codecSemantic(before.panels[0]!)?.state).toBe("current");
+
+    const expired = terminal();
+    applySemanticReadModel(expired, source(), root, new Date(NOW));
+    expect(codecSemantic(expired.panels[0]!)?.state).toBe("stale");
+    expect(expired.panels[0]?.focus_bubble).toBeUndefined();
   });
 
   test("shows an unavailable reader receipt without fabricating meaning", () => {

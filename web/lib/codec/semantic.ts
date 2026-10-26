@@ -11,7 +11,10 @@ import type {
   SemanticField,
   SemanticPhase,
 } from "../../../src/core/semantic/contract";
-import { listSemanticAgentDocuments } from "../../../src/core/semantic/storage";
+import {
+  listSemanticAgentDocuments,
+  readSemanticAgentDocument,
+} from "../../../src/core/semantic/storage";
 
 import type {
   CodecExpression,
@@ -31,7 +34,20 @@ export const CODEC_SEMANTIC_LIVE_WINDOW_MS = 5 * 60_000;
 export const CODEC_SEMANTIC_TERMINAL_WINDOW_MS = 30 * 60_000;
 
 /** Read validated derived documents. Missing or malformed storage means off. */
-export function readCodecSemanticDocuments(root = coordRoot()): SemanticAgentReadModelV2[] {
+export function readCodecSemanticDocuments(
+  root = coordRoot(),
+  generations?: ReadonlySet<string>,
+): SemanticAgentReadModelV2[] {
+  if (generations) {
+    return [...generations].flatMap((generation) => {
+      try {
+        const document = readSemanticAgentDocument(root, generation);
+        return document?.generation_id === generation ? [document] : [];
+      } catch {
+        return [];
+      }
+    });
+  }
   try {
     return listSemanticAgentDocuments(root);
   } catch {
@@ -47,9 +63,18 @@ export function applySemanticReadModel(
   now = new Date(scene.generated_at),
   canonicalInstanceByPanel: ReadonlyMap<string, string> = new Map(),
 ): number {
-  const documents = readCodecSemanticDocuments(root);
-  if (documents.length === 0) return 0;
   const generationByInstance = latestGenerationByInstance(sourceEvents);
+  const visibleGenerations = new Set<string>();
+  for (const panel of scene.panels) {
+    if (panel.machine) continue;
+    const instanceId = canonicalInstanceByPanel.get(panel.instance_id) ?? panel.instance_id;
+    const generation = generationByInstance.get(instanceId);
+    if (generation) visibleGenerations.add(generation);
+  }
+  // Historical semantic documents can outnumber the visible roster by orders
+  // of magnitude. Read and validate only generations that can join this scene.
+  const documents = readCodecSemanticDocuments(root, visibleGenerations);
+  if (documents.length === 0) return 0;
   const byGeneration = new Map(documents.map((document) => [document.generation_id, document]));
   let merged = 0;
 
@@ -61,6 +86,7 @@ export function applySemanticReadModel(
     const document = byGeneration.get(generationId);
     if (!document || document.instance_id !== semanticInstanceId) continue;
     const semantic = presentSemantic(document, panel, now);
+    if (!semantic) continue;
     setCodecSemantic(panel, semantic);
     merged += 1;
     if (semantic.state !== "current" || !semantic.headline) continue;
@@ -97,13 +123,26 @@ function presentSemantic(
   document: SemanticAgentReadModelV2,
   panel: CodecPanelScene,
   now: Date,
-): CodecSemanticChannel {
+): CodecSemanticChannel | undefined {
+  const nowMs = now.getTime();
+  const observedThroughMs = semanticTimestamp(document.source.observed_through_ts);
+  const generatedAtMs = semanticTimestamp(document.generated_at);
+  if (
+    !Number.isFinite(nowMs) ||
+    observedThroughMs === undefined ||
+    generatedAtMs === undefined ||
+    observedThroughMs > nowMs ||
+    generatedAtMs > nowMs
+  ) {
+    return undefined;
+  }
   const ttl =
     panel.ledger_state?.value === "terminal"
       ? CODEC_SEMANTIC_TERMINAL_WINDOW_MS
       : CODEC_SEMANTIC_LIVE_WINDOW_MS;
-  const expiresAt = new Date(Date.parse(document.source.observed_through_ts) + ttl).toISOString();
-  const stale = now.getTime() > Date.parse(expiresAt);
+  const expiresAtMs = observedThroughMs + ttl;
+  const expiresAt = new Date(expiresAtMs).toISOString();
+  const stale = nowMs >= expiresAtMs;
   const usage = semanticDocumentUsage(document);
   const common = {
     state: stale ? ("stale" as const) : semanticState(document.reader_outcome),
@@ -179,6 +218,13 @@ function presentField<T>(
 
 function semanticState(outcome: SemanticAgentReadModelV2["reader_outcome"]): CodecSemanticState {
   return outcome === "accepted" ? "current" : outcome;
+}
+
+function semanticTimestamp(value: string): number | undefined {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value
+    ? timestamp
+    : undefined;
 }
 
 function latestGenerationByInstance(events: readonly CodecSourceEvidence[]): Map<string, string> {

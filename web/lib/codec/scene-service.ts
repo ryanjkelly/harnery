@@ -129,7 +129,12 @@ function sceneSignature(scene: CodecScene): string {
 
 function notifyStale(state: CodecSceneServiceState): void {
   for (const subscriber of state.subscribers) {
-    if (subscriber.ready) subscriber.onStale();
+    if (!subscriber.ready) continue;
+    try {
+      subscriber.onStale();
+    } catch {
+      // A disconnected client must not interrupt the remaining subscribers.
+    }
   }
 }
 
@@ -167,7 +172,12 @@ async function rebuildScene(state: CodecSceneServiceState): Promise<CodecScene> 
       state.builtAtMs = Date.now();
       if (changed) {
         for (const subscriber of state.subscribers) {
-          if (subscriber.ready) subscriber.onScene(scene);
+          if (!subscriber.ready) continue;
+          try {
+            subscriber.onScene(scene);
+          } catch {
+            // Client delivery is independent of whether the scene built.
+          }
         }
       }
       return scene;
@@ -180,7 +190,6 @@ async function rebuildScene(state: CodecSceneServiceState): Promise<CodecScene> 
     .finally(() => {
       state.building = undefined;
       if (state.dirty && state.subscribers.size > 0) {
-        state.dirty = false;
         scheduleBuild(state);
       }
     });

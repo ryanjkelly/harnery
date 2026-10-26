@@ -63,22 +63,37 @@ export function compareCodecCards(
 ): CodecCardAuditReport {
   const findings: CodecCardAuditFinding[] = [];
   const localCards = capture.cards.filter((card) => !card.machine);
+  for (const card of capture.cards) {
+    if (!card.machine) continue;
+    findings.push({
+      instance_id: card.instance_id,
+      display_name: card.display_name,
+      field: "authority",
+      card: null,
+      known: null,
+      explanation: "Remote cards must be compared on their source machine.",
+      severity: "unverified",
+    });
+  }
   const readState = authority.meta.read_state;
   if (readState.ok === false) {
     return {
       capture,
       checked_at: checkedAt,
       authority_read_state: readState,
-      findings: localCards.map((card) => ({
-        instance_id: card.instance_id,
-        display_name: card.display_name,
-        field: "authority",
-        card: null,
-        known: null,
-        explanation: readState.reason,
-        severity: "unverified",
-      })),
-      summary: { checked: 0, mismatches: 0, unverified: localCards.length },
+      findings: [
+        ...findings,
+        ...localCards.map((card): CodecCardAuditFinding => ({
+          instance_id: card.instance_id,
+          display_name: card.display_name,
+          field: "authority",
+          card: null,
+          known: null,
+          explanation: readState.reason,
+          severity: "unverified",
+        })),
+      ],
+      summary: { checked: 0, mismatches: 0, unverified: capture.cards.length },
     };
   }
 
@@ -164,12 +179,16 @@ export function compareCodecCards(
         );
       }
     }
-    if (row.task?.trim() && card.task !== row.task) {
+    const knownTask = row.task?.trim() || null;
+    // V3 clears intentionally remove the cached task timestamp. The explicit
+    // projection state still proves that a previously displayed label is stale.
+    const taskCleared = "v3_task_state" in row && row.v3_task_state === "cleared";
+    if ((knownTask !== null || row.task_updated_at || taskCleared) && card.task !== knownTask) {
       mismatch(
         card,
         "task",
         card.task,
-        row.task,
+        knownTask,
         "The declared task differs from the current coordination view.",
       );
     }
@@ -186,7 +205,6 @@ export function compareCodecCards(
 
   for (const row of authority.active) {
     if (row.ledger_state === "terminal" || capturedIds.has(row.instance_id)) continue;
-    if (capture.cards.some((card) => card.instance_id === row.v3_instance_id)) continue;
     findings.push({
       instance_id: row.instance_id,
       display_name: row.name,

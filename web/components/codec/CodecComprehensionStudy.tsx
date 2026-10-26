@@ -14,6 +14,10 @@ import type {
 import styles from "./codecComprehension.module.css";
 
 export function CodecComprehensionStudy({ study }: { study: CodecComprehensionPublicStudy }) {
+  return <ComprehensionSession key={study.study_id} study={study} />;
+}
+
+function ComprehensionSession({ study }: { study: CodecComprehensionPublicStudy }) {
   const [started, setStarted] = useState(false);
   const [index, setIndex] = useState(0);
   const [choice, setChoice] = useState<CodecComprehensionChoice | null>(null);

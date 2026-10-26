@@ -108,6 +108,30 @@ describe("validateSuggestion", () => {
     ).toBe(false);
   });
 
+  test("fails closed when the validation clock is invalid", () => {
+    expect(validateSuggestion(base, evidence, "invalid")).toMatchObject({
+      ok: false,
+      reason: "invalid current time",
+    });
+  });
+
+  test("rejects an oversized bubble even when it is only one word", () => {
+    expect(
+      validateSuggestion(
+        { ...base, focus_bubble: { text: "x".repeat(121), basis: "event-backed" } },
+        evidence,
+        NOW,
+      ),
+    ).toMatchObject({ ok: false, reason: "bubble too long" });
+    expect(
+      validateSuggestion(
+        { ...base, focus_bubble: { text: "x".repeat(120), basis: "event-backed" } },
+        evidence,
+        NOW,
+      ).ok,
+    ).toBe(true);
+  });
+
   test("caps inferred bubbles at low confidence and four words", () => {
     const inferredHigh = validateSuggestion(
       {

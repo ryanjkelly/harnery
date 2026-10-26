@@ -76,6 +76,88 @@ describe("projectScene", () => {
     expect(scene.panels[0]?.activity).toMatchObject({ value: "working", provenance: "event" });
   });
 
+  test("child completion preserves the parent's active turn with or without a heartbeat", () => {
+    for (const heartbeats of [[], [hb({ activity_updated_at: "2026-08-16T10:04:00.000Z" })]]) {
+      const started = ev({ event_type: "turn.started", ts: "2026-08-16T10:04:01.000Z" });
+      const scene = projectScene({
+        snapshot: snapshot(heartbeats),
+        events: [
+          started,
+          ev({
+            event_type: "agent.started",
+            child_generation_id: "child-1",
+            ts: "2026-08-16T10:04:02.000Z",
+          }),
+          ev({
+            event_type: "agent.completed",
+            child_generation_id: "child-1",
+            ts: "2026-08-16T10:04:03.000Z",
+          }),
+        ],
+        now: NOW,
+      });
+
+      expect(scene.panels).toHaveLength(1);
+      expect(scene.panels[0]?.activity).toMatchObject({
+        value: "working",
+        provenance: "event",
+        observed_at: started.ts,
+        evidence_event_ids: [started.event_id],
+      });
+    }
+  });
+
+  test("child announcements count each generation once and completion closes only that child", () => {
+    const events = [
+      ev({ event_type: "turn.started", ts: "2026-08-16T10:01:00.000Z" }),
+      ev({
+        event_type: "agent.delegated",
+        child_generation_id: "child-1",
+        ts: "2026-08-16T10:02:00.000Z",
+      }),
+      ev({
+        event_type: "agent.started",
+        child_generation_id: "child-1",
+        ts: "2026-08-16T10:02:01.000Z",
+      }),
+      ev({
+        event_type: "agent.started",
+        child_generation_id: "child-2",
+        ts: "2026-08-16T10:02:02.000Z",
+      }),
+    ];
+    const expression = () =>
+      projectScene({ snapshot: snapshot([hb({})]), events, now: NOW }).panels[0]?.expression.value;
+
+    expect(expression()).toBe("coordinating");
+    events.push(
+      ev({
+        event_type: "agent.completed",
+        child_generation_id: "child-1",
+        ts: "2026-08-16T10:03:00.000Z",
+      }),
+      ev({
+        event_type: "agent.completed",
+        child_generation_id: "child-1",
+        ts: "2026-08-16T10:03:01.000Z",
+      }),
+      ev({
+        event_type: "agent.completed",
+        child_generation_id: "unannounced-child",
+        ts: "2026-08-16T10:03:02.000Z",
+      }),
+    );
+    expect(expression()).toBe("coordinating");
+    events.push(
+      ev({
+        event_type: "agent.completed",
+        child_generation_id: "child-2",
+        ts: "2026-08-16T10:03:03.000Z",
+      }),
+    );
+    expect(expression()).not.toBe("coordinating");
+  });
+
   test("cold bootstrap from the snapshot alone renders evidence-safe panels", () => {
     const scene = projectScene({
       snapshot: snapshot([
@@ -411,6 +493,95 @@ describe("projectScene", () => {
     expect(fromEvent.panels[0]?.lifecycle).toMatchObject({ value: "done", provenance: "event" });
   });
 
+  test("task and lifecycle use the newest declaration, preferring events on timestamp ties", () => {
+    for (const [heartbeatAt, eventAt, winner] of [
+      ["2026-08-16T10:01:00.000Z", "2026-08-16T10:02:00.000Z", "event"],
+      ["2026-08-16T10:03:00.000Z", "2026-08-16T10:02:00.000Z", "projection"],
+      ["2026-08-16T10:02:00.000Z", "2026-08-16T10:02:00.000Z", "event"],
+    ] as const) {
+      const panel = projectScene({
+        snapshot: snapshot([
+          hb({
+            task: "Cached task",
+            task_updated_at: heartbeatAt,
+            task_state: "blocked",
+            task_state_updated_at: heartbeatAt,
+          }),
+        ]),
+        events: [
+          ev({ event_type: "coord.task_changed", task: "Event task", ts: eventAt }),
+          ev({ event_type: "coord.lifecycle_changed", task_state: "active", ts: eventAt }),
+        ],
+        now: NOW,
+      }).panels[0];
+      const eventWins = winner === "event";
+
+      expect(panel?.identity.task).toMatchObject({
+        value: eventWins ? "Event task" : "Cached task",
+        provenance: winner,
+        observed_at: eventWins ? eventAt : heartbeatAt,
+      });
+      expect(panel?.lifecycle).toMatchObject({
+        value: eventWins ? "active" : "blocked",
+        provenance: winner,
+        observed_at: eventWins ? eventAt : heartbeatAt,
+      });
+    }
+  });
+
+  test("an unstamped cached task cannot overwrite an explicit event declaration", () => {
+    const panel = projectScene({
+      snapshot: snapshot([hb({ task: "Cached task" })]),
+      events: [ev({ event_type: "coord.task_changed", task: "Declared task" })],
+      now: NOW,
+    }).panels[0];
+
+    expect(panel?.identity.task).toMatchObject({ value: "Declared task", provenance: "event" });
+  });
+
+  test("a newer active heartbeat clears an older blocked expression on both panel paths", () => {
+    const heartbeat = hb({
+      task_state: "active",
+      task_state_updated_at: "2026-08-16T10:04:30.000Z",
+    });
+    const events = [
+      ev({
+        event_type: "coord.lifecycle_changed",
+        task_state: "blocked",
+        ts: "2026-08-16T10:02:00.000Z",
+      }),
+      ev({ event_type: "turn.started", ts: "2026-08-16T10:04:00.000Z" }),
+    ];
+    for (const inputSnapshot of [snapshot([heartbeat]), snapshot([], [heartbeat])]) {
+      const panel = projectScene({ snapshot: inputSnapshot, events, now: NOW }).panels[0];
+
+      expect(panel?.lifecycle).toMatchObject({ value: "active", provenance: "projection" });
+      expect(panel?.expression.value).not.toBe("blocked");
+    }
+
+    const evidenceOnly = projectScene({ snapshot: snapshot([]), events, now: NOW }).panels[0];
+    expect(evidenceOnly?.lifecycle).toMatchObject({ value: "blocked", provenance: "event" });
+    expect(evidenceOnly?.expression.value).toBe("blocked");
+  });
+
+  test("a newer task clear suppresses the older label from either source", () => {
+    const cachedClear = projectScene({
+      snapshot: snapshot([hb({ task_updated_at: "2026-08-16T10:04:30.000Z" })]),
+      events: [ev({ event_type: "coord.task_changed", task: "Old event task" })],
+      now: NOW,
+    }).panels[0];
+    expect(cachedClear?.identity.task).toBeUndefined();
+
+    const eventClear = projectScene({
+      snapshot: snapshot([
+        hb({ task: "Old cached task", task_updated_at: "2026-08-16T10:03:00.000Z" }),
+      ]),
+      events: [ev({ event_type: "coord.task_changed", task_cleared: true })],
+      now: NOW,
+    }).panels[0];
+    expect(eventClear?.identity.task).toBeUndefined();
+  });
+
   test("newer turn completion overrides stale working activity from the heartbeat cache", () => {
     const scene = projectScene({
       snapshot: snapshot([
@@ -473,6 +644,28 @@ describe("projectScene", () => {
     expect(band(49)).toBe("reduced");
     // A decisive move clears the hold.
     expect(band(30)).toBe("ample");
+  });
+
+  test("gradual context changes leave the hysteresis window in both directions", () => {
+    const band = (remaining: number) =>
+      projectScene({
+        snapshot: snapshot([hb({})]),
+        events: [ev({ event_type: "context.observed", used_percent: 100 - remaining })],
+        now: NOW,
+      }).panels[0]?.context_band.value;
+
+    expect([52, 51, 50, 49, 48, 47].map(band)).toEqual([
+      "ample", "ample", "ample", "ample", "ample", "reduced",
+    ]);
+    expect([22, 21, 20, 19, 18, 17].map(band)).toEqual([
+      "reduced", "reduced", "reduced", "reduced", "reduced", "low",
+    ]);
+    expect([18, 19, 20, 21, 22, 23].map(band)).toEqual([
+      "low", "low", "low", "low", "low", "reduced",
+    ]);
+    expect([48, 49, 50, 51, 52, 53].map(band)).toEqual([
+      "reduced", "reduced", "reduced", "reduced", "reduced", "ample",
+    ]);
   });
 
   test("projects exact context counts alongside the capacity band", () => {

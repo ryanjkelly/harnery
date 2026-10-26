@@ -76,6 +76,7 @@ const EXPRESSIONS: ReadonlySet<string> = new Set([
 ]);
 
 const MAX_BUBBLE_WORDS = 4;
+const MAX_BUBBLE_CHARS = 120;
 /** A suggestion may not outlive its usefulness; ten minutes is generous. */
 const MAX_TTL_MS = 10 * 60_000;
 
@@ -152,6 +153,7 @@ export function validateSuggestion(
 
   const expiresAt = typeof s.expires_at === "string" ? Date.parse(s.expires_at) : Number.NaN;
   const nowMs = Date.parse(now);
+  if (!Number.isFinite(nowMs)) return { ok: false, reason: "invalid current time" };
   if (!Number.isFinite(expiresAt)) return { ok: false, reason: "missing expires_at" };
   if (expiresAt <= nowMs) return { ok: false, reason: "already expired" };
   if (expiresAt > nowMs + MAX_TTL_MS) return { ok: false, reason: "expiry too far out" };
@@ -185,6 +187,9 @@ export function validateSuggestion(
       return { ok: false, reason: "empty bubble text" };
     }
     const words = b.text.trim().split(/\s+/);
+    if (words.join(" ").length > MAX_BUBBLE_CHARS) {
+      return { ok: false, reason: "bubble too long" };
+    }
     if (words.length > MAX_BUBBLE_WORDS) return { ok: false, reason: "bubble too long" };
     // Synthesis across signals is inferred by definition; inferred content is
     // capped at low confidence.

@@ -87,6 +87,33 @@ describe("projectCodecTimings", () => {
     expect(timing?.observed_at).toBe("2026-09-04T10:04:00.000Z");
   });
 
+  test("a delayed turn completion cannot extend clocks beyond the session end", () => {
+    const lateCompletion = event("turn.completed", "2026-09-04T10:08:00.000Z", {
+      turn_id: "turn-1",
+    });
+    const timing = projectCodecTimings(
+      [
+        event("session.started", "2026-09-04T10:00:00.000Z"),
+        event("turn.started", "2026-09-04T10:01:00.000Z", { turn_id: "turn-1" }),
+        event("session.ended", "2026-09-04T10:04:00.000Z"),
+        lateCompletion,
+      ],
+      "2026-09-04T10:10:00.000Z",
+    ).get(INSTANCE);
+
+    expect(timing?.value).toMatchObject({
+      session_duration_ms: 240_000,
+      last_turn_duration_ms: 180_000,
+      working_duration_ms: 180_000,
+      idle_duration_ms: 60_000,
+      session_active: false,
+      last_turn_active: false,
+      current_bucket: "stopped",
+    });
+    expect(timing?.observed_at).toBe("2026-09-04T10:04:00.000Z");
+    expect(timing?.evidence_event_ids).not.toContain(lateCompletion.event_id);
+  });
+
   test("omits timing when the bounded evidence has no session boundary", () => {
     const timings = projectCodecTimings(
       [event("turn.started", "2026-09-04T10:02:00.000Z")],

@@ -521,7 +521,6 @@ export function projectActivityChannels(
         if (slot.friction?.value === "repeating-operation") slot.friction = undefined;
         break;
       case "session.ended":
-      case "agent.completed":
         slot.open.clear();
         slot.compaction = undefined;
         slot.pendingTerminals.clear();

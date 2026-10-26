@@ -39,7 +39,12 @@ export async function POST(request: Request): Promise<Response> {
     const text = await request.text();
     if (text.length > 256_000)
       return Response.json({ error: "capture too large" }, { status: 413 });
-    const capture: unknown = JSON.parse(text);
+    let capture: unknown;
+    try {
+      capture = JSON.parse(text);
+    } catch {
+      return Response.json({ error: "invalid card capture" }, { status: 400 });
+    }
     if (!validCapture(capture)) {
       return Response.json({ error: "invalid card capture" }, { status: 400 });
     }

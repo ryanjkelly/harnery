@@ -93,7 +93,7 @@ interface InstanceEvidence {
   actionsFull: ExpressiveAction[];
   /** Successful terminal/progress evidence for bounded cadence inference. */
   successfulProgress: Array<{ ts: string; event_id: string }>;
-  openSubagents: number;
+  openSubagents: Set<string>;
   /** Newest compaction boundary, for the compacting expression. */
   lastCompaction?: { phase: "started" | "completed"; ts: string; event_id: string };
   /** Open typed wait (started without a matching end), for dormancy. */
@@ -139,7 +139,7 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         intentHistory: [],
         actionsFull: [],
         successfulProgress: [],
-        openSubagents: 0,
+        openSubagents: new Set(),
       };
       byInstance.set(ev.instance_id, slot);
     }
@@ -193,7 +193,6 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         break;
       case "turn.completed":
       case "session.ended":
-      case "agent.completed":
         setActivity("idle");
         break;
       default:
@@ -215,13 +214,13 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         // and opens coordination
         // evidence, but it is not the parent's activity or session lifecycle.
         slot.lastTurnOrSessionStarted = ev;
-        slot.openSubagents += 1;
+        if (ev.child_generation_id) slot.openSubagents.add(ev.child_generation_id);
         break;
       case "session.ended":
         slot.lastSessionEnded = ev;
         break;
       case "agent.completed":
-        slot.openSubagents = Math.max(0, slot.openSubagents - 1);
+        if (ev.child_generation_id) slot.openSubagents.delete(ev.child_generation_id);
         break;
       case "turn.started":
         slot.lastTurnOrSessionStarted = ev;
@@ -491,7 +490,11 @@ function activity(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<Co
 function lifecycle(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<CodecLifecycle> {
   // The heartbeat defaults task_state to "active" even with no declaration, so
   // only a stamped update time makes the projection evidence-backed.
-  if (hb.task_state_updated_at) {
+  const event = ev?.lastLifecycleChanged;
+  if (
+    hb.task_state_updated_at &&
+    (!event?.task_state || ms(hb.task_state_updated_at) > ms(event.ts))
+  ) {
     return present(hb.task_state, "projection", "high", hb.task_state_updated_at);
   }
   if (ev?.lastLifecycleChanged?.task_state) {
@@ -507,13 +510,19 @@ function lifecycle(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<C
 }
 
 function taskLabel(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<string> | undefined {
+  const event = ev?.lastTaskChanged;
+  if (event && (!hb.task_updated_at || ms(event.ts) >= ms(hb.task_updated_at))) {
+    if (!event.task?.trim() || event.task_cleared) return undefined;
+    return present(event.task.trim(), "event", "high", event.ts, [event.event_id]);
+  }
+  // A stamped clear is newer evidence than the previous nonempty task label.
+  if (hb.task_updated_at) {
+    return hb.task?.trim()
+      ? present(hb.task.trim(), "projection", "high", hb.task_updated_at)
+      : undefined;
+  }
   if (hb.task?.trim()) {
     return present(hb.task.trim(), "projection", "high", hb.task_updated_at ?? hb.last_heartbeat);
-  }
-  if (ev?.lastTaskChanged?.task && !ev.lastTaskChanged.task_cleared) {
-    return present(ev.lastTaskChanged.task, "event", "high", ev.lastTaskChanged.ts, [
-      ev.lastTaskChanged.event_id,
-    ]);
   }
   return undefined;
 }
@@ -530,8 +539,15 @@ function contextBand(
   const remaining = Math.max(0, Math.min(100, 100 - sample.used_percent));
   let band: CodecContextBand = remaining > 50 ? "ample" : remaining >= 20 ? "reduced" : "low";
   const prior = lastBandByInstance.get(instanceId);
-  if (prior && prior.band !== band && Math.abs(remaining - prior.remaining) <= BAND_HYSTERESIS_PP) {
-    band = prior.band; // hold the previous band inside the hysteresis window
+  if (
+    prior &&
+    ((prior.band === "ample" && remaining >= 50 - BAND_HYSTERESIS_PP) ||
+      (prior.band === "reduced" &&
+        remaining >= 20 - BAND_HYSTERESIS_PP &&
+        remaining <= 50 + BAND_HYSTERESIS_PP) ||
+      (prior.band === "low" && remaining <= 20 + BAND_HYSTERESIS_PP))
+  ) {
+    band = prior.band; // hold only inside the boundary's hysteresis window
   }
   lastBandByInstance.set(instanceId, { band, remaining });
   const confidence: Confidence = sample.context_confidence === "estimated" ? "medium" : "high";
@@ -797,7 +813,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
         presence: panelPresence.value,
         activity: panelActivity.value,
         lastObservedAt: expressionObservedAt,
-        ...(ev?.lastLifecycleChanged?.task_state
+        ...(panelLifecycle.provenance === "event" && ev?.lastLifecycleChanged?.task_state
           ? {
               lifecycleState: {
                 value: ev.lastLifecycleChanged.task_state,
@@ -824,7 +840,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
             }
           : {}),
         actions: ev?.actionsFull ?? [],
-        openSubagents: ev?.openSubagents ?? 0,
+        openSubagents: ev?.openSubagents.size ?? 0,
       },
       now,
     );
@@ -891,6 +907,14 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       : present("unknown", "unknown", "low", ev.lastEventTs ?? now);
     const fallbackTs = ev.lastEventTs ?? now;
     const evContextBand = contextBand(instanceId, ev, fallbackTs);
+    const matchingHeartbeat = heartbeats.get(instanceId);
+    const evLifecycle: Presented<CodecLifecycle> = matchingHeartbeat
+      ? lifecycle(matchingHeartbeat, ev)
+      : ev.lastLifecycleChanged?.task_state
+        ? present(ev.lastLifecycleChanged.task_state, "event", "high", ev.lastLifecycleChanged.ts, [
+            ev.lastLifecycleChanged.event_id,
+          ])
+        : present("unknown", "unknown", "low", fallbackTs);
     const channels = deriveExpressiveChannels(
       {
         presence: evPresence.value,
@@ -913,8 +937,8 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
             }
           : {}),
         actions: ev.actionsFull,
-        openSubagents: ev.openSubagents,
-        ...(ev.lastLifecycleChanged?.task_state
+        openSubagents: ev.openSubagents.size,
+        ...(evLifecycle.provenance === "event" && ev.lastLifecycleChanged?.task_state
           ? {
               lifecycleState: {
                 value: ev.lastLifecycleChanged.task_state,
@@ -930,7 +954,6 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       },
       now,
     );
-    const matchingHeartbeat = heartbeats.get(instanceId);
     const task = matchingHeartbeat
       ? taskLabel(matchingHeartbeat, ev)
       : ev.lastTaskChanged?.task && !ev.lastTaskChanged.task_cleared
@@ -951,11 +974,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       },
       presence: evPresence,
       activity: evActivity,
-      lifecycle: ev.lastLifecycleChanged?.task_state
-        ? present(ev.lastLifecycleChanged.task_state, "event", "high", ev.lastLifecycleChanged.ts, [
-            ev.lastLifecycleChanged.event_id,
-          ])
-        : present("unknown", "unknown", "low", fallbackTs),
+      lifecycle: evLifecycle,
       expression: channels.expression,
       attention: channels.attention,
       context_band: evContextBand,

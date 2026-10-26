@@ -79,6 +79,26 @@ describe("deriveExpressiveChannels", () => {
     expect(c.expression.evidence_event_ids).toHaveLength(2);
   });
 
+  test.each([true, false])(
+    "a previous turn's failure does not imply recovery (prompt=%s)",
+    (prompt) => {
+      const c = deriveExpressiveChannels(
+        inputs({
+          lastTurnStarted: prompt ? { ts: at(30), event_id: "new-prompt" } : undefined,
+          lastTurnCompleted: { ts: at(60), event_id: "prior-stop" },
+          actions: [
+            action({ outcome: "error", ts: at(80), category: "build" }),
+            action({ event_id: "new-edit", outcome: "ok", ts: at(20), category: "edit" }),
+          ],
+        }),
+        NOW,
+      );
+
+      expect(c.expression.value).toBe("building");
+      expect(c.expression.evidence_event_ids).toEqual(["new-edit"]);
+    },
+  );
+
   test("celebrating on a fresh successful build/test, low confidence, brief", () => {
     const c = deriveExpressiveChannels(
       inputs({ actions: [action({ category: "test", outcome: "ok", ts: at(3) })] }),

@@ -81,6 +81,14 @@ test("evidence receipt exposes bounded provenance without raw source content", (
       observed_at: "2026-08-21T15:00:01.000Z",
       evidence_event_ids: ["evt_semantic"],
     },
+    tags: {
+      value: ["verification", "coordination"],
+      basis: "model-synthesis",
+      provenance: "inferred",
+      confidence: "medium",
+      observed_at: "2026-08-21T15:00:01.000Z",
+      evidence_event_ids: ["evt_semantic"],
+    },
   });
   const rows = codecEvidenceReceiptRows(panel);
   expect(rows.find((row) => row.channel === "operation")?.value).toBe("Editing files · active");
@@ -104,6 +112,12 @@ test("evidence receipt exposes bounded provenance without raw source content", (
     detail: "prediction",
     confidence: "low",
   });
+  expect(rows.find((row) => row.channel === "tags")?.value).toBe("verification · coordination");
   expect(rows[0]?.evidence_event_ids).toEqual(["evt_two", "evt_three", "evt_four"]);
   expect(JSON.stringify(rows)).not.toContain("tool_input");
+
+  panel.operation.value.elapsed_ms = 119_600;
+  expect(codecEvidenceReceiptRows(panel).find((row) => row.channel === "operation")?.detail).toBe(
+    "elapsed 2m · 8 baseline samples · long-running after 30s",
+  );
 });

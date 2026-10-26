@@ -117,7 +117,9 @@ export function readRemotePresence(
       continue;
     }
 
-    for (const raw of blob.agents as Array<Record<string, unknown>>) {
+    for (const candidate of blob.agents) {
+      const raw = record(candidate);
+      if (!raw) continue;
       const instanceId = typeof raw.instance_id === "string" ? raw.instance_id : undefined;
       if (!instanceId) continue;
 

@@ -21,6 +21,7 @@ export const runtime = "nodejs";
 const HEARTBEAT_INTERVAL_MS = 5_000;
 export async function GET(request: Request): Promise<Response> {
   const encoder = new TextEncoder();
+  let cleanup = () => {};
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -37,9 +38,10 @@ export async function GET(request: Request): Promise<Response> {
         }
       }
 
-      function cleanup(): void {
+      cleanup = (): void => {
         if (closed) return;
         closed = true;
+        request.signal.removeEventListener("abort", cleanup);
         closeSceneConnection?.();
         if (heartbeat) clearInterval(heartbeat);
         try {
@@ -47,6 +49,12 @@ export async function GET(request: Request): Promise<Response> {
         } catch {
           /* already closed */
         }
+      };
+
+      request.signal.addEventListener("abort", cleanup, { once: true });
+      if (request.signal.aborted) {
+        cleanup();
+        return;
       }
 
       try {
@@ -73,11 +81,9 @@ export async function GET(request: Request): Promise<Response> {
       heartbeat = setInterval(() => {
         send("heartbeat", { ts: new Date().toISOString() });
       }, HEARTBEAT_INTERVAL_MS);
-
-      request.signal.addEventListener("abort", cleanup);
     },
     cancel() {
-      // mirrors abort; cleanup is idempotent
+      cleanup();
     },
   });
 

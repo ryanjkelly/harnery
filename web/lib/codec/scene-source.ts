@@ -54,7 +54,8 @@ interface SanitizedTailCache {
   inode: bigint;
   size: number;
   byteLimit: number;
-  partial: string;
+  partial: Buffer;
+  discardPartial: boolean;
   rows: SanitizedTailRow[];
   rowBytes: number;
   lifecycle: Map<string, SanitizedTailRow[]>;
@@ -204,40 +205,56 @@ export async function readIncrementalSanitizedTail(
     size >= cached.size
   ) {
     if (size > cached.size) {
-      const appended = await readRange(filePath, cached.size, size - cached.size);
-      const text = cached.partial + appended.toString("utf8");
-      const finalNewline = text.lastIndexOf("\n");
+      let appended = await readRange(filePath, cached.size, size - cached.size);
+      cached.size = size;
+      if (cached.discardPartial) {
+        const newline = appended.indexOf(0x0a);
+        if (newline < 0) return mergedTailRows(cached);
+        appended = appended.subarray(newline + 1);
+        cached.discardPartial = false;
+      }
+      // A writer can stop between UTF-8 bytes. Decode only complete rows so
+      // the next append can finish a character without replacement bytes.
+      const bytes = Buffer.concat([cached.partial, appended]);
+      const finalNewline = bytes.lastIndexOf(0x0a);
       if (finalNewline >= 0) {
-        const complete = text.slice(0, finalNewline + 1);
-        const added = sanitizedRows(complete);
+        const complete = bytes.subarray(0, finalNewline + 1);
+        const added = sanitizedRows(complete.toString("utf8"));
         cached.rows.push(...added);
         cached.rowBytes += added.reduce((sum, row) => sum + row.sourceBytes, 0);
-        cached.partial = text.slice(finalNewline + 1);
+        const partial = bytes.subarray(finalNewline + 1);
+        cached.discardPartial = partial.length > cached.byteLimit;
+        cached.partial = cached.discardPartial ? Buffer.alloc(0) : Buffer.from(partial);
         trimTail(cached);
       } else {
-        cached.partial = text;
+        // An unfinished row must not grow the cache beyond its byte window.
+        // Ignore its remaining bytes until the next actual row boundary.
+        cached.discardPartial = bytes.length > cached.byteLimit;
+        cached.partial = cached.discardPartial ? Buffer.alloc(0) : bytes;
       }
-      cached.size = size;
     }
     return mergedTailRows(cached);
   }
 
   const start = Math.max(0, size - effectiveByteLimit);
-  let text = (await readRange(filePath, start, size - start)).toString("utf8");
+  let bytes = await readRange(filePath, start, size - start);
+  let discardPartial = false;
   if (start > 0) {
-    const firstNewline = text.indexOf("\n");
-    text = firstNewline >= 0 ? text.slice(firstNewline + 1) : "";
+    const firstNewline = bytes.indexOf(0x0a);
+    discardPartial = firstNewline < 0;
+    bytes = firstNewline >= 0 ? bytes.subarray(firstNewline + 1) : Buffer.alloc(0);
   }
-  const finalNewline = text.lastIndexOf("\n");
-  const complete = finalNewline >= 0 ? text.slice(0, finalNewline + 1) : "";
-  const partial = finalNewline >= 0 ? text.slice(finalNewline + 1) : text;
-  const rows = sanitizedRows(complete);
+  const finalNewline = bytes.lastIndexOf(0x0a);
+  const complete = finalNewline >= 0 ? bytes.subarray(0, finalNewline + 1) : Buffer.alloc(0);
+  const partial = Buffer.from(finalNewline >= 0 ? bytes.subarray(finalNewline + 1) : bytes);
+  const rows = sanitizedRows(complete.toString("utf8"));
   const next: SanitizedTailCache = {
     device: stat.dev,
     inode: stat.ino,
     size,
     byteLimit: effectiveByteLimit,
     partial,
+    discardPartial,
     rows,
     rowBytes: rows.reduce((sum, row) => sum + row.sourceBytes, 0),
     lifecycle: new Map(),

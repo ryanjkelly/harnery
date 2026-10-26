@@ -92,6 +92,107 @@ describe("Codec scene service", () => {
     second.close();
   });
 
+  test("keeps invalidation received while an asynchronous build is pending", async () => {
+    let builds = 0;
+    let finishBuild!: (value: CodecScene) => void;
+    let changed!: () => void;
+    const watcher = Object.assign(new EventEmitter(), { close() {} });
+    const service = createCodecSceneService({
+      eventPaths: () => [import.meta.path],
+      fingerprint: () => "unchanged",
+      refreshMs: 60_000,
+      watch: ((_path: unknown, listener: (eventType: string, filename: string | null) => void) => {
+        changed = () => listener("change", "events.ndjson");
+        return watcher;
+      }) as unknown as typeof import("node:fs").watch,
+      build: () => {
+        builds += 1;
+        return builds === 2
+          ? new Promise((resolve) => {
+              finishBuild = resolve;
+            })
+          : Promise.resolve(scene(`scene-${builds}`));
+      },
+    });
+    services.push(service);
+    const updates: CodecScene[] = [];
+    const connection = await service.connect(
+      (next) => updates.push(next),
+      () => {},
+    );
+
+    const pending = service.refresh();
+    changed();
+    finishBuild(scene("scene-2"));
+    await pending;
+
+    expect((await service.getScene()).generated_at).toBe("scene-3");
+    expect(builds).toBe(3);
+    expect(updates.map((value) => value.generated_at)).toEqual(["scene-2", "scene-3"]);
+    connection.close();
+  });
+
+  test("a throwing scene subscriber does not fail the build or starve other tabs", async () => {
+    let builds = 0;
+    let stale = 0;
+    const service = createCodecSceneService({
+      eventPaths: () => [],
+      build: async () => scene(`scene-${++builds}`),
+    });
+    services.push(service);
+    await service.connect(
+      () => {
+        throw new Error("disconnected subscriber");
+      },
+      () => {
+        stale += 1;
+      },
+    );
+    const updates: CodecScene[] = [];
+    await service.connect(
+      (next) => updates.push(next),
+      () => {
+        stale += 1;
+      },
+    );
+
+    expect((await service.refresh()).generated_at).toBe("scene-2");
+    expect(updates.map((value) => value.generated_at)).toEqual(["scene-2"]);
+    expect(stale).toBe(0);
+  });
+
+  test("a throwing stale subscriber does not hide the build error from other tabs", async () => {
+    const failure = new Error("scene source unavailable");
+    let fail = false;
+    const service = createCodecSceneService({
+      eventPaths: () => [],
+      build: async () => {
+        if (fail) throw failure;
+        return scene("initial");
+      },
+    });
+    services.push(service);
+    await service.connect(
+      () => {},
+      () => {
+        throw new Error("disconnected subscriber");
+      },
+    );
+    let stale = 0;
+    await service.connect(
+      () => {},
+      () => {
+        stale += 1;
+      },
+    );
+
+    fail = true;
+    await expect(service.refresh()).rejects.toBe(failure);
+    expect(stale).toBe(1);
+    fail = false;
+    expect((await service.refresh()).generated_at).toBe("initial");
+  });
+
   test("does not repeat a request refresh when a queued watcher timer fires", async () => {
     let builds = 0;
     let changed: (() => void) | undefined;

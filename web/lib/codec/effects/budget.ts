@@ -1,7 +1,7 @@
 import type { CodecEffectCue } from "./contracts";
 
 export interface CodecEffectBudgetOptions {
-  maxConcurrent: number;
+  maxConcurrent: number | (() => number);
   seenLimit?: number;
 }
 
@@ -10,18 +10,18 @@ export interface CodecEffectBudgetOptions {
 export class CodecEffectBudget {
   readonly #active = new Map<string, CodecEffectCue>();
   readonly #seen = new Map<string, true>();
-  readonly #maxConcurrent: number;
+  readonly #maxConcurrent: number | (() => number);
   readonly #seenLimit: number;
 
   constructor(options: CodecEffectBudgetOptions) {
-    this.#maxConcurrent = Math.max(1, options.maxConcurrent);
-    this.#seenLimit = Math.max(this.#maxConcurrent, options.seenLimit ?? 500);
+    this.#maxConcurrent = options.maxConcurrent;
+    this.#seenLimit = Math.max(this.#concurrentLimit(), options.seenLimit ?? 500);
   }
 
   start(cue: CodecEffectCue): boolean {
     if (this.#seen.has(cue.id)) return false;
     this.#remember(cue.id);
-    if (this.#active.size >= this.#maxConcurrent) return false;
+    if (this.#active.size >= this.#concurrentLimit()) return false;
     if (
       [...this.#active.values()].some((active) => active.targetInstanceId === cue.targetInstanceId)
     ) {
@@ -41,6 +41,12 @@ export class CodecEffectBudget {
 
   get activeCount(): number {
     return this.#active.size;
+  }
+
+  #concurrentLimit(): number {
+    const value =
+      typeof this.#maxConcurrent === "function" ? this.#maxConcurrent() : this.#maxConcurrent;
+    return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1;
   }
 
   #remember(id: string): void {

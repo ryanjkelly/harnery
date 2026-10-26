@@ -22,6 +22,11 @@ function panel(
 }
 
 describe("portraitSource", () => {
+  test("encodes pack versions without changing the requested variant or fragment", () => {
+    expect(portraitSource(panel("focused", { pack_id: "f19-s", pack_version: "2&variant=roster-v1#x" })))
+      .toBe("/api/codec-pack/f19-s/focused?v=2%26variant%3Droster-v1%23x");
+  });
+
   test("a bound pack yields its expression URL; the neutral pack yields no request", () => {
     expect(portraitSource(panel("focused"))).toBe("/api/codec-pack/f19-s/focused?v=2");
     expect(

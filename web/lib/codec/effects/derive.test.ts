@@ -110,6 +110,26 @@ describe("Codec effect derivation", () => {
 });
 
 describe("Codec effect budget", () => {
+  test("applies changed viewport limits without interrupting effects already playing", () => {
+    let maxConcurrent = 6;
+    const budget = new CodecEffectBudget({ maxConcurrent: () => maxConcurrent });
+    const cue = (sequence: number) =>
+      effectForPreview({ sequence, kind: "energy", targetInstanceId: `agent-${sequence}` });
+
+    expect(budget.start(cue(1))).toBe(true);
+    expect(budget.start(cue(2))).toBe(true);
+    expect(budget.start(cue(3))).toBe(true);
+    maxConcurrent = 2;
+    expect(budget.start(cue(4))).toBe(false);
+    expect(budget.activeCount).toBe(3);
+    budget.finish(cue(1).id);
+    budget.finish(cue(2).id);
+    expect(budget.start(cue(5))).toBe(true);
+    expect(budget.start(cue(6))).toBe(false);
+    maxConcurrent = 6;
+    expect(budget.start(cue(7))).toBe(true);
+  });
+
   test("deduplicates ids, caps concurrency, and releases target slots", () => {
     const budget = new CodecEffectBudget({ maxConcurrent: 2, seenLimit: 4 });
     const one = effectForPreview({ sequence: 1, kind: "energy", targetInstanceId: "agent-a" });

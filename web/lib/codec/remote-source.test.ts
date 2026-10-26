@@ -176,4 +176,19 @@ describe("readRemotePanels", () => {
     expect(readRemotePanels(NOW, root)).toEqual([]);
     expect(readRemotePresence(NOW, root).machines).toEqual([]);
   });
+
+  test("skips malformed agent rows without losing valid agents or machine counts", () => {
+    writeBlob("rk-machine", {
+      v: 1,
+      machine: "rk-machine",
+      published_at: "2026-08-16T11:59:40.000Z",
+      agents: [null, false, 42, "invalid", [], {}, agent(), agent({ instance_id: "remote-2" })],
+    });
+
+    const presence = readRemotePresence(NOW, root);
+    expect(presence.panels.map((panel) => panel.instance_id)).toEqual(["remote-1", "remote-2"]);
+    expect(presence.machines).toMatchObject([
+      { machine: "rk-machine", state: "fresh", visible_agent_count: 2 },
+    ]);
+  });
 });

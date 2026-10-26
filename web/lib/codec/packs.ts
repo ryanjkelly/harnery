@@ -125,7 +125,10 @@ const MAX_VALIDATION_CACHE_ENTRIES = 128;
 
 type ValidPackResult = { ok: true; pack: CodecPack };
 
-const validationCache = new Map<string, { manifestJson: string; result: ValidPackResult }>();
+const validationCache = new Map<
+  string,
+  { manifestJson: string; directoryMtimeNs: bigint; result: ValidPackResult }
+>();
 
 export function codecDir(root = harneryDir()): string {
   return path.join(root, "codec");
@@ -152,14 +155,16 @@ export function validatePackDir(
 ): { ok: true; pack: CodecPack } | { ok: false; problems: string[] } {
   const manifestPath = path.join(dir, "pack.json");
   let manifestJson: string;
+  let directoryMtimeNs: bigint;
   try {
     manifestJson = fs.readFileSync(manifestPath, "utf8");
+    directoryMtimeNs = fs.statSync(dir, { bigint: true }).mtimeNs;
   } catch (err) {
     return { ok: false, problems: [`unreadable pack.json: ${(err as Error).message}`] };
   }
 
   const cached = validationCache.get(dir);
-  if (cached?.manifestJson === manifestJson) {
+  if (cached?.manifestJson === manifestJson && cached.directoryMtimeNs === directoryMtimeNs) {
     validationCache.delete(dir);
     validationCache.set(dir, cached);
     return cached.result;
@@ -171,6 +176,9 @@ export function validatePackDir(
     manifest = JSON.parse(manifestJson);
   } catch (err) {
     return { ok: false, problems: [`unreadable pack.json: ${(err as Error).message}`] };
+  }
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    return { ok: false, problems: ["pack.json must contain an object"] };
   }
   if (manifest.schema_version !== 1) problems.push("unsupported schema_version");
   const packId = typeof manifest.pack_id === "string" ? manifest.pack_id : "";
@@ -190,8 +198,8 @@ export function validatePackDir(
       problems.push(`expression ${expr}: missing or invalid filename`);
       continue;
     }
-    if (!fs.existsSync(path.join(dir, file))) {
-      problems.push(`expression ${expr}: file ${file} not on disk`);
+    if (!servablePackFile(dir, file)) {
+      problems.push(`expression ${expr}: file ${file} missing or not a supported image file`);
       continue;
     }
     validated[expr] = file;
@@ -203,8 +211,8 @@ export function validatePackDir(
       problems.push(`expression ${expr}: declared but invalid filename`);
       continue;
     }
-    if (!fs.existsSync(path.join(dir, file))) {
-      problems.push(`expression ${expr}: file ${file} not on disk`);
+    if (!servablePackFile(dir, file)) {
+      problems.push(`expression ${expr}: file ${file} missing or not a supported image file`);
       continue;
     }
     validated[expr] = file;
@@ -226,12 +234,40 @@ export function validatePackDir(
       ...(typeof manifest.quality === "string" ? { quality: manifest.quality } : {}),
     },
   };
-  validationCache.set(dir, { manifestJson, result });
+  // A nested symlink target can change without changing the pack directory's mtime.
+  const hasLinkedAssets = Object.values(validated).some((file) => {
+    try {
+      return fs.lstatSync(path.join(dir, file)).isSymbolicLink();
+    } catch {
+      return true;
+    }
+  });
+  if (hasLinkedAssets) {
+    validationCache.delete(dir);
+    return result;
+  }
+  validationCache.set(dir, { manifestJson, directoryMtimeNs, result });
   if (validationCache.size > MAX_VALIDATION_CACHE_ENTRIES) {
     const oldest = validationCache.keys().next().value;
     if (oldest !== undefined) validationCache.delete(oldest);
   }
   return result;
+}
+
+function servablePackFile(dir: string, file: string): boolean {
+  if (!/\.(?:webp|png|jpe?g)$/i.test(file)) return false;
+  try {
+    const target = fs.realpathSync(path.join(dir, file));
+    const relative = path.relative(fs.realpathSync(dir), target);
+    return (
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative) &&
+      fs.statSync(target).isFile()
+    );
+  } catch {
+    return false;
+  }
 }
 
 function validPacksInDir(dir: string): CodecPack[] {
@@ -336,12 +372,25 @@ export function readPackRegistry(root = harneryDir()): PackRegistry {
   try {
     const parsed = JSON.parse(fs.readFileSync(registryPath(root), "utf8"));
     if (parsed?.schema_version === 1 && Array.isArray(parsed.bindings)) {
-      return parsed as PackRegistry;
+      return { schema_version: 1, bindings: parsed.bindings.filter(validBinding) };
     }
   } catch {
     // fall through to a fresh registry
   }
   return { schema_version: 1, bindings: [] };
+}
+
+function validBinding(value: unknown): value is PackBinding {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const binding = value as Record<string, unknown>;
+  return (
+    typeof binding.instance_id === "string" && binding.instance_id.length > 0 &&
+    typeof binding.pack_id === "string" && SLUG_RE.test(binding.pack_id) &&
+    typeof binding.pack_version === "string" && binding.pack_version.length > 0 &&
+    typeof binding.bound_at === "string" && Number.isFinite(Date.parse(binding.bound_at)) &&
+    (binding.released_at === undefined ||
+      (typeof binding.released_at === "string" && Number.isFinite(Date.parse(binding.released_at))))
+  );
 }
 
 /** Read-only operational rollup for the roster lab. */
@@ -366,7 +415,10 @@ export function summarizePackRoster(
     .filter((packId) => !healthyAssigned.has(packId));
   const historicalUsesByPack: Record<string, number> = {};
   for (const binding of registry.bindings) {
-    historicalUsesByPack[binding.pack_id] = (historicalUsesByPack[binding.pack_id] ?? 0) + 1;
+    const prior = Object.hasOwn(historicalUsesByPack, binding.pack_id)
+      ? historicalUsesByPack[binding.pack_id]!
+      : 0;
+    historicalUsesByPack[binding.pack_id] = prior + 1;
   }
 
   return {
@@ -570,7 +622,7 @@ export function resolvePackAsset(
   const pack = local.ok ? local.pack : bundled?.ok ? bundled.pack : null;
   if (!pack) return null;
   const file = resolveExpressionFile(pack, expression);
-  if (!file) return null;
+  if (!file || !servablePackFile(pack.dir, file)) return null;
   const filePath = path.join(pack.dir, file);
   const ext = path.extname(file).toLowerCase();
   const contentType =
@@ -586,9 +638,11 @@ export function resolvePackAsset(
 }
 
 function resolveExpressionFile(pack: CodecPack, expression: string): string | undefined {
-  const fallback = EXPRESSION_FALLBACK[expression as CodecExpression];
+  const fallback = Object.hasOwn(EXPRESSION_FALLBACK, expression)
+    ? EXPRESSION_FALLBACK[expression as CodecExpression]
+    : undefined;
   return (
-    pack.expressions[expression] ??
+    (Object.hasOwn(pack.expressions, expression) ? pack.expressions[expression] : undefined) ??
     (fallback ? pack.expressions[fallback] : undefined) ??
     pack.expressions.neutral
   );

@@ -112,6 +112,70 @@ describe("projectActivityChannels", () => {
     expect(channels?.operation).toBeUndefined();
   });
 
+  test("a child completing does not close the parent's open operation", () => {
+    const requested = event({
+      event_type: "tool.requested",
+      ts: at(40),
+      span_id: "parent-operation",
+      tool_name: "Read",
+      category: "research",
+    });
+    const completedChild = event({
+      event_type: "agent.completed",
+      child_generation_id: "child-generation",
+      ts: at(10),
+    });
+    const channels = projectActivityChannels([requested, completedChild], NOW).get("inst-a");
+
+    expect(channels?.operation).toMatchObject({
+      value: { tool_name: "Read", state: "active", elapsed_ms: 40_000 },
+      evidence_event_ids: [requested.event_id],
+    });
+    const closed = projectActivityChannels(
+      [requested, completedChild, event({ event_type: "session.ended", ts: at(5) })],
+      NOW,
+    ).get("inst-a");
+    expect(closed?.operation).toBeUndefined();
+  });
+
+  test("child completion preserves parent compaction and write-claim contention", () => {
+    const target = fingerprint("parent-target");
+    const compaction = event({ event_type: "context.compaction_started", ts: at(40) });
+    const channels = projectActivityChannels(
+      [
+        compaction,
+        event({
+          event_type: "coord.claim_changed",
+          ts: at(30),
+          claim_operation: "acquired",
+          claim_access: "write",
+          target_fingerprint: target,
+        }),
+        event({
+          event_type: "agent.completed",
+          child_generation_id: "child-generation",
+          ts: at(20),
+        }),
+        event({
+          instance_id: "inst-b",
+          event_type: "coord.claim_changed",
+          ts: at(10),
+          claim_operation: "acquired",
+          claim_access: "write",
+          target_fingerprint: target,
+        }),
+      ],
+      NOW,
+    );
+
+    expect(channels.get("inst-a")?.operation).toMatchObject({
+      value: { label: "Compacting context", state: "active" },
+      evidence_event_ids: [compaction.event_id],
+    });
+    expect(channels.get("inst-a")?.friction?.value).toBe("target-contention");
+    expect(channels.get("inst-b")?.friction?.value).toBe("target-contention");
+  });
+
   test("context compaction becomes a bounded operation and closes on completion", () => {
     const started = event({
       event_type: "context.compaction_started",

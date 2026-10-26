@@ -21,7 +21,7 @@ export function listCodecStyleStudies(root = harneryDir()): CodecStyleStudy[] {
   try {
     boards = fs
       .readdirSync(boardsRoot)
-      .filter((entry) => BOARD_ID.test(entry))
+      .filter((entry) => Boolean(resolveBoardDir(entry, root)))
       .sort()
       .reverse();
   } catch {
@@ -32,7 +32,10 @@ export function listCodecStyleStudies(root = harneryDir()): CodecStyleStudy[] {
   try {
     return fs
       .readdirSync(path.join(boardsRoot, current))
-      .filter((entry) => entry.endsWith(".png") && STUDY_ID.test(entry.slice(0, -4)))
+      .filter((entry) =>
+        entry.endsWith(".png") &&
+        Boolean(resolveCodecStyleStudy(current, entry.slice(0, -4), root)),
+      )
       .sort()
       .map((entry) => {
         const studyId = entry.slice(0, -4);
@@ -53,11 +56,39 @@ export function resolveCodecStyleStudy(
   studyId: string,
   root = harneryDir(),
 ): string | undefined {
-  if (!BOARD_ID.test(boardId) || !STUDY_ID.test(studyId)) return undefined;
+  if (!STUDY_ID.test(studyId)) return undefined;
+  const boardDir = resolveBoardDir(boardId, root);
+  if (!boardDir) return undefined;
   const filePath = path.join(root, "codec", "style-boards", boardId, `${studyId}.png`);
   try {
-    return fs.statSync(filePath).isFile() ? filePath : undefined;
+    const target = fs.realpathSync(filePath);
+    return withinDirectory(boardDir, target) && fs.statSync(target).isFile()
+      ? filePath
+      : undefined;
   } catch {
     return undefined;
   }
+}
+
+function resolveBoardDir(boardId: string, root: string): string | undefined {
+  if (!BOARD_ID.test(boardId)) return undefined;
+  try {
+    const boardsRoot = fs.realpathSync(path.join(root, "codec", "style-boards"));
+    const boardDir = fs.realpathSync(path.join(boardsRoot, boardId));
+    return withinDirectory(boardsRoot, boardDir) && fs.statSync(boardDir).isDirectory()
+      ? boardDir
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function withinDirectory(directory: string, target: string): boolean {
+  const relative = path.relative(directory, target);
+  return (
+    relative !== "" &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
 }

@@ -143,7 +143,7 @@ describe("Codec comprehension study", () => {
     expect(fs.readFileSync(stored, "utf8")).not.toContain("model reply");
   });
 
-  test("rejects incomplete or repeated answers", () => {
+  test("rejects incomplete answers", () => {
     const root = fixtureRoot();
     writeCohort(root, fixtureCohort());
     expect(() =>
@@ -157,6 +157,115 @@ describe("Codec comprehension study", () => {
         root,
       ),
     ).toThrow("incomplete comprehension submission");
+  });
+
+  test("rejects repeated, unknown, or replaced-cohort answers before writing a result", () => {
+    const root = fixtureRoot();
+    const cohort = fixtureCohort();
+    writeCohort(root, cohort);
+    const firstResponse = {
+      trial_id: cohort.trials[0]!.trial_id,
+      choice: "a",
+      confidence: "high",
+      response_ms: 500,
+    };
+    const submission = {
+      schema_version: 1,
+      study_id: cohort.study_id,
+      total_duration_ms: 1_000,
+      responses: [firstResponse, firstResponse],
+    };
+
+    expect(() => storeCodecComprehensionResult(submission, root)).toThrow(
+      "unexpected comprehension response",
+    );
+    expect(() =>
+      storeCodecComprehensionResult(
+        {
+          ...submission,
+          responses: [firstResponse, { ...firstResponse, trial_id: "trial_3333333333333333" }],
+        },
+        root,
+      ),
+    ).toThrow("unexpected comprehension response");
+    writeCohort(root, { ...cohort, study_id: "study_bbbbbbbbbbbbbbbb" });
+    expect(() => storeCodecComprehensionResult(submission, root)).toThrow(
+      "comprehension study changed",
+    );
+    expect(fs.existsSync(path.join(root, "semantic", "evaluations", "results"))).toBe(false);
+  });
+
+  test("scores by trial identity when answers arrive out of order and discards extra prose", () => {
+    const root = fixtureRoot();
+    const cohort = fixtureCohort();
+    writeCohort(root, cohort);
+    const receipt = storeCodecComprehensionResult(
+      {
+        schema_version: 1,
+        study_id: cohort.study_id,
+        total_duration_ms: 1_000,
+        task: "uncontrolled task prose",
+        responses: [
+          {
+            trial_id: cohort.trials[1]!.trial_id,
+            choice: "a",
+            confidence: "high",
+            response_ms: 500,
+            explanation: "uncontrolled response prose",
+          },
+          {
+            trial_id: cohort.trials[0]!.trial_id,
+            choice: "a",
+            confidence: "low",
+            response_ms: 500,
+          },
+        ],
+      },
+      root,
+    );
+
+    expect(receipt.summary).toMatchObject({
+      semantic_preferred: 1,
+      comparison_preferred: 1,
+      semantic_share_excluding_ties: 0.5,
+      by_expression: {
+        "wrapping-up": { trials: 1, semantic_preferred: 1, comparison_preferred: 0, same: 0 },
+        verifying: { trials: 1, semantic_preferred: 0, comparison_preferred: 1, same: 0 },
+      },
+    });
+    const stored = fs.readFileSync(
+      path.join(root, "semantic", "evaluations", "results", `${receipt.receipt_id}.json`),
+      "utf8",
+    );
+    expect(stored).not.toContain("uncontrolled");
+    expect(JSON.parse(stored)).toEqual(receipt);
+  });
+
+  test("reports no directional preference when every trial is a tie", () => {
+    const root = fixtureRoot();
+    const cohort = fixtureCohort();
+    writeCohort(root, cohort);
+    const receipt = storeCodecComprehensionResult(
+      {
+        schema_version: 1,
+        study_id: cohort.study_id,
+        total_duration_ms: 0,
+        responses: cohort.trials.map((trial) => ({
+          trial_id: trial.trial_id,
+          choice: "same",
+          confidence: "low",
+          response_ms: 0,
+        })),
+      },
+      root,
+    );
+
+    expect(receipt.summary).toMatchObject({
+      semantic_preferred: 0,
+      comparison_preferred: 0,
+      same: 2,
+      semantic_share_excluding_ties: null,
+    });
   });
 });
 

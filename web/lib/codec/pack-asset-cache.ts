@@ -81,9 +81,12 @@ async function readPackAsset(
   };
 }
 
-export function packAssetHeaders(asset: CachedPackAsset): Record<string, string> {
+export function packAssetHeaders(
+  asset: CachedPackAsset,
+  immutable = true,
+): Record<string, string> {
   return {
-    "cache-control": "public, max-age=31536000, immutable",
+    "cache-control": immutable ? "public, max-age=31536000, immutable" : "public, no-cache",
     "content-length": String(asset.body.byteLength),
     "content-type": asset.contentType,
     etag: asset.etag,
@@ -95,7 +98,10 @@ export function packAssetHeaders(asset: CachedPackAsset): Record<string, string>
 export function packAssetNotModified(request: Request, asset: CachedPackAsset): boolean {
   const ifNoneMatch = request.headers.get("if-none-match");
   if (ifNoneMatch) {
-    return ifNoneMatch.split(",").some((tag) => tag.trim() === asset.etag || tag.trim() === "*");
+    return ifNoneMatch.split(",").some((tag) => {
+      const validator = tag.trim();
+      return validator === "*" || validator.replace(/^W\//, "") === asset.etag;
+    });
   }
 
   const ifModifiedSince = request.headers.get("if-modified-since");

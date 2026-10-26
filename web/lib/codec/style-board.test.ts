@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,6 +18,8 @@ describe("Codec style-board assets", () => {
       writeFileSync(path.join(root, "codec", "style-boards", board, "graphic-cel.png"), "png");
     }
     writeFileSync(path.join(root, "codec", "style-boards", "2026-08-21", "notes.txt"), "no");
+    writeFileSync(path.join(root, "codec", "style-boards", "2026-08-22"), "not a board");
+    mkdirSync(path.join(root, "codec", "style-boards", "2026-08-21", "not-a-study.png"));
     expect(listCodecStyleStudies(root)).toEqual([
       {
         board_id: "2026-08-21",
@@ -37,5 +39,21 @@ describe("Codec style-board assets", () => {
     expect(resolveCodecStyleStudy("../secret", "kinetic-shonen", root)).toBeUndefined();
     expect(resolveCodecStyleStudy("2026-08-21", "../secret", root)).toBeUndefined();
     expect(resolveCodecStyleStudy("2026-08-21", "missing", root)).toBeUndefined();
+  });
+
+  test("rejects symlinks outside a board and skips boards outside the collection", () => {
+    const boardsRoot = path.join(root, "codec", "style-boards");
+    const boardDir = path.join(boardsRoot, "2026-08-21");
+    const outsideDir = path.join(root, "outside");
+    mkdirSync(boardDir, { recursive: true });
+    mkdirSync(outsideDir);
+    writeFileSync(path.join(boardDir, "valid.png"), "png");
+    writeFileSync(path.join(outsideDir, "outside.png"), "private");
+    symlinkSync(path.join(outsideDir, "outside.png"), path.join(boardDir, "outside.png"));
+    symlinkSync(outsideDir, path.join(boardsRoot, "2026-08-22"), "dir");
+
+    expect(resolveCodecStyleStudy("2026-08-21", "outside", root)).toBeUndefined();
+    expect(resolveCodecStyleStudy("2026-08-22", "outside", root)).toBeUndefined();
+    expect(listCodecStyleStudies(root).map((study) => study.study_id)).toEqual(["valid"]);
   });
 });

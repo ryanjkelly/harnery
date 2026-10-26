@@ -28,12 +28,27 @@ describe("Codec pack asset cache", () => {
     expect(headers["cache-control"]).toBe("public, max-age=31536000, immutable");
     expect(headers.etag).toBe(first.etag);
     expect(headers["content-length"]).toBe(String(first.body.byteLength));
+    expect(packAssetHeaders(first, false)["cache-control"]).toBe("public, no-cache");
     expect(
       packAssetNotModified(
         new Request("http://localhost/image", { headers: { "if-none-match": first.etag } }),
         first,
       ),
     ).toBe(true);
+    expect(
+      packAssetNotModified(
+        new Request("http://localhost/image", { headers: { "if-none-match": `W/${first.etag}` } }),
+        first,
+      ),
+    ).toBe(true);
+    expect(
+      packAssetNotModified(
+        new Request("http://localhost/image", {
+          headers: { "if-none-match": '"other"', "if-modified-since": first.lastModified },
+        }),
+        first,
+      ),
+    ).toBe(false);
     expect(
       packAssetNotModified(
         new Request("http://localhost/image", {

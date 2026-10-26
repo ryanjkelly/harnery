@@ -55,7 +55,7 @@ const TARGET_EFFECT_MS: Record<Exclude<CodecEffectKind, "ping">, number> = {
 export function createCodecEffectRuntime(
   options: CodecEffectRuntimeOptions,
 ): CodecEffectRuntimeHandle {
-  const budget = new CodecEffectBudget({ maxConcurrent: options.maxConcurrent(), seenLimit: 500 });
+  const budget = new CodecEffectBudget({ maxConcurrent: options.maxConcurrent, seenLimit: 500 });
   const effectNodes = new Map<string, Set<HTMLElement>>();
   const effectTimers = new Map<string, Set<ReturnType<typeof setTimeout>>>();
   const effectAnimationFrames = new Map<string, number>();

@@ -1,7 +1,7 @@
 "use client";
 
 import { Camera, Download, RefreshCw, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AgentChip } from "@/components/AgentChip";
 import { type CodecCardAuditReport, captureCodecCards } from "@/lib/codec/card-audit";
 import type { CodecScene } from "@/lib/codec/contracts";
@@ -9,27 +9,79 @@ import type { CodecScene } from "@/lib/codec/contracts";
 const STORAGE_KEY = "harnery.codec.card-audits.v1";
 const HISTORY_LIMIT = 10;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Both persisted history and network responses are untrusted browser inputs. */
+export function isCodecCardAuditReport(value: unknown): value is CodecCardAuditReport {
+  if (!isRecord(value) || !isRecord(value.capture) || !isRecord(value.summary)) return false;
+  const capture = value.capture;
+  const authority = value.authority_read_state;
+  return (
+    typeof capture.captured_at === "string" &&
+    Number.isFinite(Date.parse(capture.captured_at)) &&
+    typeof capture.scene_generated_at === "string" &&
+    Array.isArray(capture.cards) &&
+    capture.cards.every(
+      (card) =>
+        isRecord(card) &&
+        ["instance_id", "display_name", "presence", "activity", "lifecycle", "updated_at"].every(
+          (field) => typeof card[field] === "string",
+        ) &&
+        (card.machine === undefined || typeof card.machine === "string") &&
+        (card.task === null || typeof card.task === "string") &&
+        (card.ledger_state === null || typeof card.ledger_state === "string"),
+    ) &&
+    typeof value.checked_at === "string" &&
+    isRecord(authority) &&
+    (authority.ok === true || (authority.ok === false && typeof authority.reason === "string")) &&
+    [value.summary.checked, value.summary.mismatches, value.summary.unverified].every(
+      (count) => typeof count === "number" && Number.isInteger(count) && count >= 0,
+    ) &&
+    Array.isArray(value.findings) &&
+    value.findings.every(
+      (finding) =>
+        isRecord(finding) &&
+        ["instance_id", "display_name", "field", "explanation"].every(
+          (field) => typeof finding[field] === "string",
+        ) &&
+        (finding.card === null || typeof finding.card === "string") &&
+        (finding.known === null || typeof finding.known === "string") &&
+        (finding.severity === "mismatch" || finding.severity === "unverified"),
+    )
+  );
+}
+
+export function codecCardAuditHistory(value: unknown): CodecCardAuditReport[] {
+  return Array.isArray(value) ? value.filter(isCodecCardAuditReport).slice(0, HISTORY_LIMIT) : [];
+}
+
 export function CodecCardAudit({ scene }: { scene: CodecScene }) {
   const [reports, setReports] = useState<CodecCardAuditReport[]>([]);
   const [selected, setSelected] = useState(0);
   const [open, setOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
+  const request = useRef<AbortController | null>(null);
 
   useEffect(() => {
     try {
       const saved: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
-      if (Array.isArray(saved)) {
-        setReports(
-          saved.filter((item) => item && typeof item === "object").slice(0, HISTORY_LIMIT),
-        );
-      }
+      setReports(codecCardAuditHistory(saved));
     } catch {
       // Browsers may disable storage; current comparisons still work.
     }
+    return () => {
+      request.current?.abort();
+      request.current = null;
+    };
   }, []);
 
   async function compare(): Promise<void> {
+    if (request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
     setRunning(true);
     setError("");
     const capture = captureCodecCards(scene, new Date().toISOString());
@@ -38,9 +90,12 @@ export function CodecCardAudit({ scene }: { scene: CodecScene }) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(capture),
+        signal: controller.signal,
       });
       if (!response.ok) throw new Error(`Comparison failed (${response.status})`);
-      const report = (await response.json()) as CodecCardAuditReport;
+      const report: unknown = await response.json();
+      if (controller.signal.aborted) return;
+      if (!isCodecCardAuditReport(report)) throw new Error("Comparison returned an invalid report");
       const next = [report, ...reports].slice(0, HISTORY_LIMIT);
       setReports(next);
       setSelected(0);
@@ -51,10 +106,14 @@ export function CodecCardAudit({ scene }: { scene: CodecScene }) {
         // A downloaded report remains available even when storage is full.
       }
     } catch (failure) {
+      if (controller.signal.aborted) return;
       setError(failure instanceof Error ? failure.message : "Comparison failed");
       setOpen(true);
     } finally {
-      setRunning(false);
+      if (request.current === controller) {
+        request.current = null;
+        setRunning(false);
+      }
     }
   }
 

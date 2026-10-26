@@ -86,7 +86,9 @@ function RuntimeTooltip({
         : field === "effort" || field === "speed"
           ? runtime?.harness === "cursor" && value
             ? `Explicitly encoded in the canonical Cursor model id ${runtime.model ?? ""}.`
-            : `The ${field} setting was not reported by this adapter.`
+            : value
+              ? `The adapter reported this ${field} setting.`
+              : `The ${field} setting was not reported by this adapter.`
           : "";
 
   return (

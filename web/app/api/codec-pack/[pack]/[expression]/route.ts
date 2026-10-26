@@ -24,10 +24,11 @@ export async function GET(
   const asset = resolvePackAsset(pack, expression);
   if (!asset) return new Response("not found", { status: 404 });
   try {
+    const searchParams = new URL(request.url).searchParams;
     const variant =
-      new URL(request.url).searchParams.get("variant") === "roster-v1" ? "roster" : "source";
+      searchParams.get("variant") === "roster-v1" ? "roster" : "source";
     const cached = await loadCachedPackAsset(asset, variant);
-    const headers = packAssetHeaders(cached);
+    const headers = packAssetHeaders(cached, searchParams.get("v") === asset.packVersion);
     if (packAssetNotModified(request, cached)) {
       return new Response(null, { status: 304, headers });
     }

@@ -113,6 +113,7 @@ export function projectCodecTimings(
         (event) =>
           event.event_type === "turn.completed" &&
           eventTime(event) >= turnStartedAt &&
+          eventTime(event) <= measuredAt &&
           (!lastTurnStarted.turn_id || !event.turn_id || event.turn_id === lastTurnStarted.turn_id),
       );
       const turnEndedAt = turnTerminal ? eventTime(turnTerminal) : measuredAt;

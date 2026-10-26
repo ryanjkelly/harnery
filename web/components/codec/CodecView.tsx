@@ -43,7 +43,7 @@ import {
   Zap,
 } from "lucide-react";
 import Link from "next/link";
-import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentChip } from "@/components/AgentChip";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -264,34 +264,34 @@ export function CodecView({
     }
   };
 
-  const refetch = useCallback(() => {
-    void fetch("/api/codec-scene")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((next: unknown) => {
-        // Polling recovery is snapshot semantics: no replay of missed cues.
-        const scene = parseCodecScene(next);
-        if (scene) ingestScene(scene, false);
-      })
-      .catch(() => {
-        // polling failure; the status chip already says we're degraded
-      });
-  }, [ingestScene]);
+  const snapshotLoader = useMemo(
+    () => createCodecSnapshotLoader((next) => ingestScene(next, false), () => setFeedFault(true)),
+    [ingestScene],
+  );
+
+  useEffect(() => () => snapshotLoader.cancel(), [snapshotLoader, mode]);
 
   useLiveSignal({
     streamUrl: "/api/codec-stream",
     events: {
       snapshot: (ev) => {
         const next = parseScene(ev);
-        if (next) ingestScene(next, false);
+        if (next) {
+          snapshotLoader.cancel();
+          ingestScene(next, false);
+        }
       },
       scene: (ev) => {
         const next = parseScene(ev);
-        if (next) ingestScene(next, true);
+        if (next) {
+          snapshotLoader.cancel();
+          ingestScene(next, true);
+        }
       },
       heartbeat: () => setLastSignalAt(new Date().toISOString()),
       stale: () => setFeedFault(true),
     },
-    onFallbackChange: refetch,
+    onFallbackChange: snapshotLoader.load,
     fetchOnFallbackStart: false, // the page server-renders a complete scene
     enabled: mode === "live",
   });
@@ -327,10 +327,16 @@ export function CodecView({
     return () => clearInterval(timer);
   }, [mode, replayPhases.length, replayPlaying]);
 
-  const current = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "online"));
-  const stale = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "unknown"));
-  const ended = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "offline"));
-  const panels = [...current, ...stale, ...ended];
+  const { current, stale, ended, panels } = useMemo(() => {
+    const current = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "online"));
+    const stale = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "unknown"));
+    const ended = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "offline"));
+    return { current, stale, ended, panels: [...current, ...stale, ...ended] };
+  }, [scene.panels]);
+  const panelNames = useMemo(
+    () => new Map(scene.panels.map((panel) => [panel.instance_id, panel.identity.display_name])),
+    [scene.panels],
+  );
   const remotePanelOpen = showRemotePanel && scene.remote_machines.length > 0;
   const teamPanelOpen = showTeamPanel && panels.length > 0;
 
@@ -394,8 +400,7 @@ export function CodecView({
       : { silenceMs: 0, stale: false };
   const parentNameFor = (panel: CodecPanelScene) =>
     panel.parent_instance_id
-      ? scene.panels.find((p) => p.instance_id === panel.parent_instance_id?.value)?.identity
-          .display_name
+      ? panelNames.get(panel.parent_instance_id.value)
       : undefined;
   const mobileLayout = layout.composition === "mobile-deck";
   const balancedTwoRows = layout.composition === "balanced-two-row";
@@ -979,6 +984,48 @@ function parseCodecScene(value: unknown): CodecScene | null {
   if (typeof value !== "object" || value === null) return null;
   const candidate = value as { schema_version?: unknown };
   return candidate.schema_version === CODEC_SCHEMA_VERSION ? (value as CodecScene) : null;
+}
+
+/** Polling is a snapshot recovery path; a later request or stream scene wins. */
+export function createCodecSnapshotLoader(
+  onScene: (scene: CodecScene) => void,
+  onFailure: () => void,
+  fetchSnapshot: (
+    url: string,
+    options: { cache: "no-store"; signal: AbortSignal },
+  ) => Promise<Pick<Response, "ok" | "json">> = (url, options) => fetch(url, options),
+) {
+  let active: AbortController | null = null;
+
+  const cancel = () => {
+    active?.abort();
+    active = null;
+  };
+
+  const load = async (): Promise<void> => {
+    cancel();
+    const controller = new AbortController();
+    active = controller;
+    try {
+      const response = await fetchSnapshot("/api/codec-scene", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("Codec snapshot request failed");
+      const next: unknown = await response.json();
+      // Aborting fetch is best effort; a response may already be decoding.
+      if (active !== controller || controller.signal.aborted) return;
+      const scene = parseCodecScene(next);
+      if (!scene) throw new Error("Codec snapshot returned an unsupported scene");
+      onScene(scene);
+    } catch {
+      if (active === controller && !controller.signal.aborted) onFailure();
+    } finally {
+      if (active === controller) active = null;
+    }
+  };
+
+  return { load, cancel };
 }
 
 /** Relationship line colors: violet = shared coordination (delegation), and

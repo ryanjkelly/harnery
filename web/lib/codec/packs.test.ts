@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -11,6 +11,7 @@ import {
   EXPRESSION_FALLBACK,
   EXTENDED_EXPRESSIONS,
   listPacks,
+  readPackRegistry,
   REQUIRED_EXPRESSIONS,
   ROSTER_EXPRESSIONS,
   resolvePackAsset,
@@ -66,6 +67,41 @@ beforeEach(() => {
 });
 
 describe("validatePackDir / listPacks", () => {
+  test("rejects non-object manifests without taking down the roster", () => {
+    const dir = makePack("aurora");
+    for (const malformed of ["null", "[]", "1", '"text"']) {
+      writeFileSync(path.join(dir, "pack.json"), malformed);
+      expect(validatePackDir(dir).ok).toBe(false);
+      expect(listPacks(root)).toEqual([]);
+    }
+  });
+
+  test("invalidates a complete cached pack after an image disappears", () => {
+    const dir = makePack("aurora");
+    expect(validatePackDir(dir).ok).toBe(true);
+    unlinkSync(path.join(dir, "alert.webp"));
+    expect(validatePackDir(dir).ok).toBe(false);
+    expect(resolvePackAsset("aurora", "neutral", root)).toBeNull();
+    writeFileSync(path.join(dir, "alert.webp"), "restored");
+    expect(validatePackDir(dir).ok).toBe(true);
+  });
+
+  test("rejects directories and files outside the pack as expression assets", () => {
+    const dir = makePack("aurora");
+    const image = path.join(dir, "alert.webp");
+    unlinkSync(image);
+    mkdirSync(image);
+    expect(validatePackDir(dir).ok).toBe(false);
+
+    const otherDir = makePack("basalt");
+    unlinkSync(path.join(otherDir, "alert.webp"));
+    const outside = path.join(root, "outside.webp");
+    writeFileSync(outside, "outside");
+    symlinkSync(outside, path.join(otherDir, "alert.webp"));
+    expect(validatePackDir(otherDir).ok).toBe(false);
+    expect(resolvePackAsset("basalt", "alert", root)).toBeNull();
+  });
+
   test("a complete pack validates; an incomplete one is excluded from the roster", () => {
     makePack("aurora");
     makePack("basalt", { missing: ["alert"] });
@@ -153,6 +189,20 @@ describe("tracked default roster", () => {
 });
 
 describe("allocateCharacters", () => {
+  test("ignores malformed registry entries while preserving valid history", () => {
+    makePack("aurora");
+    const valid = { instance_id: "i-1", pack_id: "aurora", pack_version: "1", bound_at: NOW };
+    writeFileSync(
+      path.join(root, "codec", "registry.json"),
+      JSON.stringify({
+        schema_version: 1,
+        bindings: [null, 1, {}, { ...valid, pack_id: "../bad" }, valid],
+      }),
+    );
+    expect(readPackRegistry(root).bindings).toEqual([valid]);
+    expect(allocateCharacters([target("i-1")], NOW, root).get("i-1")?.pack_id).toBe("aurora");
+  });
+
   test("unique assignment, stability, deterministic overflow, release and reuse", () => {
     makePack("aurora");
     makePack("basalt");
@@ -325,6 +375,25 @@ describe("summarizePackRoster", () => {
 });
 
 describe("resolvePackAsset", () => {
+  test("rechecks expression symlinks when their nested target changes", () => {
+    const dir = makePack("aurora");
+    const nestedDir = path.join(dir, "images");
+    mkdirSync(nestedDir);
+    const nestedImage = path.join(nestedDir, "alert.webp");
+    writeFileSync(nestedImage, "img");
+    unlinkSync(path.join(dir, "alert.webp"));
+    symlinkSync(nestedImage, path.join(dir, "alert.webp"));
+    expect(resolvePackAsset("aurora", "alert", root)).not.toBeNull();
+
+    const outside = path.join(root, "outside.webp");
+    writeFileSync(outside, "outside");
+    unlinkSync(nestedImage);
+    symlinkSync(outside, nestedImage);
+    expect(validatePackDir(dir).ok).toBe(false);
+    expect(listPacks(root)).toEqual([]);
+    expect(resolvePackAsset("aurora", "alert", root)).toBeNull();
+  });
+
   test("serves declared files only, falls back to neutral, rejects bad slugs", () => {
     makePack("aurora");
     const ok = resolvePackAsset("aurora", "alert", root);
@@ -334,6 +403,8 @@ describe("resolvePackAsset", () => {
     // Unknown-but-slug-valid expression falls back to neutral.
     const fallback = resolvePackAsset("aurora", "smug", root);
     expect(fallback?.filePath.endsWith(`${path.sep}neutral.webp`)).toBe(true);
+    expect(resolvePackAsset("aurora", "constructor", root)?.filePath)
+      .toBe(fallback?.filePath);
 
     expect(resolvePackAsset("../etc", "neutral", root)).toBeNull();
     expect(resolvePackAsset("aurora", "..%2f..", root)).toBeNull();

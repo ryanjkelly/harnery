@@ -13,6 +13,7 @@ import {
   type CodecTelemetry,
   type Presented,
 } from "./contracts";
+import type { CodecEffectKind } from "./effects/contracts";
 
 export const DEBUG_EXPRESSIONS: readonly CodecExpression[] = [
   "neutral",
@@ -76,6 +77,18 @@ export interface CodecDebugPing {
   sequence: number;
   fromId: string;
   toId: string;
+}
+
+export function canPreviewCodecDebugEffect(
+  kind: CodecEffectKind,
+  visibleIds: ReadonlySet<string>,
+  fromId: string,
+  targetId: string,
+): boolean {
+  return (
+    visibleIds.has(targetId) &&
+    (kind !== "ping" || (visibleIds.has(fromId) && fromId !== targetId))
+  );
 }
 
 interface BuildCodecDebugSceneOptions {
