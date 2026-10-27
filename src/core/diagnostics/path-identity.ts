@@ -2,6 +2,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { PERSONAL_DIR_MODE, PERSONAL_FILE_MODE } from "../storage/modes.ts";
 
 const HOME_PATH =
   /(?:[A-Za-z]:[\\/]Users[\\/](?:[^\\/\r\n\0:"<>|]+(?=[\\/])|[^\\/\s\0:]+)|\/home\/[^/\s\0:]+|\/Users\/[^/\s\0:]+)/g;
@@ -37,9 +38,9 @@ function identityKey(): Buffer {
   if (!key) {
     const fresh = randomBytes(32);
     try {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-      writeFileSync(path, `${fresh.toString("hex")}\n`, { flag: "wx", mode: 0o600 });
-      chmodSync(path, 0o600);
+      mkdirSync(dirname(path), { recursive: true, mode: PERSONAL_DIR_MODE });
+      writeFileSync(path, `${fresh.toString("hex")}\n`, { flag: "wx", mode: PERSONAL_FILE_MODE });
+      chmodSync(path, PERSONAL_FILE_MODE);
       key = fresh;
     } catch {
       // A concurrent writer won the race, or state is unwritable. Prefer the

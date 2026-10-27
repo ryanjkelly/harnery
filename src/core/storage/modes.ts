@@ -26,6 +26,12 @@ export function stateSharing(): "private" | "group" {
   return resolved;
 }
 
+/** Directory mode for personal state in the user's home, which never follows project sharing. */
+export const PERSONAL_DIR_MODE = 0o700;
+
+/** File mode for personal state in the user's home, such as a per-install secret key. */
+export const PERSONAL_FILE_MODE = 0o600;
+
 export function resetStorageSharing(): void {
   resolved = undefined;
 }
