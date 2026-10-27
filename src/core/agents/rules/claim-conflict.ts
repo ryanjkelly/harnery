@@ -18,7 +18,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { adapterFromPlatform as sharedAdapterFromPlatform } from "../../adapter.ts";
-import { recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
+import { resolveBinName } from "../../config.ts";
+import { writeProducerDiagnosticV3 } from "../../events/v3/producers/intake.ts";
+import { LiveCoordinationAuthorityV3Error, recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 
 const FRESHNESS_SECS = 600;
@@ -82,8 +84,15 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
     // prune the claim from their heartbeat and allow the edit. Skips when the
     // file doesn't exist (intent-to-create claim); that surface IS load-bearing.
     if (isFileCommittedClean(coordRoot, req.path)) {
-      if (!releaseClaimThroughLedger(coordRoot, conflict.instance_id, req.path, req)) {
-        return authorityUnavailable(req.path, "release the stale claim on");
+      const refused = releaseClaimThroughLedger(coordRoot, conflict.instance_id, req.path, req);
+      if (refused) {
+        return authorityUnavailable(
+          coordRoot,
+          req,
+          req.path,
+          "release the stale claim on",
+          refused,
+        );
       }
       // Fall through to ordering check + allow.
     } else {
@@ -146,8 +155,9 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
       // Every blocker is a finished (committed-clean) edit: prune them so they
       // stop constraining future acquisitions, then fall through to allow.
       for (const p of blockers) {
-        if (!releaseClaimThroughLedger(coordRoot, req.instance_id, p, req)) {
-          return authorityUnavailable(p, "release the completed claim on");
+        const refused = releaseClaimThroughLedger(coordRoot, req.instance_id, p, req);
+        if (refused) {
+          return authorityUnavailable(coordRoot, req, p, "release the completed claim on", refused);
         }
       }
     }
@@ -156,9 +166,8 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
   // Acquire the claim: atomic check-and-set. Adds req.path to my
   // files_touched if not already present.
   if (req.mode !== "read") {
-    if (!acquireClaimThroughLedger(coordRoot, req)) {
-      return authorityUnavailable(req.path, "acquire");
-    }
+    const refused = acquireClaimThroughLedger(coordRoot, req);
+    if (refused) return authorityUnavailable(coordRoot, req, req.path, "acquire", refused);
   }
 
   return { allow: true, exit_code: 0, rule: "claim.pass" };
@@ -242,7 +251,8 @@ function isFileCommittedClean(coordRoot: string, relPath: string): boolean {
   }
 }
 
-function acquireClaimThroughLedger(coordRoot: string, req: ClaimRequest): boolean {
+/** Returns null when the ledger recorded the claim, else the refusal reason. */
+function acquireClaimThroughLedger(coordRoot: string, req: ClaimRequest): string | null {
   const owner = readPeers(coordRoot).find((peer) => peer.instance_id === req.instance_id);
   try {
     recordLiveClaimChangeV3({
@@ -254,9 +264,9 @@ function acquireClaimThroughLedger(coordRoot: string, req: ClaimRequest): boolea
       path: req.path,
       access: "write",
     });
-    return true;
-  } catch {
-    return false;
+    return null;
+  } catch (error) {
+    return refusalReason(error);
   }
 }
 
@@ -265,7 +275,7 @@ function releaseClaimThroughLedger(
   subjectInstanceId: string,
   relPath: string,
   actor: ClaimRequest,
-): boolean {
+): string | null {
   const owner = readPeers(coordRoot).find((peer) => peer.instance_id === actor.instance_id);
   try {
     recordLiveClaimChangeV3({
@@ -278,17 +288,39 @@ function releaseClaimThroughLedger(
       path: relPath,
       access: "write",
     });
-    return true;
-  } catch {
-    return false;
+    return null;
+  } catch (error) {
+    return refusalReason(error);
   }
 }
 
-function authorityUnavailable(path: string, operation: string): VerdictResult {
+function refusalReason(error: unknown): string {
+  if (error instanceof LiveCoordinationAuthorityV3Error) return error.reason;
+  return error instanceof Error ? error.message : String(error);
+}
+
+function authorityUnavailable(
+  coordRoot: string,
+  req: ClaimRequest,
+  path: string,
+  operation: string,
+  refusal: string,
+): VerdictResult {
+  // The ledger's own reason is the only evidence of why a healthy-looking
+  // session cannot claim; a generic message sent agents to diagnose the wrong
+  // layer, so keep the reason in the verdict and in a durable diagnostic.
+  writeProducerDiagnosticV3(coordRoot, "claim_authority_refused", {
+    instance_id: req.instance_id,
+    operation,
+    reason: refusal,
+  });
   return {
     allow: false,
     exit_code: 2,
     rule: "claim.authority_unavailable",
-    reason: `Cannot safely ${operation} ${path}; V3 authority is unavailable.`,
+    reason:
+      `Cannot safely ${operation} ${path}; the coordination ledger refused the claim ` +
+      `(${refusal}). Run \`${resolveBinName(coordRoot)} agents health\` and retry; if health ` +
+      "is safe, the refusal reason above names the session state that blocked it.",
   };
 }

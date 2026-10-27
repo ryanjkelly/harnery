@@ -60,6 +60,21 @@ describe("evaluateClaim on canonical V3 authority", () => {
     expect(verdict("src/a-lower.ts")).toMatchObject({ allow: true, rule: "claim.pass" });
     expect(readLiveCoordinationRow(root, "self")?.files_touched).toEqual(["src/a-lower.ts"]);
   });
+
+  test("a Claude Code session with no open turn still acquires its claim", () => {
+    // A turn started by a background-task notification may have no prompt
+    // hook; claims attach to the session span and must not need a turn.
+    seedV3Session(root, "self", { name: "Maya", adapter: "claude-code" });
+    expect(verdict("docs/x.md")).toMatchObject({ allow: true, rule: "claim.pass" });
+  });
+
+  test("a ledger refusal names its reason instead of a generic authority error", () => {
+    const result = verdict("docs/x.md");
+    expect(result).toMatchObject({ allow: false, rule: "claim.authority_unavailable" });
+    expect(result.reason).toMatch(/refused the claim \(.+\)/);
+    expect(result.reason).not.toContain("V3 authority is unavailable");
+    expect(result.reason).toContain("agents health");
+  });
 });
 
 function verdict(path: string, mode: "read" | "write" = "write") {
