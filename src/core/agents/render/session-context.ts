@@ -482,4 +482,3 @@ export function formatPendingCouncils(coordRoot: string, agentName: string): str
   }
   return `Councils waiting on your input (${pending.length} open): ${list}. Run \`${bin} agents council list --mine\` to see all of them, then \`${bin} agents council show <id>\` for any brief.`;
 }
-
