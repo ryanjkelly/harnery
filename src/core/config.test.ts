@@ -20,6 +20,7 @@ import {
   logStorageConfigSource,
   MAX_HOST_PROMPT_REMINDER_CHARS,
   pinnedBinName,
+  readAdmissionConfig,
   resolveBinName,
   sessionFinalizationConfig,
   stripJsonComments,
@@ -680,6 +681,50 @@ describe("codexWindowsBridgeConfig", () => {
       const result = codexWindowsBridgeConfig(r);
       expect(result.entryPoint).toBeNull();
       expect(result.error).toContain("hooks.codexWindowsBridge.entryPoint");
+    }
+  });
+});
+
+describe("readAdmissionConfig", () => {
+  test("undefined without an admission block", () => {
+    const root = makeRoot("{}");
+    try {
+      expect(readAdmissionConfig(root)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reads resources and guard, dropping malformed values one by one", () => {
+    const root = makeRoot(`{
+      // comments are fine
+      "admission": {
+        "resources": {
+          "build": {
+            "capacity": 2,
+            "timeout_minutes": 30,
+            "defer_on_pressure": { "psi_full_avg10": 40, "max_wait_seconds": 300 }
+          },
+          "media": { "capacity": 0, "timeout_minutes": 1.5, "defer_on_pressure": { "psi_full_avg10": 40 } },
+          "bad": "nope"
+        },
+        "guard": { "resource": "build" }
+      }
+    }`);
+    try {
+      expect(readAdmissionConfig(root)).toEqual({
+        resources: {
+          build: {
+            capacity: 2,
+            timeout_minutes: 30,
+            defer_on_pressure: { psi_full_avg10: 40, max_wait_seconds: 300 },
+          },
+          media: {},
+        },
+        guard: { resource: "build" },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

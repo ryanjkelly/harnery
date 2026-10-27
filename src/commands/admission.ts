@@ -15,7 +15,7 @@ import { closeSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { type Command, Option } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { resolveBinName } from "../core/config.ts";
+import { readAdmissionConfig, resolveBinName } from "../core/config.ts";
 import {
   type AdmissionEntry,
   type AdmissionStatus,
@@ -24,6 +24,7 @@ import {
   admissionBaseDir,
   admissionStatus,
   listAdmissionResources,
+  waitForMemoryPressure,
 } from "../lib/admission.ts";
 import {
   type AdmissionHistoryGroup,
@@ -101,6 +102,54 @@ const DEFAULT_JOBS_LIMIT = 20;
  */
 export function jobsBaseDir(): string {
   return coordEnv("JOBS_DIR") ?? `${admissionBaseDir()}-jobs`;
+}
+
+/**
+ * Resources this process tree already holds, set on every child that
+ * `admission run` starts. A nested run on one of them runs directly.
+ */
+const HELD_ENV = "HARNERY_ADMISSION_HELD";
+
+function heldResources(): string[] {
+  return (coordEnv("ADMISSION_HELD") ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+/** Run a command with inherited stdio and report how it ended. Never throws. */
+async function runChild(
+  emit: EmitContext,
+  commandArgs: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<AdmissionReleaseResult> {
+  const [executable, ...childArgs] = commandArgs;
+  try {
+    const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolvePromise, rejectPromise) => {
+        const child = spawn(executable as string, childArgs, {
+          stdio: "inherit",
+          shell: false,
+          env,
+        });
+        child.on("error", rejectPromise);
+        child.on("exit", (code, signal) => resolvePromise({ code, signal }));
+      },
+    );
+    if (outcome.signal !== null) {
+      emit.error({
+        code: "admission_child_signal",
+        message: `${executable} was terminated by signal ${outcome.signal}`,
+      });
+    }
+    return { exitCode: outcome.code, signal: outcome.signal };
+  } catch (err: unknown) {
+    emit.error({
+      code: "admission_spawn_error",
+      message: `cannot run ${executable}: ${describeError(err)}`,
+    });
+    return { exitCode: 1 };
+  }
 }
 
 /** Parse "30m", "24h", or "7d" into milliseconds; undefined means invalid. */
@@ -306,7 +355,8 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
         "launch failure. The job's own outcome comes from admission wait.",
     )
     .action(async (commandArgs: string[], opts: AdmissionRunOpts) => {
-      const capacity = parseBoundedInt(opts.capacity, 1, 1, 32);
+      const resourceConfig = readAdmissionConfig()?.resources[opts.resource];
+      const capacity = parseBoundedInt(opts.capacity, resourceConfig?.capacity ?? 1, 1, 32);
       if (capacity === undefined) {
         emit.error({
           code: "admission_usage",
@@ -315,7 +365,12 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
         process.exitCode = 1;
         return;
       }
-      const timeoutMinutes = parseBoundedInt(opts.timeout, 60, 1, 1440);
+      const timeoutMinutes = parseBoundedInt(
+        opts.timeout,
+        resourceConfig?.timeout_minutes ?? 60,
+        1,
+        1440,
+      );
       if (timeoutMinutes === undefined) {
         emit.error({
           code: "admission_usage",
@@ -329,6 +384,16 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
         opts.label ??
         (joined.length > LABEL_MAX_CHARS ? `${joined.slice(0, LABEL_MAX_CHARS - 3)}...` : joined);
 
+      // A nested run on a resource this process tree already holds would wait
+      // on its own parent forever, and HARNERY_ADMISSION_SKIP=1 opts one
+      // command out on purpose. Both run the command directly.
+      const held = heldResources();
+      if (coordEnv("ADMISSION_SKIP") === "1" || held.includes(opts.resource)) {
+        const result = await runChild(emit, commandArgs, process.env);
+        process.exitCode = result.exitCode ?? 1;
+        return;
+      }
+
       if (opts.detach) {
         launchDetachedJob(emit, {
           commandArgs,
@@ -341,6 +406,22 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
         return;
       }
 
+      let pressureWaitMs = 0;
+      const pressure = resourceConfig?.defer_on_pressure;
+      if (pressure) {
+        pressureWaitMs = await waitForMemoryPressure({
+          threshold: pressure.psi_full_avg10,
+          maxWaitMs: pressure.max_wait_seconds * 1000,
+          onWait: (event) =>
+            emit.log(
+              event.gaveUp
+                ? `memory pressure still ${event.pressure} after ${formatJobAge(event.waitedMs)}; starting anyway: ${label}`
+                : `memory pressure ${event.pressure} > ${pressure.psi_full_avg10}; waiting before: ${label}`,
+              "info",
+            ),
+        });
+      }
+
       const dir = admissionBaseDir();
       let lastWaitMessage = "";
       let handle: Awaited<ReturnType<typeof acquireAdmission>>;
@@ -350,6 +431,7 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
           {
             label,
             timeoutMs: timeoutMinutes * 60_000,
+            ...(pressureWaitMs > 0 ? { pressureWaitMs } : {}),
             onWait: (info) => {
               const holders = info.holders.map((holder) => holder.label).join(", ") || "none";
               const message =
@@ -375,38 +457,14 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
         throw err;
       }
 
-      const [executable, ...childArgs] = commandArgs;
-      const result: AdmissionReleaseResult = {};
+      const childEnv = {
+        ...process.env,
+        [HELD_ENV]: [...held, opts.resource].join(","),
+      };
+      let result: AdmissionReleaseResult = {};
       try {
-        const outcome = await new Promise<{
-          code: number | null;
-          signal: NodeJS.Signals | null;
-        }>((resolvePromise, rejectPromise) => {
-          const child = spawn(executable as string, childArgs, {
-            stdio: "inherit",
-            shell: false,
-          });
-          child.on("error", rejectPromise);
-          child.on("exit", (code, signal) => resolvePromise({ code, signal }));
-        });
-        result.exitCode = outcome.code;
-        result.signal = outcome.signal;
-        if (outcome.signal !== null) {
-          emit.error({
-            code: "admission_child_signal",
-            message: `${executable} was terminated by signal ${outcome.signal}`,
-          });
-          process.exitCode = 1;
-          return;
-        }
-        process.exitCode = outcome.code ?? 1;
-      } catch (err: unknown) {
-        emit.error({
-          code: "admission_spawn_error",
-          message: `cannot run ${executable}: ${describeError(err)}`,
-        });
-        result.exitCode = 1;
-        process.exitCode = 1;
+        result = await runChild(emit, commandArgs, childEnv);
+        process.exitCode = result.signal ? 1 : (result.exitCode ?? 1);
       } finally {
         handle.release(result);
       }

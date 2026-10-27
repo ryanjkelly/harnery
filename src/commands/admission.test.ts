@@ -63,6 +63,8 @@ const roots: string[] = [];
 let savedAdmissionDir: string | undefined;
 let savedJobsDir: string | undefined;
 let savedHistoryDir: string | undefined;
+let savedHeld: string | undefined;
+let savedSkip: string | undefined;
 let savedExitCode: typeof process.exitCode;
 let savedArgv1: string | undefined;
 
@@ -70,6 +72,11 @@ beforeEach(() => {
   savedAdmissionDir = process.env.HARNERY_ADMISSION_DIR;
   savedJobsDir = process.env.HARNERY_JOBS_DIR;
   savedHistoryDir = process.env.HARNERY_ADMISSION_HISTORY_DIR;
+  // An outer slot (the suite itself may run under one) must not leak in.
+  savedHeld = process.env.HARNERY_ADMISSION_HELD;
+  savedSkip = process.env.HARNERY_ADMISSION_SKIP;
+  delete process.env.HARNERY_ADMISSION_HELD;
+  delete process.env.HARNERY_ADMISSION_SKIP;
   savedExitCode = process.exitCode;
   savedArgv1 = process.argv[1];
 });
@@ -81,6 +88,10 @@ afterEach(() => {
   else process.env.HARNERY_JOBS_DIR = savedJobsDir;
   if (savedHistoryDir === undefined) delete process.env.HARNERY_ADMISSION_HISTORY_DIR;
   else process.env.HARNERY_ADMISSION_HISTORY_DIR = savedHistoryDir;
+  if (savedHeld === undefined) delete process.env.HARNERY_ADMISSION_HELD;
+  else process.env.HARNERY_ADMISSION_HELD = savedHeld;
+  if (savedSkip === undefined) delete process.env.HARNERY_ADMISSION_SKIP;
+  else process.env.HARNERY_ADMISSION_SKIP = savedSkip;
   if (savedArgv1 !== undefined) process.argv[1] = savedArgv1;
   process.exitCode = savedExitCode;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -186,6 +197,53 @@ describe("admission run", () => {
     );
     expect(process.exitCode ?? 0).toBe(1);
   });
+});
+
+describe("admission run passthrough", () => {
+  test("the child sees the resource it holds in HARNERY_ADMISSION_HELD", async () => {
+    fixtureBaseDir();
+    process.exitCode = undefined;
+    await buildProgram(captureEmit().emit).parseAsync(
+      [
+        "admission",
+        "run",
+        "--resource",
+        "cmd-test",
+        "--",
+        "sh",
+        "-c",
+        'test "$HARNERY_ADMISSION_HELD" = cmd-test',
+      ],
+      { from: "user" },
+    );
+    expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  for (const [name, key, value] of [
+    ["a nested run on a held resource", "HARNERY_ADMISSION_HELD", "other,cmd-test"],
+    ["HARNERY_ADMISSION_SKIP=1", "HARNERY_ADMISSION_SKIP", "1"],
+  ] as const) {
+    test(`${name} runs directly without queueing or recording`, async () => {
+      fixtureBaseDir();
+      const saved = process.env[key];
+      process.env[key] = value;
+      try {
+        process.exitCode = undefined;
+        await buildProgram(captureEmit().emit).parseAsync(
+          ["admission", "run", "--resource", "cmd-test", "--", "/bin/false"],
+          { from: "user" },
+        );
+        expect(process.exitCode as number | undefined).toBe(1);
+      } finally {
+        if (saved === undefined) delete process.env[key];
+        else process.env[key] = saved;
+      }
+      process.exitCode = undefined;
+      const { emit, data } = captureEmit();
+      await buildProgram(emit).parseAsync(["admission", "history", "--json"], { from: "user" });
+      expect((data[0] as { groups: unknown[] }).groups).toEqual([]);
+    });
+  }
 });
 
 describe("admission history", () => {

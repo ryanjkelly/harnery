@@ -92,6 +92,8 @@ interface HarneryConfig {
     requireGitFinalization?: boolean;
     finalizationRoots?: AgentFinalizationRoot[];
   };
+  /** Admission resource defaults and the heavy-command guard. Project config only. */
+  admission?: unknown;
   /** Host-owned agent instruction settings. */
   instructions?: {
     hostAddendumFile?: unknown;
@@ -631,6 +633,89 @@ export function ripgrepAutoInstall(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).tools?.ripgrep?.autoInstall === true;
+}
+
+/** Wait before queueing while Linux memory pressure is high (PSI `full avg10`). */
+export interface AdmissionPressureConfig {
+  psi_full_avg10: number;
+  max_wait_seconds: number;
+}
+
+/** Per-resource defaults for `admission run`; command-line flags win. */
+export interface AdmissionResourceConfig {
+  capacity?: number;
+  timeout_minutes?: number;
+  defer_on_pressure?: AdmissionPressureConfig;
+}
+
+export interface AdmissionProjectConfig {
+  resources: Record<string, AdmissionResourceConfig>;
+  /** Present when the agent hook should wrap heavy shell commands in a slot. */
+  guard?: { resource: string };
+}
+
+function positiveNumber(value: unknown, max: number): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= max
+    ? value
+    : undefined;
+}
+
+/**
+ * Admission settings from `.harnery/config.jsonc`:
+ *
+ * ```jsonc
+ * "admission": {
+ *   "resources": {
+ *     "build": {
+ *       "capacity": 2,
+ *       "timeout_minutes": 30,
+ *       "defer_on_pressure": { "psi_full_avg10": 40, "max_wait_seconds": 300 }
+ *     }
+ *   },
+ *   "guard": { "resource": "build" }
+ * }
+ * ```
+ *
+ * Project config only, like other machine-shaping policy. Malformed values are
+ * dropped one by one rather than rejecting the whole block. Undefined when the
+ * project declares no admission settings.
+ */
+export function readAdmissionConfig(coordRoot?: string | null): AdmissionProjectConfig | undefined {
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return undefined;
+  const raw = readProjectConfig(root).admission;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const record = raw as { resources?: unknown; guard?: unknown };
+  const resources: Record<string, AdmissionResourceConfig> = {};
+  if (
+    record.resources &&
+    typeof record.resources === "object" &&
+    !Array.isArray(record.resources)
+  ) {
+    for (const [name, value] of Object.entries(record.resources as Record<string, unknown>)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const entry = value as Record<string, unknown>;
+      const capacity = positiveNumber(entry.capacity, 32);
+      const timeout = positiveNumber(entry.timeout_minutes, 1440);
+      const pressure = entry.defer_on_pressure as Record<string, unknown> | undefined;
+      const threshold = positiveNumber(pressure?.psi_full_avg10, 100);
+      const maxWait = positiveNumber(pressure?.max_wait_seconds, 86_400);
+      resources[name] = {
+        ...(capacity !== undefined && Number.isInteger(capacity) ? { capacity } : {}),
+        ...(timeout !== undefined && Number.isInteger(timeout) ? { timeout_minutes: timeout } : {}),
+        ...(threshold !== undefined && maxWait !== undefined
+          ? { defer_on_pressure: { psi_full_avg10: threshold, max_wait_seconds: maxWait } }
+          : {}),
+      };
+    }
+  }
+  const guard = record.guard as { resource?: unknown } | undefined;
+  return {
+    resources,
+    ...(guard && typeof guard.resource === "string" && guard.resource
+      ? { guard: { resource: guard.resource } }
+      : {}),
+  };
 }
 
 /**

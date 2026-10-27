@@ -55,6 +55,8 @@ export interface AdmissionHistoryRecord {
   hold_ms?: number;
   /** Labels of the holders when this ticket first had to wait. */
   waited_behind?: string[];
+  /** Time spent deferring for memory pressure before joining the queue. */
+  pressure_wait_ms?: number;
   exit_code?: number | null;
   signal?: string | null;
 }

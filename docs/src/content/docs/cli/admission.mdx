@@ -31,13 +31,35 @@ The resource name is just a string agreed on by the participants: every wrapper 
 | Flag | Description |
 | --- | --- |
 | `--resource <name>` | Required. Admission resource to queue on, e.g. `build`. |
-| `--capacity <n>` | Concurrent holders this machine should allow (1 to 32; default 1). Advisory: the smallest capacity among concurrent waiters effectively governs. |
-| `--timeout <minutes>` | Maximum admission wait before giving up (1 to 1440; default 60). |
+| `--capacity <n>` | Concurrent holders this machine should allow (1 to 32; default from the project config, else 1). Advisory: the smallest capacity among concurrent waiters effectively governs. |
+| `--timeout <minutes>` | Maximum admission wait before giving up (1 to 1440; default from the project config, else 60). |
 | `--label <text>` | Holder description shown in status listings. Default: the command itself. |
 | `--detach` | Run the command as a durable job instead of in the foreground. See below. |
 | `--json` | With `--detach`, print the job envelope as JSON. |
 
 Exit codes: the child's exit code on a completed run; 4 when the admission wait timed out (the command never ran); 1 on a usage error, a spawn failure, or a child killed by a signal.
+
+### Per-resource defaults
+
+A project can set each resource's defaults once in `.harnery/config.jsonc`, so every caller agrees on them without repeating flags:
+
+```jsonc
+"admission": {
+  "resources": {
+    "build": {
+      "capacity": 2,
+      "timeout_minutes": 30,
+      "defer_on_pressure": { "psi_full_avg10": 40, "max_wait_seconds": 300 }
+    }
+  }
+}
+```
+
+Flags still win over the config. `defer_on_pressure` makes the run wait, holding no slot, while Linux memory pressure (`full avg10` from `/proc/pressure/memory`) is above the threshold, so a heavy job does not start on a machine that is already stalling. After `max_wait_seconds` it joins the queue anyway. On systems without pressure stall information it never waits. The time spent waiting is recorded in the history as `pressure_wait_ms`.
+
+### Nested runs and opting out
+
+Every child `admission run` starts carries `HARNERY_ADMISSION_HELD`, a comma-separated list of the resources its process tree holds. A nested `admission run` on one of those resources runs its command directly instead of queueing behind its own parent, which would otherwise deadlock (a build slot held around a commit whose hook also asks for one, for example). `HARNERY_ADMISSION_SKIP=1` runs a command directly on purpose. Neither case queues or records history.
 
 ## Durable jobs: run --detach
 
@@ -66,7 +88,7 @@ Each job directory holds three files:
 | `status.json` | The mutable state, rewritten atomically: `launching`, `queued`, `running`, or `completed`, plus the supervisor PID, the heartbeat, and the final `exit_code` and `signal`. |
 | `job.log` | The command's merged stdout and stderr. |
 
-Job records live beside the queue state, under `$TMPDIR/harnery-admission-jobs` by default, or the directory named by `HARNERY_JOBS_DIR`.
+Job records live beside the queue state, under `/tmp/harnery-admission-jobs` by default, or the directory named by `HARNERY_JOBS_DIR`.
 
 Exit codes with `--detach`: 0 once the job is launched, 1 on a usage error or a failure to launch the supervisor. The job's own outcome comes from `admission wait`.
 
@@ -140,7 +162,7 @@ The queue is plain files on one machine, designed so that no crash can wedge it:
 - **Self-correcting races.** When two waiters admit themselves against the same freed slot, whoever sorts later re-lists the held directory, sees the over-admission, renames itself back, and rejoins the queue with its original position (the filename keeps its enqueue timestamp).
 - **Dead-PID and TTL pruning.** Every participant prunes entries whose PID is no longer alive or whose age exceeds the TTL (default 6 hours) whenever it looks at the queue. A crashed holder's slot frees as soon as anyone else looks; no daemon, no manual cleanup.
 - **Advisory, single-machine scope.** Only processes that opt in by wrapping themselves participate, and the state is local files, so the protocol coordinates one machine only. It is a cooperation mechanism, not a lock a hostile process cannot bypass.
-- **State location.** Queue state lives under `$TMPDIR/harnery-admission` by default, or the directory named by the `HARNERY_ADMISSION_DIR` environment variable. Because it sits in the temp directory, it is cleared on reboot, which is correct: stale queue state must not outlive the boot.
+- **State location.** Queue state lives under `/tmp/harnery-admission` on Linux and macOS (the system temp directory on Windows), or the directory named by the `HARNERY_ADMISSION_DIR` environment variable. The default is the literal `/tmp` rather than `$TMPDIR` because agent sandboxes often give each session a private `TMPDIR`, and a queue there would admit every session on its own. Because it sits in the temp directory, it is cleared on reboot, which is correct: stale queue state must not outlive the boot.
 
 ## Examples
 

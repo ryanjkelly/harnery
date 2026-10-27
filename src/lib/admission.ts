@@ -90,6 +90,8 @@ export interface AdmissionAcquireOptions {
   timeoutMs?: number;
   /** Progress callback, invoked at most once per poll while waiting. */
   onWait?: (info: AdmissionWaitInfo) => void;
+  /** Time the caller already spent deferring for memory pressure, for the history. */
+  pressureWaitMs?: number;
 }
 
 export interface AdmissionHandle {
@@ -316,6 +318,7 @@ export async function acquireAdmission(
     capacity: config.capacity,
   };
   let waitedBehind: string[] | undefined;
+  const pressureWait = options.pressureWaitMs ? { pressure_wait_ms: options.pressureWaitMs } : {};
   const myName = `${String(Date.now()).padStart(13, "0")}-${process.pid}-${randomUUID().slice(0, 8)}.json`;
   writeEntry(tickets, myName, myEntry);
 
@@ -381,6 +384,7 @@ export async function acquireAdmission(
               wait_ms: waitedMs,
               hold_ms: endedAt.getTime() - acquiredAt.getTime(),
               ...(waitedBehind?.length ? { waited_behind: waitedBehind } : {}),
+              ...pressureWait,
               ...(result?.exitCode !== undefined ? { exit_code: result.exitCode } : {}),
               ...(result?.signal !== undefined ? { signal: result.signal } : {}),
             });
@@ -412,6 +416,7 @@ export async function acquireAdmission(
           ended_at: endedAt.toISOString(),
           wait_ms: endedAt.getTime() - startedWaiting,
           ...(waitedBehind?.length ? { waited_behind: waitedBehind } : {}),
+          ...pressureWait,
         });
         throw new AdmissionTimeoutError(
           config.resource,
@@ -456,13 +461,75 @@ export function admissionStatus(
 }
 
 /**
- * Base directory for admission queue state. tmpdir clears on reboot, which
- * is correct — stale queue state must not outlive the boot. Override with
- * HARNERY_ADMISSION_DIR. Host CLIs and harn commands must share this helper
- * so they join the same machine-wide queues.
+ * Base directory for admission queue state. The temp directory clears on
+ * reboot, which is correct: stale queue state must not outlive the boot.
+ * Override with HARNERY_ADMISSION_DIR. Host CLIs and harn commands must share
+ * this helper so they join the same machine-wide queues.
+ *
+ * On POSIX the default is the literal /tmp, not os.tmpdir(): agent sandboxes
+ * often set a private TMPDIR per session, and a queue under it would admit
+ * every session on its own.
  */
 export function admissionBaseDir(): string {
-  return coordEnv("ADMISSION_DIR") ?? join(tmpdir(), "harnery-admission");
+  return (
+    coordEnv("ADMISSION_DIR") ??
+    (process.platform === "win32" ? join(tmpdir(), "harnery-admission") : "/tmp/harnery-admission")
+  );
+}
+
+/**
+ * Linux memory pressure: the `full avg10` figure from /proc/pressure/memory,
+ * the share of the last ten seconds in which every runnable task stalled on
+ * memory. Undefined where pressure stall information is unavailable.
+ */
+export function memoryPressureFullAvg10(): number | undefined {
+  try {
+    const line = readFileSync("/proc/pressure/memory", "utf8")
+      .split("\n")
+      .find((candidate) => candidate.startsWith("full"));
+    const match = line ? /avg10=([0-9.]+)/.exec(line) : null;
+    return match?.[1] !== undefined ? Number(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface PressureWaitOptions {
+  /** Defer while `full avg10` is above this value. */
+  threshold: number;
+  /** Give up deferring after this long and let the caller start anyway. */
+  maxWaitMs: number;
+  pollMs?: number;
+  /** Pressure reader; tests inject one. */
+  read?: () => number | undefined;
+  /** Called once when deferral starts and once if it gives up. */
+  onWait?: (event: { pressure: number; waitedMs: number; gaveUp: boolean }) => void;
+}
+
+/**
+ * Wait, holding no slot, while the machine is already stalling on memory, so
+ * a heavy job does not start into a storm. Never blocks forever: after
+ * maxWaitMs it returns and the caller starts anyway. Returns the time waited.
+ */
+export async function waitForMemoryPressure(options: PressureWaitOptions): Promise<number> {
+  const read = options.read ?? memoryPressureFullAvg10;
+  const pollMs = options.pollMs ?? 5_000;
+  const started = Date.now();
+  let announced = false;
+  while (true) {
+    const pressure = read();
+    if (pressure === undefined || pressure <= options.threshold) return Date.now() - started;
+    const waitedMs = Date.now() - started;
+    if (waitedMs + pollMs > options.maxWaitMs) {
+      options.onWait?.({ pressure, waitedMs, gaveUp: true });
+      return waitedMs;
+    }
+    if (!announced) {
+      announced = true;
+      options.onWait?.({ pressure, waitedMs, gaveUp: false });
+    }
+    await sleep(pollMs);
+  }
 }
 
 /** Resources present under an admission base directory. */

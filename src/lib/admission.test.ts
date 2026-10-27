@@ -11,6 +11,7 @@ import {
   admissionStatus,
   listAdmissionResources,
   pidAlive,
+  waitForMemoryPressure,
 } from "./admission.ts";
 import {
   readAdmissionHistory,
@@ -340,11 +341,15 @@ describe("admissionStatus", () => {
 });
 
 describe("admissionBaseDir", () => {
-  test("defaults to tmpdir/harnery-admission", () => {
+  test("defaults to the machine-wide /tmp queue on POSIX, ignoring a private TMPDIR", () => {
     const prev = process.env.HARNERY_ADMISSION_DIR;
     delete process.env.HARNERY_ADMISSION_DIR;
     try {
-      expect(admissionBaseDir()).toBe(join(tmpdir(), "harnery-admission"));
+      expect(admissionBaseDir()).toBe(
+        process.platform === "win32"
+          ? join(tmpdir(), "harnery-admission")
+          : "/tmp/harnery-admission",
+      );
     } finally {
       if (prev === undefined) delete process.env.HARNERY_ADMISSION_DIR;
       else process.env.HARNERY_ADMISSION_DIR = prev;
@@ -360,5 +365,41 @@ describe("admissionBaseDir", () => {
       if (prev === undefined) delete process.env.HARNERY_ADMISSION_DIR;
       else process.env.HARNERY_ADMISSION_DIR = prev;
     }
+  });
+});
+
+describe("waitForMemoryPressure", () => {
+  test("returns at once when pressure is low or unavailable", async () => {
+    expect(await waitForMemoryPressure({ threshold: 40, maxWaitMs: 1_000, read: () => 3 })).toBe(0);
+    expect(
+      await waitForMemoryPressure({ threshold: 40, maxWaitMs: 1_000, read: () => undefined }),
+    ).toBe(0);
+  });
+
+  test("waits while pressure is high and returns once it drops", async () => {
+    const readings = [90, 90, 10];
+    const events: boolean[] = [];
+    const waited = await waitForMemoryPressure({
+      threshold: 40,
+      maxWaitMs: 5_000,
+      pollMs: 20,
+      read: () => readings.shift(),
+      onWait: (event) => events.push(event.gaveUp),
+    });
+    expect(waited).toBeGreaterThanOrEqual(30);
+    expect(events).toEqual([false]);
+  });
+
+  test("gives up after maxWaitMs and lets the caller start", async () => {
+    const events: boolean[] = [];
+    const waited = await waitForMemoryPressure({
+      threshold: 40,
+      maxWaitMs: 60,
+      pollMs: 20,
+      read: () => 99,
+      onWait: (event) => events.push(event.gaveUp),
+    });
+    expect(waited).toBeLessThan(1_000);
+    expect(events).toEqual([false, true]);
   });
 });
