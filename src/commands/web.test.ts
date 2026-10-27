@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
 import {
   isWebPortAvailable,
@@ -160,7 +161,9 @@ describe("nodeOptionsWithHeapCap", () => {
     process.env.NODE_OPTIONS = "--enable-source-maps";
     const options = nodeOptionsWithWebDiagnostics("/tmp/harnery web", 2048);
     expect(options).toContain("--enable-source-maps --max-old-space-size=2048");
-    expect(options).toContain("--import=file:///tmp/harnery%20web/server-preload.mjs");
+    expect(options).toContain(
+      `--import=${pathToFileURL(join("/tmp/harnery web", "server-preload.mjs")).href}`,
+    );
   });
 
   test("does not add a duplicate web diagnostics preload", () => {

@@ -47,6 +47,30 @@ harn doctor   # optional: one-time runtime + dependency check
 
 > **npm gives you the engine + CLI.** The `web/` dashboard and the `docs/` site live in the git repo, not the npm package (which is the CLI + coord engine: `bin`, `dist`, `src`, `schemas`). To run the dashboard, `git clone` the repo, `bun install`, and `harn web up` from there, pointing it at your project with `--coord-root <dir>` (or just run it from inside the project). `harn web up` prints these exact steps if you invoke it without the clone present.
 
+### Native Windows source checkout
+
+For source development on Windows, install Node.js 20.19+ and Bun, then use
+PowerShell 7:
+
+```powershell
+bun install --frozen-lockfile
+Push-Location web
+bun install --frozen-lockfile
+Pop-Location
+npm link --ignore-scripts --offline --package-lock=false
+harn init --project-root 'C:\path\to\project' --adapter 'claude-code,codex'
+harn web up --coord-root 'C:\path\to\project'
+```
+
+The [native launchers](bin/README.md) run source through Bun and need no Bash.
+The dashboard binds to loopback. Codex hook commands still need the harness's
+separate approval before a new session can execute them.
+
+Windows state inherits NTFS ACLs: POSIX mode bits cannot prove those access
+rights. File contents are still flushed before publication; Windows does not
+support the directory fsync used for POSIX directory-entry durability. Atomic
+file publication and lease ownership checks remain in place.
+
 ## Uninstall
 
 Two layers. **Unwire a project** (keeps `.harnery/` history by default; on a terminal it asks before deleting it):

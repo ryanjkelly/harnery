@@ -267,6 +267,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       if (heapMb > 0) emit.log(`heap ceiling · ${heapMb} MB`, "info");
 
       const child = spawn(webRunner(), ["run", mode], {
+        windowsHide: true,
         cwd: root,
         env: {
           ...process.env,
@@ -360,6 +361,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       if (heapMb > 0) emit.log(`heap ceiling · ${heapMb} MB`, "info");
 
       const child = spawn(webRunner(), ["run", "start"], {
+        windowsHide: true,
         cwd: root,
         env: {
           ...process.env,

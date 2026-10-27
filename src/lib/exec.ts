@@ -46,6 +46,7 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
   const [file, ...args] = cmd;
   return new Promise<ExecResult>((resolveResult) => {
     const proc = spawn(file, args, {
+      windowsHide: true,
       cwd: opts.cwd ?? process.cwd(),
       env: opts.env ?? { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],

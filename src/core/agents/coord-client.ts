@@ -214,7 +214,7 @@ function gitRevParse(cwd: string, flag: string): string | null {
     // `cwd` must exist or the spawn itself fails; callers pass paths that may
     // not (a project dir from a stale env var), so treat any failure as "no
     // answer" rather than letting it throw.
-    const r = spawnSync("git", ["rev-parse", flag], { encoding: "utf8", cwd });
+    const r = spawnSync("git", ["rev-parse", flag], { encoding: "utf8", cwd, windowsHide: true });
     if (r.status === 0) value = r.stdout.trim() || null;
   } catch {
     value = null;
@@ -297,6 +297,7 @@ export function pidStartToken(pid: number): string | null {
     // two callers with different environments must not disagree about one
     // process.
     const out = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      windowsHide: true,
       encoding: "utf8",
       timeout: 2000,
       env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
@@ -686,7 +687,10 @@ function readPpid(pid: number): number | null {
   }
   // Portable fallback: `ps -o ppid= -p <pid>` works on macOS/BSD/Linux.
   try {
-    const out = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+    const out = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
     if (out.status === 0) {
       const parsed = Number.parseInt(out.stdout.trim(), 10);
       if (Number.isFinite(parsed) && parsed > 0) return parsed;

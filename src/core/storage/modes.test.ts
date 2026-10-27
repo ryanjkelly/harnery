@@ -43,7 +43,7 @@ test("state is owner-only unless the project asks for group sharing", () => {
   expect(stateSharing()).toBe("private");
   expect([stateDirMode(), stateFileMode()]).toEqual([0o700, 0o600]);
   expect(stateModeTooOpen(0o600)).toBe(false);
-  expect(stateModeTooOpen(0o640)).toBe(true);
+  expect(stateModeTooOpen(0o640, "linux")).toBe(true);
 });
 
 test("group sharing opens state to the group and never to other users", () => {
@@ -51,8 +51,8 @@ test("group sharing opens state to the group and never to other users", () => {
   expect(stateSharing()).toBe("group");
   expect([stateDirMode(), stateFileMode()]).toEqual([0o2770, 0o660]);
   expect(stateModeTooOpen(0o660)).toBe(false);
-  expect(stateModeTooOpen(0o664)).toBe(true);
-  expect(stateModeTooOpen(0o606)).toBe(true);
+  expect(stateModeTooOpen(0o664, "linux")).toBe(true);
+  expect(stateModeTooOpen(0o606, "linux")).toBe(true);
 });
 
 test("the environment overrides the project file, and anything unrecognized reads as private", () => {
@@ -84,28 +84,44 @@ test("a user-global setting cannot loosen a project", () => {
   }
 });
 
-test("in group mode a state write is group-readable and writable even under a strict umask", () => {
-  project("group");
-  process.umask(0o077);
-  expect(stateSharing()).toBe("group");
-  expect(process.umask() & 0o070).toBe(0);
-  const path = join(dir, ".harnery", "private", "x", "state.json");
-  writePrivateJsonAtomic(path, { a: 1 });
-  expect(statSync(path).mode & 0o777).toBe(0o660);
-  expect(statSync(join(dir, ".harnery", "private", "x")).mode & 0o777).toBe(0o770);
-});
+test.skipIf(process.platform === "win32")(
+  "in group mode a state write is group-readable and writable even under a strict umask",
+  () => {
+    project("group");
+    process.umask(0o077);
+    expect(stateSharing()).toBe("group");
+    expect(process.umask() & 0o070).toBe(0);
+    const path = join(dir, ".harnery", "private", "x", "state.json");
+    writePrivateJsonAtomic(path, { a: 1 });
+    expect(statSync(path).mode & 0o777).toBe(0o660);
+    expect(statSync(join(dir, ".harnery", "private", "x")).mode & 0o777).toBe(0o770);
+  },
+);
 
-test("in group mode a state directory keeps setgid after it is chmodded", () => {
-  project("group");
-  const sub = join(dir, ".harnery", "private", "z");
-  mkdirSync(sub, { recursive: true, mode: stateDirMode() });
-  chmodSync(sub, stateDirMode());
-  // Without setgid a file made here would take its writer's group, which other users cannot read.
-  expect(statSync(sub).mode & 0o2000).toBe(0o2000);
-});
+test.skipIf(process.platform === "win32")(
+  "in group mode a state directory keeps setgid after it is chmodded",
+  () => {
+    project("group");
+    const sub = join(dir, ".harnery", "private", "z");
+    mkdirSync(sub, { recursive: true, mode: stateDirMode() });
+    chmodSync(sub, stateDirMode());
+    // Without setgid a file made here would take its writer's group, which other users cannot read.
+    expect(statSync(sub).mode & 0o2000).toBe(0o2000);
+  },
+);
 
-test("in private mode the same write stays owner-only", () => {
+test.skipIf(process.platform === "win32")("in private mode the same write stays owner-only", () => {
   const path = join(dir, ".harnery", "private", "y", "state.json");
   writePrivateJsonAtomic(path, { a: 1 });
   expect(statSync(path).mode & 0o777).toBe(0o600);
 });
+
+test.skipIf(process.platform !== "win32")(
+  "Windows state accepts synthesized mode bits without changing inherited ACLs",
+  () => {
+    const path = join(dir, ".harnery", "private", "state.json");
+    writePrivateJsonAtomic(path, { a: 1 });
+    expect(stateModeTooOpen(statSync(path).mode)).toBe(false);
+    expect(stateModeTooOpen(0o666, "linux")).toBe(true);
+  },
+);

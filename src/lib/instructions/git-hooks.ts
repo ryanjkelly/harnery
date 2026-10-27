@@ -53,18 +53,21 @@ function regionName(event: GitHookEvent): string {
  */
 export function renderGitHookBody(event: GitHookEvent): string {
   const blocking = event === "pre-commit";
+  const native = process.platform === "win32";
+  const command = `${native ? "node " : ""}"$harnery_hook_bin"`;
+  const extension = native ? ".mjs" : "";
   const invoke = blocking
-    ? `  "$harnery_hook_bin" git-hook ${event} "$@"\n` +
+    ? `  ${command} git-hook ${event} "$@"\n` +
       `  harnery_hook_rc=$?\n` +
       `  [ "$harnery_hook_rc" -ne 0 ] && exit "$harnery_hook_rc"\n`
-    : `  "$harnery_hook_bin" git-hook ${event} "$@" >/dev/null 2>&1 || true\n`;
+    : `  ${command} git-hook ${event} "$@" >/dev/null 2>&1 || true\n`;
   return (
     `# Coordination for this hook lives in harnery (agent-coord git-hook ${event});\n` +
     `# upgrading harnery upgrades the behavior. Managed region: do not edit by hand.\n` +
     `harnery_hook_root=$(git rev-parse --show-superproject-working-tree 2>/dev/null)\n` +
     `[ -n "$harnery_hook_root" ] || harnery_hook_root=$(git rev-parse --show-toplevel 2>/dev/null)\n` +
-    `for harnery_hook_bin in "$harnery_hook_root/harnery/bin/agent-coord" "$harnery_hook_root/node_modules/harnery/bin/agent-coord"; do\n` +
-    `  [ -x "$harnery_hook_bin" ] || continue\n` +
+    `for harnery_hook_bin in "$harnery_hook_root/harnery/bin/agent-coord${extension}" "$harnery_hook_root/node_modules/harnery/bin/agent-coord${extension}"; do\n` +
+    `  [ -${native ? "f" : "x"} "$harnery_hook_bin" ] || continue\n` +
     invoke +
     `  break\n` +
     `done`
@@ -79,6 +82,7 @@ export function renderGitHookBody(event: GitHookEvent): string {
  */
 export function resolveHooksDir(projectRoot: string): string | null {
   const r = spawnSync("git", ["rev-parse", "--git-path", "hooks"], {
+    windowsHide: true,
     cwd: projectRoot,
     encoding: "utf8",
     timeout: 5000,

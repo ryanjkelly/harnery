@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -35,6 +36,37 @@ const CLAUDE_HOOK = `"\${CLAUDE_PROJECT_DIR:-.}"/${HOOK}`;
 const CLAUDE = ADAPTER_SPECS["claude-code"];
 const CURSOR = ADAPTER_SPECS.cursor;
 const CODEX = ADAPTER_SPECS.codex;
+
+test.skipIf(process.platform !== "win32")(
+  "native source launcher initializes and checks a Windows project with spaces",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery native consumer "));
+    const launcher = join(import.meta.dir, "..", "..", "bin", "harn.mjs");
+    try {
+      const run = (...args: string[]) =>
+        spawnSync(
+          "node",
+          [launcher, "init", "--project-root", root, "--adapter", "claude-code,codex", ...args],
+          {
+            encoding: "utf8",
+            timeout: 30_000,
+          },
+        );
+      const initialized = run();
+      expect(`${initialized.stdout}${initialized.stderr}`).toContain("initialized event ledger V3");
+      expect(initialized.status).toBe(0);
+      const checked = run("--check");
+      expect(`${checked.stdout}${checked.stderr}`).toContain("are current");
+      expect(checked.status).toBe(0);
+      const hooks = JSON.parse(readFileSync(join(root, ".codex", "hooks.json"), "utf8"));
+      expect(hooks.hooks.SessionStart[0].hooks[0].commandWindows).toBe(
+        "agent-hook session-start --adapter codex",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 /** Run with a PATH that carries no harness CLI, so installed-adapter detection is empty. */
 async function withoutInstalledHarnesses<T>(fn: () => Promise<T>): Promise<T> {

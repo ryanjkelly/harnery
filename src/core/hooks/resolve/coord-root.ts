@@ -91,6 +91,7 @@ function gitRevParse(start: string, flag: string): string | null {
     // A stale adapter project directory may no longer exist. Treat spawn
     // failure as no path evidence instead of turning discovery into an error.
     const result = spawnSync("git", ["rev-parse", flag], {
+      windowsHide: true,
       cwd: start,
       encoding: "utf8",
     });

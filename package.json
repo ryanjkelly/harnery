@@ -224,9 +224,9 @@
     }
   },
   "bin": {
-    "harn": "./bin/harn",
-    "agent-coord": "./bin/agent-coord",
-    "agent-hook": "./bin/agent-hook"
+    "harn": "./bin/harn.mjs",
+    "agent-coord": "./bin/agent-coord.mjs",
+    "agent-hook": "./bin/agent-hook.mjs"
   },
   "//files": "src ships as TS so the `bun` export condition resolves to source; negate co-located tests, fixture directories, and shared test helpers so they don't ride into the tarball (a .npmignore is inert for paths already inside the files allowlist).",
   "files": [
@@ -256,7 +256,7 @@
   "scripts": {
     "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/rewrite-dts-extensions.mjs",
     "build:openclaw-plugin": "mkdir -p openclaw-plugin/dist && bun build openclaw-plugin/src/index.ts openclaw-plugin/src/record-worker.ts --target=node --format=esm --external openclaw --outdir openclaw-plugin/dist --entry-naming '[name].js' && cp openclaw-plugin/package.json openclaw-plugin/openclaw.plugin.json openclaw-plugin/dist/",
-    "clean": "rm -rf dist",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "prepublishOnly": "npm run build",
     "typecheck": "bun x tsc --noEmit",
     "lint": "bun x @biomejs/biome check src openclaw-plugin opencode-plugin",

@@ -14,7 +14,9 @@ import { installOpenCodePlugin, OPENCODE_PLUGIN_ENTRY } from "./opencode-plugin.
 import {
   agentHookPathForProject,
   diffWiring,
+  expectedCommandWindows,
   harneryPackageRoot,
+  hookCommand,
   hookCommandWindows,
   hookTimeoutFor,
   loadAdapterWiring,
@@ -157,7 +159,8 @@ describe("diffWiring", () => {
       hooks: [
         {
           type: "command",
-          command: `bash ${HOOK_BASE} ${subcommand} --adapter codex`,
+          command: hookCommand(codex, HOOK_BASE, subcommand, "codex"),
+          commandWindows: expectedCommandWindows(codex, HOOK_BASE, subcommand, "codex"),
           ...(timeout === undefined ? {} : { timeout }),
         },
       ],
@@ -186,7 +189,7 @@ describe("diffWiring", () => {
     ).toBe(
       "if ((Get-Command codex-wsl-hook -ErrorAction Ignore) -and $PWD.ProviderPath -like '\\\\wsl*') " +
         "{ codex-wsl-hook pre-tool-use --adapter codex } else " +
-        "{ bash harnery/bin/agent-hook pre-tool-use --adapter codex }; exit $LASTEXITCODE",
+        `{ ${process.platform === "win32" ? 'node "harnery/bin/run.mjs" agent-hook' : "bash harnery/bin/agent-hook"} pre-tool-use --adapter codex }; exit $LASTEXITCODE`,
     );
   });
 
@@ -195,7 +198,7 @@ describe("diffWiring", () => {
     const win = hookCommandWindows(codex, HOOK_BASE, "stop", "codex", "codex-wsl-hook");
     const handler = (commandWindows?: string) => ({
       type: "command",
-      command: `bash ${HOOK_BASE} stop --adapter codex`,
+      command: hookCommand(codex, HOOK_BASE, "stop", "codex"),
       ...(commandWindows ? { commandWindows } : {}),
       timeout: 20,
     });
@@ -215,7 +218,8 @@ describe("diffWiring", () => {
     expect(diffWiring(settingsWith(win), codex, optedOut).stale.map((e) => e.settingsKey)).toEqual([
       "Stop",
     ]);
-    expect(diffWiring(settingsWith(), codex, optedOut).stale).toEqual([]);
+    const native = expectedCommandWindows(codex, HOOK_BASE, "stop", "codex");
+    expect(diffWiring(settingsWith(native), codex, optedOut).stale).toEqual([]);
   });
 
   test("hookTimeoutFor applies per-event overrides and none for undeclared adapters", () => {
@@ -247,7 +251,7 @@ describe("agentHookPathForProject", () => {
   test("uses a repo-relative launcher when Harnery is contained by the project", () => {
     const root = join(process.cwd(), "consumer-root");
     expect(agentHookPathForProject(root, join(root, "harnery"))).toBe(
-      join("harnery", "bin", "agent-hook"),
+      process.platform === "win32" ? "agent-hook" : join("harnery", "bin", "agent-hook"),
     );
   });
 

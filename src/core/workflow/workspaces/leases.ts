@@ -17,6 +17,7 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
+import { fsyncDirectory } from "../durable-record.ts";
 
 const MAX_LEASE_BYTES = 8 * 1024;
 const MAX_CONTENTION_OBSERVATION_ATTEMPTS = 8;
@@ -566,15 +567,6 @@ function sameInode(left: string, right: string): boolean {
 
 function digestBytes(bytes: string): string {
   return createHash("sha256").update(bytes).digest("hex");
-}
-
-function fsyncDirectory(path: string): void {
-  const fd = openSync(path, "r");
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
 }
 
 function safeUnlink(path: string): void {

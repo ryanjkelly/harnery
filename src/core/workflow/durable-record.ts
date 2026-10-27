@@ -61,10 +61,24 @@ export function writeImmutableJson(path: string, value: unknown): boolean {
 }
 
 export function fsyncParentDirectory(path: string): void {
-  const directory = dirname(path);
+  fsyncDirectory(dirname(path));
+}
+
+/** Flush directory entries where the runtime supports it; file fsync remains mandatory. */
+export function fsyncDirectory(directory: string): void {
   const fd = openSync(directory, "r");
   try {
     fsyncSync(fd);
+  } catch (error) {
+    // Windows does not expose directory FlushFileBuffers through node:fs.
+    // Keep atomic links/renames and file flushes, but do not claim POSIX
+    // directory-entry durability on that platform. Other errors still fail.
+    if (
+      process.platform !== "win32" ||
+      !["EPERM", "EINVAL", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code ?? "")
+    ) {
+      throw error;
+    }
   } finally {
     closeSync(fd);
   }

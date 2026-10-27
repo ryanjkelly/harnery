@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { coordEnv } from "../../lib/env.ts";
 import {
   type ReadLedgerV3SinceResult,
@@ -150,7 +151,9 @@ export async function spawnSemanticService(
   const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
   const logFd = sharedLogs ? undefined : openSync(paths.log, "a", stateFileMode());
   if (logFd !== undefined) chmodSync(paths.log, stateFileMode());
-  const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
+  const harnBin = fileURLToPath(
+    new URL(import.meta.url.endsWith(".ts") ? "../../cli.ts" : "../../cli.js", import.meta.url),
+  );
   if (!existsSync(harnBin)) {
     if (logFd !== undefined) closeSync(logFd);
     throw new Error(`cannot find harn executable at ${harnBin}`);
@@ -160,7 +163,8 @@ export async function spawnSemanticService(
     args.push("--calls-per-hour", String(options.callsPerHour));
   }
   let spawnError: Error | undefined;
-  const child = spawn(harnBin, args, {
+  const child = spawn(process.execPath, [harnBin, ...args], {
+    windowsHide: true,
     cwd: coordRoot,
     detached: true,
     stdio: logFd === undefined ? ["ignore", "ignore", "ignore"] : ["ignore", logFd, logFd],

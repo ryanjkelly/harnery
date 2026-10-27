@@ -1,6 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { exec } from "./exec.ts";
 
+test.skipIf(process.platform !== "win32")(
+  "background subprocesses have no visible Windows console",
+  async () => {
+    const script = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class HarneryConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd); }'; [HarneryConsoleProbe]::IsWindowVisible([HarneryConsoleProbe]::GetConsoleWindow())`;
+    const result = await exec([
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      script,
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("False");
+  },
+);
+
 // ADR 0046: the environment class is a STRUCTURAL signal, not a text match. It
 // rests on one machine-verified fact — a binary spawned directly that is absent
 // arrives at `proc.on("error")` with errno ENOENT, while a shell that merely

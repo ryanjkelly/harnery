@@ -36,7 +36,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { coordEnv } from "../../../lib/env.ts";
 
 /** Which probe answers "when did this process start?" on this machine. */
-export type StartTokenProbe = "procfs" | "ps";
+export type StartTokenProbe = "procfs" | "ps" | "windows";
 
 /**
  * The `ps` probe is text formatted by `strftime("%c", localtime(...))`, so its
@@ -59,9 +59,10 @@ let cachedBootId: string | null | undefined;
  */
 export function startTokenProbe(): StartTokenProbe {
   const override = coordEnv("PID_PROBE");
-  if (override === "procfs" || override === "ps") return override;
+  if (override === "procfs" || override === "ps" || override === "windows") return override;
   if (cachedProbe === undefined) {
-    cachedProbe = existsSync("/proc/self/stat") ? "procfs" : "ps";
+    cachedProbe =
+      process.platform === "win32" ? "windows" : existsSync("/proc/self/stat") ? "procfs" : "ps";
   }
   return cachedProbe;
 }
@@ -156,8 +157,31 @@ function defaultPsRun(pid: number): { status: number | null; stdout: string } {
  * will not say.
  */
 export function processStartToken(pid: number): string | null {
-  if (!Number.isFinite(pid) || pid <= 0) return null;
-  return startTokenProbe() === "procfs" ? procfsStartToken(pid) : psStartToken(pid);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  const probe = startTokenProbe();
+  if (probe === "windows") return windowsStartToken(pid);
+  return probe === "procfs" ? procfsStartToken(pid) : psStartToken(pid);
+}
+
+/** Windows process creation time in invariant UTC ticks, independent of locale. */
+export function windowsStartToken(pid: number): string | null {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    const out = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `try { (Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks } catch { exit 1 }`,
+      ],
+      { encoding: "utf8", timeout: 4_000, windowsHide: true },
+    );
+    const ticks = out.stdout?.trim();
+    return out.status === 0 && ticks && /^\d+$/.test(ticks) ? `w${ticks}` : null;
+  } catch {
+    return null;
+  }
 }
 
 export type ProcessGenerationVerdict = "same" | "different" | "unknown";

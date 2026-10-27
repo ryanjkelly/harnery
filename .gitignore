@@ -13,6 +13,8 @@ coverage/
 # routes.d.ts under `next dev` than under `next build`. Tracking it means the
 # tree goes dirty based on whichever command ran last.
 web/next-env.d.ts
+# Next dev creates local, version-specific agent guidance alongside its cache.
+web/AGENTS.md
 .harnery/*
 !.harnery/config.jsonc
 # Runtime state + caches (harn tunnel writes .cache/tunnel/). Untracked but not

@@ -11,3 +11,7 @@
  */
 import "./server-keepalive.mjs";
 import "./server-performance.mjs";
+
+// Next reads PORT itself. Shell parameter expansion in package scripts is
+// interpreted literally by cmd.exe on native Windows.
+process.env.PORT ??= process.env.HARNERY_WEB_PORT ?? "4276";

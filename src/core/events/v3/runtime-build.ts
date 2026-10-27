@@ -16,6 +16,7 @@ export function currentHarneryRuntimeBuild(): string {
   const root = harneryPackageRoot();
   if (existsSync(resolve(root, ".git"))) {
     const result = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], {
+      windowsHide: true,
       encoding: "utf8",
       timeout: 5_000,
     });

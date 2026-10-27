@@ -54,6 +54,12 @@ export function stateFileMode(): number {
  * True when a state file or directory is readable or writable by someone it should not be: anyone
  * but the owner in private mode, anyone outside the owner and group in group mode.
  */
-export function stateModeTooOpen(mode: number): boolean {
+export function stateModeTooOpen(
+  mode: number,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  // Windows synthesizes POSIX mode bits; access is controlled by inherited
+  // NTFS ACLs, which chmod and stat.mode cannot inspect or tighten.
+  if (platform === "win32") return false;
   return (mode & (stateSharing() === "group" ? 0o007 : 0o077)) !== 0;
 }

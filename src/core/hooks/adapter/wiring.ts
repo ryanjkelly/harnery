@@ -132,7 +132,12 @@ export function expectedCommandWindows(
   adapter: AdapterId,
   options?: WiringOptions,
 ): string | undefined {
-  if (!spec.windowsBridgeHooks || !options?.windowsBridgeEntryPoint) return undefined;
+  if (!spec.windowsBridgeHooks) return undefined;
+  if (!options?.windowsBridgeEntryPoint) {
+    return process.platform === "win32"
+      ? nativeHookCommand(agentHookPath, subcommand, adapter)
+      : undefined;
+  }
   return hookCommandWindows(
     spec,
     agentHookPath,
@@ -194,11 +199,18 @@ export function hookCommand(
   subcommand: string,
   adapter: AdapterId,
 ): string {
+  if (process.platform === "win32") return nativeHookCommand(agentHookPath, subcommand, adapter);
   if (agentHookPath === "agent-hook") {
     return `agent-hook ${subcommand} --adapter ${adapter}`;
   }
   const anchor = spec.projectDirEnv ? `"\${${spec.projectDirEnv}:-.}"/` : "";
   return `bash ${anchor}${agentHookPath} ${subcommand} --adapter ${adapter}`;
+}
+
+function nativeHookCommand(agentHookPath: string, subcommand: string, adapter: AdapterId): string {
+  if (agentHookPath === "agent-hook") return `agent-hook ${subcommand} --adapter ${adapter}`;
+  const runner = join(dirname(agentHookPath), "run.mjs").replaceAll("\\", "/");
+  return `node "${runner}" agent-hook ${subcommand} --adapter ${adapter}`;
 }
 
 /**
@@ -208,6 +220,9 @@ export function hookCommand(
  * instead of recording a relative path back into one developer's package tree.
  */
 export function agentHookPathForProject(projectRoot: string, packageRoot: string): string {
+  // Native npm shims run the linked source checkout without Bash, and do not
+  // depend on a hook's working directory after an agent changes directories.
+  if (process.platform === "win32") return "agent-hook";
   const hook = join(packageRoot, "bin", "agent-hook");
   const candidate = relative(projectRoot, hook);
   if (candidate === ".." || candidate.startsWith(`..${sep}`) || isAbsolute(candidate)) {

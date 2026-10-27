@@ -26,6 +26,7 @@ function deadPid(): number {
 }
 
 const hasProcfs = procfsStartToken(process.pid) !== null;
+const hasPs = psStartToken(process.pid) !== null;
 
 function withEnv(vars: Record<string, string | undefined>, body: () => void): void {
   const saved = new Map(Object.keys(vars).map((k) => [k, process.env[k]]));
@@ -56,7 +57,7 @@ describe("processStartToken", () => {
   });
 
   test("tags the token by probe, so two platforms are never compared", () => {
-    expect(processStartToken(process.pid)).toMatch(/^[lp]/);
+    expect(processStartToken(process.pid)).toMatch(/^[lpw]/);
   });
 
   test("declines to guess for a dead pid or a nonsense one", () => {
@@ -74,7 +75,9 @@ describe("startTokenProbe", () => {
 
   test("otherwise follows what the machine actually has", () => {
     withEnv({ HARNERY_PID_PROBE: undefined }, () => {
-      expect(startTokenProbe()).toBe(hasProcfs ? "procfs" : "ps");
+      expect(startTokenProbe()).toBe(
+        process.platform === "win32" ? "windows" : hasProcfs ? "procfs" : "ps",
+      );
     });
   });
 
@@ -105,7 +108,7 @@ describe("psStartToken", () => {
     ).toBeNull();
   });
 
-  test("reads a real process, so the branch runs on every platform with ps", () => {
+  test.skipIf(!hasPs)("reads a real process, so the branch runs on every platform with ps", () => {
     // The BSD path is the same code wherever ps exists. Exercising it only on
     // BSD hardware is how a branch rots between releases.
     const token = psStartToken(process.pid);
@@ -113,7 +116,7 @@ describe("psStartToken", () => {
     expect(psStartToken(process.pid)).toBe(token as string);
   });
 
-  test("renders the same instant no matter the caller's timezone", () => {
+  test.skipIf(!hasPs)("renders the same instant no matter the caller's timezone", () => {
     // `ps` formats lstart through TZ and LC_TIME, so an unpinned probe describes
     // one live process differently depending on who asked: a git hook runs under
     // LC_ALL=C, a login shell under the user's locale, and each then reads the
@@ -197,7 +200,7 @@ describe("verifyProcessGeneration", () => {
     expect(verifyProcessGeneration(process.pid, "l1")).toBe("different");
   });
 
-  test("works the same through the ps probe", () => {
+  test.skipIf(!hasPs)("works the same through the ps probe", () => {
     withEnv({ HARNERY_PID_PROBE: "ps" }, () => {
       const token = processStartToken(process.pid) as string;
       expect(token).toMatch(/^p/);

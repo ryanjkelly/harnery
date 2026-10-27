@@ -13,8 +13,9 @@
 
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const DIST = new URL("../dist/", import.meta.url).pathname;
+const DIST = fileURLToPath(new URL("../dist/", import.meta.url));
 
 // `from "<rel>.ts"` / `from '<rel>.tsx'` and `import("<rel>.ts")`: relative
 // specifiers only (must start with ./ or ../), single or double quoted.

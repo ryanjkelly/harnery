@@ -544,6 +544,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
 
 function gitBuild(root: string): string {
   const result = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], {
+    windowsHide: true,
     encoding: "utf8",
     timeout: 5000,
   });
@@ -974,7 +975,10 @@ function renderInstructionsOnly(
 }
 
 function gitTopLevel(): string | null {
-  const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const r = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
   const out = r.status === 0 ? r.stdout.trim() : "";
   return out || null;
 }

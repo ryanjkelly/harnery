@@ -61,7 +61,7 @@ describe("lifecycle: apply → check → remove", () => {
     for (const event of GIT_HOOK_EVENTS) {
       const file = join(repo, ".git", "hooks", event);
       expect(existsSync(file)).toBe(true);
-      expect(statSync(file).mode & 0o111).toBeGreaterThan(0); // executable
+      if (process.platform !== "win32") expect(statSync(file).mode & 0o111).toBeGreaterThan(0);
       const content = readFileSync(file, "utf8");
       expect(content.startsWith("#!/bin/sh\n")).toBe(true);
       expect(content).toContain(`git-hook ${event}`);

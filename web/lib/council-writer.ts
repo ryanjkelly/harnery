@@ -22,9 +22,11 @@ function helperPath(): string {
 
 async function runHelper(args: string[]): Promise<HelperResult> {
   const root = coordRoot();
+  const native = process.platform === "win32";
   return new Promise((resolve) => {
-    const proc = spawn(helperPath(), args, {
+    const proc = spawn(native ? process.execPath : helperPath(), native ? [`${helperPath()}.mjs`, ...args] : args, {
       cwd: root,
+      windowsHide: true,
       env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
     });
     let stdout = "";
@@ -112,9 +114,11 @@ export interface CreateCouncilOpts {
 async function runHarn(args: string[]): Promise<HelperResult> {
   const root = coordRoot();
   const harnBin = path.join(root, "harnery", "bin", "harn");
+  const native = process.platform === "win32";
   return new Promise((resolve) => {
-    const proc = spawn(harnBin, args, {
+    const proc = spawn(native ? process.execPath : harnBin, native ? [`${harnBin}.mjs`, ...args] : args, {
       cwd: root,
+      windowsHide: true,
       env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
     });
     let stdout = "";

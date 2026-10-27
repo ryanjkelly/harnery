@@ -2,6 +2,10 @@
 
 Each PR that changes published behavior should include a changeset file in this directory describing the change.
 
+| Pending change | Purpose |
+| --- | --- |
+| [native-windows-source.md](native-windows-source.md) | Native Windows launchers, initialization, and process identity |
+
 To add one, run:
 
 ```bash
