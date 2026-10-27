@@ -408,6 +408,9 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
           label,
           timeoutMinutes,
           json: opts.json === true,
+          ...(resourceConfig?.defer_on_pressure
+            ? { deferOnPressure: resourceConfig.defer_on_pressure }
+            : {}),
         });
         return;
       }
@@ -693,6 +696,7 @@ interface LaunchOptions {
   label: string;
   timeoutMinutes: number;
   json: boolean;
+  deferOnPressure?: { psi_full_avg10: number; max_wait_seconds: number };
 }
 
 function launchDetachedJob(emit: EmitContext, options: LaunchOptions): void {
@@ -720,6 +724,7 @@ function launchDetachedJob(emit: EmitContext, options: LaunchOptions): void {
       argv: options.commandArgs,
       cwd: process.cwd(),
       created_at: nowIso(),
+      ...(options.deferOnPressure ? { defer_on_pressure: options.deferOnPressure } : {}),
     };
     writeJobDocument(jobDir, document);
     logFd = openSync(join(jobDir, DURABLE_JOB_LOG_FILENAME), "a");
@@ -836,6 +841,25 @@ export async function superviseJob(emit: EmitContext, opts: AdmissionSuperviseOp
     });
   };
 
+  // Defer before queueing, holding no slot, exactly as a foreground run does.
+  let pressureWaitMs = 0;
+  const pressure = document.defer_on_pressure;
+  if (pressure) {
+    pressureWaitMs = await waitForMemoryPressure({
+      threshold: pressure.psi_full_avg10,
+      maxWaitMs: pressure.max_wait_seconds * 1000,
+      onWait: (event) => {
+        writeJobStatus(jobDir, { ...status, updated_at: nowIso() });
+        emit.log(
+          event.gaveUp
+            ? `memory pressure still ${event.pressure} after ${formatJobAge(event.waitedMs)}; queueing anyway`
+            : `memory pressure ${event.pressure} > ${pressure.psi_full_avg10}; waiting before queueing`,
+          "info",
+        );
+      },
+    });
+  }
+
   let handle: Awaited<ReturnType<typeof acquireAdmission>>;
   try {
     handle = await acquireAdmission(
@@ -847,6 +871,7 @@ export async function superviseJob(emit: EmitContext, opts: AdmissionSuperviseOp
       {
         label: document.label,
         timeoutMs: timeoutMinutes * 60_000,
+        ...(pressureWaitMs > 0 ? { pressureWaitMs } : {}),
         onWait: () => {
           writeJobStatus(jobDir, { ...status, updated_at: nowIso() });
         },
@@ -890,6 +915,7 @@ export async function superviseJob(emit: EmitContext, opts: AdmissionSuperviseOp
         const child = spawn(executable as string, childArgs, {
           stdio: ["ignore", logFd as number, logFd as number],
           shell: false,
+          env: { ...process.env, [HELD_ENV]: [...heldResources(), document.resource].join(",") },
           ...(document.cwd ? { cwd: document.cwd } : {}),
         });
         child.on("error", rejectPromise);

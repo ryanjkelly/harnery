@@ -89,6 +89,8 @@ Each job directory holds three files:
 | `status.json` | The mutable state, rewritten atomically: `launching`, `queued`, `running`, or `completed`, plus the supervisor PID, the heartbeat, and the final `exit_code` and `signal`. |
 | `job.log` | The command's merged stdout and stderr. |
 
+A detached job follows the same per-resource config as a foreground run: the client resolves capacity, timeout, and `defer_on_pressure` when it launches the job and stores them in the job record, so the supervisor waits out memory pressure before it queues and its command sees `HARNERY_ADMISSION_HELD`.
+
 Job records live beside the queue state, under `/tmp/harnery-admission-jobs` by default, or the directory named by `HARNERY_JOBS_DIR`.
 
 Exit codes with `--detach`: 0 once the job is launched, 1 on a usage error or a failure to launch the supervisor. The job's own outcome comes from `admission wait`.

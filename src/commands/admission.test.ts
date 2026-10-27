@@ -13,6 +13,7 @@ import {
   type DurableJobDocument,
   type DurableJobStatus,
   jobsRoot,
+  readJobDocument,
   readJobStatus,
   writeJobDocument,
   writeJobStatus,
@@ -357,6 +358,34 @@ describe("admission supervise", () => {
     await buildProgram(statusEmit).parseAsync(["admission", "status", "--json"], { from: "user" });
     const payload = data[0] as { resources: { resource: string; holders: unknown[] }[] };
     for (const resource of payload.resources) expect(resource.holders).toEqual([]);
+  });
+});
+
+describe("admission supervise: held resource and pressure setting", () => {
+  test("the job sees HARNERY_ADMISSION_HELD and a stored pressure setting survives the read", async () => {
+    fixtureBaseDir();
+    const jobDir = createJobDir(jobsBase(), "job-held");
+    writeJobDocument(jobDir, {
+      schema_version: DURABLE_JOB_SCHEMA_VERSION,
+      job_id: "job-held",
+      resource: "cmd-test",
+      capacity: 1,
+      label: "held check",
+      argv: ["sh", "-c", 'test "$HARNERY_ADMISSION_HELD" = cmd-test'],
+      cwd: tmpdir(),
+      created_at: new Date().toISOString(),
+      // A threshold no machine exceeds, so the run never actually defers.
+      defer_on_pressure: { psi_full_avg10: 100, max_wait_seconds: 1 },
+    });
+    expect(readJobDocument(jobDir)?.defer_on_pressure).toEqual({
+      psi_full_avg10: 100,
+      max_wait_seconds: 1,
+    });
+    const { emit, errors } = captureEmit();
+    process.exitCode = undefined;
+    await superviseJob(emit, { jobDir });
+    expect(errors).toEqual([]);
+    expect(readJobStatus(jobDir)?.exit_code).toBe(0);
   });
 });
 

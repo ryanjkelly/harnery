@@ -63,6 +63,11 @@ export interface DurableJobDocument {
   /** Directory the wrapped command runs in. */
   cwd: string;
   created_at: string;
+  /**
+   * Wait while Linux memory pressure is above this before queueing, as the
+   * foreground run does. The client resolves it from the resource's project config at launch.
+   */
+  defer_on_pressure?: { psi_full_avg10: number; max_wait_seconds: number };
 }
 
 export interface DurableJobStatus {
@@ -208,7 +213,17 @@ export function readJobDocument(jobDir: string): DurableJobDocument | null {
       : [],
     cwd: typeof parsed.cwd === "string" ? parsed.cwd : "",
     created_at: typeof parsed.created_at === "string" ? parsed.created_at : "",
+    ...readDeferOnPressure(parsed.defer_on_pressure),
   };
+}
+
+function readDeferOnPressure(value: unknown): Pick<DurableJobDocument, "defer_on_pressure"> {
+  if (!isRecord(value)) return {};
+  const threshold = value.psi_full_avg10;
+  const maxWait = value.max_wait_seconds;
+  return typeof threshold === "number" && typeof maxWait === "number" && maxWait > 0
+    ? { defer_on_pressure: { psi_full_avg10: threshold, max_wait_seconds: maxWait } }
+    : {};
 }
 
 /** Read the status document, or null when it is missing or unusable. */
