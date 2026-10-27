@@ -1,0 +1,75 @@
+---
+title: "0226: Stop defers status evidence during a background handoff"
+description: "ADR: while Claude Code has moved the agent's own foreground command into the background, the end-of-turn check lets the turn end and requires the status evidence on the turn the task's completion notification starts."
+---
+
+**Status:** accepted (2026-10-27) · **Scope:** product tier (`core/agents`, hooks)
+
+## Context
+
+The end-of-turn check requires a guarded status check and a visible status box
+on every tool turn. When the host requires Git finalization, the status check
+refuses while owned work is uncommitted, unpushed, or behind its upstream.
+
+Claude Code can move a running foreground command into the background so that
+a user message reaching the session is delivered without interrupting the
+command. When that command is the agent's own commit and push, three controls
+meet:
+
+- the status check refuses because the push has not landed;
+- the inline-waiter guard ([ADR 0187](/decisions/0187-reject-inline-shell-waiters/))
+  denies `sleep` and polling loops, so the agent cannot block in the shell;
+- Stop blocks the turn because the status evidence is missing.
+
+The agent had no action that could satisfy all three. In one observed session
+Stop bounced it five times in about forty seconds while a 95-second commit
+finished, each bounce adding a visible re-prompt and model tokens. The
+remediation cap would eventually have allowed the stop, but a backstop is not a
+design.
+
+## Decision
+
+Stop treats a pending background handoff as a reason to yield, not to block.
+
+- **Signal.** At Stop, the Claude Code adapter reads the session transcript for
+  tool results whose structured `toolUseResult` carries
+  `backgroundedToDeliverMessage: true` and a `backgroundTaskId`, with no later
+  `<task-notification>` naming that task. Only Claude Code writes those fields,
+  so tool output cannot forge them. Any notification text naming the task closes
+  it, which can only make Stop stricter.
+- **Scope.** A command the agent chose to background, or a monitor it armed,
+  opens nothing. A handoff older than 30 minutes stops deferring, so a lost
+  notification cannot disable the ritual. Cursor and Codex are unchanged.
+- **Verdict.** `evaluateStopHookV3Events` drops only the status-check and
+  status-box demands and returns `stop-hook.background_handoff_deferred`.
+  Task declaration and session naming do not depend on the running command and
+  stay enforced. No `end_turn_checked` evidence is invented.
+- **Effects.** A deferred stop clears the remediation count and does not
+  reconcile an explicit session-end request, because it proves nothing about
+  finalization. The Git finalization check itself is unchanged.
+
+The turn that the completion notification starts is an ordinary tool turn, so
+it owes the status check and box again.
+
+The transcript scan reads up to 8 MB from the end of the file. Request-capture
+rows of several hundred KB each can sit between the handoff and Stop, which
+pushed the handoff out of the 256 KB window the status-box scan uses.
+
+## Alternatives considered
+
+- **Instructions only.** Telling agents to accept one bounce preserves the
+  defect, and the observed session shows one bounce becoming several.
+- **Loosen the inline-waiter guard.** ADR 0187 explains why a shell loop that
+  looks bounded is still unsafe; waiting belongs on the host's task handle.
+- **A distinct `git_finalization_in_progress` status code.** Lock files or a
+  running pre-commit process do not prove which task owns them. Useful as a
+  later diagnostic, not as the authority for yielding.
+
+## Consequences
+
+- An agent whose commit is backgrounded can end its turn and resume when the
+  task reports, without re-prompt churn.
+- The exemption depends on Claude Code's transcript fields. A version that drops
+  them returns Stop to the stricter behavior rather than to a silent pass.
+- A notification that never arrives leaves at most 30 minutes of deferred
+  status evidence; the next turn after that enforces normally.
