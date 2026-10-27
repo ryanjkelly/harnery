@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.46.1
+
+### Patch Changes
+
+- f6930cf: A refused file claim now names the coordination ledger's actual refusal reason (for example `heartbeat_missing`) instead of the generic "V3 authority is unavailable", and records a `claim_authority_refused` diagnostic. A regression test confirms a Claude Code session with no open turn can still acquire a claim.
+- 2271474: Stop no longer bounces a Claude Code agent whose foreground command was moved to the background to deliver a user message. While that task is still running, the status-check and status-box demands wait for the turn its completion notification starts; task declaration and session naming stay enforced, agent-chosen background runs and monitors earn no exemption, and a handoff older than 30 minutes stops deferring.
+
 ## 0.46.0
 
 ### Minor Changes
