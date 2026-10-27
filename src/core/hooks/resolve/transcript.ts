@@ -94,6 +94,67 @@ export function scanAssistantStatusBoxPresent(
   );
 }
 
+/** A handoff older than this no longer defers Stop, so a lost notification cannot disable the ritual. */
+export const BACKGROUND_HANDOFF_MAX_AGE_MS = 30 * 60 * 1000;
+
+/**
+ * Claude Code interleaves request-capture rows of several hundred KB each, so
+ * the 256KB status-box window can lose a handoff written a minute earlier.
+ */
+const BACKGROUND_HANDOFF_TAIL_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Claude Code background tasks it moved off the foreground on its own (to
+ * deliver a mid-command user message) that have not yet posted a
+ * `<task-notification>`. Only the structured `toolUseResult` fields written by
+ * Claude Code open a handoff; the agent cannot forge them through tool output.
+ * Any later notification text naming the task closes it, so a spoofed
+ * notification can only make Stop stricter. A command the agent chose to
+ * background (`run_in_background`) or a Monitor opens nothing.
+ */
+export function scanPendingBackgroundHandoffs(
+  transcriptPath: string | undefined,
+  nowMs: number = Date.now(),
+): string[] {
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return [];
+  let size: number;
+  try {
+    size = statSync(readablePath).size;
+  } catch {
+    return [];
+  }
+  const text = readRange(readablePath, Math.max(0, size - BACKGROUND_HANDOFF_TAIL_BYTES), size);
+  if (!text) return [];
+  const opened = new Map<string, number>();
+  for (const line of text.split("\n")) {
+    // Request-capture rows echo the same text; the row-type check below keeps
+    // only Claude Code's own top-level tool-result rows.
+    if (line.includes("backgroundedToDeliverMessage")) {
+      const row = parseTranscriptRow(line);
+      const result = row?.toolUseResult as
+        | { backgroundTaskId?: unknown; backgroundedToDeliverMessage?: unknown }
+        | undefined;
+      if (
+        row?.type === "user" &&
+        result?.backgroundedToDeliverMessage === true &&
+        typeof result.backgroundTaskId === "string" &&
+        result.backgroundTaskId
+      ) {
+        opened.set(result.backgroundTaskId, Date.parse(String(row.timestamp)));
+      }
+    }
+    if (line.includes("task-notification")) {
+      for (const match of line.matchAll(/<task-id>([^<]+)<\/task-id>/g)) {
+        opened.delete(match[1]!);
+      }
+    }
+  }
+  return [...opened]
+    .filter(([, at]) => Number.isFinite(at) && nowMs - at <= BACKGROUND_HANDOFF_MAX_AGE_MS)
+    .map(([id]) => id);
+}
+
 /** Most recent user-visible assistant text across Claude Code and Codex JSONL. */
 export function scanLatestAssistantText(transcriptPath: string | undefined): string | undefined {
   const readablePath = resolveTranscriptPath(transcriptPath);

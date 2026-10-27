@@ -121,6 +121,38 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     expect(one.reason).not.toContain("Repair ALL of them");
   });
 
+  test("a pending background handoff defers status and box evidence but not the task", () => {
+    const base = [turnStarted(0), event("tool.requested", 1)];
+    const pending = { pending_background_handoff: true };
+
+    // Status refused and no box: the agent's own commit is still running.
+    expect(
+      verdict("claude-code", [...base, task(3), turnCompleted(5, ritual(false))], pending),
+    ).toMatchObject({ allow: true, rule: "stop-hook.background_handoff_deferred" });
+
+    // A missing task declaration does not depend on the task and still blocks.
+    const noTask = verdict("claude-code", [...base, turnCompleted(5, ritual(false))], pending);
+    expect(noTask).toMatchObject({ allow: false, rule: "stop-hook.rule_3_3" });
+    expect(noTask.reason).not.toContain("End-of-turn rule (1/3)");
+
+    // A prose-only continuation turn also yields while the task runs.
+    expect(
+      verdict("claude-code", [turnStarted(0), turnCompleted(5, ritual(false))], pending),
+    ).toMatchObject({ allow: true, rule: "stop-hook.background_handoff_deferred" });
+
+    // A complete ritual is an ordinary pass, and the notification turn enforces again.
+    expect(
+      verdict(
+        "claude-code",
+        [...base, status(2), task(3), turnCompleted(5, ritual(true))],
+        pending,
+      ),
+    ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
+    expect(
+      verdict("claude-code", [...base, task(3), turnCompleted(5, ritual(false))]),
+    ).toMatchObject({ allow: false, rule: "stop-hook.rule_1_3" });
+  });
+
   test("Cursor requires both the status event and reply-text status evidence", () => {
     expect(
       verdict("cursor", [
@@ -408,6 +440,7 @@ function verdict(
     stop_hook_active?: boolean;
     status_box_present_strict?: boolean;
     session_name_observation_unavailable?: boolean;
+    pending_background_handoff?: boolean;
   } = {},
 ) {
   return evaluateStopHookV3Events(

@@ -139,6 +139,7 @@ import type { SessionNameDisplayInspection } from "./resolve/transcript.ts";
 import {
   inspectSessionNameDisplayImmediately,
   scanAssistantStatusBoxPresent,
+  scanPendingBackgroundHandoffs,
   scanStatusBoxPresent,
   scanTranscriptRuntime,
 } from "./resolve/transcript.ts";
@@ -1506,6 +1507,18 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
     logError(coordRoot, err, { phase: "stop-presence" });
   }
 
+  // Claude Code may move a running foreground command (often the agent's own
+  // commit and push) into the background to deliver a user message. Until it
+  // reports back, finalization cannot pass, so the verdict defers the status
+  // demands instead of bouncing the agent in a loop.
+  const pendingBackgroundHandoffs =
+    adapter === "claude-code"
+      ? scanPendingBackgroundHandoffs(
+          payload?.transcript_path ??
+            behavior.discoverTranscript?.(payload?.session_id ?? sessionId),
+        )
+      : [];
+
   // Stop verdict (V3 ritual + task/status gate). Direct in-process call: the
   // rule lives in Harnery. agent-hook already emitted this turn.completed
   // with privacy-safe ritual observations, so the evidence is in the stream.
@@ -1519,7 +1532,15 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
     session_name_observation_unavailable: typeof data.session_name_unavailable_reason === "string",
     bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
     workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
+    pending_background_handoff: pendingBackgroundHandoffs.length > 0,
   });
+  if (verdict.rule === "stop-hook.background_handoff_deferred") {
+    appendDebug(coordRoot, {
+      ...debugBase,
+      effect: "stop-deferred-background-handoff",
+      background_task_ids: pendingBackgroundHandoffs,
+    });
+  }
   if (!verdict.allow) {
     // Backstop for sessions whose evidence can never land (e.g. a headless
     // child whose status command resolves to a different owner): after
@@ -1553,6 +1574,12 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
   // until the adapter has committed turn.completed above. Reconcile only
   // when such a request exists; any later real work cancels it in the
   // finalizer instead of being terminated underneath the agent.
+  // A deferred stop proves nothing about finalization; an explicit end must
+  // wait for the turn that reports the background task's result.
+  if (verdict.rule === "stop-hook.background_handoff_deferred") {
+    if (behavior.runtimeContextRetry) scheduleRuntimeContextRetry(coordRoot, adapter, sessionId);
+    return undefined;
+  }
   try {
     const { hasPendingExplicitSessionEndV3, reconcileSessionFinalizationV3 } = await import(
       "../agents/session-finalizer-v3.ts"

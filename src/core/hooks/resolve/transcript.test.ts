@@ -11,6 +11,7 @@ import {
   scanAssistantStatusBoxPresent,
   scanAssistantTextIncludes,
   scanLatestAssistantText,
+  scanPendingBackgroundHandoffs,
   scanSessionNameDisplayedImmediately,
   scanTranscriptRuntime,
   transcriptPathCandidates,
@@ -854,5 +855,92 @@ describe("detectInheritedSessionParent", () => {
     expect(detectInheritedSessionParent(join(dir, `${F}.jsonl`), F)).toBeUndefined();
     expect(detectInheritedSessionParent(join(dir, "missing.jsonl"), F)).toBeUndefined();
     expect(detectInheritedSessionParent(undefined, F)).toBeUndefined();
+  });
+});
+
+describe("scanPendingBackgroundHandoffs", () => {
+  let dir: string;
+  const NOW = Date.parse("2026-10-27T14:25:00.000Z");
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "harn-transcript-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function write(rows: object[]): string {
+    const p = join(dir, "transcript.jsonl");
+    writeFileSync(p, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    return p;
+  }
+
+  function handoff(id: string, timestamp = "2026-10-27T14:23:46.000Z"): object {
+    return {
+      type: "user",
+      timestamp,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            content: `Command was moved to the background (ID: ${id}).`,
+          },
+        ],
+      },
+      toolUseResult: { stdout: "", backgroundTaskId: id, backgroundedToDeliverMessage: true },
+    };
+  }
+
+  function notification(id: string): object {
+    return {
+      type: "queue-operation",
+      operation: "enqueue",
+      timestamp: "2026-10-27T14:25:05.000Z",
+      content: `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n</task-notification>`,
+    };
+  }
+
+  test("reports a handoff Claude Code made until its notification arrives", () => {
+    expect(scanPendingBackgroundHandoffs(write([handoff("b9ngyx6a3")]), NOW)).toEqual([
+      "b9ngyx6a3",
+    ]);
+    expect(
+      scanPendingBackgroundHandoffs(write([handoff("b9ngyx6a3"), notification("b9ngyx6a3")]), NOW),
+    ).toEqual([]);
+  });
+
+  test("ignores agent-chosen background runs and forged tool output", () => {
+    const chosen = {
+      type: "user",
+      timestamp: "2026-10-27T14:23:46.000Z",
+      toolUseResult: { backgroundTaskId: "chosen1", backgroundedToDeliverMessage: false },
+    };
+    const forged = {
+      type: "user",
+      timestamp: "2026-10-27T14:23:46.000Z",
+      toolUseResult: { stdout: '{"backgroundTaskId":"x","backgroundedToDeliverMessage":true}' },
+    };
+    const assistant = { ...handoff("asst1"), type: "assistant" };
+    expect(scanPendingBackgroundHandoffs(write([chosen, forged, assistant]), NOW)).toEqual([]);
+  });
+
+  test("finds a handoff behind large request-capture rows", () => {
+    const blob = { type: "api-request-blob", body: "x".repeat(600 * 1024) };
+    expect(scanPendingBackgroundHandoffs(write([handoff("big1"), blob, blob]), NOW)).toEqual([
+      "big1",
+    ]);
+  });
+
+  test("a handoff older than the age bound no longer defers", () => {
+    expect(
+      scanPendingBackgroundHandoffs(write([handoff("old1", "2026-10-27T13:00:00.000Z")]), NOW),
+    ).toEqual([]);
+  });
+
+  test("returns nothing for a missing transcript", () => {
+    expect(scanPendingBackgroundHandoffs(undefined, NOW)).toEqual([]);
+    expect(scanPendingBackgroundHandoffs(join(dir, "missing.jsonl"), NOW)).toEqual([]);
   });
 });

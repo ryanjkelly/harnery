@@ -36,6 +36,12 @@ export interface StopHookRequest {
   session_name_observation_unavailable?: boolean;
   bypass?: boolean;
   workflow_child?: boolean;
+  /**
+   * Claude Code moved this session's foreground command into the background
+   * and has not yet reported it finished. Finalization cannot pass until it
+   * does, so status and reply-box demands wait for the notification turn.
+   */
+  pending_background_handoff?: boolean;
 }
 
 export const STOP_REMEDIATION_MARKER = "[harnery:stop-remediation";
@@ -170,6 +176,7 @@ export function evaluateStopHookV3Events(
   // Pure prose turns keep the human-visible acknowledgement but do not require
   // task or final-status mutations. This preserves the pre-V3 policy exactly.
   if (!usedTool) {
+    if (!ackPresent && req.pending_background_handoff) return backgroundHandoffDeferred();
     if (!ackPresent) return withCycleAnchor(ackBlock(), cycleAnchor);
     return {
       allow: true,
@@ -203,10 +210,30 @@ export function evaluateStopHookV3Events(
     }
   }
 
-  const blocked = mergeStopBlocks(pending);
+  // A status check run now would refuse on the in-flight commit and a box
+  // cannot be issued without it, so bouncing only loops until the task ends.
+  // Task and naming evidence do not depend on the task and stay enforced.
+  const enforced = req.pending_background_handoff
+    ? pending.filter(
+        (block) => block.rule !== "stop-hook.rule_1_3" && block.rule !== "stop-hook.rule_2_3",
+      )
+    : pending;
+  const blocked = mergeStopBlocks(enforced);
   if (blocked) return withCycleAnchor(blocked, cycleAnchor);
+  if (enforced.length < pending.length) return backgroundHandoffDeferred();
 
   return { allow: true, exit_code: 0, rule: "stop-hook.pass" };
+}
+
+function backgroundHandoffDeferred(): VerdictResult {
+  return {
+    allow: true,
+    exit_code: 0,
+    rule: "stop-hook.background_handoff_deferred",
+    reason:
+      "a command Claude Code moved to the background is still running; status and reply-box " +
+      "evidence are required on the turn its completion notification starts",
+  };
 }
 
 function unconditionalVerdict(req: StopHookRequest): VerdictResult | undefined {
