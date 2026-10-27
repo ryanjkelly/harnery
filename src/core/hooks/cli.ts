@@ -69,6 +69,7 @@ import {
   agentsRequireGitFinalization,
   coordFreshnessSeconds,
   hostPromptContextConfig,
+  readAdmissionConfig,
   resolveBinName,
 } from "../config.ts";
 import {
@@ -143,6 +144,7 @@ import {
 } from "./resolve/transcript.ts";
 import { clearHookRunMarker, writeHookRunMarker } from "./run-markers.ts";
 import { sessionNamePresence } from "./session-name-presence.ts";
+import { shellCommitTreeReason } from "./shell-commit-tree.ts";
 import { shellRmReason } from "./shell-rm.ts";
 import { shellWaiterReason } from "./shell-waiter.ts";
 
@@ -1636,6 +1638,17 @@ async function handleToolRequested(run: HookRun): Promise<number | undefined> {
     return 0;
   }
 
+  const commitTreeReason = shellCommitTreeReason(
+    payload?.tool_name,
+    payload?.tool_input,
+    resolveBinName(coordRoot),
+  );
+  if (commitTreeReason) {
+    const { emitDeny } = await import("./adapter/output.ts");
+    emitDeny(adapter, commitTreeReason);
+    return 0;
+  }
+
   // G-guard for ALL adapters. Claude Code previously ran this via a
   // pre-tool-use bash adapter (which called `agent-coord verdict --rule=claim`);
   // that adapter is now deleted, so agent-hook owns the deny for every adapter.
@@ -1651,7 +1664,39 @@ async function handleToolRequested(run: HookRun): Promise<number | undefined> {
     logError(coordRoot, err, { phase: "pre-tool-use-guard" });
   }
   if (!guardAllowed) return 0;
+
+  // Heavy shell checks queue for a machine-wide admission slot when the
+  // project configures one. Fails open: any error runs the command as written.
+  try {
+    if (await emitAdmissionRewrite(coordRoot, adapter, payload)) return 0;
+  } catch (err) {
+    logError(coordRoot, err, { phase: "pre-tool-use-admission" });
+  }
   return undefined;
+}
+
+async function emitAdmissionRewrite(
+  coordRoot: string,
+  adapter: Adapter,
+  payload: HookRun["payload"],
+): Promise<boolean> {
+  const resource = readAdmissionConfig(coordRoot)?.guard?.resource;
+  if (!resource) return false;
+  const { admissionHookOutput } = await import("./shell-admission.ts");
+  const output = admissionHookOutput({
+    adapter,
+    resource,
+    bin: resolveBinName(coordRoot),
+    projectRoot: coordRoot,
+    toolName: payload?.tool_name,
+    toolInput: payload?.tool_input,
+    cwd: payload?.cwd,
+    skip: coordEnv("ADMISSION_SKIP") === "1" || Boolean(coordEnv("ADMISSION_HELD")),
+    platform: process.platform,
+  });
+  if (!output) return false;
+  process.stdout.write(`${JSON.stringify(output)}\n`);
+  return true;
 }
 
 async function handlePostToolUse(run: HookRun): Promise<void> {

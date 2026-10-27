@@ -1,0 +1,69 @@
+---
+title: "0225: Queue heavy shell checks and reject commit-tree"
+description: "Rewrite heavy agent shell checks into an admission slot, and deny hand-built commits that skip the index lock."
+---
+
+**Status:** accepted (2026-10-26)
+
+## Context
+
+A whole-project typecheck, a full test suite, or a production build can each
+take gigabytes of memory. When several agents on one machine start them at
+once, memory runs out and every session stalls. `admission run` already caps
+how many run together, but only when the agent remembers to wrap the command.
+An instruction asking for that wrapper did not stop the failure: two bare
+typechecks started beside a pre-commit typecheck and a test suite and exhausted
+memory on one machine. A host project then shipped its own PreToolUse hook that
+rewrote heavy commands into the queue. That fixed it for one host and two
+adapters, and the code was copied into a second project.
+
+Separately, when a peer's commit holds the Git index lock while its pre-commit
+checks wait for a slot, an agent can build its own commit from a separate index
+with `git commit-tree` and push it. That skips every pre-commit check and the
+commit-time claim guard.
+
+## Decision
+
+The shared PreToolUse path gains two shell guards.
+
+`admission.guard.resource` in the project config turns on the admission
+rewrite. For Claude Code and Codex shell tools, each simple command that is a
+heavy check gets `<bin> admission run --resource <name> --project-root <root>
+--label 'agent: ...' --` inserted in front of it, after leading `VAR=value`
+assignments. The rest of the command stays byte for byte. Heavy means `tsc`
+however launched, `next build`, an unscoped `bun test`, and the `test`,
+`build`, and `typecheck` package scripts through bun, npm, pnpm, or yarn,
+including inside `bash -c`. Watch modes, version and help flags, and named-file
+test runs pass. Claude Code receives `updatedInput` with no permission decision,
+so its own permission rules still apply, and its Bash timeout rises to the
+10-minute maximum because the queued wait counts against it. Codex requires
+`permissionDecision: "allow"` beside `updatedInput`. Cursor and OpenCode have no
+rewrite channel and pass through, as do Windows-native shells.
+`HARNERY_ADMISSION_SKIP=1` on the command or in the hook's environment, an
+inherited `HARNERY_ADMISSION_HELD`, or a command that already runs
+`admission run` skips the rewrite. Any failure runs the command as written.
+
+`git commit-tree` at any command position is denied, including behind Git's
+global options, wrappers, and `bash -c`. The denial says to wait for the
+peer's commit and points at `<bin> admission status`.
+`HARNERY_ALLOW_COMMIT_TREE=1` is the deliberate override.
+
+## Alternatives considered
+
+- More instruction prose had already failed for both habits.
+- Keeping the rewrite in each host duplicates the shell parsing and leaves
+  every other host and adapter uncovered.
+- Denying a heavy command instead of rewriting it would cost the agent a turn
+  for a fix the hook can apply exactly.
+- Detecting the separate-index workaround by `GIT_INDEX_FILE` would also catch
+  legitimate tooling that builds a staged snapshot; `commit-tree` is the step
+  that produces the unchecked commit.
+
+## Validation
+
+Regression cases cover every detection rule, the exact rewrite (assignment and
+keyword placement, one slot per heavy segment, heredocs, long labels), string
+and argv tool inputs, both adapters' output shapes, the pass-through cases, and
+a rewritten command run in bash with a stub wrapper that keeps `cd`, pipes, and
+the exit code. An agent-hook test confirms the rewrite appears only once the
+config names a resource and that `commit-tree` is denied.

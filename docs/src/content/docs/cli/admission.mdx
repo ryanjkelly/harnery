@@ -143,6 +143,10 @@ The summary groups records by resource and label, most total queue wait first, s
 
 Records live in `$XDG_STATE_HOME/harnery/admission-history/<resource>.jsonl` (default `~/.local/state/harnery/admission-history/`), outside the temp directory, so they survive the reboot that correctly clears the queues. A file past 8 MiB rotates to `<resource>.1.jsonl`, and one rotated file is kept. A queue root not named `harnery-admission`, such as an isolated test queue, records beside itself as `<root>-history` instead. `HARNERY_ADMISSION_HISTORY_DIR` moves the history and `HARNERY_ADMISSION_HISTORY=off` stops recording. Embedding hosts get the same records through `acquireAdmission`; pass a result to `release({ exitCode })` to record the outcome, or `historyDir: null` to opt one queue out.
 
+## Agent hook guard
+
+With `"admission": { "guard": { "resource": "build" } }` in `.harnery/config.jsonc`, the agent hook queues heavy shell checks for you. Before a Claude Code or Codex shell command runs, each segment that is a heavy check (`tsc` however launched, `next build`, an unscoped `bun test`, or a `test`, `build`, or `typecheck` package script) gets `admission run --resource build --project-root <root> --label 'agent: ...' --` inserted in front of it. The rest of the command is unchanged. Prefix `HARNERY_ADMISSION_SKIP=1` to run one check ungated on purpose. The same hook denies `git commit-tree`, which builds a commit that skips the index lock and every pre-commit check; wait for the peer's commit instead, or prefix `HARNERY_ALLOW_COMMIT_TREE=1`. See [ADR 0225](/decisions/0225-queue-heavy-shell-checks-and-reject-commit-tree/).
+
 ## Reading a job record
 
 Classification is fail-closed, the same rule [`harn qa-status`](/cli/qa-status/) applies to a detached QA run. Liveness is proven by the supervisor's PID, never assumed from the status document:

@@ -48,6 +48,47 @@ afterEach(() => {
 });
 
 describe("agent-hook V3 hard cut", () => {
+  test("queues heavy shell checks when the project configures an admission guard", () => {
+    for (const adapter of ["claude-code", "codex"] as const) {
+      const root = candidateRoot(adapter);
+      const session = `admission-${adapter}`;
+      const hook = (tool: string, input: Record<string, unknown>, id: string) =>
+        run(
+          AGENT_HOOK,
+          ["pre-tool-use", "--adapter", adapter],
+          {
+            session_id: session,
+            conversation_id: session,
+            thread_id: session,
+            cwd: root,
+            tool_name: tool,
+            tool_input: input,
+            tool_use_id: id,
+          },
+          root,
+          { HARNERY_BIN: "acme" },
+        );
+      const unconfigured = hook("Bash", { command: "npx tsc --noEmit" }, `${adapter}-off`);
+      expect(unconfigured.stdout).not.toContain("updatedInput");
+      writeFileSync(
+        join(root, ".harnery", "config.jsonc"),
+        '{ "admission": { "guard": { "resource": "build" } } }',
+      );
+      const queued = hook("Bash", { command: "npx tsc --noEmit" }, `${adapter}-on`);
+      expect(queued.status).toBe(0);
+      const output = JSON.parse(queued.stdout).hookSpecificOutput;
+      expect(output.updatedInput.command).toBe(
+        `acme admission run --resource build --project-root ${root} --label 'agent: npx tsc --noEmit' -- npx tsc --noEmit`,
+      );
+      expect(output.permissionDecision).toBe(adapter === "codex" ? "allow" : undefined);
+      const light = hook("Bash", { command: "ls" }, `${adapter}-light`);
+      expect(light.stdout).not.toContain("updatedInput");
+      const plumbing = hook("Bash", { command: "git commit-tree $t -m x" }, `${adapter}-plumb`);
+      expect(JSON.parse(plumbing.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+      expect(plumbing.stdout).toContain("acme admission status");
+    }
+  });
+
   test("denies inline waiters through each shell adapter and permits immediate reads", () => {
     for (const adapter of ["claude-code", "cursor", "codex"] as const) {
       const root = candidateRoot(adapter);
@@ -2224,6 +2265,8 @@ function run(
     "CODEX_THREAD_ID",
     "HARNERY_AGENT_COORD_OWNER",
     "HARNERY_AGENT_COORD_BRIDGE",
+    "HARNERY_ADMISSION_SKIP",
+    "HARNERY_ADMISSION_HELD",
   ]) {
     delete env[key];
   }
