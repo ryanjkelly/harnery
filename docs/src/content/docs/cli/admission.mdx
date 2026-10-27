@@ -34,6 +34,7 @@ The resource name is just a string agreed on by the participants: every wrapper 
 | `--capacity <n>` | Concurrent holders this machine should allow (1 to 32; default from the project config, else 1). Advisory: the smallest capacity among concurrent waiters effectively governs. |
 | `--timeout <minutes>` | Maximum admission wait before giving up (1 to 1440; default from the project config, else 60). |
 | `--label <text>` | Holder description shown in status listings. Default: the command itself. |
+| `--project-root <dir>` | Read per-resource defaults from this project's `.harnery/config.jsonc` instead of the nearest one, for callers inside a nested checkout. |
 | `--detach` | Run the command as a durable job instead of in the foreground. See below. |
 | `--json` | With `--detach`, print the job envelope as JSON. |
 

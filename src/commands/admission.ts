@@ -62,6 +62,7 @@ interface AdmissionRunOpts {
   capacity?: string;
   timeout?: string;
   label?: string;
+  projectRoot?: string;
   detach?: boolean;
   json?: boolean;
 }
@@ -339,6 +340,11 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
       "Holder description shown in status listings (default: the command itself).",
     )
     .option(
+      "--project-root <dir>",
+      "Read admission settings from this project's .harnery/config.jsonc instead of " +
+        "the nearest one (for callers inside a nested checkout).",
+    )
+    .option(
       "--detach",
       "Launch the command as a durable job: a detached supervisor holds the slot, " +
         "runs the command, and records the outcome on disk. Prints the job id and " +
@@ -355,7 +361,7 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
         "launch failure. The job's own outcome comes from admission wait.",
     )
     .action(async (commandArgs: string[], opts: AdmissionRunOpts) => {
-      const resourceConfig = readAdmissionConfig()?.resources[opts.resource];
+      const resourceConfig = readAdmissionConfig(opts.projectRoot)?.resources[opts.resource];
       const capacity = parseBoundedInt(opts.capacity, resourceConfig?.capacity ?? 1, 1, 32);
       if (capacity === undefined) {
         emit.error({
