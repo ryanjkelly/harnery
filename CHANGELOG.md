@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.46.0
+
+### Minor Changes
+
+- 5a2affb: Record every finished admission ticket in a persistent history and add `admission history` to report queue wait, hold time, what each ticket waited behind, and timed-out or abandoned tickets. `AdmissionHandle.release()` accepts an optional `{ exitCode, signal }`.
+- 08f1cf6: The agent hook queues heavy shell checks for an admission slot when `admission.guard.resource` is configured, rewriting each typecheck, full test suite, or build segment into `admission run` for Claude Code and Codex. It also denies `git commit-tree`, which builds a commit that skips the index lock and pre-commit checks; `HARNERY_ALLOW_COMMIT_TREE=1` overrides.
+- b8f30b2: `admission run` reads per-resource defaults (capacity, timeout, memory-pressure deferral) from `.harnery/config.jsonc` `admission.resources`, runs nested calls on a held resource directly through `HARNERY_ADMISSION_HELD`, honors `HARNERY_ADMISSION_SKIP=1`, and defaults its queue to `/tmp/harnery-admission` on POSIX so sessions with a private `TMPDIR` share one queue.
+- 563bf57: Cap every critique invocation at 160 vision calls. `qa-run` tile budgets, `review-pack create --max-tiles`, and `browse --check-critique-max-tiles` stop at 160, and `review-pack judge` refuses a larger pack without calling the provider. Job files that asked for more than 160 tiles are now rejected. Signoff on a page whose complete review would need more than 160 tiles now passes on a sampled critique that kept every edge band, gate hit, and required scope, recorded as `coverage_mode: "sampled"` on the run's critique row and the pack's critique record.
+- fb9dcdb: Record the tokens each critique tile spent. `CritiqueProvider` receives an optional `reportUsage` callback; the judge stores each tile's usage in `critique_pool.tile_timings[].usage`, sums it in `critique_pool.usage` (with `tiles_unreported` for backends that report nothing), and prints the totals in its log and in `review-pack judge`. `runCritique` returns the same totals as `usage`. New toolkit exports: `CritiqueUsage`, `CritiqueUsageTotals`, `addCritiqueUsage`, `sumCritiqueUsage`, and `formatCritiqueUsage`.
+- deb4783: `agents ping` now reaches agents on other machines that share the repo's origin. A name not known locally is matched against other machines' presence and recent mail senders, queued in this machine's `refs/harnery/mail/<machine>` ref, and imported into the recipient's inbox when its machine next fetches. New `presence mail` shows unacknowledged cross-machine messages (ADR 0222).
+- 10acd5f: Peer messages now copy a verified, safely addressable direct parent and report
+  each recipient's actual result. Exact generation checks and stable operation
+  IDs prevent retries from selecting a different task. Replay-only attempts keep
+  missing history unknown, and a parent copy that exceeds the existing 4000-byte
+  limit fails explicitly. Agent show and status expose the selected task's parent
+  relationship and its evidence source without changing claim or lifecycle
+  authority.
+
+### Patch Changes
+
+- 05264ed: Honor explicit QA capture bands within the selected provider's declared pixel limit. Keep planning and capture consistent, with a conservative default when usable sizing metadata is absent.
+- 5321034: Make tool-use hooks and cold ledger reads cheaper. The pre- and post-tool-use hooks answer their session-name checks from the heartbeat cache and read the full ledger only when that cache cannot decide, which brings a hook pair from about 1.3 seconds to 0.3 seconds on a 22 MB active segment. Event validation checks only the union member named by `event_type`, and canonical JSON skips Unicode normalization for ASCII strings and keys; both produce identical results and roughly halve the remaining full-read validation cost.
+- e9f93b9: Prevent incomplete layout and content scans from passing. Add an explicit traversal budget for larger pages. The clipping check supports pure two-dimensional translations and keeps unsupported transforms unknown.
+- a616436: Detached `admission run --detach` jobs now wait out configured memory pressure before queueing, record that wait in the history, and pass `HARNERY_ADMISSION_HELD` to their command, matching foreground runs.
+- abbc3ed: `docs metadata sync --check` now rejects lifecycle timestamps later than the current time (with a 10-minute allowance for clock skew). When a committed `status_changed_at` is already in the future, sync accepts a correction to a time that has passed instead of pinning the impossible value until the clock catches up.
+- a8edf2d: Send a cookie with no leading-dot domain (host-only) to its exact host only, in `fetch`, `cookies header` and every redirect hop. Domain cookies still reach subdomains. `fetch` now follows redirects itself whenever a cookie jar is in use, so each hop takes its Cookie header from the jar and saves its own Set-Cookie. Set-Cookie parsing drops a Domain that does not cover the response host and cookies that break their `__Host-` or `__Secure-` prefix rules, and browser cookie injection skips such cookies. Secure cookies are also sent to loopback hosts over HTTP, as browsers do.
+- 088371e: Validate a V3 producer state with the reader's own validator before publishing it, so a state no reader would accept fails in the hook that produced it and the previous file stays in place. One invalid producer-state file no longer fails every listing in the checkout: listings skip it and record a `producer_state_invalid_skipped` diagnostic naming its adapter and session hash, `agents health` and `ledger-v3 status` report it by name, and readers that target that session's own state still fail closed. Pending runtime contexts reconciled past the retry limit by an externally driven retry are now readable.
+- 0206ef8: Key diagnostic home-path pseudonyms with a per-install secret so a shared bundle no longer lets anyone confirm a guessed user name by hashing it. The secret is created on first use at `$XDG_STATE_HOME/harnery/diagnostic-identity.key` (default `~/.local/state`, mode 0600) and never enters a bundle. Pseudonyms stay stable on one install and distinct per home; finding and timeline IDs derived from home paths change once on upgrade.
+- 42c1f3f: Choose default log segment seal times after acquiring the family lease so concurrent writers preserve manifest ordering.
+- 1ac1cba: Keep page review source checks stable after temporary capture overrides. Correct terminal-line detection around inline markup and boxed code while retaining checks for genuine prose runts.
+- 3b45f56: Under WSL, copy a site's cookies from the Windows sign-in profile before each headless `browse` run when the profile changed since the last copy and is closed, so a sign-in made in that window outside a waiting `--login` run reaches headless runs. An open profile is left alone with one log line. Add `browse --sync-login <url>` to run the copy on demand, and `HARNERY_BROWSER_LOGIN_SYNC=off` to turn the automatic copy off.
+- b70efbd: Allow browse runt checks to retain an explicitly bounded findings list through
+  `--check-runts-max-findings` or `Browser.checkRunts({ maxFindings })`. The default
+  50 findings, 5,000-block scan cap, detection rules, and failure behavior stay
+  unchanged. Invalid bounds fail before the sweep.
+- c8f4c91: Make cold ledger reads and command recording cheaper. A process with no cached read now trusts the authenticated validation checkpoint that writers already keep, when it names exactly the storage being read: it skips the per-event contract and canonical-byte checks, still applies every ledger-level rule, and keeps the result only if it reproduces that checkpoint exactly. Anything else falls back to full validation. A full read of a 23 MB active segment drops from about 430 ms to 90 ms with an identical result. Command output summaries are now staged durably and appended together with the command's completion under one lease.
+
 ## 0.45.2
 
 ### Patch Changes
