@@ -81,6 +81,9 @@ export interface EnvCheck {
  */
 export type EnvSection = () => Promise<EnvCheck[]>;
 
+/** Verdict from `HarneryProgramContext.headerPolicy` for one caller header. */
+export type FetchHeaderDecision = { allow: true } | { allow: false; message: string };
+
 export interface HarneryProgramContext {
   /** Project name (e.g., "my-monorepo"). Used in user-facing log lines + telemetry tags. */
   projectName?: string;
@@ -121,6 +124,17 @@ export interface HarneryProgramContext {
    * zones behind a WAF). harn standalone skips the callback entirely.
    */
   extraHeaders?: (url: string) => Record<string, string>;
+  /**
+   * Optional check run on every header the caller passed to `fetch` with
+   * `-H`, before any request leaves the process. Returning
+   * `{ allow: false, message }` stops the run with that message and a
+   * nonzero exit; there is no flag to override it. Only caller headers are
+   * checked: the default User-Agent and anything `extraHeaders` adds are the
+   * host's own. Redirect hops are not re-checked because a cross-origin hop
+   * already drops every caller header except a few browser headers. The
+   * message must not echo the header value. harn standalone checks nothing.
+   */
+  headerPolicy?: (host: string, name: string, value: string) => FetchHeaderDecision;
   /**
    * Optional callback that returns extra cookies to persist into the shared
    * jar before `fetch` / `browse` attach it. Runs only when a jar is in

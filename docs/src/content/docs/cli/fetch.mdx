@@ -30,6 +30,10 @@ An HTTP request that writes the response body to stdout and speaks to the **shar
 
 Requests are paced like every other Harnery page load: consecutive requests to the same site wait a random 3 to 9 seconds, shared across processes through `~/.cache/harnery/pace.json`, with local and private hosts exempt. `--no-pace` skips it for one run and `HARNERY_PACE=off` disables it machine-wide. The full set of controls is in [Human pace](/cli/browse/#human-pace).
 
+## Header policy
+
+A host that composes Harnery can check every `-H` header through `HarneryProgramContext.headerPolicy(host, name, value)` before the request is sent. A refusal ends the run with the host's message and a nonzero exit, and no flag overrides it. Only your `-H` headers are checked; the default `User-Agent` and headers the host adds through `extraHeaders` are not. `harn` on its own installs no policy.
+
 ## Redirects
 
 With the default `--redirect follow`, Harnery follows redirects itself rather than leaving them to the runtime, with or without the cookie jar. Each hop gets the jar cookies for its own host, the host's `extraHeaders` for its own URL, and its own `Set-Cookie` persistence.
