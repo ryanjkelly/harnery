@@ -131,12 +131,6 @@ export interface HarneryProgramContext {
    */
   extraCookies?: import("./lib/cookies/index.ts").ExtraCookies;
   /**
-   * When it returns true for a run, `fetch` follows redirects itself so the
-   * cookie header, `extraHeaders`, and Set-Cookie persistence apply to every
-   * hop instead of only the first request.
-   */
-  clientRedirects?: () => boolean;
-  /**
    * Called once per `browse` run. Returns the guard that inspects that
    * session's live cookies before each request, after each response, and at
    * close (throwing stops the session and fails the run), or undefined for no

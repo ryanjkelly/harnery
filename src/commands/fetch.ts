@@ -111,7 +111,6 @@ async function runFetch(
       signal: ac.signal,
       extraHeaders: context?.extraHeaders,
       extraCookies: context?.extraCookies,
-      clientRedirects: context?.clientRedirects?.() || undefined,
       responseType: "bytes",
     });
   } finally {

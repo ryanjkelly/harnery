@@ -30,6 +30,12 @@ An HTTP request that writes the response body to stdout and speaks to the **shar
 
 Requests are paced like every other Harnery page load: consecutive requests to the same site wait a random 3 to 9 seconds, shared across processes through `~/.cache/harnery/pace.json`, with local and private hosts exempt. `--no-pace` skips it for one run and `HARNERY_PACE=off` disables it machine-wide. The full set of controls is in [Human pace](/cli/browse/#human-pace).
 
+## Redirects
+
+With the default `--redirect follow`, Harnery follows redirects itself rather than leaving them to the runtime, with or without the cookie jar. Each hop gets the jar cookies for its own host, the host's `extraHeaders` for its own URL, and its own `Set-Cookie` persistence.
+
+A redirect within the same origin keeps every header you passed. A redirect to a different origin keeps only `User-Agent`, `Accept`, `Accept-Language`, and `Range`; every other `-H` header, including `Authorization`, `Cookie`, API keys, and custom `X-*` headers, is dropped for the rest of the chain. A `303`, or a `301` or `302` on a request other than GET or HEAD, continues as a GET without the body. A `307` or `308` to a different origin on a request other than GET or HEAD stops with an error instead of resending the body; request the new URL directly if that is what you want.
+
 ## Output
 
 The body goes to stdout by default. With `--output`, Harnery writes the HTTP representation bytes exactly as received, before content decoding, regardless of the file extension or `Content-Type`. Byte-mode requests ask the server for identity encoding and do not automatically decompress a response that still carries `Content-Encoding`, so `--headers` continues to describe the saved file. The Bun runtime supports this directly. The Node fallback fails instead of saving altered bytes if a server ignores the identity request and returns content-encoded data. Stdout and `--json` decode the body as UTF-8 text, so use `--output` for binary files and text in another encoding. `--json` emits the whole `FetchResult` (`{ status, statusText, url, headers, body, cookiesSaved }`) as a single JSON object. When cookies are saved back to the jar, a note is logged to stderr.
@@ -46,7 +52,7 @@ harn fetch https://example.com | harn read -
 # POST JSON with explicit headers
 harn fetch https://example.com/api -X POST -H 'Content-Type: application/json' -d '{"k":"v"}'
 
-# Capture cookies set on intermediate redirects (follow swallows them)
+# Inspect a redirect response without following it
 harn fetch https://example.com/login --redirect manual --headers
 
 # Clean session, full result as JSON

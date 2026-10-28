@@ -178,7 +178,7 @@ describe("fetchWithJar extraCookies", () => {
   });
 });
 
-describe("fetchWithJar clientRedirects", () => {
+describe("fetchWithJar client-side redirects", () => {
   test("runs the header callback and cookie persistence for every hop", async () => {
     const seen: { path: string; cookie: string | null }[] = [];
     const server = Bun.serve({
@@ -209,7 +209,6 @@ describe("fetchWithJar clientRedirects", () => {
       const hops: string[] = [];
       const result = await fetchWithJar(`http://127.0.0.1:${server.port}/a`, {
         jar,
-        clientRedirects: true,
         extraHeaders: (url) => {
           hops.push(new URL(url).pathname);
           return {};
@@ -240,7 +239,6 @@ describe("fetchWithJar clientRedirects", () => {
     try {
       await expect(
         fetchWithJar(`http://127.0.0.1:${server.port}/a`, {
-          clientRedirects: true,
           extraHeaders: (url) => {
             if (new URL(url).pathname === "/stop") throw new Error("blocked hop");
             return {};
@@ -271,7 +269,6 @@ describe("fetchWithJar clientRedirects", () => {
         method: "POST",
         body: "x",
         headers: { Authorization: "Bearer secret" },
-        clientRedirects: true,
       });
       expect(JSON.parse(result.body)).toEqual({ method: "GET", auth: null });
     } finally {
@@ -286,7 +283,7 @@ describe("fetchWithJar host-only cookies", () => {
     return Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: handler });
   }
 
-  test("a host-only cookie is not sent to a subdomain on a redirect, with or without clientRedirects", async () => {
+  test("a host-only cookie is not sent to a subdomain on a redirect", async () => {
     const seen: (string | null)[] = [];
     const target = serve((request) => {
       seen.push(request.headers.get("cookie"));
@@ -302,9 +299,8 @@ describe("fetchWithJar host-only cookies", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-host-only-"));
     roots.push(root);
     try {
-      for (const clientRedirects of [undefined, true, false]) {
-        seen.length = 0;
-        const jar = new CookieJar({ path: join(root, `cookies-${String(clientRedirects)}.json`) });
+      {
+        const jar = new CookieJar({ path: join(root, "cookies.json") });
         jar.set({
           name: "__Host-session",
           value: "secret",
@@ -314,10 +310,7 @@ describe("fetchWithJar host-only cookies", () => {
           httpOnly: true,
           secure: true,
         });
-        const result = await fetchWithJar(`http://app.localhost:${origin.port}/start`, {
-          jar,
-          ...(clientRedirects === undefined ? {} : { clientRedirects }),
-        });
+        const result = await fetchWithJar(`http://app.localhost:${origin.port}/start`, { jar });
         expect(result.body).toBe("target");
         expect(new URL(result.url).hostname).toBe("evil.app.localhost");
         expect(seen).toEqual([null]);
@@ -411,6 +404,223 @@ describe("fetchWithJar host-only cookies", () => {
       expect(jar.list().map((c) => c.name)).toEqual([]);
     } finally {
       server.stop(true);
+    }
+  });
+});
+
+describe("fetchWithJar cross-origin redirect policy", () => {
+  type Seen = { path: string; method: string; headers: Record<string, string>; body: string };
+
+  function recorder(seen: Seen[], route: (path: string) => Response | null) {
+    return Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        const headers: Record<string, string> = {};
+        request.headers.forEach((v, k) => {
+          headers[k] = v;
+        });
+        seen.push({ path, method: request.method, headers, body: await request.text() });
+        return route(path) ?? new Response("done");
+      },
+    });
+  }
+
+  test("a cross-origin hop keeps only browser headers", async () => {
+    const targetSeen: Seen[] = [];
+    const target = recorder(targetSeen, () => null);
+    const origin = recorder(
+      [],
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://127.0.0.1:${target.port}/x` },
+        }),
+    );
+    try {
+      const result = await fetchWithJar(`http://127.0.0.1:${origin.port}/start`, {
+        headers: {
+          "User-Agent": "test-agent/1",
+          Accept: "text/html",
+          "Accept-Language": "en-US",
+          Range: "bytes=0-10",
+          Authorization: "Bearer secret",
+          "X-Api-Key": "key-123",
+          "X-Custom-Bypass": "bypass-token",
+          Cookie: "sid=abc",
+        },
+      });
+      expect(result.body).toBe("done");
+      expect(targetSeen).toHaveLength(1);
+      const h = targetSeen[0]?.headers ?? {};
+      expect(h["user-agent"]).toBe("test-agent/1");
+      expect(h.accept).toBe("text/html");
+      expect(h["accept-language"]).toBe("en-US");
+      expect(h.range).toBe("bytes=0-10");
+      expect(h.authorization).toBeUndefined();
+      expect(h["x-api-key"]).toBeUndefined();
+      expect(h["x-custom-bypass"]).toBeUndefined();
+      expect(h.cookie).toBeUndefined();
+    } finally {
+      origin.stop(true);
+      target.stop(true);
+    }
+  });
+
+  test("the policy applies without a jar too", async () => {
+    const targetSeen: Seen[] = [];
+    const target = recorder(targetSeen, () => null);
+    const origin = recorder(
+      [],
+      () =>
+        new Response(null, {
+          status: 301,
+          headers: { Location: `http://127.0.0.1:${target.port}/x` },
+        }),
+    );
+    try {
+      await fetchWithJar(`http://127.0.0.1:${origin.port}/start`, {
+        jar: null,
+        headers: { "X-Api-Key": "key-123", "User-Agent": "test-agent/1" },
+      });
+      expect(targetSeen[0]?.headers["x-api-key"]).toBeUndefined();
+      expect(targetSeen[0]?.headers["user-agent"]).toBe("test-agent/1");
+    } finally {
+      origin.stop(true);
+      target.stop(true);
+    }
+  });
+
+  for (const status of [307, 308]) {
+    test(`a cross-origin ${status} on a POST stops without resending the body`, async () => {
+      const targetSeen: Seen[] = [];
+      const target = recorder(targetSeen, () => null);
+      const origin = recorder(
+        [],
+        () =>
+          new Response(null, {
+            status,
+            headers: { Location: `http://127.0.0.1:${target.port}/x` },
+          }),
+      );
+      try {
+        await expect(
+          fetchWithJar(`http://127.0.0.1:${origin.port}/start`, {
+            method: "POST",
+            body: "secret-body",
+          }),
+        ).rejects.toThrow(`Refusing to follow a ${status} redirect of a POST request`);
+        expect(targetSeen).toHaveLength(0);
+      } finally {
+        origin.stop(true);
+        target.stop(true);
+      }
+    });
+  }
+
+  test("a same-origin 307 keeps the method, body, and every caller header", async () => {
+    const seen: Seen[] = [];
+    const server = recorder(seen, (path) =>
+      path === "/a" ? new Response(null, { status: 307, headers: { Location: "/b" } }) : null,
+    );
+    try {
+      await fetchWithJar(`http://127.0.0.1:${server.port}/a`, {
+        method: "POST",
+        body: "payload",
+        headers: { Authorization: "Bearer secret", "X-Api-Key": "key-123" },
+      });
+      expect(seen.map((s) => s.path)).toEqual(["/a", "/b"]);
+      const second = seen[1];
+      expect(second?.method).toBe("POST");
+      expect(second?.body).toBe("payload");
+      expect(second?.headers.authorization).toBe("Bearer secret");
+      expect(second?.headers["x-api-key"]).toBe("key-123");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("host-scoped bypass headers ride a same-origin hop but not a cross-origin one", async () => {
+    const targetSeen: Seen[] = [];
+    const target = recorder(targetSeen, () => null);
+    const seen: Seen[] = [];
+    const origin = recorder(seen, (path) => {
+      if (path === "/a") return new Response(null, { status: 302, headers: { Location: "/b" } });
+      if (path === "/b") {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: `http://127.0.0.1:${target.port}/x` },
+        });
+      }
+      return null;
+    });
+    const zone = `127.0.0.1:${origin.port}`;
+    try {
+      await fetchWithJar(`http://${zone}/a`, {
+        headers: { "X-Explicit-Bypass": "explicit" },
+        extraHeaders: (url): Record<string, string> =>
+          new URL(url).host === zone ? { "X-Zone-Bypass": "zone-secret" } : {},
+      });
+      expect(seen.map((s) => s.path)).toEqual(["/a", "/b"]);
+      for (const hop of seen) {
+        expect(hop.headers["x-zone-bypass"]).toBe("zone-secret");
+        expect(hop.headers["x-explicit-bypass"]).toBe("explicit");
+      }
+      expect(targetSeen[0]?.headers["x-zone-bypass"]).toBeUndefined();
+      expect(targetSeen[0]?.headers["x-explicit-bypass"]).toBeUndefined();
+    } finally {
+      origin.stop(true);
+      target.stop(true);
+    }
+  });
+
+  test("the jar sends only the new host's cookies after a cross-origin hop", async () => {
+    const targetSeen: Seen[] = [];
+    const target = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        targetSeen.push({
+          path: new URL(request.url).pathname,
+          method: request.method,
+          headers: { cookie: request.headers.get("cookie") ?? "" },
+          body: "",
+        });
+        return new Response("done");
+      },
+    });
+    const origin = recorder(
+      [],
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://b.localhost:${target.port}/x` },
+        }),
+    );
+    const root = mkdtempSync(join(tmpdir(), "harnery-redirect-jar-"));
+    roots.push(root);
+    try {
+      const jar = new CookieJar({ path: join(root, "cookies.json") });
+      for (const [name, domain] of [
+        ["a_session", "a.localhost"],
+        ["b_session", "b.localhost"],
+      ] as const) {
+        jar.set({
+          name,
+          value: "v",
+          domain,
+          path: "/",
+          expires: -1,
+          httpOnly: true,
+          secure: false,
+        });
+      }
+      await fetchWithJar(`http://a.localhost:${origin.port}/start`, { jar });
+      expect(targetSeen[0]?.headers.cookie).toBe("b_session=v");
+    } finally {
+      origin.stop(true);
+      target.stop(true);
     }
   });
 });

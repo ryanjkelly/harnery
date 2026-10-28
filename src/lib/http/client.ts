@@ -54,15 +54,6 @@ export interface FetchOptions<TResponseType extends FetchResponseType = "text"> 
   extraCookies?: ExtraCookies;
   /** Response body representation. Default `text`; use `bytes` for lossless file output. */
   responseType?: TResponseType;
-  /**
-   * With `redirect: "follow"`, follow redirects in this client instead of the
-   * runtime's fetch. Every hop then gets its own cookie header, `extraHeaders`
-   * call, and Set-Cookie persistence, so a caller that inspects those can stop
-   * a chain between hops. Credential headers are dropped on a cross-origin hop.
-   * Default: on whenever a `jar` is passed (host-only cookies must follow the
-   * jar's exact-host rule on every hop), off without one.
-   */
-  clientRedirects?: boolean;
 }
 
 type FetchBody<TResponseType extends FetchResponseType> = TResponseType extends "bytes"
@@ -86,23 +77,40 @@ export interface FetchResult<TBody = string> {
  * Pass `responseType: "bytes"` when the caller must preserve the body exactly.
  * Streams aren't supported; this is a CLI helper, not a streaming HTTP
  * client. Use Bun's `fetch` directly for streaming workloads.
+ *
+ * With `redirect: "follow"` (the default) this client follows redirects
+ * itself instead of the runtime's fetch, with or without a jar, so one
+ * policy governs every hop:
+ *   - Each hop gets its own jar Cookie header (exact-host for host-only
+ *     cookies), its own `extraHeaders(url)` call for the hop's URL, and its
+ *     own Set-Cookie persistence. A callback that throws stops the chain
+ *     before the next request.
+ *   - A same-origin hop keeps every caller header.
+ *   - A cross-origin hop keeps only the caller headers in
+ *     `CROSS_ORIGIN_REDIRECT_HEADERS`; credentials, bypass tokens, and custom
+ *     `X-*` headers are dropped for the rest of the chain.
+ *   - A cross-origin 307 or 308 on a request that is not GET or HEAD throws
+ *     instead of resending the body to the new origin.
  */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_CLIENT_REDIRECTS = 20;
+
+/** Caller headers that survive a redirect to a different origin (lowercase). */
+export const CROSS_ORIGIN_REDIRECT_HEADERS: ReadonlySet<string> = new Set([
+  "user-agent",
+  "accept",
+  "accept-language",
+  "range",
+]);
 
 export async function fetchWithJar<TResponseType extends FetchResponseType = "text">(
   url: string,
   opts: FetchOptions<TResponseType> = {},
 ): Promise<FetchResult<FetchBody<TResponseType>>> {
-  // With a jar, redirects are followed here so every hop gets its own Cookie
-  // header from the jar (exact-host for host-only cookies) and its own
-  // Set-Cookie persistence; the runtime would otherwise carry or drop the
-  // first hop's header on its own rules. Pass `clientRedirects: false` to opt out.
-  const clientRedirects = opts.clientRedirects ?? Boolean(opts.jar);
-  if (!clientRedirects || (opts.redirect ?? "follow") !== "follow") return fetchOnce(url, opts);
+  if ((opts.redirect ?? "follow") !== "follow") return fetchOnce(url, opts);
 
   let current = url;
-  let method = opts.method ?? "GET";
+  let method = (opts.method ?? "GET").toUpperCase();
   let body = opts.body;
   let headers = opts.headers;
   let cookiesSaved = 0;
@@ -115,17 +123,23 @@ export async function fetchWithJar<TResponseType extends FetchResponseType = "te
       throw new Error(`Too many redirects (more than ${MAX_CLIENT_REDIRECTS}) starting at ${url}`);
     }
     const next = new URL(location, current);
+    const crossOrigin = next.origin !== new URL(current).origin;
     if (
       result.status === 303 ||
       ((result.status === 301 || result.status === 302) && method !== "GET" && method !== "HEAD")
     ) {
       method = "GET";
       body = undefined;
+    } else if (crossOrigin && method !== "GET" && method !== "HEAD") {
+      throw new Error(
+        `Refusing to follow a ${result.status} redirect of a ${method} request from ${new URL(current).origin} to ${next.origin}: ` +
+          "it would resend the request body to a different origin. Send the request to the new URL directly if that is intended.",
+      );
     }
-    if (next.origin !== new URL(current).origin && headers) {
+    if (crossOrigin && headers) {
       headers = Object.fromEntries(
-        Object.entries(headers).filter(
-          ([name]) => !["authorization", "cookie"].includes(name.toLowerCase()),
+        Object.entries(headers).filter(([name]) =>
+          CROSS_ORIGIN_REDIRECT_HEADERS.has(name.toLowerCase()),
         ),
       );
     }
