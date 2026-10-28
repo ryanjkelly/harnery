@@ -1,6 +1,5 @@
 /** End-to-end binary smoke tests for the universal V3 hook path. */
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -12,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { spawnCoordBinSync } from "../../src/core/agents/coord-bin.ts";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
@@ -133,7 +133,11 @@ function sandbox(initialize: boolean): string {
   const root = mkdtempSync(join(tmpdir(), "harnery-v3-binary-"));
   roots.push(root);
   mkdirSync(join(root, ".harnery"), { recursive: true });
-  symlinkSync(HARNERY_DIR, join(root, "harnery"));
+  symlinkSync(
+    HARNERY_DIR,
+    join(root, "harnery"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
   if (initialize) {
     initializeEventLedgerV3({
       coordRoot: root,
@@ -152,7 +156,7 @@ function run(
   adapter: "claude-code" | "codex" | "cursor",
   payload: object,
 ) {
-  const result = spawnSync("bash", [AGENT_HOOK, event, "--adapter", adapter], {
+  const result = spawnCoordBinSync(AGENT_HOOK, [event, "--adapter", adapter], {
     input: JSON.stringify(payload),
     cwd: root,
     encoding: "utf8",

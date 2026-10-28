@@ -28,7 +28,7 @@ import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import type { Adapter } from "../core/adapter.ts";
-import { coordBinPath } from "../core/agents/coord-bin.ts";
+import { coordBinPath, spawnCoordBinSync } from "../core/agents/coord-bin.ts";
 import {
   checkGitFinalization,
   formatGitFinalizationFailure,
@@ -1915,7 +1915,7 @@ function ensureAdapterSession(root: string): void {
       : { source: "resume" }),
   });
 
-  spawnSync("bash", [agentHook, "session-start", "--adapter", bootstrap.adapter], {
+  spawnCoordBinSync(agentHook, ["session-start", "--adapter", bootstrap.adapter], {
     input: payload,
     cwd: root,
     encoding: "utf8",
@@ -1977,7 +1977,7 @@ function runReleaseClaim(path: string): void {
   if (path.startsWith(`${root}/`)) canonical = path.slice(root.length + 1);
 
   const helper = agentCoordOrExit(root);
-  const result = spawnSync(helper, ["release-claim", myOwner, canonical], {
+  const result = spawnCoordBinSync(helper, ["release-claim", myOwner, canonical], {
     encoding: "utf8",
     ...coordHelperOpts(root),
   });
@@ -2036,7 +2036,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
 
   // Heartbeat mutation goes through agent-coord (atomic temp+rename).
   const helper = agentCoordOrExit(root);
-  const result = spawnSync(helper, ["set-task", myOwner, task], {
+  const result = spawnCoordBinSync(helper, ["set-task", myOwner, task], {
     encoding: "utf8",
     ...coordHelperOpts(root),
   });
@@ -4792,7 +4792,7 @@ function replayAdapterSamples(
       }
 
       const subcommand = EVENT_SUBCOMMAND[event] ?? event;
-      const dispatch = spawnSync("bash", [agentHook, subcommand, "--adapter", adapterFlag], {
+      const dispatch = spawnCoordBinSync(agentHook, [subcommand, "--adapter", adapterFlag], {
         cwd: sandbox,
         encoding: "utf8",
         input: JSON.stringify(payloadObj),
@@ -5371,7 +5371,7 @@ function runHeal(opts: {
 
   // Both recovery actions are handled by the bundled agent-coord binary.
   const helper = agentCoordOrExit(root);
-  let proc = spawnSync(helper, helperArgs, {
+  let proc = spawnCoordBinSync(helper, helperArgs, {
     encoding: "utf8",
     ...coordHelperOpts(root),
   });
@@ -5412,7 +5412,7 @@ function runHeal(opts: {
         "the current native session could not establish authority; no fallback cache was accepted",
       );
     }
-    proc = spawnSync(helper, helperArgs, {
+    proc = spawnCoordBinSync(helper, helperArgs, {
       encoding: "utf8",
       ...coordHelperOpts(root),
     });

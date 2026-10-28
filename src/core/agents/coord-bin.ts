@@ -21,12 +21,42 @@
  * still resolves.
  */
 
+import {
+  type SpawnSyncOptions,
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns,
+  spawnSync,
+} from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { coordEnv } from "../../lib/env.ts";
 
 export type CoordBinName = "agent-coord" | "agent-hook" | "harn";
+
+export function spawnCoordBinSync(
+  binary: string,
+  args: readonly string[],
+  options: SpawnSyncOptionsWithStringEncoding,
+): SpawnSyncReturns<string>;
+export function spawnCoordBinSync(
+  binary: string,
+  args: readonly string[],
+  options?: SpawnSyncOptions,
+): SpawnSyncReturns<string | Buffer>;
+/** Execute the native launcher on Windows, preserving stdin, argv and blocking exit codes. */
+export function spawnCoordBinSync(
+  binary: string,
+  args: readonly string[],
+  options: SpawnSyncOptions = {},
+): SpawnSyncReturns<string | Buffer> {
+  const native = process.platform === "win32";
+  return spawnSync(
+    native ? process.execPath : binary,
+    native ? [`${binary}.mjs`, ...args] : [...args],
+    { windowsHide: true, ...options },
+  );
+}
 
 /**
  * Absolute path to one of harnery's bundled binaries, or null when no candidate

@@ -17,7 +17,7 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { applyDetection } from "../../../lib/presence.ts";
-import { coordBinPath } from "../../agents/coord-bin.ts";
+import { coordBinPath, spawnCoordBinSync } from "../../agents/coord-bin.ts";
 
 export { captureImages, imageJanitor, recordImageArtifactsV3 } from "./image-capture.ts";
 
@@ -70,7 +70,7 @@ export function journalJanitor(repoRoot: string): void {
   try {
     const bin = harnBin(repoRoot);
     if (!bin) return;
-    spawnSync("bash", [bin, "journal", "janitor", "--quiet"], {
+    spawnCoordBinSync(bin, ["journal", "janitor", "--quiet"], {
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
       timeout: 5000,
       stdio: "ignore",
@@ -89,7 +89,7 @@ export function journalRecoveryCue(repoRoot: string): string {
   try {
     const bin = harnBin(repoRoot);
     if (!bin) return "";
-    const r = spawnSync("bash", [bin, "journal", "recovery-cue"], {
+    const r = spawnCoordBinSync(bin, ["journal", "recovery-cue"], {
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
       timeout: 5000,
       encoding: "utf8",
@@ -105,7 +105,7 @@ export function journalArchive(repoRoot: string, owner: string): void {
   try {
     const bin = harnBin(repoRoot);
     if (!bin || !owner) return;
-    spawnSync("bash", [bin, "journal", "archive", "--owner", owner], {
+    spawnCoordBinSync(bin, ["journal", "archive", "--owner", owner], {
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
       timeout: 5000,
       stdio: "ignore",

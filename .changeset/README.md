@@ -4,6 +4,7 @@ Each PR that changes published behavior should include a changeset file in this 
 
 | Pending change | Purpose |
 | --- | --- |
+| [windows-coordination-helpers.md](windows-coordination-helpers.md) | Native internal coordination calls and hook lifecycle verification |
 | [native-windows-source.md](native-windows-source.md) | Native Windows launchers, initialization, and process identity |
 
 To add one, run:

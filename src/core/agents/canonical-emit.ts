@@ -10,10 +10,9 @@
  * seconds and record the observation before the parent command exits.
  */
 
-import { spawnSync } from "node:child_process";
 import { type EventAdapterIdV3, eventAdapterIdV3FromPlatform } from "../events/v3/adapter-id.ts";
 import type { LiveCoordinationObservationV3 } from "../events/v3/live-observation.ts";
-import { coordBinPath } from "./coord-bin.ts";
+import { coordBinPath, spawnCoordBinSync } from "./coord-bin.ts";
 import { resolveCoordRoot } from "./coord-client.ts";
 import type { Heartbeat } from "./state/heartbeat-reader.ts";
 
@@ -64,7 +63,7 @@ export function emitEventV3(input: EventV3EmitInput): boolean {
     ];
     // Pin cwd + HARNERY_COORD_ROOT_OVERRIDE so the child writes to the SAME
     // stream we resolved, regardless of where the caller's shell is cd'd.
-    const result = spawnSync(binary, args, {
+    const result = spawnCoordBinSync(binary, args, {
       encoding: "utf8",
       stdio: ["pipe", "ignore", "pipe"],
       input: JSON.stringify(input.observation),
