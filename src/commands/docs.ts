@@ -344,7 +344,9 @@ async function handleLint(opts: {
     error_count: errors.length,
     warning_count: warnings.length,
     cold_handoffs: cold,
-    violations,
+    // Errors first: a reader (or a truncated pipe) sees what blocks before
+    // thousands of advisory warnings.
+    violations: [...errors, ...warnings],
   });
 
   if (errors.length > 0) emit.setExitCode(1);
