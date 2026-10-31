@@ -7,9 +7,10 @@
  * and forwards the result as the adapter-shaped additionalContext payload.
  *
  * Four subsections combined into one additionalContext payload:
- *   1. Peer table: semantically-relevant peer fields hashed; only re-emits
- *      when peers change (name + instance_id + session_id + kind + started_at
- *      + sorted(files_touched) + platform, sorted by instance_id).
+ *   1. Peer table: re-emits only when a live peer arrives or leaves, changes
+ *      lifecycle, or changes its claimed files. Activity and task text never
+ *      trigger a reprint. Peers past the heartbeat-freshness window are left
+ *      out and counted in "+N more".
  *   2. Council pending: pending open-council IDs hashed; re-emits when the
  *      ID set changes.
  *   3. Focus nudge. Until the session has displayed its current suggested
@@ -24,8 +25,11 @@
  *   5. Codex status footer: a non-deduplicated reminder to put the live status
  *      box after the substantive answer. Stop stays observe-only, so missing the
  *      footer can never trigger a replacement response.
+ *   6. Turn ritual: for adapters whose Stop hook enforces the ritual, shown on
+ *      the first prompt, after a compaction, and after a bounced turn.
  *
  * Hash files live at:
+ *   .harnery/.last-turn-ritual.<instance_id>
  *   .harnery/.last-peer-hash.<instance_id>
  *   .harnery/.last-council-hash.<instance_id>
  *   .harnery/.last-task-nudge-hash.<instance_id>
@@ -46,7 +50,13 @@ import {
 import { join } from "node:path";
 
 import { coordEnv } from "../../../lib/env.ts";
-import { endOfTurnStatusCommand, hostPromptReminder, resolveBinName } from "../../config.ts";
+import {
+  coordFreshnessSeconds,
+  endOfTurnStatusCommand,
+  hostPromptReminder,
+  resolveBinName,
+} from "../../config.ts";
+import { readContextState } from "../../context/index.ts";
 import type { PressureWorkloadClass } from "../../diagnostics/contract.ts";
 import { formatPeerInbox, peerInbox } from "../../inbox/peer-messages.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
@@ -98,10 +108,9 @@ export interface PromptContextOpts {
    * The caller enables this only for human-facing Codex sessions. */
   statusFooterNudge?: boolean;
   /** Adapter id whose Stop hook ENFORCES the end-of-turn ritual (task_set +
-   * status check). When set, append a fresh per-prompt reminder of that
-   * contract so the model satisfies it before ending the turn instead of
-   * being bounced into a retry. Not hash-deduped, same rationale as the
-   * status footer. */
+   * status check). When set, append a reminder of that contract on the
+   * session's first prompt, after a context compaction, and after a turn the
+   * Stop hook bounced (see `markTurnRitualBounced`). */
   turnRitualNudge?: string;
   /** The emitter acknowledges exactly these IDs only after output succeeds. */
   onInboxPrepared?: (messageIds: readonly string[]) => void;
@@ -182,13 +191,12 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (statusMsg) sections.push(statusMsg);
   }
 
-  // 7. Adapters whose Stop hook ENFORCES the turn ritual get a fresh reminder
-  // on every prompt. Reminding before the reply is drafted is far cheaper than
-  // the bounce-and-retry the Stop hook otherwise forces: enforcement-only
-  // compliance was measured missing on a double-digit share of turns. Not
-  // hash-deduped for the same reason as the Codex footer.
+  // 7. Adapters whose Stop hook ENFORCES the turn ritual get the reminder when
+  // it is news: on the session's first prompt, after a context compaction,
+  // and after a turn the Stop hook bounced. The Stop hook keeps enforcing on
+  // every turn, so a missed ritual still costs one retry and re-arms this.
   if (turnRitualNudge) {
-    const ritualMsg = renderTurnRitualReminder(coordRoot, instanceId, turnRitualNudge);
+    const ritualMsg = renderTurnRitualReminder(coordRoot, instanceId, sessionId, turnRitualNudge);
     if (ritualMsg) sections.push(ritualMsg);
   }
 
@@ -262,13 +270,45 @@ function renderHostPromptReminder(coordRoot: string, selfInstanceId: string): st
   return hostPromptReminder(coordRoot) ?? "";
 }
 
+function turnRitualStatePath(coordRoot: string, instanceId: string): string {
+  return join(coordRoot, ".harnery", `.last-turn-ritual.${instanceId}`);
+}
+
+const TURN_RITUAL_BOUNCED = "bounced";
+
+/**
+ * Called by the Stop hook when it blocks a turn for a missing ritual step, so
+ * the next prompt carries the reminder again.
+ */
+export function markTurnRitualBounced(coordRoot: string, instanceId: string): void {
+  writeHashFile(turnRitualStatePath(coordRoot, instanceId), TURN_RITUAL_BOUNCED);
+}
+
 function renderTurnRitualReminder(
   coordRoot: string,
   selfInstanceId: string,
+  sessionId: string,
   adapter: string,
 ): string {
   const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);
   if (!hb || hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) return "";
+
+  // The key changes when native context compaction drops the earlier reminder.
+  let generation = 0;
+  try {
+    generation = readContextState(coordRoot, sessionId)?.generation ?? 0;
+  } catch {
+    /* no continuity state: treat as the first context generation */
+  }
+  const key = `context-generation=${generation}`;
+  const statePath = turnRitualStatePath(coordRoot, selfInstanceId);
+  const previous = safeRead(statePath);
+  if (previous === key) return "";
+  writeHashFile(statePath, key);
+  const bounced =
+    previous === TURN_RITUAL_BOUNCED
+      ? "Your previous turn was bounced by the Stop hook because the ritual was incomplete. "
+      : "";
 
   const bin = resolveBinName(coordRoot);
   const statusCommand = endOfTurnStatusCommand(coordRoot);
@@ -278,6 +318,7 @@ function renderTurnRitualReminder(
       ? " and paste its output verbatim in a fenced code block at the end of your reply"
       : "";
   return (
+    bounced +
     `Turn ritual (Stop-enforced): on any turn that uses tools, run \`${bin} agents set-task "<short focus>"\` at some point during the turn (required every turn, even when the focus is unchanged; pass an empty string when there is no meaningful focus), then make \`${statusCommand}\` your final tool call${paste}. ` +
     "A turn that ends without these is bounced by the Stop hook and costs a retry."
   );
@@ -404,8 +445,57 @@ function computePeerTableIfChanged(
   const remote = readRemoteMachinesSafe(coordRoot);
   if (peers.length === 0 && remote.length === 0) return "";
 
-  // Build hash basis: sorted-by-instance_id projection of semantically-relevant fields.
-  const basis = peers
+  const rendered = renderPeerTable({
+    peers,
+    remote,
+    mySessionId,
+    nowMs: Date.now(),
+    freshnessSeconds: coordFreshnessSeconds(coordRoot),
+    relations: forkRelationLabels(
+      coordRoot,
+      selfInstanceId,
+      new Set(peers.map((p) => p.instance_id ?? "")),
+    ),
+  });
+  if (!rendered.table) return "";
+
+  const hashFile = join(coordRoot, ".harnery", `.last-peer-hash.${selfInstanceId}`);
+  const oldHash = safeRead(hashFile);
+  if (oldHash && oldHash === rendered.hash) return "";
+
+  // Persist hash atomically (temp + rename, same convention as other coord writes).
+  writeHashFile(hashFile, rendered.hash);
+  return rendered.table;
+}
+
+export interface PeerTableInput {
+  peers: HeartbeatRow[];
+  remote: RemoteMachine[];
+  mySessionId: string;
+  nowMs: number;
+  /** Sessions whose last heartbeat is older than this are folded into "+N more". */
+  freshnessSeconds: number;
+  relations?: Map<string, string>;
+}
+
+/**
+ * Pure peer-table render plus its change key. The key covers only what makes
+ * the table news: which live sessions exist, their lifecycle, and the files
+ * they claim. Activity and task text change on nearly every peer tool call, so
+ * they render in the table but never trigger a reprint by themselves.
+ */
+export function renderPeerTable(input: PeerTableInput): { hash: string; table: string } {
+  const { peers, remote, mySessionId, nowMs, freshnessSeconds } = input;
+  const cutoffMs = nowMs - freshnessSeconds * 1000;
+  const live: HeartbeatRow[] = [];
+  const stale: HeartbeatRow[] = [];
+  for (const peer of peers) {
+    const seenMs = Date.parse(peer.last_heartbeat ?? "");
+    if (Number.isFinite(seenMs) && seenMs >= cutoffMs) live.push(peer);
+    else stale.push(peer);
+  }
+
+  const basis = live
     .map((p) => ({
       name: p.name ?? null,
       instance_id: p.instance_id ?? null,
@@ -414,44 +504,29 @@ function computePeerTableIfChanged(
       started_at: p.started_at ?? null,
       files_touched: Array.from(p.files_touched ?? []).sort(),
       platform: p.platform ?? null,
-      activity: p.activity ?? "unknown",
       task_state: p.task_state ?? "active",
       task_state_reason: p.task_state_reason ?? null,
     }))
     .sort((a, b) => (a.instance_id ?? "").localeCompare(b.instance_id ?? ""));
-  // Remote basis: machine + per-agent identity/task/files (published_at is
-  // excluded — a keepalive re-publish alone shouldn't re-emit the table).
+  // Remote basis: machine + per-agent identity, lifecycle, and files
+  // (published_at, activity, and task are excluded for the same reason).
   const remoteBasis = remote.map((m) => ({
     machine: m.machine,
     agents: m.agents.map((a) => ({
       instance_id: a.instance_id,
       name: a.name ?? null,
-      task: a.task ?? null,
-      activity: a.activity,
       task_state: a.task_state,
       task_state_reason: a.task_state_reason ?? null,
       files_touched: Array.from(a.files_touched ?? []).sort(),
     })),
   }));
-  const newHash = sha256Hex16(JSON.stringify({ local: basis, remote: remoteBasis }));
+  const hash = sha256Hex16(JSON.stringify({ local: basis, remote: remoteBasis }));
 
-  const hashFile = join(coordRoot, ".harnery", `.last-peer-hash.${selfInstanceId}`);
-  const oldHash = safeRead(hashFile);
-  if (oldHash && oldHash === newHash) return "";
-
-  // Render peer table via the same formatter used at SessionStart.
-  const local = formatPeerTable(
-    peers,
-    mySessionId,
-    forkRelationLabels(coordRoot, selfInstanceId, new Set(peers.map((p) => p.instance_id ?? ""))),
-  );
-  const remoteTable = formatRemoteTable(remote);
+  const nowSec = Math.floor(nowMs / 1000);
+  const local = formatPeerTable(live, stale, mySessionId, nowSec, input.relations);
+  const remoteTable = formatRemoteTable(remote, nowSec);
   const table = [local, remoteTable].filter(Boolean).join("\n\n");
-  if (!table) return "";
-
-  // Persist hash atomically (temp + rename, same convention as other coord writes).
-  writeHashFile(hashFile, newHash);
-  return table;
+  return { hash, table };
 }
 
 /** readRemoteMachines with a local failure guard (rendering must never throw). */
@@ -464,9 +539,8 @@ function readRemoteMachinesSafe(coordRoot: string): RemoteMachine[] {
 }
 
 /** Render sessions on other machines (presence transport) as a subtable. */
-function formatRemoteTable(remote: RemoteMachine[]): string {
+function formatRemoteTable(remote: RemoteMachine[], nowSec: number): string {
   if (remote.length === 0) return "";
-  const nowSec = Math.floor(Date.now() / 1000);
   const lines: string[] = [];
   for (const m of remote) {
     for (const a of m.agents.slice(0, 10)) {
@@ -583,24 +657,26 @@ function writeHashFile(path: string, value: string): void {
  * (no cross-file imports of formatting internals). If both renderers diverge,
  * pull the shared bits into a small util module. */
 
+type PeerRow = HeartbeatRow & { display_files: string[]; relation?: string; label?: string };
+
 function formatPeerTable(
   peers: HeartbeatRow[],
+  stalePeers: HeartbeatRow[],
   mySessionId: string,
+  nowSec: number,
   relations: Map<string, string> = new Map(),
 ): string {
   if (peers.length === 0) return "";
-  const nowSec = Math.floor(Date.now() / 1000);
 
   const fold: Record<string, string[]> = {};
-  for (const p of peers) {
+  for (const p of [...peers, ...stalePeers]) {
     const kind = p.kind ?? "unknown";
     if (kind === "transient" && p.session_id) {
       fold[p.session_id] = (fold[p.session_id] ?? []).concat(p.files_touched ?? []);
     }
   }
 
-  type RowExt = HeartbeatRow & { display_files: string[]; relation?: string };
-  const rows: RowExt[] = peers
+  const rows: PeerRow[] = peers
     .filter((p) => (p.kind ?? "unknown") !== "transient")
     .map((p) => {
       const folded = fold[p.instance_id ?? ""] ?? [];
@@ -608,22 +684,28 @@ function formatPeerTable(
       const relation = relations.get(p.instance_id ?? "");
       return { ...p, display_files: display, ...(relation ? { relation } : {}) };
     });
+  assignUniqueLabels(rows);
+  const staleRows = stalePeers.filter((p) => (p.kind ?? "unknown") !== "transient");
 
   // Related sessions sort first so a fork parent never hides in "+N more".
   const blocking = rows
     .filter((p) => p.session_id !== mySessionId)
     .sort((a, b) => Number(!!b.relation) - Number(!!a.relation) || byStartedAt(a, b));
   const group = rows.filter((p) => p.session_id === mySessionId).sort(byStartedAt);
+  const staleBlocking = staleRows.filter((p) => p.session_id !== mySessionId).length;
+  const staleGroup = staleRows.length - staleBlocking;
 
   const out: string[] = [];
   const blk = renderSubtable(
     blocking,
+    staleBlocking,
     "Other agent groups active (their files block you):",
     nowSec,
   );
   if (blk) out.push(blk);
   const grp = renderSubtable(
     group,
+    staleGroup,
     "Your group (subagents / parent / siblings; no mutual block):",
     nowSec,
   );
@@ -631,25 +713,43 @@ function formatPeerTable(
   return out.join("\n\n");
 }
 
+/**
+ * One full, distinct label per row. An unnamed session shows its whole
+ * instance id (an 8-character prefix collides for time-ordered ids), and a
+ * name two live rows share carries its instance id so they read as two.
+ */
+function assignUniqueLabels(rows: PeerRow[]): void {
+  const base = (r: PeerRow) => r.name ?? r.instance_id ?? "unknown";
+  const counts = new Map<string, number>();
+  for (const r of rows) counts.set(base(r), (counts.get(base(r)) ?? 0) + 1);
+  for (const r of rows) {
+    const label = base(r);
+    r.label =
+      (counts.get(label) ?? 0) > 1 && r.name && r.instance_id
+        ? `${label} (${r.instance_id})`
+        : label;
+  }
+}
+
 function byStartedAt(a: HeartbeatRow, b: HeartbeatRow): number {
   return (a.started_at ?? "").localeCompare(b.started_at ?? "");
 }
 
 function renderSubtable(
-  rows: Array<HeartbeatRow & { display_files: string[]; relation?: string }>,
+  rows: PeerRow[],
+  staleCount: number,
   header: string,
   nowSec: number,
 ): string {
   if (rows.length === 0) return "";
   const first = rows.slice(0, 10).map((r) => formatRow(r, nowSec));
-  const overflow = rows.length > 10 ? `\n  +${rows.length - 10} more` : "";
+  const more = Math.max(0, rows.length - 10) + staleCount;
+  const staleNote = staleCount > 0 ? ` (${staleCount} with no recent heartbeat)` : "";
+  const overflow = more > 0 ? `\n  +${more} more${staleNote}` : "";
   return `${header}\n${first.join("\n")}${overflow}`;
 }
 
-function formatRow(
-  r: HeartbeatRow & { display_files: string[]; relation?: string },
-  nowSec: number,
-): string {
+function formatRow(r: PeerRow, nowSec: number): string {
   const taskPart = r.task ? ` "${r.task.slice(0, 60)}"` : "";
   const statePart = formatState(r);
   // Fall back started_at → last_heartbeat; if neither is a valid timestamp,
@@ -657,9 +757,8 @@ function formatRow(
   const startedSec = parseIsoSec(r.started_at) ?? parseIsoSec(r.last_heartbeat);
   const ageFrom = startedSec === null ? "age unknown" : fmtAge(nowSec - startedSec);
   const filesPart = fmtFiles(r.display_files);
-  // Prefer a short instance_id over a bare "unknown" so an incomplete row is
-  // still identifiable.
-  const label = r.name ?? (r.instance_id ? r.instance_id.slice(0, 8) : "unknown");
+  // An unnamed row shows its full instance id; a prefix can collide.
+  const label = r.label ?? r.name ?? r.instance_id ?? "unknown";
   const relation = r.relation ? ` [${r.relation}]` : "";
   return `  - agent-${label}${relation}${taskPart}   (${statePart}, ${ageFrom}, ${filesPart})`;
 }

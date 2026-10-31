@@ -1542,6 +1542,14 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
     });
   }
   if (!verdict.allow) {
+    // Re-arm the prompt-time ritual reminder; it is otherwise shown only on a
+    // session's first prompt so the per-prompt context stays small.
+    try {
+      const { markTurnRitualBounced } = await import("../agents/render/prompt-context.ts");
+      markTurnRitualBounced(coordRoot, owner.instance_id);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "stop-ritual-rearm" });
+    }
     // Backstop for sessions whose evidence can never land (e.g. a headless
     // child whose status command resolves to a different owner): after
     // `cap` consecutive blocked stops in one cycle, allow the stop instead

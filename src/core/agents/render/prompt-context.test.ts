@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
-import { renderPromptContext } from "./prompt-context.ts";
+import {
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../events/v3/live-routing.ts";
+import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
+import { markTurnRitualBounced, renderPeerTable, renderPromptContext } from "./prompt-context.ts";
 
 let root: string;
 
@@ -69,9 +75,34 @@ describe("renderPromptContext on the V3 coordination projection", () => {
     expect(claude).toContain("Turn ritual (Stop-enforced)");
     expect(claude).toContain("paste its output verbatim in a fenced code block");
 
+    markTurnRitualBounced(root, "self");
     const cursor = render({ turnRitualNudge: "cursor" });
     expect(cursor).toContain("Turn ritual (Stop-enforced)");
     expect(cursor).toContain("paste its output verbatim in a fenced code block");
+  });
+
+  test("the turn ritual reminder appears only when it is news", () => {
+    expect(render({ turnRitualNudge: "claude-code" })).toContain("Turn ritual (Stop-enforced)");
+    expect(render({ turnRitualNudge: "claude-code" })).toBe("");
+    expect(render({ turnRitualNudge: "claude-code" })).toBe("");
+
+    markTurnRitualBounced(root, "self");
+    const afterBounce = render({ turnRitualNudge: "claude-code" });
+    expect(afterBounce).toContain("previous turn was bounced by the Stop hook");
+    expect(afterBounce).toContain("Turn ritual (Stop-enforced)");
+    expect(render({ turnRitualNudge: "claude-code" })).toBe("");
+
+    // A compaction advances the context generation and drops the old reminder.
+    const dir = join(
+      root,
+      ".harnery",
+      "context",
+      createHash("sha256").update("self").digest("hex").slice(0, 24),
+    );
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ generation: 2 }), "utf8");
+    expect(render({ turnRitualNudge: "claude-code" })).toContain("Turn ritual (Stop-enforced)");
+    expect(render({ turnRitualNudge: "claude-code" })).toBe("");
   });
 
   test("peer changes refresh the semantic hash from canonical V3 claims", () => {
@@ -85,6 +116,34 @@ describe("renderPromptContext on the V3 coordination projection", () => {
     expect(first).toContain("docs/x.md");
     expect(render()).toBe("");
     expect(existsSync(join(root, ".harnery", ".last-peer-hash.self"))).toBe(true);
+  });
+
+  test("a peer that only changes activity does not reprint the table", () => {
+    seedV3Session(root, "peer", { name: "Adelaide", claims: ["docs/x.md"] });
+    expect(render()).toContain("agent-Adelaide");
+    const before = peerActivity("peer");
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    recordLiveHookSignalV3({
+      coordRoot: root,
+      route,
+      eventName: "user-prompt-submit",
+      adapter: "codex",
+      instanceId: "peer",
+      payload: { session_id: "peer", turn_id: "peer-turn-1", raw: {} },
+    });
+    expect(peerActivity("peer")).not.toBe(before);
+    expect(render()).toBe("");
+
+    // A new claim is news and reprints.
+    seedV3Session(root, "peer", { name: "Adelaide", claims: ["docs/y.md"] });
+    expect(render()).toContain("docs/y.md");
+    // A peer arriving is news and reprints.
+    seedV3Session(root, "peer2", { name: "Bruno" });
+    expect(render()).toContain("agent-Bruno");
+    // A lifecycle change is news and reprints.
+    seedV3Session(root, "peer2", { name: "Bruno", lifecycle: "done" });
+    expect(render()).toContain("lifecycle=done");
   });
 
   test("an empty task produces one deduplicated focus nudge", () => {
@@ -142,6 +201,10 @@ describe("renderPromptContext on the V3 coordination projection", () => {
   });
 });
 
+function peerActivity(id: string): string | undefined {
+  return readLiveCoordinationRows(root).find((row) => row.instance_id === id)?.activity;
+}
+
 function render(extra: Record<string, unknown> = {}): string {
   return renderPromptContext({
     coordRoot: root,
@@ -151,3 +214,60 @@ function render(extra: Record<string, unknown> = {}): string {
     ...extra,
   });
 }
+
+describe("renderPeerTable", () => {
+  const nowMs = Date.parse("2026-10-31T15:00:00Z");
+  const iso = (agoSec: number) => new Date(nowMs - agoSec * 1000).toISOString();
+  const peer = (id: string, agoSec: number, extra: Record<string, unknown> = {}) => ({
+    instance_id: id,
+    name: `P${id}`,
+    session_id: `s-${id}`,
+    kind: "session",
+    started_at: iso(agoSec + 60),
+    last_heartbeat: iso(agoSec),
+    activity: "working" as const,
+    task_state: "active" as const,
+    ...extra,
+  });
+  const table = (peers: ReturnType<typeof peer>[]) =>
+    renderPeerTable({ peers, remote: [], mySessionId: "me", nowMs, freshnessSeconds: 600 });
+
+  test("peers past the freshness window are counted, not listed", () => {
+    const peers = [
+      ...Array.from({ length: 8 }, (_, i) => peer(`live${i}`, 30)),
+      ...Array.from({ length: 30 }, (_, i) => peer(`old${i}`, 3600)),
+    ];
+    const out = table(peers).table;
+    expect(out.match(/^ {2}- agent-/gm)).toHaveLength(8);
+    expect(out).not.toContain("Pold");
+    expect(out).toContain("+30 more (30 with no recent heartbeat)");
+  });
+
+  test("no live peers prints nothing, and a peer going stale changes the key", () => {
+    expect(table([peer("a", 3600)]).table).toBe("");
+    const fresh = table([peer("a", 30), peer("b", 30)]).hash;
+    expect(table([peer("a", 30), peer("b", 3600)]).hash).not.toBe(fresh);
+  });
+
+  test("activity and task changes keep the key; claims and lifecycle change it", () => {
+    const base = table([peer("a", 30)]).hash;
+    expect(table([peer("a", 30, { activity: "idle", task: "other" })]).hash).toBe(base);
+    expect(table([peer("a", 30, { files_touched: ["x.ts"] })]).hash).not.toBe(base);
+    expect(table([peer("a", 30, { task_state: "done" })]).hash).not.toBe(base);
+  });
+
+  test("unnamed and duplicate names render as one full, distinct name", () => {
+    const out = table([
+      peer("01a171dc-b571-72c3-b4b7-5d5a9612a322", 30, { name: undefined }),
+      peer("01a171dc-b969-7fc2-8407-a0a559c7b9f9", 30, { name: undefined }),
+      peer("wf-2026-10-25T07-00-48-619Z-7c0c84-a4", 30, { name: undefined }),
+      peer("one", 30, { name: "Amelia" }),
+      peer("two", 30, { name: "Amelia" }),
+    ]).table;
+    expect(out).toContain("agent-01a171dc-b571-72c3-b4b7-5d5a9612a322 ");
+    expect(out).toContain("agent-01a171dc-b969-7fc2-8407-a0a559c7b9f9 ");
+    expect(out).toContain("agent-wf-2026-10-25T07-00-48-619Z-7c0c84-a4 ");
+    expect(out).toContain("agent-Amelia (one)");
+    expect(out).toContain("agent-Amelia (two)");
+  });
+});
