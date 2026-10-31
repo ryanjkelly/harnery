@@ -344,8 +344,14 @@ export function registerAgentsCommand(
 
   cmd
     .command("status")
-    .description("End-of-turn status box (name + session age + files held + peer count)")
+    .description(
+      "End-of-turn status box (name, task, lifecycle, files held, live peers, time; diagnostics only when they report a problem)",
+    )
     .option("--json", "JSON output instead of the box")
+    .option(
+      "--full",
+      "Print every diagnostic row (session age, changes, activity, parent, context, resources)",
+    )
     .option(
       "--end-turn",
       "Treat this as the turn's closing status: issue the box only when this session's held paths are committed and their repositories are pushed",
@@ -361,7 +367,13 @@ export function registerAgentsCommand(
         "The Stop hook payload includes session_id; pass it through.",
     )
     .action(
-      (opts: { endTurn?: boolean; endSession?: boolean; json?: boolean; sessionId?: string }) => {
+      (opts: {
+        endTurn?: boolean;
+        endSession?: boolean;
+        json?: boolean;
+        full?: boolean;
+        sessionId?: string;
+      }) => {
         runStatus(opts);
       },
     );
@@ -2364,6 +2376,7 @@ function runStatus(opts: {
   endTurn?: boolean;
   endSession?: boolean;
   json?: boolean;
+  full?: boolean;
   sessionId?: string;
 }): void {
   const root = monorepoRoot();
@@ -2616,29 +2629,30 @@ function runStatus(opts: {
     return;
   }
 
-  const rows: Array<[string, string]> = [
-    ["session", formatAge(ageSecs)],
-    ...(turnElapsed ? ([["turn", turnElapsed.value]] as Array<[string, string]>) : []),
-    ["changes", turnChanges.value],
-    ["activity", activityOf(hb)],
-    ["lifecycle", lifecycleLabel(hb)],
-    ["parent", describeParentReference(data.parent_reference)],
-    ["context", ctxStr],
-    ["resources", formatResourceSummary(resources)],
-    ["files", filesStr],
-    ["peers", peersStr],
-    ["time", timeStr],
-  ];
-  // Task gets full text; formatBox word-wraps to MAX_BOX_CONTENT_WIDTH. It sits
-  // directly above `activity`, which keeps it under the session/turn clocks
-  // whether or not the turn row rendered.
-  if (hb.task && hb.task.length > 0) {
-    rows.splice(
-      rows.findIndex((row) => row[0] === "activity"),
-      0,
-      ["task", hb.task],
-    );
-  }
+  const contextPercent = !ctxUsage
+    ? null
+    : ctxUsage.percentOnly
+      ? ctxUsage.usedPercent
+      : (ctxUsage.used / ctxUsage.window) * 100;
+  const rows = statusBoxRows({
+    full: opts.full === true,
+    session: formatAge(ageSecs),
+    turn: turnElapsed?.value ?? null,
+    changes: turnChanges.value,
+    task: hb.task ?? "",
+    activity: activityOf(hb),
+    lifecycle: lifecycleLabel(hb),
+    parent: describeParentReference(data.parent_reference),
+    parentProblem: data.parent_reference.state === "conflict",
+    context: ctxStr,
+    contextProblem: contextPercent !== null && contextPercent >= STATUS_CONTEXT_WARN_PERCENT,
+    resources: formatResourceSummary(resources),
+    resourcesProblem:
+      resources.assessment.state === "elevated" || resources.assessment.state === "critical",
+    files: filesStr,
+    peers: peersStr,
+    time: timeStr,
+  });
   if (pendingCouncils.length > 0) {
     // Slot the council line right before `time` so it stays in the "what's
     // active for me" cluster of rows. Show the first ID + count; full list
@@ -2670,6 +2684,60 @@ function runStatus(opts: {
   // Box rendering needs predictable stdout regardless of TTY/pipe detection:
   // agent runs this via Bash (no TTY) and pastes captured stdout into chat.
   process.stdout.write(`${formatBox(displayName, rows)}\n`); // lint-ok-emission: chat-paste path; emit.text() auto-suppresses non-TTY
+}
+
+/** Context use at which the compact status box adds its context row. */
+const STATUS_CONTEXT_WARN_PERCENT = 80;
+
+/**
+ * Rows of the status box. The compact default carries what an operator acts
+ * on (task, lifecycle, files held, live peers, time, with the turn duration
+ * beside the time); diagnostic rows appear only when they report a problem.
+ * `--full` restores every row. The Stop hook detects the box by its
+ * `┌─ agent-` title, never by a row, so trimming rows cannot break it.
+ */
+export function statusBoxRows(input: {
+  full: boolean;
+  session: string;
+  turn: string | null;
+  changes: string;
+  task: string;
+  activity: string;
+  lifecycle: string;
+  parent: string;
+  parentProblem: boolean;
+  context: string;
+  contextProblem: boolean;
+  resources: string;
+  resourcesProblem: boolean;
+  files: string;
+  peers: string;
+  time: string;
+}): Array<[string, string]> {
+  const task: Array<[string, string]> = input.task ? [["task", input.task]] : [];
+  if (input.full) {
+    return [
+      ["session", input.session],
+      ...(input.turn ? ([["turn", input.turn]] as Array<[string, string]>) : []),
+      ["changes", input.changes],
+      ...task,
+      ["activity", input.activity],
+      ["lifecycle", input.lifecycle],
+      ["parent", input.parent],
+      ["context", input.context],
+      ["resources", input.resources],
+      ["files", input.files],
+      ["peers", input.peers],
+      ["time", input.time],
+    ];
+  }
+  const rows: Array<[string, string]> = [...task, ["lifecycle", input.lifecycle]];
+  if (input.parentProblem) rows.push(["parent", input.parent]);
+  if (input.contextProblem) rows.push(["context", input.context]);
+  if (input.resourcesProblem) rows.push(["resources", input.resources]);
+  rows.push(["files", input.files], ["peers", input.peers]);
+  rows.push(["time", input.turn ? `${input.time} (turn ${input.turn})` : input.time]);
+  return rows;
 }
 
 function qualityForStatus(

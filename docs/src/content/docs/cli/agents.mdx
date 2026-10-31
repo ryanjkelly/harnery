@@ -527,28 +527,33 @@ glance:
 
 ```
 ┌─ agent-Foo ────────────────────────────────────────────────────────┐
-│ session    48m                                                      │
-│ turn       4m 12s                                                   │
 │ task       refactoring the ingest retry loop                        │
-│ activity   working                                                  │
 │ lifecycle  active                                                   │
-│ context    240K / 1M (24%)                                          │
 │ files      1 held                                                   │
 │ peers      Bar (CC), 3 files; Baz (CC)                              │
-│ time       Tue, Jul 14, 2026, 7:40 AM CDT                           │
+│ time       Tue, Jul 14, 2026, 7:40 AM CDT (turn 4m 12s)             │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-`session` is how long this session has been alive and `turn` is how long the
-turn the box closes has been running, so a long session and a short turn read
-differently at a glance. `task` is what you declared with `set-task`, and
-`peers` lists the other active agents with their adapter and file counts.
+The box carries the rows an operator acts on. `task` is what you declared
+with `set-task`, `lifecycle` is the objective's state, `files` is what you
+hold, and `peers` lists the other active agents with their adapter and file
+counts. The `time` row ends with how long the turn the box closes has been
+running.
 
-The `turn` row measures from the `turn.started` event the operator's prompt
+Diagnostic rows appear only when they report a problem: `parent` when the
+recorded parent relation conflicts, `context` when the context window is at
+least 80% full, and `resources` when the machine's resource assessment is
+elevated or critical. `--full` prints every row, including `session` (how long
+the session has been alive), `turn`, `changes`, and `activity`. `--json`
+always carries every field. The Stop hook detects the pasted box by its
+`┌─ agent-` title, so the rows shown never affect enforcement.
+
+The turn duration measures from the `turn.started` event the operator's prompt
 recorded to the moment the box renders. A Stop-hook remediation restart is
 folded back into the turn it retried, because the operator experienced one
-turn. The row is best-effort: a session with no turn evidence in the ledger
-renders no `turn` line at all. `--json` carries the same measurement as
+turn. The measurement is best-effort: a session with no turn evidence in the ledger
+shows no turn duration at all. `--json` carries the same measurement as
 `turn_elapsed_secs`, with `turn_complete` saying whether a `turn.completed`
 already closed it.
 

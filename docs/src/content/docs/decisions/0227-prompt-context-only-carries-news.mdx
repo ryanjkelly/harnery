@@ -1,0 +1,62 @@
+---
+title: "0227: Prompt context carries only news"
+description: "ADR: the per-prompt peer table reprints only when live peers arrive, leave, change lifecycle, or change claims; stale peers are counted, not listed; the turn-ritual reminder appears on the first prompt, after compaction, and after a bounced turn; the status box shows diagnostics only when they report a problem."
+---
+
+**Status:** accepted (2026-10-31) · **Scope:** product tier (`core/agents/render`, hooks, `agents status`)
+
+## Context
+
+Everything the prompt hook injects is re-read on every later turn of the
+session. Three parts of it repeated without carrying anything new:
+
+- The peer table's change key included each peer's `activity`, which changes
+  on nearly every peer tool call. In a busy checkout the table reprinted on
+  most prompts.
+- The table listed every session in the coordination view, including ones with
+  no heartbeat for hours, and it shortened an unnamed session to an 8-character
+  instance-id prefix. Time-ordered ids share that prefix, so two sessions read
+  as one name listed twice.
+- The Stop-enforced turn-ritual reminder was injected on every prompt, even
+  though the Stop hook already enforces the ritual on every tool turn.
+
+The closing `agents status` box also printed session age, edit counts,
+activity, parent evidence, context use, and a multi-line resource summary on
+every turn, when most of those rows report nothing an operator acts on.
+
+## Decision
+
+- **Peer-table key.** The key covers the live peer set (identity fields),
+  each peer's lifecycle, and its claimed files. Activity and task text still
+  render but no longer trigger a reprint.
+- **Stale peers.** A peer whose last heartbeat is older than
+  `coord.freshness_seconds` is left out of the table and counted in its
+  subtable's `+N more` line. A table with no live peers prints nothing.
+  `agents status` and `agents list` still report every session.
+- **Names.** An unnamed row shows its full instance id; a name shared by two
+  live rows carries each row's instance id.
+- **Ritual reminder.** Shown on a session's first prompt, again when the
+  context generation advances after a compaction, and again on the prompt
+  after any turn the Stop hook blocked. Stop enforcement is unchanged, so a
+  missed ritual still costs one retry, which re-arms the reminder.
+- **Status box.** The default box shows `task`, `lifecycle`, `files`, `peers`,
+  and `time` (with the turn duration). `parent` appears on a conflict,
+  `context` at 80% or more, and `resources` when the assessment is elevated or
+  critical. `--full` prints every row and `--json` is unchanged. The Stop hook
+  detects the box by its `┌─ agent-` title, so no row is load-bearing.
+
+## Alternatives considered
+
+- **Hash only the peer count.** Rejected: a file claim is the most important
+  peer change and would not register.
+- **Keep the per-prompt ritual reminder.** Rejected because enforcement
+  already exists; the reminder's value is highest before the first reply and
+  right after a failure, which is where it now appears.
+- **Drop stale sessions from the view entirely.** Rejected: liveness is a
+  rendering concern here, and the authoritative view must keep them.
+
+## Consequences
+
+Bounced turns could rise if the first-prompt reminder is not enough. The
+re-arm on bounce bounds that to one retry per lapse, and reverting is local to
+`renderTurnRitualReminder`.

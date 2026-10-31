@@ -50,10 +50,14 @@ test("agent status exposes cache totals in JSON and keeps coordination usable wi
     resources: { state: "fresh", namespace: "wsl", machine: { cpu_percent: 30 } },
   });
   expect(json.stdout).not.toContain("should-not-appear");
+  // Without a warning the compact box leaves the resource row out; --full keeps it.
   const human = run();
   expect(human.status).toBe(0);
-  expect(human.stdout).toContain("resources");
-  expect(human.stdout).toContain("CPU 30%");
+  expect(human.stdout).not.toContain("CPU 30%");
+  const full = run("--full");
+  expect(full.status).toBe(0);
+  expect(full.stdout).toContain("resources");
+  expect(full.stdout).toContain("CPU 30%");
   rmSync(resourcePaths(root).snapshot);
   const missing = run("--json");
   expect(missing.status).toBe(0);
