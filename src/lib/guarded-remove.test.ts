@@ -88,8 +88,8 @@ test("resolves relative targets and --allow-protected under --root, not the cwd"
     });
     expect(existsSync(file)).toBe(true);
     // (c) A relative path escaping root is refused.
-    for (const escape of ["../x", `../${elsewhere.root.split("/").pop()}/output.mp4`])
-      expect(() => guardedRemove([escape], { root, yes: true })).toThrow();
+    for (const outside of ["../x", `../${elsewhere.root.split("/").pop()}/output.mp4`])
+      expect(() => guardedRemove([outside], { root, yes: true })).toThrow();
     // Relative --allow-protected resolves under root too.
     expect(
       guardedRemove(["copy"], {
