@@ -86,7 +86,10 @@ process. Windows has no pinned artifact yet (hint only).
 | `--without <pattern>` | Drop files that contain this pattern (file-level, repeatable). |
 | `-q, --quiet` | No output; exit `0` if any qualified match exists, `1` if none. |
 | `--max-count <n>` | Stop after N matches per file. |
-| `--limit <n>` | Truncate output to N matches total. |
+| `--limit <n>` | Show at most N result rows per page (default 50). |
+| `--page <n>` | Show page N of `--limit`-sized pages (1-based, default 1). |
+| `--all` | Show every result row: no default bound and no paging. |
+| `--max-columns <n>` | Clip each printed line to N characters (default 300; `0` turns clipping off). |
 | `--include <glob>` | Extra include glob (repeatable). |
 | `--exclude <glob>` | Extra exclude glob (repeatable). |
 | `--no-default-excludes` | Disable the default skip list. |
@@ -96,7 +99,27 @@ Numeric flags are validated strictly (`--limit nope`, negative, or fractional
 values fail before any engine spawns). Meaningless flag combinations are
 rejected with explicit errors rather than silently ignored: context with
 `-l`/`-c`/`--files`/`-q`; `--and`/`--without` with `--files`; `-q` with
-`--json`/`-l`/`-c`/`--limit`.
+`--json`/`-l`/`-c`/`--limit`/`--page`/`--all`; `--all` with `--limit` or `--page`.
+
+### Bounded output and paging
+
+A search shows at most 50 result rows unless you pass `--limit <n>` or
+`--all`, and clips each line to 300 characters unless you pass
+`--max-columns`. An agent re-reads every search result on its next turn, and
+a typical search returns about a dozen rows, so the default leaves ordinary
+searches whole and stops a broad pattern from filling the context. When rows
+are left out, the last line says how many matches and files were left out and
+which `--page` continues:
+
+```text
+Showing matches 1-50 of 312 (in 40 files); 262 matches in 31 other files left out. Next: --page 2, or --all for everything.
+```
+
+Pages are cut from one order (repo, then file path, then line), so
+`--page 2` starts exactly where page 1 stopped, on either engine. The totals
+come from a count pass (the same search with `-c`), and a content page is then
+read from just the files that hold its rows. A search that fits on one page
+prints no notice. A clipped line ends with `…[+N chars]`.
 
 ## Boolean composition (`--and` / `--without`)
 
@@ -193,22 +216,24 @@ your shell doesn't expand it.
 Human mode prints `file:line:content` per match (context rows render
 grep-style as `file-line-content`), with a `── <repo> ──` header when more
 than one repo is searched. `--json` emits an envelope shaped
-`{ pattern, mode, engine, and_patterns[], without_patterns[], repos[], total_matches, total_files, truncated, elapsed_ms }`,
+`{ pattern, mode, engine, and_patterns[], without_patterns[], repos[], total_matches, total_files, truncated, limit, page, available_matches, available_files, omitted_matches, omitted_files, next_page, elapsed_ms }`,
 where each entry in `repos[]` carries `{ name, cwd, matches[], truncated }` and
 every row is `{ repo, file, line, text, kind }` with
-`kind: "match" | "context"`.
+`kind: "match" | "context"`, plus `clipped` (characters removed) on a clipped
+row. `total_*` describe this page, `available_*` the whole search, and
+`omitted_*` the difference. `limit` is `null` under `--all`, and `next_page`
+is `null` on the last page.
 
 Filenames are framed with the NUL delimiter (`--null` on both engines), so
 paths containing colons, dashes, or spaces can never be mis-split.
 `total_matches` / `total_files` count **match rows only**; context rows are
 free and never consume `--limit`. `truncated` is `true` only when a result
-beyond `--limit` actually exists: a search with exactly `N` results under
-`--limit N` is *not* truncated (one row of lookahead distinguishes the two).
+after this page actually exists: a search with exactly `N` results under
+`--limit N` is *not* truncated.
 
 Matches are sorted by file then line, so output is stable across runs and
 identical between engines. In `-c` count mode, zero-count rows are filtered
-on both engines. Under `--limit`, *which* matches survive truncation depends
-on engine walk order. Counts and flags are stable, the selection may not be.
+on both engines, and a page selects the same rows on either engine.
 
 ## Notes
 

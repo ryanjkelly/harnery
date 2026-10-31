@@ -35,7 +35,29 @@ import { resolveSearchEngine, type SearchEngine } from "../lib/tools/ripgrep.ts"
  * envelope `{ pattern, mode, engine, and_patterns, without_patterns, repos,
  * total_matches, total_files, truncated, elapsed_ms }`. Matches are sorted
  * (file, then line) for stable output across runs and engines.
+ *
+ * Bounded output and paging: a search shows at most DEFAULT_LIMIT result rows
+ * unless `--limit <n>` or `--all` says otherwise, and clips each printed line
+ * to DEFAULT_MAX_COLUMNS characters (`--max-columns 0` turns clipping off).
+ * Both defaults exist because every search result is re-read by an agent's
+ * next model turn: a typical search returns about a dozen rows, so 50 rows
+ * leaves ordinary searches untouched and stops a broad pattern from flooding
+ * the context, and 300 columns keeps any hand-written source line while
+ * cutting minified or generated ones. When rows are left out, a count pass
+ * (the same search with `-c`, which prints one short row per file) supplies
+ * the totals, and the last line states how many matches and files were left
+ * out and the `--page <n>` that continues. Pages are cut from one global order
+ * (repo order, then file path, then line), so `--page 2` starts exactly where
+ * page 1 stopped, whichever engine ran. A content page is fetched by searching
+ * only the files that hold its rows.
  */
+
+/** Result rows shown when neither --limit nor --all is given. */
+export const DEFAULT_LIMIT = 50;
+/** Characters kept per printed line unless --max-columns says otherwise. */
+export const DEFAULT_MAX_COLUMNS = 300;
+/** Explicit file arguments per engine call when fetching a content page. */
+const PAGE_FILE_BATCH = 200;
 
 const DEFAULT_EXCLUDE_DIRS = [
   ".git",
@@ -94,6 +116,12 @@ export interface GrepOpts {
   beforeContext?: string;
   maxCount?: string;
   limit?: string;
+  /** 1-based page of `limit`-sized pages. */
+  page?: string;
+  /** Lift the default row bound (no paging). */
+  all?: boolean;
+  /** Characters kept per line; "0" disables clipping. */
+  maxColumns?: string;
   include?: string[];
   exclude?: string[];
   and?: string[];
@@ -110,6 +138,8 @@ export interface Match {
   text: string;
   /** "match" = primary result row (counts toward totals + --limit); "context" = free -C/-A/-B row. */
   kind: "match" | "context";
+  /** Characters removed from `text` by --max-columns clipping (absent when whole). */
+  clipped?: number;
 }
 
 export function registerGrepCommand(
@@ -150,7 +180,13 @@ export function registerGrepCommand(
       "Print N lines before each match (overrides -C's before side)",
     )
     .option("--max-count <n>", "Stop after N matches per file")
-    .option("--limit <n>", "Truncate output to N matches total")
+    .option("--limit <n>", `Show at most N result rows per page (default ${DEFAULT_LIMIT})`)
+    .option("--page <n>", "Show page N of --limit-sized pages (1-based; default 1)")
+    .option("--all", "Show every result row (no default bound, no paging)")
+    .option(
+      "--max-columns <n>",
+      `Clip each printed line to N characters (default ${DEFAULT_MAX_COLUMNS}; 0 = no clipping)`,
+    )
     .option(
       "--and <pattern>",
       "Only show files that ALSO contain this pattern (file-level, repeatable)",
@@ -201,15 +237,32 @@ export interface GrepResult {
   and_patterns: string[];
   without_patterns: string[];
   repos: { name: string; cwd: string; matches: Match[]; truncated: boolean }[];
+  /** Result rows shown on this page (context rows excluded). */
   total_matches: number;
+  /** Files with at least one shown row. */
   total_files: number;
+  /** More rows exist after this page. */
   truncated: boolean;
+  /** Page size; null with --all. */
+  limit: number | null;
+  page: number;
+  /** Result rows / files the whole search found, across every page. */
+  available_matches: number;
+  available_files: number;
+  /** Rows / files the search found that this page does not show. */
+  omitted_matches: number;
+  omitted_files: number;
+  /** The --page value that continues, or null on the last page. */
+  next_page: number | null;
   elapsed_ms: number;
 }
 
 /** Validated, resolved options — built once before repo fan-out. */
 interface NormOpts {
-  limit: number; // Infinity when unset
+  limit: number; // page size; Infinity with --all
+  offset: number; // rows skipped before this page
+  page: number;
+  maxColumns: number; // Infinity when clipping is off
   maxCount: number | undefined;
   before: number;
   after: number;
@@ -256,7 +309,18 @@ function normalizeLangs(lang: string | string[] | undefined): string[] | undefin
 
 /** Validate numerics, resolve context sides, expand langs, enforce the compatibility matrix. */
 function normalizeOpts(opts: GrepOpts): NormOpts {
-  const limit = opts.limit ? parseIntOpt("--limit", opts.limit, 1) : Number.POSITIVE_INFINITY;
+  if (opts.all && opts.limit) throw new Error("--all does not combine with --limit");
+  if (opts.all && opts.page) throw new Error("--all does not combine with --page");
+  const limit = opts.all
+    ? Number.POSITIVE_INFINITY
+    : opts.limit
+      ? parseIntOpt("--limit", opts.limit, 1)
+      : DEFAULT_LIMIT;
+  const page = opts.page ? parseIntOpt("--page", opts.page, 1) : 1;
+  const maxColumnsRaw =
+    opts.maxColumns !== undefined
+      ? parseIntOpt("--max-columns", opts.maxColumns, 0)
+      : DEFAULT_MAX_COLUMNS;
   const maxCount = opts.maxCount ? parseIntOpt("--max-count", opts.maxCount, 1) : undefined;
   const c = opts.context !== undefined ? parseIntOpt("-C/--context", opts.context, 0) : 0;
   const before =
@@ -303,6 +367,8 @@ function normalizeOpts(opts: GrepOpts): NormOpts {
       [opts.filesOnly, "-l/--files-only"],
       [opts.count, "-c/--count"],
       [opts.limit, "--limit"],
+      [opts.page, "--page"],
+      [opts.all, "--all"],
     ];
     for (const [set, flag] of rejected) {
       if (set) throw new Error(`-q/--quiet does not combine with ${flag}`);
@@ -312,6 +378,9 @@ function normalizeOpts(opts: GrepOpts): NormOpts {
   return {
     // -q only needs existence: one accepted primary row settles the exit code.
     limit: opts.quiet ? 1 : limit,
+    offset: opts.quiet || !Number.isFinite(limit) ? 0 : (page - 1) * limit,
+    page,
+    maxColumns: maxColumnsRaw === 0 ? Number.POSITIVE_INFINITY : maxColumnsRaw,
     maxCount,
     before,
     after,
@@ -339,66 +408,148 @@ export async function runGrep(
   // ride the same --no-default-excludes gate as the built-in list.
   const hostExcludeDirs = opts.noDefaultExcludes ? [] : (context?.grepExcludeDirs ?? []);
 
-  // All repos are searched concurrently; each collects at most limit+1
-  // accepted rows (one row of lookahead, so "exactly N results" is
-  // distinguishable from "more than N"), then the global budget is applied
-  // in repo order below so `--limit` semantics stay deterministic.
-  const acceptLimit = Number.isFinite(norm.limit) ? norm.limit + 1 : Number.POSITIVE_INFINITY;
-  const perRepo = await Promise.all(
-    repos.map((repo) => {
-      // In --all-repos mode the parent scan prunes submodule dirs — each
-      // submodule gets its own scoped scan, so descending from the parent
-      // would double-scan and double-report every submodule match. This
-      // pruning is correctness (one repo owns each match), so it applies
-      // even when --no-default-excludes is set.
-      const dedupeDirs = opts.allRepos && repo.name === "parent" ? (context?.submodules ?? []) : [];
-      const extraDirs = [...hostExcludeDirs, ...dedupeDirs];
-      return runGrepInRepo(
-        pattern,
-        paths,
-        opts,
-        norm,
-        repo.cwd,
-        repo.name,
-        acceptLimit,
-        engine,
-        rgBin,
-        extraDirs,
-      );
-    }),
-  );
+  // In --all-repos mode the parent scan prunes submodule dirs — each
+  // submodule gets its own scoped scan, so descending from the parent would
+  // double-scan and double-report every submodule match. This pruning is
+  // correctness (one repo owns each match), so it applies even when
+  // --no-default-excludes is set.
+  const extraDirsFor = (repo: { name: string }): string[] => {
+    const dedupeDirs = opts.allRepos && repo.name === "parent" ? (context?.submodules ?? []) : [];
+    return [...hostExcludeDirs, ...dedupeDirs];
+  };
+  const scan = (
+    repo: { name: string; cwd: string },
+    scanPaths: string[],
+    scanOpts: GrepOpts,
+    scanNorm: NormOpts,
+    acceptLimit: number,
+  ): Promise<Match[]> =>
+    runGrepInRepo(
+      pattern,
+      scanPaths,
+      scanOpts,
+      scanNorm,
+      repo.cwd,
+      repo.name,
+      acceptLimit,
+      engine,
+      rgBin,
+      extraDirsFor(repo),
+    );
+  const byPosition = (a: Match, b: Match) =>
+    a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line;
+
+  // Every path yields, per repo, the selected rows (sorted) plus what the
+  // whole search found there, so the page window can be stated exactly.
+  let selected: Match[][];
+  let available: { matches: number; files: Set<string> }[];
+  let after: boolean[]; // rows exist in this repo after the page window
+
+  if (opts.quiet) {
+    // Existence only: one accepted row settles the exit code, so the engine is
+    // stopped at the first hit and no count pass runs.
+    selected = await Promise.all(repos.map((repo) => scan(repo, paths, opts, norm, 1)));
+    available = selected.map((rows) => ({
+      matches: rows.length,
+      files: new Set(rows.map((m) => m.file)),
+    }));
+    after = selected.map(() => false);
+  } else if (!Number.isFinite(norm.limit) || opts.files || opts.filesOnly || opts.count) {
+    // --all, or a mode whose rows are files (one short row each): collect the
+    // complete result, then cut the page from its sorted order.
+    const all = await Promise.all(
+      repos.map((repo) => scan(repo, paths, opts, norm, Number.POSITIVE_INFINITY)),
+    );
+    for (const rows of all) rows.sort(byPosition);
+    available = all.map((rows) => ({
+      matches: rows.length,
+      files: new Set(rows.map((m) => m.file)),
+    }));
+    const windows = pageWindows(
+      all.map((rows) => rows.map(() => 1)),
+      norm.offset,
+      norm.limit,
+    );
+    selected = all.map((rows, i) => rows.slice(windows[i]?.start ?? 0, windows[i]?.end ?? 0));
+    after = all.map((rows, i) => (windows[i]?.end ?? 0) < rows.length);
+  } else {
+    // Content page. The count pass reports one row per file (path + matching
+    // line count) for the whole search; the page window is computed from those
+    // counts, and only the files holding the window's rows are searched again.
+    const countOpts: GrepOpts = { ...opts, count: true };
+    const counts = await Promise.all(
+      repos.map((repo) => scan(repo, paths, countOpts, norm, Number.POSITIVE_INFINITY)),
+    );
+    for (const rows of counts) rows.sort(byPosition);
+    available = counts.map((rows) => ({
+      matches: rows.reduce((sum, r) => sum + r.line, 0),
+      files: new Set(rows.map((r) => r.file)),
+    }));
+    // Expand per-file counts into a row index space without materializing rows.
+    const windows = pageWindows(
+      counts.map((rows) => rows.map((r) => r.line)),
+      norm.offset,
+      norm.limit,
+    );
+    // The selected files already passed --and/--without, so the page fetch
+    // skips the membership scans.
+    const fetchNorm: NormOpts = { ...norm, andPatterns: [], withoutPatterns: [] };
+    selected = await Promise.all(
+      repos.map(async (repo, i) => {
+        const w = windows[i];
+        const rows = counts[i] ?? [];
+        if (!w || w.start >= w.end) return [];
+        const picks = sliceFiles(rows, w.start, w.end);
+        const fetched: Match[] = [];
+        for (let b = 0; b < picks.length; b += PAGE_FILE_BATCH) {
+          const batch = picks.slice(b, b + PAGE_FILE_BATCH);
+          fetched.push(
+            ...(await scan(
+              repo,
+              batch.map((p) => p.file),
+              opts,
+              fetchNorm,
+              Number.POSITIVE_INFINITY,
+            )),
+          );
+        }
+        fetched.sort(byPosition);
+        const out: Match[] = [];
+        for (const pick of picks) {
+          const inFile = fetched.filter((m) => m.file === pick.file);
+          out.push(...inFile.slice(pick.skip, pick.skip + pick.take));
+        }
+        return out;
+      }),
+    );
+    after = counts.map((_, i) => (windows[i]?.end ?? 0) < (available[i]?.matches ?? 0));
+  }
 
   const allRepoResults: GrepResult["repos"] = [];
   let totalMatches = 0;
   const filesSeen = new Set<string>();
-  let truncated = false;
-  let budget = norm.limit;
+  let availableMatches = 0;
+  let availableFiles = 0;
 
   for (let i = 0; i < repos.length; i++) {
     const repo = repos[i];
     if (!repo) continue;
-    const collected = perRepo[i] ?? [];
-    collected.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line));
-    const take = Number.isFinite(budget)
-      ? Math.min(collected.length, Math.max(0, budget))
-      : collected.length;
-    let matches = collected.slice(0, take);
-    // truncated only when an accepted primary row was actually omitted —
-    // the lookahead row (or a later-repo surplus) is the proof.
-    const repoTruncated = collected.length > take;
-    if (repoTruncated) truncated = true;
-    if (Number.isFinite(budget)) budget -= take;
+    let matches = selected[i] ?? [];
     totalMatches += matches.length;
+    availableMatches += available[i]?.matches ?? 0;
+    availableFiles += available[i]?.files.size ?? 0;
     for (const m of matches) filesSeen.add(`${repo.name}/${m.file}`);
-    // Context is materialized only for the SELECTED rows, after budgeting,
-    // so context rows never consume the limit and trailing context is never
-    // cut off by an engine kill.
+    // Context is materialized only for the SELECTED rows, after paging, so
+    // context rows never consume the limit and trailing context is never cut
+    // off by an engine kill.
     if (!opts.files && !opts.filesOnly && !opts.count && (norm.before > 0 || norm.after > 0)) {
       matches = await materializeContext(matches, repo.cwd, norm.before, norm.after);
     }
-    allRepoResults.push({ name: repo.name, cwd: repo.cwd, matches, truncated: repoTruncated });
+    if (Number.isFinite(norm.maxColumns)) matches = matches.map((m) => clip(m, norm.maxColumns));
+    allRepoResults.push({ name: repo.name, cwd: repo.cwd, matches, truncated: after[i] ?? false });
   }
 
+  const truncated = allRepoResults.some((r) => r.truncated);
   return {
     pattern,
     mode: opts.files ? "files" : opts.literal ? "literal" : "regex",
@@ -409,8 +560,64 @@ export async function runGrep(
     total_matches: totalMatches,
     total_files: filesSeen.size,
     truncated,
+    limit: Number.isFinite(norm.limit) && !opts.quiet ? norm.limit : null,
+    page: opts.quiet ? 1 : norm.page,
+    available_matches: availableMatches,
+    available_files: availableFiles,
+    omitted_matches: availableMatches - totalMatches,
+    omitted_files: availableFiles - filesSeen.size,
+    next_page: truncated && !opts.quiet ? norm.page + 1 : null,
     elapsed_ms: Date.now() - started,
   };
+}
+
+/**
+ * Cut the page window [offset, offset + limit) out of one global row order:
+ * repos in order, each repo's rows in sorted order. `weights[i][j]` is how many
+ * rows item j of repo i stands for (1 for a row, a file's count in the count
+ * pass). Returns each repo's window as row indices local to that repo.
+ */
+function pageWindows(
+  weights: number[][],
+  offset: number,
+  limit: number,
+): { start: number; end: number }[] {
+  const end = offset + limit;
+  let base = 0;
+  return weights.map((items) => {
+    const size = items.reduce((sum, w) => sum + w, 0);
+    const start = Math.min(size, Math.max(0, offset - base));
+    const stop = Math.min(size, Math.max(0, end - base));
+    base += size;
+    return { start, end: stop };
+  });
+}
+
+/** Which files (and which of their rows) a local row window covers. */
+function sliceFiles(
+  counts: Match[],
+  start: number,
+  end: number,
+): { file: string; skip: number; take: number }[] {
+  const picks: { file: string; skip: number; take: number }[] = [];
+  let pos = 0;
+  for (const row of counts) {
+    const fileStart = pos;
+    const fileEnd = pos + row.line;
+    pos = fileEnd;
+    if (fileEnd <= start) continue;
+    if (fileStart >= end) break;
+    const skip = Math.max(0, start - fileStart);
+    const take = Math.min(fileEnd, end) - fileStart - skip;
+    if (take > 0) picks.push({ file: row.file, skip, take });
+  }
+  return picks;
+}
+
+/** Clip a row's text to `max` characters, recording how many were removed. */
+function clip(m: Match, max: number): Match {
+  if (m.text.length <= max) return m;
+  return { ...m, text: m.text.slice(0, max), clipped: m.text.length - max };
 }
 
 function resolveRepos(
@@ -967,7 +1174,8 @@ function normalizeFile(file: string): string {
   return file.startsWith("./") ? file.slice(2) : file;
 }
 
-function renderResult(r: GrepResult, opts: GrepOpts): string {
+/** Exported for tests (not part of the package exports map). */
+export function renderResult(r: GrepResult, opts: GrepOpts): string {
   const lines: string[] = [];
   const showRepoHeader = r.repos.length > 1;
   for (const repo of r.repos) {
@@ -988,25 +1196,42 @@ function renderResult(r: GrepResult, opts: GrepOpts): string {
         lines.push(m.file);
       } else if (opts.count) {
         lines.push(`${m.file}:${m.line}`);
-      } else if (m.kind === "context") {
-        lines.push(`${m.file}-${m.line}-${m.text}`);
       } else {
-        lines.push(`${m.file}:${m.line}:${m.text}`);
+        const sep = m.kind === "context" ? "-" : ":";
+        const more = m.clipped ? ` …[+${m.clipped} chars]` : "";
+        lines.push(`${m.file}${sep}${m.line}${sep}${m.text}${more}`);
       }
       prev = m;
     }
-    if (repo.truncated) {
-      lines.push("  (truncated; raise --limit)");
-    }
   }
-  if (r.total_matches === 0) {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const matchWord = (n: number) => `${n} match${n === 1 ? "" : "es"}`;
+  const fileRows = Boolean(opts.files || opts.filesOnly || opts.count);
+  if (r.total_matches === 0 && r.available_matches === 0) {
     const modeTag = r.mode === "literal" ? " (literal)" : r.mode === "files" ? " (files)" : "";
     lines.push(`(no matches for /${r.pattern}/${modeTag})`);
-  } else if (r.repos.length > 1 || r.truncated) {
+  } else if (r.omitted_matches > 0) {
+    // Something was left out: state the window, what was left out, and how to
+    // continue. Never printed when the page shows everything.
+    const first = r.limit === null ? 1 : (r.page - 1) * r.limit + 1;
+    const last = first + r.total_matches - 1;
+    const shown =
+      r.total_matches === 0
+        ? `Page ${r.page} is past the end`
+        : fileRows
+          ? `Showing ${first}-${last} of ${plural(r.available_matches, "file")}`
+          : `Showing matches ${first}-${last} of ${r.available_matches} (in ${plural(r.available_files, "file")})`;
+    const left = fileRows
+      ? `${plural(r.omitted_matches, "file")} left out`
+      : `${matchWord(r.omitted_matches)} in ${plural(r.omitted_files, "other file")} left out`;
+    const next =
+      r.next_page !== null ? `. Next: --page ${r.next_page}, or --all for everything` : "";
     lines.push("");
-    const summary = `${r.total_matches} match${r.total_matches === 1 ? "" : "es"} across ${r.total_files} file${r.total_files === 1 ? "" : "s"}`;
-    const tail = r.truncated ? " (truncated; raise --limit)" : "";
-    lines.push(`${summary}${tail}  (${r.elapsed_ms}ms, ${r.engine})`);
+    lines.push(`${shown}; ${left}${next}.  (${r.elapsed_ms}ms, ${r.engine})`);
+  } else if (r.repos.length > 1) {
+    lines.push("");
+    const summary = `${matchWord(r.total_matches)} across ${plural(r.total_files, "file")}`;
+    lines.push(`${summary}  (${r.elapsed_ms}ms, ${r.engine})`);
   }
   return lines.join("\n");
 }

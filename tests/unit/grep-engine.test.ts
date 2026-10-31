@@ -4,10 +4,13 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DEFAULT_LIMIT,
+  DEFAULT_MAX_COLUMNS,
   type GrepOpts,
   type GrepResult,
   type Match,
   NulDecoder,
+  renderResult,
   runGrep,
 } from "../../src/commands/grep.ts";
 
@@ -121,6 +124,14 @@ beforeAll(() => {
   write("lang/x.ts", "quarklang ts\n");
   write("lang/y.tsx", "quarklang tsx\n");
   write("lang/z.js", "quarklang js\n");
+
+  // Paging fixtures: 9 pmark rows over three files, plus one long line.
+  write("page/a.txt", "pmark a1\nfiller\npmark a2\npmark a3\n");
+  write("page/b.txt", "pmark b1\npmark b2\n");
+  write("page/c.txt", "pmark c1\nx\npmark c2\npmark c3\ny\npmark c4\n");
+  write("long/wide.txt", `lmark ${"w".repeat(1000)}\nlmark short\n`);
+  // Default-bound fixture: more rows than DEFAULT_LIMIT.
+  write("bulk/many.txt", Array.from({ length: 60 }, (_, i) => `bmark ${i}`).join("\n"));
 });
 
 afterAll(() => {
@@ -194,16 +205,11 @@ describe("grep engine parity", () => {
   });
 
   test("--limit truncates and flags the envelope", async () => {
-    // Under a limit, WHICH matches survive depends on engine walk order
-    // (documented), so assert count + flag parity rather than identity.
-    const viaGrep = await runWith("grep", "needle", [fixtureRoot], { limit: "2" });
-    expect(viaGrep.total_matches).toBe(2);
-    expect(viaGrep.truncated).toBe(true);
-    if (hasRg) {
-      const viaRg = await runWith("rg", "needle", [fixtureRoot], { limit: "2" });
-      expect(viaRg.total_matches).toBe(2);
-      expect(viaRg.truncated).toBe(true);
-    }
+    // Pages are cut from one sorted order, so both engines select the SAME rows.
+    const r = await bothEngines("needle", [fixtureRoot], { limit: "2" });
+    expect(r.total_matches).toBe(2);
+    expect(r.truncated).toBe(true);
+    expect(r.next_page).toBe(2);
   });
 
   test("no matches is normal (exit 1), not an error", async () => {
@@ -682,9 +688,16 @@ describe("envelope contract", () => {
     });
     expect(Object.keys(r).sort()).toEqual([
       "and_patterns",
+      "available_files",
+      "available_matches",
       "elapsed_ms",
       "engine",
+      "limit",
       "mode",
+      "next_page",
+      "omitted_files",
+      "omitted_matches",
+      "page",
       "pattern",
       "repos",
       "total_files",
@@ -696,5 +709,138 @@ describe("envelope contract", () => {
     expect(Object.keys(repo ?? {}).sort()).toEqual(["cwd", "matches", "name", "truncated"]);
     const row = repo?.matches[0];
     expect(Object.keys(row ?? {}).sort()).toEqual(["file", "kind", "line", "repo", "text"]);
+  });
+});
+
+describe("bounded output and paging", () => {
+  const pageDir = () => join(fixtureRoot, "page");
+  const rows = (r: GrepResult) =>
+    r.repos.flatMap((repo) => repo.matches.filter((m) => m.kind === "match"));
+  const key = (m: Match) => `${m.file.replace(`${fixtureRoot}/`, "")}:${m.line}`;
+
+  test("pages continue exactly where the previous page stopped", async () => {
+    const all = await bothEngines("pmark", [pageDir()], { all: true });
+    expect(all.total_matches).toBe(9);
+    expect(all.limit).toBeNull();
+    expect(all.next_page).toBeNull();
+    const seen: string[] = [];
+    let page = 1;
+    for (;;) {
+      const r = await bothEngines("pmark", [pageDir()], { limit: "2", page: String(page) });
+      expect(r.available_matches).toBe(9);
+      expect(r.available_files).toBe(3);
+      expect(r.omitted_matches).toBe(9 - r.total_matches);
+      seen.push(...rows(r).map(key));
+      if (r.next_page === null) break;
+      expect(r.next_page).toBe(page + 1);
+      page = r.next_page;
+    }
+    expect(page).toBe(5);
+    expect(seen).toEqual(rows(all).map(key));
+  });
+
+  test("a page boundary inside one file splits that file's rows", async () => {
+    // a.txt has 3 rows; page 1 of size 2 takes a1,a2 and page 2 starts at a3.
+    const p2 = await bothEngines("pmark", [pageDir()], { limit: "2", page: "2" });
+    expect(rows(p2).map(key)).toEqual(["page/a.txt:4", "page/b.txt:1"]);
+    expect(p2.total_files).toBe(2);
+    expect(p2.omitted_files).toBe(1); // c.txt has no row on this page
+  });
+
+  test("context lines ride along with a later page without consuming it", async () => {
+    const r = await bothEngines("pmark", [pageDir()], { limit: "2", page: "4", context: "1" });
+    // Rows 7-8 of the global order are c2 (line 3) and c3 (line 4).
+    expect(rows(r).map(key)).toEqual(["page/c.txt:3", "page/c.txt:4"]);
+    const ctx = r.repos[0]?.matches.filter((m) => m.kind === "context").map(key);
+    expect(ctx).toEqual(["page/c.txt:2", "page/c.txt:5"]);
+    expect(r.total_matches).toBe(2);
+  });
+
+  test("--and qualification still applies on later pages", async () => {
+    const r = await bothEngines("pmark", [pageDir()], { and: ["filler"], limit: "2", page: "2" });
+    expect(r.available_matches).toBe(3);
+    expect(rows(r).map(key)).toEqual(["page/a.txt:4"]);
+    expect(r.next_page).toBeNull();
+  });
+
+  test("files-only and count modes page by file", async () => {
+    const l = await bothEngines("pmark", [pageDir()], { filesOnly: true, limit: "2", page: "2" });
+    expect(rows(l).map((m) => m.file.replace(`${fixtureRoot}/`, ""))).toEqual(["page/c.txt"]);
+    expect(l.available_matches).toBe(3);
+    const c = await bothEngines("pmark", [pageDir()], { count: true, limit: "1" });
+    expect(rows(c).map(key)).toEqual(["page/a.txt:3"]);
+    expect(c.next_page).toBe(2);
+  });
+
+  test("a page past the end is empty and says so", async () => {
+    const r = await bothEngines("pmark", [pageDir()], { limit: "5", page: "3" });
+    expect(r.total_matches).toBe(0);
+    expect(r.next_page).toBeNull();
+    expect(renderResult(r, {})).toContain("Page 3 is past the end");
+  });
+
+  test("long lines are clipped by default and whole with --max-columns 0", async () => {
+    const r = await bothEngines("lmark", [join(fixtureRoot, "long")], {});
+    const wide = rows(r)[0];
+    expect(wide?.text.length).toBe(DEFAULT_MAX_COLUMNS);
+    expect(wide?.clipped).toBe(1006 - DEFAULT_MAX_COLUMNS);
+    expect(rows(r)[1]?.clipped).toBeUndefined();
+    expect(renderResult(r, {})).toContain(`…[+${1006 - DEFAULT_MAX_COLUMNS} chars]`);
+    const whole = await bothEngines("lmark", [join(fixtureRoot, "long")], { maxColumns: "0" });
+    expect(rows(whole)[0]?.text.length).toBe(1006);
+    expect(rows(whole)[0]?.clipped).toBeUndefined();
+  });
+
+  test("the default bound applies without flags; --limit and --all override it", async () => {
+    const bulk = [join(fixtureRoot, "bulk")];
+    const d = await bothEngines("bmark", bulk, {});
+    expect(d.total_matches).toBe(DEFAULT_LIMIT);
+    expect(d.limit).toBe(DEFAULT_LIMIT);
+    expect(d.available_matches).toBe(60);
+    expect(d.omitted_matches).toBe(60 - DEFAULT_LIMIT);
+    const text = renderResult(d, {});
+    expect(text).toContain(`Showing matches 1-${DEFAULT_LIMIT} of 60 (in 1 file)`);
+    expect(text).toContain("Next: --page 2, or --all for everything");
+    expect((await bothEngines("bmark", bulk, { limit: "100" })).total_matches).toBe(60);
+    const all = await bothEngines("bmark", bulk, { all: true });
+    expect(all.total_matches).toBe(60);
+    expect(all.truncated).toBe(false);
+  });
+
+  test("a search that fits prints no left-out notice", async () => {
+    const r = await bothEngines("pmark", [pageDir()], {});
+    expect(r.omitted_matches).toBe(0);
+    expect(r.truncated).toBe(false);
+    const text = renderResult(r, {});
+    expect(text).not.toContain("left out");
+    expect(text).not.toContain("--page");
+  });
+
+  test("paging flags are validated", async () => {
+    for (const [opts, re] of [
+      [{ all: true, limit: "5" }, /--all does not combine with --limit/],
+      [{ all: true, page: "2" }, /--all does not combine with --page/],
+      [{ page: "0" }, /--page/],
+      [{ maxColumns: "x" }, /--max-columns/],
+      [{ quiet: true, page: "2" }, /--quiet does not combine with --page/],
+      [{ quiet: true, all: true }, /--quiet does not combine with --all/],
+    ] as [GrepOpts, RegExp][]) {
+      await expect(runWith("grep", "pmark", [pageDir()], opts)).rejects.toThrow(re);
+    }
+  });
+
+  test("--json carries the page fields (spawned CLI)", () => {
+    const harn = join(import.meta.dir, "..", "..", "bin", "harn");
+    const out = spawnSync(harn, ["grep", "pmark", "page", "--limit", "4", "--json"], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+    });
+    expect(out.status).toBe(0);
+    const parsed = JSON.parse(out.stdout);
+    const env = parsed.data ?? parsed;
+    expect(env.total_matches).toBe(4);
+    expect(env.available_matches).toBe(9);
+    expect(env.next_page).toBe(2);
+    expect(env.limit).toBe(4);
   });
 });

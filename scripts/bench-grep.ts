@@ -76,7 +76,12 @@ async function timeEngine(
   let matches = 0;
   for (let i = 0; i < iterations; i++) {
     const t0 = performance.now();
-    const r = await runGrep(pattern, paths, context ? { allRepos: true } : {}, context);
+    const r = await runGrep(
+      pattern,
+      paths,
+      context ? { allRepos: true, all: true } : { all: true },
+      context,
+    );
     runs.push(Math.round(performance.now() - t0));
     matches = r.total_matches;
   }
