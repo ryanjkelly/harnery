@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { applyInstructions, checkInstructions, removeInstructions } from "./apply.ts";
+import { spawnSync } from "node:child_process";
+
+import { applyInstructions, checkInstructions, parentScopeWarning, removeInstructions } from "./apply.ts";
 
 const BIN = "acme";
 let root: string;
@@ -382,5 +384,40 @@ describe("host addendum", () => {
     config("../escape.md");
     const r = checkInstructions(root, { binName: BIN, adapter: "claude-code" });
     expect(r.status).toBe("error");
+  });
+});
+
+describe("parentScopeWarning", () => {
+  const child = (name: string, body: string) => {
+    mkdirSync(join(root, name), { recursive: true });
+    writeFileSync(join(root, name, "AGENTS.md"), body);
+  };
+  const BLOCK = "<!-- harnery:begin instructions v=abc -->\nx\n<!-- harnery:end instructions -->\n";
+
+  test("warns for a non-Git folder holding projects with their own block", () => {
+    child("alpha", BLOCK);
+    child("beta", BLOCK);
+    child("plain", "# no block\n");
+    const w = parentScopeWarning(root);
+    expect(w).toContain("not a Git work tree");
+    expect(w).toContain("2 project(s)");
+    expect(w).toContain("alpha, beta");
+    expect(w).not.toContain("plain");
+    const applied = applyInstructions(root, { binName: BIN, adapter: "claude-code", dryRun: true });
+    expect(applied.warnings.some((x) => x.includes("not a Git work tree"))).toBe(true);
+  });
+
+  test("an empty .git folder does not make the folder a repository", () => {
+    mkdirSync(join(root, ".git"));
+    child("alpha", BLOCK);
+    expect(parentScopeWarning(root)).toContain("alpha");
+  });
+
+  test("stays quiet inside a Git work tree and when no child carries a block", () => {
+    child("plain", "# no block\n");
+    expect(parentScopeWarning(root)).toBeNull();
+    child("alpha", BLOCK);
+    expect(spawnSync("git", ["init", "-q", root]).status).toBe(0);
+    expect(parentScopeWarning(root)).toBeNull();
   });
 });

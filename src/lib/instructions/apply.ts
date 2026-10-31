@@ -21,6 +21,7 @@
  *     `.claude/skills/`; Cursor and Codex use `.agents/skills/`.
  */
 
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -170,6 +171,9 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
   // aborts the whole run instead of leaving AGENTS.md half-updated.
   const addendum = readHostAddendum(projectRoot);
 
+  const parentScope = parentScopeWarning(projectRoot);
+  if (parentScope) warnings.push(parentScope);
+
   // ── AGENTS.md orientation block ─────────────────────────────────────────
   const agentsPath = join(projectRoot, AGENTS_FILE);
   const agentsExisted = existsSync(agentsPath);
@@ -290,6 +294,50 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
   }
 
   return { actions, warnings };
+}
+
+/** True when `dir` is inside a real Git work tree (an empty `.git` folder does not count). */
+function insideGitWorkTree(dir: string): boolean {
+  const r = spawnSync("git", ["-C", dir, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" });
+  return r.status === 0 && r.stdout.trim() === "true";
+}
+
+const PARENT_SCAN_SKIP = new Set(["node_modules"]);
+
+/**
+ * Warn when instructions are being installed in a folder that is not a Git
+ * work tree but holds projects carrying their own Harnery instructions block.
+ * Harnesses that read instruction files from parent folders (Claude Code walks
+ * up for CLAUDE.md) would load this block on top of each project's own, and
+ * with the wrong command name when a project pins a different one. Installing
+ * in a non-Git folder stays supported; this only names the overlap.
+ */
+export function parentScopeWarning(projectRoot: string): string | null {
+  if (insideGitWorkTree(projectRoot)) return null;
+  let entries: string[];
+  try {
+    entries = readdirSync(projectRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith(".") && !PARENT_SCAN_SKIP.has(e.name))
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return null;
+  }
+  const marker = `harnery:begin ${INSTRUCTIONS_REGION}`;
+  const children = entries.filter((name) => {
+    try {
+      return readFileSync(join(projectRoot, name, AGENTS_FILE), "utf8").includes(marker);
+    } catch {
+      return false;
+    }
+  });
+  if (children.length === 0) return null;
+  const listed = children.slice(0, 5).join(", ") + (children.length > 5 ? `, +${children.length - 5} more` : "");
+  return (
+    `${projectRoot} is not a Git work tree and contains ${children.length} project(s) with their own ` +
+    `Harnery instructions (${listed}). Harnesses that read parent folders, such as Claude Code, will load ` +
+    `this block on top of theirs. Run init inside each project instead, or pass --project-root <project>.`
+  );
 }
 
 interface RemoveOpts {
