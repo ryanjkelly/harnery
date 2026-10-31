@@ -90,6 +90,17 @@ async function runFetch(
     headers[h.slice(0, idx).trim()] = h.slice(idx + 1).trim();
   }
 
+  // Caller headers only: the User-Agent above is ours, not the caller's.
+  if (context?.headerPolicy) {
+    const host = new URL(url).hostname;
+    for (const h of opts.header ?? []) {
+      const idx = h.indexOf(":");
+      const name = h.slice(0, idx).trim();
+      const verdict = context.headerPolicy(host, name, h.slice(idx + 1).trim());
+      if (!verdict.allow) throw new Error(verdict.message);
+    }
+  }
+
   const jar =
     opts.cookies !== false
       ? new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-fetch" })
@@ -111,7 +122,6 @@ async function runFetch(
       signal: ac.signal,
       extraHeaders: context?.extraHeaders,
       extraCookies: context?.extraCookies,
-      clientRedirects: context?.clientRedirects?.() || undefined,
       responseType: "bytes",
     });
   } finally {

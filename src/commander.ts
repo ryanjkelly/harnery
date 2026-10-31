@@ -81,6 +81,9 @@ export interface EnvCheck {
  */
 export type EnvSection = () => Promise<EnvCheck[]>;
 
+/** Verdict from `HarneryProgramContext.headerPolicy` for one caller header. */
+export type FetchHeaderDecision = { allow: true } | { allow: false; message: string };
+
 export interface HarneryProgramContext {
   /** Project name (e.g., "my-monorepo"). Used in user-facing log lines + telemetry tags. */
   projectName?: string;
@@ -122,6 +125,17 @@ export interface HarneryProgramContext {
    */
   extraHeaders?: (url: string) => Record<string, string>;
   /**
+   * Optional check run on every header the caller passed to `fetch` with
+   * `-H`, before any request leaves the process. Returning
+   * `{ allow: false, message }` stops the run with that message and a
+   * nonzero exit; there is no flag to override it. Only caller headers are
+   * checked: the default User-Agent and anything `extraHeaders` adds are the
+   * host's own. Redirect hops are not re-checked because a cross-origin hop
+   * already drops every caller header except a few browser headers. The
+   * message must not echo the header value. harn standalone checks nothing.
+   */
+  headerPolicy?: (host: string, name: string, value: string) => FetchHeaderDecision;
+  /**
    * Optional callback that returns extra cookies to persist into the shared
    * jar before `fetch` / `browse` attach it. Runs only when a jar is in
    * play (`--no-cookies` skips it). Use this for host-minted session
@@ -130,12 +144,6 @@ export interface HarneryProgramContext {
    * harn standalone skips the callback entirely.
    */
   extraCookies?: import("./lib/cookies/index.ts").ExtraCookies;
-  /**
-   * When it returns true for a run, `fetch` follows redirects itself so the
-   * cookie header, `extraHeaders`, and Set-Cookie persistence apply to every
-   * hop instead of only the first request.
-   */
-  clientRedirects?: () => boolean;
   /**
    * Called once per `browse` run. Returns the guard that inspects that
    * session's live cookies before each request, after each response, and at

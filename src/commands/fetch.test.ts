@@ -103,3 +103,72 @@ describe("fetch command response bodies", () => {
     expect(json.data[0]).toMatchObject({ body: "café", status: 200 });
   });
 });
+
+describe("fetch command header policy", () => {
+  test("a refused caller header stops the run before any request", async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response("sent");
+    }) as unknown as typeof fetch;
+    const seen: Array<[string, string, string]> = [];
+    const captured = captureEmit();
+    await expect(
+      createHarneryProgram({
+        emit: captured.emit,
+        context: {
+          headerPolicy: (host, name, value) => {
+            seen.push([host, name, value]);
+            return name === "X-Secret"
+              ? { allow: false, message: `refused ${name} to ${host}` }
+              : { allow: true };
+          },
+        },
+      }).parseAsync(
+        [
+          "fetch",
+          "https://unlisted.example/path",
+          "--no-cookies",
+          "--no-pace",
+          "-H",
+          "Accept: text/html",
+          "X-Secret: synthetic-value",
+        ],
+        { from: "user" },
+      ),
+    ).rejects.toMatchObject({
+      code: "fetch_error",
+      message: "refused X-Secret to unlisted.example",
+    });
+    expect(called).toBe(false);
+    expect(seen).toEqual([
+      ["unlisted.example", "Accept", "text/html"],
+      ["unlisted.example", "X-Secret", "synthetic-value"],
+    ]);
+  });
+
+  test("allowed headers are sent and the default User-Agent is never checked", async () => {
+    let sent: Headers | undefined;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      sent = new Headers(init?.headers);
+      return new Response("ok");
+    }) as unknown as typeof fetch;
+    const names: string[] = [];
+    const captured = captureEmit();
+    await createHarneryProgram({
+      emit: captured.emit,
+      context: {
+        headerPolicy: (_host, name) => {
+          names.push(name);
+          return { allow: true };
+        },
+      },
+    }).parseAsync(
+      ["fetch", "https://vendor.example/", "--no-cookies", "--no-pace", "-H", "X-Custom: 1"],
+      { from: "user" },
+    );
+    expect(names).toEqual(["X-Custom"]);
+    expect(sent?.get("x-custom")).toBe("1");
+    expect(captured.text).toEqual(["ok"]);
+  });
+});
