@@ -27,6 +27,25 @@ describe("validateDocsMetadataV2", () => {
     expect(result).toEqual({ valid: true, profile: "lifecycle", issues: [] });
   });
 
+  test("names the valid values when a status or relation is rejected", () => {
+    const result = validateDocsMetadataV2({
+      ...base,
+      type: "plan",
+      status: "active",
+      status_changed_at: "2026-08-19T19:47:53Z",
+      owner: "ryan-kelly",
+      summary: "A plan with an unknown status.",
+      relations: { blocks: ["docs/plans/other.md"] },
+    });
+    const messages = result.issues.map((issue) => issue.message);
+    expect(messages).toContain(
+      "status 'active' is invalid for plan; use one of: proposed, in-progress, shipped, abandoned",
+    );
+    expect(messages).toContain(
+      "unknown relation 'blocks'; use one of: depends_on, supersedes, superseded_by, continues, related",
+    );
+  });
+
   test("requires canonical UTC timestamps and orders them", () => {
     const result = validateDocsMetadataV2({
       ...base,

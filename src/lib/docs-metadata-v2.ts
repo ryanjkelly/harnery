@@ -287,7 +287,13 @@ function validateRelations(
   const allowed = new Set(["depends_on", "supersedes", "superseded_by", "continues", "related"]);
   for (const [key, value] of Object.entries(data.relations)) {
     if (!allowed.has(key)) {
-      add(issues, "error", "unknown_relation", `relations.${key}`, `unknown relation '${key}'`);
+      add(
+        issues,
+        "error",
+        "unknown_relation",
+        `relations.${key}`,
+        `unknown relation '${key}'; use one of: ${[...allowed].join(", ")}`,
+      );
       continue;
     }
     validateStringList(value, `relations.${key}`, issues);
@@ -311,7 +317,7 @@ function validateAccess(
         "error",
         "unknown_access_field",
         `access.${key}`,
-        `unknown access field '${key}'`,
+        `unknown access field '${key}'; use ${[...allowed].join(" or ")}`,
       );
     }
   }
@@ -334,7 +340,13 @@ function validateLifecycle(
   const allowed =
     type === "plan" ? PLAN_STATUSES : type === "issue" ? ISSUE_STATUSES : HANDOFF_STATUSES;
   if (status && !allowed.has(status)) {
-    add(issues, "error", "invalid_status", "status", `status '${status}' is invalid for ${type}`);
+    add(
+      issues,
+      "error",
+      "invalid_status",
+      "status",
+      `status '${status}' is invalid for ${type}; use one of: ${[...allowed].join(", ")}`,
+    );
   }
 
   const changedAt = validateTimestamp(data, "status_changed_at", issues);
@@ -543,8 +555,15 @@ function validateInquiry(
 ): void {
   requireString(data, "title", issues);
   const status = requireString(data, "status", issues);
-  if (status && !new Set(["open", "resolved", "abandoned"]).has(status)) {
-    add(issues, "error", "invalid_status", "status", `inquiry status '${status}' is invalid`);
+  const inquiryStatuses = ["open", "resolved", "abandoned"];
+  if (status && !inquiryStatuses.includes(status)) {
+    add(
+      issues,
+      "error",
+      "invalid_status",
+      "status",
+      `inquiry status '${status}' is invalid; use one of: ${inquiryStatuses.join(", ")}`,
+    );
   }
   const changedAt = validateTimestamp(data, "status_changed_at", issues);
   if (createdAt !== null && changedAt !== null && changedAt < createdAt) {
