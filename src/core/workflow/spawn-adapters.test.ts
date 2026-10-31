@@ -40,7 +40,36 @@ describe("registered workflow adapter contracts", () => {
       "model-x",
       "--effort",
       "high",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
     ]);
+  });
+
+  test("Claude loads MCP servers only when the spawn opts in", () => {
+    // Default: strict empty MCP config (connectors are cut by env in the spawner).
+    expect(buildClaudeInvocation(request).argv.slice(-3)).toEqual([
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+    ]);
+    // "inherit": Claude Code's own MCP config and connectors, no guard flags.
+    const inherit = buildClaudeInvocation({ ...request, mcp: "inherit" }).argv;
+    expect(inherit).not.toContain("--strict-mcp-config");
+    expect(inherit).not.toContain("--mcp-config");
+    // An explicit server map: exactly those servers, still strict.
+    const servers = { mcpServers: { docs: { command: "docs-mcp", args: ["--stdio"] } } };
+    const named = buildClaudeInvocation({ ...request, mcp: servers }).argv;
+    expect(named.slice(-3)).toEqual([
+      "--strict-mcp-config",
+      "--mcp-config",
+      JSON.stringify(servers),
+    ]);
+    // Never drop project settings: workflow children need hooks and CLAUDE.md.
+    expect(named).not.toContain("--setting-sources");
+    expect(() => buildClaudeInvocation({ ...request, mcp: { mcpServers: [] } as never })).toThrow(
+      /mcp must be/,
+    );
   });
 
   test("Codex maps effort through a TOML-safe config override", () => {
@@ -138,6 +167,9 @@ describe("worker full access rendering (ADR 0192)", () => {
       "model-x",
       "--effort",
       "high",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
     ]);
   });
 

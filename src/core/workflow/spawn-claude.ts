@@ -16,9 +16,17 @@
  *    visible to peers — the point of running them under harnery. So the child
  *    gets HARNERY_WORKFLOW_CHILD=1 and the stop-hook rule exempts it
  *    (stop-hook.ts), keeping heartbeats + events on.
+ * 3. **No MCP servers or claude.ai connectors unless the spawn asks.** A
+ *    headless child otherwise loads every connector on the account (about 130
+ *    tool schemas) into every turn. `req.mcp` defaults to `"none"` (strict
+ *    empty MCP config plus ENABLE_CLAUDEAI_MCP_SERVERS=false); `"inherit"` or
+ *    a server map is the per-spawn opt-in. Project settings, hooks, and
+ *    CLAUDE.md still load: workflow children need them, so this adapter never
+ *    passes `--setting-sources ""`.
  */
 
 import { exec } from "../../lib/exec.ts";
+import { claudeMcpLaunch } from "../../lib/headless/index.ts";
 import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profiles.ts";
 import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
 import { notFoundError } from "./adapters.ts";
@@ -62,6 +70,7 @@ export function buildClaudeInvocation(req: SpawnRequest): AdapterInvocation {
   if (fullAccess) argv.push(...fullAccess);
   if (req.model) argv.push("--model", req.model);
   if (req.effort) argv.push("--effort", req.effort);
+  argv.push(...claudeMcpLaunch(req.mcp).args);
   return { argv };
 }
 
@@ -152,10 +161,13 @@ export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spa
   }
   const r = await exec(invocation.argv, {
     cwd: req.cwd,
-    env: buildChildEnv(req.runId, {
-      subscriptionOnly: req.subscriptionOnly,
-      agentId: req.agentId,
-    }),
+    env: {
+      ...buildChildEnv(req.runId, {
+        subscriptionOnly: req.subscriptionOnly,
+        agentId: req.agentId,
+      }),
+      ...claudeMcpLaunch(req.mcp).env,
+    },
     timeout: req.timeoutMs,
   });
   return normalizeClaudeResult({ ...r, durationMs: Date.now() - t0 });

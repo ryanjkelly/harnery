@@ -72,6 +72,7 @@ export function resolveSpecialistAssignment(
       maxTurns: opts.maxTurns ?? profile.maxTurns,
       label: opts.label,
       schema: opts.schema,
+      ...(opts.mcp ? { mcp: opts.mcp } : {}),
     },
   };
 }

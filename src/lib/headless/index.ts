@@ -26,6 +26,11 @@
  *   PATH" is not "working", and under parallel load the first backend can
  *   flake on a fraction of calls while the second runs clean.
  *
+ * - A claude-code call loads NO MCP servers and no claude.ai connectors by
+ *   default (`claudeMcpLaunch`). Connectors attach about 130 tool schemas to
+ *   every turn of a one-shot call that never uses them; a caller that needs
+ *   one opts in per request with `mcp: "inherit"` or an explicit server map.
+ *
  * Env knobs (read through coordEnv, so the HARNERY_ prefix stays in one
  * place): HARNERY_HEADLESS_BACKEND forces one backend and disables the
  * fallback walk; HARNERY_HEADLESS_MODEL overrides the model passed to
@@ -77,6 +82,55 @@ export interface HeadlessRequest {
   timeoutMs?: number;
   /** Agentic turn budget where the backend supports one (default 4). */
   maxTurns?: number;
+  /** MCP servers the claude-code backend may load (default `"none"`; see
+   * `ClaudeMcpMode`). The codex and cursor backends ignore it. */
+  mcp?: ClaudeMcpMode;
+}
+
+/**
+ * Which MCP servers a spawned `claude` child may load.
+ *
+ * - `"none"` (the default for every spawn Harnery owns): no MCP servers and no
+ *   claude.ai connectors. Measured on a headless child, connectors add tens of
+ *   thousands of tokens of tool schemas to every turn.
+ * - `"inherit"`: whatever Claude Code would load on its own, connectors
+ *   included. The explicit opt-in for a workflow that really uses one.
+ * - `{ mcpServers }`: exactly these servers (the `--mcp-config` JSON shape),
+ *   with claude.ai connectors still off.
+ */
+export type ClaudeMcpMode = "none" | "inherit" | { mcpServers: Record<string, unknown> };
+
+/** The two guards that keep a `claude` child free of MCP servers: strict MCP
+ * config with an empty server map, plus the env switch that stops claude.ai
+ * connectors attaching mid-session (the flag alone does not cover them). */
+export const CLAUDE_NO_MCP_ARGS: readonly string[] = [
+  "--strict-mcp-config",
+  "--mcp-config",
+  '{"mcpServers":{}}',
+];
+export const CLAUDE_NO_CONNECTORS_ENV: Readonly<Record<string, string>> = {
+  ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+};
+
+/** Resolve an MCP mode to the argv and env additions for a `claude` child.
+ * Throws on a malformed server map rather than launching with a guess. */
+export function claudeMcpLaunch(mode: ClaudeMcpMode = "none"): {
+  args: string[];
+  env: Record<string, string>;
+} {
+  if (mode === "inherit") return { args: [], env: {} };
+  if (mode === "none")
+    return { args: [...CLAUDE_NO_MCP_ARGS], env: { ...CLAUDE_NO_CONNECTORS_ENV } };
+  const servers = (mode as { mcpServers?: unknown } | null)?.mcpServers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+    throw new Error(
+      'mcp must be "none", "inherit", or { mcpServers: { <name>: <server config> } }',
+    );
+  }
+  return {
+    args: ["--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: servers })],
+    env: { ...CLAUDE_NO_CONNECTORS_ENV },
+  };
 }
 
 export interface HeadlessResult {
@@ -135,6 +189,7 @@ interface StagedCall {
   model?: string;
   timeoutMs: number;
   maxTurns: number;
+  mcp?: ClaudeMcpMode;
 }
 
 /** Write the request's images into a fresh neutral dir and resolve the
@@ -154,16 +209,23 @@ function stageCall(req: HeadlessRequest): StagedCall {
     model: coordEnv("HEADLESS_MODEL") ?? req.model,
     timeoutMs: req.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     maxTurns: req.maxTurns ?? DEFAULT_MAX_TURNS,
+    ...(req.mcp ? { mcp: req.mcp } : {}),
   };
 }
 
 /** Run a harness CLI from the neutral dir with stdin CLOSED (see module
  * comment: an open stdin pipe deadlocks codex). */
-function execHarness(bin: string, args: string[], call: StagedCall) {
+function execHarness(
+  bin: string,
+  args: string[],
+  call: StagedCall,
+  extraEnv: Record<string, string> = {},
+) {
   const pending = execFileAsync(bin, args, {
     cwd: call.dir,
     timeout: call.timeoutMs,
     maxBuffer: MAX_BUFFER,
+    ...(Object.keys(extraEnv).length ? { env: { ...process.env, ...extraEnv } } : {}),
   });
   pending.child.stdin?.end();
   return pending;
@@ -178,7 +240,9 @@ async function runClaudeCode(bin: string, call: StagedCall): Promise<HeadlessRes
   const args = ["-p", call.prompt, "--output-format", "json", "--max-turns", String(call.maxTurns)];
   if (call.imagePaths.length) args.push("--allowedTools", "Read");
   if (call.model) args.push("--model", call.model);
-  const { stdout } = await execHarness(bin, args, call);
+  const mcp = claudeMcpLaunch(call.mcp);
+  args.push(...mcp.args);
+  const { stdout } = await execHarness(bin, args, call, mcp.env);
   const envelope = JSON.parse(stdout) as { is_error?: boolean; result?: unknown };
   if (envelope.is_error) {
     throw new Error(

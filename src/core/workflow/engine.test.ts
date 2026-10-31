@@ -588,6 +588,32 @@ describe("runWorkflow", () => {
     expect(proof.agents[0].specialist).toBe("reviewer");
   });
 
+  test("agent() passes an MCP opt-in to the spawner only when the script asks", async () => {
+    const requests: SpawnRequest[] = [];
+    const spawner: Spawner = async (req) => {
+      requests.push(req);
+      return okSpawn("done");
+    };
+    const script = writeScript(`
+      export default async ({ agent }) => {
+        await agent("plain stage");
+        await agent("needs a connector", { mcp: "inherit" });
+        await agent("role stage", { specialist: "reader", mcp: { mcpServers: { docs: { command: "d" } } } });
+      };
+    `);
+    await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      defaultAdapter: "claude-code",
+      specialists: { reader: { instructions: "Read carefully." } },
+      ...quiet,
+    });
+    expect(requests).toHaveLength(3);
+    expect(requests[0]?.mcp).toBeUndefined();
+    expect(requests[1]?.mcp).toBe("inherit");
+    expect(requests[2]?.mcp).toEqual({ mcpServers: { docs: { command: "d" } } });
+  });
+
   test("specialist identity participates in resume caching and unknown roles fail closed", async () => {
     let calls = 0;
     const spawner: Spawner = async () => {

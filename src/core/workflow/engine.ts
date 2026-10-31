@@ -1101,6 +1101,7 @@ async function executeWorkflow(
           runId,
           agentId: id,
           subscriptionOnly,
+          ...(agentOpts.mcp ? { mcp: agentOpts.mcp } : {}),
           // A full-access launch has no sandbox to project a policy into.
           ...(access.mode === "full-access"
             ? { access: "full-access" as const }
@@ -1505,6 +1506,8 @@ function agentCallKey(
     agentOpts.schema ?? null,
   ];
   if (agentOpts.specialist) parts.push(agentOpts.specialist);
+  // Appended only when set so existing resume keys stay stable.
+  if (agentOpts.mcp) parts.push({ mcp: agentOpts.mcp });
   parts.push(prompt);
   const basis = JSON.stringify(parts);
   return createHash("sha256").update(basis).digest("hex").slice(0, 16);

@@ -7,6 +7,7 @@
  * Design record: decision 0015 (portable coordination-aware workflows).
  */
 
+import type { ClaudeMcpMode } from "../../lib/headless/index.ts";
 import type { DiagnosticAdvice } from "../diagnostics/contract.ts";
 import type {
   DispatchCostEstimator,
@@ -342,6 +343,11 @@ export interface AgentOpts {
    * Mixed-adapter workflows are legal: triage on one CLI, deep work on
    * another. */
   adapter?: AdapterName;
+  /** MCP servers a Claude Code child may load (default `"none"`: no MCP
+   * servers, no claude.ai connectors). Set `"inherit"` for a stage that really
+   * calls a connector, or `{ mcpServers: {...} }` for exactly those servers.
+   * Other adapters ignore it. */
+  mcp?: ClaudeMcpMode;
 }
 
 /** Open registry key. The built-in catalog currently contains Claude Code,
@@ -436,6 +442,10 @@ export interface SpawnRequest {
    * spawner refuses it when its adapter declares no full-access rendering, and
    * refuses it alongside a filesystem policy, which it would contradict. */
   access?: WorkerAccessMode;
+  /** MCP servers a Claude Code child may load. Absent means `"none"`: no MCP
+   * servers and no claude.ai connectors. `"inherit"` or an explicit server map
+   * is the per-spawn opt-in (see `ClaudeMcpMode`). Other adapters ignore it. */
+  mcp?: ClaudeMcpMode;
 }
 
 /**

@@ -33,7 +33,11 @@ function fakeClaude(result: string, opts: { error?: boolean } = {}) {
   // argv capture lets tests assert flag shapes without parsing in sh.
   fakeBin(
     "claude",
-    `printf '%s\\n' "$@" > "${join(binDir, "claude.argv")}"\nprintf '%s' '${envelope}'`,
+    [
+      `printf '%s\\n' "$@" > "${join(binDir, "claude.argv")}"`,
+      `printf '%s' "\${ENABLE_CLAUDEAI_MCP_SERVERS-unset}" > "${join(binDir, "claude.switch")}"`,
+      `printf '%s' '${envelope}'`,
+    ].join("\n"),
   );
 }
 
@@ -93,6 +97,36 @@ describe("runHeadlessOn", () => {
     expect(argv).toContain("2");
     // no images staged → no Read tool grant
     expect(argv).not.toContain("--allowedTools");
+  });
+
+  test("claude-code: loads no MCP servers or connectors by default", async () => {
+    fakeClaude("ok");
+    await runHeadlessOn("claude-code", { prompt: "hi" });
+    const argv = readFileSync(join(binDir, "claude.argv"), "utf-8").split("\n");
+    expect(argv).toContain("--strict-mcp-config");
+    expect(argv[argv.indexOf("--mcp-config") + 1]).toBe('{"mcpServers":{}}');
+    expect(argv).not.toContain("--setting-sources");
+    expect(readFileSync(join(binDir, "claude.switch"), "utf-8")).toBe("false");
+  });
+
+  test('claude-code: mcp "inherit" and a server map are explicit opt-ins', async () => {
+    const saved = process.env.ENABLE_CLAUDEAI_MCP_SERVERS;
+    delete process.env.ENABLE_CLAUDEAI_MCP_SERVERS;
+    try {
+      fakeClaude("ok");
+      await runHeadlessOn("claude-code", { prompt: "hi", mcp: "inherit" });
+      expect(readFileSync(join(binDir, "claude.argv"), "utf-8")).not.toContain("--mcp-config");
+      expect(readFileSync(join(binDir, "claude.switch"), "utf-8")).toBe("unset");
+
+      const servers = { mcpServers: { docs: { command: "docs-mcp" } } };
+      await runHeadlessOn("claude-code", { prompt: "hi", mcp: servers });
+      const argv = readFileSync(join(binDir, "claude.argv"), "utf-8").split("\n");
+      expect(argv[argv.indexOf("--mcp-config") + 1]).toBe(JSON.stringify(servers));
+      expect(argv).toContain("--strict-mcp-config");
+      expect(readFileSync(join(binDir, "claude.switch"), "utf-8")).toBe("false");
+    } finally {
+      if (saved !== undefined) process.env.ENABLE_CLAUDEAI_MCP_SERVERS = saved;
+    }
   });
 
   test("claude-code: an is_error envelope throws", async () => {
