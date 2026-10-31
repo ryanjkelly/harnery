@@ -88,7 +88,7 @@ process. Windows has no pinned artifact yet (hint only).
 | `--max-count <n>` | Stop after N matches per file. |
 | `--limit <n>` | Show at most N result rows per page (default: every row). |
 | `--page <n>` | Show page N of `--limit`-sized pages (1-based, default 1; needs `--limit`). |
-| `--max-columns <n>` | Clip each printed line to N characters (default 300; `0` turns clipping off). |
+| `--max-columns <n>` | Clip each printed line to N characters (default 500; `0` turns clipping off). |
 | `--include <glob>` | Extra include glob (repeatable). |
 | `--exclude <glob>` | Extra exclude glob (repeatable). |
 | `--no-default-excludes` | Disable the default skip list. |
@@ -103,7 +103,7 @@ rejected with explicit errors rather than silently ignored: context with
 ### Output and paging
 
 A search shows every result row unless you pass `--limit <n>`, and clips each
-line to 300 characters unless you pass `--max-columns`. There is no default
+line to 500 characters unless you pass `--max-columns`. There is no default
 row bound: every default tried from 50 to 300 rows dropped evidence that an
 unbounded search found. With `--limit`, the last line says how many matches
 and files were left out and which `--page` continues:

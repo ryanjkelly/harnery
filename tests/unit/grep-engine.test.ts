@@ -779,6 +779,8 @@ describe("output and paging", () => {
   });
 
   test("long lines are clipped by default and whole with --max-columns 0", async () => {
+    // 500, set by the context bench's v2 tune split (300 cut a line holding an answer).
+    expect(DEFAULT_MAX_COLUMNS).toBe(500);
     const r = await bothEngines("lmark", [join(fixtureRoot, "long")], {});
     const wide = rows(r)[0];
     expect(wide?.text.length).toBe(DEFAULT_MAX_COLUMNS);

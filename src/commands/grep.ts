@@ -38,8 +38,10 @@ import { resolveSearchEngine, type SearchEngine } from "../lib/tools/ripgrep.ts"
  *
  * Output and paging: a search shows every result row unless `--limit <n>`
  * sets a page size, and clips each printed line to DEFAULT_MAX_COLUMNS
- * characters (`--max-columns 0` turns clipping off). 300 columns keeps any
- * hand-written source line while cutting minified or generated ones. There is
+ * characters (`--max-columns 0` turns clipping off). 500 columns keeps any
+ * hand-written source line and long prose lines while cutting minified or
+ * generated ones; on the v2 tune split a 300-column clip lost a claim that
+ * 500 kept, at about 8% more tokens than 300. There is
  * no default row bound: on the context bench's v2 tune split, every default
  * from 50 to 300 rows lost answer evidence that the unbounded search found
  * (plan 2026-10-31_context-round-trips, Track D). When rows are left out, a count pass
@@ -52,7 +54,7 @@ import { resolveSearchEngine, type SearchEngine } from "../lib/tools/ripgrep.ts"
  */
 
 /** Characters kept per printed line unless --max-columns says otherwise. */
-export const DEFAULT_MAX_COLUMNS = 300;
+export const DEFAULT_MAX_COLUMNS = 500;
 /** Explicit file arguments per engine call when fetching a content page. */
 const PAGE_FILE_BATCH = 200;
 
