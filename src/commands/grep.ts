@@ -36,14 +36,13 @@ import { resolveSearchEngine, type SearchEngine } from "../lib/tools/ripgrep.ts"
  * total_matches, total_files, truncated, elapsed_ms }`. Matches are sorted
  * (file, then line) for stable output across runs and engines.
  *
- * Bounded output and paging: a search shows at most DEFAULT_LIMIT result rows
- * unless `--limit <n>` or `--all` says otherwise, and clips each printed line
- * to DEFAULT_MAX_COLUMNS characters (`--max-columns 0` turns clipping off).
- * Both defaults exist because every search result is re-read by an agent's
- * next model turn: a typical search returns about a dozen rows, so 50 rows
- * leaves ordinary searches untouched and stops a broad pattern from flooding
- * the context, and 300 columns keeps any hand-written source line while
- * cutting minified or generated ones. When rows are left out, a count pass
+ * Output and paging: a search shows every result row unless `--limit <n>`
+ * sets a page size, and clips each printed line to DEFAULT_MAX_COLUMNS
+ * characters (`--max-columns 0` turns clipping off). 300 columns keeps any
+ * hand-written source line while cutting minified or generated ones. There is
+ * no default row bound: on the context bench's v2 tune split, every default
+ * from 50 to 300 rows lost answer evidence that the unbounded search found
+ * (plan 2026-10-31_context-round-trips, Track D). When rows are left out, a count pass
  * (the same search with `-c`, which prints one short row per file) supplies
  * the totals, and the last line states how many matches and files were left
  * out and the `--page <n>` that continues. Pages are cut from one global order
@@ -52,8 +51,6 @@ import { resolveSearchEngine, type SearchEngine } from "../lib/tools/ripgrep.ts"
  * only the files that hold its rows.
  */
 
-/** Result rows shown when neither --limit nor --all is given. */
-export const DEFAULT_LIMIT = 50;
 /** Characters kept per printed line unless --max-columns says otherwise. */
 export const DEFAULT_MAX_COLUMNS = 300;
 /** Explicit file arguments per engine call when fetching a content page. */
@@ -119,7 +116,6 @@ export interface GrepOpts {
   /** 1-based page of `limit`-sized pages. */
   page?: string;
   /** Lift the default row bound (no paging). */
-  all?: boolean;
   /** Characters kept per line; "0" disables clipping. */
   maxColumns?: string;
   include?: string[];
@@ -180,9 +176,8 @@ export function registerGrepCommand(
       "Print N lines before each match (overrides -C's before side)",
     )
     .option("--max-count <n>", "Stop after N matches per file")
-    .option("--limit <n>", `Show at most N result rows per page (default ${DEFAULT_LIMIT})`)
-    .option("--page <n>", "Show page N of --limit-sized pages (1-based; default 1)")
-    .option("--all", "Show every result row (no default bound, no paging)")
+    .option("--limit <n>", "Show at most N result rows per page (default: every row)")
+    .option("--page <n>", "Show page N of --limit-sized pages (1-based; default 1; needs --limit)")
     .option(
       "--max-columns <n>",
       `Clip each printed line to N characters (default ${DEFAULT_MAX_COLUMNS}; 0 = no clipping)`,
@@ -243,7 +238,7 @@ export interface GrepResult {
   total_files: number;
   /** More rows exist after this page. */
   truncated: boolean;
-  /** Page size; null with --all. */
+  /** Page size; null without --limit. */
   limit: number | null;
   page: number;
   /** Result rows / files the whole search found, across every page. */
@@ -259,7 +254,7 @@ export interface GrepResult {
 
 /** Validated, resolved options — built once before repo fan-out. */
 interface NormOpts {
-  limit: number; // page size; Infinity with --all
+  limit: number; // page size; Infinity without --limit
   offset: number; // rows skipped before this page
   page: number;
   maxColumns: number; // Infinity when clipping is off
@@ -309,13 +304,7 @@ function normalizeLangs(lang: string | string[] | undefined): string[] | undefin
 
 /** Validate numerics, resolve context sides, expand langs, enforce the compatibility matrix. */
 function normalizeOpts(opts: GrepOpts): NormOpts {
-  if (opts.all && opts.limit) throw new Error("--all does not combine with --limit");
-  if (opts.all && opts.page) throw new Error("--all does not combine with --page");
-  const limit = opts.all
-    ? Number.POSITIVE_INFINITY
-    : opts.limit
-      ? parseIntOpt("--limit", opts.limit, 1)
-      : DEFAULT_LIMIT;
+  const limit = opts.limit ? parseIntOpt("--limit", opts.limit, 1) : Number.POSITIVE_INFINITY;
   const page = opts.page ? parseIntOpt("--page", opts.page, 1) : 1;
   const maxColumnsRaw =
     opts.maxColumns !== undefined
@@ -368,12 +357,12 @@ function normalizeOpts(opts: GrepOpts): NormOpts {
       [opts.count, "-c/--count"],
       [opts.limit, "--limit"],
       [opts.page, "--page"],
-      [opts.all, "--all"],
     ];
     for (const [set, flag] of rejected) {
       if (set) throw new Error(`-q/--quiet does not combine with ${flag}`);
     }
   }
+  if (opts.page && !opts.limit) throw new Error("--page needs --limit (the page size)");
 
   return {
     // -q only needs existence: one accepted primary row settles the exit code.
@@ -455,7 +444,7 @@ export async function runGrep(
     }));
     after = selected.map(() => false);
   } else if (!Number.isFinite(norm.limit) || opts.files || opts.filesOnly || opts.count) {
-    // --all, or a mode whose rows are files (one short row each): collect the
+    // No page size, or a mode whose rows are files (one short row each): collect the
     // complete result, then cut the page from its sorted order.
     const all = await Promise.all(
       repos.map((repo) => scan(repo, paths, opts, norm, Number.POSITIVE_INFINITY)),
@@ -1225,7 +1214,7 @@ export function renderResult(r: GrepResult, opts: GrepOpts): string {
       ? `${plural(r.omitted_matches, "file")} left out`
       : `${matchWord(r.omitted_matches)} in ${plural(r.omitted_files, "other file")} left out`;
     const next =
-      r.next_page !== null ? `. Next: --page ${r.next_page}, or --all for everything` : "";
+      r.next_page !== null ? `. Next: --page ${r.next_page}` : "";
     lines.push("");
     lines.push(`${shown}; ${left}${next}.  (${r.elapsed_ms}ms, ${r.engine})`);
   } else if (r.repos.length > 1) {

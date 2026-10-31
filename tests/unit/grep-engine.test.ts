@@ -4,7 +4,6 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  DEFAULT_LIMIT,
   DEFAULT_MAX_COLUMNS,
   type GrepOpts,
   type GrepResult,
@@ -130,7 +129,7 @@ beforeAll(() => {
   write("page/b.txt", "pmark b1\npmark b2\n");
   write("page/c.txt", "pmark c1\nx\npmark c2\npmark c3\ny\npmark c4\n");
   write("long/wide.txt", `lmark ${"w".repeat(1000)}\nlmark short\n`);
-  // Default-bound fixture: more rows than DEFAULT_LIMIT.
+  // Unbounded-default fixture: more rows than any page used here.
   write("bulk/many.txt", Array.from({ length: 60 }, (_, i) => `bmark ${i}`).join("\n"));
 });
 
@@ -712,14 +711,14 @@ describe("envelope contract", () => {
   });
 });
 
-describe("bounded output and paging", () => {
+describe("output and paging", () => {
   const pageDir = () => join(fixtureRoot, "page");
   const rows = (r: GrepResult) =>
     r.repos.flatMap((repo) => repo.matches.filter((m) => m.kind === "match"));
   const key = (m: Match) => `${m.file.replace(`${fixtureRoot}/`, "")}:${m.line}`;
 
   test("pages continue exactly where the previous page stopped", async () => {
-    const all = await bothEngines("pmark", [pageDir()], { all: true });
+    const all = await bothEngines("pmark", [pageDir()], {});
     expect(all.total_matches).toBe(9);
     expect(all.limit).toBeNull();
     expect(all.next_page).toBeNull();
@@ -791,20 +790,22 @@ describe("bounded output and paging", () => {
     expect(rows(whole)[0]?.clipped).toBeUndefined();
   });
 
-  test("the default bound applies without flags; --limit and --all override it", async () => {
+  test("no row bound without --limit; --limit pages and states what is left out", async () => {
     const bulk = [join(fixtureRoot, "bulk")];
     const d = await bothEngines("bmark", bulk, {});
-    expect(d.total_matches).toBe(DEFAULT_LIMIT);
-    expect(d.limit).toBe(DEFAULT_LIMIT);
-    expect(d.available_matches).toBe(60);
-    expect(d.omitted_matches).toBe(60 - DEFAULT_LIMIT);
-    const text = renderResult(d, {});
-    expect(text).toContain(`Showing matches 1-${DEFAULT_LIMIT} of 60 (in 1 file)`);
-    expect(text).toContain("Next: --page 2, or --all for everything");
-    expect((await bothEngines("bmark", bulk, { limit: "100" })).total_matches).toBe(60);
-    const all = await bothEngines("bmark", bulk, { all: true });
-    expect(all.total_matches).toBe(60);
-    expect(all.truncated).toBe(false);
+    expect(d.total_matches).toBe(60);
+    expect(d.limit).toBeNull();
+    expect(d.truncated).toBe(false);
+    expect(d.omitted_matches).toBe(0);
+    expect(renderResult(d, {})).not.toContain("left out");
+    const paged = await bothEngines("bmark", bulk, { limit: "50" });
+    expect(paged.total_matches).toBe(50);
+    expect(paged.limit).toBe(50);
+    expect(paged.omitted_matches).toBe(10);
+    const text = renderResult(paged, {});
+    expect(text).toContain("Showing matches 1-50 of 60 (in 1 file)");
+    expect(text).toContain("Next: --page 2.");
+    expect(text).not.toContain("--all");
   });
 
   test("a search that fits prints no left-out notice", async () => {
@@ -818,12 +819,10 @@ describe("bounded output and paging", () => {
 
   test("paging flags are validated", async () => {
     for (const [opts, re] of [
-      [{ all: true, limit: "5" }, /--all does not combine with --limit/],
-      [{ all: true, page: "2" }, /--all does not combine with --page/],
-      [{ page: "0" }, /--page/],
+      [{ page: "2" }, /--page needs --limit/],
+      [{ page: "0", limit: "2" }, /--page/],
       [{ maxColumns: "x" }, /--max-columns/],
       [{ quiet: true, page: "2" }, /--quiet does not combine with --page/],
-      [{ quiet: true, all: true }, /--quiet does not combine with --all/],
     ] as [GrepOpts, RegExp][]) {
       await expect(runWith("grep", "pmark", [pageDir()], opts)).rejects.toThrow(re);
     }

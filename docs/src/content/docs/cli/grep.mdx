@@ -86,9 +86,8 @@ process. Windows has no pinned artifact yet (hint only).
 | `--without <pattern>` | Drop files that contain this pattern (file-level, repeatable). |
 | `-q, --quiet` | No output; exit `0` if any qualified match exists, `1` if none. |
 | `--max-count <n>` | Stop after N matches per file. |
-| `--limit <n>` | Show at most N result rows per page (default 50). |
-| `--page <n>` | Show page N of `--limit`-sized pages (1-based, default 1). |
-| `--all` | Show every result row: no default bound and no paging. |
+| `--limit <n>` | Show at most N result rows per page (default: every row). |
+| `--page <n>` | Show page N of `--limit`-sized pages (1-based, default 1; needs `--limit`). |
 | `--max-columns <n>` | Clip each printed line to N characters (default 300; `0` turns clipping off). |
 | `--include <glob>` | Extra include glob (repeatable). |
 | `--exclude <glob>` | Extra exclude glob (repeatable). |
@@ -99,20 +98,18 @@ Numeric flags are validated strictly (`--limit nope`, negative, or fractional
 values fail before any engine spawns). Meaningless flag combinations are
 rejected with explicit errors rather than silently ignored: context with
 `-l`/`-c`/`--files`/`-q`; `--and`/`--without` with `--files`; `-q` with
-`--json`/`-l`/`-c`/`--limit`/`--page`/`--all`; `--all` with `--limit` or `--page`.
+`--json`/`-l`/`-c`/`--limit`/`--page`; `--page` without `--limit`.
 
-### Bounded output and paging
+### Output and paging
 
-A search shows at most 50 result rows unless you pass `--limit <n>` or
-`--all`, and clips each line to 300 characters unless you pass
-`--max-columns`. An agent re-reads every search result on its next turn, and
-a typical search returns about a dozen rows, so the default leaves ordinary
-searches whole and stops a broad pattern from filling the context. When rows
-are left out, the last line says how many matches and files were left out and
-which `--page` continues:
+A search shows every result row unless you pass `--limit <n>`, and clips each
+line to 300 characters unless you pass `--max-columns`. There is no default
+row bound: every default tried from 50 to 300 rows dropped evidence that an
+unbounded search found. With `--limit`, the last line says how many matches
+and files were left out and which `--page` continues:
 
 ```text
-Showing matches 1-50 of 312 (in 40 files); 262 matches in 31 other files left out. Next: --page 2, or --all for everything.
+Showing matches 1-50 of 312 (in 40 files); 262 matches in 31 other files left out. Next: --page 2.
 ```
 
 Pages are cut from one order (repo, then file path, then line), so
@@ -221,7 +218,7 @@ where each entry in `repos[]` carries `{ name, cwd, matches[], truncated }` and
 every row is `{ repo, file, line, text, kind }` with
 `kind: "match" | "context"`, plus `clipped` (characters removed) on a clipped
 row. `total_*` describe this page, `available_*` the whole search, and
-`omitted_*` the difference. `limit` is `null` under `--all`, and `next_page`
+`omitted_*` the difference. `limit` is `null` without `--limit`, and `next_page`
 is `null` on the last page.
 
 Filenames are framed with the NUL delimiter (`--null` on both engines), so
