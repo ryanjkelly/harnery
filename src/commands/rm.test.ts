@@ -88,6 +88,29 @@ test("CLI emits preview and applies only with yes", async () => {
   }
 });
 
+test("CLI resolves relative targets under --root when the cwd differs", async () => {
+  const { root, file } = fixture();
+  const decoy = fixture();
+  const cwd = process.cwd();
+  try {
+    process.chdir(decoy.root);
+    for (const yes of [false, true]) {
+      const output = capture();
+      const program = createHarneryProgram({ emit: output.emit, context: { repoRoot: root } });
+      await program.parseAsync(
+        ["rm", "--root", root, "--json", ...(yes ? ["--yes"] : []), "render.mp4"],
+        { from: "user" },
+      );
+      expect(output.code()).toBe(0);
+      expect(output.data[0]).toMatchObject({ applied: yes, targets: [file] });
+      expect(existsSync(file)).toBe(!yes);
+      expect(existsSync(decoy.file)).toBe(true);
+    }
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
 test("CLI blocks another agent's exact, ancestor and descendant claims", async () => {
   for (const claim of ["render.mp4", ".", "render.mp4/child"]) {
     const { root, file } = fixture();

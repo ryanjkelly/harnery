@@ -72,6 +72,54 @@ test("refuses working directory and ancestors", () => {
   }
 });
 
+test("resolves relative targets and --allow-protected under --root, not the cwd", () => {
+  const { root, file } = fixture();
+  const elsewhere = fixture();
+  const cwd = process.cwd();
+  mkdirSync(join(root, "copy", ".credentials"), { recursive: true });
+  mkdirSync(join(elsewhere.root, "copy", ".credentials"), { recursive: true });
+  try {
+    // A decoy with the same relative name sits in the cwd; it must never be targeted.
+    process.chdir(elsewhere.root);
+    // (d) Preview resolves under root and deletes nothing.
+    expect(guardedRemove(["output.mp4"], { root })).toMatchObject({
+      applied: false,
+      targets: [file],
+    });
+    expect(existsSync(file)).toBe(true);
+    // (c) A relative path escaping root is refused.
+    for (const escape of ["../x", `../${elsewhere.root.split("/").pop()}/output.mp4`])
+      expect(() => guardedRemove([escape], { root, yes: true })).toThrow();
+    // Relative --allow-protected resolves under root too.
+    expect(
+      guardedRemove(["copy"], {
+        root,
+        recursive: true,
+        allowProtected: ["copy/.credentials"],
+      }).protected,
+    ).toEqual([join(root, "copy", ".credentials")]);
+    // (a) Applying removes the root's file and leaves the cwd decoy alone.
+    expect(guardedRemove(["output.mp4"], { root, yes: true })).toMatchObject({
+      applied: true,
+      targets: [file],
+    });
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(elsewhere.file)).toBe(true);
+    expect(existsSync(join(elsewhere.root, "copy", ".credentials"))).toBe(true);
+  } finally {
+    process.chdir(cwd);
+  }
+  // (b) Absolute targets are unchanged, including one outside root.
+  const absolute = fixture();
+  expect(() => guardedRemove([elsewhere.file], { root: absolute.root, yes: true })).toThrow(
+    "strictly inside --root",
+  );
+  expect(guardedRemove([absolute.file], { root: absolute.root, yes: true }).targets).toEqual([
+    absolute.file,
+  ]);
+  expect(existsSync(elsewhere.file)).toBe(true);
+});
+
 test("requires recursive and inspects complete directories", () => {
   const { root } = fixture();
   const dir = join(root, "render");

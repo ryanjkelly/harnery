@@ -23,7 +23,7 @@ export function registerRmCommand(
     .description("Preview guarded removal of untracked files; --yes applies permanent deletion")
     .requiredOption(
       "--root <directory>",
-      "Allowed directory; each target must be strictly inside it",
+      "Allowed directory; relative targets resolve under it, and each target must be strictly inside it",
     )
     .option("-r, --recursive", "Permit directory removal after inspecting its complete contents")
     .option(
@@ -37,7 +37,7 @@ export function registerRmCommand(
     )
     .option(
       "--allow-protected <path>",
-      "Remove this one protected path (Git metadata, credentials, Harnery state, keys) inside a target; repeat per path",
+      "Remove this one protected path (Git metadata, credentials, Harnery state, keys) inside a target; relative paths resolve under --root; repeat per path",
       (value: string, previous: string[] = []) => [...previous, value],
     )
     .option("--yes", "Permanently remove validated targets")

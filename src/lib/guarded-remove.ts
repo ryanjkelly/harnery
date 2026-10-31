@@ -92,7 +92,8 @@ export function guardedRemove(
     throw new Error("--root cannot be a filesystem root or home directory");
   assertEntryLimitAuthority();
   if (paths.length === 0 || paths.length > 100) throw new Error("Supply 1-100 explicit targets");
-  const targets = paths.map((path) => checkedPath(path, allowed));
+  // Relative targets name paths under --root, never under the process cwd.
+  const targets = paths.map((path) => checkedPath(path, allowed, false, root));
   const snapshots = new Map<string, string>();
   const removedProtected = new Set<string>();
   const links: RemovalLink[] = [];
@@ -349,7 +350,7 @@ function allowedProtected(
   for (const input of paths) {
     if (!input?.trim() || /[\0\r\n*?[\]$]/.test(input))
       throw new Error("Use a nonempty explicit --allow-protected path without wildcards");
-    const path = resolve(input);
+    const path = resolve(root, input);
     let cursor = dirname(path);
     while (true) {
       if (lstatSync(cursor).isSymbolicLink())
@@ -435,10 +436,11 @@ function checkedPath(
   input: string,
   allowed: ReadonlySet<string> = new Set(),
   isRoot = false,
+  base?: string,
 ): string {
   if (!input?.trim() || /[\0\r\n*?[\]$]/.test(input))
     throw new Error("Use a nonempty explicit path without wildcards or unresolved variables");
-  const path = resolve(input);
+  const path = base === undefined ? resolve(input) : resolve(base, input);
   let cursor = path;
   while (true) {
     if (
