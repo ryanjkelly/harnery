@@ -1,30 +1,43 @@
 ---
 title: harn computer
-description: Opt-in desktop control through one pinned desktop driver. Install it, run its daemon, and call its tools while one desktop lease keeps two agents from driving the same desktop at once.
+description: Opt-in desktop control through two pinned desktop drivers, Cua Driver and agent-desktop. Install them, run any daemon, and call their tools while one desktop lease keeps two agents from driving the same desktop at once.
 sidebar:
   order: 48
 ---
 
 ```
 harn computer status [--json]
-harn computer install [--yes] [--json]
-harn computer up
-harn computer down
-harn computer doctor [--json]
-harn computer tools
-harn computer describe <tool>
-harn computer call <tool> [json] [--wait <seconds>] [--keep-screenshot]
+harn computer install [--driver <id>] [--yes] [--json]
+harn computer up [--driver <id>]
+harn computer down [--driver <id>]
+harn computer doctor [--driver <id>] [--json]
+harn computer tools [--driver <id>]
+harn computer describe <tool> [--driver <id>]
+harn computer call <tool> [json] [--driver <id>] [--wait <seconds>] [--keep-screenshot]
 harn computer lease status [--json]
 harn computer lease acquire [--wait <seconds>]
 harn computer lease release
 ```
 
-`harn computer` gives every harness the same desktop control: one pinned,
-checksum-verified driver binary, called through its CLI. Agents use it for
-native desktop apps, or for a page that needs a real browser they cannot drive
-any other way. It is a last resort after vendor APIs, CLIs, and the browser
-tools. The design is in
-[decision record 0228](/decisions/0228-computer-use-through-a-pinned-desktop-driver/).
+`harn computer` gives every harness the same desktop control through two
+pinned, checksum-verified driver binaries, each called through its CLI. Agents
+use it for native desktop apps, or for a page that needs a real browser they
+cannot drive any other way. It is a last resort after vendor APIs, CLIs, and
+the browser tools. The design is in
+[decision record 0228](/decisions/0228-computer-use-through-a-pinned-desktop-driver/)
+and [decision record 0231](/decisions/0231-two-desktop-drivers-on-every-desktop/).
+
+## Drivers
+
+| Id | Driver | Reads and acts through | Daemon |
+|---|---|---|---|
+| `cua` | Cua Driver 0.38.0 | Tool calls with element tokens; accessibility, keyboard and pixel routes; window screenshots; an isolated browser through CDP | Yes |
+| `agent-desktop` | agent-desktop 1.0.2 | Accessibility-tree snapshots with refs scoped to each snapshot; headless semantic actions by default | No |
+
+Both drive the same desktop under the same lease. `call`, `tools` and
+`describe` use one driver: `--driver <id>`, else the project's
+`computer.driver`, else `cua`. `install`, `up`, `down` and `doctor` act on
+every driver unless `--driver` names one.
 
 ## Enabling it
 
@@ -94,9 +107,10 @@ against an agent that sets out to get around it.
 
 | Host | Status |
 |---|---|
-| Windows 10/11 (native) | Supported |
-| WSL2 on Windows 10/11 | Supported; drives the Windows desktop through interop |
-| macOS, Linux desktops | Not yet. `install` exits 1 with the reason |
+| Windows 10/11 (native) | Both drivers. State in `%LOCALAPPDATA%\harnery` |
+| WSL2 on Windows 10/11 | Both drivers' Windows builds, run through interop to drive the Windows desktop; same state directory |
+| macOS 13+ | Both drivers. State in `~/Library/Application Support/harnery`. Cua Driver runs from `/Applications/CuaDriver.app`. Each needs a one-time Accessibility (and Screen Recording) grant |
+| Linux desktop | Both drivers. State in `$XDG_STATE_HOME/harnery` (default `~/.local/state/harnery`). Run inside the signed-in user's graphical session with `at-spi2-core` |
 
 ## computer status
 
@@ -104,43 +118,55 @@ against an agent that sets out to get around it.
 harn computer status
 ```
 
-Shows whether the project enables computer use, the host kind, the pinned
-driver version, the installed executable (or `not installed`), whether the
-daemon is running and its pid, and the current desktop lease holder with its
-generation and idle expiry. `--json` emits the same fields. Status never
-changes anything.
+Shows whether the project enables computer use, the host kind, and for each
+driver its pinned version, whether it is the default, the installed executable
+(or `not installed`), and whether its daemon is running (or not needed). It
+ends with the current desktop lease holder, its generation, and its idle
+expiry. `--json` emits the same fields, with the drivers under `drivers` and
+the default under `default_driver`. Status never changes anything.
 
 ## computer install
 
 ```bash
-harn computer install          # preview: URL, SHA-256, install dir, preference file
-harn computer install --yes    # download, verify, extract, write preferences
+harn computer install                                # preview both drivers
+harn computer install --yes                          # install both
+harn computer install --driver agent-desktop --yes   # install one
 ```
 
-Without `--yes` it prints the plan only. With `--yes` it downloads the pinned
-archive, checks its SHA-256, extracts it to a versioned directory under the
-desktop's shared state directory, and writes the driver's own preference file
-(telemetry off) before the binary first runs. It never edits `PATH`, registers
-autostart, or elevates. Re-running is idempotent. Upgrading the driver is a
-Harnery release that moves the pin.
+Without `--yes` it prints each plan only: URL, SHA-256, install directory,
+executable, any preference file, any further step, and any one-time setup the
+person must do. With `--yes` it downloads each pinned archive (`.zip` or
+`.tar.gz`), checks its SHA-256, extracts it to a versioned directory under the
+desktop's shared state directory, and writes Cua Driver's preference file
+(telemetry off) before that binary first runs. On macOS it then verifies
+`CuaDriver.app` with `codesign --verify --deep --strict`, checks its bundle
+identifier, and copies it to `/Applications`, replacing only an older Cua
+Driver bundle. It never edits `PATH`, registers autostart, or elevates.
+Re-running is idempotent. One driver failing does not stop the other; the
+command then exits 1. Upgrading a driver is a Harnery release that moves its
+pin.
 
 ## computer up / down
 
-`up` starts the driver daemon at the user's normal integrity level if it is not
-already running; it needs the driver installed. `down` stops it. `call` starts
-the daemon on its own, so `up` is optional.
+`up` starts each installed driver's daemon at the user's normal integrity level
+if it is not already running. `down` stops them. agent-desktop has no daemon,
+so both skip it. `call` starts a needed daemon on its own, so `up` is optional.
 
 ## computer doctor
 
-Runs the driver's own health report and prints one line per check. Any check
-that does not pass, or a failing driver exit, exits 1. `--json` emits the
-parsed checks and the raw report.
+Runs each installed driver's own health report and prints one line per check
+under the driver's name. agent-desktop's checks are its OS permission states,
+so a missing macOS Accessibility grant shows here. Any check that does not
+pass, or a failing driver exit, exits 1. `--json` emits
+`{ ok, drivers: [{ driver, ok, exit_code, checks, report }] }`.
 
 ## computer tools / describe
 
-`tools` lists every driver tool with a one-line description. `describe <tool>`
-prints one tool's full description and input schema. Agents look up a schema
-on demand instead of carrying the whole catalog in every turn.
+`tools` lists one driver's tools. `describe <tool>` prints one tool's full
+description and arguments. Agents look up a schema on demand instead of
+carrying the whole catalog in every turn. For agent-desktop, `describe` adds
+the JSON keys the command accepts, and `describe skill:desktop` (or
+`skill:platform`) prints the binary's own guide for its version.
 
 ## computer call
 
@@ -148,9 +174,16 @@ on demand instead of carrying the whole catalog in every turn.
 harn computer call launch_app '{"name": "notepad"}'
 harn computer call get_window_state '{"include_screenshot": false}'
 harn computer call get_window_state '{"screenshot_out_file": "/tmp/state.png"}'
+harn computer call --driver agent-desktop snapshot '{"app": "Notepad.exe", "interactive_only": true}'
+harn computer call --driver agent-desktop set-value '{"ref_id": "@s8f3k2p9:e1", "value": "hi"}'
 ```
 
-Runs one tool call and prints the driver's JSON. The arguments must be a JSON
+Runs one tool call and prints the driver's JSON. For agent-desktop the tool is
+a command name and the JSON keys are that command's snake_case field names;
+Harnery runs it as a one-entry `batch` and prints the command's own envelope,
+exiting 1 when its `ok` is false. `"headed": true` moves to the global
+`--headed` flag. The tool `batch` with `{"commands": [...]}` runs several
+entries in one process. The arguments must be a JSON
 object (default `{}`). In order, the command:
 
 1. Sets `session` to the caller's agent name when the arguments omit it, so
@@ -163,13 +196,13 @@ object (default `{}`). In order, the command:
    ```
    Desktop is held by agent-Ada (generation 7, idle-expires in 84s). Wait, or ask them to run `harn computer lease release`.
    ```
-3. Starts the daemon if it is not running.
+3. Starts the driver's daemon if it has one and it is not running.
 4. Translates file paths in the arguments and results between WSL and Windows
-   syntax, so `screenshot_out_file` can name a WSL path.
-5. Replaces the value of any key ending in `png_b64` with a short
-   `<omitted N chars; …>` note, so one state read cannot flood an agent's
-   context. Pass `--keep-screenshot` to keep the inline image, or write it to
-   a file with `screenshot_out_file` and read that file.
+   syntax, so `screenshot_out_file` or `output_path` can name a WSL path.
+5. Replaces the value of any key ending in `png_b64`, and any other string of
+   2,048 or more base64 characters, with a short `<omitted N chars; …>` note,
+   so one state read cannot flood an agent's context. Pass `--keep-screenshot`
+   to keep the inline image, or write it to a file and read that file.
 
 The driver's stderr passes through and its exit code becomes the command's
 exit code.

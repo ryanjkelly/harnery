@@ -233,6 +233,8 @@ interface HarneryConfig {
   computer?: {
     mode?: ComputerMode;
     enabled?: boolean;
+    /** Default desktop driver for `computer call`, `tools` and `describe` (ADR 0231). */
+    driver?: string;
     grant_minutes?: number;
     idle_seconds?: number;
     wait_seconds?: number;
@@ -806,6 +808,8 @@ export interface ComputerProjectConfig {
   wait_seconds?: number;
   /** How long an `ask-each-task` approval lasts at most, in minutes. */
   grant_minutes?: number;
+  /** Default desktop driver id from `computer.driver` (ADR 0231); the command validates it. */
+  driver?: string;
 }
 
 /** One person's own desktop-control choices, kept outside every project. */
@@ -954,6 +958,9 @@ export function readComputerConfig(
     ...(idle !== undefined ? { idle_seconds: idle } : {}),
     ...(waitOk ? { wait_seconds: wait } : {}),
     ...(grantMinutes !== undefined ? { grant_minutes: grantMinutes } : {}),
+    ...(typeof record.driver === "string" && record.driver.trim()
+      ? { driver: record.driver.trim() }
+      : {}),
   };
 }
 

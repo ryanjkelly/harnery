@@ -2,13 +2,15 @@
  * Host detection for `harn computer` (ADR 0228).
  *
  * Decides whose desktop this process can drive and where the state shared by
- * every caller of that desktop lives (`%LOCALAPPDATA%\harnery`). Native
- * Windows and WSL2 both drive the Windows desktop; everything else is
- * unsupported for now.
+ * every caller of that desktop lives. Native Windows and WSL2 both drive the
+ * Windows desktop and share `%LOCALAPPDATA%\harnery`; macOS uses
+ * `~/Library/Application Support/harnery`; a Linux desktop uses
+ * `$XDG_STATE_HOME/harnery` (default `~/.local/state/harnery`). ADR 0231.
  *
  * Internal module: not exported from package.json.
  */
-import { win32 } from "node:path";
+import { homedir } from "node:os";
+import { posix, win32 } from "node:path";
 import { isWSL } from "../browser/launch-args.ts";
 import { windowsLocalAppData, windowsPathToWsl } from "../browser/windows-chrome.ts";
 import type { HostInfo } from "./types.ts";
@@ -22,12 +24,12 @@ export interface HostDeps {
   isWsl?: () => boolean;
   /** `%LOCALAPPDATA%` as a Windows path, read through interop. WSL only. */
   localAppData?: () => string | undefined;
+  /** Defaults to `os.homedir()`. macOS and Linux only. */
+  home?: () => string;
 }
 
-const MACOS_REASON =
-  "macOS is not yet supported: its desktop driver needs an app bundle and accessibility and screen-recording grants (ADR 0228).";
-const LINUX_REASON =
-  "Linux desktops are not yet supported; computer use drives a Windows desktop from native Windows or WSL2 (ADR 0228).";
+const LINUX_NO_SESSION_NOTE =
+  "No graphical session found (DISPLAY and WAYLAND_DISPLAY are unset); run from the signed-in user's desktop session.";
 
 let cached: HostInfo | undefined;
 
@@ -78,10 +80,31 @@ function resolveHost(deps: HostDeps): HostInfo {
     }
     return { kind: "wsl", desktopStateDir: `${mounted}/harnery` };
   }
-  if (platform === "darwin") return { kind: "unsupported", reason: MACOS_REASON };
-  if (platform === "linux") return { kind: "unsupported", reason: LINUX_REASON };
+  const home = (deps.home ?? homedir)();
+  if (platform === "darwin") {
+    if (!home) return { kind: "unsupported", reason: "The home directory is unknown." };
+    return {
+      kind: "macos",
+      desktopStateDir: posix.join(home, "Library", "Application Support", "harnery"),
+    };
+  }
+  if (platform === "linux") {
+    const xdgState = env.XDG_STATE_HOME?.trim();
+    const base = xdgState?.startsWith("/")
+      ? xdgState
+      : home
+        ? posix.join(home, ".local", "state")
+        : "";
+    if (!base) return { kind: "unsupported", reason: "The home directory is unknown." };
+    const graphical = Boolean(env.DISPLAY?.trim() || env.WAYLAND_DISPLAY?.trim());
+    return {
+      kind: "linux",
+      desktopStateDir: posix.join(base, "harnery"),
+      ...(graphical ? {} : { note: LINUX_NO_SESSION_NOTE }),
+    };
+  }
   return {
     kind: "unsupported",
-    reason: `Platform ${platform} is not supported for computer use (ADR 0228).`,
+    reason: `Platform ${platform} is not supported for computer use (ADR 0231).`,
   };
 }

@@ -1,8 +1,9 @@
-// `computer`: opt-in desktop control through one pinned desktop driver
-// (ADR 0228). The driver adapter (src/lib/computer/cua.ts), host detection and
-// the cross-call desktop lease live in src/lib/computer/; this command owns
-// the config gate, flag parsing, lease policy for `call`, screenshot redaction,
-// rendering, and exit codes.
+// `computer`: opt-in desktop control through pinned desktop drivers (ADRs 0228
+// and 0231). The driver adapters (src/lib/computer/cua.ts and agent-desktop.ts,
+// listed in drivers.ts), host detection and the cross-call desktop lease live
+// in src/lib/computer/; this command owns the config gate, driver selection,
+// flag parsing, lease policy for `call`, screenshot redaction, rendering, and
+// exit codes. Every driver shares the one desktop lease.
 //
 // Approval modes (ADR 0230): in `ask-each-task` and `ask-once-per-session` an
 // agent needs a live approval (`computer grant`, answered by the person) before
@@ -30,6 +31,7 @@ import {
   writeComputerPreference,
 } from "../core/config.ts";
 import type { Confirm } from "../lib/computer/confirm.ts";
+import { DRIVER_IDS } from "../lib/computer/drivers.ts";
 import type {
   DesktopGrant,
   GrantChannel,
@@ -85,7 +87,8 @@ export interface ComputerDeps {
   emit: EmitContext;
   binName: string;
   host: () => HostInfo;
-  driver: DesktopDriver;
+  /** Every available driver, in registry order; `computer.driver` picks the default. */
+  drivers: DesktopDriver[];
   lease: LeaseApi;
   owner: () => LeaseOwner;
   /** Effective settings; `prefs` evaluates a hypothetical set of personal choices. */
@@ -108,7 +111,11 @@ export interface ComputerDeps {
   now: () => number;
 }
 
-export type ComputerDepsInput = Pick<ComputerDeps, "emit" | "binName"> & Partial<ComputerDeps>;
+export type ComputerDepsInput = Pick<ComputerDeps, "emit" | "binName"> &
+  Partial<ComputerDeps> & {
+    /** Shorthand for `drivers: [driver]` (tests). */
+    driver?: DesktopDriver;
+  };
 
 /**
  * Who is asking for the desktop: the coordinated agent when one is resolvable,
@@ -136,25 +143,25 @@ export function resolveLeaseOwner(): LeaseOwner {
 async function loadDefaultDeps(): Promise<
   Pick<
     ComputerDeps,
-    "host" | "driver" | "lease" | "leaseDir" | "defaultIdleMs" | "grants" | "confirm"
+    "host" | "drivers" | "lease" | "leaseDir" | "defaultIdleMs" | "grants" | "confirm"
   >
 > {
   const [
     { detectHost },
-    { cuaDriver },
+    drivers,
     { desktopLease, leaseDir, DEFAULT_LEASE_IDLE_MS },
     grants,
     { confirmWithPerson },
   ] = await Promise.all([
     import("../lib/computer/host.ts"),
-    import("../lib/computer/cua.ts"),
+    import("../lib/computer/drivers.ts").then((m) => m.loadDrivers()),
     import("../lib/computer/lease.ts"),
     import("../lib/computer/grants.ts"),
     import("../lib/computer/confirm.ts"),
   ]);
   return {
     host: () => detectHost(),
-    driver: cuaDriver,
+    drivers,
     lease: desktopLease,
     leaseDir,
     defaultIdleMs: DEFAULT_LEASE_IDLE_MS,
@@ -174,7 +181,7 @@ async function loadDefaultDeps(): Promise<
 async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
   const needsDefaults =
     !input.host ||
-    !input.driver ||
+    (!input.drivers && !input.driver) ||
     !input.lease ||
     !input.leaseDir ||
     !input.grants ||
@@ -185,7 +192,8 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
     emit: input.emit,
     binName: input.binName,
     host: input.host ?? (defaults?.host as ComputerDeps["host"]),
-    driver: input.driver ?? (defaults?.driver as DesktopDriver),
+    drivers:
+      input.drivers ?? (input.driver ? [input.driver] : (defaults?.drivers as DesktopDriver[])),
     lease: input.lease ?? (defaults?.lease as LeaseApi),
     leaseDir: input.leaseDir ?? (defaults?.leaseDir as ComputerDeps["leaseDir"]),
     defaultIdleMs: input.defaultIdleMs ?? (defaults?.defaultIdleMs as number),
@@ -336,12 +344,39 @@ function requireSupported(host: HostInfo): SupportedHost {
   return host as SupportedHost;
 }
 
-function requireInstalled(deps: ComputerDeps, host: HostInfo): string {
-  const exe = deps.driver.installedExecutable(host);
+/**
+ * The driver a command acts on: `--driver`, else the project's
+ * `computer.driver`, else the first registered driver.
+ */
+function selectDriver(deps: ComputerDeps, requested?: string): DesktopDriver {
+  const id = requested ?? deps.config().driver ?? deps.drivers[0]?.id;
+  const found = deps.drivers.find((d) => d.id === id);
+  if (found) return found;
+  throw new ComputerError(
+    "computer_usage",
+    `Unknown desktop driver "${id}". Available: ${deps.drivers.map((d) => d.id).join(", ")}.`,
+  );
+}
+
+/** `--driver` narrows to one driver; without it, every driver. */
+function targetDrivers(deps: ComputerDeps, requested?: string): DesktopDriver[] {
+  return requested ? [selectDriver(deps, requested)] : deps.drivers;
+}
+
+function defaultDriverId(deps: ComputerDeps): string | undefined {
+  try {
+    return selectDriver(deps).id;
+  } catch {
+    return undefined;
+  }
+}
+
+function requireInstalled(deps: ComputerDeps, driver: DesktopDriver, host: HostInfo): string {
+  const exe = driver.installedExecutable(host);
   if (exe) return exe;
   throw new ComputerError(
     "computer_not_installed",
-    `The pinned desktop driver (${deps.driver.id} ${deps.driver.version}) is not installed. Run \`${deps.binName} computer install --yes\`.`,
+    `The pinned desktop driver (${driver.id} ${driver.version}) is not installed. Run \`${deps.binName} computer install --driver ${driver.id} --yes\`.`,
   );
 }
 
@@ -365,8 +400,8 @@ function leaseOptions(
 }
 
 /** Lease time for one `call`: long enough that the call itself can never outlive the lease. */
-function callLeaseIdleMs(deps: ComputerDeps): number {
-  return Math.max(configuredIdleMs(deps), (deps.driver.callTimeoutMs ?? 0) + CALL_LEASE_MARGIN_MS);
+function callLeaseIdleMs(deps: ComputerDeps, driver: DesktopDriver): number {
+  return Math.max(configuredIdleMs(deps), (driver.callTimeoutMs ?? 0) + CALL_LEASE_MARGIN_MS);
 }
 
 function secondsUntil(iso: string, nowMs: number): number {
@@ -416,6 +451,8 @@ function parseCallArgs(raw: string | undefined): Record<string, unknown> {
 }
 
 const PNG_B64_RE = /"([A-Za-z0-9_]*png_b64)"(\s*:\s*)"((?:[^"\\]|\\.)*)"/g;
+/** Any long run of base64 in a string value (a screenshot under a generic key such as `data`). */
+const LONG_B64_RE = /"([A-Za-z0-9_]+)"(\s*:\s*)"([A-Za-z0-9+/]{2048,}={0,2})"/g;
 
 /**
  * Replace inline base64 screenshots in driver output with a short note, so a
@@ -423,11 +460,11 @@ const PNG_B64_RE = /"([A-Za-z0-9_]*png_b64)"(\s*:\s*)"((?:[^"\\]|\\.)*)"/g;
  * text, so the driver's formatting survives.
  */
 export function redactInlineScreenshots(stdout: string): string {
-  return stdout.replace(
-    PNG_B64_RE,
-    (_match, key: string, sep: string, value: string) =>
-      `"${key}"${sep}"<omitted ${value.length} chars; pass screenshot_out_file or --keep-screenshot>"`,
-  );
+  const note = (key: string, sep: string, value: string) =>
+    `"${key}"${sep}"<omitted ${value.length} chars; save to a file (screenshot_out_file or output_path) or pass --keep-screenshot>"`;
+  return stdout
+    .replace(PNG_B64_RE, (_m, key: string, sep: string, value: string) => note(key, sep, value))
+    .replace(LONG_B64_RE, (_m, key: string, sep: string, value: string) => note(key, sep, value));
 }
 
 function printDriverResult(deps: ComputerDeps, result: DriverCallResult, stdout = result.stdout) {
@@ -437,17 +474,30 @@ function printDriverResult(deps: ComputerDeps, result: DriverCallResult, stdout 
   if (result.exitCode !== 0) deps.emit.setExitCode(result.exitCode);
 }
 
-async function ensureDaemon(deps: ComputerDeps, host: HostInfo): Promise<DaemonStatus> {
-  const current = deps.driver.daemonStatus(host);
+async function ensureDaemon(driver: DesktopDriver, host: HostInfo): Promise<DaemonStatus> {
+  const current = driver.daemonStatus(host);
   if (current.running) return current;
-  const started = await deps.driver.startDaemon(host);
+  const started = await driver.startDaemon(host);
   if (!started.running) {
     throw new ComputerError(
       "computer_daemon_failed",
-      `The desktop driver daemon did not start${started.detail ? `: ${started.detail}` : "."}`,
+      `The ${driver.id} daemon did not start${started.detail ? `: ${started.detail}` : "."}`,
     );
   }
   return started;
+}
+
+function describeDaemon(driver: DesktopDriver, daemon: DaemonStatus | null): string {
+  if (!driver.hasDaemon) return "not needed (runs per call)";
+  if (!daemon) return "n/a";
+  return daemon.running
+    ? `running${daemon.pid !== undefined ? ` (pid ${daemon.pid})` : ""}`
+    : `stopped${daemon.detail ? ` (${daemon.detail})` : ""}`;
+}
+
+const DRIVER_OPTION = "--driver <id>";
+function driverHelp(what: string): string {
+  return `Desktop driver ${what} (${DRIVER_IDS.join(" or ")}).`;
 }
 
 /** Write human-readable text, ending it with exactly one newline. */
@@ -538,8 +588,8 @@ export function createComputerCommand(
   const computer = parent
     .command("computer")
     .description(
-      "Opt-in desktop control through a pinned desktop driver: install it, run its daemon, " +
-        "and call its tools while holding a desktop lease shared by every agent on this machine.",
+      "Opt-in desktop control through pinned desktop drivers (cua, agent-desktop): install them, run any daemon, " +
+        "and call their tools while holding a desktop lease shared by every agent on this machine.",
     )
     .addHelpText(
       "after",
@@ -553,7 +603,7 @@ export function createComputerCommand(
   computer
     .command("status")
     .description(
-      "Show the approval mode and your approval, the host, pinned driver, install, daemon, and desktop lease holder.",
+      "Show the approval mode and your approval, the host, each pinned driver with its install and daemon, and the desktop lease holder.",
     )
     .option("--json", "Emit the status as JSON.")
     .action(
@@ -561,15 +611,19 @@ export function createComputerCommand(
         const config = deps.config();
         const host = deps.host();
         const supported = host.kind !== "unsupported" && Boolean(host.desktopStateDir);
-        const installed = supported ? (deps.driver.installedExecutable(host) ?? null) : null;
-        let daemon: DaemonStatus | null = null;
-        if (installed) {
-          try {
-            daemon = deps.driver.daemonStatus(host);
-          } catch (err) {
-            daemon = { running: false, detail: (err as Error).message };
+        const defaultId = defaultDriverId(deps);
+        const drivers = deps.drivers.map((driver) => {
+          const installed = supported ? (driver.installedExecutable(host) ?? null) : null;
+          let daemon: DaemonStatus | null = null;
+          if (installed && driver.hasDaemon) {
+            try {
+              daemon = driver.daemonStatus(host);
+            } catch (err) {
+              daemon = { running: false, detail: (err as Error).message };
+            }
           }
-        }
+          return { driver, installed, daemon };
+        });
         const lease = supported ? deps.lease.read(leaseOptions(deps, host as SupportedHost)) : null;
         const nowMs = deps.now();
         const owner = deps.owner();
@@ -589,10 +643,20 @@ export function createComputerCommand(
             mode_source: config.mode_source,
             ...(config.config_error ? { config_error: config.config_error } : {}),
             approval: grant,
-            host: { kind: host.kind, ...(host.reason ? { reason: host.reason } : {}) },
-            driver: { id: deps.driver.id, version: deps.driver.version },
-            installed,
-            daemon,
+            host: {
+              kind: host.kind,
+              ...(host.reason ? { reason: host.reason } : {}),
+              ...(host.note ? { note: host.note } : {}),
+            },
+            default_driver: defaultId ?? null,
+            drivers: drivers.map(({ driver, installed, daemon }) => ({
+              id: driver.id,
+              version: driver.version,
+              summary: driver.summary,
+              has_daemon: driver.hasDaemon,
+              installed,
+              daemon,
+            })),
             lease: lease ? { ...lease, expires_in_seconds: expiresInSeconds(lease, nowMs) } : null,
           });
           return;
@@ -614,22 +678,19 @@ export function createComputerCommand(
                 }`,
               ]
             : []),
-          `host:      ${host.kind}${host.reason ? ` (${host.reason})` : ""}`,
-          `driver:    ${deps.driver.id} ${deps.driver.version} (pinned)`,
+          `host:      ${host.kind}${host.reason ? ` (${host.reason})` : ""}${host.note ? ` (${host.note})` : ""}`,
         ];
-        if (supported) {
-          lines.push(`installed: ${installed ?? "not installed"}`);
+        for (const { driver, installed, daemon } of drivers) {
           lines.push(
-            `daemon:    ${
-              daemon
-                ? daemon.running
-                  ? `running${daemon.pid !== undefined ? ` (pid ${daemon.pid})` : ""}`
-                  : `stopped${daemon.detail ? ` (${daemon.detail})` : ""}`
-                : "n/a"
-            }`,
+            `driver:    ${driver.id} ${driver.version} (pinned${driver.id === defaultId ? ", default" : ""}): ${driver.summary}`,
           );
-          lines.push(`lease:     ${lease ? `held by ${describeLease(lease, nowMs)}` : "free"}`);
+          if (supported) {
+            lines.push(`  installed: ${installed ?? "not installed"}`);
+            if (installed) lines.push(`  daemon:    ${describeDaemon(driver, daemon)}`);
+          }
         }
+        if (supported)
+          lines.push(`lease:     ${lease ? `held by ${describeLease(lease, nowMs)}` : "free"}`);
         emitLine(deps.emit, lines.join("\n"));
       }),
     );
@@ -638,123 +699,189 @@ export function createComputerCommand(
   computer
     .command("install")
     .description(
-      "Preview the pinned driver install (URL, SHA-256, install dir, preference file); --yes downloads, verifies, and installs it.",
+      "Preview the pinned driver installs (URL, SHA-256, install dir, other steps); --yes downloads, verifies, and installs them.",
     )
+    .option(DRIVER_OPTION, driverHelp("to install; default: every driver"))
     .option("--yes", "Apply the install. Without it, only the plan is shown.")
-    .option("--json", "Emit the plan or result as JSON.")
+    .option("--json", "Emit the plans or results as JSON.")
     .action(
-      guarded(input, async (deps, opts: { yes?: boolean; json?: boolean }) => {
+      guarded(input, async (deps, opts: { driver?: string; yes?: boolean; json?: boolean }) => {
         requireEnabled(deps);
         const host = requireSupported(deps.host());
-        const plan = deps.driver.planInstall(host);
+        const drivers = targetDrivers(deps, opts.driver);
+        const plans = drivers.map((driver) => ({ driver, plan: driver.planInstall(host) }));
         if (!opts.yes) {
           if (opts.json) {
-            deps.emit.data({ applied: false, plan });
+            deps.emit.data({ applied: false, plans: plans.map(({ plan }) => plan) });
             return;
           }
-          emitLine(
-            deps.emit,
-            [
+          const lines: string[] = [];
+          for (const { plan } of plans) {
+            lines.push(
               `${plan.alreadyInstalled ? "Already installed" : "Would install"}: ${plan.driver} ${plan.version} for ${plan.host}`,
               `  url:          ${plan.artifact.url}`,
               `  sha256:       ${plan.artifact.sha256}`,
               `  install dir:  ${plan.installDir}`,
               `  executable:   ${plan.executable}`,
-              `  preferences:  ${plan.preferenceFile} ${JSON.stringify(plan.preferences)}`,
-              plan.alreadyInstalled
-                ? "Nothing to do."
-                : `Re-run with --yes to install: \`${deps.binName} computer install --yes\`.`,
-            ].join("\n"),
+            );
+            if (plan.preferenceFile)
+              lines.push(
+                `  preferences:  ${plan.preferenceFile} ${JSON.stringify(plan.preferences ?? {})}`,
+              );
+            for (const step of plan.steps ?? []) lines.push(`  step:         ${step}`);
+            for (const item of plan.setup ?? []) lines.push(`  you:          ${item}`);
+          }
+          const pending = plans.filter(({ plan }) => !plan.alreadyInstalled);
+          lines.push(
+            pending.length === 0
+              ? "Nothing to do."
+              : `Re-run with --yes to install: \`${deps.binName} computer install${opts.driver ? ` --driver ${opts.driver}` : ""} --yes\`.`,
           );
+          emitLine(deps.emit, lines.join("\n"));
           return;
         }
-        const result = await deps.driver.install(plan);
-        if (opts.json) {
-          deps.emit.data({ applied: true, result });
-          return;
+        const results: unknown[] = [];
+        const lines: string[] = [];
+        let failed = false;
+        for (const { driver, plan } of plans) {
+          try {
+            const result = await driver.install(plan);
+            results.push(result);
+            lines.push(
+              result.installed
+                ? `Installed ${result.driver} ${result.version} at ${result.executable}.`
+                : `${result.driver} ${result.version} was already installed at ${result.executable}.`,
+            );
+            for (const item of result.setup ?? []) lines.push(`  you: ${item}`);
+          } catch (err) {
+            failed = true;
+            const message = (err as Error).message ?? String(err);
+            results.push({ driver: driver.id, error: message });
+            lines.push(`Failed to install ${driver.id} ${driver.version}: ${message}`);
+          }
         }
-        emitLine(
-          deps.emit,
-          result.installed
-            ? `Installed ${result.driver} ${result.version} at ${result.executable}.\nStart it with \`${deps.binName} computer up\`.`
-            : `${result.driver} ${result.version} was already installed at ${result.executable}.`,
-        );
+        if (opts.json) deps.emit.data({ applied: true, results });
+        else {
+          if (!failed && drivers.some((d) => d.hasDaemon))
+            lines.push(`Start daemons with \`${deps.binName} computer up\`.`);
+          emitLine(deps.emit, lines.join("\n"));
+        }
+        if (failed) deps.emit.setExitCode(1);
       }),
     );
 
   // ---------------------------------------------------------------- up/down
   computer
     .command("up")
-    .description("Start the desktop driver daemon (unelevated) if it is not running.")
+    .description(
+      "Start each installed driver's daemon (unelevated) if it is not running; drivers without a daemon need nothing.",
+    )
+    .option(DRIVER_OPTION, driverHelp("to start; default: every installed driver"))
     .action(
-      guarded(input, async (deps) => {
+      guarded(input, async (deps, opts: { driver?: string }) => {
         requireEnabled(deps);
         const host = requireSupported(deps.host());
-        requireInstalled(deps, host);
-        const status = await ensureDaemon(deps, host);
-        emitLine(
-          deps.emit,
-          `Daemon running${status.pid !== undefined ? ` (pid ${status.pid})` : ""}.`,
-        );
+        const drivers = targetDrivers(deps, opts.driver);
+        if (opts.driver) requireInstalled(deps, drivers[0] as DesktopDriver, host);
+        const installed = drivers.filter((d) => d.installedExecutable(host));
+        if (installed.length === 0) requireInstalled(deps, drivers[0] as DesktopDriver, host);
+        const lines: string[] = [];
+        for (const driver of installed) {
+          if (!driver.hasDaemon) {
+            lines.push(`${driver.id}: no daemon needed.`);
+            continue;
+          }
+          const status = await ensureDaemon(driver, host);
+          lines.push(
+            `${driver.id}: daemon running${status.pid !== undefined ? ` (pid ${status.pid})` : ""}.`,
+          );
+        }
+        emitLine(deps.emit, lines.join("\n"));
       }),
     );
 
   computer
     .command("down")
-    .description("Stop the desktop driver daemon.")
+    .description("Stop each installed driver's daemon.")
+    .option(DRIVER_OPTION, driverHelp("to stop; default: every installed driver"))
     .action(
-      guarded(input, (deps) => {
+      guarded(input, (deps, opts: { driver?: string }) => {
         const host = requireSupported(deps.host());
-        requireInstalled(deps, host);
-        const status = deps.driver.stopDaemon(host);
-        emitLine(
-          deps.emit,
-          status.running ? `Daemon still running: ${status.detail}` : "Daemon stopped.",
-        );
-        if (status.running) deps.emit.setExitCode(1);
+        const drivers = targetDrivers(deps, opts.driver);
+        if (opts.driver) requireInstalled(deps, drivers[0] as DesktopDriver, host);
+        const lines: string[] = [];
+        for (const driver of drivers.filter((d) => d.installedExecutable(host))) {
+          if (!driver.hasDaemon) {
+            lines.push(`${driver.id}: no daemon.`);
+            continue;
+          }
+          const status = driver.stopDaemon(host);
+          lines.push(
+            status.running
+              ? `${driver.id}: daemon still running: ${status.detail}`
+              : `${driver.id}: daemon stopped.`,
+          );
+          if (status.running) deps.emit.setExitCode(1);
+        }
+        emitLine(deps.emit, lines.length ? lines.join("\n") : "No driver is installed.");
       }),
     );
 
   // ------------------------------------------------------------------ doctor
   computer
     .command("doctor")
-    .description("Run the driver's own health report; any non-passing check exits 1.")
+    .description("Run each installed driver's own health report; any non-passing check exits 1.")
+    .option(DRIVER_OPTION, driverHelp("to check; default: every installed driver"))
     .option("--json", "Emit the checks as JSON.")
     .action(
-      guarded(input, (deps, opts: { json?: boolean }) => {
+      guarded(input, (deps, opts: { driver?: string; json?: boolean }) => {
         const host = requireSupported(deps.host());
-        requireInstalled(deps, host);
-        const result = deps.driver.health(host);
-        let json = result.json;
-        if (json === undefined) {
-          try {
-            json = JSON.parse(result.stdout);
-          } catch {
-            json = undefined;
+        const drivers = targetDrivers(deps, opts.driver);
+        if (opts.driver) requireInstalled(deps, drivers[0] as DesktopDriver, host);
+        const installed = drivers.filter((d) => d.installedExecutable(host));
+        if (installed.length === 0) requireInstalled(deps, drivers[0] as DesktopDriver, host);
+        const reports = installed.map((driver) => {
+          const result = driver.health(host);
+          let json = result.json;
+          if (json === undefined) {
+            try {
+              json = JSON.parse(result.stdout);
+            } catch {
+              json = undefined;
+            }
           }
-        }
-        const checks = healthChecks(json);
-        const failing = checks?.filter((c) => !PASSING.has(c.status.toLowerCase())) ?? [];
-        const ok = result.exitCode === 0 && checks !== undefined && failing.length === 0;
+          const checks = healthChecks(json);
+          const failing = checks?.filter((c) => !PASSING.has(c.status.toLowerCase())) ?? [];
+          const ok = result.exitCode === 0 && checks !== undefined && failing.length === 0;
+          return { driver, result, json, checks, ok };
+        });
+        const ok = reports.every((r) => r.ok);
         if (opts.json) {
           deps.emit.data({
             ok,
-            exit_code: result.exitCode,
-            checks: checks ?? null,
-            report: json ?? result.stdout,
+            drivers: reports.map(({ driver, result, json, checks, ok }) => ({
+              driver: driver.id,
+              ok,
+              exit_code: result.exitCode,
+              checks: checks ?? null,
+              report: json ?? result.stdout,
+            })),
           });
-        } else if (checks) {
-          emitLine(
-            deps.emit,
-            checks
-              .map((c) => `${c.status.padEnd(6)} ${c.name}${c.message ? `: ${c.message}` : ""}`)
-              .join("\n"),
-          );
         } else {
-          if (result.stdout) emitLine(deps.emit, result.stdout);
-          emitLine(deps.emit, "No structured checks in the driver's health report.");
+          const lines: string[] = [];
+          for (const { driver, result, checks } of reports) {
+            lines.push(`${driver.id} ${driver.version}:`);
+            if (checks)
+              for (const c of checks)
+                lines.push(`  ${c.status.padEnd(6)} ${c.name}${c.message ? `: ${c.message}` : ""}`);
+            else {
+              if (result.stdout) lines.push(result.stdout.replace(/\n$/, ""));
+              lines.push("  No structured checks in the driver's health report.");
+            }
+          }
+          emitLine(deps.emit, lines.join("\n"));
         }
-        if (result.stderr) deps.writeStderr(result.stderr);
+        for (const { result } of reports) if (result.stderr) deps.writeStderr(result.stderr);
         if (!ok) deps.emit.setExitCode(1);
       }),
     );
@@ -762,23 +889,30 @@ export function createComputerCommand(
   // ---------------------------------------------------------- tools/describe
   computer
     .command("tools")
-    .description("List the driver's tools (name: description).")
+    .description("List a driver's tools.")
+    .option(DRIVER_OPTION, driverHelp("to list (default: the project's default driver)"))
     .action(
-      guarded(input, (deps) => {
+      guarded(input, (deps, opts: { driver?: string }) => {
         const host = requireSupported(deps.host());
-        requireInstalled(deps, host);
-        printDriverResult(deps, deps.driver.listTools(host));
+        const driver = selectDriver(deps, opts.driver);
+        requireInstalled(deps, driver, host);
+        printDriverResult(deps, driver.listTools(host));
       }),
     );
 
   computer
     .command("describe <tool>")
-    .description("Show one tool's description and input schema.")
+    .description("Show one tool's description and arguments.")
+    .option(
+      DRIVER_OPTION,
+      driverHelp("the tool belongs to (default: the project's default driver)"),
+    )
     .action(
-      guarded(input, (deps, tool: string) => {
+      guarded(input, (deps, tool: string, opts: { driver?: string }) => {
         const host = requireSupported(deps.host());
-        requireInstalled(deps, host);
-        printDriverResult(deps, deps.driver.describe(host, tool));
+        const driver = selectDriver(deps, opts.driver);
+        requireInstalled(deps, driver, host);
+        printDriverResult(deps, driver.describe(host, tool));
       }),
     );
 
@@ -789,6 +923,7 @@ export function createComputerCommand(
       "Call one driver tool with a JSON object of arguments, holding the desktop lease. " +
         "`session` defaults to your agent name; inline base64 screenshots are redacted unless --keep-screenshot.",
     )
+    .option(DRIVER_OPTION, driverHelp("to call (default: the project's default driver)"))
     .option(
       "--wait <seconds>",
       "How long to wait for another agent's lease (default: config wait_seconds or 30).",
@@ -801,11 +936,12 @@ export function createComputerCommand(
           deps,
           tool: string,
           rawJson: string | undefined,
-          opts: { wait?: string; keepScreenshot?: boolean },
+          opts: { driver?: string; wait?: string; keepScreenshot?: boolean },
         ) => {
           const config = requireEnabled(deps);
           const host = requireSupported(deps.host());
-          requireInstalled(deps, host);
+          const driver = selectDriver(deps, opts.driver);
+          requireInstalled(deps, driver, host);
           const args = parseCallArgs(rawJson);
           const waitSeconds =
             parseSeconds(opts.wait, "--wait") ?? config.wait_seconds ?? DEFAULT_CALL_WAIT_SECONDS;
@@ -818,15 +954,15 @@ export function createComputerCommand(
           // the desktop; refresh to the normal idle period once it returns.
           const acquired = await deps.lease.acquire(
             owner,
-            leaseOptions(deps, host, Math.round(waitSeconds * 1000), callLeaseIdleMs(deps)),
+            leaseOptions(deps, host, Math.round(waitSeconds * 1000), callLeaseIdleMs(deps, driver)),
           );
           if (!acquired.ok) throw heldError(deps, acquired.holder);
 
-          await ensureDaemon(deps, host);
-          const translated = deps.driver.translateArgsPaths(host, tool, args);
-          const result = deps.driver.call(host, tool, translated);
+          if (driver.hasDaemon) await ensureDaemon(driver, host);
+          const translated = driver.translateArgsPaths(host, tool, args);
+          const result = driver.call(host, tool, translated);
           await deps.lease.acquire(owner, leaseOptions(deps, host));
-          let stdout = deps.driver.translateResultPaths(host, result.stdout);
+          let stdout = driver.translateResultPaths(host, result.stdout);
           if (!opts.keepScreenshot) stdout = redactInlineScreenshots(stdout);
           printDriverResult(deps, result, stdout);
         },

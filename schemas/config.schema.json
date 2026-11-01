@@ -311,8 +311,14 @@
     "computer": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Opt-in desktop control through a pinned desktop driver (ADRs 0228 and 0230). Project config only; inert unless mode (or enabled) turns it on. Where it is on, each person may choose their own mode with `computer mode`, stored outside the project.",
+      "description": "Opt-in desktop control through pinned desktop drivers (ADRs 0228, 0230 and 0231). Project config only; inert unless mode (or enabled) turns it on. Where it is on, each person may choose their own mode with `computer mode`, stored outside the project.",
       "properties": {
+        "driver": {
+          "type": "string",
+          "enum": ["cua", "agent-desktop"],
+          "default": "cua",
+          "description": "Default desktop driver for `computer call`, `tools` and `describe`; `--driver` overrides per command. Both drivers share one desktop lease."
+        },
         "mode": {
           "type": "string",
           "enum": ["off", "ask-each-task", "ask-once-per-session", "on"],

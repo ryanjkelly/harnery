@@ -1,0 +1,116 @@
+---
+title: "0231: Two desktop drivers on every desktop"
+description: "ADR: `harn computer` ships two pinned drivers, Cua Driver and agent-desktop, side by side under one desktop lease, and runs both on Windows, WSL, macOS and Linux. `--driver` or `computer.driver` picks one per call."
+---
+
+**Status:** accepted (2026-11-01) · **Scope:** product tier (`commands/computer`, `lib/computer`, `core/config`, the opt-in skill)
+
+## Context
+
+[Decision 0228](/decisions/0228-computer-use-through-a-pinned-desktop-driver/)
+shipped one pinned driver, Cua Driver, on Windows and WSL only, and kept a
+`DesktopDriver` interface so a second driver would not branch inside the
+command. Two gaps remained.
+
+- **Hosts.** Operators also run agents on macOS and Linux desktops, where
+  `install` refused.
+- **One kind of reading.** Cua Driver works through tool calls, element tokens,
+  pixel routes, screenshots, and an isolated browser over CDP. agent-desktop
+  (Apache-2.0) reads the operating system's accessibility tree as a snapshot and
+  acts on refs scoped to that snapshot. A ref from an older snapshot fails with
+  `STALE_REF` instead of resolving to a different element. It runs one process
+  per call with no daemon, ships for Windows, macOS and Linux, publishes
+  SHA-256 checksums and build attestations, and contains no telemetry.
+
+A trial on 2026-11-01 drove the Windows desktop from WSL with agent-desktop
+1.0.2. It set and read back Notepad text through UI Automation, computed 7 × 6
+in Calculator by clicking refs, and wrote a window screenshot to a WSL path.
+Both drivers then ran through `harn computer` on the same machine.
+
+## Decision
+
+### Both drivers, one lease
+
+Harnery pins both drivers. `drivers.ts` lists them; the command resolves one
+by id and never branches on which one it got. Every driver shares the one
+desktop lease and the approval gate from
+[decision 0230](/decisions/0230-desktop-control-approval-modes/), because they
+drive the same desktop.
+
+- `call`, `tools` and `describe` act on one driver: `--driver <id>`, else the
+  project's `computer.driver`, else `cua`.
+- `install`, `up`, `down` and `doctor` act on every driver unless `--driver`
+  names one. `status` lists both and marks the default.
+- A driver declares whether it has a daemon. `call` starts one only for a
+  driver that has it; `up` and `down` skip the others.
+
+The skill tells agents to start with agent-desktop for reading and operating
+native app UI and to use Cua Driver for browsers, pixels, or anything
+agent-desktop refuses. Refs and tokens belong to the driver that made them.
+
+### agent-desktop through `batch`
+
+`call <tool> <json>` runs `agent-desktop batch` with one entry
+`{"command": tool, "args": json}`. Batch arguments use the same typed fields as
+the CLI, so Harnery needs no per-command flag mapping. The single result is
+unwrapped into the envelope the direct command prints, and its `ok` sets the
+exit code. `session` and `headed` move to the batch's flags. The tool `batch`
+with `{"commands": [...]}` runs several entries in one process. `describe`
+prints the command's help plus the JSON keys the binary lists when given an
+unknown key; `describe skill:<name>` prints the binary's own version-matched
+guide.
+
+### Four hosts
+
+| Host | Shared state directory | Cua Driver | agent-desktop |
+|---|---|---|---|
+| Windows 10/11 | `%LOCALAPPDATA%\harnery` | Windows zip | Windows tar.gz |
+| WSL2 | the same directory through `/mnt/<drive>` | Windows build through interop | Windows build through interop |
+| macOS 13+ | `~/Library/Application Support/harnery` | universal build; the app bundle goes to `/Applications` | per-architecture build |
+| Linux desktop | `$XDG_STATE_HOME/harnery` (default `~/.local/state/harnery`) | per-architecture build | per-architecture build |
+
+macOS ties Accessibility and Screen Recording grants to a signed app bundle at
+a stable location, and Cua Driver's daemon relaunches into its bundle to get
+them. `install --yes` on macOS therefore verifies `CuaDriver.app` with
+`codesign --verify --deep --strict`, checks its bundle identifier, and copies
+it to `/Applications/CuaDriver.app`, replacing only an older Cua Driver bundle.
+It refuses to replace any other app at that path. agent-desktop runs under the
+agent's own process, so the person grants Accessibility to the app the agent
+runs in; the install preview names that step.
+
+A Linux host without `DISPLAY` or `WAYLAND_DISPLAY` is still a Linux host, and
+`status` notes that no graphical session was found.
+
+### Archives
+
+A shared installer handles both formats. The `.tar.gz` reader accepts only
+regular files and directories, so an archive cannot place a link pointing
+outside the install directory, and it reuses the zip reader's path checks.
+
+## Alternatives
+
+- **Pick one driver.** Rejected: each covers work the other does not
+  (agent-desktop's snapshot-scoped refs and lack of a daemon; Cua Driver's
+  isolated browser and pixel routes).
+- **One namespace of tools across both drivers.** Rejected: both have a `click`
+  with different arguments, and merging them would hide which driver's
+  semantics an agent is relying on.
+- **Map JSON arguments onto agent-desktop's CLI flags.** Rejected: `batch`
+  already accepts typed JSON, so Harnery would duplicate the binary's argument
+  model and drift from it on every upgrade.
+- **Install agent-desktop through npm.** Rejected: its postinstall rewrites the
+  launcher, and npm resolution is not pinned to a checksum the way a release
+  archive is.
+- **Run Cua Driver on macOS from the versioned directory.** Rejected: grants
+  attach to the bundle's location, so each upgrade would ask the person again
+  and the daemon could not relaunch into a granted bundle.
+
+## Consequences
+
+- Upgrading either driver is a Harnery change to its pin table.
+- macOS install writes outside Harnery's state directory, at
+  `/Applications/CuaDriver.app`, and the preview says so.
+- The first macOS run of each driver needs the person to grant permissions in
+  System Settings.
+- The lease still serializes all desktop work, so agents using different
+  drivers do not run desktop tasks at the same time.

@@ -535,7 +535,7 @@ say that first; it is the most useful sentence in the reply.`;
 }
 
 function computerBody(b: string): string {
-  return `\`${b} computer\` drives this machine's desktop through a pinned desktop driver.
+  return `\`${b} computer\` drives this machine's desktop through two pinned desktop drivers.
 It is the last resort: use a vendor API, a CLI, or the browser tools first.
 Reach for it only for a native desktop app, or a page that needs a real
 browser you cannot drive any other way.
@@ -546,10 +546,29 @@ browser you cannot drive any other way.
 ${b} computer status
 \`\`\`
 
-It shows the approval mode, the host, the pinned driver and whether it is
-installed, the daemon, and who holds the desktop. When the driver is missing,
-run \`${b} computer install --yes\`. \`${b} computer doctor\` reports the driver's
-own health checks.
+It shows the approval mode, the host, each pinned driver and whether it is
+installed, any daemon, and who holds the desktop. When a driver is missing,
+run \`${b} computer install --yes\` (both) or add \`--driver <id>\`.
+\`${b} computer doctor\` reports each driver's own health checks, including
+missing OS permissions.
+
+## Two drivers
+
+Both drive the same desktop under the same lease. \`--driver <id>\` picks one
+for \`call\`, \`tools\` and \`describe\`; without it you get the project's default
+(\`status\` marks it).
+
+- **\`agent-desktop\`**: reads an app's accessibility tree as a snapshot and
+  acts on refs from that snapshot. Compact, headless by default, and a stale
+  ref fails instead of hitting the wrong element. Start here for reading and
+  operating native app UI: buttons, fields, menus, lists, settings.
+- **\`cua\`**: tool calls with element tokens, pixel and keyboard routes,
+  window screenshots, and an isolated browser through CDP. Use it for a
+  browser task, when you need to see pixels, or when agent-desktop refuses an
+  action or cannot see the control.
+
+Refs and tokens belong to the driver that produced them; never pass one
+driver's ref to the other.
 
 ## Approval
 
@@ -574,10 +593,35 @@ ${b} computer done
 Never change the mode, edit the approval files, or run the driver directly to
 get around a refusal. The approval is a promise to the person, not a lock.
 
-## Core loop
+## Core loop: agent-desktop
 
-Every step is one call: \`${b} computer call <tool> '<json>'\`. Look up a tool's
-arguments with \`${b} computer describe <tool>\` rather than guessing; \`${b} computer tools\`
+Every step is one call: \`${b} computer call --driver agent-desktop <command> '<json>'\`.
+JSON keys are the command's snake_case field names (\`--window-id\` becomes
+\`window_id\`, a ref is \`ref_id\`). \`${b} computer describe --driver agent-desktop <command>\`
+lists them; \`describe --driver agent-desktop skill:desktop\` prints the full
+loop and retry rules from the binary itself.
+
+1. **Find the app**: \`list-apps\`, or \`launch\` with \`{"app": "<name>"}\`.
+2. **Snapshot**: \`snapshot\` with \`{"app": "<name>", "interactive_only": true}\`.
+   For a dense app, add \`"skeleton": true\` first, then snapshot one region
+   with \`"root": "<ref>"\`.
+3. **Act on a ref** such as \`"@s8f3k2p9:e8"\` from the latest snapshot:
+   \`click\`, \`set-value\` (\`{"ref_id": ..., "value": ...}\`), \`toggle\`, \`select\`.
+   Prefer \`set-value\` to \`type\`, which needs \`"headed": true\` on Windows.
+4. **Read back** with \`get\` or a fresh snapshot. On \`STALE_REF\` or
+   \`AMBIGUOUS_TARGET\`, snapshot again; retry only when the error's
+   \`disposition.retry\` is \`safe\`.
+
+If a packaged app (Calculator, Settings) fails by name with \`APP_NOT_FOUND\`,
+get its window id from \`list-windows\` and pass \`window_id\` instead.
+
+Pass \`"headed": true\` only when a command refuses headless delivery: it moves
+the pointer and takes focus from the person.
+
+## Core loop: cua
+
+Every step is one call: \`${b} computer call --driver cua <tool> '<json>'\`. Look up a tool's
+arguments with \`${b} computer describe --driver cua <tool>\` rather than guessing; \`${b} computer tools --driver cua\`
 lists them.
 
 1. **Launch** the app in the background with \`launch_app\`.
@@ -593,11 +637,11 @@ lists them.
 
 ## Rules
 
-- Prefer accessibility routes (\`set_value\`, invoke) over \`type_text\` and
-  coordinate clicks.
-- Never pass \`delivery_mode: "foreground"\` unless the driver returned
+- Prefer accessibility routes (agent-desktop refs; cua \`set_value\` and
+  invoke) over typing and coordinate clicks.
+- Never pass cua's \`delivery_mode: "foreground"\` unless the driver returned
   \`background_unavailable\` or \`delivery_failed\` for that action.
-- For a browser, call \`browser_prepare\` with \`allow_launch: true\` and
+- For a browser, use cua's \`browser_prepare\` with \`allow_launch: true\` and
   \`profile: {"mode": "isolated_new"}\`. Never attach to the user's real
   profile unless the operator asks for it.
 - Never type a password, username, or one-time code into a sign-in page. Stop
@@ -608,7 +652,7 @@ lists them.
 - Everything you capture can reach your model provider. Prefer one window
   over the full screen, and never capture a visible password manager or a
   sign-in form with a filled field.
-- Only \`kill_app\` processes you launched.
+- Only close apps you launched (cua \`kill_app\`, agent-desktop \`close-app\`).
 
 ## One desktop, one holder
 
@@ -686,7 +730,7 @@ export const SKILLS: SkillTemplate[] = [
       buildOwnedSkill({
         name: "harn-computer",
         description:
-          "Drive a native desktop app or a real browser through the project's pinned desktop driver, as a last resort after APIs, CLIs, and browser tools. Covers the setup check, asking the person for approval, the launch / read state / act by element token / read back loop, safety rules, and the shared desktop lease.",
+          "Drive a native desktop app or a real browser through the project's two pinned desktop drivers (agent-desktop snapshots and refs; cua tools, screenshots and isolated browser), as a last resort after APIs, CLIs, and browser tools. Covers the setup check, which driver to pick, asking the person for approval, each driver's read / act / read back loop, safety rules, and the shared desktop lease.",
         binName,
         body: computerBody(binName),
       }),

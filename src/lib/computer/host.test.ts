@@ -40,15 +40,44 @@ describe("detectHost", () => {
     expect(host.reason).toContain("interop");
   });
 
-  test("plain Linux and macOS are unsupported", () => {
-    const linux = detectHost({ platform: "linux", env: {}, isWsl: () => false });
-    expect(linux.kind).toBe("unsupported");
-    expect(linux.reason).toContain("Linux");
-    const mac = detectHost({ platform: "darwin", env: {} });
-    expect(mac.kind).toBe("unsupported");
-    expect(mac.reason).toContain("macOS");
-    expect(mac.reason).toContain("ADR 0228");
-    expect(mac.desktopStateDir).toBeUndefined();
+  test("macOS uses Application Support/harnery", () => {
+    const mac = detectHost({ platform: "darwin", env: {}, home: () => "/Users/me" });
+    expect(mac).toEqual({
+      kind: "macos",
+      desktopStateDir: "/Users/me/Library/Application Support/harnery",
+    });
+  });
+
+  test("Linux uses XDG_STATE_HOME, else ~/.local/state, and notes a missing session", () => {
+    const xdg = detectHost({
+      platform: "linux",
+      env: { XDG_STATE_HOME: "/state", DISPLAY: ":0" },
+      isWsl: () => false,
+      home: () => "/home/me",
+    });
+    expect(xdg).toEqual({ kind: "linux", desktopStateDir: "/state/harnery" });
+    const bare = detectHost({
+      platform: "linux",
+      env: {},
+      isWsl: () => false,
+      home: () => "/home/me",
+    });
+    expect(bare.kind).toBe("linux");
+    expect(bare.desktopStateDir).toBe("/home/me/.local/state/harnery");
+    expect(bare.note).toContain("graphical session");
+    const wayland = detectHost({
+      platform: "linux",
+      env: { WAYLAND_DISPLAY: "wayland-0" },
+      isWsl: () => false,
+      home: () => "/home/me",
+    });
+    expect(wayland.note).toBeUndefined();
+  });
+
+  test("other platforms are unsupported", () => {
+    const host = detectHost({ platform: "freebsd", env: {}, home: () => "/home/me" });
+    expect(host.kind).toBe("unsupported");
+    expect(host.reason).toContain("freebsd");
   });
 
   test("the default result is cached per process", () => {

@@ -1,32 +1,45 @@
 /**
- * Cua Driver adapter for `harn computer` (ADR 0228).
+ * Cua Driver adapter for `harn computer` (ADRs 0228 and 0231).
  *
  * Everything specific to this driver lives here: the pinned release and its
- * archive hashes, the archive layout, the driver's preference file, and the
- * `call` / `list-tools` / `describe` / `status` / `serve` / `stop` arguments.
- * The command layer and the desktop lease see only `DesktopDriver`.
+ * archive hashes, the archive layout per platform, the driver's preference
+ * file, the macOS app bundle, and the `call` / `list-tools` / `describe` /
+ * `status` / `serve` / `stop` arguments. The command layer and the desktop
+ * lease see only `DesktopDriver`.
  *
  * Under WSL the Windows build runs through interop: the `/mnt/<drive>/...`
  * executable is spawned directly, environment variables cross through
  * `WSLENV`, and file paths in tool arguments and results are translated with
  * `wslpath`.
  *
+ * On macOS the driver must run from `/Applications/CuaDriver.app`: macOS ties
+ * Accessibility and Screen Recording grants to that signed bundle and its
+ * location. Install verifies the bundle's signature and identifier before it
+ * copies the bundle there.
+ *
  * Internal module: not exported from package.json.
  */
-import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
-import { windowsPathToWsl, wslPathToWindows } from "../browser/windows-chrome.ts";
-import { extractZip, listZip, type ZipLimits } from "../zip/index.ts";
+import { INSTALL_MARKER, installPinnedArchive, markerMatches } from "./archive.ts";
+import {
+  archLabel,
+  defaultSpawnDetached,
+  defaultSpawnSync,
+  defaultWslpath,
+  mergePreferences,
+  normalize,
+  pathApi,
+  requireStateDir,
+  type SpawnDetachedFn,
+  type SpawnResult,
+  type SpawnSyncFn,
+  toCallResult,
+  withWslEnv,
+  wslPaths,
+} from "./driver-support.ts";
 import type {
   DaemonStatus,
   DesktopDriver,
@@ -37,32 +50,71 @@ import type {
   PinnedArtifact,
 } from "./types.ts";
 
+export type { SpawnResult, SpawnSyncFn };
+export { INSTALL_MARKER };
+
 export const CUA_DRIVER_ID = "cua";
 export const CUA_DRIVER_VERSION = "0.38.0";
 
 const RELEASE_BASE = `https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_DRIVER_VERSION}`;
 
-/** Windows-side architectures with a pinned build. */
+/** Process architectures with a pinned build. */
 export type CuaArch = "x86_64" | "arm64";
 
-function pin(arch: CuaArch, sha256: string): PinnedArtifact {
-  const stem = `cua-driver-rs-${CUA_DRIVER_VERSION}-windows-${arch}`;
+/** Pin keys: one archive per platform build. macOS ships one universal build. */
+export type CuaPlatform =
+  | "windows-x86_64"
+  | "windows-arm64"
+  | "darwin-universal"
+  | "linux-x86_64"
+  | "linux-arm64";
+
+export const CUA_APP_NAME = "CuaDriver.app";
+export const CUA_BUNDLE_ID = "com.trycua.driver";
+
+function pin(platform: CuaPlatform, sha256: string): PinnedArtifact {
+  const stem = `cua-driver-rs-${CUA_DRIVER_VERSION}-${platform}`;
+  const windows = platform.startsWith("windows-");
+  const darwin = platform.startsWith("darwin-");
+  const ext = windows ? "zip" : "tar.gz";
   return {
     version: CUA_DRIVER_VERSION,
-    fileName: `${stem}.zip`,
-    url: `${RELEASE_BASE}/${stem}.zip`,
+    fileName: `${stem}.${ext}`,
+    url: `${RELEASE_BASE}/${stem}.${ext}`,
     sha256,
-    executableEntry: `${stem}/cua-driver.exe`,
+    format: windows ? "zip" : "tar.gz",
+    topDir: stem,
+    executableEntry: windows
+      ? `${stem}/cua-driver.exe`
+      : darwin
+        ? `${stem}/${CUA_APP_NAME}/Contents/MacOS/cua-driver`
+        : `${stem}/cua-driver`,
+    ...(darwin ? { requiredEntries: [`${stem}/${CUA_APP_NAME}/Contents/Info.plist`] } : {}),
   };
 }
 
-/** Pinned archives keyed by `windows-<arch>`. Upgrading is a change here. */
-export const CUA_PINS: Readonly<Record<`windows-${CuaArch}`, PinnedArtifact>> = Object.freeze({
+/** Pinned archives. Upgrading is a change here (SHA-256 from the release `checksums.txt`). */
+export const CUA_PINS: Readonly<Record<CuaPlatform, PinnedArtifact>> = Object.freeze({
   "windows-x86_64": pin(
-    "x86_64",
+    "windows-x86_64",
     "997f20114ad3db227a854e1e5a886234f76405b155f4af70605d4b7ca4a436a1",
   ),
-  "windows-arm64": pin("arm64", "c442872360cbb819e288b9f30daa7e3d2693d5945495d1400bcd90af5bd16402"),
+  "windows-arm64": pin(
+    "windows-arm64",
+    "c442872360cbb819e288b9f30daa7e3d2693d5945495d1400bcd90af5bd16402",
+  ),
+  "darwin-universal": pin(
+    "darwin-universal",
+    "121cf20cafd2cfa69dd720e8967350c6406b22e558be6889de7a1ae3343b6d4b",
+  ),
+  "linux-x86_64": pin(
+    "linux-x86_64",
+    "a305cbd531f94d6413c5db300c33df68e3adbe8b92b9604cf8e645c5f6cb1fa3",
+  ),
+  "linux-arm64": pin(
+    "linux-arm64",
+    "ed8a51125ade8807c7717c3dde13d62bd31e6275e6b5e2446cf018d0b01d93b3",
+  ),
 });
 
 /** Preferences merged into the driver's config before its first run. */
@@ -71,18 +123,10 @@ export const CUA_PREFERENCES: Readonly<Record<string, unknown>> = Object.freeze(
 });
 
 export const CUA_TELEMETRY_ENV = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
-export const INSTALL_MARKER = ".harnery-install.json";
 export const CALL_TIMEOUT_MS = 120_000;
 export const STATUS_TIMEOUT_MS = 15_000;
 export const START_DEADLINE_MS = 10_000;
 const START_POLL_MS = 250;
-
-/** The release's executables are tens of MB each; allow headroom over the defaults. */
-const ARCHIVE_LIMITS: Partial<ZipLimits> = {
-  archiveBytes: 256 * 1024 * 1024,
-  entryBytes: 128 * 1024 * 1024,
-  totalBytes: 512 * 1024 * 1024,
-};
 
 /** Arg keys whose string values are file paths in the caller's syntax. */
 const PATH_ARG_KEYS = new Set([
@@ -94,98 +138,109 @@ const PATH_ARG_KEYS = new Set([
   "file_path",
 ]);
 
-export interface SpawnResult {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-  error?: Error;
-}
-
-export type SpawnSyncFn = (
-  command: string,
-  args: string[],
-  options: { timeout: number; env: NodeJS.ProcessEnv },
-) => SpawnResult;
-
 export interface CuaDeps {
   /** HTTP fetch for the archive download. */
   fetch?: (url: string, init?: RequestInit) => Promise<Response>;
-  /** Synchronous process runner for the driver, cmd.exe and powershell.exe. */
+  /** Synchronous process runner for the driver, cmd.exe, powershell.exe, codesign and ditto. */
   spawnSync?: SpawnSyncFn;
-  /** Detached background start (native Windows `serve`). */
-  spawnDetached?: (command: string, args: string[], env: NodeJS.ProcessEnv) => void;
+  /** Detached background start (`serve` outside WSL). */
+  spawnDetached?: SpawnDetachedFn;
   /** Pin table override (tests). Defaults to `CUA_PINS`. */
-  pins?: Readonly<Record<`windows-${CuaArch}`, PinnedArtifact>>;
+  pins?: Readonly<Record<CuaPlatform, PinnedArtifact>>;
   /** Process architecture used to pick the pin. Defaults to `process.arch`. */
   arch?: string;
   /** Base environment for driver runs. Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
   /** `%USERPROFILE%` as a Windows path (WSL reads it through cmd.exe). */
   windowsUserProfile?: (host: HostInfo) => string | undefined;
+  /** Home directory on macOS and Linux. Defaults to `os.homedir()`. */
+  home?: () => string;
+  /** Where the macOS app bundle goes. Defaults to `/Applications`. */
+  macApplicationsDir?: string;
   /** `wslpath <flag> <path>`; returns undefined when the conversion fails. */
   wslpath?: (flag: "-w" | "-u", path: string) => string | undefined;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 }
 
-interface InstallMarker {
-  version: string;
-  sha256: string;
-  installed_at: string;
-}
-
-function pathApi(host: HostInfo): typeof posix {
-  return host.kind === "windows" ? win32 : posix;
-}
-
-function requireSupported(host: HostInfo): string {
-  if (host.kind === "unsupported" || !host.desktopStateDir)
-    throw new Error(
-      `Computer use is not supported on this host: ${host.reason ?? "no shared desktop state directory"}`,
-    );
-  return host.desktopStateDir;
-}
-
-/** Map a process architecture onto a pinned Windows build. */
-export function cuaArch(arch: string): CuaArch | undefined {
-  if (arch === "x64" || arch === "x86_64" || arch === "amd64") return "x86_64";
-  if (arch === "arm64" || arch === "aarch64") return "arm64";
+/** The pin key for this host, or undefined when no build covers it. */
+export function cuaPlatform(host: HostInfo, arch: string): CuaPlatform | undefined {
+  if (host.kind === "macos") return "darwin-universal";
+  const mapped = archLabel(arch);
+  if (!mapped) return undefined;
+  if (host.kind === "windows" || host.kind === "wsl") return `windows-${mapped}`;
+  if (host.kind === "linux") return `linux-${mapped}`;
   return undefined;
 }
 
-function normalize(text: string | undefined): string {
-  return (text ?? "").replace(/\r\n?/g, "\n");
+/** Map a process architecture onto a pinned build architecture. */
+export function cuaArch(arch: string): CuaArch | undefined {
+  return archLabel(arch);
 }
 
-function parseJson(stdout: string): unknown {
-  const trimmed = stdout.trim();
-  if (!trimmed) return undefined;
+/** `CFBundleIdentifier` and `CFBundleShortVersionString` from an XML Info.plist. */
+export function readBundleInfo(plistPath: string): { id?: string; version?: string } {
+  let text: string;
   try {
-    return JSON.parse(trimmed);
+    text = readFileSync(plistPath, "utf8");
   } catch {
-    return undefined;
+    return {};
   }
+  const value = (key: string): string | undefined =>
+    new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(text)?.[1];
+  const out: { id?: string; version?: string } = {};
+  const id = value("CFBundleIdentifier");
+  const version = value("CFBundleShortVersionString");
+  if (id) out.id = id;
+  if (version) out.version = version;
+  return out;
 }
 
-const defaultSpawnSync: SpawnSyncFn = (command, args, options) => {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    timeout: options.timeout,
-    env: options.env,
-    windowsHide: true,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return {
-    status: result.status,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    error: result.error,
+/**
+ * Convert Windows paths in path-like keys of a JSON result back to the
+ * caller's syntax. Non-JSON or path-free output is returned unchanged.
+ */
+export function translateWindowsResultPaths(
+  stdout: string,
+  toCaller: (path: string) => string,
+): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return stdout;
+  }
+  let changed = false;
+  // Strip the Win32 extended-length prefixes a driver may return:
+  // `\\?\UNC\host\share` -> `\\host\share`, `\\?\C:\x` -> `C:\x`.
+  const unprefix = (value: string): string =>
+    value.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\(?=[A-Za-z]:\\)/, "");
+  const isWindowsPath = (value: string): boolean =>
+    /^[A-Za-z]:\\/.test(unprefix(value)) || /^\\\\wsl/i.test(unprefix(value));
+  const isPathKey = (key: string): boolean =>
+    key === "path" || key === "paths" || key.endsWith("_path") || key.endsWith("_file");
+  const convert = (value: unknown): unknown => {
+    if (typeof value !== "string" || !isWindowsPath(value)) return value;
+    changed = true;
+    return toCaller(unprefix(value));
   };
-};
-
-const defaultSpawnDetached = (command: string, args: string[], env: NodeJS.ProcessEnv): void => {
-  spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true, env }).unref();
-};
+  const walk = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(walk);
+    if (!node || typeof node !== "object") return node;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (isPathKey(key) && typeof value === "string") out[key] = convert(value);
+      else if (isPathKey(key) && Array.isArray(value)) out[key] = value.map(convert);
+      else out[key] = walk(value);
+    }
+    return out;
+  };
+  const result = walk(parsed);
+  if (!changed) return stdout;
+  const pretty = stdout.trim().includes("\n");
+  const trailing = stdout.endsWith("\n") ? "\n" : "";
+  return `${pretty ? JSON.stringify(result, null, 2) : JSON.stringify(result)}${trailing}`;
+}
 
 /** Create a Cua Driver adapter. Every side effect is injectable for tests. */
 export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
@@ -193,6 +248,10 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
   const baseEnv = (): NodeJS.ProcessEnv => deps.env ?? process.env;
+  const home = deps.home ?? homedir;
+  const applicationsDir = deps.macApplicationsDir ?? "/Applications";
+  const appPath = posix.join(applicationsDir, CUA_APP_NAME);
+  const appExecutable = posix.join(appPath, "Contents", "MacOS", "cua-driver");
   let userProfileCache: string | undefined;
 
   const windowsUserProfile =
@@ -207,33 +266,33 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
       return result.status === 0 && /^[A-Za-z]:\\/.test(value) ? value : undefined;
     });
 
-  const wslpath =
-    deps.wslpath ??
-    ((flag: "-w" | "-u", path: string): string | undefined => {
-      const result = run("wslpath", [flag, path], { timeout: STATUS_TIMEOUT_MS, env: baseEnv() });
-      const value = normalize(result.stdout).trim();
-      return result.status === 0 && value ? value : undefined;
-    });
+  const paths = wslPaths(deps.wslpath ?? defaultWslpath(run, baseEnv, STATUS_TIMEOUT_MS));
 
-  function artifactFor(): PinnedArtifact {
+  function artifactFor(host: HostInfo): PinnedArtifact {
     const arch = deps.arch ?? process.arch;
-    const mapped = cuaArch(arch);
-    if (!mapped)
+    const platform = cuaPlatform(host, arch);
+    if (!platform)
       throw new Error(
-        `No pinned Cua Driver build for architecture ${arch}; supported: x64 (x86_64), arm64.`,
+        `No pinned Cua Driver build for ${host.kind} on architecture ${arch}; supported: x64 (x86_64), arm64.`,
       );
-    return (deps.pins ?? CUA_PINS)[`windows-${mapped}`];
+    return (deps.pins ?? CUA_PINS)[platform];
   }
 
-  function paths(host: HostInfo): { installDir: string; executable: string } {
-    const stateDir = requireSupported(host);
+  function layout(host: HostInfo): { installDir: string; extracted: string; executable: string } {
+    const stateDir = requireStateDir(host);
     const p = pathApi(host);
     const installDir = p.join(stateDir, "tools", "cua-driver", CUA_DRIVER_VERSION);
-    return { installDir, executable: p.join(installDir, "cua-driver.exe") };
+    const artifact = artifactFor(host);
+    const extracted = p.join(installDir, ...artifact.executableEntry.split("/").slice(1));
+    // On macOS the archive copy is staging; the driver runs from /Applications.
+    const executable = host.kind === "macos" ? appExecutable : extracted;
+    return { installDir, extracted, executable };
   }
 
   function preferenceFile(host: HostInfo): string {
-    requireSupported(host);
+    requireStateDir(host);
+    if (host.kind === "macos" || host.kind === "linux")
+      return posix.join(home(), ".cua-driver", "config.json");
     if (!userProfileCache) {
       const profile = windowsUserProfile(host);
       if (!profile)
@@ -243,45 +302,40 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
       userProfileCache = profile;
     }
     if (host.kind === "windows") return win32.join(userProfileCache, ".cua-driver", "config.json");
-    return posix.join(windowsPathToWsl(userProfileCache), ".cua-driver", "config.json");
+    return posix.join(paths.toCaller(userProfileCache), ".cua-driver", "config.json");
   }
 
-  function readMarker(installDir: string, p: typeof posix): InstallMarker | undefined {
-    try {
-      return JSON.parse(readFileSync(p.join(installDir, INSTALL_MARKER), "utf8")) as InstallMarker;
-    } catch {
-      return undefined;
-    }
+  /** The /Applications bundle is the pinned version from Cua. */
+  function appCurrent(): boolean {
+    const info = readBundleInfo(posix.join(appPath, "Contents", "Info.plist"));
+    return (
+      info.id === CUA_BUNDLE_ID && info.version === CUA_DRIVER_VERSION && existsSync(appExecutable)
+    );
   }
 
   function installedExecutable(host: HostInfo): string | undefined {
     if (host.kind === "unsupported" || !host.desktopStateDir) return undefined;
     let artifact: PinnedArtifact;
+    let where: ReturnType<typeof layout>;
     try {
-      artifact = artifactFor();
+      artifact = artifactFor(host);
+      where = layout(host);
     } catch {
       return undefined;
     }
-    const { installDir, executable } = paths(host);
-    const marker = readMarker(installDir, pathApi(host));
-    if (!marker || marker.version !== artifact.version || marker.sha256 !== artifact.sha256)
+    if (!markerMatches(where.installDir, where.extracted, artifact, pathApi(host)))
       return undefined;
-    return existsSync(executable) ? executable : undefined;
+    if (host.kind === "macos" && !appCurrent()) return undefined;
+    return existsSync(where.executable) ? where.executable : undefined;
   }
 
   function driverEnv(host: HostInfo): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = { ...baseEnv(), [CUA_TELEMETRY_ENV]: "0" };
-    if (host.kind === "wsl") {
-      const entries = (env.WSLENV ?? "").split(":").filter(Boolean);
-      if (!entries.some((entry) => entry.split("/")[0] === CUA_TELEMETRY_ENV))
-        entries.push(CUA_TELEMETRY_ENV);
-      env.WSLENV = entries.join(":");
-    }
-    return env;
+    return host.kind === "wsl" ? withWslEnv(env, [CUA_TELEMETRY_ENV]) : env;
   }
 
   function requireExecutable(host: HostInfo): string {
-    requireSupported(host);
+    requireStateDir(host);
     const exe = installedExecutable(host);
     if (!exe)
       throw new Error(
@@ -293,24 +347,7 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
   function exec(host: HostInfo, args: string[], timeout: number): DriverCallResult {
     const exe = requireExecutable(host);
     const result = run(exe, args, { timeout, env: driverEnv(host) });
-    const stdout = normalize(result.stdout);
-    let stderr = normalize(result.stderr);
-    if (result.error) {
-      const code = (result.error as NodeJS.ErrnoException).code;
-      const note =
-        code === "ETIMEDOUT"
-          ? `cua-driver ${args[0]} timed out after ${Math.round(timeout / 1000)}s`
-          : `cua-driver ${args[0]} failed to run: ${result.error.message}`;
-      stderr = stderr ? `${stderr.replace(/\n$/, "")}\n${note}\n` : `${note}\n`;
-    }
-    const out: DriverCallResult = {
-      exitCode: result.status ?? (result.error ? -1 : 1),
-      stdout,
-      stderr,
-    };
-    const json = parseJson(stdout);
-    if (json !== undefined) out.json = json;
-    return out;
+    return toCallResult(`cua-driver ${args[0]}`, timeout, result);
   }
 
   function daemonStatus(host: HostInfo): DaemonStatus {
@@ -325,10 +362,10 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
   }
 
   function planInstall(host: HostInfo): InstallPlan {
-    requireSupported(host);
-    const artifact = artifactFor();
-    const { installDir, executable } = paths(host);
-    return {
+    requireStateDir(host);
+    const artifact = artifactFor(host);
+    const { installDir, executable } = layout(host);
+    const plan: InstallPlan = {
       driver: CUA_DRIVER_ID,
       version: CUA_DRIVER_VERSION,
       host: host.kind,
@@ -339,102 +376,84 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
       preferenceFile: preferenceFile(host),
       preferences: { ...CUA_PREFERENCES },
     };
-  }
-
-  function mergePreferences(file: string, preferences: Record<string, unknown>, p: typeof posix) {
-    let existing: Record<string, unknown> = {};
-    if (existsSync(file)) {
-      const raw = readFileSync(file, "utf8").replace(/^﻿/, "");
-      if (raw.trim()) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          throw new Error(
-            `Driver preference file ${file} is not valid JSON; fix or remove it, then retry.`,
-          );
-        }
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-          throw new Error(`Driver preference file ${file} is not a JSON object.`);
-        existing = parsed as Record<string, unknown>;
-      }
+    if (host.kind === "macos") {
+      const existing = readBundleInfo(posix.join(appPath, "Contents", "Info.plist"));
+      plan.steps = [
+        `Verify the ${CUA_APP_NAME} signature (codesign --verify --deep --strict) and bundle id ${CUA_BUNDLE_ID}.`,
+        existing.id
+          ? `Replace ${appPath} (${existing.id} ${existing.version ?? "unknown version"}) with ${CUA_DRIVER_VERSION} unless it already matches.`
+          : `Copy ${CUA_APP_NAME} to ${appPath}; macOS ties the driver's permission grants to that location.`,
+      ];
+      plan.setup = [
+        "On first use, allow Cua Driver in System Settings > Privacy & Security > Accessibility and > Screen Recording.",
+      ];
     }
-    const merged = { ...existing, ...preferences };
-    mkdirSync(p.dirname(file), { recursive: true });
-    const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(merged, null, 2)}\n`);
-    renameSync(temp, file);
+    if (host.kind === "linux")
+      plan.setup = ["Run from the signed-in user's graphical session with at-spi2-core installed."];
+    return plan;
   }
 
-  async function download(url: string): Promise<Uint8Array> {
-    const fetchFn = deps.fetch ?? globalThis.fetch;
-    let response: Response;
-    try {
-      response = await fetchFn(url, { redirect: "follow" });
-    } catch (error) {
+  function placeMacApp(plan: InstallPlan): void {
+    const staged = posix.join(plan.installDir, CUA_APP_NAME);
+    const verify = run("codesign", ["--verify", "--deep", "--strict", staged], {
+      timeout: 60_000,
+      env: baseEnv(),
+    });
+    if (verify.status !== 0)
       throw new Error(
-        `Downloading ${url} failed: ${error instanceof Error ? error.message : String(error)}`,
+        `${CUA_APP_NAME} failed signature verification; ${appPath} was not changed. ${normalize(
+          verify.stderr || verify.error?.message || "",
+        ).trim()}`.trim(),
+      );
+    const stagedInfo = readBundleInfo(posix.join(staged, "Contents", "Info.plist"));
+    if (stagedInfo.id !== CUA_BUNDLE_ID)
+      throw new Error(
+        `Downloaded app has bundle id ${stagedInfo.id ?? "<missing>"}, not ${CUA_BUNDLE_ID}; ${appPath} was not changed.`,
+      );
+    if (appCurrent()) return;
+    const existing = readBundleInfo(posix.join(appPath, "Contents", "Info.plist"));
+    if (existsSync(appPath) && existing.id !== CUA_BUNDLE_ID)
+      throw new Error(
+        `${appPath} exists but is not Cua Driver (bundle id ${existing.id ?? "<missing>"}); move it aside, then retry.`,
+      );
+    const temp = posix.join(
+      applicationsDir,
+      `.${CUA_APP_NAME}.harnery-${randomBytes(4).toString("hex")}`,
+    );
+    const copy = run("ditto", [staged, temp], { timeout: 120_000, env: baseEnv() });
+    if (copy.status !== 0) {
+      rmSync(temp, { recursive: true, force: true });
+      throw new Error(
+        `Copying ${CUA_APP_NAME} to ${applicationsDir} failed: ${normalize(
+          copy.stderr || copy.error?.message || "no output",
+        ).trim()}`,
       );
     }
-    if (!response.ok) throw new Error(`Downloading ${url} failed: HTTP ${response.status}`);
-    return new Uint8Array(await response.arrayBuffer());
+    if (existsSync(appPath)) rmSync(appPath, { recursive: true, force: true });
+    renameSync(temp, appPath);
   }
 
   async function install(plan: InstallPlan): Promise<InstallResult> {
     if (plan.host === "unsupported")
       throw new Error("Computer use is not supported on this host; nothing to install.");
     const p = plan.host === "windows" ? win32 : posix;
-    const artifact = plan.artifact;
-    const markerOk = (): boolean => {
-      const marker = readMarker(plan.installDir, p);
-      return (
-        !!marker &&
-        marker.version === artifact.version &&
-        marker.sha256 === artifact.sha256 &&
-        existsSync(plan.executable)
-      );
-    };
     // Preferences go down before the binary can ever run, installed or not.
-    mergePreferences(plan.preferenceFile, plan.preferences, p);
-    if (markerOk()) return { ...plan, alreadyInstalled: true, installed: false };
-
-    const bytes = await download(artifact.url);
-    const actual = createHash("sha256").update(bytes).digest("hex");
-    if (actual !== artifact.sha256.toLowerCase())
-      throw new Error(
-        `Refusing ${artifact.fileName}: SHA-256 ${actual} does not match the pinned ${artifact.sha256}. Nothing was installed.`,
-      );
-
-    const parent = p.dirname(plan.installDir);
-    mkdirSync(parent, { recursive: true });
-    const tag = `${process.pid}-${randomBytes(4).toString("hex")}`;
-    const archive = p.join(parent, `.download-${tag}.zip`);
-    const stage = p.join(parent, `.stage-${tag}`);
-    try {
-      writeFileSync(archive, bytes);
-      const topDir = artifact.executableEntry.split("/")[0] as string;
-      const entries = listZip(archive, { limits: ARCHIVE_LIMITS });
-      const stray = entries.find((entry) => !entry.name.startsWith(`${topDir}/`));
-      if (stray) throw new Error(`Unexpected entry outside ${topDir}/ in archive: ${stray.name}`);
-      if (!entries.some((entry) => entry.name === artifact.executableEntry))
-        throw new Error(`Archive lacks ${artifact.executableEntry}.`);
-      extractZip(archive, stage, { limits: ARCHIVE_LIMITS });
-      const extracted = p.join(stage, topDir);
-      if (!statSync(extracted).isDirectory()) throw new Error(`Archive lacks ${topDir}/.`);
-      const marker: InstallMarker = {
-        version: artifact.version,
-        sha256: artifact.sha256,
-        installed_at: new Date(now()).toISOString(),
-      };
-      writeFileSync(p.join(extracted, INSTALL_MARKER), `${JSON.stringify(marker, null, 2)}\n`);
-      // A versioned dir without a matching marker is a broken earlier attempt.
-      if (existsSync(plan.installDir)) rmSync(plan.installDir, { recursive: true, force: true });
-      renameSync(extracted, plan.installDir);
-    } finally {
-      rmSync(archive, { force: true });
-      rmSync(stage, { recursive: true, force: true });
+    if (plan.preferenceFile && plan.preferences)
+      mergePreferences(plan.preferenceFile, plan.preferences, p);
+    const extracted = await installPinnedArchive({
+      artifact: plan.artifact,
+      installDir: plan.installDir,
+      p,
+      ...(deps.fetch ? { fetch: deps.fetch } : {}),
+      now,
+    });
+    let appChanged = false;
+    if (plan.host === "macos") {
+      appChanged = !appCurrent();
+      placeMacApp(plan);
     }
-    return { ...plan, alreadyInstalled: false, installed: true };
+    const installed = extracted || appChanged;
+    return { ...plan, alreadyInstalled: !installed, installed };
   }
 
   async function startDaemon(host: HostInfo): Promise<DaemonStatus> {
@@ -443,7 +462,7 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     if (current.running) return current;
     const env = driverEnv(host);
     if (host.kind === "wsl") {
-      const windowsExe = toWindows(exe).replace(/'/g, "''");
+      const windowsExe = paths.toWindows(exe).replace(/'/g, "''");
       const command = `Start-Process -FilePath '${windowsExe}' -ArgumentList 'serve' -WindowStyle Hidden`;
       const result = run("powershell.exe", ["-NoProfile", "-Command", command], {
         timeout: 30_000,
@@ -475,26 +494,6 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     return daemonStatus(host);
   }
 
-  function toWindows(path: string): string {
-    const converted = wslpath("-w", path);
-    if (converted) return converted;
-    if (/^\/mnt\/[a-z]\//.test(path)) return wslPathToWindows(path);
-    // wslpath can refuse a path that does not exist yet (an output file).
-    const dir = posix.dirname(path);
-    const parent = dir !== path ? wslpath("-w", dir) : undefined;
-    return parent ? `${parent.replace(/\\$/, "")}\\${posix.basename(path)}` : path;
-  }
-
-  function toCaller(path: string): string {
-    const converted = wslpath("-u", path);
-    if (converted) return converted;
-    try {
-      return windowsPathToWsl(path);
-    } catch {
-      return path;
-    }
-  }
-
   function translateArgsPaths(
     host: HostInfo,
     _tool: string,
@@ -502,7 +501,7 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
   ): Record<string, unknown> {
     if (host.kind !== "wsl") return args;
     const convert = (value: unknown): unknown =>
-      typeof value === "string" && value.startsWith("/") ? toWindows(value) : value;
+      typeof value === "string" && value.startsWith("/") ? paths.toWindows(value) : value;
     const out: Record<string, unknown> = { ...args };
     for (const [key, value] of Object.entries(args)) {
       if (!PATH_ARG_KEYS.has(key)) continue;
@@ -511,49 +510,12 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     return out;
   }
 
-  function translateResultPaths(host: HostInfo, stdout: string): string {
-    if (host.kind !== "wsl") return stdout;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      return stdout;
-    }
-    let changed = false;
-    // Strip the Win32 extended-length prefixes the driver may return:
-    // `\\?\UNC\host\share` -> `\\host\share`, `\\?\C:\x` -> `C:\x`.
-    const unprefix = (value: string): string =>
-      value.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\(?=[A-Za-z]:\\)/, "");
-    const isWindowsPath = (value: string): boolean =>
-      /^[A-Za-z]:\\/.test(unprefix(value)) || /^\\\\wsl/i.test(unprefix(value));
-    const isPathKey = (key: string): boolean =>
-      key === "path" || key === "paths" || key.endsWith("_path") || key.endsWith("_file");
-    const convert = (value: unknown): unknown => {
-      if (typeof value !== "string" || !isWindowsPath(value)) return value;
-      changed = true;
-      return toCaller(unprefix(value));
-    };
-    const walk = (node: unknown): unknown => {
-      if (Array.isArray(node)) return node.map(walk);
-      if (!node || typeof node !== "object") return node;
-      const out: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-        if (isPathKey(key) && typeof value === "string") out[key] = convert(value);
-        else if (isPathKey(key) && Array.isArray(value)) out[key] = value.map(convert);
-        else out[key] = walk(value);
-      }
-      return out;
-    };
-    const result = walk(parsed);
-    if (!changed) return stdout;
-    const pretty = stdout.trim().includes("\n");
-    const trailing = stdout.endsWith("\n") ? "\n" : "";
-    return `${pretty ? JSON.stringify(result, null, 2) : JSON.stringify(result)}${trailing}`;
-  }
-
   return {
     id: CUA_DRIVER_ID,
     version: CUA_DRIVER_VERSION,
+    summary:
+      "tool calls with JSON arguments; accessibility, keyboard and pixel routes; screenshots; isolated browser control through CDP",
+    hasDaemon: true,
     callTimeoutMs: CALL_TIMEOUT_MS,
     planInstall,
     install,
@@ -566,7 +528,8 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     describe: (host, tool) => exec(host, ["describe", tool], CALL_TIMEOUT_MS),
     health: (host) => exec(host, ["call", "health_report", "{}"], CALL_TIMEOUT_MS),
     translateArgsPaths,
-    translateResultPaths,
+    translateResultPaths: (host, stdout) =>
+      host.kind === "wsl" ? translateWindowsResultPaths(stdout, paths.toCaller) : stdout,
   };
 }
 

@@ -1,8 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildTarGz } from "../../../tests/helpers/tar-fixture.ts";
 import { buildZip } from "../zip/index.ts";
 import {
   CUA_DRIVER_VERSION,
@@ -12,7 +21,7 @@ import {
   INSTALL_MARKER,
   type SpawnResult,
 } from "./cua.ts";
-import type { HostInfo, PinnedArtifact } from "./types.ts";
+import type { HostInfo } from "./types.ts";
 
 const TOP = `cua-driver-rs-${CUA_DRIVER_VERSION}-windows-x86_64`;
 const FILES = [
@@ -49,7 +58,7 @@ function buildArchive(): { bytes: Uint8Array<ArrayBuffer>; sha256: string } {
   };
 }
 
-function pinsWith(sha256: string): Record<"windows-x86_64" | "windows-arm64", PinnedArtifact> {
+function pinsWith(sha256: string): typeof CUA_PINS {
   return { ...CUA_PINS, "windows-x86_64": { ...CUA_PINS["windows-x86_64"], sha256 } };
 }
 
@@ -394,5 +403,115 @@ describe("path translation", () => {
     });
     const untouched = '{"ok": true}';
     expect(driver.translateResultPaths(wsl, untouched)).toBe(untouched);
+  });
+});
+
+describe("Cua Driver on macOS and Linux", () => {
+  const plist = (id: string, version: string) =>
+    `<?xml version="1.0"?><plist><dict><key>CFBundleIdentifier</key><string>${id}</string><key>CFBundleShortVersionString</key><string>${version}</string></dict></plist>`;
+
+  function darwinArchive(id = "com.trycua.driver") {
+    const top = `cua-driver-rs-${CUA_DRIVER_VERSION}-darwin-universal`;
+    const bytes = buildTarGz([
+      { name: `${top}/`, type: "5" },
+      { name: `${top}/cua-driver`, body: "bare", mode: 0o755 },
+      { name: `${top}/CuaDriver.app/Contents/Info.plist`, body: plist(id, CUA_DRIVER_VERSION) },
+      { name: `${top}/CuaDriver.app/Contents/MacOS/cua-driver`, body: "app-bin", mode: 0o755 },
+    ]);
+    return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+  }
+
+  function macDriver(bytes: Uint8Array<ArrayBuffer>, sha256: string, extra: Partial<CuaDeps> = {}) {
+    const rec = recorder((c) => {
+      if (c.command === "ditto")
+        cpSync(c.args[0] as string, c.args[1] as string, { recursive: true });
+      return {};
+    });
+    const driver = createCuaDriver({
+      arch: "arm64",
+      env: {},
+      home: () => join(root, "home"),
+      macApplicationsDir: join(root, "Applications"),
+      pins: { ...CUA_PINS, "darwin-universal": { ...CUA_PINS["darwin-universal"], sha256 } },
+      fetch: async () => new Response(bytes),
+      spawnSync: rec.spawnSync,
+      ...extra,
+    });
+    return { driver, rec };
+  }
+
+  const mac = (): HostInfo => ({ kind: "macos", desktopStateDir: join(root, "state") });
+
+  test("the macOS plan runs the driver from /Applications and lists the bundle steps", () => {
+    const { bytes, sha256 } = darwinArchive();
+    const { driver } = macDriver(bytes, sha256);
+    const plan = driver.planInstall(mac());
+    expect(plan.artifact.fileName).toBe(
+      `cua-driver-rs-${CUA_DRIVER_VERSION}-darwin-universal.tar.gz`,
+    );
+    expect(plan.executable).toBe(
+      join(root, "Applications", "CuaDriver.app", "Contents", "MacOS", "cua-driver"),
+    );
+    expect(plan.preferenceFile).toBe(join(root, "home", ".cua-driver", "config.json"));
+    expect(plan.steps?.join("\n")).toContain("codesign --verify --deep --strict");
+    expect(plan.setup?.[0]).toContain("Screen Recording");
+  });
+
+  test("install verifies the signature, places the app, and is then installed", async () => {
+    const { bytes, sha256 } = darwinArchive();
+    const { driver, rec } = macDriver(bytes, sha256);
+    const result = await driver.install(driver.planInstall(mac()));
+    expect(result.installed).toBe(true);
+    expect(rec.calls.map((c) => c.command)).toEqual(["codesign", "ditto"]);
+    expect(readFileSync(result.executable, "utf8")).toBe("app-bin");
+    expect(driver.installedExecutable(mac())).toBe(result.executable);
+    expect(
+      JSON.parse(readFileSync(join(root, "home", ".cua-driver", "config.json"), "utf8")),
+    ).toEqual({
+      telemetry_enabled: false,
+    });
+    const again = await driver.install(driver.planInstall(mac()));
+    expect(again.installed).toBe(false);
+  });
+
+  test("install refuses a failed signature check or a foreign app at the target", async () => {
+    const { bytes, sha256 } = darwinArchive();
+    const bad = macDriver(bytes, sha256, {
+      spawnSync: (command) => ({
+        status: command === "codesign" ? 1 : 0,
+        stdout: "",
+        stderr: "invalid signature",
+      }),
+    });
+    await expect(bad.driver.install(bad.driver.planInstall(mac()))).rejects.toThrow(
+      "signature verification",
+    );
+    expect(existsSync(join(root, "Applications", "CuaDriver.app"))).toBe(false);
+
+    mkdirSync(join(root, "Applications", "CuaDriver.app", "Contents"), { recursive: true });
+    writeFileSync(
+      join(root, "Applications", "CuaDriver.app", "Contents", "Info.plist"),
+      plist("com.example.other", "1"),
+    );
+    const { driver } = macDriver(bytes, sha256);
+    await expect(driver.install(driver.planInstall(mac()))).rejects.toThrow("is not Cua Driver");
+  });
+
+  test("Linux uses the linux build, a home preference file, and no app bundle", () => {
+    const driver = createCuaDriver({ arch: "arm64", home: () => "/home/me" });
+    const plan = driver.planInstall({ kind: "linux", desktopStateDir: join(root, "state") });
+    expect(plan.artifact.fileName).toBe(`cua-driver-rs-${CUA_DRIVER_VERSION}-linux-arm64.tar.gz`);
+    expect(plan.executable).toBe(
+      join(root, "state", "tools", "cua-driver", CUA_DRIVER_VERSION, "cua-driver"),
+    );
+    expect(plan.preferenceFile).toBe("/home/me/.cua-driver/config.json");
+    expect(plan.steps).toBeUndefined();
+  });
+
+  test("every pin carries a 64-hex hash and the right format", () => {
+    for (const [key, pin] of Object.entries(CUA_PINS)) {
+      expect(pin.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(pin.format).toBe(key.startsWith("windows-") ? "zip" : "tar.gz");
+    }
   });
 });

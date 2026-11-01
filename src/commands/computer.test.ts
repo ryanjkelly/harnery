@@ -163,7 +163,13 @@ interface FakeDriver extends DesktopDriver {
 }
 
 function fakeDriver(
-  opts: { installed?: boolean; running?: boolean; stdout?: string } = {},
+  opts: {
+    installed?: boolean;
+    running?: boolean;
+    stdout?: string;
+    id?: string;
+    hasDaemon?: boolean;
+  } = {},
 ): FakeDriver {
   let running = opts.running ?? true;
   const plan: InstallPlan = {
@@ -175,6 +181,7 @@ function fakeDriver(
       fileName: "fake.zip",
       url: "https://example.invalid/fake.zip",
       sha256: "ab".repeat(32),
+      format: "zip",
       executableEntry: "fake.exe",
     },
     installDir: "/mnt/c/state/tools/fake/1.2.3",
@@ -185,8 +192,10 @@ function fakeDriver(
   };
   const ok = (stdout: string): DriverCallResult => ({ exitCode: 0, stdout, stderr: "" });
   const driver: FakeDriver = {
-    id: "fake",
+    id: opts.id ?? "fake",
     version: "1.2.3",
+    summary: "fake driver",
+    hasDaemon: opts.hasDaemon ?? true,
     calls: [],
     installs: 0,
     started: 0,
@@ -279,7 +288,7 @@ describe("computer status", () => {
     const out = cap.text.join("\n");
     expect(out).toContain("mode:      on: on, no asking");
     expect(out).toContain("host:      wsl");
-    expect(out).toContain("fake 1.2.3 (pinned)");
+    expect(out).toContain("fake 1.2.3 (pinned, default): fake driver");
     expect(out).toContain("/mnt/c/state/tools/fake/1.2.3/fake.exe");
     expect(out).toContain("running (pid 42)");
     expect(out).toContain("held by agent-Other (generation 4, idle-expires in 90s)");
@@ -294,9 +303,8 @@ describe("computer status", () => {
     expect(cap.data[0]).toMatchObject({
       enabled: false,
       host: { kind: "wsl" },
-      driver: { id: "fake", version: "1.2.3" },
-      installed: null,
-      daemon: null,
+      default_driver: "fake",
+      drivers: [{ id: "fake", version: "1.2.3", installed: null, daemon: null }],
       lease: null,
     });
   });
@@ -345,7 +353,7 @@ describe("computer up", () => {
   test("names the install command when the driver is missing", async () => {
     const cap = await run(["up"], { driver: fakeDriver({ installed: false }) });
     expect(cap.exitCode()).toBe(1);
-    expect(cap.errors[0]?.message).toContain("acme computer install --yes");
+    expect(cap.errors[0]?.message).toContain("acme computer install --driver fake --yes");
   });
 });
 
@@ -386,7 +394,7 @@ describe("computer call", () => {
     const out = redacted.text.join("");
     expect(out).not.toContain(b64);
     expect(out).toContain(
-      `<omitted ${b64.length} chars; pass screenshot_out_file or --keep-screenshot>`,
+      `<omitted ${b64.length} chars; save to a file (screenshot_out_file or output_path) or pass --keep-screenshot>`,
     );
     expect(out).toContain('"snapshot_id":"s1"');
 
@@ -654,5 +662,97 @@ describe("computer mode", () => {
     const cap = await run(["mode", "on"], { prefs, config: evaluate("off") });
     expect(cap.errors[0]?.code).toBe("computer_disabled");
     expect(prefs.state.writes).toHaveLength(0);
+  });
+});
+
+describe("computer with two drivers", () => {
+  const pair = () => ({
+    a: fakeDriver({ id: "alpha" }),
+    b: fakeDriver({ id: "beta", hasDaemon: false, running: false }),
+  });
+
+  test("call uses the first driver by default, computer.driver, or --driver", async () => {
+    const { a, b } = pair();
+    await run(["call", "click", "{}"], { drivers: [a, b] });
+    expect(a.calls).toHaveLength(1);
+    expect(b.calls).toHaveLength(0);
+
+    await run(["call", "click", "{}"], {
+      drivers: [a, b],
+      config: () => cfg("on", { driver: "beta" }),
+    });
+    expect(b.calls).toHaveLength(1);
+
+    const cap = await run(["call", "--driver", "alpha", "click", "{}"], {
+      drivers: [a, b],
+      config: () => cfg("on", { driver: "beta" }),
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(a.calls).toHaveLength(2);
+  });
+
+  test("a daemonless driver is called without starting anything", async () => {
+    const { a, b } = pair();
+    await run(["call", "--driver", "beta", "snapshot", "{}"], { drivers: [a, b] });
+    expect(b.calls[0]?.args.session).toBe("agent-Me");
+    expect(b.started).toBe(0);
+  });
+
+  test("an unknown driver id is a usage error naming the available ones", async () => {
+    const { a, b } = pair();
+    const cap = await run(["tools", "--driver", "gamma"], { drivers: [a, b] });
+    expect(cap.exitCode()).toBe(1);
+    expect(cap.errors[0]?.message).toContain(
+      'Unknown desktop driver "gamma". Available: alpha, beta.',
+    );
+  });
+
+  test("status lists both drivers and marks the default", async () => {
+    const { a, b } = pair();
+    const cap = await run(["status"], {
+      drivers: [a, b],
+      config: () => cfg("on", { driver: "beta" }),
+    });
+    const out = cap.text.join("\n");
+    expect(out).toContain("alpha 1.2.3 (pinned): fake driver");
+    expect(out).toContain("beta 1.2.3 (pinned, default): fake driver");
+    expect(out).toContain("not needed (runs per call)");
+  });
+
+  test("install previews and installs every driver unless --driver narrows it", async () => {
+    const a = fakeDriver({ id: "alpha", installed: false });
+    const b = fakeDriver({ id: "beta", installed: false, hasDaemon: false });
+    const preview = await run(["install"], { drivers: [a, b] });
+    expect(preview.text.join("\n").match(/Would install/g)).toHaveLength(2);
+    await run(["install", "--yes"], { drivers: [a, b] });
+    expect([a.installs, b.installs]).toEqual([1, 1]);
+    await run(["install", "--driver", "beta", "--yes"], { drivers: [a, b] });
+    expect([a.installs, b.installs]).toEqual([1, 2]);
+  });
+
+  test("up starts only daemon drivers; doctor reports per driver", async () => {
+    const a = fakeDriver({ id: "alpha", running: false });
+    const b = fakeDriver({ id: "beta", hasDaemon: false });
+    const up = await run(["up"], { drivers: [a, b] });
+    expect(a.started).toBe(1);
+    expect(up.text.join("\n")).toContain("beta: no daemon needed.");
+    const doctor = await run(["doctor", "--json"], { drivers: [a, b] });
+    expect(doctor.data[0]).toMatchObject({
+      ok: true,
+      drivers: [
+        { driver: "alpha", ok: true },
+        { driver: "beta", ok: true },
+      ],
+    });
+  });
+});
+
+describe("redactInlineScreenshots for generic keys", () => {
+  test("also redacts long base64 under a generic key", () => {
+    const b64 = "QUJD".repeat(1000);
+    const out = redactInlineScreenshots(`{"data":{"data":"${b64}","format":"png"}}`);
+    expect(out).not.toContain(b64);
+    expect(out).toContain('"format":"png"');
+    expect(redactInlineScreenshots('{"data":"short"}')).toBe('{"data":"short"}');
   });
 });

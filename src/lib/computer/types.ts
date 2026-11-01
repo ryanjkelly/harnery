@@ -14,18 +14,25 @@ export type HostKind =
   | "windows"
   /** A WSL2 process driving the Windows desktop through interop. */
   | "wsl"
-  /** Any host without a supported driver build (macOS, Linux desktops). */
+  /** A macOS process driving its own desktop. */
+  | "macos"
+  /** A native Linux process driving its own graphical session (not WSL). */
+  | "linux"
+  /** Any other host, or one whose shared state directory cannot be resolved. */
   | "unsupported";
 
 export interface HostInfo {
   kind: HostKind;
   /** Human-readable reason when kind is "unsupported". */
   reason?: string;
+  /** Advisory for a supported host that may still fail (e.g. Linux with no graphical session). */
+  note?: string;
   /**
    * Directory (in the CALLER's path syntax) that is shared by every caller of
    * this desktop: on Windows and WSL, `%LOCALAPPDATA%\harnery` expressed as a
-   * Windows path (windows) or its `/mnt/<drive>/...` form (wsl). The lease file
-   * and driver installs live under it.
+   * Windows path (windows) or its `/mnt/<drive>/...` form (wsl); on macOS
+   * `~/Library/Application Support/harnery`; on Linux `$XDG_STATE_HOME/harnery`.
+   * The lease file and driver installs live under it.
    */
   desktopStateDir?: string;
 }
@@ -40,8 +47,17 @@ export interface PinnedArtifact {
   url: string;
   /** Lowercase hex SHA-256 of the archive. */
   sha256: string;
-  /** Path of the driver executable inside the archive. */
+  /** Archive format. */
+  format: "zip" | "tar.gz";
+  /**
+   * Single top-level directory every entry sits under, when the archive has
+   * one. That directory becomes the install directory.
+   */
+  topDir?: string;
+  /** Path of the driver executable inside the archive (forward slashes). */
   executableEntry: string;
+  /** Other paths (files or directories) the archive must contain. */
+  requiredEntries?: string[];
 }
 
 export interface InstallPlan {
@@ -56,9 +72,13 @@ export interface InstallPlan {
   /** Already installed and the executable's archive hash was verified at install time. */
   alreadyInstalled: boolean;
   /** Driver preference file written before first run, caller's path syntax. */
-  preferenceFile: string;
+  preferenceFile?: string;
   /** Preferences merged into that file (e.g. telemetry off). */
-  preferences: Record<string, unknown>;
+  preferences?: Record<string, unknown>;
+  /** Further install actions shown in the preview (e.g. placing an app bundle). */
+  steps?: string[];
+  /** One-time setup the person must do outside Harnery (e.g. OS permission grants). */
+  setup?: string[];
 }
 
 export interface InstallResult extends InstallPlan {
@@ -84,14 +104,22 @@ export interface DriverCallResult {
 }
 
 /**
- * The adapter boundary. One implementation today (`cua.ts`); a second driver
- * would implement this interface rather than branch inside the command.
+ * The adapter boundary. Each driver (`cua.ts`, `agent-desktop.ts`) implements
+ * it; the command picks one through the registry in `drivers.ts` and never
+ * branches on a driver id.
  */
 export interface DesktopDriver {
   /** Stable id, e.g. "cua". */
   readonly id: string;
   /** Pinned version this Harnery build installs. */
   readonly version: string;
+  /** Short description shown by `status` and the skill. */
+  readonly summary: string;
+  /**
+   * True when the driver runs a background daemon that `up` starts and `down`
+   * stops. A driver without one runs per call, and `up`/`down` are no-ops.
+   */
+  readonly hasDaemon: boolean;
   /** Longest one `call` may run before the driver gives up, in ms; the lease outlasts it. */
   readonly callTimeoutMs?: number;
   /** Resolve the install plan for this host without side effects. */
