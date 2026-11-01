@@ -1,0 +1,102 @@
+---
+title: "0228: Computer use through a pinned desktop driver"
+description: "ADR: `harn computer` gives every harness the same desktop control through one pinned, checksum-verified Cua Driver binary, called through its CLI, with a cross-call lease so two agents never drive one desktop at once. Opt-in per project."
+---
+
+**Status:** accepted (2026-11-01) · **Scope:** product tier (`commands/computer`, `lib/computer`, one opt-in skill)
+
+## Context
+
+Agents in a Harnery project run in Claude Code, Codex and Cursor. Each vendor
+now ships its own computer use, and each works only inside that vendor's
+harness. An operator who mixes harnesses gets three different tools, or none.
+
+Cua Driver (trycua, MIT) is a cross-platform desktop driver with a CLI, an MCP
+server and SDKs. A trial on 2026-11-01 drove a Windows desktop from WSL with it:
+background Notepad and Calculator through UI Automation, an isolated Chrome
+profile through CDP, and the same task headless from Claude Code (MCP), Codex
+(CLI) and Cursor (CLI). Three facts from that trial shape this decision:
+
+- The MCP server lists 63 tools in about 221,000 characters of schema and has
+  no option to list fewer. A harness that loads MCP schemas eagerly pays
+  roughly 55,000 tokens per turn for it. The CLI costs only what an agent asks
+  `describe` for.
+- The vendor installer turns telemetry on, edits PATH, and registers an
+  elevated logon task. None of that is needed to drive ordinary apps.
+- Every agent on a machine shares one desktop. The driver labels calls with a
+  session but does not stop two agents from interleaving actions, focus
+  changes, or clipboard writes.
+
+## Decision
+
+`harn computer` is a product-tier command family. It is inert until a project
+sets `computer.enabled: true`; installing Harnery never installs or starts a
+driver.
+
+- **One pinned driver.** Harnery pins a Cua Driver version and the SHA-256 of
+  each supported platform archive in source. `computer install` previews by
+  default and applies with `--yes`. It downloads the pinned archive, verifies
+  the hash, extracts it to a versioned directory, and writes the driver's own
+  `telemetry_enabled: false` preference before the binary first runs. It never
+  edits PATH, registers autostart, or installs the vendor skill pack. Upgrading
+  is a Harnery change to the pin.
+- **The CLI is the route.** `computer call <tool> [json]` passes one tool call
+  to the driver's `call` subcommand and prints its JSON. `computer tools` and
+  `computer describe <tool>` expose the catalog on demand. MCP registration is
+  not configured by Harnery.
+- **One desktop, one holder.** `computer call` takes a desktop lease for the
+  calling agent and refreshes it on every call; a call from another agent
+  waits (bounded) and then fails naming the holder. The lease lives in one file
+  per desktop, on the desktop's own filesystem, so callers in WSL distros,
+  native Windows shells and different repositories see the same holder. An idle
+  lease expires (default 120 seconds after the last call) and each new owner
+  increments a generation number. `computer lease release` frees it early by
+  expiring the record, so the generation keeps counting.
+- **Session label.** When a call omits `session`, Harnery sets it to the
+  agent's name, so the driver's per-session cursor and recording state follow
+  the agent.
+- **Unelevated daemon.** `computer up` starts `cua-driver serve` at the user's
+  normal integrity level; `call` starts it when it is not running. Elevation
+  for packaged apps whose accessibility tree is truncated stays a manual,
+  per-machine choice.
+- **WSL drives the Windows desktop.** Under WSL, Harnery installs the Windows
+  build, runs it through WSL interop, and translates `screenshot_out_file`
+  paths in both directions.
+- **Adapter boundary.** Cua-specific knowledge (release URLs, archive layout,
+  config file, `call` and `serve` arguments) lives in `lib/computer/cua.ts`.
+  The lease and command know only the `DesktopDriver` interface. A plugin
+  system waits for a second driver.
+- **Skill.** With `computer.enabled`, `init` renders a `harn-computer` skill
+  into every adapter's skills directory. It tells agents to prefer APIs, CLIs
+  and browser tools first, to prefer accessibility actions, to read state back
+  instead of retrying blind, to escalate to foreground delivery only when the
+  driver reports background delivery unavailable, never to type credentials
+  into a sign-in page, and to release the lease when finished.
+
+### Platforms
+
+| Host | Status |
+|---|---|
+| Windows 10/11 (native) | Supported |
+| WSL2 on Windows 10/11 (drives the Windows desktop) | Supported, trial-tested |
+| macOS, Linux desktops | Not yet. The macOS driver needs its app bundle and TCC grants; `install` refuses with a pointer to this ADR |
+
+## Alternatives
+
+- **Register the MCP server in each harness.** Rejected as the default for the
+  token cost above; an operator can still add it by hand.
+- **A wrapper in each host CLI.** Rejected: one copy of the same provisioning
+  and lease code per host, and no shared lease between repositories.
+- **Reuse `admission` slots for the lease.** Rejected: an admission ticket is
+  owned by one process and is pruned when that process exits, but an agent's
+  desktop work spans many separate CLI invocations.
+- **The vendor installer.** Rejected for its telemetry default, PATH edit and
+  elevated autostart task.
+
+## Consequences
+
+- Driver upgrades are Harnery releases, so a broken nightly cannot reach an
+  agent.
+- The lease serializes agents per desktop. A long task by one agent blocks the
+  others until it releases or goes idle.
+- Hosts that never enable `computer` see one more lazy command and nothing else.

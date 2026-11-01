@@ -554,6 +554,12 @@ function harneryCommandBundles({
         (await import("./commands/admission.ts")).registerAdmissionCommand(program, emit),
     ),
     lazy(
+      "computer",
+      `Opt-in desktop control through a pinned desktop driver: \`computer status\`, \`install\`, \`up\`, \`call <tool> [json]\` under a desktop lease shared by every agent on the machine. Start with \`${binName} computer status\`.`,
+      async (program) =>
+        (await import("./commands/computer.ts")).registerComputerCommand(program, emit, binName),
+    ),
+    lazy(
       "browse-session",
       "Control an opted-in headed browse session through an owner-only descriptor",
       async (program) =>

@@ -126,13 +126,28 @@ describe("renderInstructionsBlock", () => {
 });
 
 describe("SKILLS", () => {
-  test("ships the four harn-prefixed engine skills", () => {
+  test("ships the four harn-prefixed engine skills plus the opt-in computer skill", () => {
     expect(SKILLS.map((s) => s.id).sort()).toEqual([
+      "harn-computer",
       "harn-council",
       "harn-decide",
       "harn-end",
       "harn-team",
     ]);
+    expect(SKILLS.filter((s) => s.optIn).map((s) => s.id)).toEqual(["harn-computer"]);
+  });
+
+  test("the default block never mentions the opt-in computer skill", () => {
+    expect(renderInstructionsBlock("acme")).not.toContain("computer");
+    expect(
+      renderInstructionsBlock("acme", {
+        decide: true,
+        council: true,
+        end: true,
+        team: true,
+        computer: true,
+      }),
+    ).toContain("`acme computer`");
   });
 
   test("every skill renders an owned, fresh, correctly-pathed file", () => {
@@ -145,9 +160,11 @@ describe("SKILLS", () => {
       const body = content.slice(content.indexOf("-->") + 3).trim();
       expect(checkOwnedSkill(content, body)).toBe("fresh");
       // bin substitution reached the body; no un-substituted `harn <verb>` leaked
-      expect(content).toMatch(/\bacme (agents|decision|council|governor|work|artifacts|approval) /);
+      expect(content).toMatch(
+        /\bacme (agents|decision|council|governor|work|artifacts|approval|computer) /,
+      );
       expect(content).not.toMatch(
-        /\bharn (agents|decision|council|governor|work|artifacts|approval|web) /,
+        /\bharn (agents|decision|council|governor|work|artifacts|approval|web|computer) /,
       );
     }
   });

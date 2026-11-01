@@ -32,7 +32,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { endOfTurnStatusCommand, stripJsonComments } from "../../core/config.ts";
+import {
+  endOfTurnStatusCommand,
+  readComputerConfig,
+  stripJsonComments,
+} from "../../core/config.ts";
 import { readHostAddendum } from "./host-addendum.ts";
 import {
   checkOwnedSkill,
@@ -50,6 +54,7 @@ import {
   INSTRUCTIONS_REGION,
   renderInstructionsBlock,
   SKILLS,
+  type SkillTemplate,
 } from "./templates.ts";
 
 const AGENTS_FILE = "AGENTS.md";
@@ -135,12 +140,35 @@ export function readSkillsExclude(projectRoot: string): Set<string> {
 function blockSkills(projectRoot: string, adapter: string): BlockSkills {
   const supported = adapterSkillsDir(adapter) !== null;
   const exclude = readSkillsExclude(projectRoot);
-  return {
+  const skills: BlockSkills = {
     decide: supported && !exclude.has("harn-decide"),
     council: supported && !exclude.has("harn-council"),
     end: supported && !exclude.has("harn-end"),
     team: supported && !exclude.has("harn-team"),
   };
+  // Only an enabled project's block mentions the opt-in skill, so every other
+  // project's block stays byte-identical.
+  if (supported && !exclude.has("harn-computer") && readComputerConfig(projectRoot).enabled) {
+    skills.computer = true;
+  }
+  return skills;
+}
+
+/** False for an opt-in skill whose config gate is off in this project. */
+function skillOptedIn(projectRoot: string, skill: SkillTemplate): boolean {
+  if (skill.optIn === "computer") return readComputerConfig(projectRoot).enabled;
+  return true;
+}
+
+/** Delete an owned skill file and its now-empty harn-* dir (adapter root stays). */
+function removeOwnedSkillFile(skillPath: string): void {
+  rmSync(skillPath);
+  const dir = dirname(skillPath);
+  try {
+    if (readdirSync(dir).length === 0) rmdirSync(dir);
+  } catch {
+    /* dir not empty or gone → leave it */
+  }
 }
 
 interface ApplyOpts {
@@ -276,6 +304,16 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
         continue;
       }
       const skillPath = join(projectRoot, skillsDir, skill.relPath);
+      if (!skillOptedIn(projectRoot, skill)) {
+        // Turning the gate off takes back a skill an earlier init wrote.
+        if (existsSync(skillPath) && isOwnedFile(readFileSync(skillPath, "utf8"))) {
+          if (!opts.dryRun) removeOwnedSkillFile(skillPath);
+          actions.push(
+            `+ ${verbed("remove", "removed")} skill ${skill.id} (${skill.optIn}.enabled is off)`,
+          );
+        }
+        continue;
+      }
       const content = skill.render(opts.binName);
       const before = existsSync(skillPath) ? readFileSync(skillPath, "utf8") : null;
       if (before === content) {
@@ -298,7 +336,9 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
 
 /** True when `dir` is inside a real Git work tree (an empty `.git` folder does not count). */
 function insideGitWorkTree(dir: string): boolean {
-  const r = spawnSync("git", ["-C", dir, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" });
+  const r = spawnSync("git", ["-C", dir, "rev-parse", "--is-inside-work-tree"], {
+    encoding: "utf8",
+  });
   return r.status === 0 && r.stdout.trim() === "true";
 }
 
@@ -332,7 +372,8 @@ export function parentScopeWarning(projectRoot: string): string | null {
     }
   });
   if (children.length === 0) return null;
-  const listed = children.slice(0, 5).join(", ") + (children.length > 5 ? `, +${children.length - 5} more` : "");
+  const listed =
+    children.slice(0, 5).join(", ") + (children.length > 5 ? `, +${children.length - 5} more` : "");
   return (
     `${projectRoot} is not a Git work tree and contains ${children.length} project(s) with their own ` +
     `Harnery instructions (${listed}). Harnesses that read parent folders, such as Claude Code, will load ` +
@@ -430,16 +471,7 @@ export function removeInstructions(projectRoot: string, opts: RemoveOpts): Apply
         warnings.push(`left ${skill.relPath} (hand-edited; no harnery ownership marker)`);
         continue;
       }
-      if (!opts.dryRun) {
-        rmSync(skillPath);
-        // Drop the now-empty harn-* dir, leaving the adapter skills root intact.
-        const dir = dirname(skillPath);
-        try {
-          if (readdirSync(dir).length === 0) rmdirSync(dir);
-        } catch {
-          /* dir not empty or gone → leave it */
-        }
-      }
+      if (!opts.dryRun) removeOwnedSkillFile(skillPath);
       actions.push(`+ ${opts.dryRun ? "would delete" : "deleted"} skill ${skill.id}`);
     }
   }
@@ -501,6 +533,14 @@ export function checkInstructions(
         if (exclude.has(skill.id)) continue;
         const skillPath = join(projectRoot, skillsDir, skill.relPath);
         const c = existsSync(skillPath) ? readFileSync(skillPath, "utf8") : "";
+        if (!skillOptedIn(projectRoot, skill)) {
+          if (isOwnedFile(c)) {
+            issues.push(
+              `skill ${skill.id}: present but ${skill.optIn}.enabled is off (re-run init)`,
+            );
+          }
+          continue;
+        }
         note(`skill ${skill.id}`, checkOwnedSkill(c, skillBody(skill.render, opts.binName)));
       }
     }

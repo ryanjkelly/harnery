@@ -1,0 +1,151 @@
+---
+title: harn computer
+description: Opt-in desktop control through one pinned desktop driver. Install it, run its daemon, and call its tools while one desktop lease keeps two agents from driving the same desktop at once.
+sidebar:
+  order: 48
+---
+
+```
+harn computer status [--json]
+harn computer install [--yes] [--json]
+harn computer up
+harn computer down
+harn computer doctor [--json]
+harn computer tools
+harn computer describe <tool>
+harn computer call <tool> [json] [--wait <seconds>] [--keep-screenshot]
+harn computer lease status [--json]
+harn computer lease acquire [--wait <seconds>]
+harn computer lease release
+```
+
+`harn computer` gives every harness the same desktop control: one pinned,
+checksum-verified driver binary, called through its CLI. Agents use it for
+native desktop apps, or for a page that needs a real browser they cannot drive
+any other way. It is a last resort after vendor APIs, CLIs, and the browser
+tools. The design is in
+[decision record 0228](/decisions/0228-computer-use-through-a-pinned-desktop-driver/).
+
+## Enabling it
+
+The command is inert until a project opts in:
+
+```jsonc
+// .harnery/config.jsonc
+{
+  "computer": { "enabled": true }
+}
+```
+
+Only the project file counts; a user-global value never turns it on. Without
+it, `install`, `up`, `call`, and `lease acquire` refuse with a message that
+shows this setting. With it, `harn init` also renders the `harn-computer` skill
+into each adapter's skills directory. Two optional tunables set the lease
+timing: `idle_seconds` (default 120) and `wait_seconds` (default 30). See
+[`computer` in the config schema](/reference/config-schema/#computer).
+
+## Platforms
+
+| Host | Status |
+|---|---|
+| Windows 10/11 (native) | Supported |
+| WSL2 on Windows 10/11 | Supported; drives the Windows desktop through interop |
+| macOS, Linux desktops | Not yet. `install` exits 1 with the reason |
+
+## computer status
+
+```bash
+harn computer status
+```
+
+Shows whether the project enables computer use, the host kind, the pinned
+driver version, the installed executable (or `not installed`), whether the
+daemon is running and its pid, and the current desktop lease holder with its
+generation and idle expiry. `--json` emits the same fields. Status never
+changes anything.
+
+## computer install
+
+```bash
+harn computer install          # preview: URL, SHA-256, install dir, preference file
+harn computer install --yes    # download, verify, extract, write preferences
+```
+
+Without `--yes` it prints the plan only. With `--yes` it downloads the pinned
+archive, checks its SHA-256, extracts it to a versioned directory under the
+desktop's shared state directory, and writes the driver's own preference file
+(telemetry off) before the binary first runs. It never edits `PATH`, registers
+autostart, or elevates. Re-running is idempotent. Upgrading the driver is a
+Harnery release that moves the pin.
+
+## computer up / down
+
+`up` starts the driver daemon at the user's normal integrity level if it is not
+already running; it needs the driver installed. `down` stops it. `call` starts
+the daemon on its own, so `up` is optional.
+
+## computer doctor
+
+Runs the driver's own health report and prints one line per check. Any check
+that does not pass, or a failing driver exit, exits 1. `--json` emits the
+parsed checks and the raw report.
+
+## computer tools / describe
+
+`tools` lists every driver tool with a one-line description. `describe <tool>`
+prints one tool's full description and input schema. Agents look up a schema
+on demand instead of carrying the whole catalog in every turn.
+
+## computer call
+
+```bash
+harn computer call launch_app '{"name": "notepad"}'
+harn computer call get_window_state '{"include_screenshot": false}'
+harn computer call get_window_state '{"screenshot_out_file": "/tmp/state.png"}'
+```
+
+Runs one tool call and prints the driver's JSON. The arguments must be a JSON
+object (default `{}`). In order, the command:
+
+1. Sets `session` to the caller's agent name when the arguments omit it, so
+   the driver's per-session state follows the agent. A shell outside any agent
+   session is labelled `shell-<ppid>`.
+2. Takes the desktop lease for the caller, or refreshes it. When another agent
+   holds it, the call waits up to `--wait` seconds (default `wait_seconds`,
+   else 30) and then exits 3:
+
+   ```
+   Desktop is held by agent-Ada (generation 7, idle-expires in 84s). Wait, or ask them to run `harn computer lease release`.
+   ```
+3. Starts the daemon if it is not running.
+4. Translates file paths in the arguments and results between WSL and Windows
+   syntax, so `screenshot_out_file` can name a WSL path.
+5. Replaces the value of any key ending in `png_b64` with a short
+   `<omitted N chars; …>` note, so one state read cannot flood an agent's
+   context. Pass `--keep-screenshot` to keep the inline image, or write it to
+   a file with `screenshot_out_file` and read that file.
+
+The driver's stderr passes through and its exit code becomes the command's
+exit code.
+
+## computer lease
+
+| Command | Effect |
+|---|---|
+| `lease status [--json]` | Show the holder, its generation, and its idle expiry, or `free` |
+| `lease acquire [--wait <seconds>]` | Take or refresh the lease without calling a tool (default wait 0) |
+| `lease release` | Release the lease if you hold it; exits 3 when another agent holds it |
+
+The lease is one file per desktop, kept in the desktop's own state directory,
+so callers in WSL distros, native Windows shells, and different repositories
+all see the same holder. An idle lease expires `idle_seconds` after the last
+call (default 120). Each new holder increments the generation.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Error: computer use disabled, unsupported host, driver not installed, bad arguments, or a failing health check |
+| 3 | The desktop lease is held by another agent |
+| other | `call`, `tools`, and `describe` pass through the driver's exit code |

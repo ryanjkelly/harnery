@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { spawnSync } from "node:child_process";
-
-import { applyInstructions, checkInstructions, parentScopeWarning, removeInstructions } from "./apply.ts";
+import {
+  applyInstructions,
+  checkInstructions,
+  parentScopeWarning,
+  removeInstructions,
+} from "./apply.ts";
 
 const BIN = "acme";
 let root: string;
@@ -96,6 +100,45 @@ describe("applyInstructions (claude-code)", () => {
     expect(md).toContain("acme agents status --end-turn --end-session");
     // and re-check stays fresh (the check renders the same exclusion-aware block)
     expect(checkInstructions(root, { binName: BIN, adapter: "claude-code" }).status).toBe("fresh");
+  });
+});
+
+describe("harn-computer opt-in skill", () => {
+  const enable = (enabled: boolean) => {
+    mkdirSync(join(root, ".harnery"), { recursive: true });
+    writeFileSync(join(root, ".harnery/config.jsonc"), JSON.stringify({ computer: { enabled } }));
+  };
+
+  test("is not rendered, and not mentioned, without computer.enabled", () => {
+    applyInstructions(root, { binName: BIN, adapter: "claude-code", dryRun: false });
+    expect(has(".claude/skills/harn-computer/SKILL.md")).toBe(false);
+    expect(read("AGENTS.md")).not.toContain("harn-computer");
+    expect(checkInstructions(root, { binName: BIN, adapter: "claude-code" }).status).toBe("fresh");
+  });
+
+  test("renders with the bin name only when computer.enabled is true", () => {
+    enable(true);
+    applyInstructions(root, { binName: BIN, adapter: "claude-code", dryRun: false });
+    const skill = read(".claude/skills/harn-computer/SKILL.md");
+    expect(skill).toContain("name: harn-computer");
+    expect(skill).toContain("acme computer lease release");
+    expect(skill).not.toMatch(/\bharn computer\b/);
+    expect(read("AGENTS.md")).toContain("`harn-computer` skill");
+    expect(checkInstructions(root, { binName: BIN, adapter: "claude-code" }).status).toBe("fresh");
+  });
+
+  test("turning the gate off takes the skill back on the next init, and --check flags it first", () => {
+    enable(true);
+    applyInstructions(root, { binName: BIN, adapter: "codex", dryRun: false });
+    expect(has(".agents/skills/harn-computer/SKILL.md")).toBe(true);
+    enable(false);
+    const check = checkInstructions(root, { binName: BIN, adapter: "codex" });
+    expect(check.status).toBe("drift");
+    expect(check.issues.join("\n")).toContain("harn-computer: present but computer.enabled is off");
+    const r = applyInstructions(root, { binName: BIN, adapter: "codex", dryRun: false });
+    expect(r.actions.join("\n")).toContain("removed skill harn-computer");
+    expect(has(".agents/skills/harn-computer/SKILL.md")).toBe(false);
+    expect(checkInstructions(root, { binName: BIN, adapter: "codex" }).status).toBe("fresh");
   });
 });
 

@@ -11,7 +11,7 @@
  * `coord` (heartbeat freshness), `logs` (structured-log storage budgets),
  * `artifacts` (working-file retention),
  * `backup` (restic repo/password/prune policy), `sync` (rclone
- * remote/prefix), and `web` (dashboard port) sections. The `files` deny/override section
+ * remote/prefix), `computer` (opt-in desktop control), and `web` (dashboard port) sections. The `files` deny/override section
  * is parsed separately by `web/lib/files.ts`.
  *
  * Env vars and CLI flags override any config value per invocation (each accessor
@@ -222,6 +222,11 @@ interface HarneryConfig {
   sync?: { remote?: string; prefix?: string };
   /** Standalone dashboard defaults. */
   web?: { port?: number; bind?: string };
+  /**
+   * Opt-in desktop control (`computer` command, ADR 0228). Inert unless
+   * `enabled` is true. Project config only; read via `readComputerConfig()`.
+   */
+  computer?: { enabled?: boolean; idle_seconds?: number; wait_seconds?: number };
   [k: string]: unknown;
 }
 
@@ -729,6 +734,42 @@ export function readAdmissionConfig(coordRoot?: string | null): AdmissionProject
     ...(guard && typeof guard.resource === "string" && guard.resource
       ? { guard: { resource: guard.resource } }
       : {}),
+  };
+}
+
+/** Effective `computer` settings; unset tunables fall back to the command's defaults. */
+export interface ComputerProjectConfig {
+  enabled: boolean;
+  /** Desktop lease idle expiry in seconds. */
+  idle_seconds?: number;
+  /** How long `computer call` waits for another agent's lease, in seconds. */
+  wait_seconds?: number;
+}
+
+/**
+ * Desktop-control settings from `.harnery/config.jsonc`:
+ *
+ * ```jsonc
+ * "computer": { "enabled": true, "idle_seconds": 120, "wait_seconds": 30 }
+ * ```
+ *
+ * Project config only: enabling desktop control is a per-project decision, so a
+ * user-global value never turns it on. Malformed values are dropped one by one;
+ * `enabled` is true only when the project sets it to exactly `true`.
+ */
+export function readComputerConfig(coordRoot?: string | null): ComputerProjectConfig {
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return { enabled: false };
+  const raw = readProjectConfig(root).computer;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { enabled: false };
+  const record = raw as Record<string, unknown>;
+  const idle = positiveNumber(record.idle_seconds, 86_400);
+  const wait = record.wait_seconds;
+  const waitOk = typeof wait === "number" && Number.isFinite(wait) && wait >= 0 && wait <= 3600;
+  return {
+    enabled: record.enabled === true,
+    ...(idle !== undefined ? { idle_seconds: idle } : {}),
+    ...(waitOk ? { wait_seconds: wait } : {}),
   };
 }
 

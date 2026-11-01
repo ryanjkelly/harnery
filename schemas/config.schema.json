@@ -308,6 +308,32 @@
         }
       }
     },
+    "computer": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Opt-in desktop control through a pinned desktop driver (ADR 0228). Project config only; inert unless enabled is true.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow `computer install`, `up`, `call`, and `lease acquire` in this project, and render the harn-computer skill on init."
+        },
+        "idle_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "default": 120,
+          "description": "Desktop lease idle expiry. Every `computer call` by the holder refreshes it."
+        },
+        "wait_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 30,
+          "description": "How long `computer call` waits for another agent's lease before failing. `--wait` overrides per call."
+        }
+      }
+    },
     "files": {
       "type": "object",
       "additionalProperties": false,
@@ -395,7 +421,7 @@
           "type": "array",
           "items": { "type": "string" },
           "default": [],
-          "description": "Shipped Harnery skills this repo suppresses. Installed skill IDs are harn-decide, harn-council, and harn-end."
+          "description": "Shipped Harnery skills this repo suppresses. Installed skill IDs are harn-decide, harn-council, harn-end, harn-team, and (only when computer.enabled is true) harn-computer."
         }
       }
     },

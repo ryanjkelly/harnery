@@ -36,6 +36,11 @@ export interface BlockSkills {
   end: boolean;
   /** the `harn-team` skill file is present */
   team: boolean;
+  /**
+   * the opt-in `harn-computer` skill file is present (only when the project
+   * sets `computer.enabled`); absent from the default block entirely
+   */
+  computer?: boolean;
 }
 
 /**
@@ -78,6 +83,11 @@ export function renderInstructionsBlock(
   const teamPointer = skills.team
     ? "The `harn-team` skill owns the tier choice, the governor artifacts, and the drive loop."
     : `See \`${b} governor --help\` for the tier choice and the drive loop.`;
+  // Opt-in surface: the default block stays byte-identical unless the project
+  // enabled computer use and the skill is actually installed.
+  const computerPointer = skills.computer
+    ? `\n\n**Desktop control.** This project enables \`${b} computer\` for driving native desktop apps and real browsers as a last resort. The \`harn-computer\` skill has the loop, and the desktop is one shared resource held by one agent at a time.`
+    : "";
   // Render the journal categories from the canonical enum so this prose can
   // never drift from what `journal add` actually accepts (the "note, plan…" list
   // silently lagged the tool by two categories before this).
@@ -165,7 +175,7 @@ can't resolve from the repo, file it instead. \`${b} decision file "<question>"\
 records it and lets you proceed on a stated default; \`${b} decision search "<terms>"\`
 surfaces prior decisions, so check for precedent before re-deciding. ${decidePointer}
 
-**Councils.** For a hard or contested decision, convene a council of agents. \`${b} council create "<objective>"\` runs structured rounds toward a decision. ${councilPointer}`;
+**Councils.** For a hard or contested decision, convene a council of agents. \`${b} council create "<objective>"\` runs structured rounds toward a decision. ${councilPointer}${computerPointer}`;
 }
 
 // ── Skills ──────────────────────────────────────────────────────────────────
@@ -176,6 +186,12 @@ export interface SkillTemplate {
   /** path under the adapter skill dir, e.g. `harn-decide/SKILL.md` */
   relPath: string;
   render: (binName: string) => string;
+  /**
+   * Config gate for an opt-in skill. `"computer"` renders only when the project
+   * sets `computer.enabled: true`; ungated skills always render (minus
+   * `skills.exclude`).
+   */
+  optIn?: "computer";
 }
 
 function decideBody(b: string): string {
@@ -518,6 +534,71 @@ single next action. If you declined to build a team because one already existed,
 say that first; it is the most useful sentence in the reply.`;
 }
 
+function computerBody(b: string): string {
+  return `\`${b} computer\` drives this machine's desktop through a pinned desktop driver.
+It is the last resort: use a vendor API, a CLI, or the browser tools first.
+Reach for it only for a native desktop app, or a page that needs a real
+browser you cannot drive any other way.
+
+## Setup check
+
+\`\`\`bash
+${b} computer status
+\`\`\`
+
+It shows the host, the pinned driver and whether it is installed, the daemon,
+and who holds the desktop. When the driver is missing, the project must enable
+computer use and run \`${b} computer install --yes\`. \`${b} computer doctor\`
+reports the driver's own health checks.
+
+## Core loop
+
+Every step is one call: \`${b} computer call <tool> '<json>'\`. Look up a tool's
+arguments with \`${b} computer describe <tool>\` rather than guessing; \`${b} computer tools\`
+lists them.
+
+1. **Launch** the app in the background with \`launch_app\`.
+2. **Read state** with \`get_window_state\` and \`include_screenshot: false\`. When
+   you need to see the window, pass \`screenshot_out_file\` with a file path
+   and read that file. Inline screenshots are redacted from the output unless
+   you pass \`--keep-screenshot\`, because they flood your context.
+3. **Act by element token** \`"<snapshot_id>:<row>"\` from the latest state:
+   click, \`set_value\`, or invoke, batched through \`run_steps\` when several
+   actions belong together.
+4. **Read back** the state after acting. Confirm the change landed before you
+   retry anything; never repeat an action blind.
+
+## Rules
+
+- Prefer accessibility routes (\`set_value\`, invoke) over \`type_text\` and
+  coordinate clicks.
+- Never pass \`delivery_mode: "foreground"\` unless the driver returned
+  \`background_unavailable\` or \`delivery_failed\` for that action.
+- For a browser, call \`browser_prepare\` with \`allow_launch: true\` and
+  \`profile: {"mode": "isolated_new"}\`. Never attach to the user's real
+  profile unless the operator asks for it.
+- Never type a password, username, or one-time code into a sign-in page. Stop
+  and ask the operator to sign in.
+- Only \`kill_app\` processes you launched.
+
+## One desktop, one holder
+
+Every agent on this machine shares one desktop. \`call\` takes a lease for you
+and refreshes it on every call; it lapses after a short idle period.
+
+- A refusal naming another holder means **wait**, then try once more later. Do
+  not retry in a loop. \`--wait <seconds>\` waits longer on one call.
+- Check the holder with \`${b} computer lease status\`.
+- Release the desktop as soon as you finish:
+
+  \`\`\`bash
+  ${b} computer lease release
+  \`\`\`
+
+Report what you did on the desktop, which apps you launched and closed, and
+anything you left open.`;
+}
+
 export const SKILLS: SkillTemplate[] = [
   {
     id: "harn-decide",
@@ -565,6 +646,19 @@ export const SKILLS: SkillTemplate[] = [
           "Stand up and drive a multi-agent team on an objective: pick between a bounded run, durable work, and a governed role team; build the governor artifacts; drive off projection.next_action. Use when asked to put a team of agents on a job, orchestrate agents, or check on a goal already running. Refuses to build a second team when one already covers the objective.",
         binName,
         body: teamBody(binName),
+      }),
+  },
+  {
+    id: "harn-computer",
+    relPath: "harn-computer/SKILL.md",
+    optIn: "computer",
+    render: (binName) =>
+      buildOwnedSkill({
+        name: "harn-computer",
+        description:
+          "Drive a native desktop app or a real browser through the project's pinned desktop driver, as a last resort after APIs, CLIs, and browser tools. Covers the setup check, the launch / read state / act by element token / read back loop, safety rules, and the shared desktop lease.",
+        binName,
+        body: computerBody(binName),
       }),
   },
 ];
