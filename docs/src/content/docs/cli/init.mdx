@@ -200,6 +200,19 @@ and runs the usual command otherwise. Removing the setting and re-running
 `init` removes the field. See the
 [config reference](/reference/config-schema/#hooks).
 
+### One settings file for every OS
+
+The hook commands `init` writes depend on the OS it runs on. Windows gets
+`agent-hook <event> --adapter <adapter>` from `PATH`, plus a matching Codex
+`commandWindows`. Linux, WSL and macOS get `bash <path>/bin/agent-hook ...`
+when the project contains Harnery, and no `commandWindows`. A project that
+commits its settings files and is cloned on several OSes sets
+`hooks.portableCommands: true` in `.harnery/config.jsonc`. `init` then writes
+the Windows form on every OS, the OpenCode plugin names the same `agent-hook`
+launcher, and `--check` reports that form as current everywhere. Each clone
+needs `agent-hook` on `PATH`. See the
+[config reference](/reference/config-schema/#hooks).
+
 ### Codex authorization is a separate step
 
 Writing `.codex/hooks.json` does not authorize its commands. Codex stores

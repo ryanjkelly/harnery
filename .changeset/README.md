@@ -6,6 +6,7 @@ Each PR that changes published behavior should include a changeset file in this 
 | --- | --- |
 | [windows-coordination-helpers.md](windows-coordination-helpers.md) | Native internal coordination calls and hook lifecycle verification |
 | [native-windows-source.md](native-windows-source.md) | Native Windows launchers, initialization, and process identity |
+| [portable-hook-commands.md](portable-hook-commands.md) | One committed adapter hook form on every OS |
 
 To add one, run:
 

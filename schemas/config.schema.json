@@ -440,6 +440,11 @@
               "description": "Windows command name the bridge installs, for example codex-wsl-hook. Only a bridge that implements the decision record 0197 contract should install it."
             }
           }
+        },
+        "portableCommands": {
+          "type": "boolean",
+          "default": false,
+          "description": "Write the same adapter hook commands on every OS: agent-hook from PATH as each hook's command, plus a matching Codex commandWindows, and have init --check treat that form as current everywhere. For a project that commits its adapter settings and is cloned on Windows, Linux, WSL and macOS; every clone needs agent-hook on PATH. Project config only."
         }
       }
     },

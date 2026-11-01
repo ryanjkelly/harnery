@@ -13,6 +13,7 @@ import { ADAPTER_SPECS, type AdapterId, CLAUDE_CODE_EVENTS } from "./events.ts";
 import { installOpenCodePlugin, OPENCODE_PLUGIN_ENTRY } from "./opencode-plugin.ts";
 import {
   agentHookPathForProject,
+  type ClaudeHookGroup,
   diffWiring,
   expectedCommandWindows,
   harneryPackageRoot,
@@ -262,6 +263,140 @@ describe("agentHookPathForProject", () => {
         join(process.cwd(), "tools", "harnery"),
       ),
     ).toBe("agent-hook");
+  });
+
+  test("follows the injected platform and the portable opt-in", () => {
+    const root = join(process.cwd(), "consumer-root");
+    const pkg = join(root, "harnery");
+    expect(agentHookPathForProject(root, pkg, { platform: "linux" })).toBe(
+      join("harnery", "bin", "agent-hook"),
+    );
+    expect(agentHookPathForProject(root, pkg, { platform: "darwin" })).toBe(
+      join("harnery", "bin", "agent-hook"),
+    );
+    expect(agentHookPathForProject(root, pkg, { platform: "win32" })).toBe("agent-hook");
+    for (const platform of ["linux", "darwin", "win32"] as const) {
+      expect(agentHookPathForProject(root, pkg, { platform, portableCommands: true })).toBe(
+        "agent-hook",
+      );
+    }
+  });
+});
+
+describe("hooks.portableCommands", () => {
+  const codex = ADAPTER_SPECS.codex;
+  const root = join(process.cwd(), "consumer-root");
+  const pkg = join(root, "harnery");
+
+  /** Every event of one adapter, wired the way init would on `platform`. */
+  function wiredFor(
+    spec: (typeof ADAPTER_SPECS)[AdapterId],
+    adapter: AdapterId,
+    options: { platform: NodeJS.Platform; portableCommands?: boolean },
+  ): SettingsFile {
+    const path = agentHookPathForProject(root, pkg, options);
+    const hooks: SettingsFile["hooks"] = {};
+    for (const { settingsKey, subcommand } of spec.events) {
+      const commandWindows = expectedCommandWindows(spec, path, subcommand, adapter, options);
+      const timeout = hookTimeoutFor(spec, subcommand);
+      hooks[settingsKey] = [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: hookCommand(spec, path, subcommand, adapter, options),
+              ...(commandWindows === undefined ? {} : { commandWindows }),
+              ...(timeout === undefined ? {} : { timeout }),
+            },
+          ],
+        },
+      ];
+    }
+    return { hooks };
+  }
+
+  test("writes the PATH command and a native commandWindows on every OS", () => {
+    for (const platform of ["linux", "darwin", "win32"] as const) {
+      const options = { platform, portableCommands: true };
+      const path = agentHookPathForProject(root, pkg, options);
+      expect(hookCommand(codex, path, "stop", "codex", options)).toBe(
+        "agent-hook stop --adapter codex",
+      );
+      expect(expectedCommandWindows(codex, path, "stop", "codex", options)).toBe(
+        "agent-hook stop --adapter codex",
+      );
+      expect(hookCommand(CLAUDE, path, "stop", "claude-code", options)).toBe(
+        "agent-hook stop --adapter claude-code",
+      );
+    }
+  });
+
+  test("one committed file is current on every OS", () => {
+    for (const [spec, adapter] of [
+      [CLAUDE, "claude-code"],
+      [codex, "codex"],
+    ] as const) {
+      const committed = wiredFor(spec, adapter, { platform: "win32", portableCommands: true });
+      expect(wiredFor(spec, adapter, { platform: "linux", portableCommands: true })).toEqual(
+        committed,
+      );
+      expect(wiredFor(spec, adapter, { platform: "darwin", portableCommands: true })).toEqual(
+        committed,
+      );
+      for (const platform of ["linux", "darwin", "win32"] as const) {
+        const options = { platform, portableCommands: true };
+        const diff = diffWiring(committed, spec, {
+          agentHookPath: agentHookPathForProject(root, pkg, options),
+          adapter,
+          ...options,
+        });
+        expect(diff.stale).toEqual([]);
+        expect(diff.missing).toEqual([]);
+      }
+    }
+  });
+
+  test("without the opt-in the default stays OS-specific", () => {
+    const linux = wiredFor(codex, "codex", { platform: "linux" });
+    const handler = (linux.hooks!.Stop![0] as ClaudeHookGroup).hooks[0]!;
+    expect(handler).toEqual({
+      type: "command",
+      command: `bash ${join("harnery", "bin", "agent-hook")} stop --adapter codex`,
+      timeout: 20,
+    });
+    const windows = wiredFor(codex, "codex", { platform: "win32" });
+    expect(windows).toEqual(
+      wiredFor(codex, "codex", { platform: "linux", portableCommands: true }),
+    );
+    const linuxOptions = { platform: "linux" as const };
+    expect(
+      diffWiring(windows, codex, {
+        agentHookPath: agentHookPathForProject(root, pkg, linuxOptions),
+        adapter: "codex",
+        ...linuxOptions,
+      }).stale.length,
+    ).toBe(codex.events.length);
+  });
+
+  test("loadAdapterWiring reads the opt-in from the project config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "harnery-portable-"));
+    try {
+      const packageRoot = harneryPackageRoot();
+      if (!packageRoot) throw new Error("harnery package root unavailable");
+      mkdirSync(join(dir, ".harnery"), { recursive: true });
+      writeFileSync(
+        join(dir, ".harnery", "config.jsonc"),
+        '{ "hooks": { "portableCommands": true } }',
+      );
+      mkdirSync(join(dir, ".codex"), { recursive: true });
+      writeFileSync(
+        join(dir, ".codex", "hooks.json"),
+        JSON.stringify(wiredFor(codex, "codex", { platform: "win32", portableCommands: true })),
+      );
+      expect(loadAdapterWiring(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -68,6 +68,40 @@ test.skipIf(process.platform !== "win32")(
   },
 );
 
+test("hooks.portableCommands makes init and --check agree on the shared form", () => {
+  const root = mkdtempSync(join(tmpdir(), "harnery-portable-consumer-"));
+  const launcher = join(import.meta.dir, "..", "..", "bin", "harn.mjs");
+  try {
+    mkdirSync(join(root, ".harnery"), { recursive: true });
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      '{ "hooks": { "portableCommands": true } }\n',
+    );
+    const run = (...args: string[]) =>
+      spawnSync(
+        "node",
+        [launcher, "init", "--project-root", root, "--adapter", "claude-code,codex", ...args],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+    const initialized = run();
+    expect(initialized.status).toBe(0);
+    const checked = run("--check");
+    expect(`${checked.stdout}${checked.stderr}`).toContain("are current");
+    expect(checked.status).toBe(0);
+    const codex = JSON.parse(readFileSync(join(root, ".codex", "hooks.json"), "utf8"));
+    expect(codex.hooks.SessionStart[0].hooks[0]).toMatchObject({
+      command: "agent-hook session-start --adapter codex",
+      commandWindows: "agent-hook session-start --adapter codex",
+    });
+    const claude = JSON.parse(readFileSync(join(root, ".claude", "settings.json"), "utf8"));
+    expect(claude.hooks.SessionStart[0].hooks[0].command).toBe(
+      "agent-hook session-start --adapter claude-code",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
 /** Run with a PATH that carries no harness CLI, so installed-adapter detection is empty. */
 async function withoutInstalledHarnesses<T>(fn: () => Promise<T>): Promise<T> {
   const previous = process.env.PATH;
@@ -565,6 +599,61 @@ describe("wireHooks: Codex", () => {
       timeout: 20,
     });
     expect(settings.hooks.Stop[0]!.hooks[1]!.commandWindows).toBe("echo keep-me-too");
+  });
+
+  test("portableCommands writes identical files on Windows and POSIX", () => {
+    const written = (
+      platform: NodeJS.Platform,
+      spec: typeof CODEX,
+      adapter: "codex" | "claude-code",
+    ) => {
+      const settings: Record<string, unknown> = {};
+      wireHooks(settings as never, spec, "agent-hook", adapter, {
+        platform,
+        portableCommands: true,
+      });
+      return settings as { hooks: Record<string, ClaudeHookGroup[]> };
+    };
+    for (const [spec, adapter] of [
+      [CODEX, "codex"],
+      [CLAUDE, "claude-code"],
+    ] as const) {
+      const windows = written("win32", spec, adapter);
+      expect(written("linux", spec, adapter)).toEqual(windows);
+      expect(written("darwin", spec, adapter)).toEqual(windows);
+      const handler = windows.hooks.Stop![0]!.hooks[0]!;
+      expect(handler.command).toBe(`agent-hook stop --adapter ${adapter}`);
+      expect(handler.commandWindows).toBe(
+        adapter === "codex" ? "agent-hook stop --adapter codex" : undefined,
+      );
+      for (const platform of ["win32", "linux"] as const) {
+        const again = wireHooks(windows as never, spec, "agent-hook", adapter, {
+          platform,
+          portableCommands: true,
+        });
+        expect(again).toMatchObject({ wired: 0, upgraded: 0, removed: 0 });
+      }
+    }
+  });
+
+  test("portableCommands upgrades a POSIX-form file to the shared form", () => {
+    const settings: Record<string, unknown> = {};
+    wireHooks(settings as never, CODEX, HOOK, "codex", { platform: "linux" });
+    const stop = () =>
+      (settings as { hooks: Record<string, ClaudeHookGroup[]> }).hooks.Stop![0]!.hooks[0]!;
+    expect(stop().command).toBe(`bash ${HOOK} stop --adapter codex`);
+    expect(stop().commandWindows).toBeUndefined();
+    const result = wireHooks(settings as never, CODEX, "agent-hook", "codex", {
+      platform: "linux",
+      portableCommands: true,
+    });
+    expect(result.upgraded).toBe(CODEX.events.length);
+    expect(stop()).toEqual({
+      type: "command",
+      command: "agent-hook stop --adapter codex",
+      commandWindows: "agent-hook stop --adapter codex",
+      timeout: 20,
+    });
   });
 
   test("Claude Code never gets commandWindows, even with the option set", () => {

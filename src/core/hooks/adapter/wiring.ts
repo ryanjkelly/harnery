@@ -14,7 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { codexWindowsBridgeConfig, resolveBinName } from "../../config.ts";
+import { codexWindowsBridgeConfig, portableHookCommands, resolveBinName } from "../../config.ts";
 import {
   ADAPTER_SPECS,
   type AdapterId,
@@ -122,6 +122,22 @@ export function hookCommandWindows(
 export interface WiringOptions {
   /** Bridge entry point from `hooks.codexWindowsBridge`, or null when not opted in. */
   windowsBridgeEntryPoint?: string | null;
+  /**
+   * `hooks.portableCommands`: write the same `agent-hook` commands from PATH on
+   * every OS, plus a native Codex `commandWindows`, so one committed settings
+   * file is current everywhere.
+   */
+  portableCommands?: boolean;
+  /** The OS to write for. Defaults to the host; tests inject it. */
+  platform?: NodeJS.Platform;
+}
+
+/** The wiring options a project's committed config selects. */
+export function projectWiringOptions(projectRoot: string): WiringOptions {
+  return {
+    windowsBridgeEntryPoint: codexWindowsBridgeConfig(projectRoot).entryPoint,
+    portableCommands: portableHookCommands(projectRoot),
+  };
 }
 
 /** The `commandWindows` init writes for one event, or undefined for none. */
@@ -134,7 +150,7 @@ export function expectedCommandWindows(
 ): string | undefined {
   if (!spec.windowsBridgeHooks) return undefined;
   if (!options?.windowsBridgeEntryPoint) {
-    return process.platform === "win32"
+    return (options?.platform ?? process.platform) === "win32" || options?.portableCommands
       ? nativeHookCommand(agentHookPath, subcommand, adapter)
       : undefined;
   }
@@ -198,8 +214,11 @@ export function hookCommand(
   agentHookPath: string,
   subcommand: string,
   adapter: AdapterId,
+  options?: WiringOptions,
 ): string {
-  if (process.platform === "win32") return nativeHookCommand(agentHookPath, subcommand, adapter);
+  if ((options?.platform ?? process.platform) === "win32") {
+    return nativeHookCommand(agentHookPath, subcommand, adapter);
+  }
   if (agentHookPath === "agent-hook") {
     return `agent-hook ${subcommand} --adapter ${adapter}`;
   }
@@ -219,10 +238,17 @@ function nativeHookCommand(agentHookPath: string, subcommand: string, adapter: A
  * consumers use the package's installed `agent-hook` executable from PATH
  * instead of recording a relative path back into one developer's package tree.
  */
-export function agentHookPathForProject(projectRoot: string, packageRoot: string): string {
+export function agentHookPathForProject(
+  projectRoot: string,
+  packageRoot: string,
+  options?: WiringOptions,
+): string {
   // Native npm shims run the linked source checkout without Bash, and do not
   // depend on a hook's working directory after an agent changes directories.
-  if (process.platform === "win32") return "agent-hook";
+  // A project that commits one settings file for every OS asks for the same.
+  if ((options?.platform ?? process.platform) === "win32" || options?.portableCommands) {
+    return "agent-hook";
+  }
   const hook = join(packageRoot, "bin", "agent-hook");
   const candidate = relative(projectRoot, hook);
   if (candidate === ".." || candidate.startsWith(`..${sep}`) || isAbsolute(candidate)) {
@@ -283,6 +309,7 @@ export function diffWiring(
         expected.agentHookPath,
         event.subcommand,
         expected.adapter,
+        expected,
       );
       const timeout = hookTimeoutFor(spec, event.subcommand);
       const commandWindows = expectedCommandWindows(
@@ -401,7 +428,9 @@ function pluginDrift(
   const packageRoot = harneryPackageRoot();
   const check = checkOpenCodePlugin(projectRoot, {
     binName: resolveBinName(projectRoot),
-    agentHook: packageRoot ? agentHookPathForProject(projectRoot, packageRoot) : "agent-hook",
+    agentHook: packageRoot
+      ? agentHookPathForProject(projectRoot, packageRoot, projectWiringOptions(projectRoot))
+      : "agent-hook",
   });
   if (check.status === "fresh") return null;
   if (check.status === "missing") return null;
@@ -440,14 +469,15 @@ export function loadAdapterWiring(projectRoot: string): AdapterWiringStatus[] {
       continue;
     }
     const packageRoot = harneryPackageRoot();
+    const options = projectWiringOptions(projectRoot);
     const diff = diffWiring(
       settings,
       spec,
       packageRoot
         ? {
-            agentHookPath: agentHookPathForProject(projectRoot, packageRoot),
+            agentHookPath: agentHookPathForProject(projectRoot, packageRoot, options),
             adapter: id,
-            windowsBridgeEntryPoint: codexWindowsBridgeConfig(projectRoot).entryPoint,
+            ...options,
           }
         : undefined,
     );

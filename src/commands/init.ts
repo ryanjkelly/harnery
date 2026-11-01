@@ -31,6 +31,7 @@ import {
   codexWindowsBridgeConfig,
   DEFAULT_BIN_NAME,
   pinnedBinName,
+  portableHookCommands,
   stripJsonComments,
 } from "../core/config.ts";
 import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
@@ -61,6 +62,7 @@ import {
   isAgentHookCommand,
   makeEntry,
   orderHandlerKeys,
+  projectWiringOptions,
   type SettingsFile,
   summarizeAdapterWiring,
   type WiringOptions,
@@ -133,7 +135,8 @@ function checkAdapterHooks(
   bin: string,
 ): { drift: boolean; error: boolean; issues: string[] } {
   const spec = ADAPTER_SPECS[adapter];
-  const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
+  const options = projectWiringOptions(projectRoot);
+  const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT, options);
   if (spec.installMode === "opencode-plugin") {
     // No hooks map to diff: the plugin directory is the wiring.
     const plugin = checkOpenCodePlugin(projectRoot, { binName: bin, agentHook });
@@ -159,7 +162,7 @@ function checkAdapterHooks(
     const hookDiff = diffWiring(settings, spec, {
       agentHookPath: agentHook,
       adapter,
-      windowsBridgeEntryPoint: codexWindowsBridgeConfig(projectRoot).entryPoint,
+      ...options,
     });
     drift =
       hookDiff.missing.length > 0 ||
@@ -444,7 +447,8 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       for (const adapter of adapters) {
         const spec = ADAPTER_SPECS[adapter];
         const settingsPath = resolve(projectRoot, spec.settingsFile);
-        const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT);
+        const portableCommands = portableHookCommands(projectRoot);
+        const agentHook = agentHookPathForProject(projectRoot, HARNERY_ROOT, { portableCommands });
 
         if (spec.installMode === "opencode-plugin") {
           // OpenCode has no hooks map. Install the plugin directory instead; the
@@ -475,14 +479,16 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
           }
           const bridge = codexWindowsBridgeConfig(projectRoot);
           if (bridge.error && spec.windowsBridgeHooks) {
-            actions.push(`⚠ ${bridge.error}; writing ${adapter} hooks without commandWindows`);
+            actions.push(
+              `⚠ ${bridge.error}; writing ${adapter} hooks without the Windows bridge command`,
+            );
           }
           const { wired, already, removed, upgraded } = wireHooks(
             settings,
             spec,
             agentHook,
             adapter,
-            { windowsBridgeEntryPoint: bridge.entryPoint },
+            { windowsBridgeEntryPoint: bridge.entryPoint, portableCommands },
           );
 
           if (wired === 0 && removed === 0 && upgraded === 0) {
@@ -625,7 +631,7 @@ export function wireHooks(
     }
   }
   for (const { settingsKey, subcommand } of spec.events) {
-    const command = hookCommand(spec, agentHookPath, subcommand, adapter);
+    const command = hookCommand(spec, agentHookPath, subcommand, adapter, options);
     const timeout = hookTimeoutFor(spec, subcommand);
     const commandWindows = expectedCommandWindows(
       spec,

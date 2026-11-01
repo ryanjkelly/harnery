@@ -82,6 +82,8 @@ interface HarneryConfig {
     promptContext?: unknown;
     /** Project-only opt-in; read via `codexWindowsBridgeConfig()`. */
     codexWindowsBridge?: unknown;
+    /** Project-only opt-in; read via `portableHookCommands()`. */
+    portableCommands?: unknown;
   };
   /**
    * Agent-ritual policy owned by the host project. Git finalization is opt-in:
@@ -543,6 +545,18 @@ export function codexWindowsBridgeConfig(projectRoot: string): CodexWindowsBridg
     };
   }
   return { entryPoint, error: null };
+}
+
+/**
+ * Per-project opt-in that makes `init` write the same adapter hook commands on
+ * every OS: `agent-hook` from PATH, plus a native Codex `commandWindows`. A
+ * project that commits its settings files and is cloned on Windows and POSIX
+ * needs it, because the default form depends on the OS that ran `init`. Read
+ * from the project config only, for the same reason as the Windows bridge.
+ * Anything but `true` keeps the default.
+ */
+export function portableHookCommands(projectRoot: string): boolean {
+  return readProjectConfig(projectRoot).hooks?.portableCommands === true;
 }
 
 export function hostPromptReminder(coordRoot?: string | null): string | null {

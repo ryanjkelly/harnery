@@ -20,6 +20,7 @@ import {
   logStorageConfigSource,
   MAX_HOST_PROMPT_REMINDER_CHARS,
   pinnedBinName,
+  portableHookCommands,
   readAdmissionConfig,
   resolveBinName,
   sessionFinalizationConfig,
@@ -681,6 +682,33 @@ describe("codexWindowsBridgeConfig", () => {
       const result = codexWindowsBridgeConfig(r);
       expect(result.entryPoint).toBeNull();
       expect(result.error).toContain("hooks.codexWindowsBridge.entryPoint");
+    }
+  });
+});
+
+describe("portableHookCommands", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const root = (body?: string) => {
+    const r = makeRoot(body);
+    roots.push(r);
+    return r;
+  };
+
+  test("is off without the key", () => {
+    expect(portableHookCommands(root())).toBe(false);
+    expect(portableHookCommands(root("{}"))).toBe(false);
+    expect(portableHookCommands(root('{ "hooks": {} }'))).toBe(false);
+  });
+
+  test("is on only for literal true", () => {
+    expect(portableHookCommands(root('{ "hooks": { "portableCommands": true } }'))).toBe(true);
+    for (const value of ["false", '"true"', "1", "{}"]) {
+      expect(portableHookCommands(root(`{ "hooks": { "portableCommands": ${value} } }`))).toBe(
+        false,
+      );
     }
   });
 });
