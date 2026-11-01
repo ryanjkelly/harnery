@@ -269,6 +269,23 @@ describe("checkForUpdate and runAutoUpdate", () => {
     expect(autoUpdateTick(work, at(61 * MIN)).action).toBe("launched");
   });
 
+  posixOnly("a later successful run clears earlier failure notices", async () => {
+    const now = Date.now();
+    const failing = deps(cfg({ steps: [["sh", "-c", "exit 3"]] }), {
+      now: () => now,
+      spawnRunner: () => {},
+    });
+    await runAutoUpdate(work, { force: true, deps: failing });
+    expect(readAutoUpdateState(work).notices.some((n) => n.kind === "failure")).toBe(true);
+    const passing = deps(cfg({ steps: [["sh", "-c", "exit 0"]] }), {
+      now: () => now + 61 * MIN,
+      spawnRunner: () => {},
+    });
+    const result = await runAutoUpdate(work, { force: true, deps: passing });
+    expect(result.outcome).not.toBe("failed");
+    expect(readAutoUpdateState(work).notices.some((n) => n.kind === "failure")).toBe(false);
+  });
+
   test("a held lock skips the run", async () => {
     const lock = autoUpdateLockPath(work);
     mkdirSync(lock, { recursive: true });

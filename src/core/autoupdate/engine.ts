@@ -603,6 +603,11 @@ export async function runAutoUpdate(
       if (convergedUpdate) s.converged = convergedUpdate;
       if (dailyAt) s.dailyAt = dailyAt;
       if (cleanupAt) s.cleanupAt = cleanupAt;
+      // A run that succeeded resolves earlier failures and person requests,
+      // so sessions that start later are not told about a fixed problem.
+      if (outcome === "updated" || outcome === "current") {
+        s.notices = s.notices.filter((n) => n.kind !== "failure" && n.kind !== "person");
+      }
       for (const n of pending) notices.push(addNotice(s, n.kind, n.text, finishedMs));
     });
     // A failed run pushes the stamp forward so the tick stays one stat while backing off.
