@@ -23,10 +23,13 @@ import {
   portableHookCommands,
   readAdmissionConfig,
   readAutoUpdateConfig,
+  readComputerConfig,
+  readComputerPreferences,
   resolveBinName,
   sessionFinalizationConfig,
   stripJsonComments,
   syncJsoncConfig,
+  writeComputerPreference,
 } from "./config.ts";
 
 function makeRoot(configBody?: string): string {
@@ -862,5 +865,73 @@ describe("readAutoUpdateConfig", () => {
       rmSync(root, { recursive: true, force: true });
       rmSync(xdg, { recursive: true, force: true });
     }
+  });
+});
+
+describe("readComputerConfig", () => {
+  const none = {};
+
+  test("off unless the project turns it on", () => {
+    expect(readComputerConfig(makeRoot(), none)).toMatchObject({ enabled: false, mode: "off" });
+    expect(readComputerConfig(makeRoot('{"computer":{}}'), none).mode).toBe("off");
+  });
+
+  test("mode wins; enabled true without mode means on", () => {
+    expect(readComputerConfig(makeRoot('{"computer":{"enabled":true}}'), none).mode).toBe("on");
+    const ask = readComputerConfig(
+      makeRoot('{"computer":{"mode":"ask-each-task","grant_minutes":15}}'),
+      none,
+    );
+    expect(ask).toMatchObject({
+      enabled: true,
+      mode: "ask-each-task",
+      project_enabled: true,
+      grant_minutes: 15,
+    });
+  });
+
+  test("a malformed or contradictory section is off and says why", () => {
+    const bad = readComputerConfig(makeRoot('{"computer":{"mode":"yes"}}'), none);
+    expect(bad).toMatchObject({ enabled: false, mode: "off" });
+    expect(bad.config_error).toContain("computer.mode must be one of");
+    const clash = readComputerConfig(makeRoot('{"computer":{"enabled":false,"mode":"on"}}'), none);
+    expect(clash.mode).toBe("off");
+    expect(clash.config_error).toContain("remove one of them");
+  });
+
+  test("a person's own mode applies only where the project allows desktop control", () => {
+    const root = makeRoot('{"computer":{"mode":"ask-each-task"}}');
+    expect(readComputerConfig(root, { mode: "on" })).toMatchObject({
+      mode: "on",
+      mode_source: "user-default",
+      project_mode: "ask-each-task",
+    });
+    expect(readComputerConfig(root, { mode: "on", projects: { [root]: "off" } })).toMatchObject({
+      enabled: false,
+      mode: "off",
+      mode_source: "user-project",
+      project_enabled: true,
+    });
+    const offRoot = makeRoot('{"computer":{"mode":"off"}}');
+    expect(
+      readComputerConfig(offRoot, { mode: "on", projects: { [offRoot]: "on" } }),
+    ).toMatchObject({
+      enabled: false,
+      mode: "off",
+      mode_source: "project",
+    });
+  });
+
+  test("personal choices round-trip through computer.json", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "harnery-computer-prefs-")), "computer.json");
+    writeComputerPreference(null, "ask-once-per-session", file);
+    writeComputerPreference("/p", "on", file);
+    expect(readComputerPreferences(file)).toEqual({
+      mode: "ask-once-per-session",
+      projects: { "/p": "on" },
+    });
+    writeComputerPreference("/p", null, file);
+    writeComputerPreference(null, null, file);
+    expect(readComputerPreferences(file)).toEqual({});
   });
 });

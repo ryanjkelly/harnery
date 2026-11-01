@@ -4,16 +4,38 @@
 // the config gate, flag parsing, lease policy for `call`, screenshot redaction,
 // rendering, and exit codes.
 //
+// Approval modes (ADR 0230): in `ask-each-task` and `ask-once-per-session` an
+// agent needs a live approval (`computer grant`, answered by the person) before
+// `call` or `lease acquire` will take the desktop.
+//
 // Exit codes: 0 ok · 1 error (disabled, unsupported host, not installed,
 // driver failure; `call` propagates the driver's own exit code) · 3 the
-// desktop lease is held by another agent.
+// desktop lease is held by another agent · 4 desktop control needs the
+// person's approval first, or they declined.
 
 import { hostname, userInfo } from "node:os";
 import { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { resolveCoordRoot, resolveOwner } from "../core/agents/coord-client.ts";
 import { agentDisplayName, resolveShortName } from "../core/agents/state/activity-log.ts";
-import { type ComputerProjectConfig, readComputerConfig } from "../core/config.ts";
+import {
+  COMPUTER_MODES,
+  type ComputerMode,
+  type ComputerPreferences,
+  type ComputerProjectConfig,
+  computerModeLooser,
+  isComputerMode,
+  readComputerConfig,
+  readComputerPreferences,
+  writeComputerPreference,
+} from "../core/config.ts";
+import type { Confirm } from "../lib/computer/confirm.ts";
+import type {
+  DesktopGrant,
+  GrantChannel,
+  GrantKind,
+  GrantLogEntry,
+} from "../lib/computer/grants.ts";
 import type {
   DaemonStatus,
   DesktopDriver,
@@ -27,8 +49,36 @@ import type {
 
 /** Exit code for a desktop held by another agent. */
 export const EXIT_LEASE_HELD = 3;
+/** Exit code when desktop control needs the person's approval first, or they declined. */
+export const EXIT_APPROVAL_REQUIRED = 4;
 /** `call` waits this long for another agent's lease when nothing overrides it. */
 export const DEFAULT_CALL_WAIT_SECONDS = 30;
+/** How long the approval dialog waits for an answer before counting as no. */
+export const DEFAULT_CONFIRM_SECONDS = 120;
+/** Extra lease time beyond the driver's call timeout, so a slow call never outlives the lease. */
+const CALL_LEASE_MARGIN_MS = 15_000;
+
+/** Approval storage; the default writes beside the lease, tests inject an in-memory fake. */
+export interface GrantsApi {
+  live(
+    dir: string,
+    ownerId: string,
+    project: string | undefined,
+    nowMs: number,
+  ): DesktopGrant | undefined;
+  add(
+    dir: string,
+    grant: Omit<DesktopGrant, "id" | "granted_at" | "expires_at">,
+    options: { nowMs: number; durationMs: number },
+  ): DesktopGrant;
+  end(
+    dir: string,
+    options: { nowMs: number; ownerId?: string; project?: string; kind?: GrantKind },
+  ): DesktopGrant[];
+  log(dir: string, entry: Omit<GrantLogEntry, "at">, nowMs: number): void;
+  sessionMaxMs: number;
+  defaultTaskMinutes: number;
+}
 
 /** Everything the command touches outside itself; tests inject fakes. */
 export interface ComputerDeps {
@@ -38,7 +88,17 @@ export interface ComputerDeps {
   driver: DesktopDriver;
   lease: LeaseApi;
   owner: () => LeaseOwner;
-  config: () => ComputerProjectConfig;
+  /** Effective settings; `prefs` evaluates a hypothetical set of personal choices. */
+  config: (prefs?: ComputerPreferences) => ComputerProjectConfig;
+  grants: GrantsApi;
+  confirm: Confirm;
+  /** The person's saved choices and where to save a new one. */
+  prefs: {
+    read: () => ComputerPreferences;
+    write: (root: string | null, mode: ComputerMode | null) => ComputerPreferences;
+  };
+  /** The project root personal choices are keyed by. */
+  projectRoot: () => string | null;
   /** Lease directory for a desktop state dir. */
   leaseDir: (desktopStateDir: string) => string;
   /** Idle expiry when config sets none. */
@@ -74,20 +134,39 @@ export function resolveLeaseOwner(): LeaseOwner {
 }
 
 async function loadDefaultDeps(): Promise<
-  Pick<ComputerDeps, "host" | "driver" | "lease" | "leaseDir" | "defaultIdleMs">
+  Pick<
+    ComputerDeps,
+    "host" | "driver" | "lease" | "leaseDir" | "defaultIdleMs" | "grants" | "confirm"
+  >
 > {
-  const [{ detectHost }, { cuaDriver }, { desktopLease, leaseDir, DEFAULT_LEASE_IDLE_MS }] =
-    await Promise.all([
-      import("../lib/computer/host.ts"),
-      import("../lib/computer/cua.ts"),
-      import("../lib/computer/lease.ts"),
-    ]);
+  const [
+    { detectHost },
+    { cuaDriver },
+    { desktopLease, leaseDir, DEFAULT_LEASE_IDLE_MS },
+    grants,
+    { confirmWithPerson },
+  ] = await Promise.all([
+    import("../lib/computer/host.ts"),
+    import("../lib/computer/cua.ts"),
+    import("../lib/computer/lease.ts"),
+    import("../lib/computer/grants.ts"),
+    import("../lib/computer/confirm.ts"),
+  ]);
   return {
     host: () => detectHost(),
     driver: cuaDriver,
     lease: desktopLease,
     leaseDir,
     defaultIdleMs: DEFAULT_LEASE_IDLE_MS,
+    grants: {
+      live: grants.liveGrant,
+      add: grants.addGrant,
+      end: grants.endGrants,
+      log: grants.logGrantEvent,
+      sessionMaxMs: grants.SESSION_GRANT_MAX_MS,
+      defaultTaskMinutes: grants.DEFAULT_TASK_GRANT_MINUTES,
+    },
+    confirm: confirmWithPerson,
   };
 }
 
@@ -98,6 +177,8 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
     !input.driver ||
     !input.lease ||
     !input.leaseDir ||
+    !input.grants ||
+    !input.confirm ||
     input.defaultIdleMs === undefined;
   const defaults = needsDefaults ? await loadDefaultDeps() : undefined;
   return {
@@ -108,8 +189,15 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
     lease: input.lease ?? (defaults?.lease as LeaseApi),
     leaseDir: input.leaseDir ?? (defaults?.leaseDir as ComputerDeps["leaseDir"]),
     defaultIdleMs: input.defaultIdleMs ?? (defaults?.defaultIdleMs as number),
+    grants: input.grants ?? (defaults?.grants as GrantsApi),
+    confirm: input.confirm ?? (defaults?.confirm as Confirm),
+    prefs: input.prefs ?? {
+      read: () => readComputerPreferences(),
+      write: (root, mode) => writeComputerPreference(root, mode),
+    },
+    projectRoot: input.projectRoot ?? (() => resolveCoordRoot()),
     owner: input.owner ?? resolveLeaseOwner,
-    config: input.config ?? (() => readComputerConfig()),
+    config: input.config ?? ((prefs) => readComputerConfig(undefined, prefs)),
     writeStderr: input.writeStderr ?? ((text) => process.stderr.write(text)),
     now: input.now ?? Date.now,
   };
@@ -127,15 +215,113 @@ class ComputerError extends Error {
 }
 
 function enableHint(): string {
-  return 'Add `"computer": { "enabled": true }` to .harnery/config.jsonc to enable it for this project.';
+  return `Set "computer": { "mode": "ask-each-task" } (or ${COMPUTER_MODES.filter(
+    (m) => m !== "off" && m !== "ask-each-task",
+  )
+    .map((m) => `"${m}"`)
+    .join(" or ")}) in .harnery/config.jsonc to enable it for this project.`;
 }
 
-function requireEnabled(deps: ComputerDeps): void {
-  if (deps.config().enabled) return;
+function requireEnabled(deps: ComputerDeps): ComputerProjectConfig {
+  const config = deps.config();
+  if (config.enabled) return config;
+  if (config.config_error) {
+    throw new ComputerError(
+      "computer_config_invalid",
+      `Computer use is off because the project's computer settings are invalid: ${config.config_error}.`,
+    );
+  }
+  if (config.project_enabled) {
+    throw new ComputerError(
+      "computer_disabled",
+      `Computer use is off by your own choice (${describeSource(config)}). Change it with \`${deps.binName} computer mode <mode>\`.`,
+    );
+  }
   throw new ComputerError(
     "computer_disabled",
     `Computer use is off in this project. ${enableHint()}`,
   );
+}
+
+function describeSource(config: ComputerProjectConfig): string {
+  if (config.mode_source === "user-project") return "your setting for this project";
+  if (config.mode_source === "user-default") return "your setting for all projects";
+  return "the project's setting";
+}
+
+function describeMode(mode: ComputerMode): string {
+  switch (mode) {
+    case "off":
+      return "off";
+    case "ask-each-task":
+      return "ask before each task";
+    case "ask-once-per-session":
+      return "ask once per agent session";
+    case "on":
+      return "on, no asking";
+  }
+}
+
+function grantKindFor(mode: ComputerMode): GrantKind | null {
+  if (mode === "ask-each-task") return "task";
+  if (mode === "ask-once-per-session") return "session";
+  return null;
+}
+
+function grantDurationMs(
+  deps: ComputerDeps,
+  config: ComputerProjectConfig,
+  kind: GrantKind,
+): number {
+  if (kind === "session") return deps.grants.sessionMaxMs;
+  return Math.round((config.grant_minutes ?? deps.grants.defaultTaskMinutes) * 60_000);
+}
+
+/**
+ * In an ask mode, refuse unless the owner holds a live approval for this
+ * project. Returns the approval (undefined in `on` mode).
+ */
+function requireApproval(
+  deps: ComputerDeps,
+  config: ComputerProjectConfig,
+  host: SupportedHost,
+  owner: LeaseOwner,
+): DesktopGrant | undefined {
+  const kind = grantKindFor(config.mode);
+  if (!kind) return undefined;
+  const grant = deps.grants.live(
+    deps.leaseDir(host.desktopStateDir),
+    owner.id,
+    owner.project,
+    deps.now(),
+  );
+  if (grant) return grant;
+  throw new ComputerError(
+    "computer_approval_required",
+    `Desktop control needs the person's approval first (${describeMode(config.mode)}). Run \`${deps.binName} computer grant --purpose "<what you will do on the desktop>"\`; they answer a Yes/No prompt.`,
+    EXIT_APPROVAL_REQUIRED,
+  );
+}
+
+function grantMessage(
+  owner: LeaseOwner,
+  purpose: string,
+  kind: GrantKind,
+  durationMs: number,
+): string {
+  const lasts =
+    kind === "task"
+      ? `for this task only, up to ${Math.round(durationMs / 60_000)} minutes`
+      : `for the rest of this agent's session, up to ${Math.round(durationMs / 3_600_000)} hours`;
+  return [
+    `${owner.label} (an AI agent) wants to use this computer's screen, mouse and keyboard.`,
+    "",
+    `What for: ${purpose}`,
+    "",
+    `If you allow it, the approval lasts ${lasts}.`,
+    "",
+    "Before you allow it, close or minimize anything it should not see, on every screen: what is on screen can be sent to the AI provider. It must not send messages, emails or posts unless you approve each one separately.",
+  ].join("\n");
 }
 
 type SupportedHost = HostInfo & { desktopStateDir: string };
@@ -159,18 +345,36 @@ function requireInstalled(deps: ComputerDeps, host: HostInfo): string {
   );
 }
 
-function leaseOptions(deps: ComputerDeps, host: SupportedHost, waitMs = 0): LeaseOptions {
+function configuredIdleMs(deps: ComputerDeps): number {
   const idleSeconds = deps.config().idle_seconds;
+  return idleSeconds !== undefined ? Math.round(idleSeconds * 1000) : deps.defaultIdleMs;
+}
+
+function leaseOptions(
+  deps: ComputerDeps,
+  host: SupportedHost,
+  waitMs = 0,
+  idleMs = configuredIdleMs(deps),
+): LeaseOptions {
   return {
     dir: deps.leaseDir(host.desktopStateDir),
-    idleMs: idleSeconds !== undefined ? Math.round(idleSeconds * 1000) : deps.defaultIdleMs,
+    idleMs,
     waitMs,
     now: deps.now,
   };
 }
 
+/** Lease time for one `call`: long enough that the call itself can never outlive the lease. */
+function callLeaseIdleMs(deps: ComputerDeps): number {
+  return Math.max(configuredIdleMs(deps), (deps.driver.callTimeoutMs ?? 0) + CALL_LEASE_MARGIN_MS);
+}
+
+function secondsUntil(iso: string, nowMs: number): number {
+  return Math.max(0, Math.ceil((Date.parse(iso) - nowMs) / 1000));
+}
+
 function expiresInSeconds(lease: DesktopLease, nowMs: number): number {
-  return Math.max(0, Math.ceil((Date.parse(lease.expires_at) - nowMs) / 1000));
+  return secondsUntil(lease.expires_at, nowMs);
 }
 
 function describeLease(lease: DesktopLease, nowMs: number): string {
@@ -339,8 +543,9 @@ export function createComputerCommand(
     )
     .addHelpText(
       "after",
-      `\nEnable per project with "computer": { "enabled": true } in .harnery/config.jsonc.\n` +
-        `Exit codes: 0 ok · 1 error · ${EXIT_LEASE_HELD} desktop held by another agent.\n` +
+      `\nEnable per project with "computer": { "mode": "ask-each-task" } (or "ask-once-per-session" or "on")\n` +
+        `in .harnery/config.jsonc; each person may then choose their own with \`${bin} computer mode <mode>\`.\n` +
+        `Exit codes: 0 ok · 1 error · ${EXIT_LEASE_HELD} desktop held by another agent · ${EXIT_APPROVAL_REQUIRED} approval needed or declined.\n` +
         `Start with \`${bin} computer status\`.`,
     );
 
@@ -348,7 +553,7 @@ export function createComputerCommand(
   computer
     .command("status")
     .description(
-      "Show the host, pinned driver, install, daemon, desktop lease holder, and enabled flag.",
+      "Show the approval mode and your approval, the host, pinned driver, install, daemon, and desktop lease holder.",
     )
     .option("--json", "Emit the status as JSON.")
     .action(
@@ -367,9 +572,23 @@ export function createComputerCommand(
         }
         const lease = supported ? deps.lease.read(leaseOptions(deps, host as SupportedHost)) : null;
         const nowMs = deps.now();
+        const owner = deps.owner();
+        const grant = supported
+          ? (deps.grants.live(
+              deps.leaseDir((host as SupportedHost).desktopStateDir),
+              owner.id,
+              owner.project,
+              nowMs,
+            ) ?? null)
+          : null;
         if (opts.json) {
           deps.emit.data({
             enabled: config.enabled,
+            mode: config.mode,
+            project_mode: config.project_mode,
+            mode_source: config.mode_source,
+            ...(config.config_error ? { config_error: config.config_error } : {}),
+            approval: grant,
             host: { kind: host.kind, ...(host.reason ? { reason: host.reason } : {}) },
             driver: { id: deps.driver.id, version: deps.driver.version },
             installed,
@@ -378,8 +597,23 @@ export function createComputerCommand(
           });
           return;
         }
+        const modeLine = config.config_error
+          ? `off (invalid settings: ${config.config_error})`
+          : !config.project_enabled
+            ? `off (${enableHint()})`
+            : `${config.mode}: ${describeMode(config.mode)} (${describeSource(config)}; project default ${config.project_mode})`;
+        const grantKind = grantKindFor(config.mode);
         const lines = [
-          `enabled:   ${config.enabled ? "yes" : `no (${enableHint()})`}`,
+          `mode:      ${modeLine}`,
+          ...(grantKind
+            ? [
+                `approval:  ${
+                  grant
+                    ? `${grant.kind} approval for "${grant.purpose}", ends in ${secondsUntil(grant.expires_at, nowMs)}s`
+                    : `none; run \`${deps.binName} computer grant --purpose "<what for>"\` before using the desktop`
+                }`,
+              ]
+            : []),
           `host:      ${host.kind}${host.reason ? ` (${host.reason})` : ""}`,
           `driver:    ${deps.driver.id} ${deps.driver.version} (pinned)`,
         ];
@@ -569,26 +803,29 @@ export function createComputerCommand(
           rawJson: string | undefined,
           opts: { wait?: string; keepScreenshot?: boolean },
         ) => {
-          requireEnabled(deps);
+          const config = requireEnabled(deps);
           const host = requireSupported(deps.host());
           requireInstalled(deps, host);
           const args = parseCallArgs(rawJson);
           const waitSeconds =
-            parseSeconds(opts.wait, "--wait") ??
-            deps.config().wait_seconds ??
-            DEFAULT_CALL_WAIT_SECONDS;
+            parseSeconds(opts.wait, "--wait") ?? config.wait_seconds ?? DEFAULT_CALL_WAIT_SECONDS;
           const owner = deps.owner();
+          requireApproval(deps, config, host, owner);
           if (!("session" in args)) args.session = owner.label;
 
+          // Hold the lease for at least the driver's call timeout, so a slow
+          // call never runs on after its lease lapsed and another agent took
+          // the desktop; refresh to the normal idle period once it returns.
           const acquired = await deps.lease.acquire(
             owner,
-            leaseOptions(deps, host, Math.round(waitSeconds * 1000)),
+            leaseOptions(deps, host, Math.round(waitSeconds * 1000), callLeaseIdleMs(deps)),
           );
           if (!acquired.ok) throw heldError(deps, acquired.holder);
 
           await ensureDaemon(deps, host);
           const translated = deps.driver.translateArgsPaths(host, tool, args);
           const result = deps.driver.call(host, tool, translated);
+          await deps.lease.acquire(owner, leaseOptions(deps, host));
           let stdout = deps.driver.translateResultPaths(host, result.stdout);
           if (!opts.keepScreenshot) stdout = redactInlineScreenshots(stdout);
           printDriverResult(deps, result, stdout);
@@ -630,11 +867,13 @@ export function createComputerCommand(
     .option("--wait <seconds>", "How long to wait for another agent's lease (default 0).")
     .action(
       guarded(input, async (deps, opts: { wait?: string }) => {
-        requireEnabled(deps);
+        const config = requireEnabled(deps);
         const host = requireSupported(deps.host());
         const waitSeconds = parseSeconds(opts.wait, "--wait") ?? 0;
+        const owner = deps.owner();
+        requireApproval(deps, config, host, owner);
         const result = await deps.lease.acquire(
-          deps.owner(),
+          owner,
           leaseOptions(deps, host, Math.round(waitSeconds * 1000)),
         );
         if (!result.ok) throw heldError(deps, result.holder);
@@ -647,11 +886,12 @@ export function createComputerCommand(
 
   lease
     .command("release")
-    .description("Release the desktop lease if you hold it.")
+    .description("Release the desktop lease if you hold it; this also ends your task approval.")
     .action(
       guarded(input, (deps) => {
         const host = requireSupported(deps.host());
         const owner = deps.owner();
+        endOwnTaskApproval(deps, host, owner, "released the desktop");
         const released = deps.lease.release(owner, leaseOptions(deps, host));
         if (released) {
           emitLine(deps.emit, `Released the desktop lease held by ${owner.label}.`);
@@ -670,7 +910,305 @@ export function createComputerCommand(
       }),
     );
 
+  // ------------------------------------------------------------------- grant
+  computer
+    .command("grant")
+    .description(
+      "Ask the person at this computer to approve desktop control for one stated purpose " +
+        "(ask-each-task) or this agent session (ask-once-per-session). They answer a Yes/No " +
+        "prompt; no answer counts as no.",
+    )
+    .requiredOption("--purpose <text>", "What you will do on the desktop, in plain words.")
+    .option(
+      "--timeout <seconds>",
+      `How long to wait for the person's answer (default ${DEFAULT_CONFIRM_SECONDS}).`,
+    )
+    .action(
+      guarded(input, async (deps, opts: { purpose: string; timeout?: string }) => {
+        const config = requireEnabled(deps);
+        const host = requireSupported(deps.host());
+        const purpose = opts.purpose.trim();
+        if (!purpose)
+          throw new ComputerError("computer_usage", "--purpose must say what you will do.");
+        const kind = grantKindFor(config.mode);
+        if (!kind) {
+          emitLine(
+            deps.emit,
+            `No approval needed: desktop control is ${describeMode(config.mode)}.`,
+          );
+          return;
+        }
+        const owner = deps.owner();
+        const dir = deps.leaseDir(host.desktopStateDir);
+        const existing = deps.grants.live(dir, owner.id, owner.project, deps.now());
+        if (existing && existing.purpose === purpose) {
+          emitLine(
+            deps.emit,
+            `Already approved for "${purpose}"; ends in ${secondsUntil(existing.expires_at, deps.now())}s.`,
+          );
+          return;
+        }
+        const durationMs = grantDurationMs(deps, config, kind);
+        const timeoutSeconds = parseSeconds(opts.timeout, "--timeout") ?? DEFAULT_CONFIRM_SECONDS;
+        const base = {
+          owner_id: owner.id,
+          owner_label: owner.label,
+          project: owner.project,
+          kind,
+          purpose,
+        };
+        deps.grants.log(dir, { event: "requested", ...base }, deps.now());
+        const answer = await deps.confirm({
+          title: "Allow desktop control?",
+          message: grantMessage(owner, purpose, kind, durationMs),
+          timeoutMs: Math.round(timeoutSeconds * 1000),
+        });
+        if (answer.answer !== "approved") {
+          const event =
+            answer.answer === "denied"
+              ? "denied"
+              : answer.answer === "timed-out"
+                ? "timed-out"
+                : "unavailable";
+          deps.grants.log(
+            dir,
+            {
+              event,
+              ...base,
+              ...(answer.via ? { via: answer.via } : {}),
+              ...(answer.detail ? { detail: answer.detail } : {}),
+            },
+            deps.now(),
+          );
+          const why =
+            answer.answer === "denied"
+              ? "The person said no."
+              : answer.answer === "timed-out"
+                ? `No answer within ${timeoutSeconds}s, which counts as no.`
+                : `There was no way to ask the person here: ${answer.detail ?? "no prompt available"}. They can approve by running this command in their own terminal.`;
+          throw new ComputerError(
+            "computer_approval_declined",
+            `Desktop control was not approved. ${why} Do not use the desktop; tell the person what you needed it for.`,
+            EXIT_APPROVAL_REQUIRED,
+          );
+        }
+        const via: GrantChannel = answer.via ?? "dialog";
+        const grant = deps.grants.add(
+          dir,
+          { ...base, approved_via: via },
+          { nowMs: deps.now(), durationMs },
+        );
+        deps.grants.log(dir, { event: "approved", ...base, via }, deps.now());
+        emitLine(
+          deps.emit,
+          `Approved: ${kind === "task" ? "this task" : "this session"} may use the desktop for "${purpose}" until ${grant.expires_at}. ` +
+            `When you finish, run \`${deps.binName} computer done\`.`,
+        );
+      }),
+    );
+
+  // -------------------------------------------------------------------- done
+  computer
+    .command("done")
+    .description("Finish desktop work: end your task approval and release the desktop lease.")
+    .action(
+      guarded(input, (deps) => {
+        const host = requireSupported(deps.host());
+        const owner = deps.owner();
+        const ended = endOwnTaskApproval(deps, host, owner, "finished");
+        const released = deps.lease.release(owner, leaseOptions(deps, host));
+        emitLine(
+          deps.emit,
+          `${released ? "Released the desktop" : "You did not hold the desktop"}${ended ? " and ended your task approval" : ""}.`,
+        );
+      }),
+    );
+
+  // ------------------------------------------------------------------ revoke
+  computer
+    .command("revoke")
+    .description(
+      "End desktop-control approvals now: yours by default, or every agent's on this desktop with --all.",
+    )
+    .option("--all", "End every agent's approval on this desktop.")
+    .action(
+      guarded(input, (deps, opts: { all?: boolean }) => {
+        const host = requireSupported(deps.host());
+        const owner = deps.owner();
+        const dir = deps.leaseDir(host.desktopStateDir);
+        const ended = deps.grants.end(
+          dir,
+          opts.all ? { nowMs: deps.now() } : { nowMs: deps.now(), ownerId: owner.id },
+        );
+        for (const g of ended) {
+          deps.grants.log(
+            dir,
+            {
+              event: "revoked",
+              owner_id: g.owner_id,
+              owner_label: g.owner_label,
+              ...(g.project ? { project: g.project } : {}),
+              kind: g.kind,
+              purpose: g.purpose,
+            },
+            deps.now(),
+          );
+        }
+        emitLine(
+          deps.emit,
+          ended.length === 0
+            ? "No approvals to end."
+            : `Ended ${ended.length} approval${ended.length === 1 ? "" : "s"}: ${ended.map((g) => g.owner_label).join(", ")}.`,
+        );
+      }),
+    );
+
+  // -------------------------------------------------------------------- mode
+  computer
+    .command("mode [mode]")
+    .description(
+      `Show or set your own desktop-control mode (${COMPUTER_MODES.join(" | ")}) where the project allows desktop control. ` +
+        "Loosening it asks the person at this computer first.",
+    )
+    .option("--all-projects", "Set your mode for every project instead of just this one.")
+    .option("--clear", "Remove your own mode, so the project's default applies.")
+    .option("--json", "Emit the result as JSON.")
+    .action(
+      guarded(
+        input,
+        async (
+          deps,
+          raw: string | undefined,
+          opts: { allProjects?: boolean; clear?: boolean; json?: boolean },
+        ) => {
+          const current = deps.config();
+          if (raw === undefined && !opts.clear) {
+            if (opts.json) {
+              deps.emit.data({
+                mode: current.mode,
+                project_mode: current.project_mode,
+                mode_source: current.mode_source,
+                ...(current.config_error ? { config_error: current.config_error } : {}),
+              });
+              return;
+            }
+            emitLine(
+              deps.emit,
+              `${current.mode}: ${describeMode(current.mode)} (${describeSource(current)}; project default ${current.project_mode}).`,
+            );
+            return;
+          }
+          if (raw !== undefined && opts.clear) {
+            throw new ComputerError("computer_usage", "Pass a mode or --clear, not both.");
+          }
+          if (raw !== undefined && !isComputerMode(raw)) {
+            throw new ComputerError(
+              "computer_usage",
+              `Mode must be one of ${COMPUTER_MODES.join(", ")}.`,
+            );
+          }
+          if (!current.project_enabled) {
+            throw new ComputerError(
+              "computer_disabled",
+              `This project has desktop control off, and a personal mode cannot turn it on. ${enableHint()}`,
+            );
+          }
+          const root = opts.allProjects ? null : deps.projectRoot();
+          if (!opts.allProjects && !root) {
+            throw new ComputerError("computer_usage", "Not inside a project; pass --all-projects.");
+          }
+          const mode = raw === undefined ? null : (raw as ComputerMode);
+          const prefs = deps.prefs.read();
+          const next: ComputerPreferences = { ...prefs, projects: { ...(prefs.projects ?? {}) } };
+          if (root === null) {
+            if (mode === null) delete next.mode;
+            else next.mode = mode;
+          } else if (next.projects) {
+            if (mode === null) delete next.projects[root];
+            else next.projects[root] = mode;
+          }
+          const after = deps.config(next);
+          const scope = root === null ? "all your projects" : "this project";
+          if (computerModeLooser(after.mode, current.mode)) {
+            const answer = await deps.confirm({
+              title: "Loosen desktop control?",
+              message: [
+                `Change desktop control for ${scope} from "${describeMode(current.mode)}" to "${describeMode(after.mode)}".`,
+                "",
+                "AI agents would then need less of your approval before using this computer's screen, mouse and keyboard.",
+              ].join("\n"),
+              timeoutMs: DEFAULT_CONFIRM_SECONDS * 1000,
+            });
+            if (answer.answer !== "approved") {
+              throw new ComputerError(
+                "computer_approval_declined",
+                `Mode not changed: loosening it needs the person's approval, and ${answer.answer === "unavailable" ? `there was no way to ask (${answer.detail ?? "no prompt"})` : "it was not given"}.`,
+                EXIT_APPROVAL_REQUIRED,
+              );
+            }
+          }
+          deps.prefs.write(root, mode);
+          const host = deps.host();
+          if (host.kind !== "unsupported" && host.desktopStateDir) {
+            deps.grants.log(
+              deps.leaseDir(host.desktopStateDir),
+              {
+                event: "mode-changed",
+                ...(root ? { project: root } : {}),
+                detail: `${current.mode} -> ${after.mode} (${scope})`,
+              },
+              deps.now(),
+            );
+          }
+          if (opts.json) {
+            deps.emit.data({
+              mode: after.mode,
+              mode_source: after.mode_source,
+              scope: root === null ? "all-projects" : "project",
+            });
+            return;
+          }
+          emitLine(
+            deps.emit,
+            `Desktop control for ${scope} is now ${after.mode}: ${describeMode(after.mode)}.`,
+          );
+        },
+      ),
+    );
+
   return computer;
+}
+
+/** End the owner's task approval in this project, logging it. True when one ended. */
+function endOwnTaskApproval(
+  deps: ComputerDeps,
+  host: SupportedHost,
+  owner: LeaseOwner,
+  why: string,
+): boolean {
+  const dir = deps.leaseDir(host.desktopStateDir);
+  const ended = deps.grants.end(dir, {
+    nowMs: deps.now(),
+    ownerId: owner.id,
+    ...(owner.project ? { project: owner.project } : {}),
+    kind: "task",
+  });
+  for (const g of ended) {
+    deps.grants.log(
+      dir,
+      {
+        event: "ended",
+        owner_id: g.owner_id,
+        owner_label: g.owner_label,
+        ...(g.project ? { project: g.project } : {}),
+        kind: g.kind,
+        purpose: g.purpose,
+        detail: why,
+      },
+      deps.now(),
+    );
+  }
+  return ended.length > 0;
 }
 
 export function registerComputerCommand(

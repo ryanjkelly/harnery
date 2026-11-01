@@ -92,6 +92,8 @@ export interface DesktopDriver {
   readonly id: string;
   /** Pinned version this Harnery build installs. */
   readonly version: string;
+  /** Longest one `call` may run before the driver gives up, in ms; the lease outlasts it. */
+  readonly callTimeoutMs?: number;
   /** Resolve the install plan for this host without side effects. */
   planInstall(host: HostInfo): InstallPlan;
   /** Download, verify, extract and write preferences. Idempotent. */

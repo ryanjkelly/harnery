@@ -311,12 +311,25 @@
     "computer": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Opt-in desktop control through a pinned desktop driver (ADR 0228). Project config only; inert unless enabled is true.",
+      "description": "Opt-in desktop control through a pinned desktop driver (ADRs 0228 and 0230). Project config only; inert unless mode (or enabled) turns it on. Where it is on, each person may choose their own mode with `computer mode`, stored outside the project.",
       "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["off", "ask-each-task", "ask-once-per-session", "on"],
+          "default": "off",
+          "description": "How much approval desktop control needs. `ask-each-task`: the person approves each stated purpose for up to grant_minutes. `ask-once-per-session`: one approval per agent session. `on`: no approval. Also the project default for each person's own mode."
+        },
         "enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Allow `computer install`, `up`, `call`, and `lease acquire` in this project, and render the harn-computer skill on init."
+          "description": "Older switch: true without mode means mode `on`. false with a mode other than `off` is a contradiction, treated as off."
+        },
+        "grant_minutes": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1440,
+          "default": 20,
+          "description": "How long an `ask-each-task` approval lasts at most. It also ends at `computer done`, `lease release`, or `revoke`."
         },
         "idle_seconds": {
           "type": "number",

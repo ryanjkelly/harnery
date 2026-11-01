@@ -554,6 +554,7 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
   return {
     id: CUA_DRIVER_ID,
     version: CUA_DRIVER_VERSION,
+    callTimeoutMs: CALL_TIMEOUT_MS,
     planInstall,
     install,
     installedExecutable,

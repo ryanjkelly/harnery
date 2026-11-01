@@ -1,0 +1,116 @@
+---
+title: "0230: Desktop control approval modes"
+description: "ADR: `harn computer` gains four approval modes (off, ask-each-task, ask-once-per-session, on). The project sets the default and each person may choose their own; approvals are separate records answered by the person through a terminal prompt or a native dialog, and are a cooperative check, not a security boundary."
+---
+
+**Status:** accepted (2026-11-01) · **Scope:** product tier (`commands/computer`, `lib/computer`, `core/config`, the opt-in skill)
+
+## Context
+
+[Decision 0228](/decisions/0228-computer-use-through-a-pinned-desktop-driver/)
+made desktop control a single per-project switch: once a project set
+`computer.enabled`, every agent could drive the desktop without asking. That
+suits a developer's own machine. It does not suit a desktop that also shows
+other people's email and files, where the person wants a say before an agent
+looks at the screen or clicks anything, and where different people in one
+project want different amounts of asking.
+
+Three facts constrain the design:
+
+- **Harness approval prompts are not a common channel.** Claude Code's
+  PreToolUse hooks can answer `ask`, and a headless run with permission checks
+  off still refuses the command when a hook asks. Codex documents `ask` as
+  unsupported: it reports a hook error and runs the tool anyway, so only
+  `deny` holds there. A design that relies on the harness to ask works in one
+  harness and silently fails open in another.
+- **A desktop task is many calls.** One task is dozens of screenshot, click
+  and type calls with pauses between them. Asking per call, or per lease (which
+  lapses after two idle minutes), would ask every few minutes and train people
+  to approve without reading.
+- **Agents often run with full access.** An agent that can run any command as
+  the desktop's user can edit project config, write any file Harnery keeps,
+  run the driver binary directly, or script the desktop without the driver.
+  Nothing inside Harnery can stop that agent.
+
+## Decision
+
+### Four modes
+
+`computer.mode` is one of `off`, `ask-each-task`, `ask-once-per-session`, or
+`on`. `enabled: true` without a mode still means `on`. A malformed mode, or
+`enabled: false` with a mode other than `off`, counts as `off` and `status`
+reports why, so a typo never turns desktop control on.
+
+### The project sets the default; each person may choose
+
+The project's mode decides whether desktop control exists there at all and is
+everyone's default. Where it is not `off`, a person may choose their own mode
+for one project or for all of them (`computer mode`). The choice lives in
+`computer.json` beside the user config, never in the project, so committed
+files never differ between people. Committed surfaces (the skill and the
+instructions block) follow the project's mode only. A personal mode cannot turn
+on a project that is `off`. Loosening a personal mode asks the person first;
+tightening does not.
+
+### Approvals are their own records
+
+In an ask mode, `call` and `lease acquire` refuse with exit 4 until the agent
+holds a live approval for that project. `computer grant --purpose "<text>"`
+requests one. A task approval lasts until `computer done`, `lease release`,
+`revoke`, or `grant_minutes` (default 20), whichever comes first; a session
+approval lasts until revoked or 12 hours. Approvals are separate from the
+lease: the lease says who holds the desktop now, and its idle expiry does not
+end an approval.
+
+### The command asks the person itself
+
+`grant` does not depend on the harness. In an interactive terminal it asks
+there; otherwise it shows a native Yes/No dialog (Windows, also from WSL;
+macOS; Linux desktops with `zenity`). The dialog names the agent and its
+purpose, says how long the approval lasts, reminds the person to close anything
+the agent should not see on every screen, and states that approval to use the
+desktop is not approval to send messages. It defaults to the refusing button,
+and no answer within the timeout counts as no. The same works under every
+harness and with every permission setting.
+
+### Honest about what it is
+
+Approvals and every decision about them are kept beside the lease
+(`grants.json`, and an append-only `grants-log.ndjson` with the agent, purpose,
+outcome and channel, never screen content). They are plain files writable by
+the desktop's user. The modes stop a well-meaning agent from using the desktop
+casually or unasked; they are not a security boundary against an agent that
+sets out to get around them. The skill tells agents never to change the mode,
+edit the approval files, or run the driver directly to get around a refusal.
+
+### Lease timing fix
+
+A call now holds the lease for at least the driver's call timeout plus 15
+seconds, then refreshes it to the idle period when the call returns. Before,
+the idle period and the call timeout were both 120 seconds, so a slow call
+could run on after its lease lapsed and another agent took the desktop.
+
+## Alternatives
+
+- **Rely on the harness's own approval prompt** (a PreToolUse `ask`). Rejected
+  as the only channel because Codex treats `ask` as an error and proceeds.
+- **Tie a task approval to the lease.** Rejected: the lease lapses after two
+  idle minutes, so every pause would ask again.
+- **A dashboard button.** Rejected: an agent can reach the local dashboard as
+  easily as the person can, and a desktop-driving agent can click it.
+- **A screenshots-only mode.** Rejected for now: screenshots are the main way
+  screen content reaches the model provider, so looking without touching is
+  not the safer level it sounds like.
+- **Credential-bound approval** (an operating-system sign-in prompt the agent
+  cannot answer). Deferred: it needs testing against the driver itself before
+  it can be relied on.
+
+## Consequences
+
+- Projects that set `enabled: true` keep working unchanged, as `on`.
+- In an ask mode an agent's first desktop call per task fails with exit 4 and
+  a message naming `grant`; the skill teaches the grant, work, done loop.
+- A person can be asked at most once per task, or once per session, never per
+  call.
+- Later work: end approvals when the workstation locks, an operating-system
+  sign-in prompt for approval, and a per-application deny list.

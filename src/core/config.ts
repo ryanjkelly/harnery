@@ -20,9 +20,9 @@
  * both Bun and Node, and so the ADR-009 vendored copies stay portable.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { coordEnv } from "../lib/env.ts";
 import { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 import { AUTOUPDATE_DEFAULTS, type AutoUpdateConfig } from "./autoupdate/types.ts";
@@ -225,10 +225,18 @@ interface HarneryConfig {
   /** Standalone dashboard defaults. */
   web?: { port?: number; bind?: string };
   /**
-   * Opt-in desktop control (`computer` command, ADR 0228). Inert unless
-   * `enabled` is true. Project config only; read via `readComputerConfig()`.
+   * Opt-in desktop control (`computer` command, ADRs 0228 and 0230). Inert
+   * unless `mode` (or the older `enabled: true`) turns it on. Project config
+   * only; a person's own mode lives in `computer.json`. Read via
+   * `readComputerConfig()`.
    */
-  computer?: { enabled?: boolean; idle_seconds?: number; wait_seconds?: number };
+  computer?: {
+    mode?: ComputerMode;
+    enabled?: boolean;
+    grant_minutes?: number;
+    idle_seconds?: number;
+    wait_seconds?: number;
+  };
   /**
    * Activity-fired project self-update (ADR 0229). Inert unless `enabled` is
    * true. Project config only; read via `readAutoUpdateConfig()`.
@@ -753,38 +761,199 @@ export function readAdmissionConfig(coordRoot?: string | null): AdmissionProject
 }
 
 /** Effective `computer` settings; unset tunables fall back to the command's defaults. */
+/**
+ * How much approval desktop control needs (ADR 0230), from strictest to
+ * loosest. `ask-each-task` approves one stated purpose for a bounded time;
+ * `ask-once-per-session` approves one agent session; `on` needs no approval.
+ */
+export type ComputerMode = "off" | "ask-each-task" | "ask-once-per-session" | "on";
+
+export const COMPUTER_MODES: readonly ComputerMode[] = [
+  "off",
+  "ask-each-task",
+  "ask-once-per-session",
+  "on",
+];
+
+export function isComputerMode(value: unknown): value is ComputerMode {
+  return typeof value === "string" && (COMPUTER_MODES as readonly string[]).includes(value);
+}
+
+/** True when `a` asks for less approval than `b`. */
+export function computerModeLooser(a: ComputerMode, b: ComputerMode): boolean {
+  return COMPUTER_MODES.indexOf(a) > COMPUTER_MODES.indexOf(b);
+}
+
+/** Where the effective mode came from. */
+export type ComputerModeSource = "project" | "user-project" | "user-default";
+
+/** Effective `computer` settings; unset tunables fall back to the command's defaults. */
 export interface ComputerProjectConfig {
+  /** The effective mode is not `off`. */
   enabled: boolean;
+  /** Effective mode: the person's own choice where the project allows desktop control, else the project's. */
+  mode: ComputerMode;
+  /** The project's committed mode. Committed surfaces (skills, instructions) follow this, never a personal choice. */
+  project_mode: ComputerMode;
+  /** The project's mode is not `off`. */
+  project_enabled: boolean;
+  mode_source: ComputerModeSource;
+  /** Why the project's `computer` section was treated as `off`, when it was malformed. */
+  config_error?: string;
   /** Desktop lease idle expiry in seconds. */
   idle_seconds?: number;
   /** How long `computer call` waits for another agent's lease, in seconds. */
   wait_seconds?: number;
+  /** How long an `ask-each-task` approval lasts at most, in minutes. */
+  grant_minutes?: number;
+}
+
+/** One person's own desktop-control choices, kept outside every project. */
+export interface ComputerPreferences {
+  /** Mode for every project that allows desktop control. */
+  mode?: ComputerMode;
+  /** Mode for one project, keyed by its absolute root. Wins over `mode`. */
+  projects?: Record<string, ComputerMode>;
+}
+
+/** `~/.config/harnery/computer.json` (honors `XDG_CONFIG_HOME`). */
+export function computerPreferencesPath(): string {
+  return join(dirname(userConfigPath()), "computer.json");
+}
+
+/** The person's desktop-control choices; missing or malformed entries are ignored. */
+export function readComputerPreferences(path = computerPreferencesPath()): ComputerPreferences {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return {};
+  }
+  if (!isPlainObject(value)) return {};
+  const out: ComputerPreferences = {};
+  if (isComputerMode(value.mode)) out.mode = value.mode;
+  if (isPlainObject(value.projects)) {
+    const projects: Record<string, ComputerMode> = {};
+    for (const [root, mode] of Object.entries(value.projects)) {
+      if (isComputerMode(mode)) projects[root] = mode;
+    }
+    if (Object.keys(projects).length > 0) out.projects = projects;
+  }
+  return out;
+}
+
+/**
+ * Save the person's choice for one project (`root`) or for every project
+ * (`root` null). `mode` null clears that choice.
+ */
+export function writeComputerPreference(
+  root: string | null,
+  mode: ComputerMode | null,
+  path = computerPreferencesPath(),
+): ComputerPreferences {
+  const prefs = readComputerPreferences(path);
+  if (root === null) {
+    if (mode === null) delete prefs.mode;
+    else prefs.mode = mode;
+  } else {
+    const projects = { ...(prefs.projects ?? {}) };
+    if (mode === null) delete projects[root];
+    else projects[root] = mode;
+    if (Object.keys(projects).length > 0) prefs.projects = projects;
+    else delete prefs.projects;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(prefs, null, 2)}\n`);
+  renameSync(tmp, path);
+  return prefs;
+}
+
+/**
+ * The project's committed mode from its `computer` section. `mode` wins;
+ * `enabled: true` without `mode` means `on`. A malformed or contradictory
+ * section counts as `off` and says why, so a typo never turns control on.
+ */
+function projectComputerMode(record: Record<string, unknown>): {
+  mode: ComputerMode;
+  error?: string;
+} {
+  const hasMode = record.mode !== undefined;
+  if (hasMode && !isComputerMode(record.mode)) {
+    return {
+      mode: "off",
+      error: `computer.mode must be one of ${COMPUTER_MODES.join(", ")}; got ${JSON.stringify(record.mode)}`,
+    };
+  }
+  if (hasMode) {
+    const mode = record.mode as ComputerMode;
+    if (record.enabled === false && mode !== "off") {
+      return {
+        mode: "off",
+        error: `computer.enabled is false but computer.mode is "${mode}"; remove one of them`,
+      };
+    }
+    return { mode };
+  }
+  return { mode: record.enabled === true ? "on" : "off" };
 }
 
 /**
  * Desktop-control settings from `.harnery/config.jsonc`:
  *
  * ```jsonc
- * "computer": { "enabled": true, "idle_seconds": 120, "wait_seconds": 30 }
+ * "computer": { "mode": "ask-each-task", "grant_minutes": 20, "idle_seconds": 120, "wait_seconds": 30 }
  * ```
  *
- * Project config only: enabling desktop control is a per-project decision, so a
- * user-global value never turns it on. Malformed values are dropped one by one;
- * `enabled` is true only when the project sets it to exactly `true`.
+ * The project decides whether desktop control exists at all and sets the
+ * default mode. Where it is not `off`, each person may choose their own mode
+ * (`computer mode`), stored in `computer.json` beside the user config, never
+ * in the project. A personal choice can never turn on a project that is `off`.
+ * Malformed tunables are dropped one by one.
  */
-export function readComputerConfig(coordRoot?: string | null): ComputerProjectConfig {
+export function readComputerConfig(
+  coordRoot?: string | null,
+  prefs: ComputerPreferences = readComputerPreferences(),
+): ComputerProjectConfig {
   const root = coordRoot ?? findCoordRoot();
-  if (!root) return { enabled: false };
+  const off: ComputerProjectConfig = {
+    enabled: false,
+    mode: "off",
+    project_mode: "off",
+    project_enabled: false,
+    mode_source: "project",
+  };
+  if (!root) return off;
   const raw = readProjectConfig(root).computer;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { enabled: false };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return off;
   const record = raw as Record<string, unknown>;
+  const project = projectComputerMode(record);
+  let mode = project.mode;
+  let source: ComputerModeSource = "project";
+  if (project.mode !== "off") {
+    const personal = prefs.projects?.[root];
+    if (personal) {
+      mode = personal;
+      source = "user-project";
+    } else if (prefs.mode) {
+      mode = prefs.mode;
+      source = "user-default";
+    }
+  }
   const idle = positiveNumber(record.idle_seconds, 86_400);
   const wait = record.wait_seconds;
   const waitOk = typeof wait === "number" && Number.isFinite(wait) && wait >= 0 && wait <= 3600;
+  const grantMinutes = positiveNumber(record.grant_minutes, 24 * 60);
   return {
-    enabled: record.enabled === true,
+    enabled: mode !== "off",
+    mode,
+    project_mode: project.mode,
+    project_enabled: project.mode !== "off",
+    mode_source: source,
+    ...(project.error ? { config_error: project.error } : {}),
     ...(idle !== undefined ? { idle_seconds: idle } : {}),
     ...(waitOk ? { wait_seconds: wait } : {}),
+    ...(grantMinutes !== undefined ? { grant_minutes: grantMinutes } : {}),
   };
 }
 

@@ -38,7 +38,7 @@ export interface BlockSkills {
   team: boolean;
   /**
    * the opt-in `harn-computer` skill file is present (only when the project
-   * sets `computer.enabled`); absent from the default block entirely
+   * turns `computer` on through `mode` or `enabled`); absent from the default block entirely
    */
   computer?: boolean;
 }
@@ -86,7 +86,7 @@ export function renderInstructionsBlock(
   // Opt-in surface: the default block stays byte-identical unless the project
   // enabled computer use and the skill is actually installed.
   const computerPointer = skills.computer
-    ? `\n\n**Desktop control.** This project enables \`${b} computer\` for driving native desktop apps and real browsers as a last resort. The \`harn-computer\` skill has the loop, and the desktop is one shared resource held by one agent at a time.`
+    ? `\n\n**Desktop control.** This project enables \`${b} computer\` for driving native desktop apps and real browsers as a last resort. The \`harn-computer\` skill has the loop and the approval step, and the desktop is one shared resource held by one agent at a time.`
     : "";
   // Render the journal categories from the canonical enum so this prose can
   // never drift from what `journal add` actually accepts (the "note, plan…" list
@@ -188,7 +188,7 @@ export interface SkillTemplate {
   render: (binName: string) => string;
   /**
    * Config gate for an opt-in skill. `"computer"` renders only when the project
-   * sets `computer.enabled: true`; ungated skills always render (minus
+   * turns computer on (`mode` other than "off", or `enabled: true`); ungated skills always render (minus
    * `skills.exclude`).
    */
   optIn?: "computer";
@@ -546,10 +546,33 @@ browser you cannot drive any other way.
 ${b} computer status
 \`\`\`
 
-It shows the host, the pinned driver and whether it is installed, the daemon,
-and who holds the desktop. When the driver is missing, the project must enable
-computer use and run \`${b} computer install --yes\`. \`${b} computer doctor\`
-reports the driver's own health checks.
+It shows the approval mode, the host, the pinned driver and whether it is
+installed, the daemon, and who holds the desktop. When the driver is missing,
+run \`${b} computer install --yes\`. \`${b} computer doctor\` reports the driver's
+own health checks.
+
+## Approval
+
+The mode in \`status\` says how much the person must approve: \`off\`,
+\`ask-each-task\`, \`ask-once-per-session\`, or \`on\`. The project sets the default
+and each person may choose their own. In an ask mode, \`call\` refuses (exit 4)
+until you hold an approval:
+
+\`\`\`bash
+${b} computer grant --purpose "<what you will do, in plain words>"
+\`\`\`
+
+The person answers a Yes/No prompt; no answer counts as no. Name one real
+purpose and stay inside it; ask again when the purpose changes. If they say no,
+do not use the desktop: tell them what you needed it for. When the task is
+finished, end the approval and free the desktop:
+
+\`\`\`bash
+${b} computer done
+\`\`\`
+
+Never change the mode, edit the approval files, or run the driver directly to
+get around a refusal. The approval is a promise to the person, not a lock.
 
 ## Core loop
 
@@ -579,6 +602,12 @@ lists them.
   profile unless the operator asks for it.
 - Never type a password, username, or one-time code into a sign-in page. Stop
   and ask the operator to sign in.
+- An approval to use the desktop is not approval to communicate. Never click
+  Send, Reply, Post, Share, Accept, or Submit, or press Enter in a compose
+  field, unless the operator approved that specific message.
+- Everything you capture can reach your model provider. Prefer one window
+  over the full screen, and never capture a visible password manager or a
+  sign-in form with a filled field.
 - Only \`kill_app\` processes you launched.
 
 ## One desktop, one holder
@@ -589,7 +618,8 @@ and refreshes it on every call; it lapses after a short idle period.
 - A refusal naming another holder means **wait**, then try once more later. Do
   not retry in a loop. \`--wait <seconds>\` waits longer on one call.
 - Check the holder with \`${b} computer lease status\`.
-- Release the desktop as soon as you finish:
+- Release the desktop as soon as you finish (\`${b} computer done\` also ends
+  your task approval):
 
   \`\`\`bash
   ${b} computer lease release
@@ -656,7 +686,7 @@ export const SKILLS: SkillTemplate[] = [
       buildOwnedSkill({
         name: "harn-computer",
         description:
-          "Drive a native desktop app or a real browser through the project's pinned desktop driver, as a last resort after APIs, CLIs, and browser tools. Covers the setup check, the launch / read state / act by element token / read back loop, safety rules, and the shared desktop lease.",
+          "Drive a native desktop app or a real browser through the project's pinned desktop driver, as a last resort after APIs, CLIs, and browser tools. Covers the setup check, asking the person for approval, the launch / read state / act by element token / read back loop, safety rules, and the shared desktop lease.",
         binName,
         body: computerBody(binName),
       }),

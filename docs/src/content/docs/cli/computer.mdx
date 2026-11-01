@@ -28,21 +28,67 @@ tools. The design is in
 
 ## Enabling it
 
-The command is inert until a project opts in:
+The command is inert until a project opts in with a mode:
 
 ```jsonc
 // .harnery/config.jsonc
 {
-  "computer": { "enabled": true }
+  "computer": { "mode": "ask-each-task" }
 }
 ```
 
-Only the project file counts; a user-global value never turns it on. Without
-it, `install`, `up`, `call`, and `lease acquire` refuse with a message that
-shows this setting. With it, `harn init` also renders the `harn-computer` skill
-into each adapter's skills directory. Two optional tunables set the lease
-timing: `idle_seconds` (default 120) and `wait_seconds` (default 30). See
-[`computer` in the config schema](/reference/config-schema/#computer).
+| Mode | Meaning |
+|---|---|
+| `off` | No desktop control (the default) |
+| `ask-each-task` | The person approves each stated purpose; the approval lasts up to `grant_minutes` (default 20) |
+| `ask-once-per-session` | One approval covers the rest of that agent's session, up to 12 hours |
+| `on` | No approval needed |
+
+`"enabled": true` without a mode still means `on`. Only the project file turns
+desktop control on; a malformed or contradictory section counts as `off` and
+`status` says why. Where the project is not `off`, `install`, `up`, `call`, and
+`lease acquire` work, and `harn init` renders the `harn-computer` skill into
+each adapter's skills directory. Optional tunables: `grant_minutes`,
+`idle_seconds` (default 120), and `wait_seconds` (default 30). See
+[`computer` in the config schema](/reference/config-schema/#computer) and
+[decision record 0230](/decisions/0230-desktop-control-approval-modes/).
+
+### Each person's own mode
+
+The project's mode is the default. Where the project is not `off`, each person
+may choose their own with `harn computer mode <mode>` (this project) or
+`--all-projects`, and remove it with `--clear`. The choice is stored in
+`computer.json` beside the user config (`~/.config/harnery/`), never in the
+project, so committed files do not change. A personal mode never turns on a
+project that is `off`. Loosening it shows the person a Yes/No prompt first;
+tightening does not.
+
+## Approval
+
+In an ask mode, `call` and `lease acquire` refuse with exit 4 until the agent
+holds an approval:
+
+```bash
+harn computer grant --purpose "export the October invoices from the accounting app"
+harn computer call ...
+harn computer done
+```
+
+`grant` asks the person directly: a Yes/No prompt in an interactive terminal,
+or otherwise a native dialog on the desktop (Windows, also from WSL; macOS;
+Linux desktops with `zenity`). The dialog names the agent and its purpose,
+says how long the approval lasts, and reminds the person to close anything the
+agent should not see, because whatever is on screen can reach the model
+provider. It defaults to the refusing button, and no answer within
+`--timeout` (default 120 seconds) counts as no. `done` ends a task approval and
+releases the desktop; `lease release` also ends it. `revoke` ends your
+approvals now, and `revoke --all` ends every agent's on this desktop.
+
+Approvals and every decision about them are kept beside the lease
+(`grants.json` and `grants-log.ndjson`). They are plain files any process
+running as the desktop's user can write, so an approval is a cooperative check
+that stops a well-meaning agent acting unasked. It is not a security boundary
+against an agent that sets out to get around it.
 
 ## Platforms
 
@@ -134,12 +180,14 @@ exit code.
 |---|---|
 | `lease status [--json]` | Show the holder, its generation, and its idle expiry, or `free` |
 | `lease acquire [--wait <seconds>]` | Take or refresh the lease without calling a tool (default wait 0) |
-| `lease release` | Release the lease if you hold it; exits 3 when another agent holds it |
+| `lease release` | Release the lease if you hold it and end your task approval; exits 3 when another agent holds it |
 
 The lease is one file per desktop, kept in the desktop's own state directory,
 so callers in WSL distros, native Windows shells, and different repositories
 all see the same holder. An idle lease expires `idle_seconds` after the last
-call (default 120). Each new holder increments the generation.
+call (default 120). While a call runs, the lease is held for at least the
+driver's call timeout plus a margin, so a slow call never outlives it. Each new
+holder increments the generation.
 
 ## Exit codes
 
@@ -148,4 +196,5 @@ call (default 120). Each new holder increments the generation.
 | 0 | Success |
 | 1 | Error: computer use disabled, unsupported host, driver not installed, bad arguments, or a failing health check |
 | 3 | The desktop lease is held by another agent |
+| 4 | Desktop control needs the person's approval first, or they declined or did not answer |
 | other | `call`, `tools`, and `describe` pass through the driver's exit code |

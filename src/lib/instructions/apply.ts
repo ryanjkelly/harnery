@@ -148,7 +148,11 @@ function blockSkills(projectRoot: string, adapter: string): BlockSkills {
   };
   // Only an enabled project's block mentions the opt-in skill, so every other
   // project's block stays byte-identical.
-  if (supported && !exclude.has("harn-computer") && readComputerConfig(projectRoot).enabled) {
+  if (
+    supported &&
+    !exclude.has("harn-computer") &&
+    readComputerConfig(projectRoot).project_enabled
+  ) {
     skills.computer = true;
   }
   return skills;
@@ -156,7 +160,7 @@ function blockSkills(projectRoot: string, adapter: string): BlockSkills {
 
 /** False for an opt-in skill whose config gate is off in this project. */
 function skillOptedIn(projectRoot: string, skill: SkillTemplate): boolean {
-  if (skill.optIn === "computer") return readComputerConfig(projectRoot).enabled;
+  if (skill.optIn === "computer") return readComputerConfig(projectRoot).project_enabled;
   return true;
 }
 
@@ -536,7 +540,7 @@ export function checkInstructions(
         if (!skillOptedIn(projectRoot, skill)) {
           if (isOwnedFile(c)) {
             issues.push(
-              `skill ${skill.id}: present but ${skill.optIn}.enabled is off (re-run init)`,
+              `skill ${skill.id}: present but the project has ${skill.optIn} off (re-run init)`,
             );
           }
           continue;

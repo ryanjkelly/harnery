@@ -127,6 +127,19 @@ describe("harn-computer opt-in skill", () => {
     expect(checkInstructions(root, { binName: BIN, adapter: "claude-code" }).status).toBe("fresh");
   });
 
+  test("an ask mode renders it too, with the approval steps", () => {
+    mkdirSync(join(root, ".harnery"), { recursive: true });
+    writeFileSync(
+      join(root, ".harnery/config.jsonc"),
+      JSON.stringify({ computer: { mode: "ask-each-task" } }),
+    );
+    applyInstructions(root, { binName: BIN, adapter: "claude-code", dryRun: false });
+    const skill = read(".claude/skills/harn-computer/SKILL.md");
+    expect(skill).toContain('acme computer grant --purpose "');
+    expect(skill).toContain("acme computer done");
+    expect(checkInstructions(root, { binName: BIN, adapter: "claude-code" }).status).toBe("fresh");
+  });
+
   test("turning the gate off takes the skill back on the next init, and --check flags it first", () => {
     enable(true);
     applyInstructions(root, { binName: BIN, adapter: "codex", dryRun: false });
@@ -134,7 +147,9 @@ describe("harn-computer opt-in skill", () => {
     enable(false);
     const check = checkInstructions(root, { binName: BIN, adapter: "codex" });
     expect(check.status).toBe("drift");
-    expect(check.issues.join("\n")).toContain("harn-computer: present but computer.enabled is off");
+    expect(check.issues.join("\n")).toContain(
+      "harn-computer: present but the project has computer off",
+    );
     const r = applyInstructions(root, { binName: BIN, adapter: "codex", dryRun: false });
     expect(r.actions.join("\n")).toContain("removed skill harn-computer");
     expect(has(".agents/skills/harn-computer/SKILL.md")).toBe(false);
