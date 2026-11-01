@@ -1215,8 +1215,7 @@ export function renderResult(r: GrepResult, opts: GrepOpts): string {
     const left = fileRows
       ? `${plural(r.omitted_matches, "file")} left out`
       : `${matchWord(r.omitted_matches)} in ${plural(r.omitted_files, "other file")} left out`;
-    const next =
-      r.next_page !== null ? `. Next: --page ${r.next_page}` : "";
+    const next = r.next_page !== null ? `. Next: --page ${r.next_page}` : "";
     lines.push("");
     lines.push(`${shown}; ${left}${next}.  (${r.elapsed_ms}ms, ${r.engine})`);
   } else if (r.repos.length > 1) {
