@@ -21,7 +21,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, resolve } from "node:path";
+import { dirname, extname, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readAutoUpdateConfig, resolveBinName } from "../config.ts";
 import { fingerprint } from "./fingerprint.ts";
@@ -348,6 +348,42 @@ export function checkForUpdate(
 
 // ------------------------------------------------------------------ run
 
+/**
+ * Resolve a step's argv for the current platform. On Windows a bare command
+ * name such as `bun` or `git` is looked up on PATH with PATHEXT, because
+ * spawning without a shell does not try `.cmd` shims; a `.cmd` or `.bat`
+ * match runs through `cmd.exe`. Elsewhere the argv is used as is.
+ */
+export function resolveStepCommand(
+  cmd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync,
+): { cmd: string; args: string[]; verbatim: boolean } {
+  if (platform !== "win32" || /[\\/]/.test(cmd) || extname(cmd) !== "") {
+    return { cmd, args, verbatim: false };
+  }
+  const pathVar = env.Path ?? env.PATH ?? "";
+  const exts = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  for (const dir of pathVar.split(";").filter(Boolean)) {
+    for (const ext of exts) {
+      const candidate = win32.join(dir, cmd + ext.toLowerCase());
+      if (!exists(candidate)) continue;
+      if (/^\.(cmd|bat)$/i.test(ext)) {
+        const quote = (s: string) => (/[\s"&|<>^]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+        const line = [candidate, ...args].map(quote).join(" ");
+        return {
+          cmd: env.ComSpec ?? "cmd.exe",
+          args: ["/d", "/s", "/c", `"${line}"`],
+          verbatim: true,
+        };
+      }
+      return { cmd: candidate, args, verbatim: false };
+    }
+  }
+  return { cmd, args, verbatim: false };
+}
 export const defaultStepRunner: StepRunner = (argv, opts) =>
   new Promise((resolveRun) => {
     const started = Date.now();
@@ -360,15 +396,17 @@ export const defaultStepRunner: StepRunner = (argv, opts) =>
       clearTimeout(timer);
       resolveRun({ exitCode, timedOut, output, ms: Date.now() - started });
     };
-    const [cmd, ...args] = argv;
-    if (!cmd) {
+    const [rawCmd, ...rawArgs] = argv;
+    if (!rawCmd) {
       finish(null);
       return;
     }
+    const { cmd, args, verbatim } = resolveStepCommand(rawCmd, rawArgs, opts.env ?? process.env);
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
       env: opts.env,
       windowsHide: true,
+      windowsVerbatimArguments: verbatim,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const onData = (stream: "stdout" | "stderr") => (data: Buffer) => {

@@ -11,6 +11,7 @@ import {
   isHookConfigPath,
   isInstructionPath,
   parseNoticeLines,
+  resolveStepCommand,
   runAutoUpdate,
   setStamp,
 } from "./engine.ts";
@@ -318,5 +319,44 @@ describe("helpers", () => {
     expect(
       parseNoticeLines("a\n  harnery-notice: one\r\nharnery-notice:\nharnery-notice: two"),
     ).toEqual(["one", "two"]);
+  });
+});
+
+describe("resolveStepCommand", () => {
+  const env = {
+    Path: "C:\\tools;C:\\npm",
+    PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    ComSpec: "C:\\Windows\\system32\\cmd.exe",
+  };
+  test("non-Windows argv is unchanged", () => {
+    expect(resolveStepCommand("bun", ["x.ts"], env, "linux")).toEqual({
+      cmd: "bun",
+      args: ["x.ts"],
+      verbatim: false,
+    });
+  });
+  test("an .exe on PATH runs directly", () => {
+    const r = resolveStepCommand(
+      "git",
+      ["pull"],
+      env,
+      "win32",
+      (p) => p === "C:\\tools/git.exe" || p === "C:\\tools\\git.exe",
+    );
+    expect(r.cmd.toLowerCase()).toContain("git.exe");
+    expect(r.args).toEqual(["pull"]);
+  });
+  test("a .cmd shim runs through cmd.exe with quoting", () => {
+    const r = resolveStepCommand("bun", ["scripts/pull.ts", "a b"], env, "win32", (p) =>
+      /npm.bun\.cmd$/i.test(p),
+    );
+    expect(r.cmd).toBe(env.ComSpec);
+    expect(r.verbatim).toBe(true);
+    expect(r.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
+    expect(r.args[3]).toContain('scripts/pull.ts "a b"');
+  });
+  test("paths and names with extensions are left alone on Windows", () => {
+    expect(resolveStepCommand("bin/git-pull-all", [], env, "win32").cmd).toBe("bin/git-pull-all");
+    expect(resolveStepCommand("tool.exe", [], env, "win32").cmd).toBe("tool.exe");
   });
 });
